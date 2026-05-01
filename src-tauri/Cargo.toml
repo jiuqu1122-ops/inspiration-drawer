@@ -1,0 +1,50 @@
+[package]
+name = "inspiration-drawer"
+version = "2.0.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = ["protocol-asset", "tray-icon"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+screenshots = "0.8"        # 截屏引擎
+base64 = "0.22"            # Base64 编码
+open = "5.3"               # 调用系统默认程序打开文件
+local-ip-address = "0.6"   # 获取局域网 IP
+tauri-plugin-opener = "2.5.3"
+tauri-plugin-dialog = "2.6.0"
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-fs = "2.4.5"
+tauri-plugin-global-shortcut = "2.3.1"
+tauri-plugin-shell = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
+[target.'cfg(windows)'.dependencies]
+# Use winapi instead of an extra windows/windows-core dependency to avoid version conflicts
+# with Tauri 2.0.x's own windows-rs dependency graph.
+winapi = { version = "0.3.9", features = [
+  "std",
+  "guiddef",
+  "minwindef",
+  "ntdef",
+  "windef",
+  "winerror",
+  "winuser",
+  "winbase",
+  "shellapi",
+  "objidl",
+  "objidlbase",
+  "ole2",
+  "oleidl",
+  "unknwnbase",
+  "wtypesbase"
+] }
