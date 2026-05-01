@@ -6,11 +6,12 @@ mod native_drop;
 
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::fs;
+use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command as SysCommand, Stdio};
+use std::process::Command as SysCommand;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -19,6 +20,8 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow};
+use reqwest::blocking::Client;
+use reqwest::redirect::Policy;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -178,24 +181,133 @@ fn read_network_proxy(app_handle: &tauri::AppHandle) -> String {
 }
 
 #[tauri::command]
-fn get_network_proxy(_app_handle: tauri::AppHandle) -> Result<String, String> {
-    Ok(String::new())
+fn get_network_proxy(app_handle: tauri::AppHandle) -> Result<String, String> {
+    Ok(read_network_proxy(&app_handle))
 }
 
 #[tauri::command]
-fn set_network_proxy(_app_handle: tauri::AppHandle, _proxy: String) -> Result<String, String> {
-    Ok(String::new())
+fn set_network_proxy(app_handle: tauri::AppHandle, proxy: String) -> Result<String, String> {
+    let normalized = normalize_proxy_endpoint(&proxy).unwrap_or_default();
+    let path = network_proxy_config_path(&app_handle);
+
+    if normalized.is_empty() {
+        let _ = fs::remove_file(path);
+        return Ok(String::new());
+    }
+
+    fs::write(path, normalized.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(normalized)
 }
 
-fn effective_proxy(_app_handle: Option<&tauri::AppHandle>, _explicit_proxy: Option<&str>) -> Option<String> {
-    // 不再使用手动填写的代理；只自动读取系统代理或环境变量，避免旧配置继续影响网络请求。
-    windows_system_proxy().or_else(env_proxy)
+fn effective_proxy(app_handle: Option<&tauri::AppHandle>, explicit_proxy: Option<&str>) -> Option<String> {
+    // 优先级：本次请求显式代理 > App 内保存代理 > Windows 系统代理 > 环境变量。
+    // 这样既保留自动代理，又允许用户在特殊网络环境里手动覆盖。
+    explicit_proxy
+        .and_then(normalize_proxy_endpoint)
+        .or_else(|| {
+            app_handle
+                .map(read_network_proxy)
+                .and_then(|value| normalize_proxy_endpoint(&value))
+        })
+        .or_else(windows_system_proxy)
+        .or_else(env_proxy)
 }
 
-fn apply_curl_network_options(cmd: &mut SysCommand, proxy: Option<&str>) {
-    hide_console_window(cmd);
-    if let Some(proxy) = proxy.and_then(normalize_proxy_endpoint) {
-        cmd.arg("--proxy").arg(proxy);
+fn build_http_client(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .user_agent("Mozilla/5.0")
+        .redirect(Policy::limited(10))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(timeout_secs));
+
+    if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
+        let proxy = reqwest::Proxy::all(&proxy)
+            .map_err(|e| format!("代理配置无效：{}", e))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder.build().map_err(|e| format!("初始化网络客户端失败：{}", e))
+}
+
+fn download_url_to_file(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    out_path: &PathBuf,
+    explicit_proxy: Option<&str>,
+) -> Result<(), String> {
+    let client = build_http_client(Some(app_handle), explicit_proxy, 90)?;
+    let mut response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("下载请求失败：{}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("下载失败，HTTP 状态码：{}", response.status()));
+    }
+
+    let tmp_path = out_path.with_extension("download.tmp");
+    {
+        let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
+        response
+            .copy_to(&mut file)
+            .map_err(|e| format!("写入下载文件失败：{}", e))?;
+    }
+
+    fs::rename(&tmp_path, out_path).or_else(|_| {
+        fs::copy(&tmp_path, out_path).map(|_| ())?;
+        let _ = fs::remove_file(&tmp_path);
+        Ok::<(), std::io::Error>(())
+    }).map_err(|e| e.to_string())
+}
+
+fn http_get_text(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    explicit_proxy: Option<&str>,
+) -> Result<String, String> {
+    let client = build_http_client(Some(app_handle), explicit_proxy, 90)?;
+    let response = client
+        .get(url)
+        .header("accept", "application/json")
+        .bearer_auth(api_key)
+        .send()
+        .map_err(|e| format!("模型列表请求失败：{}", e))?;
+
+    let status = response.status();
+    let text = response.text().map_err(|e| e.to_string())?;
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!("模型列表请求失败，HTTP {}：{}", status, text))
+    }
+}
+
+fn http_post_json(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+    explicit_proxy: Option<&str>,
+) -> Result<String, String> {
+    let client = build_http_client(Some(app_handle), explicit_proxy, 120)?;
+    let response = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(body)
+        .send()
+        .map_err(|e| format!("AI 请求失败：{}", e))?;
+
+    let status = response.status();
+    let text = response.text().map_err(|e| e.to_string())?;
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!("AI 请求失败，HTTP {}：{}", status, text))
     }
 }
 
@@ -376,27 +488,8 @@ fn save_item_source_as(
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        let effective_proxy = effective_proxy(Some(&app_handle), None);
-        let mut curl_cmd = SysCommand::new("curl");
-        apply_curl_network_options(&mut curl_cmd, effective_proxy.as_deref());
-        let status = curl_cmd
-            .arg("-L")
-            .arg("--fail")
-            .arg("--connect-timeout")
-            .arg("10")
-            .arg("--max-time")
-            .arg("90")
-            .arg("-A")
-            .arg("Mozilla/5.0")
-            .arg("-o")
-            .arg(&dest_path)
-            .arg(input)
-            .status()
-            .map_err(|e| format!("调用 curl 下载失败：{}", e))?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err(format!("下载失败，curl 退出码：{:?}", status.code()));
+        download_url_to_file(&app_handle, input, &dest_path, None)?;
+        return Ok(());
     }
 
     Err(format!("unsupported source: {}", input))
@@ -583,11 +676,11 @@ async fn cache_web_image(
     app_handle: tauri::AppHandle,
     url: String,
     name: Option<String>,
-    cache_dir: Option<String>,
+    dir: Option<String>,
     proxy: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        cache_web_image_impl(app_handle, url, name, cache_dir, proxy)
+        cache_web_image_impl(app_handle, url, name, dir, proxy)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -670,30 +763,11 @@ fn cache_web_image_impl(
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        let effective_proxy = effective_proxy(Some(&app_handle), proxy.as_deref());
-        let mut curl_cmd = SysCommand::new("curl");
-        apply_curl_network_options(&mut curl_cmd, effective_proxy.as_deref());
-        let status = curl_cmd
-            .arg("-L")
-            .arg("--fail")
-            .arg("--connect-timeout")
-            .arg("10")
-            .arg("--max-time")
-            .arg("90")
-            .arg("-A")
-            .arg("Mozilla/5.0")
-            .arg("-o")
-            .arg(&out_path)
-            .arg(input)
-            .status()
-            .map_err(|e| format!("调用 curl 缓存网页图片失败：{}", e))?;
-
-        if status.success() {
-            return Ok(out_path.to_string_lossy().to_string());
+        if let Err(err) = download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
+            let _ = fs::remove_file(&out_path);
+            return Err(format!("缓存网页图片失败：{}", err));
         }
-
-        let _ = fs::remove_file(&out_path);
-        return Err(format!("缓存网页图片失败，curl 退出码：{:?}", status.code()));
+        return Ok(out_path.to_string_lossy().to_string());
     }
 
     Err(format!("unsupported web image source: {}", input))
@@ -971,35 +1045,6 @@ fn is_siliconflow_vision_model_id(id: &str) -> bool {
         || model.contains("vision")
 }
 
-fn run_curl_get_json(url: &str, api_key: &str, proxy: Option<&str>) -> Result<String, String> {
-    let auth_header = format!("Authorization: Bearer {}", api_key);
-    let mut curl_cmd = SysCommand::new("curl");
-    apply_curl_network_options(&mut curl_cmd, proxy);
-    let output = curl_cmd
-        .arg("-sS")
-        .arg("--connect-timeout")
-        .arg("20")
-        .arg("--max-time")
-        .arg("90")
-        .arg("-H")
-        .arg("accept: application/json")
-        .arg("-H")
-        .arg(auth_header)
-        .arg(url)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("调用 curl 获取模型列表失败：{}", e))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("模型列表请求失败：{} {}", stdout, stderr).trim().to_string())
-    }
-}
-
 #[tauri::command]
 async fn get_siliconflow_vision_models(
     app_handle: tauri::AppHandle,
@@ -1017,10 +1062,8 @@ async fn get_siliconflow_vision_models(
     } else {
         format!("{}/models", base)
     };
-    let proxy = effective_proxy(Some(&app_handle), None);
-
     tauri::async_runtime::spawn_blocking(move || {
-        let raw = run_curl_get_json(&url, &api_key, proxy.as_deref())?;
+        let raw = http_get_text(&app_handle, &url, &api_key, None)?;
         let parsed: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| format!("模型列表 JSON 解析失败：{}", e))?;
         let data = parsed
@@ -1040,52 +1083,6 @@ async fn get_siliconflow_vision_models(
     })
     .await
     .map_err(|e| format!("刷新模型列表任务失败：{}", e))?
-}
-
-fn run_curl_post_json(url: &str, api_key: &str, body: &serde_json::Value, proxy: Option<&str>) -> Result<String, String> {
-    let body_text = serde_json::to_string(body).map_err(|e| e.to_string())?;
-    let auth_header = format!("Authorization: Bearer {}", api_key);
-    let mut curl_cmd = SysCommand::new("curl");
-    apply_curl_network_options(&mut curl_cmd, proxy);
-    let mut child = curl_cmd
-        .arg("-sS")
-        .arg("--connect-timeout")
-        .arg("20")
-        .arg("--max-time")
-        .arg("120")
-        .arg("-X")
-        .arg("POST")
-        .arg(url)
-        .arg("-H")
-        .arg("Content-Type: application/json")
-        .arg("-H")
-        .arg(auth_header)
-        .arg("--data-binary")
-        .arg("@-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("调用 curl 失败：{}。请确认系统可执行 curl，或先使用本地配色分析。", e))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(body_text.as_bytes()).map_err(|e| e.to_string())?;
-    }
-
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stdout.is_empty() {
-            stderr
-        } else if stderr.is_empty() {
-            stdout
-        } else {
-            format!("{}\n{}", stdout, stderr)
-        })
-    }
 }
 
 fn extract_json_object_text(text: &str) -> Option<String> {
@@ -1199,8 +1196,7 @@ fn call_siliconflow_cmf(
     let url = normalize_siliconflow_endpoint(endpoint);
     let image_url = image_source_for_ai(image_source)?;
     let body = build_siliconflow_request_body(model, &image_url, item_name, note);
-    let proxy = effective_proxy(Some(app_handle), explicit_proxy);
-    let raw = run_curl_post_json(&url, api_key, &body, proxy.as_deref())?;
+    let raw = http_post_json(app_handle, &url, api_key, &body, explicit_proxy)?;
     let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
     let content = get_chat_message_content(&response)?;
     let Some(json_text) = extract_json_object_text(&content) else {

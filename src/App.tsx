@@ -2603,12 +2603,11 @@ function MainApp() {
       ''
     ).trim();
 
-    const cacheCommand = latestCacheDir ? 'cache_web_image_to_dir' : 'cache_web_image';
-    const cachePayload = latestCacheDir
-      ? { url: normalizedUrl, name: displayName, dir: latestCacheDir }
-      : { url: normalizedUrl, name: displayName, cacheDir: null, cache_dir: null };
-
-    invoke<string>(cacheCommand, cachePayload)
+    invoke<string>('cache_web_image', {
+      url: normalizedUrl,
+      name: displayName,
+      dir: latestCacheDir || undefined,
+    })
       .then((cachedPath) => {
         if (!cachedPath) return;
         const cachedUrl = convertFileSrc(cachedPath);
@@ -3966,8 +3965,47 @@ useEffect(() => {
             onMouseUp={() => { isMouseDown.current = false; confirmSnip(); }}
           >
             {snipMode.bg && <img src={snipMode.bg} className="w-full h-full object-cover pointer-events-none" />}
-            <div className="absolute inset-0 bg-transparent pointer-events-none" />
-            {selection && <div className="absolute border-2 border-emerald-400 bg-transparent shadow-[0_0_0_9999px_rgba(0,0,0,0.20)] pointer-events-none" style={{ left: selection.x, top: selection.y, width: selection.w, height: selection.h }}><div className="absolute -top-6 right-0 bg-emerald-500 text-white text-[10px] px-1 rounded">{selection.w} x {selection.h}</div></div>}
+
+            {selection ? (
+              <>
+                <div className="absolute inset-0 pointer-events-none">
+                  <div
+                    className="absolute left-0 right-0 top-0 bg-black/38"
+                    style={{ height: selection.y }}
+                  />
+                  <div
+                    className="absolute left-0 bg-black/38"
+                    style={{ top: selection.y, width: selection.x, height: selection.h }}
+                  />
+                  <div
+                    className="absolute right-0 bg-black/38"
+                    style={{ top: selection.y, left: selection.x + selection.w, height: selection.h }}
+                  />
+                  <div
+                    className="absolute left-0 right-0 bottom-0 bg-black/38"
+                    style={{ top: selection.y + selection.h }}
+                  />
+                </div>
+
+                <div
+                  className="absolute pointer-events-none rounded-[4px] border-2 border-emerald-400 shadow-[0_0_0_1px_rgba(255,255,255,0.7),0_0_0_9999px_rgba(0,0,0,0.02)]"
+                  style={{ left: selection.x, top: selection.y, width: selection.w, height: selection.h }}
+                >
+                  <div className="absolute inset-0 bg-white/10" />
+                  <div className="absolute inset-0 ring-1 ring-emerald-300/80" />
+                  <div className="absolute -top-7 right-0 rounded-md bg-emerald-500/95 px-2 py-1 text-[10px] font-semibold text-white shadow-lg whitespace-nowrap">
+                    {Math.max(0, Math.round(selection.w))} × {Math.max(0, Math.round(selection.h))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="absolute inset-0 bg-black/38 pointer-events-none" />
+                <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-full bg-black/55 px-4 py-2 text-[12px] font-medium text-white shadow-lg pointer-events-none backdrop-blur-sm">
+                  拖动鼠标框选截图区域，按 Esc 取消
+                </div>
+              </>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
