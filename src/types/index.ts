@@ -56,6 +56,34 @@ export type BufferItem = {
   alchemy?: AlchemyData;
 };
 
+
+export type FloatingNoteSnapshot = {
+  id: string;
+  itemId: string;
+  type: BufferItem['type'];
+  name?: string;
+  content?: string;
+  path?: string;
+  url?: string;
+  thumbnail?: string;
+  noteColor?: string;
+  noteMode?: 'text' | 'schedule';
+  scheduleItems?: FloatingNoteScheduleItem[];
+  createdAt: number;
+  updatedAt?: number;
+  zoom?: number;
+  width?: number;
+  height?: number;
+};
+
+export type FloatingNoteScheduleItem = {
+  id: string;
+  text: string;
+  done: boolean;
+  createdAt: number;
+  updatedAt?: number;
+};
+
 export type TabItem = {
   id: 'all' | 'image' | 'text' | 'video' | 'file' | 'alchemy';
   label: string;

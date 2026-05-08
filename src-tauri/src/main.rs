@@ -1,4 +1,4 @@
-﻿// src-tauri/src/main.rs
+// src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -14,12 +14,12 @@ use std::path::PathBuf;
 use std::process::Command as SysCommand;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 
@@ -34,6 +34,30 @@ fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
 #[cfg(not(target_os = "windows"))]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
     cmd
+}
+
+static STARTUP_CLOSE_LOCK_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+static WINDOW_RESIZE_ANIMATION_TOKEN: AtomicU64 = AtomicU64::new(0);
+
+fn now_millis_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn is_startup_close_locked() -> bool {
+    STARTUP_CLOSE_LOCK_UNTIL_MS.load(Ordering::Relaxed) > now_millis_u64()
+}
+
+#[tauri::command]
+fn set_startup_close_lock(ms: u64) {
+    let until = if ms == 0 {
+        0
+    } else {
+        now_millis_u64().saturating_add(ms)
+    };
+    STARTUP_CLOSE_LOCK_UNTIL_MS.store(until, Ordering::Relaxed);
 }
 
 fn normalize_proxy_endpoint(value: &str) -> Option<String> {
@@ -2132,15 +2156,80 @@ pub struct SnipState {
         std::sync::Mutex<Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>>,
 }
 
-// 占位函数
-#[tauri::command]
-fn get_shortcut(_name: String) -> Result<String, String> {
-    Ok("".to_string())
+fn shortcut_config_path(app_handle: &tauri::AppHandle) -> PathBuf {
+    get_user_data_dir(app_handle).join("shortcuts.json")
 }
+
+fn default_shortcut(name: &str) -> Option<&'static str> {
+    match name {
+        "update_shortcut" => Some("Alt+G"),
+        "update_snip_shortcut" => Some("F1"),
+        "update_text_shortcut" => Some("Alt+T"),
+        "update_search_shortcut" => Some("Alt+S"),
+        "update_trigger_shortcut" => Some("Alt+Q"),
+        _ => None,
+    }
+}
+
+fn normalize_shortcut_name(name: &str) -> String {
+    name.trim().replace('-', "_")
+}
+
+fn read_shortcut_map(app_handle: &tauri::AppHandle) -> serde_json::Map<String, serde_json::Value> {
+    let path = shortcut_config_path(app_handle);
+    if !path.exists() {
+        return serde_json::Map::new();
+    }
+
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
-fn update_shortcut(_name: String, _shortcut: String) -> Result<(), String> {
+fn get_shortcut(app_handle: tauri::AppHandle, name: String) -> Result<String, String> {
+    let key = normalize_shortcut_name(&name);
+    let saved = read_shortcut_map(&app_handle)
+        .get(&key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    Ok(saved
+        .or_else(|| default_shortcut(&key).map(str::to_string))
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+fn update_shortcut(app_handle: tauri::AppHandle, name: String, shortcut: String) -> Result<(), String> {
+    let key = normalize_shortcut_name(&name);
+    if default_shortcut(&key).is_none() {
+        return Err(format!("unknown shortcut name: {}", key));
+    }
+
+    let normalized = shortcut.trim().to_string();
+    if normalized.is_empty() {
+        return Err("shortcut cannot be empty".to_string());
+    }
+
+    let path = shortcut_config_path(&app_handle);
+    let mut shortcuts = read_shortcut_map(&app_handle);
+    shortcuts.insert(key, serde_json::Value::String(normalized));
+
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(shortcuts))
+        .map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+#[tauri::command]
+fn refresh_edge_drop_targets(app_handle: tauri::AppHandle) -> Result<(), String> {
+    native_drop::refresh_edge_native_drop(&app_handle)
+}
+
 const AUTO_START_REG_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const AUTO_START_VALUE_NAME: &str = "InspirationDrawer";
 
@@ -2159,12 +2248,45 @@ fn quote_windows_arg(path: &std::path::Path) -> String {
 }
 
 #[cfg(target_os = "windows")]
+fn parse_windows_run_exe_path(value: &str) -> std::path::PathBuf {
+    let trimmed = value.trim();
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        if let Some(end) = rest.find('"') {
+            return std::path::PathBuf::from(&rest[..end]);
+        }
+    }
+
+    std::path::PathBuf::from(trimmed.split_whitespace().next().unwrap_or(""))
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_windows_path(path: &std::path::Path) -> String {
+    let normalized = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    normalized
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+fn auto_start_value_matches_current_exe(value: &str) -> Result<bool, String> {
+    let registered = parse_windows_run_exe_path(value);
+    if registered.as_os_str().is_empty() {
+        return Ok(false);
+    }
+
+    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(normalize_windows_path(&registered) == normalize_windows_path(&current))
+}
+
+#[cfg(target_os = "windows")]
 fn get_auto_start_impl() -> Result<bool, String> {
     use std::ptr::null_mut;
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::winerror::ERROR_SUCCESS;
     use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
-    use winapi::um::winnt::KEY_READ;
+    use winapi::um::winnt::{KEY_READ, REG_EXPAND_SZ, REG_SZ};
 
     unsafe {
         let subkey = auto_start_wide_null(AUTO_START_REG_SUBKEY);
@@ -2206,9 +2328,13 @@ fn get_auto_start_impl() -> Result<bool, String> {
             return Ok(false);
         }
 
+        if value_type != REG_SZ && value_type != REG_EXPAND_SZ {
+            return Ok(false);
+        }
+
         let end = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
         let value = String::from_utf16_lossy(&buffer[..end]);
-        Ok(!value.trim().is_empty())
+        auto_start_value_matches_current_exe(&value)
     }
 }
 
@@ -2281,7 +2407,16 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
         };
 
         RegCloseKey(hkey);
-        result
+        result?;
+
+        let persisted = get_auto_start_impl()?;
+        if persisted == auto_start {
+            Ok(())
+        } else if auto_start {
+            Err("autostart registry value did not match current executable after write".to_string())
+        } else {
+            Err("autostart registry value still exists after delete".to_string())
+        }
     }
 }
 
@@ -2626,6 +2761,92 @@ fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
+#[cfg(not(target_os = "windows"))]
+fn set_window_bounds_atomic(
+    window: &WebviewWindow,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    window
+        .set_size(LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn resize_window_preserve_right_physical(
+    window: &WebviewWindow,
+    work_pos: LogicalPosition<f64>,
+    work_size: LogicalSize<f64>,
+    factor: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    use std::ptr::null_mut;
+    use winapi::shared::windef::RECT;
+    use winapi::um::winuser::{
+        GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+    };
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| e.to_string())?
+        .0 as winapi::shared::windef::HWND;
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let got_rect = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if got_rect == 0 {
+        return Err(format!(
+            "GetWindowRect failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let width_px = (width * factor).round().max(1.0) as i32;
+    let height_px = (height * factor).round().max(1.0) as i32;
+    let work_left_px = (work_pos.x * factor).round() as i32;
+    let work_top_px = (work_pos.y * factor).round() as i32;
+    let work_right_px = ((work_pos.x + work_size.width) * factor).round() as i32;
+    let work_bottom_px = ((work_pos.y + work_size.height) * factor).round() as i32;
+
+    // Anchor to the current physical right edge. Computing this in logical space and
+    // converting x/width separately causes ±1px drift on fractional DPI scales.
+    let max_x_px = work_right_px - width_px;
+    let max_y_px = work_bottom_px - height_px;
+    let x_px = (rect.right - width_px).max(work_left_px).min(max_x_px.max(work_left_px));
+    let y_px = rect.top.max(work_top_px).min(max_y_px.max(work_top_px));
+
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            x_px,
+            y_px,
+            width_px,
+            height_px,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+    };
+
+    if ok == 0 {
+        Err(format!(
+            "SetWindowPos failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn edge_strip_y_store() -> &'static Mutex<Option<f64>> {
     EDGE_STRIP_Y.get_or_init(|| Mutex::new(None))
 }
@@ -2713,6 +2934,13 @@ fn position_edge(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
+    if is_startup_close_locked() {
+        if let Some(edge) = app_handle.get_webview_window("edge") {
+            let _ = edge.hide();
+        }
+        return Ok(());
+    }
+
     if is_float_mode(mode.as_deref()) {
         position_float_edge(app_handle, x, y)
     } else {
@@ -2770,7 +2998,8 @@ fn open_drawer(
     let looks_like_snip_fullscreen = current_visible_size
         .map(|size| size.width >= work_size.width - 4.0 && size.height >= work_size.height - 4.0)
         .unwrap_or(false);
-    let preserve_current_position = main.is_visible().unwrap_or(false) && !looks_like_snip_fullscreen;
+    let preserve_current_position =
+        main.is_visible().unwrap_or(false) && !looks_like_snip_fullscreen && !is_startup_close_locked();
 
     let (x, y) = if preserve_current_position {
         // 如果 main 已经可见，说明抽屉可能被用户手动拖到了别的位置。
@@ -2897,6 +3126,15 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
         800.0
     };
 
+    // 启动欢迎页显示期间，前端会设置一个短暂的后端关闭锁。
+    // 任何旧的 edge 预览、mouseleave 或定时器误调用 close_drawer，都不能真正 hide 主窗口。
+    if is_startup_close_locked() {
+        main.set_always_on_top(true).ok();
+        main.show().map_err(|e| e.to_string())?;
+        let _ = main.emit("drawer-opened", ());
+        return Ok(());
+    }
+
     let _ = main.emit("drawer-closed", ());
     main.hide().map_err(|e| e.to_string())?;
     position_edge(app_handle, height, mode, None, None).ok();
@@ -2912,6 +3150,15 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
 
     let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
     let h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+
+    #[cfg(target_os = "windows")]
+    {
+        resize_window_preserve_right_physical(&main, work_pos, work_size, factor, w, h)?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
     let current_pos = main
         .outer_position()
         .ok()
@@ -2929,23 +3176,325 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
     let max_x = work_pos.x + work_size.width - w;
     let max_y = work_pos.y + work_size.height - h;
     let x = clamp_f64(desired_right - w, work_pos.x, max_x.max(work_pos.x));
-    let y = clamp_f64(
-        current_pos.y + (current_size.height - h) / 2.0,
-        work_pos.y,
-        max_y.max(work_pos.y),
-    );
+    let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
 
-    main.set_size(LogicalSize::new(w, h)).map_err(|e| e.to_string())?;
-    main.set_position(LogicalPosition::new(x, y))
-        .map_err(|e| e.to_string())?;
-    main.set_always_on_top(true).ok();
+    set_window_bounds_atomic(&main, x, y, w, h)?;
     Ok(())
+    }
 }
 
 #[tauri::command]
 fn sync_drawer_bounds(app_handle: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     resize_drawer(app_handle, width, height)
 }
+
+
+#[tauri::command]
+fn show_note_window(
+    app_handle: tauri::AppHandle,
+    label: Option<String>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
+    let label = label.unwrap_or_else(|| "note_1".to_string());
+    if label != "note" && !label.starts_with("note_") {
+        return Err(format!("invalid note window label: {}", label));
+    }
+
+    let note = app_handle
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("note window not found: {}", label))?;
+
+    note.set_min_size(Some(LogicalSize::new(48.0, 48.0))).ok();
+
+    let w = width.unwrap_or(360.0).max(48.0).min(900.0);
+    let h = height.unwrap_or(320.0).max(48.0).min(800.0);
+
+    let _ = note.set_size(LogicalSize::new(w, h));
+
+    if !note.is_visible().unwrap_or(false) {
+        if let Ok(Some(monitor)) = note.current_monitor() {
+            let factor = note.scale_factor().unwrap_or(1.0);
+            let work_pos = monitor.work_area().position.to_logical::<f64>(factor);
+            let work_size = monitor.work_area().size.to_logical::<f64>(factor);
+            let offset = label
+                .trim_start_matches("note_")
+                .parse::<f64>()
+                .unwrap_or(1.0)
+                .max(1.0);
+            let x = work_pos.x + (work_size.width - w) / 2.0 + ((offset - 1.0) * 28.0);
+            let y = work_pos.y + (work_size.height - h) / 2.0 + ((offset - 1.0) * 24.0);
+            let max_x = work_pos.x + work_size.width - w;
+            let max_y = work_pos.y + work_size.height - h;
+            let _ = note.set_position(LogicalPosition::new(
+                x.max(work_pos.x).min(max_x.max(work_pos.x)),
+                y.max(work_pos.y).min(max_y.max(work_pos.y)),
+            ));
+        }
+    }
+
+    note.show().map_err(|e| e.to_string())?;
+    let _ = note.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), String> {
+    if label != "note" && !label.starts_with("note_") {
+        return Err(format!("invalid note window label: {}", label));
+    }
+
+    let note = app_handle
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("note window not found: {}", label))?;
+    note.hide().map_err(|e| e.to_string())
+}
+
+
+
+
+const NOTE_SNAP_THRESHOLD_LOGICAL: f64 = 7.0;
+
+#[derive(Clone, Copy)]
+struct NoteSnapRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+fn is_note_window_label(label: &str) -> bool {
+    label == "note" || label.starts_with("note_")
+}
+
+fn ranges_near_or_overlap(a_start: i32, a_end: i32, b_start: i32, b_end: i32, threshold: i32) -> bool {
+    a_start <= b_end.saturating_add(threshold) && b_start <= a_end.saturating_add(threshold)
+}
+
+fn consider_snap_candidate(best: &mut Option<(i32, i32)>, candidate: i32, distance: i32) {
+    match *best {
+        Some((_, best_distance)) if best_distance <= distance => {}
+        _ => *best = Some((candidate, distance)),
+    }
+}
+
+fn is_detaching_from_snap(current: i32, candidate: i32, delta: i32) -> bool {
+    delta.abs() > 1 && (current - candidate).abs() <= 1
+}
+
+fn snapped_note_window_position(
+    app_handle: &tauri::AppHandle,
+    window: &WebviewWindow,
+    current_x: i32,
+    current_y: i32,
+    target_x: i32,
+    target_y: i32,
+    move_x: i32,
+    move_y: i32,
+) -> (i32, i32) {
+    let current_label = window.label().to_string();
+    if !is_note_window_label(&current_label) {
+        return (target_x, target_y);
+    }
+
+    let size = match window.outer_size() {
+        Ok(size) => size,
+        Err(_) => return (target_x, target_y),
+    };
+    let width = size.width.min(i32::MAX as u32) as i32;
+    let height = size.height.min(i32::MAX as u32) as i32;
+    let target = NoteSnapRect {
+        left: target_x,
+        top: target_y,
+        right: target_x.saturating_add(width),
+        bottom: target_y.saturating_add(height),
+    };
+
+    let threshold = (NOTE_SNAP_THRESHOLD_LOGICAL * window.scale_factor().unwrap_or(1.0))
+        .round()
+        .max(4.0) as i32;
+    let mut best_x: Option<(i32, i32)> = None;
+    let mut best_y: Option<(i32, i32)> = None;
+
+    for index in 0..=8 {
+        let label = if index == 0 {
+            "note".to_string()
+        } else {
+            format!("note_{}", index)
+        };
+        if label == current_label {
+            continue;
+        }
+
+        let Some(other) = app_handle.get_webview_window(&label) else {
+            continue;
+        };
+        if !other.is_visible().unwrap_or(false) {
+            continue;
+        }
+
+        let other_pos = match other.outer_position() {
+            Ok(pos) => pos,
+            Err(_) => continue,
+        };
+        let other_size = match other.outer_size() {
+            Ok(size) => size,
+            Err(_) => continue,
+        };
+        let other_width = other_size.width.min(i32::MAX as u32) as i32;
+        let other_height = other_size.height.min(i32::MAX as u32) as i32;
+        let other_rect = NoteSnapRect {
+            left: other_pos.x,
+            top: other_pos.y,
+            right: other_pos.x.saturating_add(other_width),
+            bottom: other_pos.y.saturating_add(other_height),
+        };
+
+        let vertical_near = ranges_near_or_overlap(target.top, target.bottom, other_rect.top, other_rect.bottom, threshold);
+        if vertical_near {
+            let candidates = [
+                (other_rect.left, (target.left - other_rect.left).abs()),
+                (other_rect.right, (target.left - other_rect.right).abs()),
+                (other_rect.left.saturating_sub(width), (target.right - other_rect.left).abs()),
+                (other_rect.right.saturating_sub(width), (target.right - other_rect.right).abs()),
+            ];
+            for (candidate, distance) in candidates {
+                if is_detaching_from_snap(current_x, candidate, move_x) {
+                    continue;
+                }
+                if distance <= threshold {
+                    consider_snap_candidate(&mut best_x, candidate, distance);
+                }
+            }
+        }
+
+        let horizontal_near = ranges_near_or_overlap(target.left, target.right, other_rect.left, other_rect.right, threshold);
+        if horizontal_near {
+            let candidates = [
+                (other_rect.top, (target.top - other_rect.top).abs()),
+                (other_rect.bottom, (target.top - other_rect.bottom).abs()),
+                (other_rect.top.saturating_sub(height), (target.bottom - other_rect.top).abs()),
+                (other_rect.bottom.saturating_sub(height), (target.bottom - other_rect.bottom).abs()),
+            ];
+            for (candidate, distance) in candidates {
+                if is_detaching_from_snap(current_y, candidate, move_y) {
+                    continue;
+                }
+                if distance <= threshold {
+                    consider_snap_candidate(&mut best_y, candidate, distance);
+                }
+            }
+        }
+    }
+
+    (
+        best_x.map(|(candidate, _)| candidate).unwrap_or(target_x),
+        best_y.map(|(candidate, _)| candidate).unwrap_or(target_y),
+    )
+}
+
+#[tauri::command]
+fn move_current_window_by(app_handle: tauri::AppHandle, window: WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
+    if !dx.is_finite() || !dy.is_finite() {
+        return Err("invalid move delta".to_string());
+    }
+    let factor = window.scale_factor().map_err(|e| e.to_string())?;
+    let current = window
+        .outer_position()
+        .map_err(|e| e.to_string())?;
+    let move_x = (dx * factor).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let move_y = (dy * factor).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let target_x = current.x.saturating_add(move_x);
+    let target_y = current.y.saturating_add(move_y);
+    let (x, y) = snapped_note_window_position(&app_handle, &window, current.x, current.y, target_x, target_y, move_x, move_y);
+
+    window
+        .set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
+}
+
+
+#[tauri::command]
+fn resize_current_window(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
+    let label = window.label();
+    let is_note = label == "note" || label.starts_with("note_");
+    let min_width = if is_note { 48.0 } else { 220.0 };
+    let min_height = if is_note { 48.0 } else { 160.0 };
+    let max_width = if is_note { 920.0 } else { 920.0 };
+    let max_height = if is_note { 820.0 } else { 820.0 };
+    if is_note {
+        window.set_min_size(Some(LogicalSize::new(min_width, min_height))).ok();
+    }
+    let w = clamp_f64(width, min_width, max_width);
+    let h = clamp_f64(height, min_height, max_height);
+    window
+        .set_size(LogicalSize::new(w, h))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn cancel_current_window_resize_animation() {
+    WINDOW_RESIZE_ANIMATION_TOKEN.fetch_add(1, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn animate_current_window_resize(
+    window: WebviewWindow,
+    width: f64,
+    height: f64,
+    duration_ms: Option<u64>,
+) -> Result<(), String> {
+    let label = window.label();
+    let is_note = label == "note" || label.starts_with("note_");
+    let min_width = if is_note { 48.0 } else { 220.0 };
+    let min_height = if is_note { 48.0 } else { 160.0 };
+    let max_width = 920.0;
+    let max_height = 820.0;
+    if is_note {
+        window.set_min_size(Some(LogicalSize::new(min_width, min_height))).ok();
+    }
+
+    let factor = window.scale_factor().map_err(|e| e.to_string())?;
+    let start_size = window
+        .outer_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(factor);
+    let start_w = start_size.width;
+    let start_h = start_size.height;
+    let target_w = clamp_f64(width, min_width, max_width);
+    let target_h = clamp_f64(height, min_height, max_height);
+    let duration = duration_ms.unwrap_or(110).max(1);
+    let token = WINDOW_RESIZE_ANIMATION_TOKEN.fetch_add(1, Ordering::Relaxed) + 1;
+    let window_for_animation = window.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let started_at = std::time::Instant::now();
+        loop {
+            if WINDOW_RESIZE_ANIMATION_TOKEN.load(Ordering::Relaxed) != token {
+                break;
+            }
+
+            let elapsed = started_at.elapsed().as_millis() as f64;
+            let progress = (elapsed / duration as f64).clamp(0.0, 1.0);
+            let next_w = start_w + (target_w - start_w) * progress;
+            let next_h = start_h + (target_h - start_h) * progress;
+            let _ = window_for_animation.set_size(LogicalSize::new(next_w.round(), next_h.round()));
+
+            if progress >= 1.0 {
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(16));
+        }
+
+        if WINDOW_RESIZE_ANIMATION_TOKEN.load(Ordering::Relaxed) == token {
+            let _ = window_for_animation.set_size(LogicalSize::new(target_w, target_h));
+        }
+    });
+
+    Ok(())
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -3000,23 +3549,33 @@ fn main() {
             capture_screen_area_to_file,
             get_shortcut,
             update_shortcut,
+            refresh_edge_drop_targets,
             get_auto_start,
             set_auto_start,
             copy_image,
-        
+
+            set_startup_close_lock,
+
             open_drawer,
             close_drawer,
             resize_drawer,
             position_edge,
             show_edge,
             hide_edge,
-            sync_drawer_bounds,])
+            sync_drawer_bounds,
+            show_note_window,
+            hide_note_window,
+            move_current_window_by,
+            resize_current_window,
+            animate_current_window_resize,
+            cancel_current_window_resize_animation,])
         .setup(|app| {
+            set_startup_close_lock(12_000);
+
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
                 let _ = main.set_always_on_top(true);
                 let _ = main.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
-                let _ = main.hide();
             }
 
             if let Some(edge) = app.get_webview_window("edge") {

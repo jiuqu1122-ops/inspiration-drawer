@@ -1,21 +1,22 @@
 // src/components/BufferItemCard.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from "framer-motion";
-import { 
+import {
   Tag, Star, FolderMinus, FolderOpen, Download, Copy,
-  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, Sparkles 
+  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, Sparkles, StickyNote
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
+import { Image as TauriImage } from '@tauri-apps/api/image';
 import { save } from '@tauri-apps/plugin-dialog';
 
-export default function BufferItemCard({ 
-  item, cardWidth, mediaHeight, isResizing, 
-  onResizeStart, onResizeEnd, onResize, 
-  onRemove, onRemoveFromFolder, onTogglePin, 
-  onImageClick, onVideoClick, isSelectMode, 
+export default function BufferItemCard({
+  item, cardWidth, mediaHeight, isResizing,
+  onResizeStart, onResizeEnd, onResize,
+  onRemove, onRemoveFromFolder, onTogglePin,
+  onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
-  showAlchemy = false, onAlchemy
+  showAlchemy = false, onAlchemy, onCreateFloatingNote, onLiveTextChange
 }: any) {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -26,6 +27,10 @@ export default function BufferItemCard({
   const [editContentText, setEditContentText] = useState(item.content || '');
   const [isHovered, setIsHovered] = useState(false);
   const openUrlTimerRef = useRef<any | null>(null);
+  const editStartContentRef = useRef(item.content || '');
+  const editContentDirtyRef = useRef(false);
+  const skipTextEditSaveRef = useRef(false);
+  const finishingTextEditRef = useRef(false);
 
   const isExternalHttpUrl = (value?: unknown) => (
     typeof value === 'string' &&
@@ -53,9 +58,20 @@ export default function BufferItemCard({
   }, [item?.id, item?.remark]);
 
   useEffect(() => {
-    setEditContentText(item.content || '');
+    const nextContent = item.content || '';
+    editStartContentRef.current = nextContent;
+    editContentDirtyRef.current = false;
+    setEditContentText(nextContent);
     setIsEditingText(false);
-  }, [item?.id, item?.content]);
+  }, [item?.id]);
+
+  useEffect(() => {
+    if (isEditingText) return;
+    const nextContent = item.content || '';
+    editStartContentRef.current = nextContent;
+    editContentDirtyRef.current = false;
+    setEditContentText(nextContent);
+  }, [item?.content, isEditingText]);
 
   useEffect(() => () => {
     if (openUrlTimerRef.current) window.clearTimeout(openUrlTimerRef.current);
@@ -63,30 +79,30 @@ export default function BufferItemCard({
 
   const normalizeImageToPng = (url: string, callback: (pngUrl: string) => void) => {
     const img = new Image(); img.crossOrigin = "anonymous";
-    img.onload = () => { 
-      const canvas = document.createElement('canvas'); 
-      canvas.width = img.naturalWidth; 
-      canvas.height = img.naturalHeight; 
-      const ctx = canvas.getContext('2d'); 
-      if (ctx) { 
-        ctx.drawImage(img, 0, 0); 
-        callback(canvas.toDataURL('image/png')); 
-      } else { 
-        callback(url); 
-      } 
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        callback(canvas.toDataURL('image/png'));
+      } else {
+        callback(url);
+      }
     };
     img.onerror = () => callback(url); img.src = url;
   };
 
-  const handleOpenFile = (e: React.MouseEvent | any) => { 
-    e.preventDefault(); e.stopPropagation(); 
+  const handleOpenFile = (e: React.MouseEvent | any) => {
+    e.preventDefault(); e.stopPropagation();
     if (item.path) {
         invoke('open_file', { path: item.path }).catch(()=>{});
     }
   };
-  
-  const handleShowInFolder = async (e: React.MouseEvent | any) => { 
-    e.preventDefault(); e.stopPropagation(); 
+
+  const handleShowInFolder = async (e: React.MouseEvent | any) => {
+    e.preventDefault(); e.stopPropagation();
     if (!item.path) return;
 
     const cachePath = String(item.path || '');
@@ -129,9 +145,9 @@ export default function BufferItemCard({
       });
     }, 220);
   };
-  
-  const handleSaveFile = async (e: React.MouseEvent | any) => { 
-    e.preventDefault(); e.stopPropagation(); 
+
+  const handleSaveFile = async (e: React.MouseEvent | any) => {
+    e.preventDefault(); e.stopPropagation();
     try {
       const isImage = item.type === 'image';
       const isText = item.type === 'text';
@@ -140,7 +156,7 @@ export default function BufferItemCard({
         : isText
           ? `${item.name || '文本片段'}_${Date.now()}.txt`
           : (item.name || `文件_${Date.now()}`);
-      
+
       const savePath = await save({
         defaultPath: defaultName,
         filters: isImage
@@ -192,10 +208,11 @@ export default function BufferItemCard({
       }
     }
 
-    // 再走 Tauri clipboard-manager。writeImage 接受 ArrayBuffer/Uint8Array，而不是路径。
+    // 再走 Tauri clipboard-manager。Tauri v2 下先转成 Image 对象更稳。
     try {
       const buffer = await blob.arrayBuffer();
-      await writeImage(new Uint8Array(buffer));
+      const image = await TauriImage.fromBytes(new Uint8Array(buffer));
+      await writeImage(image);
       return;
     } catch (err) {
       console.warn('tauri writeImage failed:', err);
@@ -268,7 +285,7 @@ export default function BufferItemCard({
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         e.preventDefault();
         e.stopPropagation();
-        handleCopy(e); 
+        handleCopy(e);
       }
     };
     window.addEventListener('keydown', handleKeyDown, true);
@@ -290,8 +307,8 @@ export default function BufferItemCard({
     const onMouseMove = (me: MouseEvent) => {
       const deltaX = me.clientX - startX;
       const deltaY = me.clientY - startY;
-      const newW = Math.max(100, Math.min(800, startW + deltaX)); 
-      const newH = Math.max(40, Math.min(600, startH + deltaY));  
+      const newW = Math.max(100, Math.min(800, startW + deltaX));
+      const newH = Math.max(40, Math.min(600, startH + deltaY));
       onResize(newW, newH);
     };
 
@@ -328,22 +345,50 @@ export default function BufferItemCard({
   };
 
   const saveTextContent = () => {
+    if (skipTextEditSaveRef.current) {
+      skipTextEditSaveRef.current = false;
+      return;
+    }
+    if (finishingTextEditRef.current) return;
+
+    finishingTextEditRef.current = true;
+    window.setTimeout(() => {
+      finishingTextEditRef.current = false;
+    }, 0);
+
+    const originalText = editStartContentRef.current;
     const nextText = editContentText.trim();
     if (!nextText) {
       showToast?.('文本不能为空');
-      setEditContentText(item.content || '');
+      setEditContentText(originalText);
+      if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, originalText);
       setIsEditingText(false);
       return;
     }
+
     setIsEditingText(false);
-    if (nextText !== (item.content || '').trim() && typeof onUpdateText === 'function') {
+    setEditContentText(nextText);
+    editStartContentRef.current = nextText;
+    const shouldCommit = editContentDirtyRef.current && (
+      nextText !== originalText.trim() ||
+      nextText !== (item.content || '')
+    );
+    editContentDirtyRef.current = false;
+
+    if (shouldCommit && typeof onUpdateText === 'function') {
       onUpdateText(item.id, nextText);
       showToast?.('文本已更新');
+    } else if (shouldCommit && typeof onLiveTextChange === 'function') {
+      onLiveTextChange(item.id, nextText);
     }
   };
 
   const cancelTextEdit = () => {
-    setEditContentText(item.content || '');
+    const originalText = editStartContentRef.current;
+    skipTextEditSaveRef.current = true;
+    editContentDirtyRef.current = false;
+    setEditContentText(originalText);
+    if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, originalText);
     setIsEditingText(false);
   };
 
@@ -355,16 +400,19 @@ export default function BufferItemCard({
       window.clearTimeout(openUrlTimerRef.current);
       openUrlTimerRef.current = null;
     }
+    skipTextEditSaveRef.current = false;
     setIsEditingRemark(false);
     setIsExpanded(true);
-    setEditContentText(item.content || '');
+    editStartContentRef.current = item.content || '';
+    editContentDirtyRef.current = false;
+    setEditContentText(editStartContentRef.current);
     setIsEditingText(true);
   };
 
 return (
-    <motion.div 
+    <motion.div
       layout transition={{ layout: { type: 'tween', duration: isResizing ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] } }}
-      initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} 
+      initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }}
       onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}
       onPointerEnter={() => setIsHovered(true)} onPointerLeave={() => setIsHovered(false)}
       draggable={false}
@@ -378,16 +426,27 @@ return (
       )}
 
       {isSelectMode && <div className="absolute inset-0 z-50 bg-black/5 dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5 rounded-[22px]" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(); }}><div className={`w-4 h-4 rounded-[6px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-stone-300 dark:border-stone-500 bg-white/80 dark:bg-stone-800/80'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
-      
+
       {!isSelectMode && (
         <div data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-[80] flex flex-wrap justify-end gap-1.5 min-w-[160px] pointer-events-auto">
-          <button 
-            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); if (isEditingRemark) { setIsEditingRemark(false); onUpdateRemark(item.id, editRemarkText.trim()); } else { setIsEditingRemark(true); } }} 
+          <button
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); if (isEditingRemark) { setIsEditingRemark(false); onUpdateRemark(item.id, editRemarkText.trim()); } else { setIsEditingRemark(true); } }}
             onClick={e => { e.preventDefault(); e.stopPropagation(); }} title={item.remark ? "修改/收起备注" : "添加备注"} className={btnClass}
           ><Tag className={iconClass} /></button>
-          
+
           <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }} title={item.isQuickAccess ? "取消快速访问" : "固定到快速访问"} className={`${btnClass} ${item.isQuickAccess ? 'text-amber-500' : ''}`}><Star className={`${iconClass} ${item.isQuickAccess ? 'fill-amber-400 text-amber-500' : ''}`} /></button>
-          
+
+          {typeof onCreateFloatingNote === 'function' && (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCreateFloatingNote(item); }}
+              title="固定为桌面便签"
+              className={`${btnClass} hover:text-amber-600`}
+            ><StickyNote className={iconClass} /></button>
+          )}
+
           {canShowAlchemy && (
             <button
               type="button"
@@ -398,11 +457,11 @@ return (
               className={`${btnClass} ${hasAiAlchemyDone ? 'text-amber-500' : ''}`}
             ><Sparkles className={`${iconClass} ${hasAiAlchemyDone ? 'fill-amber-300/60 text-amber-500' : ''}`} /></button>
           )}
-          
+
           {item.folderId && (
-            <button 
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemoveFromFolder(); }} 
-              title="移出当前文件夹" 
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemoveFromFolder(); }}
+              title="移出当前文件夹"
               className={`${btnClass} hover:text-amber-500`}
             ><FolderMinus className={iconClass} /></button>
           )}
@@ -410,20 +469,20 @@ return (
           {canShowInFolder && <button onClick={handleShowInFolder} title="在文件夹中显示（原文件优先，丢失则定位缓存）" className={`${btnClass} hover:text-blue-600`}><FolderOpen className={iconClass} /></button>}
           <button onClick={handleSaveFile} title="另存为文件" className={`${btnClass} hover:text-blue-500`}><Download className={iconClass} /></button>
           <button type="button" data-no-drag="true" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={handleCopy} title="复制 (Ctrl+C)" className={`${btnClass} hover:text-emerald-600`}>{copied ? <Check className={`${iconClass} text-emerald-500`} /> : <Copy className={iconClass} />}</button>
-          <button 
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(); }} 
-            title={item.isQuickAccess ? "该项目已锁定保护" : "删除"} 
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(); }}
+            title={item.isQuickAccess ? "该项目已锁定保护" : "删除"}
             className={`${btnClass} ${item.isQuickAccess ? 'text-amber-500 dark:text-amber-400 cursor-default opacity-80 hover:text-amber-500' : 'hover:text-red-600'}`}
           >{item.isQuickAccess ? <ShieldCheck className={iconClass} /> : <X className={iconClass} />}</button>
         </div>
       )}
 
       {item.type === 'image' && <img src={item.url} className="w-full object-cover cursor-pointer rounded-t-[22px]" style={{ height: mediaHeight }} title="点击预览" onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(item.url); }} />}
-      
+
       {item.type === 'video' && (
-        <div 
-          className="relative w-full group/video cursor-pointer bg-stone-900 rounded-t-[22px] overflow-hidden" 
-          style={{ height: mediaHeight }} 
+        <div
+          className="relative w-full group/video cursor-pointer bg-stone-900 rounded-t-[22px] overflow-hidden"
+          style={{ height: mediaHeight }}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onVideoClick?.(item); }}
           title="点击在抽屉内播放"
         >
@@ -438,7 +497,7 @@ return (
             {item.type === 'video' ? <Film className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" /> : <FileIcon className="w-4 h-4 text-stone-400 dark:text-stone-500 shrink-0" />}
             <span className="text-xs font-medium text-stone-600 dark:text-stone-300 truncate">{item.name}</span>
           </div>
-        ) : ( 
+        ) : (
           <div
             className={`relative flex flex-col ${isExpanded ? 'max-h-[500px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full' : 'max-h-[150px] overflow-hidden'}`}
             onDoubleClick={startTextEditFromCard}
@@ -455,11 +514,22 @@ return (
                 <textarea
                   autoFocus
                   value={editContentText}
-                  onChange={(e) => setEditContentText(e.target.value)}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    editContentDirtyRef.current = nextValue !== editStartContentRef.current;
+                    setEditContentText(nextValue);
+                    if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, nextValue);
+                  }}
                   onBlur={saveTextContent}
                   onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') saveTextContent();
-                    if (e.key === 'Escape') cancelTextEdit();
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                      e.preventDefault();
+                      saveTextContent();
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      cancelTextEdit();
+                    }
                   }}
                   placeholder="编辑文本内容..."
                   className="min-h-[96px] w-full resize-y rounded-[16px] border border-emerald-200/80 dark:border-emerald-800/55 bg-white/85 dark:bg-stone-900/45 p-2.5 text-xs leading-5 text-stone-700 dark:text-stone-200 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15"
@@ -544,7 +614,7 @@ return (
 
       <AnimatePresence initial={false}>
         {isEditingRemark && (
-          <motion.div 
+          <motion.div
             key="remark-editor"
             initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0" onClick={e => { e.preventDefault(); e.stopPropagation(); }}
@@ -565,13 +635,13 @@ return (
         )}
 
         {!isEditingRemark && item.remark && (
-          <motion.div 
+          <motion.div
             key="remark-display"
             initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0"
           >
             <div className="px-3 pb-3 pt-1">
-              <div 
+              <div
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-50 dark:bg-amber-900/30 rounded-[14px] border border-amber-100 dark:border-amber-800/50 cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors shadow-sm"
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsEditingRemark(true); }}
                 title="点击修改备注"

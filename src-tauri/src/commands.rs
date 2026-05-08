@@ -2,7 +2,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use screenshots::Screen;
 use std::io::Cursor;
-use tauri::{LogicalPosition, Manager, State, WebviewWindow};
+use tauri::{LogicalPosition, State, WebviewWindow};
 
 #[tauri::command]
 pub fn drag_window(window: WebviewWindow, dx: f64, dy: f64) {

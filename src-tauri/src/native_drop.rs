@@ -18,7 +18,7 @@ mod win {
 
     use winapi::ctypes::c_void;
     use winapi::shared::guiddef::{GUID, REFIID};
-    use winapi::shared::minwindef::{BOOL, DWORD, FALSE, HGLOBAL, TRUE, UINT, ULONG};
+    use winapi::shared::minwindef::{BOOL, DWORD, HGLOBAL, TRUE, UINT, ULONG};
     use winapi::shared::ntdef::HRESULT;
     use winapi::shared::windef::{HWND, POINTL};
     use winapi::shared::winerror::{E_NOINTERFACE, E_POINTER, S_OK};
