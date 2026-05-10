@@ -33,7 +33,7 @@
         "title": "灵感抽屉",
         "width": 400,
         "height": 800,
-        "minWidth": 320,
+        "minWidth": 360,
         "minHeight": 300,
         "resizable": false,
         "fullscreen": false,

@@ -19,7 +19,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 
@@ -1344,8 +1344,7 @@ fn sys_update_bounds(
 
     let new_x = if keep_right {
         if let Some(monitor) = window.current_monitor().map_err(|e| e.to_string())? {
-            let work_area_pos = monitor.work_area().position.to_logical::<f64>(factor);
-            let work_area_size = monitor.work_area().size.to_logical::<f64>(factor);
+            let (work_area_pos, work_area_size, _) = monitor_work_area(&monitor);
             work_area_pos.x + work_area_size.width - width
         } else {
             current_pos.x
@@ -1385,9 +1384,7 @@ fn sys_drag_window(window: WebviewWindow, dx: f64, dy: f64) {
 fn snap_to_right(window: WebviewWindow, width: f64, height: f64) {
     if let Ok(Some(monitor)) = window.current_monitor() {
         if let Ok(factor) = window.scale_factor() {
-            let work_area_size: LogicalSize<f64> = monitor.work_area().size.to_logical(factor);
-            let work_area_pos: LogicalPosition<f64> =
-                monitor.work_area().position.to_logical(factor);
+            let (work_area_pos, work_area_size, _) = monitor_work_area(&monitor);
 
             if let Ok(current_pos) = window.outer_position() {
                 let logical_pos: LogicalPosition<f64> = current_pos.to_logical(factor);
@@ -2165,8 +2162,10 @@ fn default_shortcut(name: &str) -> Option<&'static str> {
         "update_shortcut" => Some("Alt+G"),
         "update_snip_shortcut" => Some("F1"),
         "update_text_shortcut" => Some("Alt+T"),
+        "update_note_shortcut" => Some("Alt+E"),
         "update_search_shortcut" => Some("Alt+S"),
         "update_trigger_shortcut" => Some("Alt+Q"),
+        "update_canvas_shortcut" => Some("Alt+`"),
         _ => None,
     }
 }
@@ -2694,9 +2693,10 @@ fn capture_screen_area_to_file_impl(
     let physical_w = (width * scale).round().max(1.0) as u32;
     let physical_h = (height * scale).round().max(1.0) as u32;
 
-    // 先隐藏全屏截图窗口，避免把半透明遮罩和选区框一起截进去。
+    // 先隐藏并移走全屏截图窗口，避免 DWM 还没完成 hide 时把选区框截进去。
     window.hide().map_err(|e| e.to_string())?;
-    std::thread::sleep(std::time::Duration::from_millis(24));
+    let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
+    std::thread::sleep(std::time::Duration::from_millis(96));
 
     let screen = screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
     let display = screen.display_info;
@@ -2723,11 +2723,10 @@ fn capture_screen_area_to_file_impl(
             .map_err(|e| e.to_string())?
             .as_millis()
     );
-    let out_dir = if let Some(app) = app_handle.as_ref() {
-        get_user_data_dir(app).join("screenshots")
-    } else {
-        std::env::temp_dir()
-    };
+    let out_dir = app_handle
+        .as_ref()
+        .map(read_web_image_cache_dir)
+        .unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(file_name);
     image.save(&out_path).map_err(|e| e.to_string())?;
@@ -2741,20 +2740,88 @@ const EDGE_WINDOW_WIDTH: f64 = 20.0;
 const EDGE_STRIP_HEIGHT: f64 = 96.0;
 const FLOAT_TRIGGER_SIZE: f64 = 56.0;
 const FLOAT_MARGIN: f64 = 12.0;
-const DRAWER_MIN_WIDTH: f64 = 240.0;
+const DRAWER_MIN_WIDTH: f64 = 360.0;
 const DRAWER_MIN_HEIGHT: f64 = 220.0;
 const DRAWER_EDGE_MARGIN: f64 = 12.0;
 static EDGE_STRIP_Y: OnceLock<Mutex<Option<f64>>> = OnceLock::new();
 
-fn window_work_area(window: &WebviewWindow) -> Result<(LogicalPosition<f64>, LogicalSize<f64>, f64), String> {
-    let factor = window.scale_factor().map_err(|e| e.to_string())?;
+type LogicalWorkArea = (LogicalPosition<f64>, LogicalSize<f64>, f64);
+
+fn monitor_work_area(monitor: &Monitor) -> LogicalWorkArea {
+    let factor = monitor.scale_factor();
+    let pos = monitor.work_area().position.to_logical::<f64>(factor);
+    let size = monitor.work_area().size.to_logical::<f64>(factor);
+    (pos, size, factor)
+}
+
+fn window_work_area(window: &WebviewWindow) -> Result<LogicalWorkArea, String> {
     let monitor = window
         .current_monitor()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "no monitor".to_string())?;
-    let pos = monitor.work_area().position.to_logical::<f64>(factor);
-    let size = monitor.work_area().size.to_logical::<f64>(factor);
-    Ok((pos, size, factor))
+    Ok(monitor_work_area(&monitor))
+}
+
+fn window_work_area_for_point(
+    window: &WebviewWindow,
+    x: f64,
+    y: f64,
+) -> Result<LogicalWorkArea, String> {
+    if !x.is_finite() || !y.is_finite() {
+        return window_work_area(window);
+    }
+
+    let monitors = window.available_monitors().map_err(|e| e.to_string())?;
+    let mut nearest: Option<(LogicalWorkArea, f64)> = None;
+
+    for monitor in monitors {
+        let area = monitor_work_area(&monitor);
+        let (pos, size, _) = area;
+        let left = pos.x;
+        let top = pos.y;
+        let right = pos.x + size.width;
+        let bottom = pos.y + size.height;
+
+        if x >= left && x <= right && y >= top && y <= bottom {
+            return Ok(area);
+        }
+
+        let dx = if x < left {
+            left - x
+        } else if x > right {
+            x - right
+        } else {
+            0.0
+        };
+        let dy = if y < top {
+            top - y
+        } else if y > bottom {
+            y - bottom
+        } else {
+            0.0
+        };
+        let distance = dx * dx + dy * dy;
+
+        match nearest {
+            Some((_, best_distance)) if best_distance <= distance => {}
+            _ => nearest = Some((area, distance)),
+        }
+    }
+
+    nearest
+        .map(|(area, _)| area)
+        .ok_or_else(|| "no monitor".to_string())
+}
+
+fn preferred_note_work_area(
+    app_handle: &tauri::AppHandle,
+    note: &WebviewWindow,
+) -> Option<LogicalWorkArea> {
+    app_handle
+        .get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .or_else(|| note.current_monitor().ok().flatten())
+        .map(|monitor| monitor_work_area(&monitor))
 }
 
 fn clamp_f64(value: f64, min: f64, max: f64) -> f64 {
@@ -2847,6 +2914,72 @@ fn resize_window_preserve_right_physical(
     }
 }
 
+#[cfg(target_os = "windows")]
+fn resize_window_preserve_left_physical(
+    window: &WebviewWindow,
+    work_pos: LogicalPosition<f64>,
+    work_size: LogicalSize<f64>,
+    factor: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    use std::ptr::null_mut;
+    use winapi::shared::windef::RECT;
+    use winapi::um::winuser::{
+        GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+    };
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| e.to_string())?
+        .0 as winapi::shared::windef::HWND;
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let got_rect = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if got_rect == 0 {
+        return Err(format!(
+            "GetWindowRect failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let width_px = (width * factor).round().max(1.0) as i32;
+    let height_px = (height * factor).round().max(1.0) as i32;
+    let work_left_px = (work_pos.x * factor).round() as i32;
+    let work_top_px = (work_pos.y * factor).round() as i32;
+    let work_bottom_px = ((work_pos.y + work_size.height) * factor).round() as i32;
+
+    let max_y_px = work_bottom_px - height_px;
+    let x_px = rect.left.max(work_left_px);
+    let y_px = rect.top.max(work_top_px).min(max_y_px.max(work_top_px));
+
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            x_px,
+            y_px,
+            width_px,
+            height_px,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+    };
+
+    if ok == 0 {
+        Err(format!(
+            "SetWindowPos failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn edge_strip_y_store() -> &'static Mutex<Option<f64>> {
     EDGE_STRIP_Y.get_or_init(|| Mutex::new(None))
 }
@@ -2901,16 +3034,27 @@ fn position_float_edge(
         .get_webview_window("edge")
         .ok_or_else(|| "edge window not found".to_string())?;
 
-    let (work_pos, work_size, factor) = window_work_area(&edge)?;
+    let (initial_work_pos, initial_work_size, factor) = window_work_area(&edge)?;
     let current_pos = edge
         .outer_position()
         .ok()
         .map(|pos| pos.to_logical::<f64>(factor));
 
-    let default_x = work_pos.x + work_size.width - FLOAT_TRIGGER_SIZE - 24.0;
-    let default_y = work_pos.y + work_size.height * 0.38;
+    let default_x = initial_work_pos.x + initial_work_size.width - FLOAT_TRIGGER_SIZE - 24.0;
+    let default_y = initial_work_pos.y + initial_work_size.height - FLOAT_TRIGGER_SIZE - 24.0;
     let raw_x = x.or_else(|| current_pos.map(|p| p.x)).unwrap_or(default_x);
     let raw_y = y.or_else(|| current_pos.map(|p| p.y)).unwrap_or(default_y);
+
+    let (work_pos, work_size, _) = if x.is_some() || y.is_some() {
+        window_work_area_for_point(
+            &edge,
+            raw_x + FLOAT_TRIGGER_SIZE / 2.0,
+            raw_y + FLOAT_TRIGGER_SIZE / 2.0,
+        )?
+    } else {
+        (initial_work_pos, initial_work_size, factor)
+    };
+
     let max_x = work_pos.x + work_size.width - FLOAT_TRIGGER_SIZE;
     let max_y = work_pos.y + work_size.height - FLOAT_TRIGGER_SIZE;
     let next_x = clamp_f64(raw_x, work_pos.x, max_x.max(work_pos.x));
@@ -3098,7 +3242,7 @@ fn open_drawer(
         )
     };
 
-    main.set_min_size(Some(LogicalSize::new(1.0, 1.0))).ok();
+    main.set_min_size(Some(LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT))).ok();
     main.set_size(LogicalSize::new(w, h)).map_err(|e| e.to_string())?;
     main.set_position(LogicalPosition::new(x, y)).map_err(|e| e.to_string())?;
     main.set_always_on_top(true).ok();
@@ -3184,6 +3328,41 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
 }
 
 #[tauri::command]
+fn resize_drawer_from_right(app_handle: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let main = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let (work_pos, work_size, factor) = window_work_area(&main)?;
+
+    let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
+    let h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+
+    main.set_min_size(Some(LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT))).ok();
+
+    #[cfg(target_os = "windows")]
+    {
+        resize_window_preserve_left_physical(&main, work_pos, work_size, factor, w, h)?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+    let current_pos = main
+        .outer_position()
+        .ok()
+        .map(|pos| pos.to_logical::<f64>(factor))
+        .unwrap_or(LogicalPosition::new(work_pos.x, work_pos.y));
+
+    let max_y = work_pos.y + work_size.height - h;
+    let x = current_pos.x.max(work_pos.x);
+    let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
+
+    set_window_bounds_atomic(&main, x, y, w, h)?;
+    Ok(())
+    }
+}
+
+#[tauri::command]
 fn sync_drawer_bounds(app_handle: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     resize_drawer(app_handle, width, height)
 }
@@ -3195,28 +3374,56 @@ fn show_note_window(
     label: Option<String>,
     width: Option<f64>,
     height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+    topmost: Option<bool>,
 ) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
     if label != "note" && !label.starts_with("note_") {
         return Err(format!("invalid note window label: {}", label));
     }
 
-    let note = app_handle
-        .get_webview_window(&label)
-        .ok_or_else(|| format!("note window not found: {}", label))?;
+    let note = if let Some(note) = app_handle.get_webview_window(&label) {
+        note
+    } else {
+        WebviewWindowBuilder::new(&app_handle, label.clone(), WebviewUrl::App("index.html".into()))
+            .title("桌面便签")
+            .inner_size(360.0, 320.0)
+            .min_inner_size(48.0, 48.0)
+            .resizable(true)
+            .fullscreen(false)
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(false)
+            .skip_taskbar(true)
+            .visible(false)
+            .shadow(false)
+            .drag_and_drop(false)
+            .build()
+            .map_err(|e| e.to_string())?
+    };
 
     note.set_min_size(Some(LogicalSize::new(48.0, 48.0))).ok();
 
-    let w = width.unwrap_or(360.0).max(48.0).min(900.0);
-    let h = height.unwrap_or(320.0).max(48.0).min(800.0);
+    let w = width.unwrap_or(360.0).max(48.0);
+    let h = height.unwrap_or(320.0).max(48.0);
 
     let _ = note.set_size(LogicalSize::new(w, h));
+    let _ = note.set_always_on_top(topmost.unwrap_or(false));
 
-    if !note.is_visible().unwrap_or(false) {
-        if let Ok(Some(monitor)) = note.current_monitor() {
-            let factor = note.scale_factor().unwrap_or(1.0);
-            let work_pos = monitor.work_area().position.to_logical::<f64>(factor);
-            let work_size = monitor.work_area().size.to_logical::<f64>(factor);
+    if let (Some(x), Some(y)) = (x, y) {
+        if let Some((work_pos, work_size, _)) = preferred_note_work_area(&app_handle, &note) {
+            let max_x = work_pos.x + work_size.width - w;
+            let max_y = work_pos.y + work_size.height - h;
+            let _ = note.set_position(LogicalPosition::new(
+                x.max(work_pos.x).min(max_x.max(work_pos.x)),
+                y.max(work_pos.y).min(max_y.max(work_pos.y)),
+            ));
+        } else {
+            let _ = note.set_position(LogicalPosition::new(x, y));
+        }
+    } else if !note.is_visible().unwrap_or(false) {
+        if let Some((work_pos, work_size, _)) = preferred_note_work_area(&app_handle, &note) {
             let offset = label
                 .trim_start_matches("note_")
                 .parse::<f64>()
@@ -3316,7 +3523,7 @@ fn snapped_note_window_position(
     let mut best_x: Option<(i32, i32)> = None;
     let mut best_y: Option<(i32, i32)> = None;
 
-    for index in 0..=8 {
+    for index in 0..=50 {
         let label = if index == 0 {
             "note".to_string()
         } else {
@@ -3420,8 +3627,8 @@ fn resize_current_window(window: WebviewWindow, width: f64, height: f64) -> Resu
     let is_note = label == "note" || label.starts_with("note_");
     let min_width = if is_note { 48.0 } else { 220.0 };
     let min_height = if is_note { 48.0 } else { 160.0 };
-    let max_width = if is_note { 920.0 } else { 920.0 };
-    let max_height = if is_note { 820.0 } else { 820.0 };
+    let max_width = if is_note { f64::MAX } else { 920.0 };
+    let max_height = if is_note { f64::MAX } else { 820.0 };
     if is_note {
         window.set_min_size(Some(LogicalSize::new(min_width, min_height))).ok();
     }
@@ -3448,8 +3655,8 @@ fn animate_current_window_resize(
     let is_note = label == "note" || label.starts_with("note_");
     let min_width = if is_note { 48.0 } else { 220.0 };
     let min_height = if is_note { 48.0 } else { 160.0 };
-    let max_width = 920.0;
-    let max_height = 820.0;
+    let max_width = if is_note { f64::MAX } else { 920.0 };
+    let max_height = if is_note { f64::MAX } else { 820.0 };
     if is_note {
         window.set_min_size(Some(LogicalSize::new(min_width, min_height))).ok();
     }
@@ -3476,8 +3683,9 @@ fn animate_current_window_resize(
 
             let elapsed = started_at.elapsed().as_millis() as f64;
             let progress = (elapsed / duration as f64).clamp(0.0, 1.0);
-            let next_w = start_w + (target_w - start_w) * progress;
-            let next_h = start_h + (target_h - start_h) * progress;
+            let eased = 1.0 - (1.0 - progress).powi(3);
+            let next_w = start_w + (target_w - start_w) * eased;
+            let next_h = start_h + (target_h - start_h) * eased;
             let _ = window_for_animation.set_size(LogicalSize::new(next_w.round(), next_h.round()));
 
             if progress >= 1.0 {
@@ -3493,6 +3701,104 @@ fn animate_current_window_resize(
     });
 
     Ok(())
+}
+
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(target_os = "windows")]
+fn encode_powershell_script(script: &str) -> String {
+    use base64::{engine::general_purpose, Engine as _};
+    let mut bytes = Vec::with_capacity(script.len() * 2);
+    for unit in script.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn show_windows_toast(title: &str, body: &str) -> Result<(), String> {
+    let title = title.trim().chars().take(96).collect::<String>();
+    let body = body.trim().chars().take(420).collect::<String>();
+    let title = if title.is_empty() {
+        "灵感抽屉".to_string()
+    } else {
+        title
+    };
+    let body = if body.is_empty() {
+        "你有新的日程提醒".to_string()
+    } else {
+        body
+    };
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+$title = {title}
+$body = {body}
+$xmlTitle = [System.Security.SecurityElement]::Escape($title)
+$xmlBody = [System.Security.SecurityElement]::Escape($body)
+$toastXml = @"
+<toast>
+  <visual>
+    <binding template="ToastGeneric">
+      <text>$xmlTitle</text>
+      <text>$xmlBody</text>
+    </binding>
+  </visual>
+</toast>
+"@
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+$doc = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::new()
+$doc.LoadXml($toastXml)
+$toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::new($doc)
+$lastError = $null
+foreach ($appId in @('com.inspirationdrawer.app', 'Inspiration Drawer', 'Windows PowerShell')) {{
+  try {{
+    $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)
+    $notifier.Show($toast)
+    exit 0
+  }} catch {{
+    $lastError = $_
+  }}
+}}
+if ($lastError) {{ throw $lastError }}
+"#,
+        title = powershell_single_quote(&title),
+        body = powershell_single_quote(&body),
+    );
+    let encoded = encode_powershell_script(&script);
+    let mut cmd = SysCommand::new("powershell.exe");
+    hide_console_window(&mut cmd);
+    let output = cmd
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            &encoded,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if stderr.is_empty() { stdout } else { stderr })
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_windows_toast(_title: &str, _body: &str) -> Result<(), String> {
+    Err("system notifications are only wired for Windows right now".to_string())
+}
+
+#[tauri::command]
+fn show_system_notification(title: String, body: String) -> Result<(), String> {
+    show_windows_toast(&title, &body)
 }
 
 
@@ -3559,6 +3865,7 @@ fn main() {
             open_drawer,
             close_drawer,
             resize_drawer,
+            resize_drawer_from_right,
             position_edge,
             show_edge,
             hide_edge,
@@ -3568,14 +3875,15 @@ fn main() {
             move_current_window_by,
             resize_current_window,
             animate_current_window_resize,
-            cancel_current_window_resize_animation,])
+            cancel_current_window_resize_animation,
+            show_system_notification,])
         .setup(|app| {
             set_startup_close_lock(12_000);
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
                 let _ = main.set_always_on_top(true);
-                let _ = main.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
+                let _ = main.set_min_size(Some(tauri::LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT)));
             }
 
             if let Some(edge) = app.get_webview_window("edge") {

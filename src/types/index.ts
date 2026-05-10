@@ -45,6 +45,7 @@ export type BufferItem = {
   createdAt: number; 
   isQuickAccess?: boolean; 
   remark?: string; 
+  remarks?: string[];
   folderId?: string;
 
   // 扩展字段：用于文件夹、网址、网页图片来源和 CMF 炼金卡。
@@ -66,6 +67,8 @@ export type FloatingNoteSnapshot = {
   path?: string;
   url?: string;
   thumbnail?: string;
+  folderId?: string;
+  tagIds?: string[];
   noteColor?: string;
   noteMode?: 'text' | 'schedule';
   scheduleItems?: FloatingNoteScheduleItem[];
@@ -74,12 +77,19 @@ export type FloatingNoteSnapshot = {
   zoom?: number;
   width?: number;
   height?: number;
+  topmost?: boolean;
 };
 
 export type FloatingNoteScheduleItem = {
   id: string;
   text: string;
   done: boolean;
+  priority?: 'S' | 'A' | 'B' | 'C';
+  startAt?: number;
+  endAt?: number;
+  allDay?: boolean;
+  tagIds?: string[];
+  sourceItemId?: string;
   createdAt: number;
   updatedAt?: number;
 };

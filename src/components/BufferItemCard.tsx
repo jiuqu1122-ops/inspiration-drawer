@@ -22,6 +22,7 @@ export default function BufferItemCard({
   const [isExpanded, setIsExpanded] = useState(false);
   const isLongText = item.type === 'text' && item.content && item.content.length > 80;
   const [isEditingRemark, setIsEditingRemark] = useState(false);
+  const [editingRemarkIndex, setEditingRemarkIndex] = useState<number | null>(null);
   const [editRemarkText, setEditRemarkText] = useState(item.remark || '');
   const [isEditingText, setIsEditingText] = useState(false);
   const [editContentText, setEditContentText] = useState(item.content || '');
@@ -31,6 +32,7 @@ export default function BufferItemCard({
   const editContentDirtyRef = useRef(false);
   const skipTextEditSaveRef = useRef(false);
   const finishingTextEditRef = useRef(false);
+  const skipRemarkEditSaveRef = useRef(false);
 
   const isExternalHttpUrl = (value?: unknown) => (
     typeof value === 'string' &&
@@ -52,10 +54,76 @@ export default function BufferItemCard({
     .find((value) => isExternalHttpUrl(value)) || '';
   const isUrlText = item.type === 'text' && !!webSourceUrl && (item.isUrl || (item.content || '').trim() === webSourceUrl);
   const canShowInFolder = !!item.path && !isExternalHttpUrl(item.path) && !String(item.path).startsWith('data:');
+  const remarkEntries: string[] = (() => {
+    const fromList = Array.isArray(item.remarks)
+      ? item.remarks.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+      : [];
+    if (fromList.length > 0) return fromList;
+    return typeof item.remark === 'string'
+      ? item.remark.split(/\r?\n/).map((value: string) => value.trim()).filter(Boolean)
+      : [];
+  })();
+
+  const commitRemarkEdit = (options: { keepOpen?: boolean } = {}) => {
+    skipRemarkEditSaveRef.current = false;
+    const nextEntries = [...remarkEntries];
+    const index = editingRemarkIndex ?? nextEntries.length;
+    const nextText = editRemarkText.trim();
+
+    if (nextText) {
+      if (index >= 0 && index < nextEntries.length) nextEntries[index] = nextText;
+      else nextEntries.push(nextText);
+    } else if (index >= 0 && index < nextEntries.length) {
+      nextEntries.splice(index, 1);
+    }
+
+    const cleanEntries = nextEntries.map((value) => value.trim()).filter(Boolean);
+    onUpdateRemark(item.id, cleanEntries.join('\n'), cleanEntries);
+
+    if (!options.keepOpen) {
+      setIsEditingRemark(false);
+      setEditingRemarkIndex(null);
+      setEditRemarkText('');
+    }
+
+    return cleanEntries;
+  };
+
+  const beginNewRemark = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const latestEntries = isEditingRemark ? commitRemarkEdit({ keepOpen: true }) : remarkEntries;
+    setEditingRemarkIndex(latestEntries.length);
+    setEditRemarkText('');
+    setIsEditingRemark(true);
+  };
+
+  const beginEditRemark = (index: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (openUrlTimerRef.current) {
+      window.clearTimeout(openUrlTimerRef.current);
+      openUrlTimerRef.current = null;
+    }
+    const latestEntries = isEditingRemark ? commitRemarkEdit({ keepOpen: true }) : remarkEntries;
+    const nextIndex = Math.max(0, Math.min(index, Math.max(0, latestEntries.length - 1)));
+    setEditingRemarkIndex(nextIndex);
+    setEditRemarkText(latestEntries[nextIndex] || '');
+    setIsEditingRemark(true);
+  };
+
+  const cancelRemarkEdit = () => {
+    skipRemarkEditSaveRef.current = true;
+    setIsEditingRemark(false);
+    setEditingRemarkIndex(null);
+    setEditRemarkText('');
+  };
 
   useEffect(() => {
-    setEditRemarkText(item.remark || '');
-  }, [item?.id, item?.remark]);
+    setIsEditingRemark(false);
+    setEditingRemarkIndex(null);
+    setEditRemarkText('');
+  }, [item?.id]);
 
   useEffect(() => {
     const nextContent = item.content || '';
@@ -141,6 +209,20 @@ export default function BufferItemCard({
     openUrlTimerRef.current = window.setTimeout(() => {
       openUrlTimerRef.current = null;
       invoke('open_file', { path: webSourceUrl }).catch(() => {
+        showToast?.('无法打开网址');
+      });
+    }, 220);
+  };
+
+  const handleOpenRemarkUrl = (url: string, e: React.MouseEvent | any) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isExternalHttpUrl(url)) return;
+    if (e.detail && e.detail > 1) return;
+    if (openUrlTimerRef.current) window.clearTimeout(openUrlTimerRef.current);
+    openUrlTimerRef.current = window.setTimeout(() => {
+      openUrlTimerRef.current = null;
+      invoke('open_file', { path: url.trim() }).catch(() => {
         showToast?.('无法打开网址');
       });
     }, 220);
@@ -430,8 +512,8 @@ return (
       {!isSelectMode && (
         <div data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-[80] flex flex-wrap justify-end gap-1.5 min-w-[160px] pointer-events-auto">
           <button
-            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); if (isEditingRemark) { setIsEditingRemark(false); onUpdateRemark(item.id, editRemarkText.trim()); } else { setIsEditingRemark(true); } }}
-            onClick={e => { e.preventDefault(); e.stopPropagation(); }} title={item.remark ? "修改/收起备注" : "添加备注"} className={btnClass}
+            onMouseDown={beginNewRemark}
+            onClick={e => { e.preventDefault(); e.stopPropagation(); }} title="新增标签备注" className={btnClass}
           ><Tag className={iconClass} /></button>
 
           <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }} title={item.isQuickAccess ? "取消快速访问" : "固定到快速访问"} className={`${btnClass} ${item.isQuickAccess ? 'text-amber-500' : ''}`}><Star className={`${iconClass} ${item.isQuickAccess ? 'fill-amber-400 text-amber-500' : ''}`} /></button>
@@ -615,39 +697,72 @@ return (
       <AnimatePresence initial={false}>
         {isEditingRemark && (
           <motion.div
-            key="remark-editor"
+            key={`remark-editor-${editingRemarkIndex ?? 'new'}`}
             initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0" onClick={e => { e.preventDefault(); e.stopPropagation(); }}
           >
             <div className="px-3 pb-3 pt-1">
-              <input
+              <textarea
                 autoFocus value={editRemarkText} onChange={e => setEditRemarkText(e.target.value)}
-                onBlur={() => { setIsEditingRemark(false); onUpdateRemark(item.id, editRemarkText.trim()); }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') { setIsEditingRemark(false); onUpdateRemark(item.id, editRemarkText.trim()); }
-                  if (e.key === 'Escape') { setIsEditingRemark(false); setEditRemarkText(item.remark || ''); }
+                onPaste={e => e.stopPropagation()}
+                onBlur={() => {
+                  if (skipRemarkEditSaveRef.current) {
+                    skipRemarkEditSaveRef.current = false;
+                    return;
+                  }
+                  commitRemarkEdit();
                 }}
-                placeholder="写点备注方便搜索..."
-                className="w-full text-xs bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-[14px] p-2 outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 text-amber-900 dark:text-amber-100 placeholder:text-amber-400/70 dark:placeholder:text-amber-500/50 transition-all shadow-inner"
+                onKeyDown={e => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); commitRemarkEdit(); }
+                  if (e.key === 'Escape') { e.preventDefault(); cancelRemarkEdit(); }
+                }}
+                placeholder="新增标签备注..."
+                rows={3}
+                className="min-h-[72px] max-h-40 w-full resize-y whitespace-pre-wrap break-words text-xs leading-5 bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-[14px] p-2 outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 text-amber-900 dark:text-amber-100 placeholder:text-amber-400/70 dark:placeholder:text-amber-500/50 transition-all shadow-inner"
               />
             </div>
           </motion.div>
         )}
 
-        {!isEditingRemark && item.remark && (
+        {remarkEntries.length > 0 && (
           <motion.div
             key="remark-display"
             initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0"
           >
             <div className="px-3 pb-3 pt-1">
-              <div
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-50 dark:bg-amber-900/30 rounded-[14px] border border-amber-100 dark:border-amber-800/50 cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors shadow-sm"
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsEditingRemark(true); }}
-                title="点击修改备注"
-              >
-                <Tag className="w-3 h-3 text-amber-500 dark:text-amber-400 shrink-0" />
-                <span className="text-[11px] text-amber-700 dark:text-amber-300 font-medium leading-none truncate">{item.remark}</span>
+              <div className="flex flex-wrap items-start gap-1.5">
+                {remarkEntries.map((remark, index) => {
+                  const isUrlRemark = isExternalHttpUrl(remark);
+                  return (
+                    <button
+                      key={`${index}-${remark.slice(0, 24)}`}
+                      type="button"
+                      className={`inline-flex max-w-full min-w-0 items-start gap-1.5 rounded-[14px] border px-2.5 py-1.5 text-left shadow-sm transition-colors ${
+                        editingRemarkIndex === index && isEditingRemark
+                          ? 'border-amber-300 bg-amber-100 dark:border-amber-600/70 dark:bg-amber-900/45'
+                          : 'border-amber-100 bg-amber-50 hover:bg-amber-100 dark:border-amber-800/50 dark:bg-amber-900/30 dark:hover:bg-amber-900/50'
+                      }`}
+                      onClick={(e) => {
+                        if (isUrlRemark) handleOpenRemarkUrl(remark, e);
+                        else beginEditRemark(index, e);
+                      }}
+                      onDoubleClick={(e) => beginEditRemark(index, e)}
+                      title={isUrlRemark ? '单击打开网址，双击修改标签' : '点击修改标签'}
+                    >
+                      {isUrlRemark ? (
+                        <Link className="mt-0.5 w-3 h-3 text-sky-500 dark:text-sky-300 shrink-0" />
+                      ) : (
+                        <Tag className="mt-0.5 w-3 h-3 text-amber-500 dark:text-amber-400 shrink-0" />
+                      )}
+                      <span className={`min-w-0 max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[11px] font-medium leading-4 ${
+                        isUrlRemark
+                          ? 'text-sky-700 underline-offset-2 hover:underline dark:text-sky-300'
+                          : 'text-amber-700 dark:text-amber-300'
+                      }`}>{remark}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </motion.div>
