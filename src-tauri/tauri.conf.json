@@ -46,6 +46,23 @@
         "dragDropEnabled": false
       },
       {
+        "label": "snip",
+        "title": "截图选区",
+        "width": 800,
+        "height": 600,
+        "minWidth": 1,
+        "minHeight": 1,
+        "resizable": false,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": false,
+        "dragDropEnabled": false
+      },
+      {
         "label": "note_1",
         "title": "桌面便签",
         "width": 360,

@@ -77,6 +77,7 @@ export type FloatingNoteSnapshot = {
   zoom?: number;
   width?: number;
   height?: number;
+  mediumWidth?: number;
   topmost?: boolean;
 };
 

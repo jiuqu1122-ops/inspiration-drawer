@@ -6,7 +6,6 @@ import {
   Clock, Tag,
 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, emitTo } from '@tauri-apps/api/event';
@@ -105,6 +104,9 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const imageWheelResizeFrameRef = useRef<number | null>(null);
   const hoverExpandedFromModeRef = useRef<TextFloatingNoteSizeMode | null>(null);
   const notePointerOperationRef = useRef(false);
+  const noteProgrammaticResizeUntilRef = useRef(0);
+  const noteWindowResizeTimerRef = useRef<number | null>(null);
+  const lastWindowResizeSizeRef = useRef<any>(null);
   const isDark = localStorage.getItem('theme') === 'dark';
 
   useEffect(() => {
@@ -128,6 +130,10 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     if (imageWheelResizeFrameRef.current !== null) {
       cancelAnimationFrame(imageWheelResizeFrameRef.current);
       imageWheelResizeFrameRef.current = null;
+    }
+    if (noteWindowResizeTimerRef.current !== null) {
+      window.clearTimeout(noteWindowResizeTimerRef.current);
+      noteWindowResizeTimerRef.current = null;
     }
     hoverExpandedFromModeRef.current = null;
   }, []);
@@ -324,7 +330,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     await invoke('hide_note_window', { label: noteLabel }).catch(() => appWindow.hide().catch(() => {}));
   };
 
-  const persistFloatingNoteView = (patch: { zoom?: number; width?: number; height?: number }) => {
+  const persistFloatingNoteView = (patch: { zoom?: number; width?: number; height?: number; mediumWidth?: number }) => {
     const current = noteRef.current;
     if (!current) return;
 
@@ -339,6 +345,61 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     setNote(next);
     localStorage.setItem(noteStorageKey, JSON.stringify(next));
   };
+
+  useEffect(() => {
+    let unlistenResize: (() => void) | undefined;
+
+    const persistWindowSize = async () => {
+      noteWindowResizeTimerRef.current = null;
+      if (Date.now() < noteProgrammaticResizeUntilRef.current || notePointerOperationRef.current) return;
+
+      const current = noteRef.current;
+      const physicalSize = lastWindowResizeSizeRef.current;
+      if (!current || !physicalSize) return;
+
+      const factor = await appWindow.scaleFactor().catch(() => window.devicePixelRatio || 1);
+      const logicalSize = typeof physicalSize.toLogical === 'function'
+        ? physicalSize.toLogical(factor)
+        : {
+          width: Number(physicalSize.width) / factor,
+          height: Number(physicalSize.height) / factor,
+        };
+      const width = Math.max(48, Math.round(Number(logicalSize.width)));
+      const height = Math.max(48, Math.round(Number(logicalSize.height)));
+      if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+
+      if (current.type === 'text') {
+        const nextMode = resolveTextFloatingNoteSizeMode(width, height);
+        setTextNoteSizeMode(nextMode);
+        textNoteSizeModeRef.current = nextMode;
+        persistFloatingNoteView({
+          width,
+          height,
+          ...(nextMode === 'medium' ? { mediumWidth: width } : {}),
+        });
+        return;
+      }
+
+      persistFloatingNoteView({ width, height });
+    };
+
+    appWindow.onResized(({ payload }) => {
+      if (Date.now() < noteProgrammaticResizeUntilRef.current || notePointerOperationRef.current) return;
+      lastWindowResizeSizeRef.current = payload;
+      if (noteWindowResizeTimerRef.current !== null) {
+        window.clearTimeout(noteWindowResizeTimerRef.current);
+      }
+      noteWindowResizeTimerRef.current = window.setTimeout(persistWindowSize, 180);
+    }).then((fn) => { unlistenResize = fn; }).catch(() => {});
+
+    return () => {
+      if (unlistenResize) unlistenResize();
+      if (noteWindowResizeTimerRef.current !== null) {
+        window.clearTimeout(noteWindowResizeTimerRef.current);
+        noteWindowResizeTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const persistFloatingNotePatch = (patch: Partial<FloatingNoteSnapshot>) => {
     const current = noteRef.current;
@@ -381,27 +442,56 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     invoke('cancel_current_window_resize_animation').catch(() => {});
   };
 
+  const getTextNoteTargetSize = (mode: TextFloatingNoteSizeMode) => {
+    const preset = TEXT_FLOATING_NOTE_SIZES[mode];
+    if (mode !== 'medium') return preset;
+
+    const current = noteRef.current;
+    const storedMediumWidth = Number((current as any)?.mediumWidth);
+    const currentWidth = Number((current as any)?.width);
+    const liveWidth = Number(window.innerWidth);
+    const width = Number.isFinite(storedMediumWidth)
+      ? storedMediumWidth
+      : (textNoteSizeModeRef.current === 'medium' && Number.isFinite(currentWidth)
+        ? currentWidth
+        : (Number.isFinite(liveWidth) ? liveWidth : preset.width));
+
+    return {
+      ...preset,
+      width: Math.max(48, Math.round(width)),
+    };
+  };
+
   const animateTextNoteSize = (
     mode: TextFloatingNoteSizeMode,
-    options: { persist?: boolean; durationMs?: number } = {},
+    options: { persist?: boolean; durationMs?: number; force?: boolean } = {},
   ) => {
     const current = noteRef.current;
     if (!current || current.type !== 'text') return;
     const shouldPersist = options.persist !== false;
-    if (noteResizeTargetModeRef.current === mode && textNoteSizeModeRef.current === mode) return;
+    if (!options.force && noteResizeTargetModeRef.current === mode && textNoteSizeModeRef.current === mode) return;
 
     cancelNoteResizeAnimation();
+    setShowTextNoteColorPicker(false);
     noteResizeTargetModeRef.current = mode;
     setContextMenu(null);
     setTextNoteSizeMode(mode);
     textNoteSizeModeRef.current = mode;
 
-    const target = TEXT_FLOATING_NOTE_SIZES[mode];
-    if (shouldPersist) persistFloatingNoteView({ width: target.width, height: target.height });
+    const target = getTextNoteTargetSize(mode);
+    const durationMs = options.durationMs ?? 110;
+    noteProgrammaticResizeUntilRef.current = Date.now() + durationMs + 220;
+    if (shouldPersist) {
+      persistFloatingNoteView({
+        width: target.width,
+        height: target.height,
+        ...(mode === 'medium' ? { mediumWidth: target.width } : {}),
+      });
+    }
     invoke('animate_current_window_resize', {
       width: target.width,
       height: target.height,
-      durationMs: options.durationMs ?? 110,
+      durationMs,
     }).then(() => {
       if (noteResizeTargetModeRef.current === mode) noteResizeTargetModeRef.current = null;
     }).catch((err) => {
@@ -412,6 +502,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   };
 
   const cycleTextNoteSize = () => {
+    setShowTextNoteColorPicker(false);
     if (hoverResizeTimerRef.current !== null) {
       window.clearTimeout(hoverResizeTimerRef.current);
       hoverResizeTimerRef.current = null;
@@ -420,7 +511,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     hoverExpandedFromModeRef.current = null;
     const currentIndex = TEXT_FLOATING_NOTE_SIZE_ORDER.indexOf(baseMode);
     const nextMode = TEXT_FLOATING_NOTE_SIZE_ORDER[(currentIndex + 1) % TEXT_FLOATING_NOTE_SIZE_ORDER.length];
-    animateTextNoteSize(nextMode, { durationMs: 150 });
+    animateTextNoteSize(nextMode, { durationMs: 150, force: !!baseMode && baseMode !== textNoteSizeModeRef.current });
   };
 
   const changeTextNoteColor = (colorId: TextFloatingNoteColorId) => {
@@ -655,11 +746,9 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     e?.stopPropagation();
     const current = noteRef.current;
     setContextMenu(null);
+    hoverExpandedFromModeRef.current = null;
     setIsEditingNoteText(false);
     setNoteTitleDraft(current?.name || current?.content || '');
-    if (textNoteSizeMode === 'small') {
-      animateTextNoteSize('medium');
-    }
     setIsEditingNoteTitle(true);
   };
 
@@ -669,7 +758,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       noteTextAreaRef.current?.focus();
       noteTextAreaRef.current?.setSelectionRange(text.length, text.length);
     }, 0);
-  }, [isEditingNoteText, text.length]);
+  }, [isEditingNoteText]);
 
   useEffect(() => {
     if (!isEditingNoteTitle) return;
@@ -695,6 +784,23 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       document.removeEventListener('pointerdown', handlePointerDownOutside, true);
     };
   }, [isEditingNoteTitle]);
+
+  useEffect(() => {
+    if (!showTextNoteColorPicker) return;
+
+    const closeOnOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-note-color-transient="true"]')) return;
+      setShowTextNoteColorPicker(false);
+    };
+
+    window.addEventListener('pointerdown', closeOnOutsidePointerDown, true);
+    document.addEventListener('pointerdown', closeOnOutsidePointerDown, true);
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutsidePointerDown, true);
+      document.removeEventListener('pointerdown', closeOnOutsidePointerDown, true);
+    };
+  }, [showTextNoteColorPicker]);
 
   const startTextEdit = (e?: React.MouseEvent) => {
     e?.preventDefault();
@@ -725,6 +831,15 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     startManualMove(e);
   };
 
+  const expandMediumTextNote = (e?: React.MouseEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    if (noteRef.current?.type !== 'text' || textNoteSizeModeRef.current !== 'medium') return;
+    setContextMenu(null);
+    hoverExpandedFromModeRef.current = 'medium';
+    animateTextNoteSize('large', { persist: false, durationMs: 160 });
+  };
+
   const handleTextNoteTitleDoubleClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -749,6 +864,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   const handleWheelZoom = (e: React.WheelEvent) => {
     if (!note) return;
+    if (note.type !== 'image' && !e.altKey) return;
+
     e.preventDefault();
     e.stopPropagation();
 
@@ -810,25 +927,10 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     let pendingDx = 0;
     let pendingDy = 0;
     let raf: number | null = null;
-    let totalDx = 0;
-    let totalDy = 0;
-    let baseWindowPos: PhysicalPosition | null = null;
-    const useDirectMove = isPendingSnipImageNote;
     const usePointerEvents = (e as any).pointerId !== undefined;
     const moveEventName = usePointerEvents ? 'pointermove' : 'mousemove';
     const upEventName = usePointerEvents ? 'pointerup' : 'mouseup';
     notePointerOperationRef.current = true;
-
-    if (useDirectMove) {
-      appWindow.outerPosition()
-        .then((pos) => {
-          baseWindowPos = pos;
-          requestMove();
-        })
-        .catch((err) => {
-          console.warn('读取截图占位便签位置失败:', err);
-        });
-    }
 
     try {
       const target = e.currentTarget as HTMLElement | null;
@@ -846,19 +948,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       const dy = pendingDy;
       pendingDx = 0;
       pendingDy = 0;
-
-      if (useDirectMove) {
-        if (baseWindowPos && (totalDx || totalDy)) {
-          const scale = window.devicePixelRatio || 1;
-          void appWindow.setPosition(new PhysicalPosition(
-            baseWindowPos.x + Math.round(totalDx * scale),
-            baseWindowPos.y + Math.round(totalDy * scale),
-          )).catch((err) => {
-            console.warn('移动截图占位便签失败:', err);
-          });
-        }
-        return;
-      }
 
       if (dx || dy) {
         invoke('move_current_window_by', { dx, dy }).catch((err) => {
@@ -909,8 +998,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       if (dx || dy) {
         pendingDx += dx;
         pendingDy += dy;
-        totalDx += dx;
-        totalDy += dy;
         requestMove();
       }
     };
@@ -943,8 +1030,11 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
     const startX = e.screenX;
     const startY = e.screenY;
-    const startW = Math.max(220, window.innerWidth);
-    const startH = Math.max(160, window.innerHeight);
+    const isResizingMediumTextNote = noteRef.current?.type === 'text' && textNoteSizeModeRef.current === 'medium';
+    const startW = Math.max(isResizingMediumTextNote ? 48 : 220, window.innerWidth);
+    const startH = isResizingMediumTextNote
+      ? TEXT_FLOATING_NOTE_SIZES.medium.height
+      : Math.max(160, window.innerHeight);
 
     let disposed = false;
     let latestW = startW;
@@ -966,12 +1056,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     const applySize = () => {
       raf = null;
       if (disposed) return;
-      if (isPendingSnipImageNote) {
-        void appWindow.setSize(new LogicalSize(latestW, latestH)).catch((err) => {
-          console.warn('缩放截图占位便签失败:', err);
-        });
-        return;
-      }
       void invoke('resize_current_window', { width: latestW, height: latestH }).catch((err) => {
         console.warn('缩放便签失败:', err);
       });
@@ -997,15 +1081,15 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
         cancelAnimationFrame(raf);
         raf = null;
       }
-      persistFloatingNoteView({ width: latestW, height: latestH });
+      persistFloatingNoteView({
+        width: latestW,
+        height: latestH,
+        ...(isResizingMediumTextNote ? { mediumWidth: latestW } : {}),
+      });
       if (noteRef.current?.type === 'text') {
         setTextNoteSizeMode(resolveTextFloatingNoteSizeMode(latestW, latestH));
       }
-      if (isPendingSnipImageNote) {
-        void appWindow.setSize(new LogicalSize(latestW, latestH)).catch(() => {});
-      } else {
-        void invoke('resize_current_window', { width: latestW, height: latestH }).catch(() => {});
-      }
+      void invoke('resize_current_window', { width: latestW, height: latestH }).catch(() => {});
     };
 
     const handleMove: EventListener = (event) => {
@@ -1020,7 +1104,9 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       event.stopPropagation();
 
       latestW = Math.max(48, startW + me.screenX - startX);
-      latestH = Math.max(48, startH + me.screenY - startY);
+      latestH = isResizingMediumTextNote
+        ? TEXT_FLOATING_NOTE_SIZES.medium.height
+        : Math.max(48, startH + me.screenY - startY);
       requestSize();
     };
 
@@ -1039,22 +1125,18 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const displayName = note?.name || note?.content || '桌面便签';
   const zoomTitle = note?.type === 'image'
     ? '滚轮缩放便签'
-    : `滚轮缩放：${Math.round(zoom * 100)}%`;
+    : `Alt + 滚轮缩放：${Math.round(zoom * 100)}%`;
   const isTextNoteMedium = note?.type === 'text' && textNoteSizeMode === 'medium';
-  const isTextNoteSmall = note?.type === 'text' && textNoteSizeMode === 'small';
   const textNoteTitle = note?.name || text || '文字便签';
-  const textNoteInitial = Array.from((textNoteTitle || '便').trim())[0] || '便';
   const isScheduleMode = note?.type === 'text' && note.noteMode === 'schedule';
   const scheduleItems = Array.isArray(note?.scheduleItems) ? note.scheduleItems : [];
   const textNoteColor = getTextFloatingNoteColor(note?.noteColor);
   const isCharcoalTextNote = note?.type === 'text' && textNoteColor.id === 'charcoal';
-  const textNoteAccentColor = isDark ? textNoteColor.darkIcon : textNoteColor.icon;
-  const textNoteTextColor = isCharcoalTextNote
-    ? (isDark ? textNoteColor.darkText : textNoteColor.text)
-    : (isDark ? '#eeeae2' : '#35332f');
+  const textNoteAccentColor = textNoteColor.icon;
+  const textNoteTextColor = textNoteColor.text;
   const textNoteMutedTextColor = isCharcoalTextNote
-    ? (isDark ? 'rgba(241, 238, 230, 0.62)' : 'rgba(242, 239, 230, 0.64)')
-    : (isDark ? 'rgba(231, 228, 220, 0.58)' : 'rgba(82, 79, 72, 0.56)');
+    ? 'rgba(242, 239, 230, 0.64)'
+    : 'rgba(82, 79, 72, 0.56)';
   const schedulePriorityOptions = SCHEDULE_PRIORITY_OPTIONS.map(priority => ({ value: priority, label: priority }));
   const scheduleTagOptions = [
     { value: '', label: '无标签' },
@@ -1107,14 +1189,14 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const titleInputClass = isCharcoalTextNote
     ? 'border-white/18 bg-white/14 text-stone-50 ring-white/10 placeholder:text-stone-300/60'
     : 'border-stone-300/70 bg-white/82 text-stone-800 ring-stone-300/20 dark:border-stone-600 dark:bg-stone-900/80 dark:text-stone-100 dark:ring-stone-500/20';
-  const textNoteNeutralBody = isDark ? '#191917' : '#fbfaf7';
-  const textNoteNeutralHeader = isDark ? '#23221f' : '#fffefa';
+  const textNoteNeutralBody = '#fbfaf7';
+  const textNoteNeutralHeader = '#fffefa';
   const textNoteSoftBodyColor = isCharcoalTextNote
-    ? (isDark ? '#222220' : '#3f3f3c')
-    : `color-mix(in srgb, ${isDark ? textNoteColor.darkBody : textNoteColor.body} 62%, ${textNoteNeutralBody})`;
+    ? '#3f3f3c'
+    : `color-mix(in srgb, ${textNoteColor.body} 62%, ${textNoteNeutralBody})`;
   const textNoteSoftHeaderColor = isCharcoalTextNote
-    ? (isDark ? '#2c2c2a' : '#4a4945')
-    : `color-mix(in srgb, ${isDark ? textNoteColor.darkHeader : textNoteColor.header} 48%, ${textNoteNeutralHeader})`;
+    ? '#4a4945'
+    : `color-mix(in srgb, ${textNoteColor.header} 48%, ${textNoteNeutralHeader})`;
   const textNoteBodyStyle = note?.type === 'text'
     ? {
       backgroundColor: textNoteSoftBodyColor,
@@ -1125,7 +1207,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       backgroundColor: textNoteSoftHeaderColor,
       borderColor: isCharcoalTextNote
         ? 'rgba(255, 255, 255, 0.11)'
-        : (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(74, 70, 62, 0.08)'),
+        : 'rgba(74, 70, 62, 0.08)',
       color: textNoteTextColor,
     }
     : undefined;
@@ -1139,7 +1221,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     })()
     : [];
   const isSnipImageNote = note?.type === 'image' && !!note.itemId?.startsWith('snip_');
-  const isPendingSnipImageNote = isSnipImageNote && !note?.path;
 
   const handleNoteMouseEnter = () => {
     setIsNoteHovered(true);
@@ -1147,18 +1228,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       window.clearTimeout(hoverResizeTimerRef.current);
       hoverResizeTimerRef.current = null;
     }
-    if (notePointerOperationRef.current) return;
-    if (noteRef.current?.type !== 'text') return;
-    const currentMode = textNoteSizeModeRef.current;
-    if (currentMode === 'large' || hoverExpandedFromModeRef.current) return;
-
-    hoverResizeTimerRef.current = window.setTimeout(() => {
-      hoverResizeTimerRef.current = null;
-      if (notePointerOperationRef.current || noteRef.current?.type !== 'text') return;
-      if (textNoteSizeModeRef.current !== currentMode) return;
-      hoverExpandedFromModeRef.current = currentMode;
-      animateTextNoteSize('large', { persist: false, durationMs: 160 });
-    }, 55);
   };
 
   const handleNoteMouseLeave = () => {
@@ -1176,7 +1245,11 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   return (
     <div
-      className={`${isDark ? 'dark ' : ''}w-screen h-screen overflow-hidden rounded-[24px] border border-black/10 dark:border-white/10 bg-white/96 text-stone-800 dark:bg-stone-950/96 dark:text-stone-100 font-sans select-none`}
+      className={`${isDark && note?.type !== 'text' ? 'dark ' : ''}w-screen h-screen overflow-hidden rounded-[24px] bg-white/96 text-stone-800 dark:bg-stone-950/96 dark:text-stone-100 font-sans select-none ${
+        isSnipImageNote
+          ? 'border-2 border-emerald-400/90 dark:border-emerald-300/85'
+          : 'border border-black/10 dark:border-white/10'
+      }`}
       onContextMenu={handleContextMenu}
       onWheel={handleWheelZoom}
       onMouseDown={startNoteDrag}
@@ -1185,7 +1258,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       title={zoomTitle}
     >
       <div className="relative h-full w-full overflow-hidden rounded-[24px]">
-        {!isTextNoteMedium && !isTextNoteSmall && (
+        {note && !isTextNoteMedium && (
           <div className="absolute right-3 top-3 z-40 flex gap-1.5">
             {isSnipImageNote && (
               <button
@@ -1206,7 +1279,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
               </button>
             )}
             {note?.type === 'text' && (
-              <div data-no-drag="true" className="relative">
+              <div data-no-drag="true" data-note-color-transient="true" className="relative">
                 <button
                   data-no-drag="true"
                   type="button"
@@ -1231,6 +1304,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                   {showTextNoteColorPicker && (
                     <motion.div
                       data-no-drag="true"
+                      data-note-color-transient="true"
                       initial={{ opacity: 0, scale: 0.96, y: -2 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.96, y: -2 }}
@@ -1315,25 +1389,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
         </button>
           </div>
         )}
-        {(isTextNoteMedium || isTextNoteSmall) && (
-          <button
-            data-no-drag="true"
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            onDoubleClick={(e) => e.stopPropagation()}
-            onClick={hideNote}
-            title="关闭便签"
-            className={`absolute right-2 top-2 z-40 ${noteToolButtonBaseClass} ${noteCloseToolClass} ${
-              isNoteHovered ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-1 pointer-events-none'
-            }`}
-          >
-            <X className="h-3.5 w-3.5 transition-all group-hover:stroke-[2.6]" />
-          </button>
-        )}
-
         {!note ? (
           <div className="flex h-full items-center justify-center p-6 text-center text-xs leading-5 text-stone-500 dark:text-stone-400">
             还没有便签内容。回到抽屉，在卡片右上角点击“便签”按钮。
@@ -1361,28 +1416,32 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
               onDoubleClick={handleTextNoteTitleDoubleClick}
               title="拖动移动便签，双击切换尺寸"
               className={`flex shrink-0 items-center border-stone-200/70 bg-white/70 text-stone-800 shadow-sm backdrop-blur-xl transition-[height,width,padding,background-color,border-color,border-radius] duration-200 ease-linear dark:border-stone-700/70 dark:bg-stone-800/76 dark:text-stone-100 ${
-                isTextNoteSmall
-                  ? 'h-full w-full justify-center rounded-[18px] border-0 p-0 text-center'
-                  : isTextNoteMedium
-                    ? 'h-full w-full gap-2 border-0 px-4'
-                    : 'h-12 w-full gap-2 border-b px-4 pr-14'
+                isTextNoteMedium
+                  ? 'h-full w-full gap-2 border-0 px-4 pr-11'
+                  : 'h-12 w-full gap-2 border-b px-4 pr-14'
               }`}
               style={textNoteHeaderStyle}
             >
-              {isTextNoteSmall ? (
-                <div
-                  className="flex h-full w-full flex-col items-center justify-center gap-0.5"
-                  title="双击切换尺寸"
-                >
-                  <StickyNote className="h-3.5 w-3.5 shrink-0 text-stone-500 dark:text-stone-300" strokeWidth={2.4} style={{ color: textNoteAccentColor }} />
-                  <span className="max-w-[32px] truncate text-[13px] font-black leading-none text-stone-800 dark:text-stone-100" style={{ color: textNoteTextColor }}>
-                    {textNoteInitial}
-                  </span>
-                </div>
-              ) : (
-                <>
-                  <StickyNote className="h-4 w-4 shrink-0 text-stone-500 dark:text-stone-300" style={{ color: textNoteAccentColor }} />
-                  <div className="min-w-0 w-1/2 max-w-[50%] shrink-0">
+              <>
+                  {isTextNoteMedium ? (
+                    <button
+                      data-no-drag="true"
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onClick={expandMediumTextNote}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-transparent transition-colors hover:bg-black/5"
+                      title="单击展开便签"
+                    >
+                      <StickyNote className="h-4 w-4 text-stone-500 dark:text-stone-300" style={{ color: textNoteAccentColor }} />
+                    </button>
+                  ) : (
+                    <StickyNote className="h-4 w-4 shrink-0 text-stone-500 dark:text-stone-300" style={{ color: textNoteAccentColor }} />
+                  )}
+                  <div className={`flex h-full min-w-0 shrink items-center ${isTextNoteMedium ? 'max-w-[calc(100%-56px)]' : 'max-w-[50%]'}`}>
                     {isEditingNoteTitle ? (
                       <input
                         ref={noteTitleInputRef}
@@ -1405,28 +1464,29 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                         }}
                         onMouseDown={(e) => e.stopPropagation()}
                         onDoubleClick={(e) => e.stopPropagation()}
-                        className={`h-7 w-full rounded-[10px] border px-2 text-xs font-black outline-none ring-2 ${titleInputClass}`}
+                        className={`h-7 max-w-full rounded-[10px] border px-2 text-xs font-black outline-none ring-2 ${titleInputClass}`}
+                        style={{ width: `min(${Math.max(4, Math.min(Array.from(noteTitleDraft || textNoteTitle).length + 2, 24))}em, calc(100vw - 96px))` }}
                       />
                     ) : (
-                      <div
+                      <button
+                        type="button"
                         data-no-drag="true"
                         onMouseDown={(e) => {
                           if (e.detail >= 2) e.stopPropagation();
                         }}
                         onDoubleClick={startTitleEdit}
-                        className="truncate text-xs font-black leading-4"
+                        className="inline-flex h-8 max-w-full cursor-text items-center truncate bg-transparent p-0 text-left text-xs font-black leading-none"
                         title="双击修改标题"
                       >
                         {textNoteTitle}
-                      </div>
+                      </button>
                     )}
                   </div>
                   <div className="min-w-0 flex-1 self-stretch" />
-                </>
-              )}
+              </>
             </div>
 
-            {!isTextNoteMedium && !isTextNoteSmall && (
+            {!isTextNoteMedium && (
             <div className="min-h-0 flex-1 p-5 pt-4 transition-[padding] duration-200 ease-linear">
               {isScheduleMode ? (
                 <div data-no-drag="true" className="flex h-full min-h-0 flex-col gap-2">
@@ -1745,17 +1805,17 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
           )}
         </AnimatePresence>
 
-        {!isTextNoteMedium && !isTextNoteSmall && (
+        {note && (
         <div
           data-no-drag="true"
           onPointerDown={startNoteResize}
           title="拖动缩放便签"
-          className={`absolute bottom-1 right-1 z-40 h-11 w-11 cursor-nwse-resize rounded-br-[24px] transition-opacity duration-150 ${
-            isNoteHovered ? 'opacity-100' : 'opacity-25'
+          className={`absolute bottom-1 right-1 z-40 h-7 w-7 cursor-nwse-resize rounded-br-[20px] transition-opacity duration-150 ${
+            isNoteHovered ? 'opacity-65' : 'opacity-15'
           }`}
         >
-          <div className="absolute bottom-2 right-2 h-5 w-5 rounded-br-[16px] border-b-2 border-r-2 border-stone-500/45 dark:border-stone-200/45" />
-          <div className="absolute bottom-2 right-2 h-3 w-3 rounded-br-[12px] border-b-2 border-r-2 border-stone-500/30 dark:border-stone-200/30" />
+          <div className="absolute bottom-1.5 right-1.5 h-3.5 w-3.5 rounded-br-[12px] border-b border-r border-stone-500/40 dark:border-stone-200/40" />
+          <div className="absolute bottom-1.5 right-1.5 h-2 w-2 rounded-br-[8px] border-b border-r border-stone-500/25 dark:border-stone-200/25" />
         </div>
         )}
 

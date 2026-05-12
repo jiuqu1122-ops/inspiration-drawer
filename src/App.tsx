@@ -8,11 +8,11 @@ import {
   Compass, HardDrive, Monitor, BookOpen, Sparkles,
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
-  StickyNote, CalendarDays, Clock, Tag
+  StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { invoke } from '@tauri-apps/api/core';
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
@@ -88,6 +88,7 @@ import {
   FLOATING_NOTE_TEXT_BRIDGE_KEY,
   FLOATING_NOTE_TITLE_BRIDGE_KEY,
   FOLDERS_CACHE_STORAGE_KEY,
+  MAX_FLOATING_NOTE_COUNT,
   OPEN_FLOATING_NOTES_STORAGE_KEY,
   TEXT_FLOATING_NOTE_SIZES,
   deleteFloatingNoteSnapshot,
@@ -146,12 +147,205 @@ const CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY = 'drawer_calendar_notification
 const CALENDAR_NOTIFICATION_SENT_STORAGE_PREFIX = 'drawer_calendar_notification_sent_';
 const CALENDAR_NOTIFICATION_HOURS = [10, 15];
 const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
+const SNIP_RESTORE_DRAWER_STORAGE_KEY = 'drawer_snip_restore_drawer';
+const CANVAS_FALLBACK_IMAGE_WIDTH = 360;
+const CANVAS_FALLBACK_IMAGE_HEIGHT = 260;
+const CANVAS_INITIAL_IMAGE_MAX_WIDTH = 720;
+const CANVAS_INITIAL_IMAGE_MAX_HEIGHT = 560;
+const VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES = 120 * 1024 * 1024;
+
+const getCanvasInitialImageSize = (naturalWidth = 0, naturalHeight = 0) => {
+  if (naturalWidth > 0 && naturalHeight > 0) {
+    const aspect = naturalWidth / Math.max(1, naturalHeight);
+    let width = Math.min(naturalWidth, CANVAS_INITIAL_IMAGE_MAX_WIDTH, CANVAS_MAX_IMAGE_WIDTH);
+    let height = width / aspect;
+    if (height > CANVAS_INITIAL_IMAGE_MAX_HEIGHT) {
+      height = CANVAS_INITIAL_IMAGE_MAX_HEIGHT;
+      width = height * aspect;
+    }
+    return {
+      width: Math.max(1, Math.round(width)),
+      height: Math.max(1, Math.round(height)),
+    };
+  }
+  return { width: CANVAS_FALLBACK_IMAGE_WIDTH, height: CANVAS_FALLBACK_IMAGE_HEIGHT };
+};
+
+const readImageDisplaySize = (src: string) => new Promise<{ width: number; height: number }>((resolve) => {
+  if (!src) {
+    resolve(getCanvasInitialImageSize());
+    return;
+  }
+  const image = new window.Image();
+  image.onload = () => resolve(getCanvasInitialImageSize(image.naturalWidth, image.naturalHeight));
+  image.onerror = () => resolve(getCanvasInitialImageSize());
+  image.src = src;
+});
 
 
 
 
 
 
+
+function SnipOverlay() {
+  const [selection, setSelection] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [isCaptureOverlayHidden, setIsCaptureOverlayHidden] = useState(false);
+  const isMouseDownRef = useRef(false);
+  const startRef = useRef({ x: 0, y: 0 });
+  const captureInFlightRef = useRef(false);
+
+  const waitForTransparentSnipFrame = () => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      window.setTimeout(resolve, 0);
+    });
+  });
+
+  const recoverAfterSnip = async () => {
+    const size = getStoredDrawerSize();
+    const mode = getStoredTriggerMode();
+    const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
+    await invoke('recover_after_snip', {
+      restoreDrawer,
+      width: size.width,
+      height: size.height,
+      mode,
+    }).catch(() => invoke('hide_snip_window').catch(() => appWindow.hide().catch(() => {})));
+  };
+
+  const cancelSnip = async () => {
+    if (captureInFlightRef.current) return;
+    isMouseDownRef.current = false;
+    setIsCaptureOverlayHidden(false);
+    setSelection(null);
+    await emitTo('main', 'snip-cancelled', {}).catch(() => {});
+    await recoverAfterSnip();
+  };
+
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    listen('snip-reset', () => {
+      captureInFlightRef.current = false;
+      isMouseDownRef.current = false;
+      setIsCaptureOverlayHidden(false);
+      setSelection(null);
+    }).then(unlisten => unlisteners.push(unlisten));
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      void cancelSnip();
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      unlisteners.forEach(unlisten => unlisten());
+    };
+  }, []);
+
+  const finishSelection = async (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!isMouseDownRef.current || captureInFlightRef.current) return;
+    isMouseDownRef.current = false;
+    const rect = selection;
+    if (!rect || rect.w < 10 || rect.h < 10) {
+      await cancelSnip();
+      return;
+    }
+
+    const noteX = event.screenX - (event.clientX - rect.x);
+    const noteY = event.screenY - (event.clientY - rect.y);
+    captureInFlightRef.current = true;
+    flushSync(() => {
+      setIsCaptureOverlayHidden(true);
+      setSelection(null);
+    });
+    await waitForTransparentSnipFrame();
+
+    const payload = {
+      x: rect.x,
+      y: rect.y,
+      width: rect.w,
+      height: rect.h,
+      noteX,
+      noteY,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+    try {
+      const size = getStoredDrawerSize();
+      const mode = getStoredTriggerMode();
+      const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
+      await invoke('complete_snip_selection', {
+        ...payload,
+        restoreDrawer,
+        drawerWidth: size.width,
+        drawerHeight: size.height,
+        mode,
+      });
+    } catch (err) {
+      await emitTo('main', 'snip-failed', { message: err instanceof Error ? err.message : String(err) }).catch(() => {});
+      await recoverAfterSnip();
+    } finally {
+      captureInFlightRef.current = false;
+      setIsCaptureOverlayHidden(false);
+      setSelection(null);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] cursor-crosshair select-none bg-transparent"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        void cancelSnip();
+      }}
+      onMouseDown={(event) => {
+        if (event.button !== 0 || captureInFlightRef.current) return;
+        isMouseDownRef.current = true;
+        setIsCaptureOverlayHidden(false);
+        startRef.current = { x: event.clientX, y: event.clientY };
+        setSelection({ x: event.clientX, y: event.clientY, w: 0, h: 0 });
+      }}
+      onMouseMove={(event) => {
+        if (!isMouseDownRef.current || captureInFlightRef.current) return;
+        const x = Math.min(event.clientX, startRef.current.x);
+        const y = Math.min(event.clientY, startRef.current.y);
+        const w = Math.abs(event.clientX - startRef.current.x);
+        const h = Math.abs(event.clientY - startRef.current.y);
+        setSelection({ x, y, w, h });
+      }}
+      onMouseUp={finishSelection}
+    >
+      {isCaptureOverlayHidden ? null : selection ? (
+        <>
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute left-0 right-0 top-0 bg-black/38" style={{ height: selection.y }} />
+            <div className="absolute left-0 bg-black/38" style={{ top: selection.y, width: selection.x, height: selection.h }} />
+            <div className="absolute right-0 bg-black/38" style={{ top: selection.y, left: selection.x + selection.w, height: selection.h }} />
+            <div className="absolute left-0 right-0 bottom-0 bg-black/38" style={{ top: selection.y + selection.h }} />
+          </div>
+          <div
+            className="absolute pointer-events-none rounded-[4px] border-2 border-emerald-400 shadow-[0_0_0_1px_rgba(255,255,255,0.7)]"
+            style={{ left: selection.x, top: selection.y, width: selection.w, height: selection.h }}
+          >
+            <div className="absolute inset-0 bg-white/10" />
+            <div className="absolute -top-7 right-0 rounded-md bg-emerald-500/95 px-2 py-1 text-[10px] font-semibold text-white shadow-lg whitespace-nowrap">
+              {Math.max(0, Math.round(selection.w))} x {Math.max(0, Math.round(selection.h))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="absolute inset-0 bg-black/38 pointer-events-none" />
+          <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-full bg-black/55 px-4 py-2 text-[12px] font-medium text-white shadow-lg pointer-events-none backdrop-blur-sm">
+            Drag to capture, Esc to cancel
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
@@ -166,6 +360,7 @@ function MainApp() {
   const [canvasScale, setCanvasScale] = useState(1);
   const [canvasSize, setCanvasSize] = useState({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
   const [isCanvasSpacePressed, setIsCanvasSpacePressed] = useState(false);
+  const [isCanvasChromeHidden, setIsCanvasChromeHidden] = useState(false);
   const [showCanvasExitPrompt, setShowCanvasExitPrompt] = useState(false);
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
   const [canvasSelectionBox, setCanvasSelectionBox] = useState<CanvasSelectionBox | null>(null);
@@ -240,6 +435,7 @@ function MainApp() {
       setCanvasSelectedIds([]);
       setCanvasSelectionBox(null);
       setCanvasFolderImportPrompt(null);
+      setIsCanvasChromeHidden(false);
       canvasPanRef.current = null;
       canvasDragRef.current = null;
       canvasResizeRef.current = null;
@@ -491,13 +687,15 @@ function MainApp() {
     item: BufferItem,
     options: { topmost?: boolean; x?: number; y?: number; width?: number; height?: number; silent?: boolean } = {},
   ) => {
+    let pendingNoteLabel = '';
     try {
       const openLabels = readOpenFloatingNoteLabels();
       const noteLabel = FLOATING_NOTE_LABELS.find(label => !openLabels.includes(label));
       if (!noteLabel) {
-        showToast('便签已达上限，请先在抽屉侧栏删除一个便签');
+        showToast(`最多同时保存 ${MAX_FLOATING_NOTE_COUNT} 个桌面便签，请先在抽屉侧栏删除一个`);
         return;
       }
+      pendingNoteLabel = noteLabel;
       const view = readFloatingNoteViewState(item.id);
       const imageSize = item.type === 'image'
         ? (options.width && options.height
@@ -522,6 +720,7 @@ function MainApp() {
       localStorage.setItem(floatingNoteStorageKey(noteLabel), JSON.stringify(snapshot));
       rememberOpenFloatingNoteLabel(noteLabel);
 
+      void emitTo(noteLabel, 'floating-note-updated', snapshot).catch(() => {});
       await invoke('show_note_window', {
         label: noteLabel,
         width: snapshot.width,
@@ -536,6 +735,11 @@ function MainApp() {
       return { noteLabel, snapshot: snapshot as FloatingNoteSnapshot };
     } catch (err) {
       console.error('打开桌面便签失败:', err);
+      if (pendingNoteLabel) {
+        deleteFloatingNoteSnapshot(pendingNoteLabel);
+        await invoke('hide_note_window', { label: pendingNoteLabel }).catch(() => {});
+      }
+      refreshNoteManager();
       showToast('打开桌面便签失败');
       return null;
     }
@@ -581,6 +785,7 @@ function MainApp() {
   const [noteShortcut, setNoteShortcut] = useState('Alt+E');
   const [isRecordingNote, setIsRecordingNote] = useState(false);
   const [canvasShortcut, setCanvasShortcut] = useState('Alt+`');
+  const [isRecordingCanvas, setIsRecordingCanvas] = useState(false);
 
   const [showTextInput, setShowTextInput] = useState(false);
   const [quickText, setQuickText] = useState('');
@@ -627,6 +832,7 @@ function MainApp() {
   };
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const lastSelectedDrawerItemIdRef = useRef<string | null>(null);
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const draggingItemIdRef = useRef<string | null>(null);
@@ -642,9 +848,11 @@ function MainApp() {
   const [renameValue, setRenameValue] = useState('');
 
   const [snipMode, setSnipMode] = useState<{ active: boolean; bg: string }>({ active: false, bg: '' });
+  const [isSnipSessionActive, setIsSnipSessionActive] = useState(false);
   const snipModeActiveRef = useRef(false);
   const snipExitInFlightRef = useRef(false);
-  useEffect(() => { snipModeActiveRef.current = snipMode.active; }, [snipMode.active]);
+  const snipRestoreDrawerRef = useRef<{ isOpen: boolean; isPinned: boolean; isCanvasMode: boolean } | null>(null);
+  useEffect(() => { snipModeActiveRef.current = snipMode.active || isSnipSessionActive; }, [snipMode.active, isSnipSessionActive]);
   const [selection, setSelection] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
   const isMouseDown = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
@@ -653,6 +861,14 @@ function MainApp() {
   useEffect(() => {
     stateRef.current = { isOpen, isPinned, showTextInput, isSearchActive, isAntiTouchMode };
   }, [isOpen, isPinned, showTextInput, isSearchActive, isAntiTouchMode]);
+
+  useEffect(() => {
+    if (!isMainDrawerWindow) return;
+    const timer = window.setTimeout(() => {
+      void invoke('prewarm_note_window', { label: 'note_1' }).catch(() => {});
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [isMainDrawerWindow]);
 
   useEffect(() => {
     invoke('load_ai_analysis_config')
@@ -1156,7 +1372,7 @@ function MainApp() {
     const openLabels = readOpenFloatingNoteLabels();
     const label = FLOATING_NOTE_LABELS.find(item => !openLabels.includes(item));
     if (!label) {
-      showToast('便签已达上限，请先关闭一个便签');
+      showToast(`最多同时保存 ${MAX_FLOATING_NOTE_COUNT} 个桌面便签，请先关闭一个`);
       return null;
     }
 
@@ -1514,8 +1730,8 @@ function MainApp() {
       }
       if (newItem.type === 'video' && newItem.path) {
         try {
-          const thumbB64 = await invoke('get_video_thumb', { path: newItem.path });
-          if (thumbB64) newItem.thumbnail = thumbB64 as string;
+          const thumb = await getVideoThumbnail(newItem.path);
+          if (thumb) newItem.thumbnail = thumb;
           if (!newItem.url) newItem.url = convertFileSrc(newItem.path);
         } catch (e) {
           if (!newItem.url) newItem.url = convertFileSrc(newItem.path);
@@ -1759,8 +1975,8 @@ function MainApp() {
 
   useEffect(() => {
     if (!isOpen && !isPinned) {
-      setShowSettings(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false);
-      setShowHelp(false); setShowQR(false); setIsSelectMode(false); setSelectedIds([]);
+      setShowSettings(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false);
+      setShowHelp(false); setShowQR(false); setIsSelectMode(false); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null;
       setConfirmDialog(prev => ({...prev, isOpen: false})); setShowTextInput(false); setShowFolderModal(false);
       setIsSearchActive(false); setSearchQuery(''); setEditingFolderId(null); setShowUpdateLog(false);
     }
@@ -1989,11 +2205,219 @@ function MainApp() {
       const rawPath = decodeURIComponent(url.pathname || '');
       const normalized = rawPath.replace(/\//g, '\\');
       if (url.hostname) return `\\\\${url.hostname}${normalized}`;
-      return /^\\[a-zA-Z]:\\/.test(normalized) ? normalized.slice(1) : normalized;
+      const withoutLeadingSlash = /^\\[a-zA-Z]:\\/.test(normalized) ? normalized.slice(1) : normalized;
+      return withoutLeadingSlash
+        .replace(/^\\\?\\(?=[a-zA-Z]:\\)/, '')
+        .replace(/^\?\\(?=[a-zA-Z]:\\)/, '');
     } catch (_) {
       return '';
     }
   };
+
+  const normalizeLocalDragPath = (value?: string | null) => {
+    const raw = (value || '').trim().replace(/^"|"$/g, '');
+    if (!raw) return '';
+    if (/^file:/i.test(raw)) {
+      return fileUrlToLocalPath(raw) || raw;
+    }
+    return raw
+      .replace(/^\\\?\\(?=[a-zA-Z]:\\)/, '')
+      .replace(/^\?\\(?=[a-zA-Z]:\\)/, '');
+  };
+
+  const createVideoThumbnailInWebview = (path: string) => new Promise<string>((resolve) => {
+    const source = normalizeLocalDragPath(path);
+    if (!source) {
+      resolve('');
+      return;
+    }
+
+    const video = document.createElement('video');
+    const canvas = document.createElement('canvas');
+    const abortController = new AbortController();
+    let objectUrl = '';
+    let settled = false;
+    const cleanup = () => {
+      abortController.abort();
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = '';
+      }
+    };
+    const finish = (value = '') => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const timer = window.setTimeout(() => finish(''), 9000);
+    let candidateTimes: number[] = [];
+    let candidateIndex = 0;
+    let lastThumbnail = '';
+
+    const isMostlyDarkFrame = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+      try {
+        const data = ctx.getImageData(0, 0, width, height).data;
+        const step = Math.max(4, Math.floor(data.length / 4800) * 4);
+        let sampled = 0;
+        let bright = 0;
+        for (let i = 0; i < data.length; i += step) {
+          const alpha = data[i + 3] / 255;
+          const luma = (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) * alpha;
+          if (luma > 28) bright += 1;
+          sampled += 1;
+        }
+        return sampled > 0 && bright / sampled < 0.035;
+      } catch (_) {
+        return false;
+      }
+    };
+
+    const capture = () => {
+      try {
+        const naturalWidth = video.videoWidth || 640;
+        const naturalHeight = video.videoHeight || 360;
+        const maxWidth = 640;
+        const maxHeight = 360;
+        const ratio = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+        const width = Math.max(1, Math.round(naturalWidth * ratio));
+        const height = Math.max(1, Math.round(naturalHeight * ratio));
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          window.clearTimeout(timer);
+          finish('');
+          return;
+        }
+        ctx.drawImage(video, 0, 0, width, height);
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.82);
+        lastThumbnail = thumbnail;
+        if (isMostlyDarkFrame(ctx, width, height) && candidateIndex < candidateTimes.length) {
+          seekNextCandidate();
+          return;
+        }
+        window.clearTimeout(timer);
+        finish(thumbnail);
+      } catch (err) {
+        console.warn('浏览器视频缩略图生成失败:', err);
+        window.clearTimeout(timer);
+        finish(lastThumbnail);
+      }
+    };
+
+    const seekNextCandidate = () => {
+      const nextTime = candidateTimes[candidateIndex++];
+      if (!Number.isFinite(nextTime)) {
+        window.clearTimeout(timer);
+        finish(lastThumbnail);
+        return;
+      }
+      if (Math.abs(video.currentTime - nextTime) < 0.03) {
+        capture();
+        return;
+      }
+      video.currentTime = nextTime;
+    };
+
+    video.muted = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.crossOrigin = 'anonymous';
+    video.addEventListener('error', () => {
+      window.clearTimeout(timer);
+      finish('');
+    }, { once: true });
+    video.addEventListener('loadedmetadata', () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const rawTimes = duration > 0
+        ? [1, duration * 0.12, duration * 0.25, duration * 0.5, duration * 0.75, 0.25, 0]
+        : [1, 0.25, 0];
+      candidateTimes = Array.from(new Set(rawTimes
+        .map(value => Math.max(0, Math.min(duration || value, value)))
+        .map(value => Number(value.toFixed(2)))
+      ));
+      seekNextCandidate();
+    }, { once: true });
+    video.addEventListener('seeked', capture);
+
+    const assetUrl = convertFileSrc(source);
+    const loadAssetUrlDirectly = () => {
+      if (settled) return;
+      video.src = assetUrl;
+      video.load();
+    };
+
+    fetch(assetUrl, { method: 'HEAD', signal: abortController.signal })
+      .then(response => {
+        const size = Number(response.headers.get('content-length') || 0);
+        if (Number.isFinite(size) && size > VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES) {
+          throw new Error(`video too large for blob thumbnail fallback: ${size}`);
+        }
+      })
+      .catch(err => {
+        if (err?.name === 'AbortError') return;
+        console.warn('视频大小探测失败或超限，尝试直接读取视频帧:', err);
+        throw err;
+      })
+      .then(() => fetch(assetUrl, { signal: abortController.signal }))
+      .then(response => response.ok ? response.blob() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then(blob => {
+        if (blob.size > VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES) {
+          throw new Error(`video too large for blob thumbnail fallback: ${blob.size}`);
+        }
+        if (settled) return;
+        objectUrl = URL.createObjectURL(blob);
+        video.src = objectUrl;
+        video.load();
+      })
+      .catch(err => {
+        if (err?.name === 'AbortError' || settled) return;
+        console.warn('视频文件读取失败，回退 asset URL:', err);
+        loadAssetUrlDirectly();
+      });
+  });
+
+  const getVideoThumbnail = async (path: string) => {
+    const source = normalizeLocalDragPath(path);
+    try {
+      const thumb = String(await invoke('get_video_thumb', { path: source }) || '');
+      if (thumb) return thumb;
+    } catch (err) {
+      console.warn('FFmpeg 视频缩略图生成失败，尝试浏览器兜底:', err);
+    }
+    return createVideoThumbnailInWebview(source);
+  };
+
+  const videoThumbnailInFlightRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending = items.find(item =>
+      item.type === 'video' &&
+      item.path &&
+      !item.thumbnail &&
+      !videoThumbnailInFlightRef.current.has(item.id)
+    );
+    if (!pending?.path) return;
+
+    videoThumbnailInFlightRef.current.add(pending.id);
+    let cancelled = false;
+    getVideoThumbnail(pending.path).then((thumbnail) => {
+      if (cancelled || !thumbnail) return;
+      setItems(prev => prev.map(item => item.id === pending.id && !item.thumbnail ? { ...item, thumbnail } : item));
+    }).catch((err) => {
+      console.warn('已有视频缩略图补全失败:', err);
+    }).finally(() => {
+      videoThumbnailInFlightRef.current.delete(pending.id);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
 
   const getCanvasLocalPathsFromDataTransfer = (dt?: DataTransfer | null) => {
     if (!dt) return [];
@@ -2296,13 +2720,14 @@ function MainApp() {
       isQuickAccess: false,
     };
     const pos = getCanvasDropPosition(index, client);
+    const size = await readImageDisplaySize(item.url || (item.path ? convertFileSrc(item.path) : ''));
     return {
       id: `canvas_${item.id}`,
       item,
       x: pos.x,
       y: pos.y,
-      width: 190,
-      height: 138,
+      width: size.width,
+      height: size.height,
     };
   };
 
@@ -2365,7 +2790,7 @@ function MainApp() {
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const url = typeof reader.result === 'string' ? reader.result : '';
       if (!url) {
         resolve(null);
@@ -2382,13 +2807,14 @@ function MainApp() {
         isQuickAccess: false,
       };
       const pos = getCanvasDropPosition(index, client);
+      const size = await readImageDisplaySize(url);
       resolve({
         id: `canvas_${item.id}`,
         item,
         x: pos.x,
         y: pos.y,
-        width: 190,
-        height: 138,
+        width: size.width,
+        height: size.height,
       });
     };
     reader.onerror = () => resolve(null);
@@ -2409,7 +2835,7 @@ function MainApp() {
   };
 
   const addCanvasDroppedPaths = async (paths: string[], client?: { x: number; y: number }) => {
-    const cleanPaths = Array.from(new Set((paths || []).filter(Boolean)));
+    const cleanPaths = Array.from(new Set((paths || []).map(normalizeLocalDragPath).filter(Boolean)));
     if (cleanPaths.length === 0) return;
 
     const key = cleanPaths.join('\n');
@@ -2424,7 +2850,7 @@ function MainApp() {
     if (images.length === 0) showToast('无限画布只接收图片');
   };
 
-  const addDrawerImageItemToCanvas = (itemId: string, client?: { x: number; y: number }) => {
+  const addDrawerImageItemToCanvas = async (itemId: string, client?: { x: number; y: number }) => {
     const source = items.find(item => item.id === itemId);
     if (!source || source.type !== 'image') return false;
 
@@ -2436,13 +2862,14 @@ function MainApp() {
     };
     const pos = getCanvasDropPosition(0, client);
     const canvasId = `canvas_${item.id}`;
+    const size = await readImageDisplaySize(item.url || (item.path ? convertFileSrc(item.path) : ''));
     const canvasItem = {
       id: canvasId,
       item,
       x: pos.x,
       y: pos.y,
-      width: 190,
-      height: 138,
+      width: size.width,
+      height: size.height,
     };
     growCanvasToFit(canvasItem.x + canvasItem.width, canvasItem.y + canvasItem.height);
     updateCanvasItemsImmediate(prev => [...prev, canvasItem]);
@@ -2460,7 +2887,7 @@ function MainApp() {
     setCanvasFolderImportPrompt({ folderId, folderName, count });
   };
 
-  const addFolderImagesToCanvas = (folderId?: string) => {
+  const addFolderImagesToCanvas = async (folderId?: string) => {
     const imageItems = items.filter(item => item.type === 'image' && (folderId ? item.folderId === folderId : !item.folderId));
     if (imageItems.length === 0) {
       showToast('这个文件夹里还没有图片');
@@ -2468,7 +2895,7 @@ function MainApp() {
     }
 
     const now = Date.now();
-    const nextItems = imageItems.map((source, index) => {
+    const nextItems = await Promise.all(imageItems.map(async (source, index) => {
       const item: BufferItem = {
         ...source,
         id: Math.random().toString(36).substring(2, 9),
@@ -2476,15 +2903,16 @@ function MainApp() {
         isQuickAccess: false,
       };
       const pos = getCanvasDropPosition(index);
+      const size = await readImageDisplaySize(item.url || (item.path ? convertFileSrc(item.path) : ''));
       return {
         id: `canvas_${item.id}`,
         item,
         x: pos.x,
         y: pos.y,
-        width: 190,
-        height: 138,
+        width: size.width,
+        height: size.height,
       } as CanvasImageItem;
-    });
+    }));
 
     growCanvasToFit(
       Math.max(...nextItems.map(item => item.x + item.width)),
@@ -2499,10 +2927,10 @@ function MainApp() {
     const prompt = canvasFolderImportPrompt;
     if (!prompt) return;
     setCanvasFolderImportPrompt(null);
-    addFolderImagesToCanvas(prompt.folderId);
+    void addFolderImagesToCanvas(prompt.folderId);
   };
 
-  const addCanvasWebImageUrl = (url: string, name?: string, client?: { x: number; y: number }) => {
+  const addCanvasWebImageUrl = async (url: string, name?: string, client?: { x: number; y: number }) => {
     const normalizedUrl = normalizeDraggedUrl(url);
     if (!normalizedUrl) return;
     const now = Date.now();
@@ -2526,13 +2954,14 @@ function MainApp() {
     };
     const pos = getCanvasDropPosition(0, client);
     const canvasId = `canvas_${itemId}`;
+    const size = await readImageDisplaySize(normalizedUrl);
     const canvasItem = {
       id: canvasId,
       item,
       x: pos.x,
       y: pos.y,
-      width: 190,
-      height: 138,
+      width: size.width,
+      height: size.height,
     };
     growCanvasToFit(canvasItem.x + canvasItem.width, canvasItem.y + canvasItem.height);
     updateCanvasItemsImmediate(prev => [...prev, canvasItem]);
@@ -2996,7 +3425,6 @@ function MainApp() {
     if (!surface) return;
 
     const handleCanvasWheel = (event: WheelEvent) => {
-      if (!event.altKey) return;
       event.preventDefault();
       event.stopPropagation();
       zoomCanvasAt(event.clientX, event.clientY, event.deltaY);
@@ -3063,7 +3491,7 @@ function MainApp() {
     lastCanvasDragClientRef.current = client;
 
     const drawerItemId = getDraggedDrawerItemId(e.dataTransfer);
-    if (drawerItemId && addDrawerImageItemToCanvas(drawerItemId, client)) {
+    if (drawerItemId && await addDrawerImageItemToCanvas(drawerItemId, client)) {
       clearDrawerItemDragState();
       return;
     }
@@ -3071,7 +3499,7 @@ function MainApp() {
     const image = getWebImageFromDataTransfer(e.dataTransfer);
     const imageUrl = image?.url ? normalizeDraggedUrl(image.url) : '';
     if (imageUrl && /^(https?:|data:image\/)/i.test(imageUrl)) {
-      addCanvasWebImageUrl(imageUrl, image?.name, client);
+      await addCanvasWebImageUrl(imageUrl, image?.name, client);
       return;
     }
 
@@ -3118,6 +3546,19 @@ function MainApp() {
     };
 
     const handleCanvasKeysDown = (event: KeyboardEvent) => {
+      if (isCanvasModeRef.current && event.key === 'Tab') {
+        if (isTextEntryActive()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (!event.repeat) {
+          setIsCanvasChromeHidden(prev => !prev);
+          window.requestAnimationFrame(() => {
+            canvasSurfaceRef.current?.focus({ preventScroll: true });
+          });
+        }
+        return;
+      }
       if (event.code === 'Space') {
         if (!shouldStartCanvasSpacePan(event)) return;
         event.preventDefault();
@@ -3341,8 +3782,9 @@ function MainApp() {
       let thumbnail = '';
       if (type === 'video' && !isDirectory) {
         try {
-          thumbnail = String(await invoke('get_video_thumb', { path }) || '');
-        } catch (_) {
+          thumbnail = await getVideoThumbnail(path);
+        } catch (err) {
+          console.warn('视频缩略图生成失败:', err);
           thumbnail = '';
         }
       }
@@ -3476,7 +3918,7 @@ function MainApp() {
         const client = lastCanvasDragClientRef.current || undefined;
         if (webImages.length > 0) {
           for (const image of webImages) {
-            addCanvasWebImageUrl(image.url as string, image.name, client);
+            void addCanvasWebImageUrl(image.url as string, image.name, client);
           }
         } else if (Array.isArray(payload.paths) && payload.paths.length > 0) {
           if (Date.now() - lastCanvasDropAtRef.current < 700) return;
@@ -3568,7 +4010,7 @@ function MainApp() {
       if (stateRef.current.isAntiTouchMode) return;
       const payload = event.payload as { url?: string; name?: string };
       if (payload?.url) {
-        if (isCanvasModeRef.current) addCanvasWebImageUrl(payload.url, payload.name, lastCanvasDragClientRef.current || undefined);
+        if (isCanvasModeRef.current) void addCanvasWebImageUrl(payload.url, payload.name, lastCanvasDragClientRef.current || undefined);
         else addWebImageUrl(payload.url, payload.name);
       }
     }).then(f => unlistenWebImage = f);
@@ -3625,7 +4067,7 @@ function MainApp() {
       event.preventDefault();
       event.stopPropagation();
       if (isCanvasModeRef.current) {
-        addCanvasWebImageUrl(image.url, image.name, { x: event.clientX, y: event.clientY });
+        void addCanvasWebImageUrl(image.url, image.name, { x: event.clientX, y: event.clientY });
         return;
       }
       addWebImageUrl(image.url, image.name);
@@ -3849,8 +4291,53 @@ function MainApp() {
     clearDrawerItemDragState();
   };
 
+  const handleDrawerItemSelect = (itemId: string, event?: React.MouseEvent) => {
+    const visibleIds = displayItems.map(item => item.id);
+    const lastId = lastSelectedDrawerItemIdRef.current;
+    if (event?.shiftKey && lastId && visibleIds.includes(lastId) && visibleIds.includes(itemId)) {
+      const start = visibleIds.indexOf(lastId);
+      const end = visibleIds.indexOf(itemId);
+      const rangeIds = visibleIds.slice(Math.min(start, end), Math.max(start, end) + 1);
+      setSelectedIds(prev => Array.from(new Set([...prev, ...rangeIds])));
+    } else {
+      setSelectedIds(prev => prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId]);
+    }
+    lastSelectedDrawerItemIdRef.current = itemId;
+  };
+
+  const getExternalDragSourcesForItem = (itemId: string) => {
+    const dragIds = selectedIds.includes(itemId) && selectedIds.length > 1 ? selectedIds : [itemId];
+    return items
+      .filter(item => dragIds.includes(item.id))
+      .filter(item => item.type === 'image' || item.type === 'file' || item.type === 'video')
+      .map(item => normalizeLocalDragPath(item.path || item.url || item.content))
+      .filter(Boolean);
+  };
+
+  const startNativeDrawerItemDrag = async (itemId: string) => {
+    const paths = getExternalDragSourcesForItem(itemId);
+    if (paths.length === 0) return false;
+    try {
+      await invoke('start_file_drag', { paths });
+    } catch (err) {
+      console.warn('系统文件拖拽失败:', err);
+      try {
+        await invoke('copy_files_to_clipboard', { paths });
+        showToast(paths.length > 1 ? '已复制这些文件，可直接粘贴到目标程序' : '已复制文件，可直接粘贴到目标程序');
+      } catch (clipboardErr) {
+        console.warn('复制文件兜底失败:', clipboardErr);
+        showToast('拖出失败：找不到可拖拽的本地文件');
+      }
+    } finally {
+      isPointerInsideDrawerRef.current = false;
+      clearIdleAutoClose();
+      window.setTimeout(() => scheduleAutoClose(120), 0);
+    }
+    return true;
+  };
+
   const startDrawerItemPointerDrag = (e: React.PointerEvent, itemId: string) => {
-    if (e.button !== 0 || isSelectMode || isResizingCards) return;
+    if (e.button !== 0 || isResizingCards) return;
 
     const target = e.target as HTMLElement | null;
     if (target?.closest('button,input,textarea,select,a,[role="button"],[contenteditable="true"],[data-no-drag="true"],[title*="复制"],[title*="文件夹"],[title*="显示"],[aria-label]')) return;
@@ -3859,6 +4346,7 @@ function MainApp() {
     const startY = e.clientY;
     let activated = false;
     let disposed = false;
+    let nativeDragStarted = false;
 
     const cleanup = () => {
       if (disposed) return;
@@ -3882,6 +4370,18 @@ function MainApp() {
         document.body.style.cursor = 'grabbing';
       }
 
+      const isAtWindowEdge =
+        me.clientX <= 12 ||
+        me.clientY <= 12 ||
+        me.clientX >= window.innerWidth - 12 ||
+        me.clientY >= window.innerHeight - 12;
+      if (isAtWindowEdge && !nativeDragStarted) {
+        nativeDragStarted = true;
+        cleanup();
+        void startNativeDrawerItemDrag(itemId);
+        return;
+      }
+
       me.preventDefault();
     };
 
@@ -3891,7 +4391,8 @@ function MainApp() {
         if (isCanvasModeRef.current && canvasEl) {
           const rect = canvasEl.getBoundingClientRect();
           const isInsideCanvas = me.clientX >= rect.left && me.clientX <= rect.right && me.clientY >= rect.top && me.clientY <= rect.bottom;
-          if (isInsideCanvas && addDrawerImageItemToCanvas(itemId, { x: me.clientX, y: me.clientY })) {
+          if (isInsideCanvas) {
+            void addDrawerImageItemToCanvas(itemId, { x: me.clientX, y: me.clientY });
             cleanup();
             return;
           }
@@ -3941,6 +4442,7 @@ function MainApp() {
   const [drawerState, setDrawerState] = useState<'closed' | 'pre_open' | 'open' | 'closing'>(() => shouldShowInitialLaunchIntro() ? 'pre_open' : 'closed');
 
   const isPointerInsideDrawerRef = useRef(false);
+  const lastDrawerPointerDownAtRef = useRef(0);
   const drawerWidthRef = useRef(drawerWidth);
   const drawerHeightRef = useRef(drawerHeight);
   const pendingBoundsRef = useRef<{ width: number; height: number; anchor?: 'left' | 'right' } | null>(null);
@@ -3949,6 +4451,7 @@ function MainApp() {
   const boundsSyncRequestedRef = useRef(false);
   const drawerResizeAnchorRef = useRef<'left' | 'right'>('right');
   const snipCaptureInFlightRef = useRef(false);
+  const handledSnipPathsRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => { drawerWidthRef.current = drawerWidth; }, [drawerWidth]);
   useEffect(() => { drawerHeightRef.current = drawerHeight; }, [drawerHeight]);
@@ -3967,7 +4470,7 @@ function MainApp() {
   // 2. 前端从 pre_open 的侧边位置滑到 open
   // 3. 倒计时结束后，如果鼠标不在抽屉里，再缩回
   useLayoutEffect(() => {
-    if (!isStartupOverlayActive || snipMode.active) return;
+    if (!isStartupOverlayActive || snipMode.active || isSnipSessionActive) return;
 
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
@@ -3995,7 +4498,7 @@ function MainApp() {
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [isStartupOverlayActive, snipMode.active]);
+  }, [isStartupOverlayActive, snipMode.active, isSnipSessionActive]);
 
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -4128,7 +4631,7 @@ function MainApp() {
     boundsFrameRef.current = requestAnimationFrame(() => {
       boundsFrameRef.current = null;
       const next = pendingBoundsRef.current;
-      if (!next || snipMode.active) return;
+      if (!next || snipMode.active || isSnipSessionActive) return;
       pendingBoundsRef.current = null;
 
       if (boundsInvokeInFlightRef.current) {
@@ -4166,38 +4669,64 @@ const startSnip = async () => {
   try {
     if (snipModeActiveRef.current || snipCaptureInFlightRef.current) return;
     snipModeActiveRef.current = true;
+    const warmNoteLabel = FLOATING_NOTE_LABELS.find(label => !readOpenFloatingNoteLabels().includes(label));
+    if (warmNoteLabel) void invoke('prewarm_note_window', { label: warmNoteLabel }).catch(() => {});
+    isGlobalMouseDown.current = false;
+    isDraggingTitleRef.current = false;
+    setIsDraggingTitle(false);
+    isResizingState.current = false;
+    setIsSnipSessionActive(true);
+    const shouldRestoreVisibleDrawer =
+      (isOpen || isPinned || isCanvasMode) &&
+      drawerState !== 'closed' &&
+      drawerState !== 'closing';
+    snipRestoreDrawerRef.current = {
+      isOpen: shouldRestoreVisibleDrawer && isOpen,
+      isPinned: shouldRestoreVisibleDrawer && (isPinned || isPinnedRef.current || isCanvasMode),
+      isCanvasMode: shouldRestoreVisibleDrawer && isCanvasMode,
+    };
+    localStorage.setItem(
+      SNIP_RESTORE_DRAWER_STORAGE_KEY,
+      String(
+        snipRestoreDrawerRef.current.isOpen ||
+        snipRestoreDrawerRef.current.isPinned ||
+        snipRestoreDrawerRef.current.isCanvasMode
+      )
+    );
+    setSelection(null);
+    setSnipMode({ active: false, bg: '' });
 
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
+    if (idleAutoCloseTimerRef.current) {
+      clearTimeout(idleAutoCloseTimerRef.current);
+      idleAutoCloseTimerRef.current = null;
+    }
+    const restore = snipRestoreDrawerRef.current;
 
     // 先同步隐藏抽屉内容，然后直接进入透明全屏截图层。
     // 不再预先 capture_screen + base64 渲染整屏图片，启动会比旧方案快很多。
-    flushSync(() => {
-      setIsOpen(false);
-      setIsPinned(false);
-      setDrawerState('closed');
-      setSnipMode({ active: true, bg: '' });
-    });
+    void restore;
+    await invoke('show_snip_window');
 
-    const prepareChrome = Promise.allSettled([
-      invoke('set_topmost', { topmost: false }),
-      invoke('hide_edge'),
-    ]);
+    const prepareChrome = null;
 
     // 让 React 的透明遮罩先落到 DOM，再把 Tauri 主窗口切到全屏。
-    await prepareChrome;
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await invoke('enter_snip_mode');
-    await appWindow.show();
+    void prepareChrome;
   } catch (err) {
     console.error('进入截图模式失败:', err);
-    await invoke('exit_snip_mode').catch(() => {});
-    await invoke('close_drawer', { mode: triggerModeRef.current }).catch(() => {});
-    await invoke('show_edge', { height: drawerHeightRef.current, mode: triggerModeRef.current }).catch(() => {});
+    await invoke('hide_snip_window').catch(() => {});
+    await invoke('set_drawer_pass_through', { ignore: false }).catch(() => {});
+    const restore = snipRestoreDrawerRef.current;
+    if (!restore?.isOpen && !restore?.isPinned && !restore?.isCanvasMode) {
+      await invoke('show_edge', { height: drawerHeightRef.current, mode: triggerModeRef.current }).catch(() => {});
+    }
     await invoke('set_topmost', { topmost: true }).catch(() => {});
     snipModeActiveRef.current = false;
+    setIsSnipSessionActive(false);
+    snipRestoreDrawerRef.current = null;
     setSnipMode({ active: false, bg: '' });
     showToast('截图启动失败');
   }
@@ -4210,7 +4739,7 @@ useEffect(() => {
   let frame: number | null = null;
 
   const run = async () => {
-    if (snipMode.active || snipExitInFlightRef.current) return;
+    if (snipMode.active || isSnipSessionActive || snipExitInFlightRef.current) return;
 
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
@@ -4255,20 +4784,20 @@ useEffect(() => {
     if (timer) clearTimeout(timer);
     if (frame !== null) cancelAnimationFrame(frame);
   };
-}, [isDrawerActive, snipMode.active]);
+}, [isDrawerActive, snipMode.active, isSnipSessionActive]);
 
   // 兜底：只要前端状态已经是 closed，就再次把真实 Tauri 窗口压回 20px。
   // 这样即使上一轮动画/异步 resize 被打断，也不会留下一个透明的大命中框。
   useEffect(() => {
-    if (snipMode.active || snipExitInFlightRef.current || isDrawerActive || drawerState !== 'closed') return;
+    if (snipMode.active || isSnipSessionActive || snipExitInFlightRef.current || isDrawerActive || drawerState !== 'closed') return;
     invoke('close_drawer', { mode: triggerModeRef.current }).catch(() => {});
-  }, [drawerState, isDrawerActive, snipMode.active]);
+  }, [drawerState, isDrawerActive, snipMode.active, isSnipSessionActive]);
 
   // 尺寸变化只同步系统窗口大小，不重置抽屉动画状态。
 useEffect(() => {
-  if (snipMode.active || isResizingState.current || !isDrawerActive || drawerState === 'closed' || drawerState === 'closing') return;
+  if (snipMode.active || isSnipSessionActive || isResizingState.current || !isDrawerActive || drawerState === 'closed' || drawerState === 'closing') return;
   applyWindowBounds(drawerWidth + EDGE_WIDTH, drawerHeight, drawerResizeAnchorRef.current);
-}, [drawerWidth, drawerHeight, isDrawerActive, drawerState, snipMode.active]);
+}, [drawerWidth, drawerHeight, isDrawerActive, drawerState, snipMode.active, isSnipSessionActive]);
 
 
 
@@ -4557,6 +5086,223 @@ useEffect(() => {
       snipCaptureInFlightRef.current = false;
     }
   };
+
+  const finishSnipWindowSession = async (_restoreTrigger = false) => {
+    const restore = snipRestoreDrawerRef.current;
+    await invoke('hide_snip_window').catch(() => {});
+    await invoke('set_drawer_pass_through', { ignore: false }).catch(() => {});
+    isGlobalMouseDown.current = false;
+    isDraggingTitleRef.current = false;
+    isResizingState.current = false;
+    setIsDraggingTitle(false);
+    document.body.style.cursor = '';
+    snipModeActiveRef.current = false;
+    setIsSnipSessionActive(false);
+    snipExitInFlightRef.current = false;
+    snipRestoreDrawerRef.current = null;
+    setSelection(null);
+    setSnipMode({ active: false, bg: '' });
+    const shouldRestoreDrawer = !!(restore?.isOpen || restore?.isPinned || restore?.isCanvasMode);
+    if (shouldRestoreDrawer) {
+      flushSync(() => {
+        setIsOpen(true);
+        setIsPinned(!!(restore?.isPinned || restore?.isCanvasMode));
+        setDrawerState('pre_open');
+      });
+      await invoke('open_drawer', {
+        width: drawerWidthRef.current,
+        height: drawerHeightRef.current,
+        mode: triggerModeRef.current,
+      }).then(() => {
+        setDrawerState('open');
+      }).catch(async (err) => {
+        console.warn('restore drawer after snip window failed:', err);
+        await invoke('show_edge', { height: drawerHeightRef.current, mode: triggerModeRef.current }).catch(() => {});
+      });
+    } else {
+      flushSync(() => {
+        setIsOpen(false);
+        setIsPinned(false);
+        setDrawerState('closed');
+      });
+      await invoke('show_edge', { height: drawerHeightRef.current, mode: triggerModeRef.current }).catch(() => {});
+    }
+    await invoke('set_topmost', { topmost: true }).catch(() => {});
+  };
+
+  const resetSnipSessionState = () => {
+    snipModeActiveRef.current = false;
+    snipCaptureInFlightRef.current = false;
+    snipExitInFlightRef.current = false;
+    snipRestoreDrawerRef.current = null;
+    isGlobalMouseDown.current = false;
+    isDraggingTitleRef.current = false;
+    isResizingState.current = false;
+    setIsSnipSessionActive(false);
+    setIsDraggingTitle(false);
+    setSelection(null);
+    setSnipMode({ active: false, bg: '' });
+    document.body.style.cursor = '';
+  };
+
+  const handleSnipWindowCaptured = async (payload: any) => {
+    const savedPath = typeof payload?.path === 'string' ? payload.path : '';
+    if (!savedPath) {
+      showToast('截图失败');
+      await finishSnipWindowSession(true);
+      return;
+    }
+
+    const now = Date.now();
+    handledSnipPathsRef.current.forEach((timestamp, path) => {
+      if (now - timestamp > 30_000) handledSnipPathsRef.current.delete(path);
+    });
+    if (handledSnipPathsRef.current.has(savedPath) || snipCaptureInFlightRef.current) return;
+    handledSnipPathsRef.current.set(savedPath, now);
+    snipCaptureInFlightRef.current = true;
+    try {
+    playSnipShutterSound();
+    resetSnipSessionState();
+    snipCaptureInFlightRef.current = true;
+
+    const createdAt = Date.now();
+    const width = Number(payload?.width) || 320;
+    const height = Number(payload?.height) || 220;
+    const finalItem = {
+      id: `snip_${createdAt}_${Math.random().toString(36).substring(2, 7)}`,
+      type: 'image',
+      content: '截图内容',
+      name: `截图_${createdAt}.png`,
+      url: convertFileSrc(savedPath),
+      path: savedPath,
+      createdAt,
+      folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
+    } as BufferItem;
+
+    const copyScreenshotToClipboard = () => copyLocalImageToClipboard(savedPath)
+      .then(() => ({ copied: true, error: null as unknown }))
+      .catch((err) => {
+        console.warn('截图复制到剪贴板失败:', err);
+        return { copied: false, error: err as unknown };
+      });
+
+    setActiveTab('image');
+    setItems(prev => [finalItem, ...prev]);
+    if (isCanvasModeRef.current) {
+      const canvasItem = await createCanvasImageItemFromPath(savedPath, 0);
+      if (canvasItem) addCanvasImageItems([canvasItem]);
+    } else {
+      await createFloatingNote(finalItem, {
+        topmost: true,
+        x: Math.round(Number(payload?.noteX) || Number(payload?.x) || 0),
+        y: Math.round(Number(payload?.noteY) || Number(payload?.y) || 0),
+        width: Math.round(width),
+        height: Math.round(height),
+        silent: true,
+      });
+    }
+
+    void copyScreenshotToClipboard().then((clipboardResult) => {
+    if (clipboardResult.copied) {
+      showToast(isCanvasModeRef.current ? '截图成功，已复制并加入画布' : '截图成功，已复制并置顶为便签');
+    } else {
+      console.warn('截图复制失败详情:', clipboardResult.error);
+      showToast(isCanvasModeRef.current ? '截图成功，已加入画布，自动复制失败' : '截图成功，已置顶为便签，自动复制失败');
+    }
+    });
+    } catch (err) {
+      console.error('snip window capture handling failed:', err);
+      showToast('截图失败');
+      await finishSnipWindowSession(true);
+    } finally {
+      snipCaptureInFlightRef.current = false;
+      snipModeActiveRef.current = false;
+      snipExitInFlightRef.current = false;
+      isGlobalMouseDown.current = false;
+      isDraggingTitleRef.current = false;
+      isResizingState.current = false;
+      setIsSnipSessionActive(false);
+      setIsDraggingTitle(false);
+      document.body.style.cursor = '';
+    }
+  };
+
+  const recoverSnipWindowFromMain = async (restoreDrawer: boolean) => {
+    await invoke('recover_after_snip', {
+      restoreDrawer,
+      width: drawerWidthRef.current,
+      height: drawerHeightRef.current,
+      mode: triggerModeRef.current,
+    }).catch(async (err) => {
+      console.warn('recover after snip selection failed:', err);
+      await invoke('hide_snip_window').catch(() => {});
+      await invoke('set_drawer_pass_through', { ignore: false }).catch(() => {});
+      await invoke('set_topmost', { topmost: true }).catch(() => {});
+    });
+  };
+
+  const handleSnipSelection = async (payload: any) => {
+    if (snipCaptureInFlightRef.current) return;
+    snipCaptureInFlightRef.current = true;
+    const restore = snipRestoreDrawerRef.current;
+    const restoreDrawer = !!(restore?.isOpen || restore?.isPinned || restore?.isCanvasMode);
+
+    try {
+      const savedPath = await invoke<string>('capture_snip_window_selection_to_file', {
+        x: Number(payload?.x) || 0,
+        y: Number(payload?.y) || 0,
+        width: Number(payload?.width) || 1,
+        height: Number(payload?.height) || 1,
+        viewportWidth: Number(payload?.viewportWidth) || 1,
+        viewportHeight: Number(payload?.viewportHeight) || 1,
+      });
+      await recoverSnipWindowFromMain(restoreDrawer);
+      snipCaptureInFlightRef.current = false;
+      await handleSnipWindowCaptured({ ...payload, path: savedPath });
+    } catch (err) {
+      console.error('snip selection capture failed:', err);
+      await recoverSnipWindowFromMain(restoreDrawer);
+      resetSnipSessionState();
+      showToast('截图失败');
+    } finally {
+      snipCaptureInFlightRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    let disposed = false;
+    const addSnipListener = (listener: Promise<() => void>) => {
+      listener.then(unlisten => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlisteners.push(unlisten);
+        }
+      }).catch(console.warn);
+    };
+    addSnipListener(listen('snip-selection', (event: any) => {
+      void handleSnipSelection(event.payload);
+    }));
+    addSnipListener(listen('snip-captured', (event: any) => {
+      void handleSnipWindowCaptured(event.payload);
+    }));
+    addSnipListener(listen('snip-cancelled', () => {
+      void finishSnipWindowSession(true);
+    }));
+    addSnipListener(listen('snip-failed', (event: any) => {
+      console.warn('snip window capture failed:', event.payload);
+      showToast('截图失败');
+      void finishSnipWindowSession(true);
+    }));
+    addSnipListener(listen('snip-recovered', () => {
+      resetSnipSessionState();
+    }));
+    return () => {
+      disposed = true;
+      unlisteners.splice(0).forEach(unlisten => unlisten());
+    };
+  }, []);
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => { if (e.key === 'Escape' && snipMode.active) exitSnip(); };
@@ -4892,6 +5638,54 @@ useEffect(() => {
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || element.isContentEditable;
   };
 
+  useEffect(() => {
+    const handleShiftToSelect = (event: KeyboardEvent) => {
+      if (event.key !== 'Shift' || event.repeat) return;
+      if (
+        !isDrawerActive ||
+        isSelectMode ||
+        isUtilityActiveTab ||
+        displayItems.length === 0 ||
+        showSettings ||
+        showTextInput ||
+        showFolderModal ||
+        showMoveFolderModal ||
+        isSearchActive ||
+        confirmDialog.isOpen ||
+        !!selectedImage ||
+        !!selectedVideo ||
+        snipMode.active ||
+        isSnipSessionActive ||
+        isTextEntryActive()
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setIsSelectMode(true);
+      lastSelectedDrawerItemIdRef.current = null;
+    };
+
+    window.addEventListener('keydown', handleShiftToSelect, true);
+    return () => window.removeEventListener('keydown', handleShiftToSelect, true);
+  }, [
+    isDrawerActive,
+    isSelectMode,
+    isUtilityActiveTab,
+    displayItems.length,
+    showSettings,
+    showTextInput,
+    showFolderModal,
+    showMoveFolderModal,
+    isSearchActive,
+    confirmDialog.isOpen,
+    selectedImage,
+    selectedVideo,
+    snipMode.active,
+    isSnipSessionActive,
+  ]);
+
   const shouldBlockAutoClose = () => (
     // 只保留真正需要阻止自动缩回的情况：
     // 1. 用户手动点了钉住；2. 正在预览图片/视频；3. 正在拖动/缩放这类瞬时操作。
@@ -4933,7 +5727,8 @@ useEffect(() => {
     showLaunchIntro ||
     isSplashVisible ||
     showUpdateLog ||
-    snipMode.active
+    snipMode.active ||
+    isSnipSessionActive
   );
 
   const clearIdleAutoClose = () => {
@@ -4983,6 +5778,94 @@ useEffect(() => {
   };
 
   useEffect(() => {
+    let disposed = false;
+    let unlistenFocusChanged: (() => void) | undefined;
+    let closeFrame: number | null = null;
+
+    const closeUnpinnedDrawerFromOutside = () => {
+      if (closeFrame !== null) cancelAnimationFrame(closeFrame);
+      closeFrame = requestAnimationFrame(() => {
+        closeFrame = null;
+        void (async () => {
+          let pointerInsideForClose = isPointerInsideDrawerRef.current;
+          if (isSelectMode && pointerInsideForClose) {
+            try {
+              const [cursor, position, size] = await Promise.all([
+                cursorPosition(),
+                appWindow.outerPosition(),
+                appWindow.outerSize(),
+              ]);
+              pointerInsideForClose =
+                cursor.x >= position.x &&
+                cursor.y >= position.y &&
+                cursor.x <= position.x + size.width &&
+                cursor.y <= position.y + size.height;
+            } catch (_) {}
+          }
+
+          const wasInternalInteraction = Date.now() - lastDrawerPointerDownAtRef.current < 500 && pointerInsideForClose;
+          if (
+            !isOpen ||
+            isPinnedRef.current ||
+            pointerInsideForClose ||
+            wasInternalInteraction ||
+            drawerState === 'closed' ||
+            drawerState === 'closing' ||
+            snipModeActiveRef.current ||
+            snipExitInFlightRef.current ||
+            isSnipSessionActive ||
+            isDraggingTitleRef.current ||
+            isResizingState.current ||
+            isDraggingOver ||
+            showLaunchIntroRef.current ||
+            isSplashVisibleRef.current ||
+            showUpdateLogRef.current
+          ) {
+            return;
+          }
+
+          isPointerInsideDrawerRef.current = false;
+          if (closeTimerRef.current) {
+            clearTimeout(closeTimerRef.current);
+            closeTimerRef.current = null;
+          }
+          clearIdleAutoClose();
+          setIsOpen(false);
+          setIsPinned(false);
+          setIsSelectMode(false);
+          setSelectedIds([]);
+          lastSelectedDrawerItemIdRef.current = null;
+          isPinnedRef.current = false;
+          invoke('toggle_pin', { pinned: false }).catch(() => {});
+        })();
+      });
+    };
+
+    const handleWindowBlur = () => closeUnpinnedDrawerFromOutside();
+
+    window.addEventListener('blur', handleWindowBlur, true);
+    appWindow.onFocusChanged((event) => {
+      if (!event.payload) closeUnpinnedDrawerFromOutside();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenFocusChanged = unlisten;
+    }).catch(() => {});
+
+    return () => {
+      disposed = true;
+      if (closeFrame !== null) cancelAnimationFrame(closeFrame);
+      window.removeEventListener('blur', handleWindowBlur, true);
+      if (unlistenFocusChanged) unlistenFocusChanged();
+    };
+  }, [
+    isOpen,
+    drawerState,
+    isSelectMode,
+    isSnipSessionActive,
+    isDraggingOver,
+  ]);
+
+  useEffect(() => {
     if (
       !isDrawerActive ||
       drawerState !== 'open' ||
@@ -5010,6 +5893,7 @@ useEffect(() => {
     isSplashVisible,
     showUpdateLog,
     snipMode.active,
+    isSnipSessionActive,
     isDraggingOver,
   ]);
 
@@ -5547,6 +6431,16 @@ useEffect(() => {
           }
           invoke('set_topmost', { topmost: true }).catch(() => {});
         }}
+        onPointerDownCapture={() => {
+          startupAutoCloseSuppressedRef.current = false;
+          isPointerInsideDrawerRef.current = true;
+          lastDrawerPointerDownAtRef.current = Date.now();
+          clearIdleAutoClose();
+          if (closeTimerRef.current) {
+            clearTimeout(closeTimerRef.current);
+            closeTimerRef.current = null;
+          }
+        }}
         onPointerMove={() => {
           isPointerInsideDrawerRef.current = true;
           clearIdleAutoClose();
@@ -5574,10 +6468,10 @@ useEffect(() => {
             {(isOpen || isPinned || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
             {(isOpen || isPinned || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
 
-            <div className="w-16 h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col items-center py-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden">
+            <div className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'w-16 h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col items-center pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden'}>
               {/* 主抽屉：固定在侧边栏顶部，不参与文件夹滚动 */}
               <div
-                className="relative shrink-0 flex flex-col items-center w-full px-1 pt-1"
+                className="relative shrink-0 flex flex-col items-center w-full px-1 pt-0"
                 data-folder-drop-id="all"
                 data-folder-drop-name="主抽屉"
                 onPointerEnter={() => handleDrawerFolderPointerEnter('all')}
@@ -5605,7 +6499,7 @@ useEffect(() => {
                   }}
                   onPointerUp={finishMainDrawerPress}
                   onPointerLeave={finishMainDrawerPress}
-                  className={`relative mb-1 w-10 h-10 rounded-[16px] flex items-center justify-center cursor-pointer transition-all shadow-sm ${isCanvasMode ? 'bg-amber-500 text-white shadow-md scale-105' : dragOverFolderId === 'all' ? 'ring-2 ring-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 scale-105' : activeFolderId === 'all' ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 shadow-md scale-105' : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 hover:bg-white dark:hover:bg-stone-700 hover:scale-105'}`}
+                  className={`relative mb-1 flex h-10 w-10 items-center justify-center rounded-[16px] cursor-pointer transition-all shadow-sm ${isCanvasMode ? 'bg-amber-500 text-white shadow-md scale-105' : dragOverFolderId === 'all' ? 'ring-2 ring-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 scale-105' : activeFolderId === 'all' ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 shadow-md scale-105' : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 hover:bg-white dark:hover:bg-stone-700 hover:scale-105'}`}
                   title={isCanvasMode ? '点击把主抽屉图片加入画布，长按退出画布' : '长按进入无限画布'}
                 >
                   <LayoutGrid className="w-5 h-5" />
@@ -5899,10 +6793,10 @@ useEffect(() => {
 
                 {/* 🌟 标题栏区域：安全的动态拖拽魔法 */}
                 <div
-                  className="p-4 border-b border-stone-200/50 dark:border-stone-800/50 flex flex-wrap justify-between items-start gap-2 bg-white/50 dark:bg-stone-900/50 relative cursor-move z-20"
+                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'px-4 pt-3.5 pb-4.5 border-b border-stone-200/50 dark:border-stone-800/50 flex flex-wrap justify-between items-center gap-2 bg-white/50 dark:bg-stone-900/50 relative cursor-move z-20'}
                   onPointerDown={startDrawerTitleDrag}
                 >
-                  <h2 className="font-semibold text-stone-800 dark:text-stone-100 flex items-center gap-1.5 min-w-[140px] max-w-full relative pointer-events-none">
+                  <h2 className="flex h-9 min-w-[140px] max-w-full items-center gap-1.5 font-semibold leading-none text-stone-800 pointer-events-none relative dark:text-stone-100">
                     {isCanvasMode
                       ? <LayoutGrid className="w-4 h-4 text-amber-500" />
                       : activeFolderId === 'all'
@@ -5950,7 +6844,7 @@ useEffect(() => {
                             ><Trash2 className="w-3.5 h-3.5" /> 删 ({selectedIds.length})</button>
                           </>
                         )}
-                        <button onClick={() => { setIsSelectMode(false); setSelectedIds([]); setShowMoveFolderModal(false); }} className="text-xs font-medium px-2.5 py-1.5 bg-white/65 dark:bg-stone-800/65 backdrop-blur-md rounded-[14px] text-stone-500 dark:text-stone-400 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors shadow-sm">取消</button>
+                        <button onClick={() => { setIsSelectMode(false); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null; setShowMoveFolderModal(false); }} className="text-xs font-medium px-2.5 py-1.5 bg-white/65 dark:bg-stone-800/65 backdrop-blur-md rounded-[14px] text-stone-500 dark:text-stone-400 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors shadow-sm">取消</button>
                       </>
                     ) : (
                       <>
@@ -5986,7 +6880,7 @@ useEffect(() => {
                           </>
                         )}
                         <button
-                          onClick={() => { setIsSelectMode(true); setSelectedIds([]); setShowSettings(false); setIsSearchActive(false); }}
+                          onClick={() => { setIsSelectMode(true); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null; setShowSettings(false); setIsSearchActive(false); }}
                           className="p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/65 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
                           title="多选"
                         >
@@ -6085,27 +6979,31 @@ useEffect(() => {
                                 <div className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">防误触模式</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : shortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : shortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">极速截图</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSnip ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSnip(true); setIsRecording(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); }} onKeyDown={(e) => { if (isRecordingSnip) handleRecordShortcut(e, (s: string) => { setSnipShortcut(s); setIsRecordingSnip(false); }, 'update-snip-shortcut'); }} onBlur={() => setIsRecordingSnip(false)}>{isRecordingSnip ? '请按键...' : snipShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSnip ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSnip(true); setIsRecording(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSnip) handleRecordShortcut(e, (s: string) => { setSnipShortcut(s); setIsRecordingSnip(false); }, 'update-snip-shortcut'); }} onBlur={() => setIsRecordingSnip(false)}>{isRecordingSnip ? '请按键...' : snipShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">快速记录灵感</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingText ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingText(true); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); }} onKeyDown={(e) => { if (isRecordingText) handleRecordShortcut(e, (s: string) => { setTextShortcut(s); setIsRecordingText(false); }, 'update-text-shortcut'); }} onBlur={() => setIsRecordingText(false)}>{isRecordingText ? '请按键...' : textShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingText ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingText(true); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingText) handleRecordShortcut(e, (s: string) => { setTextShortcut(s); setIsRecordingText(false); }, 'update-text-shortcut'); }} onBlur={() => setIsRecordingText(false)}>{isRecordingText ? '请按键...' : textShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">全局搜索唤出</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSearch ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSearch(true); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingTrigger(false); setIsRecordingNote(false); }} onKeyDown={(e) => { if (isRecordingSearch) handleRecordShortcut(e, (s: string) => { setSearchShortcut(s); setIsRecordingSearch(false); }, 'update-search-shortcut'); }} onBlur={() => setIsRecordingSearch(false)}>{isRecordingSearch ? '请按键...' : searchShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSearch ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSearch(true); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSearch) handleRecordShortcut(e, (s: string) => { setSearchShortcut(s); setIsRecordingSearch(false); }, 'update-search-shortcut'); }} onBlur={() => setIsRecordingSearch(false)}>{isRecordingSearch ? '请按键...' : searchShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">切换触发入口</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingTrigger ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingTrigger(true); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingNote(false); }} onKeyDown={(e) => { if (isRecordingTrigger) handleRecordShortcut(e, (s: string) => { setTriggerShortcut(s); setIsRecordingTrigger(false); }, 'update-trigger-shortcut'); }} onBlur={() => setIsRecordingTrigger(false)}>{isRecordingTrigger ? '请按键...' : triggerShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingTrigger ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingTrigger(true); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingTrigger) handleRecordShortcut(e, (s: string) => { setTriggerShortcut(s); setIsRecordingTrigger(false); }, 'update-trigger-shortcut'); }} onBlur={() => setIsRecordingTrigger(false)}>{isRecordingTrigger ? '请按键...' : triggerShortcut}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">新增便签</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingNote ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingNote(true); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); }} onKeyDown={(e) => { if (isRecordingNote) handleRecordShortcut(e, (s: string) => { setNoteShortcut(s); setIsRecordingNote(false); }, 'update-note-shortcut'); }} onBlur={() => setIsRecordingNote(false)}>{isRecordingNote ? '请按键...' : noteShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingNote ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingNote(true); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingNote) handleRecordShortcut(e, (s: string) => { setNoteShortcut(s); setIsRecordingNote(false); }, 'update-note-shortcut'); }} onBlur={() => setIsRecordingNote(false)}>{isRecordingNote ? '请按键...' : noteShortcut}</button>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">切换无限画布</span>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingCanvas ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingCanvas(true); setIsRecordingNote(false); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); }} onKeyDown={(e) => { if (isRecordingCanvas) handleRecordShortcut(e, (s: string) => { setCanvasShortcut(s); setIsRecordingCanvas(false); }, 'update-canvas-shortcut'); }} onBlur={() => setIsRecordingCanvas(false)}>{isRecordingCanvas ? '请按键...' : canvasShortcut}</button>
                                   </div>
                                 </div>
                               </motion.div>
@@ -6298,14 +7196,14 @@ useEffect(() => {
 
                 <div className={`flex-1 relative flex flex-col ${
                   isCanvasMode
-                    ? 'overflow-hidden p-3'
+                    ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
                     : 'overflow-y-auto p-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
                 }`}>
                   {isCanvasMode && (
                     <div
                       ref={canvasSurfaceRef}
                       tabIndex={-1}
-                      className={`relative min-h-[calc(100vh-190px)] flex-1 overflow-auto overscroll-contain rounded-[28px] border border-amber-100/80 bg-[radial-gradient(circle_at_1px_1px,rgba(120,113,108,0.22)_1px,transparent_0)] bg-[length:26px_26px] bg-amber-50/34 shadow-inner outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:border-amber-900/34 dark:bg-stone-950/40 ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      className={`relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(120,113,108,0.22)_1px,transparent_0)] bg-[length:26px_26px] bg-amber-50/34 shadow-inner outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-amber-100/80 dark:border-amber-900/34'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto' }}
                       onPointerEnter={() => {
                         isCanvasPointerInsideRef.current = true;
@@ -6407,7 +7305,7 @@ useEffect(() => {
                                   <img
                                     src={canvasItem.item.url || (canvasItem.item.path ? convertFileSrc(canvasItem.item.path) : '')}
                                     alt={canvasItem.item.name || '画布图片'}
-                                    className="h-full w-full select-none object-cover"
+                                    className="h-full w-full select-none object-contain"
                                     style={{ backfaceVisibility: 'hidden' }}
                                     draggable={false}
                                   />
@@ -6493,6 +7391,24 @@ useEffect(() => {
                         </div>
                       </div>
                     </div>
+                  )}
+                  {isCanvasMode && (
+                    <button
+                      type="button"
+                      data-no-drag="true"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setIsCanvasChromeHidden(prev => !prev);
+                        window.requestAnimationFrame(() => {
+                          canvasSurfaceRef.current?.focus({ preventScroll: true });
+                        });
+                      }}
+                      className="absolute bottom-4 right-4 z-[100050] flex h-11 w-11 items-center justify-center rounded-full border border-white/35 bg-stone-950/42 text-white shadow-[0_10px_30px_rgba(0,0,0,0.22)] backdrop-blur-xl transition-all hover:bg-stone-950/62 focus:outline-none focus:ring-2 focus:ring-emerald-300/80"
+                      title={isCanvasChromeHidden ? '显示菜单栏 (Tab)' : '隐藏菜单栏，画布全屏 (Tab)'}
+                    >
+                      {isCanvasChromeHidden ? <Minimize2 className="h-[18px] w-[18px]" /> : <Maximize2 className="h-[18px] w-[18px]" />}
+                    </button>
                   )}
                   {activeTab === 'notes' && (
                     <div className="flex-1 flex flex-col gap-3">
@@ -6857,7 +7773,17 @@ useEffect(() => {
                             className={activeTab === 'alchemy' ? 'transition-opacity' : `${draggingItemId === item.id ? 'opacity-50 scale-[0.99]' : ''} transition-opacity`}
                             draggable={false}
                             onDragStart={(e) => e.preventDefault()}
-                            onPointerDown={(e) => { if (activeTab !== 'alchemy') startDrawerItemPointerDrag(e, item.id); }}
+                            onPointerDown={(e) => {
+                              if (activeTab === 'alchemy') return;
+                              if (e.shiftKey && !isSelectMode) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setIsSelectMode(true);
+                                handleDrawerItemSelect(item.id, e as unknown as React.MouseEvent);
+                                return;
+                              }
+                              startDrawerItemPointerDrag(e, item.id);
+                            }}
                           >
                             {activeTab === 'alchemy' ? (
                               <AlchemyDrawerCard
@@ -6893,7 +7819,7 @@ useEffect(() => {
                                     if (item.path) setSelectedVideo({ url: convertFileSrc(item.path), path: item.path });
                                   }}
                                   isSelectMode={isSelectMode} isSelected={selectedIds.includes(item.id)}
-                                  onToggleSelect={() => setSelectedIds(prev => prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id])}
+                                  onToggleSelect={(event?: React.MouseEvent) => handleDrawerItemSelect(item.id, event)}
                                   onUpdateRemark={(id: string, newRemark: string, nextRemarks?: string[]) => {
                                     const cleanRemarks = Array.isArray(nextRemarks) ? nextRemarks.filter(Boolean) : undefined;
                                     setItems(prev => prev.map(i => i.id === id ? { ...i, remark: newRemark, remarks: cleanRemarks && cleanRemarks.length > 0 ? cleanRemarks : undefined } : i));
@@ -7357,11 +8283,12 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>桌面便签更完整：卡片可以固定成独立便签，文字、图片、视频和文件都能留在桌面。</p>
+                  <p>桌面便签更实用：文字、图片、视频和文件都可以从卡片固定到桌面，关闭后仍能在左侧便签栏找回。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
-                  <p>文字便签支持三档尺寸、颜色切换、日程模式和实时编辑，同步回抽屉里的原文本卡片。</p>
-                  <p className="mt-1">多个便签靠近时会轻微磁吸对齐，右键便签可以打开抽屉或关闭窗口。</p>
+                  <p>文字便签支持实时编辑、颜色切换和日程模式，修改会同步回抽屉里的原文本卡片。</p>
+                  <p className="mt-1">便签可拖动、右下角缩放、滚轮缩放内容；多个便签靠近时会轻微磁吸对齐。</p>
+                  <p className="mt-1">无限画布可用 <span className="font-semibold text-stone-800 dark:text-stone-100">{canvasShortcut}</span> 切换，快捷键也可在设置里重新录制。</p>
                 </div>
               </div>
 
@@ -7387,7 +8314,7 @@ useEffect(() => {
                   <p>把本地文件、图片、视频、PPT、文件夹拖进抽屉，可以作为临时素材暂存。文件夹只保存路径，不会展开里面的文件。</p>
                   <p>本地文件、图片和视频会复制到缓存路径，卡片右上角可复制、另存、在文件夹中显示；网页图片也会缓存为本地副本。</p>
                   <p>如果本地源文件还在，“在文件夹中显示”会优先定位原文件；源文件被删后会定位缓存副本。</p>
-                  <p>点击图片进入大图预览；点击视频可以直接在抽屉里播放；点击普通文件会使用系统默认软件打开。</p>
+                  <p>点击图片进入大图预览；点击视频可以直接在抽屉里播放；点击普通文件会使用系统默认软件打开。卡片也可以拖出到支持文件拖放的应用。</p>
                 </section>
 
                 <section className="space-y-1.5">
@@ -7410,8 +8337,9 @@ useEffect(() => {
                 <section className="space-y-1.5">
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">桌面便签</h3>
                   <p>鼠标悬停卡片后，点击右上角的便签按钮，可以把图片、文本、视频或文件固定成独立桌面便签；原卡片仍保留在抽屉里。</p>
-                  <p>便签可以同时打开多个。单击并拖动便签非编辑区域可以移动位置；右下角手柄可调整大小；滚轮可以缩放便签内容，图片会跟随一起缩放。</p>
-                  <p>文字便签默认作为完整便签显示，双击文字区域进入编辑；修改内容会同步回抽屉里的原文本卡片。右键便签可打开抽屉或关闭当前便签，鼠标进入便签时会显示置顶按钮。</p>
+                  <p>便签可以同时打开多个。单击并拖动便签非编辑区域可以移动位置；右下角手柄可调整窗口大小；滚轮可以缩放便签内容。</p>
+                  <p>文字便签双击正文进入编辑，修改会同步回抽屉里的原文本卡片；悬浮按钮可切换颜色，也可转为日程便签。</p>
+                  <p>右键便签可打开抽屉或关闭当前便签，鼠标进入便签时会显示置顶按钮；关闭后仍可在抽屉左侧便签栏重新显示。</p>
                 </section>
 
                 <section className="space-y-1.5">
@@ -7426,7 +8354,7 @@ useEffect(() => {
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">F1</span>：快速截图。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + T</span>：打开快速文字记录。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + E</span>：新增桌面便签。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + ~</span>：切换无限画布 / 普通抽屉。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{canvasShortcut}</span>：切换无限画布 / 普通抽屉。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + S</span>：打开搜索栏。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + Q</span>：切换侧边小条 / 悬浮方块。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">Ctrl + C</span>：鼠标悬停卡片时复制该卡片内容。</p>
@@ -7443,15 +8371,15 @@ useEffect(() => {
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9996] rounded-[30px] overflow-hidden bg-black/20 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={closeUpdateLog}>
             <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 便签使用指南</span>
+                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 更新日志</span>
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p>鼠标悬停卡片，点击右上角的便签按钮，可以把文字、图片、视频或文件固定成独立桌面便签。</p>
-                <p>文字便签双击正文即可编辑，修改会实时同步回抽屉里的原文本卡片；双击标题栏可以在大卡片、条状和小图标三档之间切换。</p>
-                <p>悬浮按钮里可以切换文字便签颜色，也可以切换日程模式；从日程切回文字后仍会继续同步原卡片。</p>
-                <p>便签可以拖动、缩放、滚轮缩放内容、置顶；多个便签靠近时会轻微磁吸对齐，方便排成一组。</p>
-                <p>右键便签可以打开抽屉或关闭当前便签。关闭后仍可在抽屉左侧的便签栏里找回和管理。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v3.0 桌面便签与画布整理</p>
+                <p>卡片可固定为桌面便签，支持文字、图片、视频和文件；关闭窗口后仍可在抽屉左侧便签栏找回。</p>
+                <p>文字便签支持双击编辑、颜色切换、日程模式和实时同步原文本卡片；当前以自由拖动和右下角缩放为主。</p>
+                <p>便签支持拖动、右下角缩放、滚轮缩放内容、置顶和右键菜单；多个便签靠近时会轻微磁吸对齐。</p>
+                <p>无限画布可用 <span className="font-semibold text-stone-800 dark:text-stone-100">{canvasShortcut}</span> 切换，图片可拖入画布自由排布，快捷键可在设置中重新录制。</p>
               </div>
               <button onClick={closeUpdateLog} className="mt-4 w-full py-2 rounded-[20px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold">知道了</button>
             </motion.div>
@@ -7465,6 +8393,7 @@ useEffect(() => {
 export default function App() {
   const label = (appWindow as any).label;
   if (label === 'edge') return <EdgeTrigger />;
+  if (label === 'snip') return <SnipOverlay />;
   if (label === 'note' || (typeof label === 'string' && label.startsWith('note_'))) return <FloatingNoteHost getStoredDrawerSize={getStoredDrawerSize} getStoredTriggerMode={getStoredTriggerMode} />;
   return <MainApp />;
 }

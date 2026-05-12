@@ -507,7 +507,7 @@ return (
         </div>
       )}
 
-      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/5 dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5 rounded-[22px]" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(); }}><div className={`w-4 h-4 rounded-[6px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-stone-300 dark:border-stone-500 bg-white/80 dark:bg-stone-800/80'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
+      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/5 dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5 rounded-[22px]" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[6px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-stone-300 dark:border-stone-500 bg-white/80 dark:bg-stone-800/80'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
 
       {!isSelectMode && (
         <div data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-[80] flex flex-wrap justify-end gap-1.5 min-w-[160px] pointer-events-auto">

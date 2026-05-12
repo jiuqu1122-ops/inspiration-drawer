@@ -2,13 +2,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod native_drag;
 mod native_drop;
 
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::fs;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command as SysCommand;
@@ -224,8 +225,8 @@ fn set_network_proxy(app_handle: tauri::AppHandle, proxy: String) -> Result<Stri
 }
 
 fn effective_proxy(app_handle: Option<&tauri::AppHandle>, explicit_proxy: Option<&str>) -> Option<String> {
-    // 优先级：本次请求显式代理 > App 内保存代理 > Windows 系统代理 > 环境变量。
-    // 这样既保留自动代理，又允许用户在特殊网络环境里手动覆盖。
+    // 优先级：�??请求显式代理 > App 内保存代�?> Windows 系统代理 > �??变量�?
+    // 这样�?��留自动代理，又允许用户在特殊网络�??里手动�?盖�??
     explicit_proxy
         .and_then(normalize_proxy_endpoint)
         .or_else(|| {
@@ -250,11 +251,11 @@ fn build_http_client(
 
     if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
         let proxy = reqwest::Proxy::all(&proxy)
-            .map_err(|e| format!("代理配置无效：{}", e))?;
+            .map_err(|e| format!("代理配置无效�{}", e))?;
         builder = builder.proxy(proxy);
     }
 
-    builder.build().map_err(|e| format!("初始化网络客户端失败：{}", e))
+    builder.build().map_err(|e| format!("初�?化网络�?户�?失败�{}", e))
 }
 
 fn download_url_to_file(
@@ -267,10 +268,10 @@ fn download_url_to_file(
     let mut response = client
         .get(url)
         .send()
-        .map_err(|e| format!("下载请求失败：{}", e))?;
+        .map_err(|e| format!("下载请求失败�{}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("下载失败，HTTP 状态码：{}", response.status()));
+        return Err(format!("下载失败，HTTP 状�?�码�{}", response.status()));
     }
 
     let tmp_path = out_path.with_extension("download.tmp");
@@ -278,7 +279,7 @@ fn download_url_to_file(
         let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
         response
             .copy_to(&mut file)
-            .map_err(|e| format!("写入下载文件失败：{}", e))?;
+            .map_err(|e| format!("写入下载文件失败�{}", e))?;
     }
 
     fs::rename(&tmp_path, out_path).or_else(|_| {
@@ -300,14 +301,14 @@ fn http_get_text(
         .header("accept", "application/json")
         .bearer_auth(api_key)
         .send()
-        .map_err(|e| format!("模型列表请求失败：{}", e))?;
+        .map_err(|e| format!("模型列表请求失败�{}", e))?;
 
     let status = response.status();
     let text = response.text().map_err(|e| e.to_string())?;
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("模型列表请求失败，HTTP {}：{}", status, text))
+        Err(format!("模型列表请求失败，HTTP {}�{}", status, text))
     }
 }
 
@@ -324,14 +325,14 @@ fn http_post_json(
         .bearer_auth(api_key)
         .json(body)
         .send()
-        .map_err(|e| format!("AI 请求失败：{}", e))?;
+        .map_err(|e| format!("AI 请求失败�{}", e))?;
 
     let status = response.status();
     let text = response.text().map_err(|e| e.to_string())?;
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("AI 请求失败，HTTP {}：{}", status, text))
+        Err(format!("AI 请求失败，HTTP {}�{}", status, text))
     }
 }
 
@@ -352,24 +353,24 @@ fn show_in_folder(path: String) -> Result<(), String> {
     let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
 
     if !normalized.exists() {
-        return Err(format!("文件位置不存在：{}", normalized.to_string_lossy()));
+        return Err(format!("文件位置不存�?��{}", normalized.to_string_lossy()));
     }
 
     let resolved = fs::canonicalize(&normalized).unwrap_or_else(|_| normalized.clone());
 
-    // /select 在部分 Windows 环境下会被 Explorer 解析失败，失败时它会退回打开“文档”或“桌面”。
-    // 稳定优先：文件打开它的真实父目录；文件夹打开它本身。
+    // /select 在部�?Windows �??下会�?Explorer 解析失败，失败时它会�?回打�?“文档�?�或“�?面�?��??
+    // 稳定优先：文件打�?它的真实父目录；文件夹打�?它本�???
     let target_dir = if resolved.is_dir() {
         resolved.clone()
     } else {
         resolved
             .parent()
-            .ok_or_else(|| "无法获取文件所在目录".to_string())?
+            .ok_or_else(|| "cannot resolve containing folder".to_string())?
             .to_path_buf()
     };
 
     if !target_dir.exists() {
-        return Err(format!("文件夹不存在：{}", target_dir.to_string_lossy()));
+        return Err(format!("文件夹不存在�{}", target_dir.to_string_lossy()));
     }
 
     #[cfg(target_os = "windows")]
@@ -445,7 +446,7 @@ fn cache_local_file_to_dir_impl(
         .unwrap_or_else(|_| target_dir_raw.clone());
 
     if source_canon.starts_with(&target_dir) {
-        return Ok(source_canon.to_string_lossy().to_string());
+        return Ok(display_local_path(&source_canon));
     }
 
     let file_name = source_canon
@@ -455,23 +456,21 @@ fn cache_local_file_to_dir_impl(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("local_file_{}", now_millis_u128()));
 
-    let mut target = target_dir.join(format!("{}_{}", now_millis_u128(), file_name));
-    if target.exists() {
-        let stem = target
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("local_file")
-            .to_string();
-        let ext = target
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| format!(".{}", value))
-            .unwrap_or_default();
-        target = target_dir.join(format!("{}_{}{}", stem, now_millis_u128(), ext));
-    }
+    let target = unique_file_path(target_dir.join(file_name));
 
     fs::copy(&source_canon, &target).map_err(|e| e.to_string())?;
-    Ok(target.to_string_lossy().to_string())
+    Ok(display_local_path(&target))
+}
+
+fn display_local_path(path: &std::path::Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        value.to_string()
+    }
 }
 
 #[tauri::command]
@@ -535,6 +534,36 @@ fn sanitize_file_name(name: &str) -> String {
     } else {
         trimmed.chars().take(120).collect()
     }
+}
+
+fn unique_file_path(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+
+    let parent = path.parent().map(|value| value.to_path_buf()).unwrap_or_else(std::env::temp_dir);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("local_file")
+        .to_string();
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_string());
+
+    for index in 2..1000 {
+        let file_name = match &ext {
+            Some(ext) if !ext.is_empty() => format!("{}_{}.{}", stem, index, ext),
+            _ => format!("{}_{}", stem, index),
+        };
+        let candidate = parent.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    path
 }
 
 #[tauri::command]
@@ -718,8 +747,8 @@ async fn cache_web_image_to_dir(
     dir: String,
     proxy: Option<String>,
 ) -> Result<String, String> {
-    // 专门给“设置里的网页图片缓存路径”使用。参数名保持简单的 dir，
-    // 避开 cache_dir / cacheDir 在 Tauri 参数映射里的歧义。
+    // 专门给�?��?�?��的网页图片缓存路径�?�使用�?�参数名保持�?单的 dir�?
+    // 避开 cache_dir / cacheDir �?Tauri 参数映射里的歧义�?
     tauri::async_runtime::spawn_blocking(move || {
         cache_web_image_impl(app_handle, url, name, Some(dir), proxy)
     })
@@ -739,8 +768,8 @@ fn cache_web_image_impl(
         return Err("empty web image url".to_string());
     }
 
-    // 优先使用前端传来的最新缓存路径；如果没有传，再读取后端保存的设置。
-    // 这样可避免拖拽监听器/配置文件不同步时继续写入默认缓存目录。
+    // 优先使用前�?传来的最新缓存路径；如果没有传，再�?取后�?��存的设置�?
+    // 这样�?��免拖拽监�?��/配置文件不同步时继续写入默�?缓存�?���?
     let dir = cache_dir
         .as_deref()
         .map(str::trim)
@@ -789,7 +818,7 @@ fn cache_web_image_impl(
     if input.starts_with("http://") || input.starts_with("https://") {
         if let Err(err) = download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
             let _ = fs::remove_file(&out_path);
-            return Err(format!("缓存网页图片失败：{}", err));
+            return Err(format!("缓存网页图片失败�{}", err));
         }
         return Ok(out_path.to_string_lossy().to_string());
     }
@@ -838,9 +867,9 @@ fn relocate_web_cache_file(
         return Ok(source_canon.to_string_lossy().to_string());
     }
 
-    // 只迁移 App 自己生成/接管的网页临时图片，不碰用户真实本地文件。
-    // 某些 Windows OLE/browser 拖拽链路不会给 URL，而是先把网页图保存到 App 默认目录，
-    // 然后只把这个临时 path 发给前端。这里把这种临时文件搬到用户设置的缓存目录。
+    // �?���?App �?��生成/接�?的网页临时图片，不�?用户真实�?��文件�?
+    // 某些 Windows OLE/browser 拖拽链路不会�?URL，�?�是先把网页图保存到 App 默�?�?���?
+    // 然后�?��这个临时 path 发给前�?。这里把这�?临时文件�?��用户设置的缓存目录�??
     let under_default_cache = source_canon.starts_with(&default_cache_dir);
     let under_app_data = source_canon.starts_with(&app_data_dir);
     let under_temp = source_canon.starts_with(&temp_dir);
@@ -909,18 +938,18 @@ fn cmf_palette_for_name(name: &str) -> serde_json::Value {
     let palettes = [
         serde_json::json!({
             "colors": ["#e7dfd2", "#b8aea1", "#6f6a63", "#f0a45a"],
-            "keywords": ["低饱和", "暖灰金属", "柔和倒角", "家居科技"],
-            "materials": ["喷砂阳极氧化铝", "低光泽 PC/ABS", "细织物网布", "硅胶脚垫"]
+            "keywords": ["暖中性色", "柔和金属", "圆润边缘", "家居科技"],
+            "materials": ["哑光铝材", "暖灰 PC/ABS", "柔软橡胶", "织物点缀"]
         }),
         serde_json::json!({
             "colors": ["#ebe7df", "#9aa0a3", "#5e696f", "#1f2528"],
             "keywords": ["半透明", "轻科技", "层次感", "克制"],
-            "materials": ["烟灰透明 PC", "雾面银喷涂件", "黑色 TPU 密封圈", "半透磨砂纹理"]
+            "materials": ["烟灰透明 PC", "雾银喷涂", "黑色 TPU 密封圈", "半透明磨砂纹理"]
         }),
         serde_json::json!({
             "colors": ["#f1eadf", "#c9b8a2", "#8d7d6f", "#4b4038"],
-            "keywords": ["温暖", "织物", "弱科技感", "亲和"],
-            "materials": ["针织声学布", "暖灰磨砂 PC", "咖色橡胶", "微纹理喷涂"]
+            "keywords": ["安静", "温暖", "触感友好", "家居感"],
+            "materials": ["针织声学布", "暖灰磨砂 PC", "咖色橡胶", "细砂纹喷涂"]
         }),
         serde_json::json!({
             "colors": ["#e8ece9", "#aeb8b2", "#65736b", "#23312c"],
@@ -986,7 +1015,6 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
         return Ok(format!("data:{};base64,{}", mime, b64));
     }
 
-    // 如果传进来的是无法解析的 asset/url，就原样交给模型；前端失败时会降级到本地色板。
     Ok(trimmed.to_string())
 }
 
@@ -999,15 +1027,15 @@ fn model_supports_image(model: &str) -> bool {
 }
 
 fn cmf_system_prompt() -> &'static str {
-    "你是工业设计 CMF 分析助手。只输出严格 JSON，不要 Markdown，不要代码块。字段必须是：title:string, colors:string[], keywords:string[], summary:string, form:string, cmf:string, borrow:string[], avoid:string[], materials:string[]。colors 必须是 4 到 6 个十六进制色值；keywords 4 到 8 个中文设计风格短标签，例如极简主义、科技感、家居感、轻盈感；summary 必须是 AI 分析介绍的第一句话，建议 20 到 60 个中文字符，以句号结尾；borrow/avoid/materials 每项 3 到 6 条。请基于参考图做工业设计、消费电子、家居产品方向的 CMF / 造型 / 材料 / 借鉴判断，不要编造品牌，不要照搬原图造型。"
+    "你是一名资深产品 CMF 与造型语言分析师。必须只返回严格 JSON，不要 Markdown，不要解释。除 colors 中的十六进制色值外，所有文本字段必须使用简体中文。必需字段：title:string, colors:string[], keywords:string[], summary:string, form:string, cmf:string, borrow:string[], avoid:string[], materials:string[]。colors 保持 4-6 个十六进制色值；keywords 为 4-8 个中文短语；summary 为 20-60 个中文词；borrow/avoid/materials 各 3-6 条中文短句。"
 }
 
 fn cmf_user_text(item_name: &str, note: &str, with_image: bool) -> String {
     format!(
-        "请分析这张参考图，名称：{}。备注：{}。{}请输出可直接用于灵感抽屉的 CMF 炼金卡 JSON：1) 主色板；2) 配色/材质 CMF 方向；3) 造型语言；4) 可借鉴判断；5) 不适合照搬；6) 材料建议。",
+        "请分析这张参考图。名称：{}。备注：{}。{}请只返回 JSON，内容包括：1）主色与辅助色；2）配色、材料和表面处理逻辑；3）造型语言；4）可以借鉴的设计动作；5）不应照搬的风险；6）材料建议。所有描述必须使用简体中文。",
         item_name,
         if note.trim().is_empty() { "无" } else { note.trim() },
-        if with_image { "" } else { "当前模型可能无法看图，请主要根据名称和备注给出保守分析；" }
+        if with_image { "" } else { "当前模型没有图像能力，请根据名称和备注推断。" }
     )
 }
 
@@ -1077,7 +1105,7 @@ async fn get_siliconflow_vision_models(
 ) -> Result<Vec<String>, String> {
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {
-        return Err("请先填写硅基流动 API Key".to_string());
+        return Err("请先�?��硅基流动 API Key".to_string());
     }
 
     let base = endpoint.trim().trim_end_matches('/').to_string();
@@ -1089,11 +1117,11 @@ async fn get_siliconflow_vision_models(
     tauri::async_runtime::spawn_blocking(move || {
         let raw = http_get_text(&app_handle, &url, &api_key, None)?;
         let parsed: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| format!("模型列表 JSON 解析失败：{}", e))?;
+            .map_err(|e| format!("模型列表 JSON 解析失败�{}", e))?;
         let data = parsed
             .get("data")
             .and_then(|value| value.as_array())
-            .ok_or_else(|| "模型列表返回格式不正确：缺少 data 数组".to_string())?;
+            .ok_or_else(|| "模型列表返回格式不�?�?��缺少 data 数组".to_string())?;
 
         let mut models: Vec<String> = data
             .iter()
@@ -1106,7 +1134,7 @@ async fn get_siliconflow_vision_models(
         Ok(models)
     })
     .await
-    .map_err(|e| format!("刷新模型列表任务失败：{}", e))?
+    .map_err(|e| format!("刷新模型列表任务失败�{}", e))?
 }
 
 fn extract_json_object_text(text: &str) -> Option<String> {
@@ -1144,7 +1172,7 @@ fn get_chat_message_content(response: &serde_json::Value) -> Result<String, Stri
         .and_then(|message| message.get("content"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("AI 返回结构中没有 message.content：{}", response))
+        .ok_or_else(|| format!("AI response missing message.content: {}", response))
 }
 
 fn normalize_ai_result_json(item_name: &str, mut value: serde_json::Value) -> serde_json::Value {
@@ -1188,11 +1216,11 @@ fn normalize_ai_result_json(item_name: &str, mut value: serde_json::Value) -> se
         "title": get_str("title", item_name),
         "colors": colors,
         "keywords": keywords,
-        "form": get_str("form", "保留参考图的大面关系、体量比例和关键识别细节，避免直接照搬轮廓。"),
-        "summary": first_sentence_or_fallback(&get_str("summary", "整体呈现克制的科技感，适合做产品 CMF 方向延展。"), "整体呈现克制的科技感，适合做产品 CMF 方向延展。"),
-        "cmf": get_str("cmf", "基于参考图生成 CMF 方向：提取主色与辅助色比例，并结合低光泽、微纹理和可量产材料做产品化表达。"),
-        "borrow": get_arr("borrow", vec!["借鉴主色和辅色比例", "借鉴材质对比关系", "借鉴局部细节作为识别点"]),
-        "avoid": get_arr("avoid", vec!["不要直接复制原图造型", "高饱和点缀色需要克制", "量产前需评估耐脏和耐刮"]),
+        "form": get_str("form", "保留参考图中的整体比例、柔和边缘和可识别的局部细节，同时让产品语言保持简洁并便于量产。"),
+        "summary": first_sentence_or_fallback(&get_str("summary", "这张参考图呈现出克制的科技感，可延展为一套产品 CMF 方向。"), "这张参考图呈现出克制的科技感，可延展为一套产品 CMF 方向。"),
+        "cmf": get_str("cmf", "围绕主色与辅助色建立 CMF 方向，并结合低光泽、细纹理和适合量产的材料组合。"),
+        "borrow": get_arr("borrow", vec!["借鉴主色与强调色的比例关系", "借鉴材料之间的粗细与冷暖对比", "借鉴局部细节作为识别点"]),
+        "avoid": get_arr("avoid", vec!["不要直接复制原图轮廓", "高饱和点缀色需要克制使用", "量产前需要验证耐磨和耐刮表现"]),
         "materials": materials,
         "analysisMode": "ai",
         "apiStatus": "siliconflow_ok",
@@ -1211,7 +1239,7 @@ fn call_siliconflow_cmf(
     explicit_proxy: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if api_key.trim().is_empty() {
-        return Err("请先填写硅基流动 API Key".to_string());
+        return Err("请先�?��硅基流动 API Key".to_string());
     }
     if model.trim().is_empty() {
         return Err("请先选择硅基流动模型".to_string());
@@ -1221,12 +1249,12 @@ fn call_siliconflow_cmf(
     let image_url = image_source_for_ai(image_source)?;
     let body = build_siliconflow_request_body(model, &image_url, item_name, note);
     let raw = http_post_json(app_handle, &url, api_key, &body, explicit_proxy)?;
-    let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
+    let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("解析硅基流动响应失败�{}；原始返回：{}", e, raw))?;
     let content = get_chat_message_content(&response)?;
     let Some(json_text) = extract_json_object_text(&content) else {
-        return Err(format!("模型没有返回 JSON：{}", content));
+        return Err(format!("模型没有返回 JSON�{}", content));
     };
-    let parsed: serde_json::Value = serde_json::from_str(&json_text).map_err(|e| format!("解析模型 JSON 失败：{}；内容：{}", e, json_text))?;
+    let parsed: serde_json::Value = serde_json::from_str(&json_text).map_err(|e| format!("解析模型 JSON 失败�{}；内容：{}", e, json_text))?;
     Ok(normalize_ai_result_json(item_name, parsed))
 }
 
@@ -1274,11 +1302,6 @@ fn analyze_cmf_card_impl(
         );
     }
 
-    // 这里保留给其他 AI 分析软件的稳定后端入口。
-    // endpoint 为空时，前端会优先走本地 Canvas 配色算法；如果仍调用到这里，
-    // 也只返回“配色分析”结构，不伪造造型/材料/借鉴判断。
-    // endpoint 不为空时，后续可在此处把 image_source / item_name / note / config 组装成对应 HTTP 请求，
-    // 并返回同样的 JSON 字段：colors、keywords、form、cmf、borrow、avoid、materials。
     let palette = cmf_palette_for_name(&item_name);
     let colors = palette.get("colors").cloned().unwrap_or_else(|| serde_json::json!([]));
     let keywords = palette.get("keywords").cloned().unwrap_or_else(|| serde_json::json!([]));
@@ -1288,9 +1311,9 @@ fn analyze_cmf_card_impl(
             "title": item_name,
             "colors": colors,
             "keywords": keywords,
-            "summary": "本地配色算法只提取主色板，不生成造型和材料判断。",
+            "summary": "当前没有配置 AI 接口，此结果仅提供基于色板的本地分析结构。",
             "form": "",
-            "cmf": "未配置 AI 接口：这里只返回配色分析结构；前端会优先使用本地像素算法提取真实色板。",
+            "cmf": "当前没有配置 AI 接口，可先将本地提取的色板作为初步 CMF 方向。",
             "borrow": [],
             "avoid": [],
             "materials": [],
@@ -1309,11 +1332,11 @@ fn analyze_cmf_card_impl(
         "title": item_name,
         "colors": colors,
         "keywords": keywords,
-        "summary": "整体呈现克制的科技感，适合做产品 CMF 方向延展。",
-        "form": format!("从「{}」中提取到偏克制的体量关系：优先保留大面简洁、边缘柔和、局部细节形成记忆点的造型逻辑。{}", item_name, if note_text.trim().is_empty() { "".to_string() } else { format!(" 备注提示：{}", note_text.trim()) }),
-        "cmf": format!("基于当前参考图生成的 CMF 占位分析：主色保持低饱和，材料以雾面、微纹理和可量产的塑胶/金属/织物组合为主。{}", if model.is_empty() { "".to_string() } else { format!("预留模型：{}。", model) }),
-        "borrow": ["借鉴主色和辅色的比例关系", "借鉴材质之间的粗细/冷暖对比", "借鉴局部细节作为记忆点，而不是照搬整体造型"],
-        "avoid": ["不要直接复制原图轮廓或装饰比例", "高亮点缀色需要克制使用", "若用于量产产品，需要重新评估耐脏、耐刮和装配分件线"],
+        "summary": "这张参考图呈现出克制的科技感，可继续延展为产品 CMF 方向。",
+        "form": format!("将「{}」作为克制的造型参考：大面保持简洁，边缘处理柔和，并让局部细节形成记忆点。{}", item_name, if note_text.trim().is_empty() { "".to_string() } else { format!(" 备注：{}", note_text.trim()) }),
+        "cmf": format!("基于当前参考建立 CMF 方向：控制色彩饱和度，结合哑光表面、细腻纹理和适合量产的材料组合。{}", if model.is_empty() { "".to_string() } else { format!(" 已保留模型配置：{}。", model) }),
+        "borrow": ["借鉴主色与强调色的比例关系", "借鉴材料之间的对比关系", "借鉴局部细节作为识别点"],
+        "avoid": ["不要直接复制原图造型", "高饱和点缀色需要克制使用", "量产前需要验证耐用性和耐刮性"],
         "materials": materials,
         "analysisMode": "ai",
         "apiStatus": "reserved_mock",
@@ -1399,8 +1422,8 @@ fn snap_to_right(window: WebviewWindow, width: f64, height: f64) {
 
 #[tauri::command]
 fn toggle_pin(window: WebviewWindow, pinned: bool) {
-    // pinned 只表示"锁定展开/不自动缩回"，不要在这里控制窗口位置。
-    // 取消钉住后的复位/缩回由前端 close_drawer + trigger mode 处理。
+    // pinned �?���?锁定展开/不自动缩�?，不要在这里控制窗口位置�?
+    // 取消钉住后的复位/缩回由前�?close_drawer + trigger mode 处理�?
     let _ = window.set_always_on_top(true);
     let _ = pinned;
 }
@@ -1429,8 +1452,8 @@ fn mobile_should_accept(signature: &str) -> bool {
         return true;
     };
 
-    // 手机端有些实现会对同一个发送动作连续打 /send、/upload 或重试一次。
-    // 这里用短时间内容签名去重，避免抽屉里出现两张/两个完全相同的卡片。
+    // 手机�?��些实现会对同�?�?��送动作连�?�� /send�?upload 或重试一次�??
+    // 这里用短时间内�?签名去重，避免抽屉里出现两张/两个完全相同的卡片�??
     recent.retain(|_, last_seen| now.saturating_sub(*last_seen) <= 8_000);
     if let Some(last_seen) = recent.get_mut(signature) {
         if now.saturating_sub(*last_seen) <= 2_500 {
@@ -1660,7 +1683,7 @@ fn emit_mobile_data_url(app_handle: &tauri::AppHandle, data_url: &str, fallback_
     let trimmed = data_url.trim();
     let (mime, bytes) = decode_data_url(trimmed)?;
     let name = fallback_name
-        .filter(|name| !name.trim().is_empty() && *name != "手机内容")
+        .filter(|name| !name.trim().is_empty() && *name != "手机内�?")
         .map(|name| name.to_string())
         .unwrap_or_else(|| default_mobile_file_name(&mime));
     let item_type = guess_mobile_item_type(&mime, &name);
@@ -1777,7 +1800,7 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
 
     let text = get_json_string(obj, &["text", "content", "message"]);
     let url = get_json_string(obj, &["url", "imageUrl", "image_url", "fileUrl", "file_url"]);
-    let name = get_json_string(obj, &["name", "filename", "fileName", "title"]).unwrap_or_else(|| "手机内容".to_string());
+    let name = get_json_string(obj, &["name", "filename", "fileName", "title"]).unwrap_or_else(|| "手机内�?".to_string());
     let explicit_type = get_json_string(obj, &["type", "kind"]).unwrap_or_default();
     let mime = get_json_string(obj, &["mime", "mimeType", "contentType"]).unwrap_or_default();
     let data_url = get_json_string(obj, &["dataUrl", "data_url", "data"]);
@@ -1786,7 +1809,7 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
     if let Some(data) = data_url.filter(|s| s.starts_with("data:")) {
         let (mime_from_data, bytes) = decode_data_url(&data)?;
         let mime_used = if mime.is_empty() { mime_from_data } else { mime };
-        let file_name = if name == "手机内容" { default_mobile_file_name(&mime_used) } else { name };
+        let file_name = if name == "手机内�?" { default_mobile_file_name(&mime_used) } else { name };
         let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime_used, &file_name) } else { normalize_mobile_item_type(&explicit_type) };
         emit_mobile_bytes(app_handle, &item_type, &file_name, &bytes)?;
         return Ok(1);
@@ -1795,7 +1818,7 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
     if let Some(b64) = base64_data {
         use base64::{engine::general_purpose, Engine as _};
         let bytes = general_purpose::STANDARD.decode(b64.trim()).map_err(|e| e.to_string())?;
-        let file_name = if name == "手机内容" { default_mobile_file_name(&mime) } else { name };
+        let file_name = if name == "手机内�?" { default_mobile_file_name(&mime) } else { name };
         let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime, &file_name) } else { normalize_mobile_item_type(&explicit_type) };
         emit_mobile_bytes(app_handle, &item_type, &file_name, &bytes)?;
         return Ok(1);
@@ -2015,7 +2038,7 @@ fn first_sentence_or_fallback(value: &str, fallback: &str) -> String {
     let clean = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let source = if clean.trim().is_empty() { fallback } else { clean.trim() };
     for (idx, ch) in source.char_indices() {
-        if matches!(ch, '。' | '！' | '!' | '？' | '?') {
+        if matches!(ch, '.' | '!' | '?') {
             return source[..idx + ch.len_utf8()].trim().to_string();
         }
     }
@@ -2112,6 +2135,11 @@ fn open_file(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn get_video_thumb(path: String) -> Result<String, String> {
+    let source = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
+    if !source.is_file() {
+        return Err(format!("video file not found: {}", display_local_path(&source)));
+    }
+
     let temp_dir = std::env::temp_dir();
     let file_name = format!(
         "thumb_{}.png",
@@ -2122,29 +2150,53 @@ fn get_video_thumb(path: String) -> Result<String, String> {
     );
     let out_path = temp_dir.join(&file_name);
 
-    let status = SysCommand::new("ffmpeg")
-        .args([
-            "-i",
-            &path,
-            "-ss",
-            "00:00:01.000",
-            "-vframes",
-            "1",
-            "-s",
-            "640x360",
-            out_path.to_str().unwrap(),
-        ])
-        .status()
-        .map_err(|e| format!("FFmpeg 调用失败: {}", e))?;
+    let mut last_error = String::new();
+    for seek in ["00:00:01.000", "00:00:00.250", "00:00:00.000"] {
+        let _ = fs::remove_file(&out_path);
+        let mut cmd = SysCommand::new("ffmpeg");
+        hide_console_window(&mut cmd);
+        let output = cmd
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                seek,
+                "-i",
+            ])
+            .arg(&source)
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=640:-2",
+                out_path.to_str().unwrap_or("thumb.png"),
+            ])
+            .output()
+            .map_err(|e| format!("FFmpeg 调用失败: {}", e))?;
 
-    if status.success() {
+        if output.status.success() && out_path.exists() {
+            break;
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        last_error = if stderr.is_empty() { stdout } else { stderr };
+    }
+
+    if out_path.exists() {
         let img_bytes = fs::read(&out_path).map_err(|e| e.to_string())?;
         use base64::{engine::general_purpose, Engine as _};
         let b64 = general_purpose::STANDARD.encode(&img_bytes);
         let _ = fs::remove_file(&out_path);
         Ok(format!("data:image/png;base64,{}", b64))
     } else {
-        Err("视频截帧失败".into())
+        Err(if last_error.is_empty() {
+            "video thumbnail generation failed".to_string()
+        } else {
+            format!("video thumbnail generation failed: {}", last_error)
+        })
     }
 }
 
@@ -2397,7 +2449,7 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
             }
         } else {
             let status = RegDeleteValueW(hkey, name.as_ptr());
-            // 2 = ERROR_FILE_NOT_FOUND。目标值本来不存在时，也视为已经关闭。
+            // 2 = ERROR_FILE_NOT_FOUND。目标�?�本来不存在时，也�?为已经关�???
             if status == ERROR_SUCCESS as i32 || status == 2 {
                 Ok(())
             } else {
@@ -2456,6 +2508,11 @@ fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
         let mut path = percent_decode_lossy(trimmed.trim_start_matches("file:///"));
         if cfg!(target_os = "windows") {
             path = path.replace('/', "\\");
+            if path.starts_with("?\\") {
+                path = path[2..].to_string();
+            } else if path.starts_with("\\?\\") {
+                path = path[3..].to_string();
+            }
         }
         return Some(PathBuf::from(path));
     }
@@ -2464,6 +2521,11 @@ fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
         let mut path = percent_decode_lossy(trimmed.trim_start_matches("file://"));
         if cfg!(target_os = "windows") {
             path = path.replace('/', "\\");
+            if path.starts_with("?\\") {
+                path = path[2..].to_string();
+            } else if path.starts_with("\\?\\") {
+                path = path[3..].to_string();
+            }
         }
         return Some(PathBuf::from(path));
     }
@@ -2611,7 +2673,13 @@ throw $last
 }
 
 #[tauri::command]
-fn copy_image(data_url: String) -> Result<(), String> {
+async fn copy_image(data_url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || copy_image_impl(data_url))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn copy_image_impl(data_url: String) -> Result<(), String> {
     let input = data_url.trim();
     if input.is_empty() {
         return Err("empty image source".to_string());
@@ -2651,6 +2719,16 @@ fn copy_image(data_url: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
+    native_drag::start_file_drag(paths)
+}
+
+#[tauri::command]
+fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
+    native_drag::copy_files_to_clipboard(paths)
+}
+
 
 #[tauri::command]
 fn capture_screen_area(window: WebviewWindow, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
@@ -2659,6 +2737,98 @@ fn capture_screen_area(window: WebviewWindow, x: f64, y: f64, width: f64, height
     use base64::{engine::general_purpose, Engine as _};
     let b64 = general_purpose::STANDARD.encode(&img_bytes);
     Ok(format!("data:image/png;base64,{}", b64))
+}
+
+#[tauri::command]
+async fn capture_screen_to_file(
+    app_handle: tauri::AppHandle,
+    window: WebviewWindow,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let current_monitor = window
+            .current_monitor()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no current monitor".to_string())?;
+        let monitor_pos = current_monitor.position();
+        let screens = screenshots::Screen::all().map_err(|e| e.to_string())?;
+        if screens.is_empty() {
+            return Err("no screen available".to_string());
+        }
+        let screen = screens
+            .iter()
+            .find(|s| s.display_info.x == monitor_pos.x && s.display_info.y == monitor_pos.y)
+            .unwrap_or(&screens[0])
+            .clone();
+        let image = screen.capture().map_err(|e| e.to_string())?;
+        let out_dir = read_web_image_cache_dir(&app_handle);
+        fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        let file_name = format!(
+            "drawer_snip_background_{}.jpg",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis()
+        );
+        let out_path = out_dir.join(file_name);
+        let file = File::create(&out_path).map_err(|e| e.to_string())?;
+        let mut file = BufWriter::new(file);
+        image
+            .write_to(&mut file, screenshots::image::ImageFormat::Jpeg)
+            .map_err(|e| e.to_string())?;
+        Ok(out_path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn crop_image_file_to_file(
+    app_handle: tauri::AppHandle,
+    path: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+    file_name: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
+        let image = screenshots::image::open(&source).map_err(|e| e.to_string())?;
+        let image_w = image.width().max(1);
+        let image_h = image.height().max(1);
+        let scale_x = image_w as f64 / viewport_width.max(1.0);
+        let scale_y = image_h as f64 / viewport_height.max(1.0);
+
+        let sx = (x * scale_x).round().max(0.0).min((image_w - 1) as f64) as u32;
+        let sy = (y * scale_y).round().max(0.0).min((image_h - 1) as f64) as u32;
+        let max_w = image_w.saturating_sub(sx).max(1);
+        let max_h = image_h.saturating_sub(sy).max(1);
+        let sw = (width * scale_x).round().max(1.0).min(max_w as f64) as u32;
+        let sh = (height * scale_y).round().max(1.0).min(max_h as f64) as u32;
+
+        let cropped = image.crop_imm(sx, sy, sw, sh);
+        let out_dir = read_web_image_cache_dir(&app_handle);
+        fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        let fallback_name = format!(
+            "drawer_snip_area_{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis()
+        );
+        let safe_name = file_name
+            .as_deref()
+            .map(sanitize_file_name)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(fallback_name);
+        let out_path = unique_file_path(out_dir.join(safe_name));
+        cropped.save(&out_path).map_err(|e| e.to_string())?;
+        Ok(out_path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2677,6 +2847,171 @@ async fn capture_screen_area_to_file(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn capture_screen_area_absolute_to_file(
+    app_handle: tauri::AppHandle,
+    window: WebviewWindow,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let scale = window.scale_factor().map_err(|e| e.to_string())?;
+        let physical_x = (x * scale).round() as i32;
+        let physical_y = (y * scale).round() as i32;
+        let physical_w = (width * scale).round().max(1.0) as u32;
+        let physical_h = (height * scale).round().max(1.0) as u32;
+
+        window.hide().map_err(|e| e.to_string())?;
+        let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
+        std::thread::sleep(std::time::Duration::from_millis(16));
+
+        let _ = window.emit("snip-area-captured", ());
+        capture_physical_area_to_file(Some(&app_handle), physical_x, physical_y, physical_w, physical_h)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn capture_snip_selection_to_file(
+    app_handle: tauri::AppHandle,
+    window: WebviewWindow,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let window_pos = window.outer_position().map_err(|e| e.to_string())?;
+        let window_size = window.outer_size().map_err(|e| e.to_string())?;
+        let scale_x = window_size.width as f64 / viewport_width.max(1.0);
+        let scale_y = window_size.height as f64 / viewport_height.max(1.0);
+        let physical_x = window_pos.x + (x * scale_x).round() as i32;
+        let physical_y = window_pos.y + (y * scale_y).round() as i32;
+        let physical_w = (width * scale_x).round().max(1.0) as u32;
+        let physical_h = (height * scale_y).round().max(1.0) as u32;
+
+        window.hide().map_err(|e| e.to_string())?;
+        let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
+        std::thread::sleep(std::time::Duration::from_millis(16));
+
+        capture_physical_area_to_file(Some(&app_handle), physical_x, physical_y, physical_w, physical_h)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn capture_snip_window_selection_to_file(
+    app_handle: tauri::AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> Result<String, String> {
+    let snip = app_handle
+        .get_webview_window("snip")
+        .ok_or_else(|| "snip window not found".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let window_pos = snip.outer_position().map_err(|e| e.to_string())?;
+        let window_size = snip.outer_size().map_err(|e| e.to_string())?;
+        let scale_x = window_size.width as f64 / viewport_width.max(1.0);
+        let scale_y = window_size.height as f64 / viewport_height.max(1.0);
+        let physical_x = window_pos.x + (x * scale_x).round() as i32;
+        let physical_y = window_pos.y + (y * scale_y).round() as i32;
+        let physical_w = (width * scale_x).round().max(1.0) as u32;
+        let physical_h = (height * scale_y).round().max(1.0) as u32;
+
+        snip.hide().map_err(|e| e.to_string())?;
+        let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
+        std::thread::sleep(std::time::Duration::from_millis(16));
+
+        capture_physical_area_to_file(Some(&app_handle), physical_x, physical_y, physical_w, physical_h)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn complete_snip_selection(
+    app_handle: tauri::AppHandle,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+    note_x: f64,
+    note_y: f64,
+    restore_drawer: bool,
+    drawer_width: f64,
+    drawer_height: f64,
+    mode: Option<String>,
+) -> Result<(), String> {
+    let snip = app_handle
+        .get_webview_window("snip")
+        .ok_or_else(|| "snip window not found".to_string())?;
+    let window_pos = snip.outer_position().map_err(|e| e.to_string())?;
+    let window_size = snip.outer_size().map_err(|e| e.to_string())?;
+    let scale_x = window_size.width as f64 / viewport_width.max(1.0);
+    let scale_y = window_size.height as f64 / viewport_height.max(1.0);
+    let physical_x = window_pos.x + (x * scale_x).round() as i32;
+    let physical_y = window_pos.y + (y * scale_y).round() as i32;
+    let physical_w = (width * scale_x).round().max(1.0) as u32;
+    let physical_h = (height * scale_y).round().max(1.0) as u32;
+
+    let _ = snip.hide();
+    let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
+    if let Some(main) = app_handle.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(false);
+        let _ = main.set_always_on_top(true);
+    }
+
+    let app_for_capture = app_handle.clone();
+    let capture_result = tauri::async_runtime::spawn_blocking(move || {
+        capture_physical_area_to_bmp_file(Some(&app_for_capture), physical_x, physical_y, physical_w, physical_h)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match capture_result {
+        Ok(path) => {
+            if let Some(main) = app_handle.get_webview_window("main") {
+                let _ = main.emit(
+                    "snip-captured",
+                    serde_json::json!({
+                        "path": path,
+                        "x": x,
+                        "y": y,
+                        "width": width,
+                        "height": height,
+                        "noteX": note_x,
+                        "noteY": note_y,
+                    }),
+                );
+                let _ = main.emit("snip-recovered", ());
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = recover_after_snip(
+                app_handle.clone(),
+                restore_drawer,
+                drawer_width,
+                drawer_height,
+                mode.clone(),
+            );
+            Err(err)
+        }
+    }
+}
+
 fn capture_screen_area_to_file_impl(
     app_handle: Option<tauri::AppHandle>,
     window: WebviewWindow,
@@ -2693,11 +3028,21 @@ fn capture_screen_area_to_file_impl(
     let physical_w = (width * scale).round().max(1.0) as u32;
     let physical_h = (height * scale).round().max(1.0) as u32;
 
-    // 先隐藏并移走全屏截图窗口，避免 DWM 还没完成 hide 时把选区框截进去。
+    // 先隐藏并移走全屏�?��窗口，避�?DWM 还没完成 hide 时把选区框截进去�?
     window.hide().map_err(|e| e.to_string())?;
     let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
-    std::thread::sleep(std::time::Duration::from_millis(96));
+    std::thread::sleep(std::time::Duration::from_millis(16));
 
+    capture_physical_area_to_file(app_handle.as_ref(), physical_x, physical_y, physical_w, physical_h)
+}
+
+fn capture_physical_area_to_file(
+    app_handle: Option<&tauri::AppHandle>,
+    physical_x: i32,
+    physical_y: i32,
+    physical_w: u32,
+    physical_h: u32,
+) -> Result<String, String> {
     let screen = screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
     let display = screen.display_info;
     let rel_x = physical_x - display.x;
@@ -2712,10 +3057,8 @@ fn capture_screen_area_to_file_impl(
         .capture_area(rel_x.max(0), rel_y.max(0), safe_w, safe_h)
         .map_err(|e| e.to_string())?;
 
-    // 像素已经捕获完成，可以立刻通知前端恢复抽屉。
-    // 后面的 PNG 落盘不再阻塞用户看到抽屉。
-    let _ = window.emit("snip-area-captured", ());
-
+    // 像素已经捕获完成，可以立刻�?�知前�?恢�?抽屉�?
+    // 后面�?PNG 落盘不再阻�?用户看到抽屉�?
     let file_name = format!(
         "drawer_snip_area_{}.png",
         std::time::SystemTime::now()
@@ -2723,13 +3066,69 @@ fn capture_screen_area_to_file_impl(
             .map_err(|e| e.to_string())?
             .as_millis()
     );
-    let out_dir = app_handle
-        .as_ref()
-        .map(read_web_image_cache_dir)
-        .unwrap_or_else(std::env::temp_dir);
+    let out_dir = app_handle.map(read_web_image_cache_dir).unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(file_name);
-    image.save(&out_path).map_err(|e| e.to_string())?;
+    let file = File::create(&out_path).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        writer,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::NoFilter,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(out_path.to_string_lossy().to_string())
+}
+
+fn capture_physical_area_to_bmp_file(
+    app_handle: Option<&tauri::AppHandle>,
+    physical_x: i32,
+    physical_y: i32,
+    physical_w: u32,
+    physical_h: u32,
+) -> Result<String, String> {
+    let screen = screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
+    let display = screen.display_info;
+    let rel_x = physical_x - display.x;
+    let rel_y = physical_y - display.y;
+
+    let max_w = (display.width as i32 - rel_x).max(1) as u32;
+    let max_h = (display.height as i32 - rel_y).max(1) as u32;
+    let safe_w = physical_w.min(max_w).max(1);
+    let safe_h = physical_h.min(max_h).max(1);
+
+    let image = screen
+        .capture_area(rel_x.max(0), rel_y.max(0), safe_w, safe_h)
+        .map_err(|e| e.to_string())?;
+    let file_name = format!(
+        "drawer_snip_area_{}.bmp",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis()
+    );
+    let out_dir = app_handle.map(read_web_image_cache_dir).unwrap_or_else(std::env::temp_dir);
+    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let out_path = out_dir.join(file_name);
+    let file = File::create(&out_path).map_err(|e| e.to_string())?;
+    let mut writer = BufWriter::new(file);
+    let encoder = screenshots::image::codecs::bmp::BmpEncoder::new(&mut writer);
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(out_path.to_string_lossy().to_string())
 }
@@ -2758,6 +3157,27 @@ fn window_work_area(window: &WebviewWindow) -> Result<LogicalWorkArea, String> {
     let monitor = window
         .current_monitor()
         .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no monitor".to_string())?;
+    Ok(monitor_work_area(&monitor))
+}
+
+fn window_work_area_with_fallback(
+    primary: &WebviewWindow,
+    fallback: Option<&WebviewWindow>,
+) -> Result<LogicalWorkArea, String> {
+    if let Ok(area) = window_work_area(primary) {
+        return Ok(area);
+    }
+    if let Some(fallback) = fallback {
+        if let Ok(area) = window_work_area(fallback) {
+            return Ok(area);
+        }
+    }
+    let monitor = primary
+        .available_monitors()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
         .ok_or_else(|| "no monitor".to_string())?;
     Ok(monitor_work_area(&monitor))
 }
@@ -2852,6 +3272,7 @@ fn resize_window_preserve_right_physical(
     factor: f64,
     width: f64,
     height: f64,
+    right_anchor_px: Option<i32>,
 ) -> Result<(), String> {
     use std::ptr::null_mut;
     use winapi::shared::windef::RECT;
@@ -2885,11 +3306,12 @@ fn resize_window_preserve_right_physical(
     let work_right_px = ((work_pos.x + work_size.width) * factor).round() as i32;
     let work_bottom_px = ((work_pos.y + work_size.height) * factor).round() as i32;
 
-    // Anchor to the current physical right edge. Computing this in logical space and
-    // converting x/width separately causes ±1px drift on fractional DPI scales.
+    // Anchor to a physical right edge. Computing this in logical space and converting
+    // x/width separately causes ±1px drift on fractional DPI scales.
+    let right_anchor_px = right_anchor_px.unwrap_or(rect.right);
     let max_x_px = work_right_px - width_px;
     let max_y_px = work_bottom_px - height_px;
-    let x_px = (rect.right - width_px).max(work_left_px).min(max_x_px.max(work_left_px));
+    let x_px = (right_anchor_px - width_px).max(work_left_px).min(max_x_px.max(work_left_px));
     let y_px = rect.top.max(work_top_px).min(max_y_px.max(work_top_px));
 
     let ok = unsafe {
@@ -3002,8 +3424,9 @@ fn position_side_edge(app_handle: tauri::AppHandle, height: f64, y: Option<f64>)
     let edge = app_handle
         .get_webview_window("edge")
         .ok_or_else(|| "edge window not found".to_string())?;
+    let main = app_handle.get_webview_window("main");
 
-    let (work_pos, work_size, _) = window_work_area(&edge)?;
+    let (work_pos, work_size, _) = window_work_area_with_fallback(&edge, main.as_ref())?;
     let edge_x = work_pos.x + work_size.width - EDGE_WINDOW_WIDTH;
     let edge_h = EDGE_STRIP_HEIGHT.min(work_size.height.max(1.0));
     let default_y = work_pos.y + ((work_size.height - edge_h) / 2.0).max(0.0);
@@ -3012,8 +3435,8 @@ fn position_side_edge(app_handle: tauri::AppHandle, height: f64, y: Option<f64>)
     let edge_y = clamp_f64(raw_y, work_pos.y, max_y.max(work_pos.y));
     set_saved_edge_strip_y(edge_y);
 
-    // 侧边小条模式：系统窗口本身只保留可见小条的命中区。
-    // 右键拖动时只改变 y，x 永远锁在屏幕最右侧。
+    // 侧边小条模式：系统窗口本�?��保留�??小条的命�?���?
+    // 右键拖动时只改变 y，x 永远锁在屏幕�?右侧�?
     edge.set_min_size(Some(LogicalSize::new(1.0, 1.0))).ok();
     edge.set_size(LogicalSize::new(EDGE_WINDOW_WIDTH, edge_h))
         .map_err(|e| e.to_string())?;
@@ -3033,8 +3456,10 @@ fn position_float_edge(
     let edge = app_handle
         .get_webview_window("edge")
         .ok_or_else(|| "edge window not found".to_string())?;
+    let main = app_handle.get_webview_window("main");
 
-    let (initial_work_pos, initial_work_size, factor) = window_work_area(&edge)?;
+    let (initial_work_pos, initial_work_size, factor) =
+        window_work_area_with_fallback(&edge, main.as_ref())?;
     let current_pos = edge
         .outer_position()
         .ok()
@@ -3050,7 +3475,8 @@ fn position_float_edge(
             &edge,
             raw_x + FLOAT_TRIGGER_SIZE / 2.0,
             raw_y + FLOAT_TRIGGER_SIZE / 2.0,
-        )?
+        )
+        .or_else(|_| Ok::<LogicalWorkArea, String>((initial_work_pos, initial_work_size, factor)))?
     } else {
         (initial_work_pos, initial_work_size, factor)
     };
@@ -3112,6 +3538,113 @@ fn hide_edge(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn show_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let snip = app_handle
+        .get_webview_window("snip")
+        .ok_or_else(|| "snip window not found".to_string())?;
+    let main = app_handle.get_webview_window("main");
+    let anchor = app_handle
+        .get_webview_window("main")
+        .or_else(|| app_handle.get_webview_window("edge"))
+        .ok_or_else(|| "anchor window not found".to_string())?;
+    let monitor = anchor
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .or_else(|| anchor.available_monitors().ok().and_then(|mut monitors| monitors.pop()))
+        .ok_or_else(|| "no current monitor".to_string())?;
+
+    if let Some(main) = main.as_ref() {
+        let _ = main.set_ignore_cursor_events(true);
+    }
+
+    snip.set_min_size(Some(LogicalSize::new(1.0, 1.0))).ok();
+    snip.set_ignore_cursor_events(false).ok();
+    snip.set_always_on_top(true).ok();
+    snip.set_shadow(false).ok();
+    snip.set_position(*monitor.position())
+        .map_err(|e| e.to_string())?;
+    snip.set_size(*monitor.size()).map_err(|e| e.to_string())?;
+    snip.show().map_err(|e| e.to_string())?;
+    let _ = snip.set_focus();
+
+    #[cfg(target_os = "windows")]
+    {
+        use winapi::um::winuser::{
+            SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        };
+
+        if let Ok(hwnd) = snip.hwnd() {
+            let hwnd = hwnd.0 as winapi::shared::windef::HWND;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+                SetForegroundWindow(hwnd);
+            }
+        }
+    }
+
+    if let Some(main) = main.as_ref() {
+        let _ = main.set_ignore_cursor_events(true);
+    }
+    let _ = snip.emit("snip-reset", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(snip) = app_handle.get_webview_window("snip") {
+        let _ = snip.hide();
+        let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
+    }
+    if let Some(main) = app_handle.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(false);
+        let _ = main.set_always_on_top(true);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn recover_after_snip(
+    app_handle: tauri::AppHandle,
+    restore_drawer: bool,
+    width: f64,
+    height: f64,
+    mode: Option<String>,
+) -> Result<(), String> {
+    let _ = width;
+    if let Some(snip) = app_handle.get_webview_window("snip") {
+        let _ = snip.hide();
+        let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
+    }
+    if let Some(main) = app_handle.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(false);
+    }
+
+    if restore_drawer {
+        if let Some(main) = app_handle.get_webview_window("main") {
+            let _ = main.set_always_on_top(true);
+            let _ = main.show();
+            let _ = main.emit("drawer-opened", ());
+        }
+    } else {
+        show_edge(app_handle.clone(), height, mode, None, None)?;
+    }
+
+    if let Some(main) = app_handle.get_webview_window("main") {
+        let _ = main.set_always_on_top(true);
+        let _ = main.emit("snip-recovered", ());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn open_drawer(
     app_handle: tauri::AppHandle,
     width: f64,
@@ -3124,9 +3657,9 @@ fn open_drawer(
     let edge = app_handle.get_webview_window("edge");
 
     let (work_pos, work_size, factor) = if let Some(edge_window) = edge.as_ref() {
-        window_work_area(edge_window)?
+        window_work_area_with_fallback(edge_window, Some(&main))?
     } else {
-        window_work_area(&main)?
+        window_work_area_with_fallback(&main, None)?
     };
 
     let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
@@ -3146,9 +3679,9 @@ fn open_drawer(
         main.is_visible().unwrap_or(false) && !looks_like_snip_fullscreen && !is_startup_close_locked();
 
     let (x, y) = if preserve_current_position {
-        // 如果 main 已经可见，说明抽屉可能被用户手动拖到了别的位置。
-        // 外部拖入文件/网页图片时只保证窗口尺寸正确，不再把它吸附回屏幕右侧。
-        // 但截图全屏窗口不算"用户摆放的位置"，避免截图退出后保留全屏左上角。
+        // 如果 main 已经�??，�?明抽屉可能�?用户手动拖到了别的位�???
+        // 外部拖入文件/网页图片时只保证窗口尺�?正确，不再把它吸附回屏幕右侧�?
+        // 但截图全屏窗口不�?用户摆放的位�?，避免截图�??出后保留全屏左上角�??
         let current_pos = main
             .outer_position()
             .ok()
@@ -3197,8 +3730,8 @@ fn open_drawer(
             )
         }
     } else {
-        // 侧边小条模式：抽屉主体跟随小条的垂直中心展开。
-        // 如果小条太靠近屏幕上下边缘，就自动降低抽屉高度，避免主体超出屏幕。
+        // 侧边小条模式：抽屉主体跟随小条的垂直�?��展开�?
+        // 如果小条�?��近屏幕上下边缘，就自动降低抽屉高度，避免主体超出屏幕�?
         let edge_h = EDGE_STRIP_HEIGHT.min(work_size.height.max(1.0));
         let default_center_y = work_pos.y + work_size.height / 2.0;
         let strip_center_y = get_saved_edge_strip_y()
@@ -3249,7 +3782,7 @@ fn open_drawer(
     main.show().map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
 
-    // 抽屉打开期间隐藏 edge，避免离开主体时经过触发器又重新展开。
+    // 抽屉打开期间隐藏 edge，避免�?�?主体时经过触发器又重新展�?�?
     if let Some(edge_window) = edge {
         let _ = edge_window.hide();
     }
@@ -3270,8 +3803,8 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
         800.0
     };
 
-    // 启动欢迎页显示期间，前端会设置一个短暂的后端关闭锁。
-    // 任何旧的 edge 预览、mouseleave 或定时器误调用 close_drawer，都不能真正 hide 主窗口。
+    // �?��欢迎页显示期间，前�?会�?�?���?��暂的后�?关闭锁�??
+    // 任何旧的 edge 预�?、mouseleave 或定时器�?���?close_drawer，都不能真�? hide 主窗口�??
     if is_startup_close_locked() {
         main.set_always_on_top(true).ok();
         main.show().map_err(|e| e.to_string())?;
@@ -3286,6 +3819,52 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
 }
 
 #[tauri::command]
+fn get_drawer_right_edge(app_handle: tauri::AppHandle) -> Result<f64, String> {
+    let main = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        use winapi::shared::windef::RECT;
+        use winapi::um::winuser::GetWindowRect;
+
+        let hwnd = main
+            .hwnd()
+            .map_err(|e| e.to_string())?
+            .0 as winapi::shared::windef::HWND;
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let got_rect = unsafe { GetWindowRect(hwnd, &mut rect) };
+        if got_rect == 0 {
+            return Err(format!(
+                "GetWindowRect failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        return Ok(rect.right as f64);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let factor = main.scale_factor().unwrap_or(1.0);
+        let pos = main
+            .outer_position()
+            .map_err(|e| e.to_string())?
+            .to_logical::<f64>(factor);
+        let size = main
+            .outer_size()
+            .map_err(|e| e.to_string())?
+            .to_logical::<f64>(factor);
+        Ok(pos.x + size.width)
+    }
+}
+
+#[tauri::command]
 fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     let main = app_handle
         .get_webview_window("main")
@@ -3297,7 +3876,7 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
 
     #[cfg(target_os = "windows")]
     {
-        resize_window_preserve_right_physical(&main, work_pos, work_size, factor, w, h)?;
+        resize_window_preserve_right_physical(&main, work_pos, work_size, factor, w, h, None)?;
         return Ok(());
     }
 
@@ -3314,8 +3893,8 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
         .map(|size| size.to_logical::<f64>(factor))
         .unwrap_or(LogicalSize::new(w, h));
 
-    // 保持当前右边缘不动，而不是每次缩放都吸附回屏幕最右侧。
-    // 这样移动后自动钉住的抽屉，缩放时仍会留在用户放置的位置附近。
+    // 保持当前右边缘不�?��而不�?��次缩放都吸附回屏幕最右侧�?
+    // 这样移动后自动钉住的抽屉，缩放时仍会留在用户放置的位�?��近�??
     let desired_right = current_pos.x + current_size.width;
     let max_x = work_pos.x + work_size.width - w;
     let max_y = work_pos.y + work_size.height - h;
@@ -3324,6 +3903,52 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
 
     set_window_bounds_atomic(&main, x, y, w, h)?;
     Ok(())
+    }
+}
+
+#[tauri::command]
+fn resize_drawer_at_right(
+    app_handle: tauri::AppHandle,
+    width: f64,
+    height: f64,
+    right_edge: f64,
+) -> Result<(), String> {
+    let main = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let (work_pos, work_size, factor) = window_work_area(&main)?;
+
+    let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
+    let h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+
+    #[cfg(target_os = "windows")]
+    {
+        resize_window_preserve_right_physical(
+            &main,
+            work_pos,
+            work_size,
+            factor,
+            w,
+            h,
+            Some(right_edge.round() as i32),
+        )?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let current_pos = main
+            .outer_position()
+            .ok()
+            .map(|pos| pos.to_logical::<f64>(factor))
+            .unwrap_or(LogicalPosition::new(work_pos.x + work_size.width - w, work_pos.y));
+        let max_x = work_pos.x + work_size.width - w;
+        let max_y = work_pos.y + work_size.height - h;
+        let x = clamp_f64(right_edge - w, work_pos.x, max_x.max(work_pos.x));
+        let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
+
+        set_window_bounds_atomic(&main, x, y, w, h)?;
+        Ok(())
     }
 }
 
@@ -3367,6 +3992,58 @@ fn sync_drawer_bounds(app_handle: tauri::AppHandle, width: f64, height: f64) -> 
     resize_drawer(app_handle, width, height)
 }
 
+const MAX_FLOATING_NOTE_WINDOWS: u32 = 8;
+
+fn validate_note_window_label(label: &str) -> Result<(), String> {
+    if label == "note" {
+        return Ok(());
+    }
+
+    let Some(raw_index) = label.strip_prefix("note_") else {
+        return Err(format!("invalid note window label: {}", label));
+    };
+
+    let index = raw_index
+        .parse::<u32>()
+        .map_err(|_| format!("invalid note window label: {}", label))?;
+    if !(1..=MAX_FLOATING_NOTE_WINDOWS).contains(&index) {
+        return Err(format!(
+            "桌面便签最多同时保存 {} 个，请先关闭一个便签",
+            MAX_FLOATING_NOTE_WINDOWS
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_hidden_note_window(app_handle: &tauri::AppHandle, label: String) -> Result<WebviewWindow, String> {
+    WebviewWindowBuilder::new(app_handle, label, WebviewUrl::App("index.html".into()))
+        .title("Desktop note")
+        .inner_size(360.0, 320.0)
+        .min_inner_size(48.0, 48.0)
+        .resizable(true)
+        .fullscreen(false)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(false)
+        .skip_taskbar(true)
+        .visible(false)
+        .shadow(false)
+        .drag_and_drop(false)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn prewarm_note_window(app_handle: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
+    let label = label.unwrap_or_else(|| "note_1".to_string());
+    validate_note_window_label(&label)?;
+    if app_handle.get_webview_window(&label).is_none() {
+        let _ = build_hidden_note_window(&app_handle, label)?;
+    }
+    Ok(())
+}
+
 
 #[tauri::command]
 fn show_note_window(
@@ -3379,28 +4056,12 @@ fn show_note_window(
     topmost: Option<bool>,
 ) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
-    if label != "note" && !label.starts_with("note_") {
-        return Err(format!("invalid note window label: {}", label));
-    }
+    validate_note_window_label(&label)?;
 
     let note = if let Some(note) = app_handle.get_webview_window(&label) {
         note
     } else {
-        WebviewWindowBuilder::new(&app_handle, label.clone(), WebviewUrl::App("index.html".into()))
-            .title("桌面便签")
-            .inner_size(360.0, 320.0)
-            .min_inner_size(48.0, 48.0)
-            .resizable(true)
-            .fullscreen(false)
-            .transparent(true)
-            .decorations(false)
-            .always_on_top(false)
-            .skip_taskbar(true)
-            .visible(false)
-            .shadow(false)
-            .drag_and_drop(false)
-            .build()
-            .map_err(|e| e.to_string())?
+        build_hidden_note_window(&app_handle, label.clone())?
     };
 
     note.set_min_size(Some(LogicalSize::new(48.0, 48.0))).ok();
@@ -3447,9 +4108,7 @@ fn show_note_window(
 
 #[tauri::command]
 fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), String> {
-    if label != "note" && !label.starts_with("note_") {
-        return Err(format!("invalid note window label: {}", label));
-    }
+    validate_note_window_label(&label)?;
 
     let note = app_handle
         .get_webview_window(&label)
@@ -3853,23 +4512,35 @@ fn main() {
             commands::exit_snip_mode,
             capture_screen_area,
             capture_screen_area_to_file,
+            capture_screen_area_absolute_to_file,
+            capture_snip_selection_to_file,
+            capture_snip_window_selection_to_file,
+            complete_snip_selection,
             get_shortcut,
             update_shortcut,
             refresh_edge_drop_targets,
             get_auto_start,
             set_auto_start,
             copy_image,
+            start_file_drag,
+            copy_files_to_clipboard,
 
             set_startup_close_lock,
 
             open_drawer,
             close_drawer,
+            get_drawer_right_edge,
             resize_drawer,
+            resize_drawer_at_right,
             resize_drawer_from_right,
             position_edge,
             show_edge,
             hide_edge,
+            show_snip_window,
+            hide_snip_window,
+            recover_after_snip,
             sync_drawer_bounds,
+            prewarm_note_window,
             show_note_window,
             hide_note_window,
             move_current_window_by,
@@ -3893,6 +4564,13 @@ fn main() {
                 let _ = position_edge(app.handle().clone(), 800.0, None, None, None);
             }
 
+            if let Some(snip) = app.get_webview_window("snip") {
+                let _ = snip.set_shadow(false);
+                let _ = snip.set_always_on_top(true);
+                let _ = snip.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
+                let _ = snip.hide();
+            }
+
             if let Err(err) = native_drop::init_native_drop(app) {
                 eprintln!("native drop init failed: {err}");
             }
@@ -3901,14 +4579,14 @@ fn main() {
 
             if let Some(icon) = app.default_window_icon().cloned() {
                 let open_item = MenuItem::with_id(app, "open_drawer", "打开抽屉", true, None::<&str>)?;
-                let trigger_item = MenuItem::with_id(app, "toggle_trigger", "切换触发入口", true, None::<&str>)?;
-                let theme_item = MenuItem::with_id(app, "toggle_theme", "切换色彩主题", true, None::<&str>)?;
-                let quit_item = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
+                let trigger_item = MenuItem::with_id(app, "toggle_trigger", "切换入口", true, None::<&str>)?;
+                let theme_item = MenuItem::with_id(app, "toggle_theme", "切换主题", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
                 let tray_menu = Menu::with_items(app, &[&open_item, &trigger_item, &theme_item, &quit_item])?;
 
                 let _ = TrayIconBuilder::new()
                     .icon(icon)
-                    .tooltip("灵感抽屉")
+                    .tooltip("Inspiration drawer")
                     .menu(&tray_menu)
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {

@@ -3,20 +3,20 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { BufferItem, Folder, FloatingNoteSnapshot } from '../types';
 import { clamp } from './common';
 
-const FLOATING_NOTE_LABELS = Array.from({ length: 50 }, (_, idx) => `note_${idx + 1}`);
+const MAX_FLOATING_NOTE_COUNT = 8;
+const FLOATING_NOTE_LABELS = Array.from({ length: MAX_FLOATING_NOTE_COUNT }, (_, idx) => `note_${idx + 1}`);
 const OPEN_FLOATING_NOTES_STORAGE_KEY = 'drawer_open_floating_notes';
 const FLOATING_NOTE_TEXT_BRIDGE_KEY = 'drawer_floating_note_text_bridge';
 const FLOATING_NOTE_TITLE_BRIDGE_KEY = 'drawer_floating_note_title_bridge';
 const FLOATING_NOTE_SOURCE_BRIDGE_KEY = 'drawer_floating_note_source_bridge';
 const FLOATING_NOTE_DESTROY_BRIDGE_KEY = 'drawer_floating_note_destroy_bridge';
 const FOLDERS_CACHE_STORAGE_KEY = 'drawer_folders_cache';
-type TextFloatingNoteSizeMode = 'large' | 'medium' | 'small';
+type TextFloatingNoteSizeMode = 'large' | 'medium';
 const TEXT_FLOATING_NOTE_SIZES: Record<TextFloatingNoteSizeMode, { width: number; height: number; label: string }> = {
   large: { width: 360, height: 360, label: '默认' },
   medium: { width: 360, height: 56, label: '条状' },
-  small: { width: 56, height: 56, label: '首字' },
 };
-const TEXT_FLOATING_NOTE_SIZE_ORDER: TextFloatingNoteSizeMode[] = ['large', 'medium', 'small'];
+const TEXT_FLOATING_NOTE_SIZE_ORDER: TextFloatingNoteSizeMode[] = ['large', 'medium'];
 const IMAGE_FLOATING_NOTE_MAX_WIDTH = 460;
 const IMAGE_FLOATING_NOTE_MAX_HEIGHT = 420;
 const IMAGE_FLOATING_NOTE_BASE_AREA = 360 * 320;
@@ -56,13 +56,7 @@ const resolveTextFloatingNoteSizeMode = (width?: number, height?: number): TextF
   const h = Number(height);
   if (!Number.isFinite(w) || !Number.isFinite(h)) return 'large';
 
-  return TEXT_FLOATING_NOTE_SIZE_ORDER.reduce((best, mode) => {
-    const bestSize = TEXT_FLOATING_NOTE_SIZES[best];
-    const size = TEXT_FLOATING_NOTE_SIZES[mode];
-    const bestDistance = Math.abs(bestSize.width - w) + Math.abs(bestSize.height - h);
-    const distance = Math.abs(size.width - w) + Math.abs(size.height - h);
-    return distance < bestDistance ? mode : best;
-  }, 'large' as TextFloatingNoteSizeMode);
+  return h <= 96 ? 'medium' : 'large';
 };
 
 const floatingNoteStorageKey = (label = 'note_1') => `drawer_floating_note_${label}`;
@@ -80,13 +74,14 @@ const readFloatingNoteViewState = (itemId?: string) => {
       zoom: Number.isFinite(Number(parsed.zoom)) ? clamp(Number(parsed.zoom), 0.45, 3) : undefined,
       width: Number.isFinite(Number(parsed.width)) ? Math.max(48, Number(parsed.width)) : undefined,
       height: Number.isFinite(Number(parsed.height)) ? Math.max(48, Number(parsed.height)) : undefined,
+      mediumWidth: Number.isFinite(Number(parsed.mediumWidth)) ? Math.max(48, Number(parsed.mediumWidth)) : undefined,
     };
   } catch (_) {
     return {};
   }
 };
 
-const writeFloatingNoteViewState = (itemId: string | undefined, patch: { zoom?: number; width?: number; height?: number }) => {
+const writeFloatingNoteViewState = (itemId: string | undefined, patch: { zoom?: number; width?: number; height?: number; mediumWidth?: number }) => {
   if (!itemId) return {};
   const previous = readFloatingNoteViewState(itemId);
   const next = {
@@ -237,6 +232,7 @@ const readFloatingNoteSnapshot = (label = 'note_1'): FloatingNoteSnapshot | null
 
 export {
   FLOATING_NOTE_LABELS,
+  MAX_FLOATING_NOTE_COUNT,
   OPEN_FLOATING_NOTES_STORAGE_KEY,
   FLOATING_NOTE_TEXT_BRIDGE_KEY,
   FLOATING_NOTE_TITLE_BRIDGE_KEY,
