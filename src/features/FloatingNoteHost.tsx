@@ -95,6 +95,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const noteTitleInputRef = useRef<HTMLInputElement | null>(null);
   const noteRef = useRef<FloatingNoteSnapshot | null>(note);
   const noteTitleDraftRef = useRef(noteTitleDraft);
+  const isNoteHoveredRef = useRef(false);
+  const isEditingNoteTextRef = useRef(false);
   const noteResizeAnimationRef = useRef<number | null>(null);
   const noteResizeAnimationTokenRef = useRef(0);
   const noteResizeTargetModeRef = useRef<TextFloatingNoteSizeMode | null>(null);
@@ -116,6 +118,10 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   useEffect(() => {
     noteTitleDraftRef.current = noteTitleDraft;
   }, [noteTitleDraft]);
+
+  useEffect(() => {
+    isEditingNoteTextRef.current = isEditingNoteText;
+  }, [isEditingNoteText]);
 
   useEffect(() => {
     textNoteSizeModeRef.current = textNoteSizeMode;
@@ -143,6 +149,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     const view = readFloatingNoteViewState(note?.itemId);
     setZoom(clamp(Number((note as any)?.zoom ?? view.zoom ?? 1), 0.45, 3));
     setTextNoteSizeMode(resolveTextFloatingNoteSizeMode((note as any)?.width ?? view.width, (note as any)?.height ?? view.height));
+    isEditingNoteTextRef.current = false;
     setIsEditingNoteText(false);
     setIsEditingNoteTitle(false);
     setShowTextNoteColorPicker(false);
@@ -221,6 +228,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
     listen('floating-note-updated', (event: any) => {
       const payload = event.payload as FloatingNoteSnapshot;
+      if ((payload as any)?.targetLabel && (payload as any).targetLabel !== noteLabel) return;
       if (payload && payload.itemId) {
         const isSameSource = noteRef.current?.itemId === payload.itemId;
         setNote(payload);
@@ -236,6 +244,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
     listen('floating-note-source-updated', (event: any) => {
       const payload = event.payload || {};
+      if (payload?.targetLabel && payload.targetLabel !== noteLabel) return;
       const current = noteRef.current;
       if (!current || current.type !== 'text' || current.itemId !== payload.itemId) return;
 
@@ -303,6 +312,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   const openDrawerFromNote = async () => {
     setContextMenu(null);
+    if (localStorage.getItem('drawer_anti_touch_mode') === 'true') return;
     const { width, height } = getStoredDrawerSize();
     await invoke('open_drawer', { width, height, mode: getStoredTriggerMode() }).catch(() => {});
   };
@@ -693,6 +703,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       setText(nextContent);
       syncTextToDrawer(next || { ...current, noteMode: 'text' }, nextContent);
     }
+    isEditingNoteTextRef.current = false;
     setIsEditingNoteText(false);
     setIsEditingNoteTitle(false);
   };
@@ -747,6 +758,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     const current = noteRef.current;
     setContextMenu(null);
     hoverExpandedFromModeRef.current = null;
+    isEditingNoteTextRef.current = false;
     setIsEditingNoteText(false);
     setNoteTitleDraft(current?.name || current?.content || '');
     setIsEditingNoteTitle(true);
@@ -806,21 +818,13 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     e?.preventDefault();
     e?.stopPropagation();
     setContextMenu(null);
+    isEditingNoteTextRef.current = true;
     setIsEditingNoteText(true);
   };
 
   const handleTextDisplayMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    // 第二下点击时立即进入编辑，避免父级拖动逻辑吞掉 dblclick。
-    if (e.detail >= 2) {
-      startTextEdit(e);
-      return;
-    }
-
-    startManualMove(e);
+    startTextEdit(e);
   };
 
   const handleTextNoteTitleMouseDown = (e: React.MouseEvent) => {
@@ -848,7 +852,13 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   const finishTextEdit = () => {
     saveText();
+    isEditingNoteTextRef.current = false;
     setIsEditingNoteText(false);
+    const previousMode = hoverExpandedFromModeRef.current;
+    if (previousMode && !isNoteHoveredRef.current) {
+      hoverExpandedFromModeRef.current = null;
+      animateTextNoteSize(previousMode, { persist: false, durationMs: 145 });
+    }
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -1223,6 +1233,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const isSnipImageNote = note?.type === 'image' && !!note.itemId?.startsWith('snip_');
 
   const handleNoteMouseEnter = () => {
+    isNoteHoveredRef.current = true;
     setIsNoteHovered(true);
     if (hoverResizeTimerRef.current !== null) {
       window.clearTimeout(hoverResizeTimerRef.current);
@@ -1232,11 +1243,13 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   const handleNoteMouseLeave = () => {
     if (notePointerOperationRef.current) return;
+    isNoteHoveredRef.current = false;
     setIsNoteHovered(false);
     if (hoverResizeTimerRef.current !== null) {
       window.clearTimeout(hoverResizeTimerRef.current);
       hoverResizeTimerRef.current = null;
     }
+    if (isEditingNoteTextRef.current) return;
     const previousMode = hoverExpandedFromModeRef.current;
     hoverExpandedFromModeRef.current = null;
     if (!previousMode) return;
@@ -1398,6 +1411,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
             {imageSrc ? (
               <img
                 src={imageSrc}
+                loading="lazy"
+                decoding="async"
                 className="h-full w-full object-contain pointer-events-none select-none"
                 draggable={false}
                 alt={displayName}
@@ -1675,12 +1690,12 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                 <div
                   data-text-note-display="true"
                   onMouseDown={handleTextDisplayMouseDown}
-                  onDoubleClick={startTextEdit}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   className="h-full w-full overflow-y-auto whitespace-pre-wrap break-words text-stone-700 transition-[font-size,line-height] duration-200 ease-linear dark:text-stone-100"
                   style={{ fontSize: `${14 * zoom}px`, lineHeight: 1.65, color: textNoteTextColor }}
-                  title="单击拖动便签，双击编辑文字"
+                  title="单击编辑文字"
                 >
-                  {text.trim() ? text : <span style={{ color: textNoteMutedTextColor }}>双击写点灵感...</span>}
+                  {text.trim() ? text : <span style={{ color: textNoteMutedTextColor }}>单击写点灵感...</span>}
                 </div>
               )}
             </div>

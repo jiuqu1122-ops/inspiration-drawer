@@ -7,7 +7,7 @@ pub fn generate_video_thumbnail(video_path: &str, output_path: &str) -> Result<(
             "-i", video_path,
             "-ss", "00:00:01",
             "-vframes", "1",
-            "-s", "640x360",
+            "-s", "1280x720",
             output_path,
         ])
         .status()

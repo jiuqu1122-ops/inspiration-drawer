@@ -7,6 +7,26 @@ export type CanvasImageItem = {
   y: number;
   width: number;
   height: number;
+  inputs?: string[];
+  ai?: CanvasAiItemData;
+};
+
+export type CanvasAiProvider = 'openai-compatible' | 'xais-chat' | 'aoduo-ai';
+
+export type CanvasAiItemType = 'image-generator' | 'generated-image';
+
+export type CanvasAiItemData = {
+  type: CanvasAiItemType;
+  provider?: CanvasAiProvider;
+  endpoint?: string;
+  model?: string;
+  prompt?: string;
+  aspectRatio?: string;
+  resolution?: string;
+  count?: number;
+  status?: 'idle' | 'working' | 'success' | 'error';
+  error?: string;
+  generatedAt?: number;
 };
 
 export type CanvasResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -36,7 +56,7 @@ export const CANVAS_BASE_HEIGHT = 2200;
 export const CANVAS_GROW_CHUNK = 1400;
 export const CANVAS_EDGE_AUTOSCROLL_MARGIN = 76;
 export const CANVAS_EDGE_AUTOSCROLL_SPEED = 34;
-export const CANVAS_MIN_SCALE = 0.35;
-export const CANVAS_MAX_SCALE = 2.5;
+export const CANVAS_MIN_SCALE = 0.08;
+export const CANVAS_MAX_SCALE = 4;
 export const CANVAS_MIN_IMAGE_WIDTH = 80;
 export const CANVAS_MAX_IMAGE_WIDTH = 1200;

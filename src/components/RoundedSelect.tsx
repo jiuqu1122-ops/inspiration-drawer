@@ -7,6 +7,22 @@ type RoundedSelectOption = {
   label: string;
 };
 
+type RoundedSelectProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'value' | 'onChange' | 'className' | 'title'> & {
+  value: string;
+  options: RoundedSelectOption[];
+  onChange: (value: string) => void;
+  className?: string;
+  menuClassName?: string;
+  optionClassName?: string;
+  selectedOptionClassName?: string;
+  icon?: React.ReactNode;
+  hideLabel?: boolean;
+  labelClassName?: string;
+  chevronClassName?: string;
+  title?: string;
+  menuMinWidth?: number;
+};
+
 function RoundedSelect({
   value,
   options,
@@ -16,20 +32,13 @@ function RoundedSelect({
   optionClassName = '',
   selectedOptionClassName = '',
   icon,
+  hideLabel = false,
+  labelClassName = '',
+  chevronClassName = '',
   title,
   menuMinWidth,
-}: {
-  value: string;
-  options: RoundedSelectOption[];
-  onChange: (value: string) => void;
-  className?: string;
-  menuClassName?: string;
-  optionClassName?: string;
-  selectedOptionClassName?: string;
-  icon?: React.ReactNode;
-  title?: string;
-  menuMinWidth?: number;
-}) {
+  ...buttonProps
+}: RoundedSelectProps) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -95,6 +104,7 @@ function RoundedSelect({
   return (
     <>
       <button
+        {...buttonProps}
         ref={buttonRef}
         type="button"
         title={title}
@@ -110,8 +120,8 @@ function RoundedSelect({
         className={`inline-flex min-w-0 items-center gap-1.5 transition-colors ${className}`}
       >
         {icon}
-        <span className="min-w-0 flex-1 truncate">{selected?.label || ''}</span>
-        <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+        <span className={hideLabel ? 'sr-only' : `min-w-0 flex-1 truncate ${labelClassName}`}>{selected?.label || ''}</span>
+        <ChevronDown className={`${chevronClassName || 'h-3.5 w-3.5'} shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && createPortal(
         <div

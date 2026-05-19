@@ -10,13 +10,78 @@ import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { save } from '@tauri-apps/plugin-dialog';
 
+type LazyCardImageProps = {
+  src?: string;
+  alt?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  title?: string;
+  onClick?: React.MouseEventHandler<HTMLImageElement>;
+  onVisible?: () => void;
+};
+
+function LazyCardImage({ src, alt = '', className, style, title, onClick, onVisible }: LazyCardImageProps) {
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const onVisibleRef = useRef(onVisible);
+  const [visibleSrc, setVisibleSrc] = useState('');
+
+  useEffect(() => {
+    onVisibleRef.current = onVisible;
+  }, [onVisible]);
+
+  useEffect(() => {
+    setVisibleSrc('');
+    if (!src) return;
+    let notified = false;
+    const reveal = () => {
+      setVisibleSrc(src);
+      if (!notified) {
+        notified = true;
+        onVisibleRef.current?.();
+      }
+    };
+
+    const node = imgRef.current;
+    if (!node || !('IntersectionObserver' in window)) {
+      reveal();
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some(entry => entry.isIntersecting || entry.intersectionRatio > 0)) {
+        reveal();
+        observer.disconnect();
+      }
+    }, { rootMargin: '640px 0px' });
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [src]);
+
+  return (
+    <img
+      ref={imgRef}
+      src={visibleSrc || undefined}
+      alt={alt}
+      className={className}
+      style={style}
+      title={title}
+      loading="lazy"
+      decoding="async"
+      draggable={false}
+      onClick={onClick}
+    />
+  );
+}
+
 export default function BufferItemCard({
   item, cardWidth, mediaHeight, isResizing,
   onResizeStart, onResizeEnd, onResize,
   onRemove, onRemoveFromFolder, onTogglePin,
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
-  showAlchemy = false, onAlchemy, onCreateFloatingNote, onLiveTextChange
+  showAlchemy = false, onAlchemy, onEnsureThumbnail, onCreateFloatingNote, onLiveTextChange,
+  onTextEditStart, onTextEditEnd, preferFullImageSource = false
 }: any) {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -417,6 +482,8 @@ export default function BufferItemCard({
   const isPaletteOnlyAlchemy = alchemyResult?.analysisMode === 'palette';
   const hasCompactPalette = item.type === 'image' && (isAlchemyLoading || alchemyColors.length > 0);
   const hasAiAlchemyDone = isAlchemyDone && !isPaletteOnlyAlchemy;
+  const imageCardSource = preferFullImageSource ? (item.url || item.thumbnail || '') : (item.thumbnail || item.url || '');
+  const imagePreviewSource = item.url || item.thumbnail || '';
   const videoThumbnail = item.thumbnail || item.cover || (typeof item.url === 'string' && item.url.startsWith('data:image/') ? item.url : '');
 
   const handleAlchemyClick = (e: React.MouseEvent | any) => {
@@ -463,6 +530,7 @@ export default function BufferItemCard({
     } else if (shouldCommit && typeof onLiveTextChange === 'function') {
       onLiveTextChange(item.id, nextText);
     }
+    if (typeof onTextEditEnd === 'function') onTextEditEnd(item.id);
   };
 
   const cancelTextEdit = () => {
@@ -472,6 +540,7 @@ export default function BufferItemCard({
     setEditContentText(originalText);
     if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, originalText);
     setIsEditingText(false);
+    if (typeof onTextEditEnd === 'function') onTextEditEnd(item.id);
   };
 
   const startTextEditFromCard = (e: React.MouseEvent | any) => {
@@ -488,6 +557,7 @@ export default function BufferItemCard({
     editStartContentRef.current = item.content || '';
     editContentDirtyRef.current = false;
     setEditContentText(editStartContentRef.current);
+    if (typeof onTextEditStart === 'function') onTextEditStart(item.id);
     setIsEditingText(true);
   };
 
@@ -559,7 +629,19 @@ return (
         </div>
       )}
 
-      {item.type === 'image' && <img src={item.url} className="w-full object-cover cursor-pointer rounded-t-[22px]" style={{ height: mediaHeight }} title="点击预览" onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(item.url); }} />}
+      {item.type === 'image' && (
+        <LazyCardImage
+          src={imageCardSource}
+          alt={item.name || item.content || 'image'}
+          className="w-full object-cover cursor-pointer rounded-t-[22px] bg-stone-100 dark:bg-stone-900"
+          style={{ height: mediaHeight }}
+          title="点击预览"
+          onVisible={() => {
+            if (!item.thumbnail) onEnsureThumbnail?.(item);
+          }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource); }}
+        />
+      )}
 
       {item.type === 'video' && (
         <div
@@ -568,7 +650,13 @@ return (
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onVideoClick?.(item); }}
           title="点击在抽屉内播放"
         >
-          {videoThumbnail ? <img src={videoThumbnail} className="w-full h-full object-cover opacity-80 group-hover/video:opacity-100 transition-opacity" /> : <div className="w-full h-full bg-gradient-to-br from-stone-800 to-stone-900 flex items-center justify-center"><Film className="w-12 h-12 text-stone-700/60" /></div>}
+          {videoThumbnail ? (
+            <LazyCardImage
+              src={videoThumbnail}
+              alt={item.name || item.content || 'video'}
+              className="w-full h-full object-cover opacity-80 group-hover/video:opacity-100 transition-opacity"
+            />
+          ) : <div className="w-full h-full bg-gradient-to-br from-stone-800 to-stone-900 flex items-center justify-center"><Film className="w-12 h-12 text-stone-700/60" /></div>}
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 group-hover/video:bg-black/30 transition-colors"><div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-[18px] flex items-center justify-center text-white shadow-lg transition-transform group-hover/video:scale-110 border border-white/20"><Play className="w-5 h-5 ml-1 fill-white opacity-90" /></div></div>
         </div>
       )}

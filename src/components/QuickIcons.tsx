@@ -40,8 +40,8 @@ export function QuickAccessIcon({ item, onRemove, onImageClick }: any) {
   };
 
   const renderContent = () => {
-    if (item.thumbnail) return <img src={item.thumbnail} className="w-full h-full object-cover rounded-[10px]" />;
-    if ((item.type === 'image' || item.type === 'video') && item.url) return <img src={item.url} className="w-full h-full object-cover rounded-[10px]" />;
+    if (item.thumbnail) return <img src={item.thumbnail} alt={item.name || ''} loading="lazy" decoding="async" draggable={false} className="w-full h-full object-cover rounded-[10px]" />;
+    if ((item.type === 'image' || item.type === 'video') && item.url) return <img src={item.url} alt={item.name || ''} loading="lazy" decoding="async" draggable={false} className="w-full h-full object-cover rounded-[10px]" />;
     if (item.type === 'video') return <Film className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />;
     if (item.type === 'text') return <Type className="w-5 h-5 text-stone-500 dark:text-stone-400" />;
     return <FolderOpen className="w-5 h-5 fill-amber-400/20 text-amber-500" />;

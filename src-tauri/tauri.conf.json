@@ -64,6 +64,7 @@
       },
       {
         "label": "note_1",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -81,6 +82,7 @@
       },
       {
         "label": "note_2",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -98,6 +100,7 @@
       },
       {
         "label": "note_3",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -115,6 +118,7 @@
       },
       {
         "label": "note_4",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -132,6 +136,7 @@
       },
       {
         "label": "note_5",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -149,6 +154,7 @@
       },
       {
         "label": "note_6",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -166,6 +172,7 @@
       },
       {
         "label": "note_7",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -183,6 +190,7 @@
       },
       {
         "label": "note_8",
+        "url": "note.html",
         "title": "桌面便签",
         "width": 360,
         "height": 320,
@@ -213,6 +221,9 @@
     "active": true,
     "targets": [
       "nsis"
+    ],
+    "resources": [
+      "../cloudflared.exe"
     ],
     "icon": [
       "icons/32x32.png",

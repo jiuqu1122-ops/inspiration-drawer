@@ -1,4 +1,4 @@
-// src-tauri/src/main.rs
+﻿// src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
@@ -9,23 +9,26 @@ use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::fs;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::Command as SysCommand;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command as SysCommand, Stdio};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const APP_USER_AGENT: &str = "inspiration-drawer";
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
@@ -39,6 +42,27 @@ fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
 
 static STARTUP_CLOSE_LOCK_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_RESIZE_ANIMATION_TOKEN: AtomicU64 = AtomicU64::new(0);
+static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
+
+struct CloudflaredShare {
+    child: Child,
+    dir: PathBuf,
+    server_stop: Arc<AtomicBool>,
+    server_thread: Option<JoinHandle<()>>,
+}
+
+static CLOUDFLARED_SHARES: OnceLock<Mutex<HashMap<String, CloudflaredShare>>> = OnceLock::new();
+
+fn cloudflared_shares() -> &'static Mutex<HashMap<String, CloudflaredShare>> {
+    CLOUDFLARED_SHARES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudflaredPublicImageUrls {
+    share_id: String,
+    urls: Vec<String>,
+}
 
 fn now_millis_u64() -> u64 {
     std::time::SystemTime::now()
@@ -59,6 +83,15 @@ fn set_startup_close_lock(ms: u64) {
         now_millis_u64().saturating_add(ms)
     };
     STARTUP_CLOSE_LOCK_UNTIL_MS.store(until, Ordering::Relaxed);
+}
+
+fn is_anti_touch_locked() -> bool {
+    ANTI_TOUCH_LOCKED.load(Ordering::Relaxed) != 0
+}
+
+#[tauri::command]
+fn set_anti_touch_lock(locked: bool) {
+    ANTI_TOUCH_LOCKED.store(if locked { 1 } else { 0 }, Ordering::Relaxed);
 }
 
 fn normalize_proxy_endpoint(value: &str) -> Option<String> {
@@ -225,8 +258,8 @@ fn set_network_proxy(app_handle: tauri::AppHandle, proxy: String) -> Result<Stri
 }
 
 fn effective_proxy(app_handle: Option<&tauri::AppHandle>, explicit_proxy: Option<&str>) -> Option<String> {
-    // 优先级：�??请求显式代理 > App 内保存代�?> Windows 系统代理 > �??变量�?
-    // 这样�?��留自动代理，又允许用户在特殊网络�??里手动�?盖�??
+    // 优先级：请求显式代理 > App 内保存代理 > Windows 系统代理 > 环境变量
+    // 这样既保留自动代理，又允许用户在特殊网络环境里手动覆盖。
     explicit_proxy
         .and_then(normalize_proxy_endpoint)
         .or_else(|| {
@@ -244,18 +277,28 @@ fn build_http_client(
     timeout_secs: u64,
 ) -> Result<Client, String> {
     let mut builder = Client::builder()
-        .user_agent("Mozilla/5.0")
+        .user_agent(APP_USER_AGENT)
         .redirect(Policy::limited(10))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(timeout_secs));
 
     if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
         let proxy = reqwest::Proxy::all(&proxy)
-            .map_err(|e| format!("代理配置无效�{}", e))?;
+            .map_err(|e| format!("代理配置无效：{}", e))?;
         builder = builder.proxy(proxy);
     }
 
-    builder.build().map_err(|e| format!("初�?化网络�?户�?失败�{}", e))
+    builder.build().map_err(|e| format!("初始化网络客户端失败：{}", e))
+}
+
+fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
+    Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(Policy::limited(10))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
 }
 
 fn download_url_to_file(
@@ -268,10 +311,10 @@ fn download_url_to_file(
     let mut response = client
         .get(url)
         .send()
-        .map_err(|e| format!("下载请求失败�{}", e))?;
+        .map_err(|e| format!("下载请求失败：{}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("下载失败，HTTP 状�?�码�{}", response.status()));
+        return Err(format!("下载失败，HTTP 状态码：{}", response.status()));
     }
 
     let tmp_path = out_path.with_extension("download.tmp");
@@ -279,7 +322,7 @@ fn download_url_to_file(
         let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
         response
             .copy_to(&mut file)
-            .map_err(|e| format!("写入下载文件失败�{}", e))?;
+            .map_err(|e| format!("写入下载文件失败：{}", e))?;
     }
 
     fs::rename(&tmp_path, out_path).or_else(|_| {
@@ -301,14 +344,14 @@ fn http_get_text(
         .header("accept", "application/json")
         .bearer_auth(api_key)
         .send()
-        .map_err(|e| format!("模型列表请求失败�{}", e))?;
+        .map_err(|e| format!("模型列表请求失败：{}", e))?;
 
     let status = response.status();
     let text = response.text().map_err(|e| e.to_string())?;
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("模型列表请求失败，HTTP {}�{}", status, text))
+        Err(format!("模型列表请求失败，HTTP {}：{}", status, text))
     }
 }
 
@@ -319,21 +362,289 @@ fn http_post_json(
     body: &serde_json::Value,
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
-    let client = build_http_client(Some(app_handle), explicit_proxy, 120)?;
-    let response = client
+    let timeout_secs = 300;
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let response_result = client
         .post(url)
         .bearer_auth(api_key)
         .json(body)
-        .send()
-        .map_err(|e| format!("AI 请求失败�{}", e))?;
+        .send();
+
+    let response = match response_result {
+        Ok(response) => response,
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("AI 请求失败：{}", first_err));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            direct_client
+                .post(url)
+                .bearer_auth(api_key)
+                .json(body)
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "AI 请求失败：{}；无代理直连重试也失败：{}",
+                        first_err, second_err
+                    )
+                })?
+        }
+    };
 
     let status = response.status();
     let text = response.text().map_err(|e| e.to_string())?;
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("AI 请求失败，HTTP {}�{}", status, text))
+        Err(format!("AI 请求失败，HTTP {}：{}", status, text))
     }
+}
+fn image_mime_extension(mime: &str) -> &'static str {
+    match mime.to_ascii_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        "image/svg+xml" => "svg",
+        _ => "png",
+    }
+}
+
+fn decode_data_image(input: &str) -> Result<(Vec<u8>, String), String> {
+    let value = input.trim();
+    let Some((header, payload)) = value.split_once(',') else {
+        return Err("参考图不是 data URL".to_string());
+    };
+    if !header.starts_with("data:image/") {
+        return Err("参考图不是图片 data URL".to_string());
+    }
+    let mime = header
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split(';').next())
+        .filter(|mime| mime.starts_with("image/"))
+        .unwrap_or("image/png")
+        .to_string();
+    use base64::{engine::general_purpose, Engine as _};
+    let bytes = general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|e| format!("参考图 Base64 解析失败：{}", e))?;
+    Ok((bytes, mime))
+}
+
+fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, String), String> {
+    let value = input.trim();
+    if value.starts_with("data:image/") {
+        return decode_data_image(value);
+    }
+
+    if value.starts_with("http://") || value.starts_with("https://") {
+        let response = client
+            .get(value)
+            .header("accept", "image/*,*/*")
+            .send()
+            .map_err(|e| format!("下载参考图失败：{}", e))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("下载参考图失败，HTTP {}", status));
+        }
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .filter(|value| value.starts_with("image/"))
+            .map(str::to_string)
+            .or_else(|| image_ext_from_name_or_url(value).map(|ext| match ext.as_str() {
+                "jpg" | "jpeg" => "image/jpeg".to_string(),
+                "webp" => "image/webp".to_string(),
+                "gif" => "image/gif".to_string(),
+                "bmp" => "image/bmp".to_string(),
+                "svg" => "image/svg+xml".to_string(),
+                _ => "image/png".to_string(),
+            }))
+            .unwrap_or_else(|| "image/png".to_string());
+        let bytes = response.bytes().map_err(|e| format!("读取参考图失败：{}", e))?.to_vec();
+        return Ok((bytes, mime));
+    }
+
+    let path = local_path_from_url_like(value).unwrap_or_else(|| PathBuf::from(value));
+    if path.is_file() {
+        let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
+        return Ok((bytes, guess_mime_from_path(&path).to_string()));
+    }
+
+    Err("参考图必须是公网 URL、data URL 或本地图片路径".to_string())
+}
+
+fn build_ai_image_edit_form(
+    client: &Client,
+    model: &str,
+    prompt: &str,
+    n: u32,
+    size: &str,
+    images: &[String],
+) -> Result<Form, String> {
+    let mut form = Form::new()
+        .text("model", model.to_string())
+        .text("prompt", prompt.to_string())
+        .text("n", n.to_string())
+        .text("size", size.to_string());
+
+    for (index, image) in images.iter().take(8).enumerate() {
+        let (bytes, mime) = image_edit_source_to_bytes(client, image)?;
+        let ext = image_mime_extension(&mime);
+        let part = Part::bytes(bytes)
+            .file_name(format!("input-{}.{}", index + 1, ext))
+            .mime_str(&mime)
+            .map_err(|e| format!("参考图 MIME 设置失败：{}", e))?;
+        let field_name = if index == 0 { "image" } else { "image[]" };
+        form = form.part(field_name, part);
+    }
+
+    Ok(form)
+}
+
+fn http_post_image_edit(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    n: u32,
+    size: &str,
+    images: &[String],
+    explicit_proxy: Option<&str>,
+) -> Result<String, String> {
+    if images.is_empty() {
+        return Err("缺少参考图".to_string());
+    }
+
+    let timeout_secs = 300;
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let response_result = client
+        .post(url)
+        .bearer_auth(api_key)
+        .multipart(build_ai_image_edit_form(&client, model, prompt, n, size, images)?)
+        .send();
+
+    let response = match response_result {
+        Ok(response) => response,
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("AI 图片上传失败：{}", first_err));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            direct_client
+                .post(url)
+                .bearer_auth(api_key)
+                .multipart(build_ai_image_edit_form(&direct_client, model, prompt, n, size, images)?)
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "AI 图片上传失败：{}；无代理直连重试也失败：{}",
+                        first_err, second_err
+                    )
+                })?
+        }
+    };
+
+    let status = response.status();
+    let text = response.text().map_err(|e| e.to_string())?;
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!("AI 图片上传失败，HTTP {}：{}", status, text))
+    }
+}
+
+#[tauri::command]
+async fn post_ai_json(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    body: serde_json::Value,
+    proxy: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("请先填写 API Key".to_string());
+        }
+        let raw = http_post_json(
+            &app_handle,
+            &url,
+            &api_key,
+            &body,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )?;
+        serde_json::from_str(&raw)
+            .map_err(|e| format!("AI 响应 JSON 解析失败：{}；原始返回：{}", e, raw))
+    })
+    .await
+    .map_err(|e| format!("AI 请求任务失败：{}", e))?
+}
+
+#[tauri::command]
+async fn post_ai_image_edit(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    model: String,
+    prompt: String,
+    n: u32,
+    size: String,
+    images: Vec<String>,
+    proxy: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("请先填写 API Key".to_string());
+        }
+        let raw = http_post_image_edit(
+            &app_handle,
+            &url,
+            &api_key,
+            &model,
+            &prompt,
+            n,
+            &size,
+            &images,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )?;
+        serde_json::from_str(&raw)
+            .map_err(|e| format!("AI 图片响应 JSON 解析失败：{}；原始返回：{}", e, raw))
+    })
+    .await
+    .map_err(|e| format!("AI 图片上传任务失败：{}", e))?
+}
+
+#[tauri::command]
+async fn get_ai_json(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    proxy: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("Please enter API Key first.".to_string());
+        }
+        let raw = http_get_text(
+            &app_handle,
+            &url,
+            &api_key,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )?;
+        serde_json::from_str(&raw)
+            .map_err(|e| format!("AI response JSON parse failed: {}; raw response: {}", e, raw))
+    })
+    .await
+    .map_err(|e| format!("AI GET request task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -353,13 +664,13 @@ fn show_in_folder(path: String) -> Result<(), String> {
     let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
 
     if !normalized.exists() {
-        return Err(format!("文件位置不存�?��{}", normalized.to_string_lossy()));
+        return Err(format!("文件位置不存在：{}", normalized.to_string_lossy()));
     }
 
     let resolved = fs::canonicalize(&normalized).unwrap_or_else(|_| normalized.clone());
 
-    // /select 在部�?Windows �??下会�?Explorer 解析失败，失败时它会�?回打�?“文档�?�或“�?面�?��??
-    // 稳定优先：文件打�?它的真实父目录；文件夹打�?它本�???
+    // /select 在部分 Windows 环境下会让 Explorer 解析失败，失败时它会回退到“文档”或“桌面”。
+    // 稳定优先：文件打开它的真实父目录；文件夹打开它本身。
     let target_dir = if resolved.is_dir() {
         resolved.clone()
     } else {
@@ -370,7 +681,7 @@ fn show_in_folder(path: String) -> Result<(), String> {
     };
 
     if !target_dir.exists() {
-        return Err(format!("文件夹不存在�{}", target_dir.to_string_lossy()));
+        return Err(format!("文件夹不存在：{}", target_dir.to_string_lossy()));
     }
 
     #[cfg(target_os = "windows")]
@@ -724,6 +1035,445 @@ fn image_ext_from_mime(mime: &str) -> &'static str {
     }
 }
 
+fn source_to_cloudflared_image_file(source: &str, dir: &PathBuf, index: usize) -> Result<String, String> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Err("参考图为空".to_string());
+    }
+
+    if trimmed.starts_with("data:image/") {
+        let (mime, bytes) = decode_data_url(trimmed)?;
+        let ext = image_ext_from_mime(&mime);
+        let file_name = format!("input-{}.{}", index + 1, ext);
+        fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
+        return Ok(file_name);
+    }
+
+    let local = local_path_from_url_like(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
+    if !local.is_file() {
+        return Err("本地图生图需要本地图片或 data URL".to_string());
+    }
+
+    let ext = local
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg"))
+        .unwrap_or_else(|| "jpg".to_string());
+    let file_name = format!("input-{}.{}", index + 1, ext);
+    fs::copy(local, dir.join(&file_name)).map_err(|e| e.to_string())?;
+    Ok(file_name)
+}
+
+fn extract_trycloudflare_url(line: &str) -> Option<String> {
+    line.split_whitespace()
+        .map(|part| part.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | ',')))
+        .map(|part| part.trim_end_matches(['.', ',', ';']).to_string())
+        .filter(|part| part.starts_with("https://") && part.contains("trycloudflare.com"))
+        .find(|url| url.contains("trycloudflare.com"))
+}
+
+fn compact_cloudflared_output(lines: &[String]) -> String {
+    let useful = lines
+        .iter()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.contains("Thank you for trying Cloudflare Tunnel")
+                || trimmed.contains("without a Cloudflare account")
+                || trimmed.contains("Online Services Terms of Use")
+                || trimmed.contains("account-less Tunnels have no uptime guarantee")
+            {
+                return None;
+            }
+            Some(trimmed.to_string())
+        })
+        .take(5)
+        .collect::<Vec<_>>();
+
+    if useful.is_empty() {
+        "没有拿到 trycloudflare 公网 URL，可能是 Cloudflare quick tunnel 暂时不可用或当前网络阻止了连接。".to_string()
+    } else {
+        useful.join("；")
+    }
+}
+
+fn push_cloudflared_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !candidates.iter().any(|candidate| candidate == &path) {
+        candidates.push(path);
+    }
+}
+
+fn add_cloudflared_candidates_from_dir(candidates: &mut Vec<PathBuf>, dir: &Path, exe_name: &str) {
+    let mut current = Some(dir);
+    while let Some(dir) = current {
+        push_cloudflared_candidate(candidates, dir.join(exe_name));
+        push_cloudflared_candidate(candidates, dir.join("bin").join(exe_name));
+        current = dir.parent();
+    }
+}
+
+fn cloudflared_binary(app_handle: &tauri::AppHandle) -> (PathBuf, String) {
+    let exe_name = if cfg!(target_os = "windows") { "cloudflared.exe" } else { "cloudflared" };
+    let mut candidates = Vec::new();
+
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        add_cloudflared_candidates_from_dir(&mut candidates, &resource_dir, exe_name);
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            add_cloudflared_candidates_from_dir(&mut candidates, dir, exe_name);
+        }
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        add_cloudflared_candidates_from_dir(&mut candidates, &current_dir, exe_name);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        add_cloudflared_candidates_from_dir(&mut candidates, &manifest_dir, exe_name);
+    }
+
+    for path in &candidates {
+        if path.is_file() {
+            return (fs::canonicalize(path).unwrap_or_else(|_| path.clone()), String::new());
+        }
+    }
+
+    let checked = candidates
+        .iter()
+        .take(12)
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join("；");
+    (PathBuf::from(exe_name), checked)
+}
+
+fn serve_cloudflared_file(mut stream: TcpStream, dir: &PathBuf) -> std::io::Result<()> {
+    let mut request_line = String::new();
+    {
+        let mut reader = BufReader::new(stream.try_clone()?);
+        reader.read_line(&mut request_line)?;
+    }
+
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let raw_path = parts.next().unwrap_or("/");
+    if method != "GET" && method != "HEAD" {
+        stream.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        return Ok(());
+    }
+
+    let file_name = raw_path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("/")
+        .trim_start_matches('/');
+
+    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+        stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        return Ok(());
+    }
+
+    let path = dir.join(file_name);
+    if !path.is_file() {
+        stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        return Ok(());
+    }
+
+    let bytes = fs::read(&path)?;
+    let content_type = guess_mime_from_path(&path);
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        content_type,
+        bytes.len()
+    );
+    stream.write_all(headers.as_bytes())?;
+    if method == "GET" {
+        stream.write_all(&bytes)?;
+    }
+    Ok(())
+}
+
+fn start_cloudflared_file_server(dir: PathBuf) -> Result<(u16, Arc<AtomicBool>, JoinHandle<()>), String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("启动本地图片服务失败：{}", e))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("设置本地图片服务失败：{}", e))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+
+    let handle = thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = serve_cloudflared_file(stream, &dir);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(40));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok((port, stop, handle))
+}
+
+fn spawn_cloudflared_tunnel(app_handle: &tauri::AppHandle, port: u16) -> Result<(String, Child), String> {
+    let (binary, checked_paths) = cloudflared_binary(app_handle);
+    let url = format!("http://127.0.0.1:{}", port);
+    let mut cmd = SysCommand::new(&binary);
+    hide_console_window(&mut cmd);
+    let mut child = cmd
+        .args(["tunnel", "--no-autoupdate", "--protocol", "http2", "--url"])
+        .arg(&url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            let checked_note = if checked_paths.is_empty() {
+                String::new()
+            } else {
+                format!("已检查：{}。", checked_paths)
+            };
+            format!(
+                "无法启动 cloudflared：{}。请将 cloudflared.exe 放到项目根目录、应用资源目录、程序同目录或系统 PATH。{}",
+                e, checked_note
+            )
+        })?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (tx, rx) = mpsc::channel::<String>();
+
+    if let Some(stdout) = stdout {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                let _ = tx.send(line);
+            }
+        });
+    }
+
+    if let Some(stderr) = stderr {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().flatten() {
+                let _ = tx.send(line);
+            }
+        });
+    }
+
+    let started_at = Instant::now();
+    let mut recent_output: Vec<String> = Vec::new();
+    while started_at.elapsed() < Duration::from_secs(25) {
+        while let Ok(line) = rx.try_recv() {
+            if recent_output.len() > 12 {
+                recent_output.remove(0);
+            }
+            recent_output.push(line.clone());
+            if let Some(url) = extract_trycloudflare_url(&line) {
+                return Ok((url, child));
+            }
+        }
+
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            return Err(format!(
+                "cloudflared 隧道进程已退出（{}）。{}",
+                status,
+                compact_cloudflared_output(&recent_output)
+            ));
+        }
+
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                if recent_output.len() > 12 {
+                    recent_output.remove(0);
+                }
+                recent_output.push(line.clone());
+                if let Some(url) = extract_trycloudflare_url(&line) {
+                    return Ok((url, child));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    Err("cloudflared 启动超时：25 秒内没有拿到 trycloudflare 公网 URL，请确认网络可用".to_string())
+}
+
+fn probe_cloudflared_public_url(client: &Client, url: &str) -> Result<bool, String> {
+    let head_result = client
+        .head(url)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .send();
+
+    match head_result {
+        Ok(response) if response.status().is_success() => return Ok(true),
+        Ok(response) if response.status().as_u16() != 405 => {
+            return Ok(false);
+        }
+        Ok(_) => {}
+        Err(err) => {
+            return Err(format!("{} 访问失败：{}", url, err));
+        }
+    }
+
+    client
+        .get(url)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .header(reqwest::header::RANGE, "bytes=0-15")
+        .send()
+        .map(|response| response.status().is_success())
+        .map_err(|err| format!("{} 访问失败：{}", url, err))
+}
+
+fn warm_up_cloudflared_public_urls(app_handle: &tauri::AppHandle, urls: &[String]) -> Option<String> {
+    if urls.is_empty() {
+        return None;
+    }
+
+    let client = build_http_client(Some(app_handle), None, 10)
+        .or_else(|_| build_direct_http_client(10))
+        .ok()?;
+    let started_at = Instant::now();
+    let mut last_error = String::new();
+
+    while started_at.elapsed() < Duration::from_secs(12) {
+        let mut all_ready = true;
+        for url in urls {
+            match probe_cloudflared_public_url(&client, url) {
+                Ok(true) => {}
+                Ok(false) => {
+                    all_ready = false;
+                    last_error = format!("{} 尚未返回可用图片", url);
+                    break;
+                }
+                Err(err) => {
+                    return Some(format!("本机无法自检 cloudflared 公网图片 URL，将继续交给中转站请求。{}", err));
+                }
+            }
+        }
+
+        if all_ready {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(650));
+    }
+
+    Some(format!(
+        "cloudflared 公网图片 URL 预热未确认完成，将继续交给中转站请求。{}",
+        last_error
+    ))
+}
+
+#[tauri::command]
+async fn create_cloudflared_public_image_urls(
+    app_handle: tauri::AppHandle,
+    sources: Vec<String>,
+    dir: Option<String>,
+) -> Result<CloudflaredPublicImageUrls, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if sources.is_empty() {
+            return Err("没有需要公开的本地参考图".to_string());
+        }
+
+        let cache_dir = dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| normalize_web_image_cache_dir(&app_handle, value))
+            .unwrap_or_else(|| read_web_image_cache_dir(&app_handle));
+        fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+
+        let share_id = format!("cloudflared_ai_{}", now_millis_u128());
+        let share_dir = cache_dir.join("cloudflared-ai-refs").join(&share_id);
+        fs::create_dir_all(&share_dir).map_err(|e| e.to_string())?;
+
+        let mut file_names = Vec::new();
+        for (index, source) in sources.iter().take(8).enumerate() {
+            file_names.push(source_to_cloudflared_image_file(source, &share_dir, index)?);
+        }
+
+        let (port, server_stop, server_thread) = match start_cloudflared_file_server(share_dir.clone()) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = fs::remove_dir_all(&share_dir);
+                return Err(err);
+            }
+        };
+
+        let (base_url, child) = match spawn_cloudflared_tunnel(&app_handle, port) {
+            Ok(value) => value,
+            Err(err) => {
+                server_stop.store(true, Ordering::Relaxed);
+                let _ = server_thread.join();
+                let _ = fs::remove_dir_all(&share_dir);
+                return Err(err);
+            }
+        };
+
+        let base = base_url.trim_end_matches('/').to_string();
+        let urls = file_names
+            .iter()
+            .map(|name| format!("{}/{}", base, name))
+            .collect::<Vec<_>>();
+
+        if let Some(warning) = warm_up_cloudflared_public_urls(&app_handle, &urls) {
+            eprintln!("{}", warning);
+        }
+
+        cloudflared_shares()
+            .lock()
+            .map_err(|_| "cloudflared 分享状态锁定失败".to_string())?
+            .insert(share_id.clone(), CloudflaredShare {
+                child,
+                dir: share_dir,
+                server_stop,
+                server_thread: Some(server_thread),
+            });
+
+        Ok(CloudflaredPublicImageUrls { share_id, urls })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stop_cloudflared_share(share_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let share = cloudflared_shares()
+            .lock()
+            .map_err(|_| "cloudflared 分享状态锁定失败".to_string())?
+            .remove(&share_id);
+
+        if let Some(mut share) = share {
+            let _ = share.child.kill();
+            let _ = share.child.wait();
+            share.server_stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = share.server_thread.take() {
+                let _ = handle.join();
+            }
+            let _ = fs::remove_dir_all(share.dir);
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn cache_web_image(
     app_handle: tauri::AppHandle,
@@ -747,8 +1497,8 @@ async fn cache_web_image_to_dir(
     dir: String,
     proxy: Option<String>,
 ) -> Result<String, String> {
-    // 专门给�?��?�?��的网页图片缓存路径�?�使用�?�参数名保持�?单的 dir�?
-    // 避开 cache_dir / cacheDir �?Tauri 参数映射里的歧义�?
+    // 专门给“设置里的网页图片缓存路径”使用，参数名保持简单的 dir。
+    // 避开 cache_dir / cacheDir 在 Tauri 参数映射里的歧义。
     tauri::async_runtime::spawn_blocking(move || {
         cache_web_image_impl(app_handle, url, name, Some(dir), proxy)
     })
@@ -768,8 +1518,8 @@ fn cache_web_image_impl(
         return Err("empty web image url".to_string());
     }
 
-    // 优先使用前�?传来的最新缓存路径；如果没有传，再�?取后�?��存的设置�?
-    // 这样�?��免拖拽监�?��/配置文件不同步时继续写入默�?缓存�?���?
+    // 优先使用前端传来的最新缓存路径；如果没有传，再读取后端保存的设置。
+    // 这样可以避免拖拽监听和配置文件不同步时继续写入默认缓存目录。
     let dir = cache_dir
         .as_deref()
         .map(str::trim)
@@ -818,7 +1568,7 @@ fn cache_web_image_impl(
     if input.starts_with("http://") || input.starts_with("https://") {
         if let Err(err) = download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
             let _ = fs::remove_file(&out_path);
-            return Err(format!("缓存网页图片失败�{}", err));
+            return Err(format!("缓存网页图片失败：{}", err));
         }
         return Ok(out_path.to_string_lossy().to_string());
     }
@@ -867,9 +1617,9 @@ fn relocate_web_cache_file(
         return Ok(source_canon.to_string_lossy().to_string());
     }
 
-    // �?���?App �?��生成/接�?的网页临时图片，不�?用户真实�?��文件�?
-    // 某些 Windows OLE/browser 拖拽链路不会�?URL，�?�是先把网页图保存到 App 默�?�?���?
-    // 然后�?��这个临时 path 发给前�?。这里把这�?临时文件�?��用户设置的缓存目录�??
+    // 只移动 App 自己生成或接收的网页临时图片，不移动用户真实文件。
+    // 某些 Windows OLE/browser 拖拽链路不会给 URL，而是先把网页图保存到 App 默认缓存目录。
+    // 然后把这个临时 path 发给前端。这里把这类临时文件移动到用户设置的缓存目录。
     let under_default_cache = source_canon.starts_with(&default_cache_dir);
     let under_app_data = source_canon.starts_with(&app_data_dir);
     let under_temp = source_canon.starts_with(&temp_dir);
@@ -944,7 +1694,7 @@ fn cmf_palette_for_name(name: &str) -> serde_json::Value {
         serde_json::json!({
             "colors": ["#ebe7df", "#9aa0a3", "#5e696f", "#1f2528"],
             "keywords": ["半透明", "轻科技", "层次感", "克制"],
-            "materials": ["烟灰透明 PC", "雾银喷涂", "黑色 TPU 密封圈", "半透明磨砂纹理"]
+            "materials": ["烟灰透明 PC", "雾银喷涂", "黑色 TPU 密封件", "半透明磨砂纹理"]
         }),
         serde_json::json!({
             "colors": ["#f1eadf", "#c9b8a2", "#8d7d6f", "#4b4038"],
@@ -953,7 +1703,7 @@ fn cmf_palette_for_name(name: &str) -> serde_json::Value {
         }),
         serde_json::json!({
             "colors": ["#e8ece9", "#aeb8b2", "#65736b", "#23312c"],
-            "keywords": ["冷静", "专业", "细节秩序", "耐用感"],
+            "keywords": ["冷静", "专业", "细节秩序", "耐用"],
             "materials": ["微砂纹喷涂", "雾面金属饰条", "防滑 TPU", "深灰阻燃 PC"]
         }),
     ];
@@ -1027,7 +1777,7 @@ fn model_supports_image(model: &str) -> bool {
 }
 
 fn cmf_system_prompt() -> &'static str {
-    "你是一名资深产品 CMF 与造型语言分析师。必须只返回严格 JSON，不要 Markdown，不要解释。除 colors 中的十六进制色值外，所有文本字段必须使用简体中文。必需字段：title:string, colors:string[], keywords:string[], summary:string, form:string, cmf:string, borrow:string[], avoid:string[], materials:string[]。colors 保持 4-6 个十六进制色值；keywords 为 4-8 个中文短语；summary 为 20-60 个中文词；borrow/avoid/materials 各 3-6 条中文短句。"
+    "你是一名资深产品 CMF 与造型语言分析师。必须只返回严格 JSON，不要 Markdown，不要解释。除 colors 中的十六进制色值外，所有文本字段必须使用简体中文。必需字段：title:string, colors:string[], keywords:string[], summary:string, form:string, cmf:string, borrow:string[], avoid:string[], materials:string[]。colors 保持 4-6 个十六进制色值；keywords 保持 4-8 个中文短语；summary 保持 20-60 个中文词；borrow/avoid/materials 保持 3-6 条中文短句。"
 }
 
 fn cmf_user_text(item_name: &str, note: &str, with_image: bool) -> String {
@@ -1105,7 +1855,7 @@ async fn get_siliconflow_vision_models(
 ) -> Result<Vec<String>, String> {
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {
-        return Err("请先�?��硅基流动 API Key".to_string());
+        return Err("请先填写硅基流动 API Key".to_string());
     }
 
     let base = endpoint.trim().trim_end_matches('/').to_string();
@@ -1117,11 +1867,11 @@ async fn get_siliconflow_vision_models(
     tauri::async_runtime::spawn_blocking(move || {
         let raw = http_get_text(&app_handle, &url, &api_key, None)?;
         let parsed: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| format!("模型列表 JSON 解析失败�{}", e))?;
+            .map_err(|e| format!("模型列表 JSON 解析失败：{}", e))?;
         let data = parsed
             .get("data")
             .and_then(|value| value.as_array())
-            .ok_or_else(|| "模型列表返回格式不�?�?��缺少 data 数组".to_string())?;
+            .ok_or_else(|| "模型列表返回格式不正确：缺少 data 数组".to_string())?;
 
         let mut models: Vec<String> = data
             .iter()
@@ -1134,7 +1884,61 @@ async fn get_siliconflow_vision_models(
         Ok(models)
     })
     .await
-    .map_err(|e| format!("刷新模型列表任务失败�{}", e))?
+    .map_err(|e| format!("刷新模型列表任务失败：{}", e))?
+}
+
+#[tauri::command]
+async fn get_openai_compatible_models(
+    app_handle: tauri::AppHandle,
+    endpoint: String,
+    api_key: String,
+) -> Result<Vec<String>, String> {
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("Please enter API Key first.".to_string());
+    }
+
+    let base = endpoint.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("Please enter API Base URL first.".to_string());
+    }
+
+    let url = if base.ends_with("/models") {
+        base
+    } else {
+        format!("{}/models", base)
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let raw = http_get_text(&app_handle, &url, &api_key, None)?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("Model list JSON parse failed: {}; raw response: {}", e, raw))?;
+        let data = parsed
+            .get("data")
+            .and_then(|value| value.as_array())
+            .or_else(|| parsed.as_array())
+            .ok_or_else(|| "Model list response is missing a data array.".to_string())?;
+
+        let mut models: Vec<String> = data
+            .iter()
+            .filter_map(|item| {
+                item.get("id")
+                    .or_else(|| item.get("name"))
+                    .and_then(|value| value.as_str())
+            })
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        models.sort();
+        models.dedup();
+        if models.is_empty() {
+            Err("No models found in /models response.".to_string())
+        } else {
+            Ok(models)
+        }
+    })
+    .await
+    .map_err(|e| format!("Refresh model list task failed: {}", e))?
 }
 
 fn extract_json_object_text(text: &str) -> Option<String> {
@@ -1239,7 +2043,7 @@ fn call_siliconflow_cmf(
     explicit_proxy: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     if api_key.trim().is_empty() {
-        return Err("请先�?��硅基流动 API Key".to_string());
+        return Err("请先填写硅基流动 API Key".to_string());
     }
     if model.trim().is_empty() {
         return Err("请先选择硅基流动模型".to_string());
@@ -1249,12 +2053,12 @@ fn call_siliconflow_cmf(
     let image_url = image_source_for_ai(image_source)?;
     let body = build_siliconflow_request_body(model, &image_url, item_name, note);
     let raw = http_post_json(app_handle, &url, api_key, &body, explicit_proxy)?;
-    let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("解析硅基流动响应失败�{}；原始返回：{}", e, raw))?;
+    let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
     let content = get_chat_message_content(&response)?;
     let Some(json_text) = extract_json_object_text(&content) else {
-        return Err(format!("模型没有返回 JSON�{}", content));
+        return Err(format!("模型没有返回 JSON：{}", content));
     };
-    let parsed: serde_json::Value = serde_json::from_str(&json_text).map_err(|e| format!("解析模型 JSON 失败�{}；内容：{}", e, json_text))?;
+    let parsed: serde_json::Value = serde_json::from_str(&json_text).map_err(|e| format!("解析模型 JSON 失败：{}；内容：{}", e, json_text))?;
     Ok(normalize_ai_result_json(item_name, parsed))
 }
 
@@ -1336,7 +2140,7 @@ fn analyze_cmf_card_impl(
         "form": format!("将「{}」作为克制的造型参考：大面保持简洁，边缘处理柔和，并让局部细节形成记忆点。{}", item_name, if note_text.trim().is_empty() { "".to_string() } else { format!(" 备注：{}", note_text.trim()) }),
         "cmf": format!("基于当前参考建立 CMF 方向：控制色彩饱和度，结合哑光表面、细腻纹理和适合量产的材料组合。{}", if model.is_empty() { "".to_string() } else { format!(" 已保留模型配置：{}。", model) }),
         "borrow": ["借鉴主色与强调色的比例关系", "借鉴材料之间的对比关系", "借鉴局部细节作为识别点"],
-        "avoid": ["不要直接复制原图造型", "高饱和点缀色需要克制使用", "量产前需要验证耐用性和耐刮性"],
+        "avoid": ["不要直接复制原图造型", "高饱和点缀色需要克制使用", "量产前需要验证耐用性和耐刮表现"],
         "materials": materials,
         "analysisMode": "ai",
         "apiStatus": "reserved_mock",
@@ -1422,8 +2226,8 @@ fn snap_to_right(window: WebviewWindow, width: f64, height: f64) {
 
 #[tauri::command]
 fn toggle_pin(window: WebviewWindow, pinned: bool) {
-    // pinned �?���?锁定展开/不自动缩�?，不要在这里控制窗口位置�?
-    // 取消钉住后的复位/缩回由前�?close_drawer + trigger mode 处理�?
+    // pinned 只表示锁定展开/不自动缩回，不要在这里控制窗口位置。
+    // 取消钉住后的复位/缩回由前端 close_drawer + trigger mode 处理。
     let _ = window.set_always_on_top(true);
     let _ = pinned;
 }
@@ -1452,8 +2256,8 @@ fn mobile_should_accept(signature: &str) -> bool {
         return true;
     };
 
-    // 手机�?��些实现会对同�?�?��送动作连�?�� /send�?upload 或重试一次�??
-    // 这里用短时间内�?签名去重，避免抽屉里出现两张/两个完全相同的卡片�??
+    // 手机端某些实现会对同一次发送动作连续调用 /send、/upload 或重试一次。
+    // 这里用短时间内的签名去重，避免抽屉里出现两张或两个完全相同的卡片。
     recent.retain(|_, last_seen| now.saturating_sub(*last_seen) <= 8_000);
     if let Some(last_seen) = recent.get_mut(signature) {
         if now.saturating_sub(*last_seen) <= 2_500 {
@@ -1683,7 +2487,7 @@ fn emit_mobile_data_url(app_handle: &tauri::AppHandle, data_url: &str, fallback_
     let trimmed = data_url.trim();
     let (mime, bytes) = decode_data_url(trimmed)?;
     let name = fallback_name
-        .filter(|name| !name.trim().is_empty() && *name != "手机内�?")
+        .filter(|name| !name.trim().is_empty() && *name != "手机内容")
         .map(|name| name.to_string())
         .unwrap_or_else(|| default_mobile_file_name(&mime));
     let item_type = guess_mobile_item_type(&mime, &name);
@@ -1800,7 +2604,7 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
 
     let text = get_json_string(obj, &["text", "content", "message"]);
     let url = get_json_string(obj, &["url", "imageUrl", "image_url", "fileUrl", "file_url"]);
-    let name = get_json_string(obj, &["name", "filename", "fileName", "title"]).unwrap_or_else(|| "手机内�?".to_string());
+    let name = get_json_string(obj, &["name", "filename", "fileName", "title"]).unwrap_or_else(|| "手机内容".to_string());
     let explicit_type = get_json_string(obj, &["type", "kind"]).unwrap_or_default();
     let mime = get_json_string(obj, &["mime", "mimeType", "contentType"]).unwrap_or_default();
     let data_url = get_json_string(obj, &["dataUrl", "data_url", "data"]);
@@ -1809,7 +2613,7 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
     if let Some(data) = data_url.filter(|s| s.starts_with("data:")) {
         let (mime_from_data, bytes) = decode_data_url(&data)?;
         let mime_used = if mime.is_empty() { mime_from_data } else { mime };
-        let file_name = if name == "手机内�?" { default_mobile_file_name(&mime_used) } else { name };
+        let file_name = if name == "手机内容" { default_mobile_file_name(&mime_used) } else { name };
         let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime_used, &file_name) } else { normalize_mobile_item_type(&explicit_type) };
         emit_mobile_bytes(app_handle, &item_type, &file_name, &bytes)?;
         return Ok(1);
@@ -1818,7 +2622,7 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
     if let Some(b64) = base64_data {
         use base64::{engine::general_purpose, Engine as _};
         let bytes = general_purpose::STANDARD.decode(b64.trim()).map_err(|e| e.to_string())?;
-        let file_name = if name == "手机内�?" { default_mobile_file_name(&mime) } else { name };
+        let file_name = if name == "手机内容" { default_mobile_file_name(&mime) } else { name };
         let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime, &file_name) } else { normalize_mobile_item_type(&explicit_type) };
         emit_mobile_bytes(app_handle, &item_type, &file_name, &bytes)?;
         return Ok(1);
@@ -2170,7 +2974,7 @@ fn get_video_thumb(path: String) -> Result<String, String> {
                 "-frames:v",
                 "1",
                 "-vf",
-                "scale=640:-2",
+                "scale=720:-2",
                 out_path.to_str().unwrap_or("thumb.png"),
             ])
             .output()
@@ -2449,7 +3253,7 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
             }
         } else {
             let status = RegDeleteValueW(hkey, name.as_ptr());
-            // 2 = ERROR_FILE_NOT_FOUND。目标�?�本来不存在时，也�?为已经关�???
+            // 2 = ERROR_FILE_NOT_FOUND。目标本来不存在时，也视为已经关闭。
             if status == ERROR_SUCCESS as i32 || status == 2 {
                 Ok(())
             } else {
@@ -2636,7 +3440,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 $uri = $args[0]
 $wc = New-Object System.Net.WebClient
-$wc.Headers.Add('User-Agent', 'Mozilla/5.0')
+$wc.Headers.Add('User-Agent', 'inspiration-drawer')
 $bytes = $wc.DownloadData($uri)
 $ms = New-Object System.IO.MemoryStream(,$bytes)
 $img = [System.Drawing.Image]::FromStream($ms)
@@ -3028,7 +3832,7 @@ fn capture_screen_area_to_file_impl(
     let physical_w = (width * scale).round().max(1.0) as u32;
     let physical_h = (height * scale).round().max(1.0) as u32;
 
-    // 先隐藏并移走全屏�?��窗口，避�?DWM 还没完成 hide 时把选区框截进去�?
+    // 先隐藏并移走全屏截图窗口，避免 DWM 还没完成 hide 时把选区框截进去。
     window.hide().map_err(|e| e.to_string())?;
     let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
     std::thread::sleep(std::time::Duration::from_millis(16));
@@ -3057,8 +3861,8 @@ fn capture_physical_area_to_file(
         .capture_area(rel_x.max(0), rel_y.max(0), safe_w, safe_h)
         .map_err(|e| e.to_string())?;
 
-    // 像素已经捕获完成，可以立刻�?�知前�?恢�?抽屉�?
-    // 后面�?PNG 落盘不再阻�?用户看到抽屉�?
+    // 像素已经捕获完成，可以立刻通知前端恢复抽屉。
+    // 后面的 PNG 落盘不再阻塞用户看到抽屉。
     let file_name = format!(
         "drawer_snip_area_{}.png",
         std::time::SystemTime::now()
@@ -3435,8 +4239,8 @@ fn position_side_edge(app_handle: tauri::AppHandle, height: f64, y: Option<f64>)
     let edge_y = clamp_f64(raw_y, work_pos.y, max_y.max(work_pos.y));
     set_saved_edge_strip_y(edge_y);
 
-    // 侧边小条模式：系统窗口本�?��保留�??小条的命�?���?
-    // 右键拖动时只改变 y，x 永远锁在屏幕�?右侧�?
+    // 侧边小条模式：系统窗口本身只保留小条的命中区域。
+    // 右键拖动时只改变 y，x 永远锁在屏幕最右侧。
     edge.set_min_size(Some(LogicalSize::new(1.0, 1.0))).ok();
     edge.set_size(LogicalSize::new(EDGE_WINDOW_WIDTH, edge_h))
         .map_err(|e| e.to_string())?;
@@ -3504,7 +4308,7 @@ fn position_edge(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
-    if is_startup_close_locked() {
+    if is_startup_close_locked() || is_anti_touch_locked() {
         if let Some(edge) = app_handle.get_webview_window("edge") {
             let _ = edge.hide();
         }
@@ -3651,6 +4455,17 @@ fn open_drawer(
     height: f64,
     mode: Option<String>,
 ) -> Result<(), String> {
+    if is_anti_touch_locked() && !is_startup_close_locked() {
+        if let Some(main) = app_handle.get_webview_window("main") {
+            let _ = main.emit("drawer-closed", ());
+            let _ = main.hide();
+        }
+        if let Some(edge) = app_handle.get_webview_window("edge") {
+            let _ = edge.hide();
+        }
+        return Ok(());
+    }
+
     let main = app_handle
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
@@ -3679,9 +4494,9 @@ fn open_drawer(
         main.is_visible().unwrap_or(false) && !looks_like_snip_fullscreen && !is_startup_close_locked();
 
     let (x, y) = if preserve_current_position {
-        // 如果 main 已经�??，�?明抽屉可能�?用户手动拖到了别的位�???
-        // 外部拖入文件/网页图片时只保证窗口尺�?正确，不再把它吸附回屏幕右侧�?
-        // 但截图全屏窗口不�?用户摆放的位�?，避免截图�??出后保留全屏左上角�??
+        // 如果 main 已经显示，说明抽屉可能被用户手动拖到了别的位置。
+        // 外部拖入文件或网页图片时只保证窗口尺寸正确，不再把它吸附回屏幕右侧。
+        // 但截图全屏窗口不是用户摆放的位置，避免截图弹出后保留全屏左上角。
         let current_pos = main
             .outer_position()
             .ok()
@@ -3730,8 +4545,8 @@ fn open_drawer(
             )
         }
     } else {
-        // 侧边小条模式：抽屉主体跟随小条的垂直�?��展开�?
-        // 如果小条�?��近屏幕上下边缘，就自动降低抽屉高度，避免主体超出屏幕�?
+        // 侧边小条模式：抽屉主体跟随小条的垂直中心展开。
+        // 如果小条靠近屏幕上下边缘，就自动降低抽屉高度，避免主体超出屏幕。
         let edge_h = EDGE_STRIP_HEIGHT.min(work_size.height.max(1.0));
         let default_center_y = work_pos.y + work_size.height / 2.0;
         let strip_center_y = get_saved_edge_strip_y()
@@ -3782,7 +4597,7 @@ fn open_drawer(
     main.show().map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
 
-    // 抽屉打开期间隐藏 edge，避免�?�?主体时经过触发器又重新展�?�?
+    // 抽屉打开期间隐藏 edge，避免移动主体时经过触发器又重新展开。
     if let Some(edge_window) = edge {
         let _ = edge_window.hide();
     }
@@ -3803,8 +4618,8 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
         800.0
     };
 
-    // �?��欢迎页显示期间，前�?会�?�?���?��暂的后�?关闭锁�??
-    // 任何旧的 edge 预�?、mouseleave 或定时器�?���?close_drawer，都不能真�? hide 主窗口�??
+    // 在欢迎页显示期间，前端会设置一个短暂的后端关闭锁。
+    // 任何旧的 edge 预热、mouseleave 或定时器触发 close_drawer，都不能真的 hide 主窗口。
     if is_startup_close_locked() {
         main.set_always_on_top(true).ok();
         main.show().map_err(|e| e.to_string())?;
@@ -3893,8 +4708,8 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
         .map(|size| size.to_logical::<f64>(factor))
         .unwrap_or(LogicalSize::new(w, h));
 
-    // 保持当前右边缘不�?��而不�?��次缩放都吸附回屏幕最右侧�?
-    // 这样移动后自动钉住的抽屉，缩放时仍会留在用户放置的位�?��近�??
+    // 保持当前右边缘不移动，而不是每次缩放都吸附回屏幕最右侧。
+    // 这样移动后自动钉住的抽屉，缩放时仍会留在用户放置的位置附近。
     let desired_right = current_pos.x + current_size.width;
     let max_x = work_pos.x + work_size.width - w;
     let max_y = work_pos.y + work_size.height - h;
@@ -4008,7 +4823,7 @@ fn validate_note_window_label(label: &str) -> Result<(), String> {
         .map_err(|_| format!("invalid note window label: {}", label))?;
     if !(1..=MAX_FLOATING_NOTE_WINDOWS).contains(&index) {
         return Err(format!(
-            "桌面便签最多同时保存 {} 个，请先关闭一个便签",
+            "桌面便签最多同时保留 {} 个，请先关闭一个便签。",
             MAX_FLOATING_NOTE_WINDOWS
         ));
     }
@@ -4017,7 +4832,7 @@ fn validate_note_window_label(label: &str) -> Result<(), String> {
 }
 
 fn build_hidden_note_window(app_handle: &tauri::AppHandle, label: String) -> Result<WebviewWindow, String> {
-    WebviewWindowBuilder::new(app_handle, label, WebviewUrl::App("index.html".into()))
+    WebviewWindowBuilder::new(app_handle, label, WebviewUrl::App("note.html".into()))
         .title("Desktop note")
         .inner_size(360.0, 320.0)
         .min_inner_size(48.0, 48.0)
@@ -4110,9 +4925,10 @@ fn show_note_window(
 fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), String> {
     validate_note_window_label(&label)?;
 
-    let note = app_handle
-        .get_webview_window(&label)
-        .ok_or_else(|| format!("note window not found: {}", label))?;
+    let Some(note) = app_handle.get_webview_window(&label) else {
+        return Ok(());
+    };
+
     note.hide().map_err(|e| e.to_string())
 }
 
@@ -4484,6 +5300,12 @@ fn main() {
             get_network_proxy,
             set_network_proxy,
             get_siliconflow_vision_models,
+            get_openai_compatible_models,
+            get_ai_json,
+            post_ai_json,
+            post_ai_image_edit,
+            create_cloudflared_public_image_urls,
+            stop_cloudflared_share,
             cache_web_image,
             cache_web_image_to_dir,
             relocate_web_cache_file,
@@ -4526,6 +5348,7 @@ fn main() {
             copy_files_to_clipboard,
 
             set_startup_close_lock,
+            set_anti_touch_lock,
 
             open_drawer,
             close_drawer,
@@ -4549,7 +5372,7 @@ fn main() {
             cancel_current_window_resize_animation,
             show_system_notification,])
         .setup(|app| {
-            set_startup_close_lock(12_000);
+            set_startup_close_lock(16_000);
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);

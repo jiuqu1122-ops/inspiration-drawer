@@ -495,7 +495,7 @@ function AlchemyDrawerCard({
       <div className="p-3">
         <div className="flex gap-3">
           <button onClick={onPreview} className="h-20 w-24 shrink-0 overflow-hidden rounded-[20px] bg-stone-100 dark:bg-stone-900 border border-black/5 dark:border-white/10 shadow-inner">
-            {thumb ? <img src={thumb} className="h-full w-full object-cover" draggable={false} /> : <ImageIcon className="m-auto mt-7 h-5 w-5 text-stone-400" />}
+            {thumb ? <img src={thumb} alt={title} loading="lazy" decoding="async" className="h-full w-full object-cover" draggable={false} /> : <ImageIcon className="m-auto mt-7 h-5 w-5 text-stone-400" />}
           </button>
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">

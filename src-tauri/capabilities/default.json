@@ -2,7 +2,20 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "默认权限配置",
-  "windows": ["main"],
+  "windows": [
+    "main",
+    "edge",
+    "snip",
+    "note_1",
+    "note_2",
+    "note_3",
+    "note_4",
+    "note_5",
+    "note_6",
+    "note_7",
+    "note_8",
+    "note_*"
+  ],
   "permissions": [
     "core:default",
     "core:window:default",

@@ -31,3 +31,12 @@ body,
 .dark ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(120, 113, 108, 0.8);
 }
+
+[data-canvas-interacting="true"] [data-canvas-item-id],
+[data-canvas-interacting="true"] [data-canvas-item-id] * {
+  transition: none !important;
+}
+
+[data-canvas-item-id] {
+  contain: layout paint style;
+}
