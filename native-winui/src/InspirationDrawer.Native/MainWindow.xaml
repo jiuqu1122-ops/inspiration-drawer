@@ -19,13 +19,18 @@
             IsSettingsVisible="True"
             PaneDisplayMode="LeftCompact"
             CompactPaneLength="56"
-            OpenPaneLength="220">
+            OpenPaneLength="220"
+            SelectionChanged="RootNavigation_SelectionChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="全部" Icon="AllApps" IsSelected="True" />
-                <NavigationViewItem Content="图片" Icon="Pictures" />
-                <NavigationViewItem Content="无限画布" Icon="Map" />
-                <NavigationViewItem Content="AI 生图" Icon="Camera" />
-                <NavigationViewItem Content="桌面便签" Icon="Edit" />
+                <NavigationViewItem Content="全部" Icon="AllApps" IsSelected="True" Tag="all" />
+                <NavigationViewItem Content="图片" Icon="Pictures" Tag="image" />
+                <NavigationViewItem Content="文本" Icon="Document" Tag="text" />
+                <NavigationViewItem Content="文件" Icon="OpenFile" Tag="file" />
+                <NavigationViewItem Content="视频" Icon="Video" Tag="video" />
+                <NavigationViewItemSeparator />
+                <NavigationViewItem Content="无限画布" Icon="Map" Tag="canvas" />
+                <NavigationViewItem Content="AI 生图" Icon="Camera" Tag="ai" />
+                <NavigationViewItem Content="桌面便签" Icon="Edit" Tag="notes" />
             </NavigationView.MenuItems>
 
             <Grid Padding="24" RowSpacing="16">
@@ -37,6 +42,7 @@
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="320" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
@@ -45,7 +51,14 @@
                         <TextBlock x:Name="StatusText" Text="正在读取旧版抽屉数据..." Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
 
-                    <CommandBar Grid.Column="1" DefaultLabelPosition="Right" Background="Transparent">
+                    <AutoSuggestBox
+                        x:Name="SearchBox"
+                        Grid.Column="1"
+                        QueryIcon="Find"
+                        PlaceholderText="搜索名称、内容、路径"
+                        TextChanged="SearchBox_TextChanged" />
+
+                    <CommandBar Grid.Column="2" DefaultLabelPosition="Right" Background="Transparent">
                         <AppBarButton x:Name="RefreshButton" Click="RefreshButton_Click" Icon="Refresh" Label="刷新" />
                         <AppBarButton Icon="Add" Label="添加" IsEnabled="False" />
                         <AppBarButton Icon="Camera" Label="截图" IsEnabled="False" />
@@ -116,26 +129,28 @@
                                     <TextBlock x:Name="ContentTitle" Text="全部素材" FontSize="18" FontWeight="SemiBold" />
                                     <TextBlock x:Name="ContentSubtitle" Text="只读预览旧版 Tauri 数据，下一步会迁移拖拽、画布和 AI 生图。" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                 </StackPanel>
-                                <Button Grid.Column="1" Content="进入画布" IsEnabled="False" />
+                                <Button Grid.Column="1" Content="进入画布" Click="CanvasButton_Click" />
                             </Grid>
 
                             <ScrollViewer Grid.Row="1">
                                 <ItemsRepeater x:Name="ItemRepeater">
                                     <ItemsRepeater.Layout>
-                                        <UniformGridLayout MinItemWidth="210" MinColumnSpacing="12" MinRowSpacing="12" />
+                                        <UniformGridLayout MinItemWidth="230" MinColumnSpacing="12" MinRowSpacing="12" />
                                     </ItemsRepeater.Layout>
                                     <ItemsRepeater.ItemTemplate>
                                         <DataTemplate>
                                             <Border
-                                                MinHeight="214"
+                                                MinHeight="252"
                                                 Padding="12"
                                                 CornerRadius="8"
                                                 Background="{ThemeResource LayerFillColorDefaultBrush}"
                                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                                BorderThickness="1">
+                                                BorderThickness="1"
+                                                DoubleTapped="Card_DoubleTapped">
                                                 <Grid RowSpacing="10">
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="132" />
+                                                        <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
@@ -181,6 +196,10 @@
                                                         <TextBlock Text="{Binding FolderName}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextTrimming="CharacterEllipsis" />
                                                         <TextBlock Grid.Column="1" Text="{Binding CreatedLabel}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                                                     </Grid>
+                                                    <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8">
+                                                        <Button Content="打开" Click="OpenCard_Click" IsEnabled="{Binding CanOpen}" />
+                                                        <Button Content="定位" Click="RevealCard_Click" IsEnabled="{Binding CanReveal}" />
+                                                    </StackPanel>
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>

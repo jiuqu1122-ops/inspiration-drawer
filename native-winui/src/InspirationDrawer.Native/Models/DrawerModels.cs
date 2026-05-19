@@ -1,5 +1,5 @@
-using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace InspirationDrawer.Native.Models;
 
@@ -72,9 +72,13 @@ public sealed class DrawerCard
 
     public string Description { get; set; } = "";
 
+    public string SearchText { get; set; } = "";
+
     public string FolderName { get; set; } = "未分类";
 
     public string CreatedLabel { get; set; } = "";
+
+    public string Path { get; set; } = "";
 
     public string IconGlyph { get; set; } = "\uE8A5";
 
@@ -83,4 +87,8 @@ public sealed class DrawerCard
     public bool HasImage => Image is not null;
 
     public bool HasNoImage => !HasImage;
+
+    public bool CanOpen => !string.IsNullOrWhiteSpace(Path);
+
+    public bool CanReveal => !string.IsNullOrWhiteSpace(Path);
 }

@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using InspirationDrawer.Native.Models;
 using InspirationDrawer.Native.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace InspirationDrawer.Native;
@@ -17,6 +19,9 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<DrawerCard> visibleCards = [];
     private readonly Dictionary<string, string> folderNames = [];
     private IReadOnlyList<DrawerItem> items = [];
+    private string currentFolderId = AllFolderId;
+    private string currentTypeFilter = "all";
+    private string currentSearch = "";
 
     public MainWindow()
     {
@@ -46,7 +51,8 @@ public sealed partial class MainWindow : Window
 
             RebuildFolders(snapshot.Folders, items);
             FolderList.SelectedIndex = folders.Count > 0 ? 0 : -1;
-            ApplyFolder(AllFolderId);
+            currentFolderId = AllFolderId;
+            ApplyFilters();
 
             StatusText.Text = $"已读取 {items.Count} 个素材，来自 {snapshot.DataDirectory}";
         }
@@ -76,14 +82,9 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ApplyFolder(string folderId)
+    private void ApplyFilters()
     {
-        var filtered = folderId switch
-        {
-            AllFolderId => items,
-            UnfiledFolderId => items.Where(item => string.IsNullOrWhiteSpace(item.FolderId)).ToList(),
-            _ => items.Where(item => item.FolderId == folderId).ToList(),
-        };
+        var filtered = items.Where(MatchesFolder).Where(MatchesType).Where(MatchesSearch).ToList();
 
         visibleCards.Clear();
         foreach (var item in filtered.Select(ToCard))
@@ -91,16 +92,47 @@ public sealed partial class MainWindow : Window
             visibleCards.Add(item);
         }
 
-        var selectedFolder = folders.FirstOrDefault(folder => folder.Id == folderId);
+        var selectedFolder = folders.FirstOrDefault(folder => folder.Id == currentFolderId);
+        var typeLabel = currentTypeFilter == "all" ? "全部类型" : GetTypeLabel(currentTypeFilter);
         ContentTitle.Text = selectedFolder?.Name ?? "全部素材";
         ContentSubtitle.Text = visibleCards.Count > 0
-            ? $"当前显示 {visibleCards.Count} 个素材，图片会优先加载本地文件。"
-            : "这个分类暂时没有素材。";
+            ? $"当前显示 {visibleCards.Count} 个素材，筛选：{typeLabel}"
+            : "没有符合当前筛选的素材。";
+    }
+
+    private bool MatchesFolder(DrawerItem item) => currentFolderId switch
+    {
+        AllFolderId => true,
+        UnfiledFolderId => string.IsNullOrWhiteSpace(item.FolderId),
+        _ => item.FolderId == currentFolderId,
+    };
+
+    private bool MatchesType(DrawerItem item) =>
+        currentTypeFilter is "all" || item.Type == currentTypeFilter;
+
+    private bool MatchesSearch(DrawerItem item)
+    {
+        if (string.IsNullOrWhiteSpace(currentSearch))
+        {
+            return true;
+        }
+
+        var haystack = string.Join(
+            " ",
+            item.Name,
+            item.Content,
+            item.Path,
+            item.Url,
+            item.FolderId,
+            folderNames.TryGetValue(item.FolderId, out var folderName) ? folderName : "");
+
+        return haystack.Contains(currentSearch, StringComparison.OrdinalIgnoreCase);
     }
 
     private DrawerCard ToCard(DrawerItem item)
     {
-        var name = FirstNonEmpty(item.Name, item.Content, item.Path, "未命名素材");
+        var normalizedPath = NormalizeWindowsPath(item.Path);
+        var name = FirstNonEmpty(item.Name, item.Content, normalizedPath, "未命名素材");
         var folderName = !string.IsNullOrWhiteSpace(item.FolderId) && folderNames.TryGetValue(item.FolderId, out var knownFolder)
             ? knownFolder
             : "未分类";
@@ -112,8 +144,10 @@ public sealed partial class MainWindow : Window
             TypeLabel = GetTypeLabel(item.Type),
             Name = Truncate(name, 80),
             Description = BuildDescription(item),
+            SearchText = string.Join(" ", item.Name, item.Content, normalizedPath, folderName),
             FolderName = folderName,
             CreatedLabel = FormatCreatedAt(item.CreatedAt),
+            Path = File.Exists(normalizedPath) ? normalizedPath : "",
             IconGlyph = GetIconGlyph(item.Type),
             Image = BuildImage(item),
         };
@@ -144,9 +178,10 @@ public sealed partial class MainWindow : Window
 
     private static string BuildDescription(DrawerItem item)
     {
-        if (!string.IsNullOrWhiteSpace(item.Path))
+        var normalizedPath = NormalizeWindowsPath(item.Path);
+        if (!string.IsNullOrWhiteSpace(normalizedPath))
         {
-            return NormalizeWindowsPath(item.Path);
+            return normalizedPath;
         }
 
         if (!string.IsNullOrWhiteSpace(item.Content))
@@ -186,7 +221,8 @@ public sealed partial class MainWindow : Window
         "image" => "图片",
         "video" => "视频",
         "file" => "文件",
-        _ => "文本",
+        "text" => "文本",
+        _ => "全部类型",
     };
 
     private static string GetIconGlyph(string type) => type switch
@@ -217,12 +253,107 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private static void OpenPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true,
+        });
+    }
+
+    private static void RevealPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = $"/select,\"{path}\"",
+            UseShellExecute = true,
+        });
+    }
+
+    private static DrawerCard? GetCardFromSender(object sender) =>
+        sender is FrameworkElement element ? element.DataContext as DrawerCard : null;
+
     private void FolderList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (FolderList.SelectedItem is FolderSummary selected)
         {
-            ApplyFolder(selected.Id);
+            currentFolderId = selected.Id;
+            ApplyFilters();
         }
+    }
+
+    private void SearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        currentSearch = sender.Text.Trim();
+        ApplyFilters();
+    }
+
+    private void RootNavigation_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        if (args.SelectedItem is not NavigationViewItem item || item.Tag is not string tag)
+        {
+            return;
+        }
+
+        if (tag is "canvas" or "ai" or "notes")
+        {
+            StatusText.Text = $"{item.Content} 正在迁移中，当前先保留入口。";
+            return;
+        }
+
+        currentTypeFilter = tag;
+        ApplyFilters();
+    }
+
+    private void OpenCard_Click(object sender, RoutedEventArgs e)
+    {
+        var card = GetCardFromSender(sender);
+        if (card is null)
+        {
+            return;
+        }
+
+        OpenPath(card.Path);
+        StatusText.Text = $"已打开：{card.Name}";
+    }
+
+    private void RevealCard_Click(object sender, RoutedEventArgs e)
+    {
+        var card = GetCardFromSender(sender);
+        if (card is null)
+        {
+            return;
+        }
+
+        RevealPath(card.Path);
+        StatusText.Text = $"已定位：{card.Name}";
+    }
+
+    private void Card_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        var card = GetCardFromSender(sender);
+        if (card?.CanOpen is true)
+        {
+            OpenPath(card.Path);
+            StatusText.Text = $"已打开：{card.Name}";
+        }
+    }
+
+    private void CanvasButton_Click(object sender, RoutedEventArgs e)
+    {
+        StatusText.Text = "无限画布正在迁移中，下一阶段会接入原生拖拽、缩放和节点布局。";
     }
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e)
