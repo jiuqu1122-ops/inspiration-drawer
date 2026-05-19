@@ -1,0 +1,141 @@
+<Window
+    x:Class="InspirationDrawer.Native.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Inspiration Drawer Native">
+
+    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <NavigationView
+            x:Name="RootNavigation"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="True"
+            PaneDisplayMode="LeftCompact"
+            CompactPaneLength="56"
+            OpenPaneLength="220">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="全部" Icon="AllApps" IsSelected="True" />
+                <NavigationViewItem Content="无限画布" Icon="Map" />
+                <NavigationViewItem Content="AI 生图" Icon="Pictures" />
+                <NavigationViewItem Content="桌面便签" Icon="Edit" />
+                <NavigationViewItem Content="日程" Icon="Calendar" />
+            </NavigationView.MenuItems>
+
+            <Grid Padding="24" RowSpacing="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="灵感抽屉" FontSize="28" FontWeight="SemiBold" />
+                        <TextBlock Text="Native WinUI migration shell" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+
+                    <CommandBar Grid.Column="1" DefaultLabelPosition="Right" Background="Transparent">
+                        <AppBarButton Icon="Add" Label="添加" />
+                        <AppBarButton Icon="Camera" Label="截图" />
+                        <AppBarButton Icon="Refresh" Label="刷新" />
+                    </CommandBar>
+                </Grid>
+
+                <Grid Grid.Row="1" ColumnSpacing="16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border
+                        Padding="16"
+                        CornerRadius="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                        <Grid RowSpacing="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="分类" FontSize="16" FontWeight="SemiBold" />
+                            <ListView x:Name="FolderList" Grid.Row="1" SelectionMode="Single">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Padding="0,8" ColumnSpacing="10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <FontIcon Glyph="&#xE8B7;" FontSize="16" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Name}" />
+                                            <InfoBadge Grid.Column="2" Value="{Binding Count}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </Grid>
+                    </Border>
+
+                    <Border
+                        Grid.Column="1"
+                        Padding="18"
+                        CornerRadius="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                        <Grid RowSpacing="14">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="无限画布预览" FontSize="18" FontWeight="SemiBold" />
+                                    <TextBlock Text="下一步会迁移图片节点、缩放、拖拽和 AI 生成节点。" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="进入画布" />
+                            </Grid>
+
+                            <ItemsRepeater x:Name="PreviewItems" Grid.Row="1">
+                                <ItemsRepeater.Layout>
+                                    <UniformGridLayout MinItemWidth="180" MinColumnSpacing="12" MinRowSpacing="12" />
+                                </ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border
+                                            Height="132"
+                                            Padding="12"
+                                            CornerRadius="8"
+                                            Background="{ThemeResource LayerFillColorDefaultBrush}"
+                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="1">
+                                            <StackPanel Spacing="10">
+                                                <FontIcon Glyph="&#xEB9F;" FontSize="28" HorizontalAlignment="Left" />
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Description}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>

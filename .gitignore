@@ -29,3 +29,7 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+.vs/
+
+native-winui/**/bin/
+native-winui/**/obj/
