@@ -29,6 +29,7 @@ use reqwest::redirect::Policy;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const APP_USER_AGENT: &str = "inspiration-drawer";
+const MAX_STORED_DATA_THUMBNAIL_CHARS: usize = 96 * 1024;
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
@@ -590,6 +591,30 @@ async fn post_ai_json(
 }
 
 #[tauri::command]
+async fn post_ai_text(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    body: serde_json::Value,
+    proxy: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("请先填写 API Key".to_string());
+        }
+        http_post_json(
+            &app_handle,
+            &url,
+            &api_key,
+            &body,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )
+    })
+    .await
+    .map_err(|e| format!("AI 请求任务失败：{}", e))?
+}
+
+#[tauri::command]
 async fn post_ai_image_edit(
     app_handle: tauri::AppHandle,
     url: String,
@@ -642,6 +667,28 @@ async fn get_ai_json(
         )?;
         serde_json::from_str(&raw)
             .map_err(|e| format!("AI response JSON parse failed: {}; raw response: {}", e, raw))
+    })
+    .await
+    .map_err(|e| format!("AI GET request task failed: {}", e))?
+}
+
+#[tauri::command]
+async fn get_ai_text(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    proxy: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("Please enter API Key first.".to_string());
+        }
+        http_get_text(
+            &app_handle,
+            &url,
+            &api_key,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )
     })
     .await
     .map_err(|e| format!("AI GET request task failed: {}", e))?
@@ -918,20 +965,91 @@ fn get_user_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
     path
 }
 
+fn is_data_image_string(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    let prefix = "data:image/";
+    trimmed
+        .get(..prefix.len())
+        .map(|head| head.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
+}
+
+fn remove_data_image_field(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    max_chars: Option<usize>,
+) {
+    let should_remove = object
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| {
+            is_data_image_string(value)
+                && max_chars
+                    .map(|limit| value.len() > limit)
+                    .unwrap_or(true)
+        })
+        .unwrap_or(false);
+
+    if should_remove {
+        object.remove(key);
+    }
+}
+
+fn compact_item_json_object(object: &mut serde_json::Map<String, serde_json::Value>) {
+    remove_data_image_field(object, "sourceUrl", None);
+    remove_data_image_field(object, "originalUrl", None);
+    remove_data_image_field(object, "thumbnail", Some(MAX_STORED_DATA_THUMBNAIL_CHARS));
+    remove_data_image_field(object, "cover", Some(MAX_STORED_DATA_THUMBNAIL_CHARS));
+}
+
+fn compact_item_like_json(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut() {
+        compact_item_json_object(object);
+        if let Some(item) = object.get_mut("item") {
+            compact_item_like_json(item);
+        }
+    }
+}
+
+fn compact_items_payload(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                compact_item_like_json(item);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            compact_item_json_object(object);
+            if let Some(items) = object.get_mut("items").and_then(|value| value.as_array_mut()) {
+                for item in items {
+                    compact_item_like_json(item);
+                }
+            }
+            if let Some(item) = object.get_mut("item") {
+                compact_item_like_json(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tauri::command]
 fn load_items(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_items.json");
     if path.exists() {
         let content = fs::read_to_string(path).unwrap_or_else(|_| "[]".to_string());
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+        let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        compact_items_payload(&mut value);
+        Ok(value)
     } else {
         Ok(serde_json::json!([]))
     }
 }
 
 #[tauri::command]
-fn save_items(app_handle: tauri::AppHandle, items: serde_json::Value) -> Result<(), String> {
+fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_items.json");
+    compact_items_payload(&mut items);
     let content = serde_json::to_string(&items).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
 }
@@ -951,6 +1069,27 @@ fn load_folders(app_handle: tauri::AppHandle) -> Result<serde_json::Value, Strin
 fn save_folders(app_handle: tauri::AppHandle, folders: serde_json::Value) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
     let content = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_canvas_state(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
+    if path.exists() {
+        let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".to_string());
+        let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        compact_items_payload(&mut value);
+        Ok(value)
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+#[tauri::command]
+fn save_canvas_state(app_handle: tauri::AppHandle, mut state: serde_json::Value) -> Result<(), String> {
+    let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
+    compact_items_payload(&mut state);
+    let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
@@ -2946,7 +3085,7 @@ fn get_video_thumb(path: String) -> Result<String, String> {
 
     let temp_dir = std::env::temp_dir();
     let file_name = format!(
-        "thumb_{}.png",
+        "thumb_{}.jpg",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2974,8 +3113,10 @@ fn get_video_thumb(path: String) -> Result<String, String> {
                 "-frames:v",
                 "1",
                 "-vf",
-                "scale=720:-2",
-                out_path.to_str().unwrap_or("thumb.png"),
+                "scale=360:-2",
+                "-q:v",
+                "6",
+                out_path.to_str().unwrap_or("thumb.jpg"),
             ])
             .output()
             .map_err(|e| format!("FFmpeg 调用失败: {}", e))?;
@@ -2994,7 +3135,7 @@ fn get_video_thumb(path: String) -> Result<String, String> {
         use base64::{engine::general_purpose, Engine as _};
         let b64 = general_purpose::STANDARD.encode(&img_bytes);
         let _ = fs::remove_file(&out_path);
-        Ok(format!("data:image/png;base64,{}", b64))
+        Ok(format!("data:image/jpeg;base64,{}", b64))
     } else {
         Err(if last_error.is_empty() {
             "video thumbnail generation failed".to_string()
@@ -3136,7 +3277,7 @@ fn auto_start_value_matches_current_exe(value: &str) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn get_auto_start_impl() -> Result<bool, String> {
+fn read_auto_start_value_impl() -> Result<Option<String>, String> {
     use std::ptr::null_mut;
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::winerror::ERROR_SUCCESS;
@@ -3148,7 +3289,7 @@ fn get_auto_start_impl() -> Result<bool, String> {
         let mut hkey = null_mut();
         let status = RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey);
         if status != ERROR_SUCCESS as i32 {
-            return Ok(false);
+            return Ok(None);
         }
 
         let name = auto_start_wide_null(AUTO_START_VALUE_NAME);
@@ -3165,7 +3306,7 @@ fn get_auto_start_impl() -> Result<bool, String> {
 
         if status != ERROR_SUCCESS as i32 || size_bytes == 0 {
             RegCloseKey(hkey);
-            return Ok(false);
+            return Ok(None);
         }
 
         let mut buffer = vec![0u16; ((size_bytes as usize) + 1) / 2];
@@ -3180,17 +3321,54 @@ fn get_auto_start_impl() -> Result<bool, String> {
         RegCloseKey(hkey);
 
         if status != ERROR_SUCCESS as i32 {
-            return Ok(false);
+            return Ok(None);
         }
 
         if value_type != REG_SZ && value_type != REG_EXPAND_SZ {
-            return Ok(false);
+            return Ok(None);
         }
 
         let end = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
-        let value = String::from_utf16_lossy(&buffer[..end]);
-        auto_start_value_matches_current_exe(&value)
+        Ok(Some(String::from_utf16_lossy(&buffer[..end])))
     }
+}
+
+#[cfg(all(target_os = "windows", debug_assertions))]
+fn auto_start_value_points_to_existing_same_named_exe(value: &str) -> bool {
+    let registered = parse_windows_run_exe_path(value);
+    if registered.as_os_str().is_empty() || !registered.exists() {
+        return false;
+    }
+
+    let Ok(current) = std::env::current_exe() else {
+        return false;
+    };
+
+    registered.file_name().is_some()
+        && registered.file_name() == current.file_name()
+}
+
+#[cfg(target_os = "windows")]
+fn get_auto_start_impl() -> Result<bool, String> {
+    let Some(value) = read_auto_start_value_impl()? else {
+        return Ok(false);
+    };
+
+    if auto_start_value_matches_current_exe(&value)? {
+        return Ok(true);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        // In `tauri dev`, the current executable is target/debug/inspiration-drawer.exe.
+        // Treat an existing installed app Run entry as enabled so the dev UI does not
+        // wrongly suggest that startup is off.
+        if auto_start_value_points_to_existing_same_named_exe(&value) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3214,6 +3392,17 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
         RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER,
     };
     use winapi::um::winnt::{KEY_SET_VALUE, REG_SZ};
+
+    #[cfg(debug_assertions)]
+    if auto_start {
+        if let Some(existing) = read_auto_start_value_impl()? {
+            if auto_start_value_points_to_existing_same_named_exe(&existing) {
+                return Ok(());
+            }
+        }
+
+        return Err("开发模式不会写入开机启动，避免把启动项指向 debug exe；请用正式安装版开启。".to_string());
+    }
 
     unsafe {
         let subkey = auto_start_wide_null(AUTO_START_REG_SUBKEY);
@@ -3524,8 +3713,18 @@ fn copy_image_impl(data_url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
-    native_drag::start_file_drag(paths)
+fn start_file_drag(app_handle: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let cancel_rect = app_handle.get_webview_window("main").and_then(|main| {
+        let pos = main.outer_position().ok()?;
+        let size = main.outer_size().ok()?;
+        Some(native_drag::CancelRect {
+            left: pos.x,
+            top: pos.y,
+            right: pos.x.saturating_add(size.width as i32),
+            bottom: pos.y.saturating_add(size.height as i32),
+        })
+    });
+    native_drag::start_file_drag(paths, cancel_rect)
 }
 
 #[tauri::command]
@@ -4808,20 +5007,58 @@ fn sync_drawer_bounds(app_handle: tauri::AppHandle, width: f64, height: f64) -> 
 }
 
 const MAX_FLOATING_NOTE_WINDOWS: u32 = 8;
+const MAX_PREWARMED_NOTE_WINDOWS: u32 = 2;
 
-fn validate_note_window_label(label: &str) -> Result<(), String> {
+fn note_window_index(label: &str) -> Result<Option<u32>, String> {
     if label == "note" {
-        return Ok(());
+        return Ok(None);
     }
 
     let Some(raw_index) = label.strip_prefix("note_") else {
         return Err(format!("invalid note window label: {}", label));
     };
 
-    let index = raw_index
+    raw_index
         .parse::<u32>()
-        .map_err(|_| format!("invalid note window label: {}", label))?;
-    if !(1..=MAX_FLOATING_NOTE_WINDOWS).contains(&index) {
+        .map(Some)
+        .map_err(|_| format!("invalid note window label: {}", label))
+}
+
+fn validate_note_window_label(label: &str) -> Result<(), String> {
+    if let Some(index) = note_window_index(label)? {
+        if !(1..=MAX_FLOATING_NOTE_WINDOWS).contains(&index) {
+            return Err(format!(
+                "桌面便签最多同时保留 {} 个，请先关闭一个便签。",
+                MAX_FLOATING_NOTE_WINDOWS
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn can_prewarm_note_window(label: &str) -> Result<bool, String> {
+    match note_window_index(label)? {
+        Some(index) => Ok(index <= MAX_PREWARMED_NOTE_WINDOWS),
+        None => Ok(MAX_PREWARMED_NOTE_WINDOWS > 0),
+    }
+}
+
+fn enforce_note_window_limit(app_handle: &tauri::AppHandle, target_label: &str) -> Result<(), String> {
+    let visible_count = (1..=MAX_FLOATING_NOTE_WINDOWS)
+        .filter(|index| {
+            let label = format!("note_{}", index);
+            if label == target_label {
+                return true;
+            }
+            app_handle
+                .get_webview_window(&label)
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false)
+        })
+        .count() as u32;
+
+    if visible_count > MAX_FLOATING_NOTE_WINDOWS {
         return Err(format!(
             "桌面便签最多同时保留 {} 个，请先关闭一个便签。",
             MAX_FLOATING_NOTE_WINDOWS
@@ -4853,6 +5090,9 @@ fn build_hidden_note_window(app_handle: &tauri::AppHandle, label: String) -> Res
 fn prewarm_note_window(app_handle: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
     validate_note_window_label(&label)?;
+    if !can_prewarm_note_window(&label)? {
+        return Ok(());
+    }
     if app_handle.get_webview_window(&label).is_none() {
         let _ = build_hidden_note_window(&app_handle, label)?;
     }
@@ -4872,7 +5112,24 @@ fn show_note_window(
 ) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
     validate_note_window_label(&label)?;
+    enforce_note_window_limit(&app_handle, &label)?;
+    thread::spawn(move || {
+        if let Err(err) = show_note_window_impl(app_handle, label, width, height, x, y, topmost) {
+            eprintln!("show note window failed: {err}");
+        }
+    });
+    Ok(())
+}
 
+fn show_note_window_impl(
+    app_handle: tauri::AppHandle,
+    label: String,
+    width: Option<f64>,
+    height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+    topmost: Option<bool>,
+) -> Result<(), String> {
     let note = if let Some(note) = app_handle.get_webview_window(&label) {
         note
     } else {
@@ -4929,7 +5186,15 @@ fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), S
         return Ok(());
     };
 
-    note.hide().map_err(|e| e.to_string())
+    note.hide().map_err(|e| e.to_string())?;
+    if can_prewarm_note_window(&label)? {
+        return Ok(());
+    }
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(160));
+        let _ = note.close();
+    });
+    Ok(())
 }
 
 
@@ -5276,9 +5541,35 @@ fn show_system_notification(title: String, body: String) -> Result<(), String> {
     show_windows_toast(&title, &body)
 }
 
+fn current_or_default_drawer_size(app: &tauri::AppHandle) -> (f64, f64) {
+    app.get_webview_window("main")
+        .and_then(|main| {
+            let factor = main.scale_factor().ok()?;
+            let size = main.outer_size().ok()?.to_logical::<f64>(factor);
+            if size.width >= DRAWER_MIN_WIDTH && size.height >= DRAWER_MIN_HEIGHT {
+                Some((size.width, size.height))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((400.0, 800.0))
+}
+
+fn request_force_rescue(app: &tauri::AppHandle) {
+    set_startup_close_lock(0);
+    ANTI_TOUCH_LOCKED.store(0, Ordering::Relaxed);
+
+    let (width, height) = current_or_default_drawer_size(app);
+    let _ = open_drawer(app.clone(), width, height, None);
+    let _ = app.emit("force-rescue", ());
+}
+
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            request_force_rescue(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .manage(SnipState {
             pre_snip_bounds: std::sync::Mutex::new(None),
@@ -5293,6 +5584,8 @@ fn main() {
             save_items,
             load_folders,
             save_folders,
+            load_canvas_state,
+            save_canvas_state,
             load_ai_analysis_config,
             save_ai_analysis_config,
             get_web_image_cache_dir,
@@ -5303,7 +5596,9 @@ fn main() {
             get_openai_compatible_models,
             get_ai_json,
             post_ai_json,
+            post_ai_text,
             post_ai_image_edit,
+            get_ai_text,
             create_cloudflared_public_image_urls,
             stop_cloudflared_share,
             cache_web_image,
@@ -5414,7 +5709,7 @@ fn main() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "open_drawer" => {
-                            let _ = open_drawer(app.clone(), 400.0, 800.0, None);
+                            request_force_rescue(app);
                         }
                         "toggle_trigger" => {
                             let _ = app.emit("tray-toggle-trigger-mode", ());
@@ -5435,7 +5730,7 @@ fn main() {
                         } = event
                         {
                             let app = tray.app_handle();
-                            let _ = open_drawer(app.clone(), 400.0, 800.0, None);
+                            request_force_rescue(&app);
                         }
                     })
                     .build(app);

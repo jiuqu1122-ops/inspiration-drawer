@@ -160,7 +160,7 @@ type DrawerUndoSnapshot = {
   createdAt: number;
 };
 
-const DRAWER_UNDO_LIMIT = 30;
+const DRAWER_UNDO_LIMIT = 8;
 type CanvasUndoSnapshot = {
   items: CanvasImageItem[];
   selectedIds: string[];
@@ -170,7 +170,77 @@ type CanvasUndoSnapshot = {
   createdAt: number;
 };
 
-const CANVAS_UNDO_LIMIT = 30;
+const CANVAS_UNDO_LIMIT = 6;
+const CANVAS_STATE_SAVE_DEBOUNCE_MS = 320;
+const DRAWER_ITEMS_SAVE_DEBOUNCE_MS = 360;
+const DATA_THUMBNAIL_KEEP_MAX_CHARS = 96 * 1024;
+
+type CanvasPersistedState = {
+  items: CanvasImageItem[];
+  size: { width: number; height: number };
+  scale: number;
+  scroll: { left: number; top: number };
+  updatedAt: number;
+};
+
+const isDataImageSourceValue = (value?: string | null) => (
+  /^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(String(value || '').trim())
+);
+
+const stripDataImageProvenance = (item: BufferItem): BufferItem => {
+  const hasDataSource = isDataImageSourceValue(item.sourceUrl);
+  const hasDataOriginal = isDataImageSourceValue(item.originalUrl);
+  if (!hasDataSource && !hasDataOriginal) return item;
+  const next = { ...item };
+  if (hasDataSource) next.sourceUrl = undefined;
+  if (hasDataOriginal) next.originalUrl = undefined;
+  return next;
+};
+
+const stripHeavyDataThumbnail = (item: BufferItem): BufferItem => {
+  const nextItem = stripDataImageProvenance(item);
+  const thumbnail = nextItem.thumbnail || '';
+  if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) {
+    return nextItem;
+  }
+  const next = nextItem === item ? { ...item } : { ...nextItem };
+  next.thumbnail = undefined;
+  return next;
+};
+
+const compactFloatingNoteSnapshot = (snapshot: FloatingNoteSnapshot): FloatingNoteSnapshot => {
+  const thumbnail = snapshot.thumbnail || '';
+  if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) {
+    return snapshot;
+  }
+  return { ...snapshot, thumbnail: undefined };
+};
+
+const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): CanvasImageItem => {
+  const nextItem = stripHeavyDataThumbnail(item.item);
+  return nextItem === item.item ? item : { ...item, item: nextItem };
+};
+
+const sanitizeCanvasPersistedState = (value: unknown): CanvasPersistedState => {
+  const record = value && typeof value === 'object' ? value as Partial<CanvasPersistedState> : {};
+  const rawSize = record.size && typeof record.size === 'object' ? record.size : {};
+  const rawScroll = record.scroll && typeof record.scroll === 'object' ? record.scroll : {};
+  const size = {
+    width: clamp(Number((rawSize as { width?: unknown }).width) || CANVAS_BASE_WIDTH, CANVAS_BASE_WIDTH, 20000),
+    height: clamp(Number((rawSize as { height?: unknown }).height) || CANVAS_BASE_HEIGHT, CANVAS_BASE_HEIGHT, 20000),
+  };
+  const scroll = {
+    left: Math.max(0, Number((rawScroll as { left?: unknown }).left) || 0),
+    top: Math.max(0, Number((rawScroll as { top?: unknown }).top) || 0),
+  };
+  return {
+    items: Array.isArray(record.items) ? record.items.map(stripCanvasItemDataImageProvenance) : [],
+    size,
+    scale: clamp(Number(record.scale) || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
+    scroll,
+    updatedAt: Number(record.updatedAt) || 0,
+  };
+};
 
 const cloneDrawerValue = <T,>(value: T): T => {
   try {
@@ -217,14 +287,14 @@ const CANVAS_FALLBACK_IMAGE_WIDTH = 360;
 const CANVAS_FALLBACK_IMAGE_HEIGHT = 260;
 const CANVAS_INITIAL_IMAGE_MAX_WIDTH = 720;
 const CANVAS_INITIAL_IMAGE_MAX_HEIGHT = 560;
-const IMAGE_THUMBNAIL_MAX_WIDTH = 720;
-const IMAGE_THUMBNAIL_MAX_HEIGHT = 480;
+const IMAGE_THUMBNAIL_MAX_WIDTH = 360;
+const IMAGE_THUMBNAIL_MAX_HEIGHT = 240;
 const IMAGE_THUMBNAIL_LEGACY_MAX_WIDTH = 360;
 const IMAGE_THUMBNAIL_LEGACY_MAX_HEIGHT = 240;
-const VIDEO_THUMBNAIL_MAX_WIDTH = 720;
-const VIDEO_THUMBNAIL_MAX_HEIGHT = 440;
-const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 180 * 1024;
-const VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES = 120 * 1024 * 1024;
+const VIDEO_THUMBNAIL_MAX_WIDTH = 360;
+const VIDEO_THUMBNAIL_MAX_HEIGHT = 220;
+const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
+const VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES = 24 * 1024 * 1024;
 const BLANK_NOTE_CREATE_LOCK_STORAGE_KEY = 'drawer_blank_note_create_lock';
 const SNIP_CAPTURE_LOCK_STORAGE_KEY = 'drawer_snip_capture_lock';
 const FLOATING_NOTE_CREATE_LOCK_STORAGE_PREFIX = 'drawer_floating_note_create_lock_';
@@ -242,11 +312,11 @@ const CANVAS_AI_ENDPOINT_STORAGE_KEY = 'drawer_canvas_ai_endpoint';
 const CANVAS_AI_OPENAI_MODELS_STORAGE_KEY = 'drawer_canvas_ai_openai_models';
 const CANVAS_AI_XAIS_MODELS_STORAGE_KEY = 'drawer_canvas_ai_xais_models';
 const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
-const CANVAS_AI_RESOLUTIONS = ['1k', '2k', '4k'];
+const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
 const CANVAS_AI_COUNTS = [1, 2, 3, 4];
 const CANVAS_PASTE_OFFSET = 54;
 const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
-const CANVAS_AI_DEFAULT_RESOLUTION = '2k';
+const CANVAS_AI_DEFAULT_OUTPUT_FORMAT = 'jpg';
 const CANVAS_AI_DEFAULT_COUNT = 1;
 const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
 const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
@@ -271,9 +341,9 @@ const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_R
   value: ratio,
   label: ratio,
 }));
-const CANVAS_AI_RESOLUTION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_RESOLUTIONS.map(resolution => ({
-  value: resolution,
-  label: resolution,
+const CANVAS_AI_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_OUTPUT_FORMATS.map(format => ({
+  value: format,
+  label: format.toUpperCase(),
 }));
 const CANVAS_AI_COUNT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_COUNTS.map(count => ({
   value: String(count),
@@ -287,6 +357,125 @@ const CANVAS_AI_NODE_SELECT_MENU_CLASS = '!border-stone-200/80 !bg-white/96 !tex
 const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-700 hover:!bg-cyan-50 hover:!text-cyan-800 dark:!text-white dark:hover:!bg-white/10 dark:hover:!text-white';
 const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-cyan-100 !text-cyan-800 dark:!bg-cyan-400 dark:!text-stone-950';
 const CANVAS_AI_PANEL_SELECT_CLASS = 'h-[34px] w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 text-xs font-medium text-stone-700 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:hover:bg-stone-900/70';
+type CanvasAiPromptPreset = {
+  id: string;
+  label: string;
+  hint: string;
+  prompt: string;
+  aspectRatio?: string;
+  resolution?: string;
+  outputFormat?: string;
+  count?: number;
+};
+const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
+  {
+    id: 'product-render',
+    label: '产品渲染',
+    hint: '高级工业设计棚拍',
+    aspectRatio: '16:9',
+    outputFormat: 'jpg',
+    prompt: `基于连接的参考图，为图中的产品生成一张高级工业设计产品渲染图。
+
+视觉风格：
+- 高端消费电子产品摄影
+- 简约深色背景
+- 暗光环境
+- 柔和轮廓光
+- 产品边缘有高级高光
+- 轻微虚焦背景
+- 真实材质表现
+- 干净、克制、有质感
+
+产品要求：
+- 保持原产品结构、比例、按键、接口、分件线不变
+- 不改变产品功能布局
+- 表面干净，不要脏污、油腻、划痕
+- 不要文字、不要 logo 乱生成、不要说明标签`,
+  },
+  {
+    id: 'cmf-exploration',
+    label: 'CMF 探索',
+    hint: '材质与配色方向',
+    aspectRatio: '4:3',
+    outputFormat: 'jpg',
+    prompt: `基于连接的参考图，为图中的产品做一张 CMF 设计探索图。
+
+要求：
+- 保持产品结构、比例、按键、接口、分件线不变
+- 展示 3 个克制且高级的配色/材质方向
+- 强调真实材质：金属、磨砂塑料、玻璃、织物或软触涂层
+- 光线柔和，背景干净，构图像设计评审板
+- 不要添加品牌 logo、文字标签或说明箭头`,
+  },
+  {
+    id: 'lifestyle-scene',
+    label: '场景氛围',
+    hint: '真实使用场景',
+    aspectRatio: '16:9',
+    outputFormat: 'jpg',
+    prompt: `基于连接的参考图，为图中的产品生成一张真实生活方式场景图。
+
+场景方向：
+- 现代、干净、有审美的居家或办公环境
+- 产品是画面主角，构图自然，不要像广告硬广
+- 光线柔和，有轻微景深，材质真实
+
+产品约束：
+- 保持原产品结构和功能布局不变
+- 不增加不存在的屏幕内容、按钮、接口或品牌标识
+- 不要文字、不要说明标签、不要夸张特效`,
+  },
+  {
+    id: 'detail-hero',
+    label: '细节特写',
+    hint: '边缘高光与材质',
+    aspectRatio: '3:4',
+    outputFormat: 'jpg',
+    prompt: `基于连接的参考图，为图中的产品生成一张高级产品细节特写图。
+
+画面要求：
+- 聚焦关键边缘、倒角、按键、接口或分件线
+- 微距产品摄影质感，浅景深，背景干净
+- 边缘有精致高光，材质真实可信
+- 画面克制，不要过度锐化或赛博风
+
+产品约束：
+- 不改变原结构、比例、功能布局
+- 表面干净，不要划痕、污渍、指纹
+- 不要文字、不要 logo 乱生成、不要说明标签`,
+  },
+];
+const CANVAS_AI_PROMPT_PRESET_PLACEHOLDER = '__canvas_ai_prompt_preset__';
+const CANVAS_AI_PROMPT_PRESET_ADD_VALUE = '__canvas_ai_prompt_preset_add__';
+const CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE = '__canvas_ai_prompt_preset_manage__';
+const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
+const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
+const normalizeCanvasAiPromptPreset = (value: unknown): CanvasAiPromptPreset | null => {
+  const record = value && typeof value === 'object' ? value as Partial<CanvasAiPromptPreset> : {};
+  const label = typeof record.label === 'string' ? record.label.trim().slice(0, 24) : '';
+  const prompt = typeof record.prompt === 'string' ? record.prompt.trim() : '';
+  if (!label || !prompt) return null;
+  return {
+    id: typeof record.id === 'string' && record.id.trim() ? record.id.trim() : `custom-${Math.random().toString(36).substring(2, 9)}`,
+    label,
+    hint: typeof record.hint === 'string' && record.hint.trim() ? record.hint.trim().slice(0, 48) : '自定义 Prompt 预设',
+    prompt,
+    aspectRatio: typeof record.aspectRatio === 'string' ? record.aspectRatio : undefined,
+    resolution: typeof record.resolution === 'string' ? record.resolution : undefined,
+    outputFormat: typeof record.outputFormat === 'string' ? record.outputFormat : undefined,
+    count: typeof record.count === 'number' ? record.count : undefined,
+  };
+};
+const readCustomCanvasAiPromptPresets = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed)
+      ? parsed.map(normalizeCanvasAiPromptPreset).filter((item): item is CanvasAiPromptPreset => !!item)
+      : [];
+  } catch (_) {
+    return [];
+  }
+};
 const getCanvasAiDefaultModel = (provider: CanvasAiProvider) => (
   provider === 'xais-chat'
     ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
@@ -352,6 +541,7 @@ const getCanvasAiEndpointForModels = (provider: CanvasAiProvider, endpoint: stri
 const isCanvasAiXaisImageModel = (model: string) => {
   const normalized = model.trim();
   return /nano[_-]?banana/i.test(normalized)
+    || /^(?:image2|img2)[_-]/i.test(normalized)
     || normalized.toLowerCase() === 'c3f';
 };
 const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (
@@ -660,6 +850,8 @@ function MainApp() {
   const drawerUndoRestoringRef = useRef(false);
   const canvasUndoStackRef = useRef<CanvasUndoSnapshot[]>([]);
   const canvasUndoRestoringRef = useRef(false);
+  const drawerItemsSaveTimerRef = useRef<number | null>(null);
+  const floatingBridgeSeenRef = useRef<Record<string, number>>({});
   const drawerTextEditUndoIdsRef = useRef<Set<string>>(new Set());
   const floatingTextUndoTimersRef = useRef<Record<string, number>>({});
   const blankFloatingNoteCreateLockRef = useRef(false);
@@ -675,6 +867,7 @@ function MainApp() {
   const [isCanvasSpacePressed, setIsCanvasSpacePressed] = useState(false);
   const [isCanvasChromeHidden, setIsCanvasChromeHidden] = useState(false);
   const [isCanvasNavigatorVisible, setIsCanvasNavigatorVisible] = useState(() => localStorage.getItem('drawer_canvas_navigator_visible') !== 'false');
+  const [isCanvasGeneratedListVisible, setIsCanvasGeneratedListVisible] = useState(() => localStorage.getItem('drawer_canvas_generated_list_visible') !== 'false');
   const [showCanvasExitPrompt, setShowCanvasExitPrompt] = useState(false);
   const [canvasExitPromptStep, setCanvasExitPromptStep] = useState<'choice' | 'save'>('choice');
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
@@ -703,6 +896,12 @@ function MainApp() {
   const [canvasAiXaisModels, setCanvasAiXaisModels] = useState<string[]>(() => readStoredCanvasAiXaisModels());
   const [isRefreshingCanvasAiOpenAiModels, setIsRefreshingCanvasAiOpenAiModels] = useState(false);
   const [canvasAiOpenAiModelError, setCanvasAiOpenAiModelError] = useState('');
+  const [customCanvasAiPromptPresets, setCustomCanvasAiPromptPresets] = useState<CanvasAiPromptPreset[]>(() => readCustomCanvasAiPromptPresets());
+  const [isCanvasPresetEditorOpen, setIsCanvasPresetEditorOpen] = useState(false);
+  const [canvasPresetEditorMode, setCanvasPresetEditorMode] = useState<'create' | 'manage'>('create');
+  const [canvasPresetEditingId, setCanvasPresetEditingId] = useState('');
+  const [canvasPresetNameDraft, setCanvasPresetNameDraft] = useState('');
+  const [canvasPresetPromptDraft, setCanvasPresetPromptDraft] = useState('');
   const isCanvasModeRef = useRef(false);
   const canvasItemsRef = useRef<CanvasImageItem[]>([]);
   const canvasSelectedIdsRef = useRef<string[]>([]);
@@ -784,6 +983,8 @@ function MainApp() {
   const canvasSpaceKeyCapturedRef = useRef(false);
   const keepCanvasSessionOnLeaveRef = useRef(false);
   const canvasReturnScrollRef = useRef<{ left: number; top: number } | null>(null);
+  const canvasStateLoadedRef = useRef(false);
+  const canvasPersistSaveTimerRef = useRef<number | null>(null);
   const pendingCanvasFocusItemIdRef = useRef<string | null>(null);
   const setCanvasInteractionActive = (active: boolean, releaseDelay = 120) => {
     if (canvasInteractionTimerRef.current !== null) {
@@ -846,6 +1047,7 @@ function MainApp() {
   useEffect(() => { canvasInputPickTargetIdRef.current = canvasInputPickTargetId; }, [canvasInputPickTargetId]);
   useEffect(() => { isCanvasSpacePressedRef.current = isCanvasSpacePressed; }, [isCanvasSpacePressed]);
   useEffect(() => { localStorage.setItem('drawer_canvas_navigator_visible', isCanvasNavigatorVisible ? 'true' : 'false'); }, [isCanvasNavigatorVisible]);
+  useEffect(() => { localStorage.setItem('drawer_canvas_generated_list_visible', isCanvasGeneratedListVisible ? 'true' : 'false'); }, [isCanvasGeneratedListVisible]);
   useEffect(() => {
     localStorage.setItem(CANVAS_AI_PROVIDER_STORAGE_KEY, canvasAiProvider);
     localStorage.setItem(CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY, CANVAS_AI_PROVIDER_DEFAULT_VERSION);
@@ -857,6 +1059,9 @@ function MainApp() {
     }
   }, [canvasAiApiKey, canvasAiProvider]);
   useEffect(() => { localStorage.setItem(CANVAS_AI_ENDPOINT_STORAGE_KEY, canvasAiEndpoint); }, [canvasAiEndpoint]);
+  useEffect(() => {
+    localStorage.setItem(CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY, JSON.stringify(customCanvasAiPromptPresets));
+  }, [customCanvasAiPromptPresets]);
   useLayoutEffect(() => {
     if (!isCanvasMode) return;
     applyCanvasScaleStyles(canvasScaleRef.current, canvasSizeRef.current);
@@ -1052,7 +1257,7 @@ function MainApp() {
   const takeDrawerUndoSnapshot = (label: string): DrawerUndoSnapshot => {
     const openFloatingNoteLabels = readOpenFloatingNoteLabels();
     return {
-      items: cloneDrawerValue(itemsRef.current),
+      items: cloneDrawerValue(itemsRef.current.map(stripHeavyDataThumbnail)),
       folders: cloneDrawerValue(foldersRef.current),
       activeFolderId: activeFolderIdStateRef.current,
       activeTab: activeTabRef.current,
@@ -1060,7 +1265,7 @@ function MainApp() {
       floatingNotes: openFloatingNoteLabels
         .map(noteLabel => {
           const snapshot = readFloatingNoteSnapshot(noteLabel);
-          return snapshot ? { label: noteLabel, snapshot: cloneDrawerValue(snapshot) } : null;
+          return snapshot ? { label: noteLabel, snapshot: cloneDrawerValue(compactFloatingNoteSnapshot(snapshot)) } : null;
         })
         .filter((entry): entry is { label: string; snapshot: FloatingNoteSnapshot } => !!entry),
       label,
@@ -1457,6 +1662,9 @@ function MainApp() {
   const draggingItemIdRef = useRef<string | null>(null);
   useEffect(() => { draggingItemIdRef.current = draggingItemId; }, [draggingItemId]);
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+  const closeConfirmDialog = () => {
+    setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+  };
 
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -1645,6 +1853,23 @@ function MainApp() {
       ? canvasAiOpenAiModelOptions
       : getCanvasAiModelOptions(provider)
   );
+  const canvasAiPromptPresets = useMemo(() => {
+    const defaultIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
+    const customById = new Map(customCanvasAiPromptPresets.map(preset => [preset.id, preset]));
+    return [
+      ...CANVAS_AI_PROMPT_PRESETS.map(preset => customById.get(preset.id) || preset),
+      ...customCanvasAiPromptPresets.filter(preset => !defaultIds.has(preset.id)),
+    ];
+  }, [customCanvasAiPromptPresets]);
+  const canvasAiPromptPresetSelectOptions = useMemo<RoundedSelectOption[]>(() => [
+    { value: CANVAS_AI_PROMPT_PRESET_PLACEHOLDER, label: '预设' },
+    ...canvasAiPromptPresets.map(preset => ({
+      value: preset.id,
+      label: preset.label,
+    })),
+    { value: CANVAS_AI_PROMPT_PRESET_ADD_VALUE, label: '+ 新增预设' },
+    { value: CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE, label: '管理预设' },
+  ], [canvasAiPromptPresets]);
   const canvasAiRemoteModelCount = canvasAiProvider === 'xais-chat'
     ? canvasAiXaisModels.length
     : canvasAiOpenAiModels.length;
@@ -1871,7 +2096,7 @@ function MainApp() {
   const alchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => isAlchemyCandidate(item)).length, [items]);
   const finishedAlchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => getAlchemyState(item) === 'alchemy').length, [items]);
 
-  const quickAccessItems = items.filter(item => item.isQuickAccess);
+  const quickAccessItems = useMemo(() => items.filter(item => item.isQuickAccess), [items]);
   const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
   const renderedDisplayItems = useMemo(
     () => displayItems.slice(0, drawerRenderLimit),
@@ -2392,7 +2617,7 @@ function MainApp() {
     const folderId = ensureAiGeneratedFolder();
     const now = Date.now();
     const savedItems = cleanItems.map((item, index) => ({
-      ...item,
+      ...stripHeavyDataThumbnail(item),
       folderId,
       createdAt: item.createdAt || now + index,
       isQuickAccess: false,
@@ -2422,12 +2647,16 @@ function MainApp() {
         .then((cachedPath) => {
           if (!cachedPath) return;
           const cachedUrl = convertFileSrc(cachedPath);
+          const sourceIsDataImage = isDataImageSourceValue(source);
+          const originalUrl = sourceIsDataImage || isDataImageSourceValue(item.originalUrl)
+            ? undefined
+            : item.originalUrl || source;
           const cachedItem = {
             ...item,
             url: cachedUrl,
             path: cachedPath,
-            sourceUrl: source,
-            originalUrl: item.originalUrl || source,
+            sourceUrl: sourceIsDataImage ? undefined : source,
+            originalUrl,
           } as BufferItem;
           setItems(prev => prev.map(existing => existing.id === item.id ? cachedItem : existing));
           updateCanvasItemsImmediate(prev => prev.map(canvasItem => canvasItem.item.id === item.id
@@ -2771,14 +3000,31 @@ function MainApp() {
 
   useEffect(() => {
     let unlisten: () => void;
-    listen('force-rescue', () => {
+    listen('force-rescue', async () => {
       if (stateRef.current.isAntiTouchMode) {
-        enforceAntiTouchClosed(true);
-        return;
+        stateRef.current = {
+          ...stateRef.current,
+          isAntiTouchMode: false,
+          isOpen: true,
+          isPinned: false,
+        };
+        localStorage.setItem('drawer_anti_touch_mode', 'false');
+        await invoke('set_anti_touch_lock', { locked: false }).catch(() => {});
+        emitTo('edge', 'anti-touch-changed', false).catch(() => {});
+        setIsAntiTouchMode(false);
       }
+
+      startupAutoCloseSuppressedRef.current = false;
+      isPointerInsideDrawerRef.current = true;
       setIsPinned(false); setIsOpen(true); setShowSettings(false);
       setShowHelp(false); setShowQR(false); setConfirmDialog(prev => ({...prev, isOpen: false}));
       setShowTextInput(false); setShowFolderModal(false); setShowUpdateLog(false);
+      invoke('toggle_pin', { pinned: false }).catch(() => {});
+      await invoke('open_drawer', {
+        width: drawerWidthRef.current,
+        height: drawerHeightRef.current,
+        mode: triggerModeRef.current,
+      }).catch(() => {});
     }).then(f => unlisten = f);
     return () => { if (unlisten) unlisten(); };
   }, []);
@@ -2901,7 +3147,26 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    invoke('load_items').then((savedItems: any) => { if (savedItems && savedItems.length > 0) setItems(savedItems); setIsDataLoaded(true); }).catch(() => setIsDataLoaded(true));
+    invoke('load_items').then((savedItems: any) => {
+      if (savedItems && savedItems.length > 0) setItems(savedItems.map(stripHeavyDataThumbnail));
+      setIsDataLoaded(true);
+    }).catch(() => setIsDataLoaded(true));
+    invoke('load_canvas_state').then((savedState: unknown) => {
+      const restored = sanitizeCanvasPersistedState(savedState);
+      canvasItemsRef.current = restored.items;
+      canvasSizeRef.current = restored.size;
+      canvasScaleRef.current = restored.scale;
+      canvasReturnScrollRef.current = restored.scroll;
+      canvasScrollLockRef.current = restored.scroll;
+      setCanvasItems(restored.items);
+      setCanvasSize(restored.size);
+      setCanvasScale(restored.scale);
+      applyCanvasScaleStyles(restored.scale, restored.size);
+    }).catch((err) => {
+      console.warn('恢复画布状态失败:', err);
+    }).finally(() => {
+      canvasStateLoadedRef.current = true;
+    });
     invoke('load_folders').then((savedFolders: any) => {
       if (savedFolders && savedFolders.length > 0) {
         setFolders(savedFolders);
@@ -2910,7 +3175,38 @@ function MainApp() {
     }).catch(()=>{});
   }, []);
 
-  useEffect(() => { if (isDataLoaded) invoke('save_items', { items }).catch(()=>{}); }, [items, isDataLoaded]);
+  const saveDrawerItemsNow = () => {
+    if (!isDataLoaded) return;
+    invoke('save_items', { items: itemsRef.current.map(stripHeavyDataThumbnail) }).catch(()=>{});
+  };
+
+  const scheduleDrawerItemsSave = () => {
+    if (!isDataLoaded) return;
+    if (drawerItemsSaveTimerRef.current !== null) {
+      window.clearTimeout(drawerItemsSaveTimerRef.current);
+    }
+    drawerItemsSaveTimerRef.current = window.setTimeout(() => {
+      drawerItemsSaveTimerRef.current = null;
+      saveDrawerItemsNow();
+    }, DRAWER_ITEMS_SAVE_DEBOUNCE_MS);
+  };
+
+  useEffect(() => { scheduleDrawerItemsSave(); }, [items, isDataLoaded]);
+  useEffect(() => () => {
+    if (drawerItemsSaveTimerRef.current !== null) {
+      window.clearTimeout(drawerItemsSaveTimerRef.current);
+      drawerItemsSaveTimerRef.current = null;
+    }
+    saveDrawerItemsNow();
+  }, [isDataLoaded]);
+  useEffect(() => { scheduleCanvasStateSave(); }, [canvasItems, canvasSize, canvasScale]);
+  useEffect(() => () => {
+    if (canvasPersistSaveTimerRef.current !== null) {
+      window.clearTimeout(canvasPersistSaveTimerRef.current);
+      canvasPersistSaveTimerRef.current = null;
+    }
+    saveCanvasStateNow();
+  }, []);
   useEffect(() => {
     localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(folders));
     if (isDataLoaded) invoke('save_folders', { folders }).catch(()=>{});
@@ -2981,6 +3277,54 @@ function MainApp() {
     });
   };
 
+  const applyFloatingTextPayloadToSnapshots = (payload: any) => {
+    const itemId = typeof payload?.itemId === 'string' ? payload.itemId : '';
+    const hasContent = typeof payload?.content === 'string';
+    const hasName = typeof payload?.name === 'string';
+    const payloadScheduleItems = Array.isArray(payload?.scheduleItems)
+      ? payload.scheduleItems as FloatingNoteScheduleItem[]
+      : undefined;
+    const payloadNoteMode = payload?.noteMode === 'schedule' || payload?.noteMode === 'text'
+      ? payload.noteMode as FloatingNoteSnapshot['noteMode']
+      : undefined;
+    if (!itemId || (!hasContent && !hasName && !payloadScheduleItems && !payloadNoteMode)) return;
+
+    let didUpdateSnapshot = false;
+    readOpenFloatingNoteLabels().forEach((label) => {
+      try {
+        const snapshot = readFloatingNoteSnapshot(label);
+        if (!snapshot || snapshot.itemId !== itemId || snapshot.type !== 'text') return;
+
+        const nextContent = hasContent ? payload.content : snapshot.content;
+        const nextName = hasName ? payload.name.trim() : snapshot.name;
+        const nextNoteMode = payloadNoteMode || snapshot.noteMode;
+        const nextScheduleItems = payloadScheduleItems || (
+          hasContent && nextNoteMode === 'schedule'
+            ? buildScheduleItemsFromText(nextContent || '', snapshot.scheduleItems || [], {
+              tagIds: getFolderTagIds(snapshot.folderId, snapshot.tagIds),
+              sourceItemId: itemId,
+              defaultPriority: 'B',
+            })
+            : snapshot.scheduleItems
+        );
+
+        const nextSnapshot = {
+          ...snapshot,
+          ...(hasContent ? { content: nextContent } : {}),
+          ...(hasName ? { name: nextName } : {}),
+          ...(payloadNoteMode ? { noteMode: nextNoteMode } : {}),
+          ...(nextScheduleItems ? { scheduleItems: nextScheduleItems } : {}),
+          updatedAt: Date.now(),
+        } as FloatingNoteSnapshot;
+
+        localStorage.setItem(floatingNoteStorageKey(label), JSON.stringify(nextSnapshot));
+        didUpdateSnapshot = true;
+      } catch (_) {}
+    });
+
+    if (didUpdateSnapshot) refreshNoteManager();
+  };
+
   useEffect(() => {
     let unlistenFloatingText: (() => void) | undefined;
     let unlistenFloatingTitle: (() => void) | undefined;
@@ -2993,7 +3337,12 @@ function MainApp() {
       const hasName = typeof payload.name === 'string';
       const nextName = hasName ? payload.name.trim() : '';
       if (!itemId || (!hasContent && !hasName)) return;
+      const textKey = `text:${itemId}:${payload.sourceLabel || ''}:${payload.updatedAt || ''}`;
+      const textSeenAt = payload.updatedAt ? floatingBridgeSeenRef.current[textKey] : undefined;
+      if (textSeenAt && Date.now() - textSeenAt < 4000) return;
+      if (payload.updatedAt) floatingBridgeSeenRef.current[textKey] = Date.now();
 
+      applyFloatingTextPayloadToSnapshots(payload);
       beginFloatingTextUndo(itemId, '修改便签内容');
       setItems(prev => prev.map(i => {
         if (i.id !== itemId || i.type !== 'text') return i;
@@ -3043,6 +3392,10 @@ function MainApp() {
       const itemId = typeof payload.itemId === 'string' ? payload.itemId : '';
       const nextName = typeof payload.name === 'string' ? payload.name.trim() : '';
       if (!itemId) return;
+      const titleKey = `title:${itemId}:${payload.sourceLabel || ''}:${payload.updatedAt || ''}`;
+      const titleSeenAt = payload.updatedAt ? floatingBridgeSeenRef.current[titleKey] : undefined;
+      if (titleSeenAt && Date.now() - titleSeenAt < 4000) return;
+      if (payload.updatedAt) floatingBridgeSeenRef.current[titleKey] = Date.now();
 
       beginFloatingTextUndo(itemId, '修改便签标题');
       setItems(prev => prev.map(i => (
@@ -3192,7 +3545,7 @@ function MainApp() {
           return;
         }
         ctx.drawImage(video, 0, 0, width, height);
-        const thumbnail = canvas.toDataURL('image/jpeg', 0.72);
+        const thumbnail = canvas.toDataURL('image/jpeg', 0.68);
         lastThumbnail = thumbnail;
         if (isMostlyDarkFrame(ctx, width, height) && candidateIndex < candidateTimes.length) {
           seekNextCandidate();
@@ -3252,7 +3605,10 @@ function MainApp() {
     fetch(assetUrl, { method: 'HEAD', signal: abortController.signal })
       .then(response => {
         const size = Number(response.headers.get('content-length') || 0);
-        if (Number.isFinite(size) && size > VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES) {
+        if (!Number.isFinite(size) || size <= 0) {
+          throw new Error('video size unknown; skip blob thumbnail fallback');
+        }
+        if (size > VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES) {
           throw new Error(`video too large for blob thumbnail fallback: ${size}`);
         }
       })
@@ -3350,7 +3706,7 @@ function MainApp() {
           return;
         }
         ctx.drawImage(image, 0, 0, width, height);
-        finish(canvas.toDataURL('image/webp', 0.78));
+        finish(canvas.toDataURL('image/webp', 0.66));
       } catch (err) {
         console.warn('图片缩略图生成失败:', err);
         finish('');
@@ -3361,24 +3717,7 @@ function MainApp() {
     image.crossOrigin = 'anonymous';
     timer = window.setTimeout(() => finish(''), 8000);
 
-    const assignSource = async () => {
-      try {
-        if (rawSource.includes('asset.localhost') || rawSource.startsWith('file:') || rawSource.startsWith('asset:')) {
-          const response = await fetch(rawSource);
-          if (response.ok) {
-            const blob = await response.blob();
-            if (settled) return;
-            objectUrl = URL.createObjectURL(blob);
-            image.src = objectUrl;
-            return;
-          }
-        }
-      } catch (_) {}
-
-      if (!settled) image.src = rawSource;
-    };
-
-    void assignSource();
+    image.src = rawSource;
   });
 
   const imageThumbnailInFlightRef = useRef<Set<string>>(new Set());
@@ -3481,8 +3820,43 @@ function MainApp() {
 
   const videoThumbnailInFlightRef = useRef<Set<string>>(new Set());
 
+  const ensureVideoThumbnail = (item: BufferItem) => {
+    if (
+      item.type !== 'video' ||
+      !item.path ||
+      item.thumbnail ||
+      videoThumbnailInFlightRef.current.has(item.id)
+    ) {
+      return;
+    }
+
+    videoThumbnailInFlightRef.current.add(item.id);
+    getVideoThumbnail(item.path).then((thumbnail) => {
+      if (!thumbnail) return;
+      setItems(prev => prev.map(current => (
+        current.id === item.id && current.type === 'video' && !current.thumbnail
+          ? { ...current, thumbnail }
+          : current
+      )));
+    }).catch((err) => {
+      console.warn('video thumbnail generation failed:', err);
+    }).finally(() => {
+      videoThumbnailInFlightRef.current.delete(item.id);
+    });
+  };
+
+  const ensureMediaThumbnail = (item: BufferItem) => {
+    if (item.type === 'image') ensureImageThumbnail(item);
+    if (item.type === 'video') ensureVideoThumbnail(item);
+  };
+
   useEffect(() => {
+    const visibleIds = new Set([
+      ...renderedDisplayItems.map(item => item.id),
+      ...quickAccessItems.map(item => item.id),
+    ]);
     const pending = items.find(item =>
+      visibleIds.has(item.id) &&
       item.type === 'video' &&
       item.path &&
       !item.thumbnail &&
@@ -3504,7 +3878,7 @@ function MainApp() {
     return () => {
       cancelled = true;
     };
-  }, [items]);
+  }, [items, renderedDisplayItems, quickAccessItems]);
 
   const thumbnailRecompressInFlightRef = useRef<Set<string>>(new Set());
 
@@ -3685,6 +4059,40 @@ function MainApp() {
     return next;
   };
 
+  const buildCanvasPersistedState = (): CanvasPersistedState => ({
+    items: canvasItemsRef.current.map(stripCanvasItemDataImageProvenance),
+    size: cloneDrawerValue(canvasSizeRef.current),
+    scale: clamp(canvasScaleRef.current || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
+    scroll: cloneDrawerValue(
+      canvasReturnScrollRef.current ||
+      canvasScrollLockRef.current ||
+      {
+        left: canvasSurfaceRef.current?.scrollLeft ?? 0,
+        top: canvasSurfaceRef.current?.scrollTop ?? 0,
+      }
+    ),
+    updatedAt: Date.now(),
+  });
+
+  const saveCanvasStateNow = () => {
+    if (!canvasStateLoadedRef.current) return;
+    const state = buildCanvasPersistedState();
+    invoke('save_canvas_state', { state }).catch((err) => {
+      console.warn('保存画布状态失败:', err);
+    });
+  };
+
+  const scheduleCanvasStateSave = () => {
+    if (!canvasStateLoadedRef.current) return;
+    if (canvasPersistSaveTimerRef.current !== null) {
+      window.clearTimeout(canvasPersistSaveTimerRef.current);
+    }
+    canvasPersistSaveTimerRef.current = window.setTimeout(() => {
+      canvasPersistSaveTimerRef.current = null;
+      saveCanvasStateNow();
+    }, CANVAS_STATE_SAVE_DEBOUNCE_MS);
+  };
+
   const flushCanvasItemsInFrame = () => {
     if (canvasItemsCommitFrameRef.current !== null) {
       window.cancelAnimationFrame(canvasItemsCommitFrameRef.current);
@@ -3749,7 +4157,7 @@ function MainApp() {
   const takeCanvasUndoSnapshot = (label: string): CanvasUndoSnapshot => {
     const surface = canvasSurfaceRef.current;
     return {
-      items: cloneDrawerValue(canvasItemsRef.current),
+      items: cloneDrawerValue(canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)),
       selectedIds: cloneDrawerValue(canvasSelectedIdsRef.current),
       size: cloneDrawerValue(canvasSizeRef.current),
       scroll: {
@@ -4316,15 +4724,62 @@ function MainApp() {
     return optimizeForAi ? optimizeCanvasAiInputDataUrl(dataUrl) : dataUrl;
   };
 
-  const getCanvasAiInputSource = (item: BufferItem) => {
-    const remoteSource = [
-      item.originalUrl,
-      item.sourceUrl,
+  const getCanvasAiInputSourceCandidates = (item: BufferItem) => {
+    const path = String(item.path || '').trim();
+    const pathPreviewSource = path
+      && !/^(data:image\/|https?:\/\/|asset:|file:\/\/)/i.test(path)
+      ? convertFileSrc(path)
+      : '';
+    const seen = new Set<string>();
+    return [
+      getCanvasItemDisplaySource(item),
       item.url,
+      pathPreviewSource,
       item.path,
-    ].find(value => isRemoteHttpImageSource(value));
-    if (remoteSource) return String(remoteSource);
-    return getCanvasItemDisplaySource(item);
+      item.sourceUrl,
+      item.originalUrl,
+      item.thumbnail,
+    ]
+      .map(value => String(value || '').trim())
+      .filter((value) => {
+        if (!value || seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      });
+  };
+
+  const isDirectCanvasAiInputSource = (source?: string | null) => {
+    const value = String(source || '').trim();
+    return isDataImageSourceValue(value)
+      || /^asset:/i.test(value)
+      || /^file:\/\//i.test(value)
+      || /^https?:\/\/(?:asset\.localhost|localhost|127\.0\.0\.1)/i.test(value)
+      || /^[a-zA-Z]:[\\/]/.test(value)
+      || /^\\\\/.test(value);
+  };
+
+  const prepareCanvasAiInputSource = async (item: BufferItem, mode: 'stable' | 'remote-first' = 'stable') => {
+    const candidates = getCanvasAiInputSourceCandidates(item);
+    const remoteFallback = candidates.find(source => isRemoteHttpImageSource(source));
+    if (mode === 'remote-first' && remoteFallback) {
+      return { source: remoteFallback, remoteFallback, usedRemoteFirst: true };
+    }
+    const localCandidates = candidates.filter(source => !isRemoteHttpImageSource(source));
+    let lastError: unknown = null;
+
+    for (const source of localCandidates) {
+      try {
+        const dataUrl = await imageSourceToDataUrl(source, true);
+        if (dataUrl) return { source: dataUrl, remoteFallback, usedRemoteFirst: false };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    const directSource = localCandidates.find(source => isDirectCanvasAiInputSource(source));
+    if (directSource) return { source: directSource, remoteFallback, warning: lastError, usedRemoteFirst: false };
+    if (remoteFallback) return { source: remoteFallback, remoteFallback, usedRemoteFirst: false };
+    throw lastError || new Error('参考图没有可用图片源');
   };
 
   const getCanvasAiOutputSize = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
@@ -4346,6 +4801,32 @@ function MainApp() {
     x: target.x + target.width + 72 + (index % 2) * (size.width + 28),
     y: Math.max(24, target.y + Math.floor(index / 2) * (size.height + 28)),
   });
+
+  const cacheCanvasGeneratedImageSource = async (source: string, name: string) => {
+    const trimmed = source.trim();
+    if (!trimmed || (!isDataImageSourceValue(trimmed) && !/^https?:\/\//i.test(trimmed))) {
+      return { url: trimmed, path: '' };
+    }
+
+    const latestCacheDir = (
+      webImageCacheDirRef.current ||
+      localStorage.getItem('drawer_web_image_cache_dir') ||
+      ''
+    ).trim();
+
+    try {
+      const cachedPath = await invoke<string>('cache_web_image', {
+        url: trimmed,
+        name: name || AI_GENERATED_FOLDER_NAME,
+        dir: latestCacheDir || undefined,
+      });
+      if (!cachedPath) return { url: trimmed, path: '' };
+      return { url: convertFileSrc(cachedPath), path: cachedPath };
+    } catch (err) {
+      console.warn('AI 生成图预缓存失败，暂用接口返回源:', err);
+      return { url: trimmed, path: '' };
+    }
+  };
 
   const createCanvasAiOutputPlaceholders = (target: CanvasImageItem, prompt: string) => {
     const count = clamp(Math.round(Number(target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, 4);
@@ -4399,8 +4880,10 @@ function MainApp() {
       name: displayName,
       url: imageUrl,
       path: imageUrl,
-      sourceUrl: imageUrl,
-      originalUrl: imageUrl,
+      ...(isDataImageSourceValue(imageUrl) ? {} : {
+        sourceUrl: imageUrl,
+        originalUrl: imageUrl,
+      }),
       remark: prompt,
       createdAt: Date.now() + index,
       isQuickAccess: false,
@@ -4425,13 +4908,36 @@ function MainApp() {
     };
   };
 
-  const getCanvasTextInputsForNode = (canvasItem: CanvasImageItem) => {
-    const inputIds = canvasItem.inputs || [];
-    return canvasItemsRef.current
-      .filter(item => inputIds.includes(item.id) && item.item.type === 'text')
-      .map(item => item.item.content || '')
-      .filter(Boolean);
+  const getCanvasInputItemsForNode = (canvasItem: CanvasImageItem) => {
+    const itemsById = new Map(canvasItemsRef.current.map(item => [item.id, item]));
+    return (canvasItem.inputs || [])
+      .map(inputId => itemsById.get(inputId))
+      .filter((item): item is CanvasImageItem => !!item && item.id !== canvasItem.id);
   };
+
+  const getCanvasTextInputsForNode = (canvasItem: CanvasImageItem) => (
+    getCanvasInputItemsForNode(canvasItem)
+      .filter(item => item.item.type === 'text')
+      .map(item => item.item.content || '')
+      .filter(Boolean)
+  );
+
+  const getCanvasImageInputDescriptionsForNode = (canvasItem: CanvasImageItem) => (
+    getCanvasInputItemsForNode(canvasItem)
+      .filter(item => item.item.type === 'image')
+      .slice(0, 8)
+      .map((item, index) => {
+        const title = (item.item.name || item.item.content || '').trim();
+        const note = (item.item.remark || item.ai?.prompt || '').trim();
+        const parts = [
+          `Reference image ${index + 1}`,
+          title ? `title: ${title}` : '',
+          note ? `note: ${note}` : '',
+        ].filter(Boolean);
+        return parts.join('; ');
+      })
+      .filter(Boolean)
+  );
 
   const stopTemporaryCloudflaredShares = async (shareIds: string[]) => {
     await Promise.all(shareIds.map(shareId => (
@@ -4459,42 +4965,77 @@ function MainApp() {
     return { urls, shareIds: [result.shareId] };
   };
 
-  const getCanvasImageInputsForNode = async (canvasItem: CanvasImageItem) => {
+  const getCanvasImageInputsForNode = async (
+    canvasItem: CanvasImageItem,
+    mode: 'stable' | 'remote-first' = 'stable'
+  ) => {
     const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
-    const inputIds = canvasItem.inputs || [];
-    const inputImageItems = canvasItemsRef.current
-      .filter(item => inputIds.includes(item.id) && item.item.type === 'image')
+    const inputMode = provider === 'openai-compatible' ? 'stable' : mode;
+    const inputImageItems = getCanvasInputItemsForNode(canvasItem)
+      .filter(item => item.item.type === 'image')
       .slice(0, 8);
     const result: string[] = [];
-    const localSourcesForCloudflared: string[] = [];
+    let usedRemoteFirst = false;
+    const localInputsForCloudflared: Array<{
+      source: string;
+      remoteFallback?: string;
+      label: string;
+    }> = [];
     const temporaryShareIds: string[] = [];
     const failedItems: string[] = [];
     for (const inputItem of inputImageItems) {
+      const label = inputItem.item.name || inputItem.item.content || '参考图';
       try {
-        const source = getCanvasAiInputSource(inputItem.item);
-        if (isRemoteHttpImageSource(source)) {
-          result.push(source);
+        const prepared = await prepareCanvasAiInputSource(inputItem.item, inputMode);
+        if (prepared.usedRemoteFirst) usedRemoteFirst = true;
+        if (prepared.warning) {
+          console.warn('AI 节点参考图浏览器读取失败，改用本地源:', prepared.warning);
+        }
+        if (isRemoteHttpImageSource(prepared.source)) {
+          result.push(prepared.source);
           continue;
         }
-        const dataUrl = await imageSourceToDataUrl(source, true);
-        if (dataUrl) localSourcesForCloudflared.push(dataUrl);
+        localInputsForCloudflared.push({
+          source: prepared.source,
+          remoteFallback: prepared.remoteFallback,
+          label,
+        });
       } catch (err) {
         console.warn('AI 节点参考图读取失败:', err);
-        failedItems.push(inputItem.item.name || inputItem.item.content || '参考图');
+        failedItems.push(label);
       }
     }
 
-    if (localSourcesForCloudflared.length > 0) {
+    if (localInputsForCloudflared.length > 0) {
+      const localSources = localInputsForCloudflared.map(item => item.source);
       if (provider === 'openai-compatible') {
-        result.push(...localSourcesForCloudflared);
+        result.push(...localSources);
       } else {
         try {
-          const published = await publishLocalAiInputs(localSourcesForCloudflared);
+          const published = await publishLocalAiInputs(localSources);
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
         } catch (err) {
-          console.warn('cloudflared 参考图发布失败，改用 data URL 作为输入:', err);
-          result.push(...localSourcesForCloudflared);
+          const remoteFallbacks = localInputsForCloudflared
+            .map(item => item.remoteFallback)
+            .filter((value): value is string => !!value);
+          const dataUrlFallbacks = localSources.filter(source => isDataImageSourceValue(source));
+
+          if (provider === 'aoduo-ai') {
+            if (remoteFallbacks.length > 0) {
+              console.warn('cloudflared 参考图发布失败，改用原始公网 URL 兜底:', err);
+              result.push(...remoteFallbacks);
+            } else {
+              console.warn('cloudflared 参考图发布失败，且中转2没有可用公网 URL:', err);
+              failedItems.push(...localInputsForCloudflared.map(item => item.label));
+            }
+          } else if (dataUrlFallbacks.length > 0 || remoteFallbacks.length > 0) {
+            console.warn('cloudflared 参考图发布失败，改用可用兜底源:', err);
+            result.push(...dataUrlFallbacks, ...remoteFallbacks);
+          } else {
+            console.warn('cloudflared 参考图发布失败，且没有可用兜底源:', err);
+            failedItems.push(...localInputsForCloudflared.map(item => item.label));
+          }
         }
       }
     }
@@ -4502,75 +5043,195 @@ function MainApp() {
     if (inputImageItems.length > 0 && result.length === 0) {
       throw new Error(`参考图转公网 URL 失败：${failedItems.slice(0, 3).join('、') || '请确认 cloudflared 可用'}`);
     }
-    return { images: result, temporaryShareIds };
+    return { images: Array.from(new Set(result)), temporaryShareIds, usedRemoteFirst };
   };
 
-  const addCanvasAiGeneratorNode = (client?: { x: number; y: number }) => {
-    const pos = getCanvasDropPosition(0, client);
+  const getSelectedCanvasAiInputIds = () => (
+    canvasSelectedIdsRef.current.filter(id => {
+      const item = canvasItemsRef.current.find(canvasItem => canvasItem.id === id);
+      return !!item && item.ai?.type !== 'image-generator';
+    })
+  );
+
+  const applyCanvasPresetDraft = (preset?: CanvasAiPromptPreset | null) => {
+    setCanvasPresetNameDraft(preset?.label || '');
+    setCanvasPresetPromptDraft(preset?.prompt || '');
+  };
+
+  const updateCanvasNodesForPreset = (preset: CanvasAiPromptPreset) => {
+    updateCanvasItemsImmediate(prev => prev.map(item => (
+      item.ai?.type === 'image-generator' && item.ai.presetId === preset.id
+        ? {
+          ...item,
+          item: {
+            ...item.item,
+            name: `AI ${preset.label}`,
+          },
+          ai: {
+            ...item.ai,
+            presetLabel: preset.label,
+            presetPrompt: preset.prompt,
+            aspectRatio: preset.aspectRatio || item.ai.aspectRatio,
+            outputFormat: preset.outputFormat || item.ai.outputFormat,
+            count: preset.count || item.ai.count,
+            status: 'idle' as const,
+            error: undefined,
+          },
+        }
+        : item
+    )));
+  };
+
+  const openCanvasPresetEditor = () => {
+    setCanvasPresetEditorMode('create');
+    setCanvasPresetEditingId('');
+    setCanvasPresetNameDraft('');
+    setCanvasPresetPromptDraft('');
+    setIsCanvasPresetEditorOpen(true);
+  };
+
+  const openCanvasPresetManager = (presetId?: string) => {
+    const preset = canvasAiPromptPresets.find(item => item.id === presetId)
+      || canvasAiPromptPresets[0]
+      || null;
+    if (!preset) {
+      openCanvasPresetEditor();
+      return;
+    }
+    setCanvasPresetEditorMode('manage');
+    setCanvasPresetEditingId(preset.id);
+    applyCanvasPresetDraft(preset);
+    setIsCanvasPresetEditorOpen(true);
+  };
+
+  const selectCanvasPresetForEdit = (presetId: string) => {
+    const preset = canvasAiPromptPresets.find(item => item.id === presetId);
+    if (!preset) return;
+    setCanvasPresetEditingId(preset.id);
+    applyCanvasPresetDraft(preset);
+  };
+
+  const closeCanvasPresetEditor = () => {
+    setIsCanvasPresetEditorOpen(false);
+    setCanvasPresetEditorMode('create');
+    setCanvasPresetEditingId('');
+    setCanvasPresetNameDraft('');
+    setCanvasPresetPromptDraft('');
+  };
+
+  const saveCanvasAiCustomPromptPreset = () => {
+    const label = canvasPresetNameDraft.trim().slice(0, 24);
+    const prompt = canvasPresetPromptDraft.trim();
+    if (!label || !prompt) {
+      showToast('请填写预设名称和 Prompt');
+      return;
+    }
+    const editingPreset = canvasPresetEditorMode === 'manage'
+      ? canvasAiPromptPresets.find(item => item.id === canvasPresetEditingId)
+      : null;
+    const preset: CanvasAiPromptPreset = {
+      id: editingPreset?.id || `custom-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      label,
+      hint: editingPreset?.hint || '自定义 Prompt 预设',
+      prompt,
+      aspectRatio: editingPreset?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+      outputFormat: editingPreset?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+      count: editingPreset?.count,
+    };
+    setCustomCanvasAiPromptPresets(prev => (
+      prev.some(item => item.id === preset.id)
+        ? prev.map(item => item.id === preset.id ? preset : item)
+        : [...prev, preset]
+    ));
+    updateCanvasNodesForPreset(preset);
+    closeCanvasPresetEditor();
+    showToast(canvasPresetEditorMode === 'manage' ? `已更新预设「${label}」` : `已新增预设「${label}」`);
+  };
+
+  const deleteCanvasAiCustomPromptPreset = () => {
+    if (!canvasPresetEditingId) return;
+    const editingId = canvasPresetEditingId;
+    const customPreset = customCanvasAiPromptPresets.find(item => item.id === editingId);
+    const builtInPreset = CANVAS_AI_PROMPT_PRESETS.find(item => item.id === editingId);
+    if (!customPreset) {
+      showToast('内置预设尚未修改，无需恢复');
+      return;
+    }
+    setCustomCanvasAiPromptPresets(prev => prev.filter(item => item.id !== editingId));
+    if (builtInPreset) {
+      updateCanvasNodesForPreset(builtInPreset);
+      applyCanvasPresetDraft(builtInPreset);
+      showToast(`已恢复「${builtInPreset.label}」默认预设`);
+      return;
+    }
+    closeCanvasPresetEditor();
+    showToast(`已删除预设「${customPreset.label}」`);
+  };
+
+  const buildCanvasAiGeneratorNode = (
+    pos: { x: number; y: number },
+    preset?: CanvasAiPromptPreset,
+    inputIds: string[] = []
+  ): CanvasImageItem => {
     const itemId = Math.random().toString(36).substring(2, 9);
+    const presetPrompt = getCanvasAiPresetPrompt(preset);
+    const name = preset ? `AI ${preset.label}` : 'AI 生图节点';
     const item: BufferItem = {
       id: itemId,
       type: 'text',
       content: '',
-      name: 'AI 生图节点',
+      name,
       createdAt: Date.now(),
       isQuickAccess: false,
     };
-    const canvasItem: CanvasImageItem = {
+    return {
       id: `canvas_ai_${itemId}`,
       item,
       x: pos.x,
       y: pos.y,
-      width: 360,
-      height: 330,
-      inputs: [],
+      width: preset ? 390 : 360,
+      height: preset ? 380 : 330,
+      inputs: Array.from(new Set(inputIds)),
       ai: {
         type: 'image-generator',
         provider: canvasAiProvider,
         model: getCanvasAiDefaultModel(canvasAiProvider),
-        prompt: item.content,
-        aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        resolution: CANVAS_AI_DEFAULT_RESOLUTION,
-        count: CANVAS_AI_DEFAULT_COUNT,
+        prompt: '',
+        presetId: preset?.id,
+        presetLabel: preset?.label,
+        presetPrompt: presetPrompt || undefined,
+        aspectRatio: preset?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        outputFormat: preset?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+        count: preset?.count || CANVAS_AI_DEFAULT_COUNT,
         status: 'idle',
       },
     };
-    if (appendCanvasItems([canvasItem], '新增 AI 生图节点') > 0) {
-      showToast('已添加 AI 生图节点');
+  };
+
+  const addCanvasAiGeneratorNode = (client?: { x: number; y: number }, preset?: CanvasAiPromptPreset) => {
+    const inputIds = preset ? getSelectedCanvasAiInputIds() : [];
+    const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+    const pos = inputBounds && !client
+      ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+      : getCanvasDropPosition(0, client);
+    const canvasItem = buildCanvasAiGeneratorNode(pos, preset, inputIds);
+    if (appendCanvasItems([canvasItem], preset ? `新增 ${preset.label} Prompt 节点` : '新增 AI 生图节点') > 0) {
+      showToast(preset
+        ? `已添加「${preset.label}」Prompt 节点${inputIds.length > 0 ? `，已连接 ${inputIds.length} 个输入` : ''}`
+        : '已添加 AI 生图节点');
     }
   };
 
-  const addCanvasAiGeneratorNodeAtWorld = (world: { x: number; y: number }) => {
-    const itemId = Math.random().toString(36).substring(2, 9);
-    const item: BufferItem = {
-      id: itemId,
-      type: 'text',
-      content: '',
-      name: 'AI 生图节点',
-      createdAt: Date.now(),
-      isQuickAccess: false,
-    };
-    const canvasItem: CanvasImageItem = {
-      id: `canvas_ai_${itemId}`,
-      item,
+  const addCanvasAiGeneratorNodeAtWorld = (world: { x: number; y: number }, preset?: CanvasAiPromptPreset) => {
+    const inputIds = preset ? getSelectedCanvasAiInputIds() : [];
+    const canvasItem = buildCanvasAiGeneratorNode({
       x: Math.max(24, world.x),
       y: Math.max(24, world.y),
-      width: 360,
-      height: 330,
-      inputs: [],
-      ai: {
-        type: 'image-generator',
-        provider: canvasAiProvider,
-        model: getCanvasAiDefaultModel(canvasAiProvider),
-        prompt: item.content,
-        aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        resolution: CANVAS_AI_DEFAULT_RESOLUTION,
-        count: CANVAS_AI_DEFAULT_COUNT,
-        status: 'idle',
-      },
-    };
-    if (appendCanvasItems([canvasItem], '新增 AI 生图节点') > 0) {
-      showToast('已添加 AI 生图节点');
+    }, preset, inputIds);
+    if (appendCanvasItems([canvasItem], preset ? `新增 ${preset.label} Prompt 节点` : '新增 AI 生图节点') > 0) {
+      showToast(preset
+        ? `已添加「${preset.label}」Prompt 节点${inputIds.length > 0 ? `，已连接 ${inputIds.length} 个输入` : ''}`
+        : '已添加 AI 生图节点');
     }
   };
 
@@ -4587,7 +5248,7 @@ function MainApp() {
           item: content === undefined ? item.item : {
             ...item.item,
             content,
-            name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || 'AI 生图节点',
+            name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : 'AI 生图节点'),
           },
         }
         : item
@@ -4595,7 +5256,12 @@ function MainApp() {
   };
 
   const connectSelectedCanvasItemsToGenerator = (targetId: string) => {
-    const sourceIds = canvasSelectedIdsRef.current.filter(id => id !== targetId);
+    const sourceIds = canvasSelectedIdsRef.current
+      .filter(id => id !== targetId)
+      .filter(id => {
+        const source = canvasItemsRef.current.find(item => item.id === id);
+        return !!source && source.ai?.type !== 'image-generator';
+      });
     if (sourceIds.length === 0) {
       showToast('先多选要接入的图片或文字节点');
       return;
@@ -4795,9 +5461,12 @@ function MainApp() {
 
     const provider = normalizeCanvasAiProvider(target.ai.provider || canvasAiProvider);
     const apiKey = canvasAiApiKey.trim();
+    const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
     const promptParts = [
       ...getCanvasTextInputsForNode(target),
-      target.item.content || target.ai.prompt || '',
+      ...getCanvasImageInputDescriptionsForNode(target),
+      target.ai.presetPrompt || '',
+      manualPrompt,
     ].map(text => text.trim()).filter(Boolean);
     const prompt = promptParts.join('\n\n');
     if (!prompt) {
@@ -4809,7 +5478,7 @@ function MainApp() {
       return;
     }
 
-    updateCanvasAiGeneratorData(targetId, { status: 'working', error: undefined, prompt });
+    updateCanvasAiGeneratorData(targetId, { status: 'working', error: undefined, prompt: manualPrompt });
     const placeholders = createCanvasAiOutputPlaceholders(target, prompt);
     const placeholderIds = new Set(placeholders.map(item => item.id));
     let temporaryCloudflaredShareIds: string[] = [];
@@ -4827,8 +5496,9 @@ function MainApp() {
           }
           : item));
       }
-      const preparedInputs = await getCanvasImageInputsForNode(target);
-      const inputImages = preparedInputs.images;
+      const inputMode = provider === 'openai-compatible' ? 'stable' : 'remote-first';
+      const preparedInputs = await getCanvasImageInputsForNode(target, inputMode);
+      let inputImages = preparedInputs.images;
       temporaryCloudflaredShareIds = preparedInputs.temporaryShareIds;
       if (placeholders.length > 0) {
         updateCanvasItemsImmediate(prev => prev.map(item => placeholderIds.has(item.id)
@@ -4843,7 +5513,7 @@ function MainApp() {
           : item));
       }
       const requestedCount = clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, 4);
-      const generateOptions = {
+      let generateOptions = {
         provider,
         apiKey,
         endpoint: getCanvasAiEndpointForRequest(provider, canvasAiEndpoint),
@@ -4851,13 +5521,47 @@ function MainApp() {
         model: target.ai.model || getCanvasAiDefaultModel(provider),
         inputImages,
         aspectRatio: target.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        resolution: target.ai.resolution || CANVAS_AI_DEFAULT_RESOLUTION,
+        outputFormat: target.ai.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         count: 1,
       };
       const images: CanvasImageItem[] = [];
       const seenGeneratedUrls = new Set<string>();
       let drawerUndoPushed = false;
       let lastPartialError: unknown = null;
+      let didRetryWithStableInputs = false;
+
+      const retryWithStableInputs = async (cause: unknown) => {
+        if (!preparedInputs.usedRemoteFirst || didRetryWithStableInputs || images.length > 0) return false;
+        didRetryWithStableInputs = true;
+        console.warn('公网参考图生成失败，尝试切换本地缓存参考图:', cause);
+        if (placeholders.length > 0) {
+          updateCanvasItemsImmediate(prev => prev.map(item => placeholderIds.has(item.id)
+            ? {
+              ...item,
+              item: {
+                ...item.item,
+                content: '公网参考图失败，切换本地参考图',
+                name: '公网参考图失败，切换本地参考图',
+              },
+            }
+            : item));
+        }
+        try {
+          const fallbackInputs = await getCanvasImageInputsForNode(target, 'stable');
+          inputImages = fallbackInputs.images;
+          temporaryCloudflaredShareIds = [
+            ...temporaryCloudflaredShareIds,
+            ...fallbackInputs.temporaryShareIds,
+          ];
+          generateOptions = {
+            ...generateOptions,
+            inputImages,
+          };
+          return fallbackInputs.images.length > 0;
+        } catch (fallbackError) {
+          throw new Error(`公网参考图失败：${getCanvasAiErrorSummary(cause instanceof Error ? cause.message : String(cause))}；本地兜底也失败：${getCanvasAiErrorSummary(fallbackError instanceof Error ? fallbackError.message : String(fallbackError))}`);
+        }
+      };
 
       const placeGeneratedImage = async (url: string, index: number) => {
         const placeholder = placeholders[index];
@@ -4865,15 +5569,26 @@ function MainApp() {
           ? { width: placeholder.width, height: placeholder.height }
           : getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
         const pos = placeholder || getCanvasAiOutputPosition(target, index, size);
-        const next = await createCanvasImageItemFromDataUrl(url, index, prompt, [target.id], {
+        const cached = await cacheCanvasGeneratedImageSource(url, `AI generated ${Date.now()}-${index + 1}`);
+        const next = await createCanvasImageItemFromDataUrl(cached.url || url, index, prompt, [target.id], {
           x: pos.x,
           y: pos.y,
           width: size.width,
           height: size.height,
         });
         if (!next) return null;
+        const nextItemSource = cached.path
+          ? {
+            ...next.item,
+            url: cached.url,
+            path: cached.path,
+            sourceUrl: undefined,
+            originalUrl: undefined,
+          }
+          : stripHeavyDataThumbnail(next.item);
         const nextItem: CanvasImageItem = {
           ...next,
+          item: nextItemSource,
           id: placeholder?.id || next.id,
           x: pos.x,
           y: pos.y,
@@ -4928,6 +5643,9 @@ function MainApp() {
           }
         } catch (error) {
           lastPartialError = error;
+          if (await retryWithStableInputs(error)) {
+            continue;
+          }
           if (images.length === 0) throw error;
           break;
         }
@@ -5201,13 +5919,15 @@ function MainApp() {
     showToast('已进入无限画布模式');
     window.requestAnimationFrame(() => {
       const surface = canvasSurfaceRef.current;
-      if (hasCanvasContent) {
+      const scroll = canvasReturnScrollRef.current;
+      if (surface && scroll) {
+        writeCanvasSurfaceScroll(surface, scroll.left, scroll.top);
+      } else if (hasCanvasContent) {
         pendingCanvasFocusItemIdRef.current = primaryImageId;
         if (!focusCanvasItemById(primaryImageId)) {
           window.requestAnimationFrame(() => focusCanvasItemById(pendingCanvasFocusItemIdRef.current));
         }
       } else {
-        const scroll = canvasReturnScrollRef.current;
         if (surface && scroll) writeCanvasSurfaceScroll(surface, scroll.left, scroll.top);
       }
       canvasSurfaceRef.current?.focus({ preventScroll: true });
@@ -5563,6 +6283,7 @@ function MainApp() {
         left: surface.scrollLeft,
         top: surface.scrollTop,
       };
+      scheduleCanvasStateSave();
     }
     releaseCanvasScrollWriteGuard();
   };
@@ -5726,6 +6447,8 @@ function MainApp() {
     if (!surface) return;
 
     const handleCanvasWheel = (event: WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('textarea')) return;
       event.preventDefault();
       event.stopPropagation();
       zoomCanvasAt(event.clientX, event.clientY, event.deltaY);
@@ -5754,6 +6477,7 @@ function MainApp() {
           left: surface.scrollLeft,
           top: surface.scrollTop,
         };
+        scheduleCanvasStateSave();
         return;
       }
 
@@ -5762,6 +6486,7 @@ function MainApp() {
           left: surface.scrollLeft,
           top: surface.scrollTop,
         };
+        scheduleCanvasStateSave();
         return;
       }
 
@@ -5771,6 +6496,7 @@ function MainApp() {
           left: surface.scrollLeft,
           top: surface.scrollTop,
         };
+        scheduleCanvasStateSave();
         return;
       }
 
@@ -5823,6 +6549,7 @@ function MainApp() {
     canvasReturnScrollRef.current = surface
       ? { left: surface.scrollLeft, top: surface.scrollTop }
       : canvasScrollLockRef.current;
+    saveCanvasStateNow();
     keepCanvasSessionOnLeaveRef.current = true;
     isCanvasModeRef.current = false;
     setCanvasExitPromptStep('choice');
@@ -5834,6 +6561,11 @@ function MainApp() {
     isPinnedRef.current = false;
     invoke('toggle_pin', { pinned: false }).catch(() => {});
     showToast(canvasItemsRef.current.length > 0 ? '已切回抽屉，画布内容已保留' : '已切回抽屉');
+  };
+
+  const closeCanvasExitPrompt = () => {
+    setCanvasExitPromptStep('choice');
+    setShowCanvasExitPrompt(false);
   };
 
   const requestExitCanvasMode = () => {
@@ -6042,6 +6774,7 @@ function MainApp() {
     clearCanvasUndoStack();
     updateCanvasItemsImmediate(() => []);
     updateCanvasSelection([]);
+    saveCanvasStateNow();
     setCanvasExitPromptStep('choice');
     setShowCanvasExitPrompt(false);
     setIsCanvasMode(false);
@@ -6095,6 +6828,7 @@ function MainApp() {
     clearCanvasUndoStack();
     updateCanvasItemsImmediate(() => []);
     updateCanvasSelection([]);
+    saveCanvasStateNow();
     setCanvasExitPromptStep('choice');
     setShowCanvasExitPrompt(false);
     setIsCanvasMode(false);
@@ -7282,6 +8016,36 @@ useEffect(() => {
     invoke('close_drawer', { mode: triggerModeRef.current }).catch(() => {});
   }, [drawerState, isDrawerActive, snipMode.active, isSnipSessionActive]);
 
+  useEffect(() => {
+    if (
+      snipMode.active ||
+      isSnipSessionActive ||
+      snipExitInFlightRef.current ||
+      isStartupOverlayActive ||
+      isDrawerActive ||
+      isAntiTouchMode
+    ) return;
+
+    const timers = [120, 700].map(delay => window.setTimeout(() => {
+      invoke('show_edge', {
+        height: drawerHeightRef.current,
+        mode: triggerModeRef.current,
+      }).catch(() => {});
+    }, delay));
+
+    return () => {
+      timers.forEach(timer => window.clearTimeout(timer));
+    };
+  }, [
+    drawerState,
+    isStartupOverlayActive,
+    isDrawerActive,
+    isAntiTouchMode,
+    triggerMode,
+    snipMode.active,
+    isSnipSessionActive,
+  ]);
+
   // 尺寸变化只同步系统窗口大小，不重置抽屉动画状态。
 useEffect(() => {
   if (snipMode.active || isSnipSessionActive || isResizingState.current || !isDrawerActive || drawerState === 'closed' || drawerState === 'closing') return;
@@ -8159,9 +8923,37 @@ useEffect(() => {
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || element.isContentEditable || !!element.closest('[data-canvas-edit-control="true"]');
   };
 
+  const blurCanvasActiveTextEntry = (nextTarget?: EventTarget | null) => {
+    if (!isCanvasModeRef.current) return false;
+    const element = document.activeElement as HTMLElement | null;
+    if (!element || element === document.body) return false;
+    const tag = element.tagName;
+    const isEditable = tag === 'INPUT'
+      || tag === 'TEXTAREA'
+      || tag === 'SELECT'
+      || element.isContentEditable
+      || !!element.closest('[data-canvas-edit-control="true"]');
+    if (!isEditable || typeof element.blur !== 'function') return false;
+    const nextNode = nextTarget instanceof Node ? nextTarget : null;
+    if (nextNode && (element === nextNode || element.contains(nextNode))) return false;
+    element.blur();
+    return true;
+  };
+
   const stopCanvasEditEvent = (event: React.SyntheticEvent) => {
     event.stopPropagation();
   };
+
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const handleCanvasPointerDownForBlur = (event: PointerEvent) => {
+      blurCanvasActiveTextEntry(event.target);
+    };
+    document.addEventListener('pointerdown', handleCanvasPointerDownForBlur, true);
+    return () => {
+      document.removeEventListener('pointerdown', handleCanvasPointerDownForBlur, true);
+    };
+  }, [isCanvasMode]);
 
   useEffect(() => {
     const handleDrawerUndoKeyDown = (event: KeyboardEvent) => {
@@ -8870,6 +9662,9 @@ useEffect(() => {
     ? ({ width: CALENDAR_COMPACT_CANVAS_WIDTH, zoom: calendarPageScale } as React.CSSProperties & { zoom: number })
     : undefined;
   const canvasImageItemsForNav = canvasItems.filter(item => item.item.type === 'image');
+  const canvasGeneratedItemsForList = canvasItems
+    .filter(item => item.ai?.type === 'generated-image')
+    .sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0));
   const canvasNavBounds = canvasImageItemsForNav.length > 0 ? {
     left: Math.min(...canvasImageItemsForNav.map(item => item.x)),
     top: Math.min(...canvasImageItemsForNav.map(item => item.y)),
@@ -8915,11 +9710,20 @@ useEffect(() => {
   })() : '';
   const selectedCanvasAiGenerator = canvasItems.find(item => canvasSelectedIds.includes(item.id) && item.ai?.type === 'image-generator');
   const selectedCanvasConnectableCount = selectedCanvasAiGenerator
-    ? canvasSelectedIds.filter(id => id !== selectedCanvasAiGenerator.id).length
+    ? canvasSelectedIds.filter(id => {
+      if (id === selectedCanvasAiGenerator.id) return false;
+      const item = canvasItemsById.get(id);
+      return !!item && item.ai?.type !== 'image-generator';
+    }).length
     : 0;
   const canvasFolderPickerItems = canvasFolderImportPrompt
     ? getFolderImageItemsForCanvas(canvasFolderImportPrompt.folderId)
     : [];
+  const canvasPresetEditingPreset = canvasAiPromptPresets.find(item => item.id === canvasPresetEditingId) || null;
+  const canvasPresetEditingBuiltIn = CANVAS_AI_PROMPT_PRESETS.some(item => item.id === canvasPresetEditingId);
+  const canvasPresetEditingCustom = customCanvasAiPromptPresets.some(item => item.id === canvasPresetEditingId);
+  const canvasPresetEditorTitle = canvasPresetEditorMode === 'manage' ? '管理预设' : '新增预设';
+  const canvasPresetDeleteLabel = canvasPresetEditingBuiltIn ? '恢复默认' : '删除';
 
   return (
     <div
@@ -10098,7 +10902,7 @@ useEffect(() => {
                                       <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cyan-100 text-cyan-700 shadow-inner dark:bg-cyan-400/14 dark:text-cyan-200">
                                         <Sparkles className="h-3.5 w-3.5" />
                                       </span>
-                                      <span className="truncate">AI 生图节点</span>
+                                      <span className="truncate">{canvasItem.ai?.presetLabel || 'AI 生图节点'}</span>
                                     </span>
                                     <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black ${
                                       canvasItem.ai?.status === 'working'
@@ -10119,14 +10923,24 @@ useEffect(() => {
                                     </span>
                                   </div>
                                   <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                    {canvasItem.ai?.presetLabel && (
+                                      <div className="rounded-[15px] border border-cyan-100 bg-cyan-50/70 px-3 py-2 text-[10px] leading-4 text-cyan-800 shadow-sm shadow-cyan-950/[0.03] dark:border-cyan-400/16 dark:bg-cyan-400/10 dark:text-cyan-100">
+                                        <div className="flex items-center gap-1.5 font-black">
+                                          <Sparkles className="h-3 w-3" />
+                                          <span>预设卡片 · {canvasItem.ai.presetLabel}</span>
+                                        </div>
+                                        <div className="mt-0.5 text-cyan-700/72 dark:text-cyan-100/62">预设内容已内置，下面只写额外补充要求。</div>
+                                      </div>
+                                    )}
                                     <textarea
                                       data-no-drag="true"
                                       value={canvasItem.item.content || ''}
                                       onChange={(event) => updateCanvasAiGeneratorData(canvasItem.id, { prompt: event.target.value, status: 'idle', error: undefined }, event.target.value)}
                                       onFocus={() => updateCanvasSelection([canvasItem.id])}
                                       onPointerDown={(event) => event.stopPropagation()}
-                                      placeholder="描述要生成的图片。也可以连接文字节点补充提示词。"
-                                      className="h-20 w-full resize-none rounded-[15px] border border-cyan-100 bg-white/82 px-3 py-2 text-xs leading-5 text-stone-700 outline-none shadow-inner shadow-cyan-950/[0.03] placeholder:text-stone-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100 dark:border-white/10 dark:bg-white/[0.06] dark:text-white dark:placeholder:text-white/35 dark:focus:border-cyan-300/50 dark:focus:ring-cyan-900/35"
+                                      onWheel={(event) => event.stopPropagation()}
+                                      placeholder={canvasItem.ai?.presetLabel ? '补充这个预设的细节，不填也可以直接运行。' : '描述要生成的图片。也可以连接文字节点补充提示词。'}
+                                      className="min-h-24 max-h-[260px] w-full resize-y overflow-y-auto rounded-[15px] border border-cyan-100 bg-white/82 px-3 py-2 text-xs leading-5 text-stone-700 outline-none shadow-inner shadow-cyan-950/[0.03] placeholder:text-stone-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100 dark:border-white/10 dark:bg-white/[0.06] dark:text-white dark:placeholder:text-white/35 dark:focus:border-cyan-300/50 dark:focus:ring-cyan-900/35"
                                     />
                                     <div className="flex flex-wrap items-center gap-1.5">
                                       <RoundedSelect
@@ -10166,13 +10980,13 @@ useEffect(() => {
                                       />
                                       <RoundedSelect
                                         data-no-drag="true"
-                                        value={canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_RESOLUTION}
-                                        options={CANVAS_AI_RESOLUTION_OPTIONS}
-                                        onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { resolution: value })}
+                                        value={canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT}
+                                        options={CANVAS_AI_OUTPUT_FORMAT_OPTIONS}
+                                        onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
                                         labelClassName="text-center leading-none uppercase"
                                         chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                        title={`清晰度：${canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_RESOLUTION}`}
-                                        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[48px]`}
+                                        title={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
+                                        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[54px]`}
                                         menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                         optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                         selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
@@ -10294,8 +11108,9 @@ useEffect(() => {
                                     onChange={(event) => updateCanvasTextItem(canvasItem.id, event.target.value)}
                                     onFocus={() => updateCanvasSelection([canvasItem.id])}
                                     onPointerDown={(event) => event.stopPropagation()}
+                                    onWheel={(event) => event.stopPropagation()}
                                     placeholder="写点什么..."
-                                    className="min-h-0 flex-1 resize-none bg-transparent px-3 py-2 text-[13px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
+                                    className="min-h-[120px] flex-1 resize-y overflow-y-auto bg-transparent px-3 py-2 text-[13px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
                                   />
                                 </div>
                               ) : (
@@ -10625,6 +11440,108 @@ useEffect(() => {
                       </div>
                     </motion.div>
                   )}
+                  {isCanvasMode && isCanvasPresetEditorOpen && (
+                    <motion.div
+                      data-no-drag="true"
+                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                      className="absolute left-1/2 top-14 z-[100070] w-[320px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onWheel={(event) => event.stopPropagation()}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-black">
+                          <Sparkles className="h-4 w-4 text-cyan-500" />
+                          <span>{canvasPresetEditorTitle}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={closeCanvasPresetEditor}
+                          className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
+                          title="关闭"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="grid gap-2">
+                        {canvasPresetEditorMode === 'manage' && (
+                          <div className="grid gap-1.5 rounded-[16px] border border-cyan-100/80 bg-cyan-50/58 p-2 dark:border-cyan-400/16 dark:bg-cyan-400/10">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">选择预设</span>
+                              {canvasPresetEditingBuiltIn && !canvasPresetEditingCustom && (
+                                <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-cyan-600 dark:bg-white/10 dark:text-cyan-100">
+                                  内置
+                                </span>
+                              )}
+                              {canvasPresetEditingCustom && (
+                                <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-cyan-600 dark:bg-white/10 dark:text-cyan-100">
+                                  {canvasPresetEditingBuiltIn ? '已修改' : '自定义'}
+                                </span>
+                              )}
+                            </div>
+                            <RoundedSelect
+                              data-no-drag="true"
+                              data-canvas-edit-control="true"
+                              value={canvasPresetEditingId}
+                              options={canvasAiPromptPresets.map(preset => ({ value: preset.id, label: preset.label }))}
+                              onChange={selectCanvasPresetForEdit}
+                              className="h-8 w-full rounded-[13px] border border-white/70 bg-white/84 px-3 text-xs font-bold text-stone-700 shadow-sm dark:border-white/10 dark:bg-stone-950/44 dark:text-stone-100"
+                              menuClassName="!z-[100090] !min-w-[220px]"
+                              menuMinWidth={220}
+                            />
+                          </div>
+                        )}
+                        <input
+                          data-no-drag="true"
+                          value={canvasPresetNameDraft}
+                          onChange={(event) => setCanvasPresetNameDraft(event.target.value)}
+                          placeholder="预设名称"
+                          maxLength={24}
+                          className="h-9 rounded-[15px] border border-stone-200/80 bg-white/76 px-3 text-xs font-bold text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
+                        />
+                        <textarea
+                          data-no-drag="true"
+                          value={canvasPresetPromptDraft}
+                          onChange={(event) => setCanvasPresetPromptDraft(event.target.value)}
+                          onWheel={(event) => event.stopPropagation()}
+                          placeholder="写入这个预设的隐藏 Prompt。创建预设卡片时，节点输入框会保持空白。"
+                          className="h-36 resize-y rounded-[16px] border border-stone-200/80 bg-white/76 px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
+                        />
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            {canvasPresetEditorMode === 'manage' && canvasPresetEditingPreset && (
+                              <button
+                                type="button"
+                                onClick={deleteCanvasAiCustomPromptPreset}
+                                disabled={!canvasPresetEditingCustom}
+                                className="rounded-[15px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-300 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/16 dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
+                              >
+                                {canvasPresetDeleteLabel}
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={closeCanvasPresetEditor}
+                            className="rounded-[15px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            onClick={saveCanvasAiCustomPromptPreset}
+                            className="rounded-[15px] bg-cyan-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-cyan-500/20 transition-colors hover:bg-cyan-400 dark:bg-cyan-400 dark:text-stone-950 dark:hover:bg-cyan-300"
+                          >
+                            {canvasPresetEditorMode === 'manage' ? '保存修改' : '保存'}
+                          </button>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
                   {isCanvasMode && canvasContextMenu && (
                     <div
                       data-no-drag="true"
@@ -10792,23 +11709,50 @@ useEffect(() => {
                   {isCanvasMode && (
                     <div
                       data-no-drag="true"
-                      className={`absolute top-4 z-[100055] flex items-center gap-2 ${isCanvasNavigatorVisible ? 'right-[242px]' : 'right-[58px]'}`}
+                      className={`absolute top-4 z-[100055] flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${isCanvasNavigatorVisible ? 'right-[242px] max-w-[calc(100%_-_258px)]' : 'right-[58px] max-w-[calc(100%_-_74px)]'}`}
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                     >
                       <button
                         type="button"
                         onClick={() => addCanvasAiGeneratorNode()}
-                        className="flex h-8 items-center gap-1.5 rounded-full border border-cyan-200/80 bg-cyan-50/88 px-3 text-[11px] font-black text-cyan-800 shadow-[0_7px_18px_rgba(8,145,178,0.13)] backdrop-blur-2xl transition-all hover:-translate-y-px hover:bg-cyan-100 dark:border-cyan-400/20 dark:bg-cyan-950/72 dark:text-cyan-200 dark:hover:bg-cyan-900/80"
+                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-cyan-200/80 bg-cyan-50/88 px-3 text-[11px] font-black text-cyan-800 shadow-[0_7px_18px_rgba(8,145,178,0.13)] backdrop-blur-2xl transition-all hover:-translate-y-px hover:bg-cyan-100 dark:border-cyan-400/20 dark:bg-cyan-950/72 dark:text-cyan-200 dark:hover:bg-cyan-900/80"
                         title="新增 AI 生图节点"
                       >
                         <Sparkles className="h-3.5 w-3.5" />
                         AI
                       </button>
+                      <RoundedSelect
+                        data-no-drag="true"
+                        data-canvas-edit-control="true"
+                        value={CANVAS_AI_PROMPT_PRESET_PLACEHOLDER}
+                        options={canvasAiPromptPresetSelectOptions}
+                        onChange={(value) => {
+                          if (value === CANVAS_AI_PROMPT_PRESET_ADD_VALUE) {
+                            openCanvasPresetEditor();
+                            return;
+                          }
+                          if (value === CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE) {
+                            openCanvasPresetManager();
+                            return;
+                          }
+                          const preset = canvasAiPromptPresets.find(item => item.id === value);
+                          if (preset) addCanvasAiGeneratorNode(undefined, preset);
+                        }}
+                        icon={<Sparkles className="h-3.5 w-3.5 text-cyan-500 dark:text-cyan-300" />}
+                        chevronClassName="h-3 w-3 text-stone-400 dark:text-stone-500"
+                        labelClassName="text-left"
+                        className="h-8 w-[92px] shrink-0 justify-center rounded-full border border-white/70 bg-white/78 px-2.5 text-[11px] font-black text-stone-700 shadow-[0_8px_24px_rgba(15,23,42,0.10)] backdrop-blur-2xl hover:bg-white dark:border-white/10 dark:bg-stone-950/64 dark:text-stone-200 dark:hover:bg-stone-900/82"
+                        menuClassName="!z-[100080] !min-w-[150px] !rounded-[16px] !border-white/70 !bg-white/96 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-white/10 dark:!bg-stone-950/96 dark:!text-stone-100"
+                        optionClassName="!rounded-[11px] !px-3 !py-2 hover:!bg-cyan-50 hover:!text-cyan-800 dark:hover:!bg-white/10 dark:hover:!text-white"
+                        selectedOptionClassName="!bg-stone-100 !text-stone-400 dark:!bg-white/8 dark:!text-stone-500"
+                        title="选择 Prompt 预设"
+                        menuMinWidth={150}
+                      />
                       <button
                         type="button"
                         onClick={() => addCanvasTextItem()}
-                        className="flex h-8 items-center gap-1.5 rounded-full border border-stone-200/80 bg-white/82 px-3 text-[11px] font-black text-stone-700 shadow-[0_7px_18px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-all hover:-translate-y-px hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/78 dark:text-stone-200 dark:hover:bg-stone-800"
+                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-stone-200/80 bg-white/82 px-3 text-[11px] font-black text-stone-700 shadow-[0_7px_18px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-all hover:-translate-y-px hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/78 dark:text-stone-200 dark:hover:bg-stone-800"
                         title="添加文字卡片"
                       >
                         <Type className="h-3.5 w-3.5" />
@@ -10950,6 +11894,152 @@ useEffect(() => {
                       title="显示导航"
                     >
                       <Compass className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {isCanvasMode && isCanvasGeneratedListVisible && (
+                    <div
+                      data-no-drag="true"
+                      className="absolute bottom-4 left-4 z-[100050] flex max-h-[42vh] w-[292px] flex-col rounded-[20px] border border-white/60 bg-white/80 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-900/78 dark:text-stone-200"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onWheel={(event) => event.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between gap-2 px-0.5">
+                        <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-black">
+                          <ImageIcon className="h-3.5 w-3.5 text-cyan-500" />
+                          <span>已生成</span>
+                          <span className="rounded-full bg-cyan-100 px-1.5 py-0.5 font-mono text-[9px] text-cyan-700 dark:bg-cyan-400/14 dark:text-cyan-200">
+                            {canvasGeneratedItemsForList.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {canvasGeneratedItemsForList.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => fitCanvasViewToItems(canvasGeneratedItemsForList.map(item => item.id))}
+                              className="flex h-[18px] w-[18px] items-center justify-center rounded-[7px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-cyan-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-cyan-200"
+                              title="适配全部已生成图片"
+                            >
+                              <LayoutGrid className="h-2.5 w-2.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setIsCanvasGeneratedListVisible(false)}
+                            className="flex h-[18px] w-[18px] items-center justify-center rounded-[7px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                            title="隐藏已生成列表"
+                          >
+                            <X className="h-2.5 w-2.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-2 min-h-0 overflow-y-auto pr-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                        {canvasGeneratedItemsForList.length === 0 ? (
+                          <div className="flex h-24 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-stone-200/80 bg-white/52 text-center text-[10px] font-bold text-stone-400 dark:border-stone-700/70 dark:bg-stone-950/36 dark:text-stone-500">
+                            <Sparkles className="h-4 w-4 text-cyan-400" />
+                            暂无生成图
+                          </div>
+                        ) : (
+                          <div className="grid gap-1.5">
+                            {canvasGeneratedItemsForList.map(generatedItem => {
+                              const source = getCanvasItemNavSource(generatedItem.item);
+                              const isPending = generatedItem.ai?.status === 'working' || !source;
+                              const isError = generatedItem.ai?.status === 'error';
+                              const prompt = (generatedItem.ai?.prompt || generatedItem.item.remark || '').trim();
+                              const generatedAt = generatedItem.ai?.generatedAt || generatedItem.item.createdAt || 0;
+                              return (
+                                <div
+                                  key={`canvas-generated-list-${generatedItem.id}`}
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    centerCanvasItemInView(generatedItem, { select: true });
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    centerCanvasItemInView(generatedItem, { select: true });
+                                  }}
+                                  className={`group/generated flex w-full cursor-pointer items-center gap-2 rounded-[14px] border p-1.5 text-left transition-colors ${
+                                    canvasSelectedIds.includes(generatedItem.id)
+                                      ? 'border-cyan-200 bg-cyan-50/76 dark:border-cyan-400/24 dark:bg-cyan-400/12'
+                                      : 'border-white/70 bg-white/58 hover:bg-white/90 dark:border-stone-700/60 dark:bg-stone-950/28 dark:hover:bg-stone-800/70'
+                                  }`}
+                                  title={prompt || generatedItem.item.name || '定位已生成图片'}
+                                >
+                                  <div className="h-12 w-14 shrink-0 overflow-hidden rounded-[10px] bg-stone-900/8 dark:bg-white/8">
+                                    {isPending || isError ? (
+                                      <div className={`flex h-full w-full items-center justify-center ${isError ? 'bg-red-500/12 text-red-500' : 'bg-cyan-500/10 text-cyan-500'}`}>
+                                        <Sparkles className={`h-4 w-4 ${isPending && !isError ? 'animate-pulse' : ''}`} />
+                                      </div>
+                                    ) : (
+                                      <img
+                                        src={source}
+                                        alt={generatedItem.item.name || '已生成图片'}
+                                        loading="lazy"
+                                        decoding="async"
+                                        className="h-full w-full object-cover"
+                                        draggable={false}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-black ${
+                                        isError
+                                          ? 'bg-red-100 text-red-600 dark:bg-red-400/16 dark:text-red-200'
+                                          : isPending
+                                            ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-400/16 dark:text-cyan-200'
+                                            : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/16 dark:text-emerald-200'
+                                      }`}>
+                                        {isError ? '失败' : isPending ? '生成中' : '完成'}
+                                      </span>
+                                      <span className="truncate text-[10px] font-black text-stone-700 dark:text-stone-200">
+                                        {generatedItem.item.name || 'AI 生图'}
+                                      </span>
+                                    </div>
+                                    <div className="mt-0.5 truncate text-[9px] font-medium text-stone-400 dark:text-stone-500">
+                                      {prompt || (isError ? getCanvasAiErrorSummary(generatedItem.ai?.error) : '无 Prompt 记录')}
+                                    </div>
+                                    <div className="mt-1 flex items-center justify-between gap-1">
+                                      <span className="font-mono text-[9px] font-bold text-stone-400 dark:text-stone-500">
+                                        {generatedAt ? new Date(generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          void downloadCanvasItemsByIds([generatedItem.id]);
+                                        }}
+                                        className="flex h-5 w-5 items-center justify-center rounded-[8px] text-stone-400 opacity-0 transition-all hover:bg-cyan-100 hover:text-cyan-700 group-hover/generated:opacity-100 dark:hover:bg-cyan-400/14 dark:hover:text-cyan-200"
+                                        title="下载"
+                                      >
+                                        <Download className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {isCanvasMode && !isCanvasGeneratedListVisible && (
+                    <button
+                      type="button"
+                      data-no-drag="true"
+                      onClick={() => setIsCanvasGeneratedListVisible(true)}
+                      className="absolute bottom-4 left-4 z-[100050] flex h-9 items-center gap-1.5 rounded-full border border-white/45 bg-white/76 px-3 text-[11px] font-black text-cyan-700 shadow-[0_8px_20px_rgba(0,0,0,0.13)] backdrop-blur-xl transition-colors hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/76 dark:text-cyan-200 dark:hover:bg-stone-800"
+                      title="显示已生成列表"
+                    >
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      已生成 {canvasGeneratedItemsForList.length}
                     </button>
                   )}
                   {isCanvasMode && (
@@ -11293,6 +12383,10 @@ useEffect(() => {
                       <div className="space-y-2 text-center">
                         <p className="text-xs font-bold text-stone-500 dark:text-stone-400">把灵感先丢进抽屉</p>
                         <p className="text-[11px] leading-5">拖入文件/图片/网页图 · {snipShortcut} 截图 · {textShortcut} 快速记录 · {searchShortcut} 搜索</p>
+                        <p className="text-[11px] leading-5">
+                          <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span>
+                          <span className="ml-1.5">进入画布</span>
+                        </p>
                         <p className="text-[11px] leading-5">侧边小条：悬停展开，按住左键经过不触发，Ctrl + 左键可移动位置。</p>
                         <p className="text-[11px] leading-5">悬浮方块：默认右下角，悬停 0.8s 展开，左键拖动位置，{triggerShortcut} 切换入口。</p>
                       </div>
@@ -11304,6 +12398,9 @@ useEffect(() => {
                       <div className="space-y-2 text-center">
                         <p className="text-xs font-bold text-stone-500 dark:text-stone-400">当前分类没有匹配卡片</p>
                         <p className="text-[11px] leading-5">试试切到“全部”、清空搜索，或把素材拖到当前文件夹。</p>
+                        <p className="text-[11px] leading-5">
+                          也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span> 进入画布整理参考。
+                        </p>
                         <p className="text-[11px] leading-5">常用：右上角星标固定、备注便于搜索，多选可批量导出/移动/删除。</p>
                       </div>
                     </div>
@@ -11427,7 +12524,7 @@ useEffect(() => {
                                     broadcastFloatingNoteTextUpdate(id, nextText);
                                   }}
                                   showToast={showToast}
-                                  onEnsureThumbnail={ensureImageThumbnail}
+                                  onEnsureThumbnail={ensureMediaThumbnail}
                                   onCreateFloatingNote={createFloatingNote}
                                   showAlchemy={isAlchemyCandidate(item as AlchemyBufferItem)}
                                   onAlchemy={() => runAiAlchemyFromCard(item as AlchemyBufferItem)}
@@ -11456,7 +12553,7 @@ useEffect(() => {
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
                     <div className="mt-4 mb-1 rounded-[22px] bg-stone-50/70 dark:bg-stone-900/30 border border-stone-200/60 dark:border-stone-700/60 px-3 py-2 text-[11px] leading-5 text-stone-500 dark:text-stone-400">
-                      提示：拖入文件/图片/网页图添加素材；按住左键经过侧边小条不展开；Ctrl + 左键拖动小条位置；{triggerShortcut} 切换触发入口。
+                      提示：拖入文件/图片/网页图添加素材；{canvasShortcut} 进入画布；{triggerShortcut} 切换触发入口。
                     </div>
                   )}
                 </div>
@@ -11725,7 +12822,7 @@ useEffect(() => {
 
       <AnimatePresence>
         {showCanvasExitPrompt && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave}>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeCanvasExitPrompt(); }}>
             <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white p-4 shadow-2xl border border-stone-200 dark:border-stone-700 dark:bg-stone-900" onMouseDown={(event) => event.stopPropagation()}>
               <div className="flex items-center gap-2 text-sm font-black text-stone-800 dark:text-stone-100">
                 <LayoutGrid className="h-4 w-4 text-amber-500" />
@@ -11740,7 +12837,7 @@ useEffect(() => {
                 <div className="mt-4 flex flex-wrap justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowCanvasExitPrompt(false)}
+                    onClick={closeCanvasExitPrompt}
                     className="rounded-[16px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
                   >
                     取消
@@ -11866,12 +12963,12 @@ useEffect(() => {
 
       <AnimatePresence>
         {confirmDialog.isOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
+            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
               <h3 className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
               <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">{confirmDialog.message || '确定继续吗？'}</p>
               <div className="mt-4 flex justify-end gap-2">
-                <button onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
+                <button onClick={closeConfirmDialog} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
                 <button onClick={() => confirmDialog.onConfirm()} className="px-3 py-1.5 rounded-[16px] text-xs bg-red-500 text-white">确定</button>
               </div>
             </motion.div>

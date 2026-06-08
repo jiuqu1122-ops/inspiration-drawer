@@ -8,208 +8,906 @@
     mc:Ignorable="d"
     Title="灵感抽屉 Native">
 
-    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+    <Grid
+        x:Name="RootDropSurface"
+        AllowDrop="True"
+        Background="Transparent"
+        RequestedTheme="Light"
+        DragOver="RootDropSurface_DragOver"
+        Drop="RootDropSurface_Drop">
         <Grid.Resources>
             <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+
+            <SolidColorBrush x:Key="DrawerShellBrush" Color="#d9ffffff" />
+            <SolidColorBrush x:Key="DrawerRailBrush" Color="#99f5f5f4" />
+            <SolidColorBrush x:Key="DrawerContentBrush" Color="#4df5f5f4" />
+            <SolidColorBrush x:Key="DrawerCardBrush" Color="#e6ffffff" />
+            <SolidColorBrush x:Key="DrawerStrokeBrush" Color="#e7e5e4" />
+            <SolidColorBrush x:Key="DrawerMutedBrush" Color="#78716c" />
+            <SolidColorBrush x:Key="DrawerTextBrush" Color="#292524" />
+            <SolidColorBrush x:Key="DrawerAccentBrush" Color="#10b981" />
+            <SolidColorBrush x:Key="DrawerAmberBrush" Color="#f59e0b" />
+
+            <Style x:Key="RailButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="40" />
+                <Setter Property="Height" Value="40" />
+                <Setter Property="MinWidth" Value="40" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="16" />
+                <Setter Property="Background" Value="#a6ffffff" />
+                <Setter Property="BorderBrush" Value="#b3ffffff" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Foreground" Value="#78716c" />
+            </Style>
+
+            <Style x:Key="ToolIconButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="30" />
+                <Setter Property="Height" Value="30" />
+                <Setter Property="MinWidth" Value="30" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="14" />
+                <Setter Property="Background" Value="#a6ffffff" />
+                <Setter Property="BorderBrush" Value="#b3ffffff" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Foreground" Value="#57534e" />
+                <Setter Property="FontSize" Value="14" />
+            </Style>
+
+            <Style x:Key="TabPillButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="24" />
+                <Setter Property="Padding" Value="10,4" />
+                <Setter Property="CornerRadius" Value="14" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Foreground" Value="#78716c" />
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+
+            <Style x:Key="CardIconButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="26" />
+                <Setter Property="Height" Value="26" />
+                <Setter Property="MinWidth" Value="26" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="Background" Value="#d9ffffff" />
+                <Setter Property="BorderBrush" Value="#ccffffff" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Foreground" Value="#57534e" />
+                <Setter Property="FontSize" Value="13" />
+            </Style>
         </Grid.Resources>
 
-        <NavigationView
-            x:Name="RootNavigation"
-            IsBackButtonVisible="Collapsed"
-            IsSettingsVisible="True"
-            PaneDisplayMode="LeftCompact"
-            CompactPaneLength="56"
-            OpenPaneLength="220"
-            SelectionChanged="RootNavigation_SelectionChanged">
-            <NavigationView.MenuItems>
-                <NavigationViewItem Content="全部" Icon="AllApps" IsSelected="True" Tag="all" />
-                <NavigationViewItem Content="图片" Icon="Pictures" Tag="image" />
-                <NavigationViewItem Content="文本" Icon="Document" Tag="text" />
-                <NavigationViewItem Content="文件" Icon="OpenFile" Tag="file" />
-                <NavigationViewItem Content="视频" Icon="Video" Tag="video" />
-                <NavigationViewItemSeparator />
-                <NavigationViewItem Content="无限画布" Icon="Map" Tag="canvas" />
-                <NavigationViewItem Content="AI 生图" Icon="Camera" Tag="ai" />
-                <NavigationViewItem Content="桌面便签" Icon="Edit" Tag="notes" />
-            </NavigationView.MenuItems>
-
-            <Grid Padding="24" RowSpacing="16">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <Grid ColumnSpacing="12">
+        <Border
+            Margin="0"
+            CornerRadius="30"
+            Background="{StaticResource DrawerShellBrush}"
+            BorderBrush="#f2ffffff"
+            BorderThickness="1">
+            <Grid>
+                <Grid x:Name="DrawerView">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="320" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Spacing="4">
-                        <TextBlock Text="灵感抽屉" FontSize="28" FontWeight="SemiBold" />
-                        <TextBlock x:Name="StatusText" Text="正在读取旧版抽屉数据..." Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    </StackPanel>
-
-                    <AutoSuggestBox
-                        x:Name="SearchBox"
-                        Grid.Column="1"
-                        QueryIcon="Find"
-                        PlaceholderText="搜索名称、内容、路径"
-                        TextChanged="SearchBox_TextChanged" />
-
-                    <CommandBar Grid.Column="2" DefaultLabelPosition="Right" Background="Transparent">
-                        <AppBarButton x:Name="RefreshButton" Click="RefreshButton_Click" Icon="Refresh" Label="刷新" />
-                        <AppBarButton Icon="Add" Label="添加" IsEnabled="False" />
-                        <AppBarButton Icon="Camera" Label="截图" IsEnabled="False" />
-                    </CommandBar>
-                </Grid>
-
-                <Grid Grid.Row="1" ColumnSpacing="16">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="300" />
+                        <ColumnDefinition Width="64" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
                     <Border
-                        Padding="16"
-                        CornerRadius="8"
-                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                        BorderThickness="1">
-                        <Grid RowSpacing="12">
+                        Background="{StaticResource DrawerRailBrush}"
+                        BorderBrush="#80e7e5e4"
+                        BorderThickness="0,0,1,0">
+                        <Grid Padding="0,12,0,12">
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="386" />
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
-                            <TextBlock Text="分类" FontSize="16" FontWeight="SemiBold" />
+                            <StackPanel HorizontalAlignment="Center" Spacing="4" Width="60">
+                                <Grid Width="40" Height="40">
+                                    <Button
+                                        x:Name="MainDrawerButton"
+                                        Width="40"
+                                        Height="40"
+                                        MinWidth="40"
+                                        Padding="0"
+                                        CornerRadius="16"
+                                        Background="#e7e5e4"
+                                        BorderThickness="0"
+                                        Foreground="#1c1917"
+                                        Click="MainDrawerButton_Click"
+                                        ToolTipService.ToolTip="主抽屉">
+                                        <SymbolIcon Symbol="Map" />
+                                    </Button>
+                                    <Border
+                                        x:Name="MainDrawerCountBadge"
+                                        MinWidth="16"
+                                        Height="15"
+                                        Padding="3,0"
+                                        CornerRadius="8"
+                                        Background="#57534e"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Margin="0,-5,-5,0">
+                                        <TextBlock x:Name="MainDrawerCountText" FontSize="9" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                </Grid>
+                                <TextBlock
+                                    Text="主抽屉"
+                                    Width="56"
+                                    Height="14"
+                                    FontSize="10"
+                                    FontWeight="SemiBold"
+                                    Foreground="{StaticResource DrawerTextBrush}"
+                                    TextAlignment="Center"
+                                    TextTrimming="CharacterEllipsis"
+                                    TextWrapping="NoWrap" />
+                            </StackPanel>
+
+                            <Border Grid.Row="1" Width="24" Height="1" Margin="0,10,0,8" Background="#7c57534e" CornerRadius="1" HorizontalAlignment="Center" />
+
                             <ListView
                                 x:Name="FolderList"
-                                Grid.Row="1"
-                                SelectionChanged="FolderList_SelectionChanged"
-                                SelectionMode="Single">
+                                Grid.Row="2"
+                                Padding="0"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                IsItemClickEnabled="True"
+                                ItemClick="FolderList_ItemClick"
+                                SelectionMode="None">
+                                <ListView.Resources>
+                                    <SolidColorBrush x:Key="ListViewItemBackground" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemBackgroundPressed" Color="Transparent" />
+                                    <SolidColorBrush x:Key="ListViewItemForegroundSelected" Color="#fafaf9" />
+                                </ListView.Resources>
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="Width" Value="64" />
+                                        <Setter Property="MinWidth" Value="64" />
+                                        <Setter Property="MinHeight" Value="64" />
+                                        <Setter Property="Padding" Value="0" />
+                                        <Setter Property="Margin" Value="0,0,0,8" />
+                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                        <Setter Property="VerticalContentAlignment" Value="Center" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
                                 <ListView.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid MinHeight="44" ColumnSpacing="10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <Border Width="10" Height="10" CornerRadius="5" Background="{Binding ColorBrush}" />
-                                            <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <InfoBadge Grid.Column="2" Value="{Binding Count}" VerticalAlignment="Center" />
-                                        </Grid>
+                                        <StackPanel HorizontalAlignment="Center" Spacing="4" Width="56">
+                                            <Grid Width="40" Height="40">
+                                                <Border
+                                                    CornerRadius="16"
+                                                    Background="{Binding IconBackgroundBrush}"
+                                                    BorderBrush="{Binding IconBorderBrush}"
+                                                    BorderThickness="1">
+                                                    <FontIcon Glyph="&#xE8B7;" FontSize="20" Foreground="{Binding IconForegroundBrush}" />
+                                                </Border>
+                                                <Border
+                                                    MinWidth="16"
+                                                    Height="15"
+                                                    Padding="3,0"
+                                                    CornerRadius="8"
+                                                    Background="#292524"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Top"
+                                                    Margin="0,-5,-5,0">
+                                                    <TextBlock Text="{Binding Count}" FontSize="9" FontWeight="Bold" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                </Border>
+                                            </Grid>
+                                            <TextBlock
+                                                Text="{Binding Name}"
+                                                Width="56"
+                                                Height="14"
+                                                FontSize="10"
+                                                Foreground="{Binding LabelBrush}"
+                                                TextAlignment="Center"
+                                                TextTrimming="CharacterEllipsis"
+                                                TextWrapping="NoWrap" />
+                                        </StackPanel>
                                     </DataTemplate>
                                 </ListView.ItemTemplate>
                             </ListView>
+
+                            <StackPanel Grid.Row="3" Spacing="10" HorizontalAlignment="Center" Margin="0,8,0,10">
+                                <Button Click="NewFolderButton_Click" Style="{StaticResource RailButtonStyle}" ToolTipService.ToolTip="新建收纳夹">
+                                    <SymbolIcon Symbol="Add" />
+                                </Button>
+                                <Button Click="CanvasButton_Click" Style="{StaticResource RailButtonStyle}" ToolTipService.ToolTip="无限画布">
+                                    <SymbolIcon Symbol="Map" />
+                                </Button>
+                            </StackPanel>
+
+                            <Grid Grid.Row="4" Padding="0,2,0,8">
+                                <Border Width="28" Height="4" CornerRadius="2" Background="#7c57534e" HorizontalAlignment="Center" />
+                            </Grid>
+
+                            <StackPanel Grid.Row="5" Spacing="10" HorizontalAlignment="Center">
+                                <Border
+                                    Padding="4"
+                                    CornerRadius="24"
+                                    Background="#99ffffff"
+                                    BorderBrush="#bfffffff"
+                                    BorderThickness="1">
+                                    <StackPanel Spacing="4">
+                                        <Button x:Name="QuickRailButton" Width="32" Height="32" MinWidth="32" CornerRadius="16" Background="#ecfdf5" BorderBrush="#bbf7d0" Foreground="{StaticResource DrawerAccentBrush}" Click="QuickRailModeButton_Click" Tag="quick" ToolTipService.ToolTip="快速访问">
+                                            <FontIcon Glyph="&#xE774;" FontSize="15" />
+                                        </Button>
+                                        <Button x:Name="NoteRailButton" Width="32" Height="32" MinWidth="32" CornerRadius="16" Background="Transparent" BorderThickness="0" Foreground="{StaticResource DrawerMutedBrush}" Click="QuickRailModeButton_Click" Tag="notes" ToolTipService.ToolTip="便签">
+                                            <SymbolIcon Symbol="Library" />
+                                        </Button>
+                                    </StackPanel>
+                                </Border>
+
+                                <StackPanel Spacing="8" HorizontalAlignment="Center">
+                                    <StackPanel Spacing="3" HorizontalAlignment="Center">
+                                    <Button Width="40" Height="40" MinWidth="40" CornerRadius="16" Background="#a6ffffff" BorderBrush="#b3ffffff" Foreground="#3b82f6" Click="OpenComputerButton_Click" ToolTipService.ToolTip="此电脑">
+                                        <SymbolIcon Symbol="SaveLocal" />
+                                    </Button>
+                                    <TextBlock Text="此电脑" Width="56" FontSize="10" Foreground="{StaticResource DrawerMutedBrush}" TextAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                    <StackPanel Spacing="3" HorizontalAlignment="Center">
+                                    <Button Width="40" Height="40" MinWidth="40" CornerRadius="16" Background="#a6ffffff" BorderBrush="#b3ffffff" Foreground="{StaticResource DrawerAccentBrush}" Click="OpenDesktopButton_Click" ToolTipService.ToolTip="桌面">
+                                        <FontIcon Glyph="&#xE977;" FontSize="16" />
+                                    </Button>
+                                    <TextBlock Text="桌面" Width="56" FontSize="10" Foreground="{StaticResource DrawerMutedBrush}" TextAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <ScrollViewer x:Name="QuickAccessRailScrollViewer" MaxHeight="260" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+                                    <ItemsRepeater x:Name="QuickAccessRepeater">
+                                        <ItemsRepeater.Layout>
+                                            <StackLayout Spacing="8" />
+                                        </ItemsRepeater.Layout>
+                                        <ItemsRepeater.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Width="60" HorizontalAlignment="Center" Spacing="3">
+                                                    <Grid Width="40" Height="40">
+                                                        <Button
+                                                            Width="40"
+                                                            Height="40"
+                                                            MinWidth="40"
+                                                            CornerRadius="16"
+                                                            Background="#a6ffffff"
+                                                            BorderBrush="#b3ffffff"
+                                                            Foreground="{StaticResource DrawerAmberBrush}"
+                                                            Click="OpenQuickCard_Click"
+                                                            ToolTipService.ToolTip="{Binding Name}">
+                                                            <FontIcon Glyph="{Binding IconGlyph}" FontSize="16" />
+                                                        </Button>
+                                                        <Button
+                                                            Width="16"
+                                                            Height="16"
+                                                            MinWidth="16"
+                                                            Padding="0"
+                                                            CornerRadius="8"
+                                                            Background="#fee2e2"
+                                                            BorderThickness="0"
+                                                            Foreground="#dc2626"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Top"
+                                                            Click="UnpinQuickCard_Click"
+                                                            ToolTipService.ToolTip="取消星标">
+                                                            <FontIcon Glyph="&#xE711;" FontSize="8" />
+                                                        </Button>
+                                                    </Grid>
+                                                    <TextBlock
+                                                        Text="{Binding Name}"
+                                                        FontSize="10"
+                                                        Foreground="{StaticResource DrawerMutedBrush}"
+                                                        TextAlignment="Center"
+                                                        TextTrimming="CharacterEllipsis"
+                                                        MaxLines="1" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsRepeater.ItemTemplate>
+                                    </ItemsRepeater>
+                                </ScrollViewer>
+
+                                <ScrollViewer x:Name="NoteRailScrollViewer" MaxHeight="260" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                                    <ItemsRepeater x:Name="RailNoteRepeater">
+                                        <ItemsRepeater.Layout>
+                                            <StackLayout Spacing="8" />
+                                        </ItemsRepeater.Layout>
+                                        <ItemsRepeater.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Width="60" HorizontalAlignment="Center" Spacing="3">
+                                                    <Button
+                                                        Width="40"
+                                                        Height="40"
+                                                        MinWidth="40"
+                                                        CornerRadius="16"
+                                                        Background="#fff7ed"
+                                                        BorderBrush="#fed7aa"
+                                                        Foreground="{StaticResource DrawerAmberBrush}"
+                                                        Click="OpenNoteCard_Click"
+                                                        ToolTipService.ToolTip="{Binding Name}">
+                                                        <Grid>
+                                                            <Image Source="{Binding Image}" Stretch="UniformToFill" Visibility="{Binding HasImage, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                            <FontIcon Glyph="{Binding IconGlyph}" FontSize="18" Visibility="{Binding HasNoImage, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                        </Grid>
+                                                    </Button>
+                                                    <TextBlock
+                                                        Text="{Binding Name}"
+                                                        FontSize="10"
+                                                        Foreground="{StaticResource DrawerMutedBrush}"
+                                                        TextAlignment="Center"
+                                                        TextTrimming="CharacterEllipsis"
+                                                        MaxLines="1" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsRepeater.ItemTemplate>
+                                    </ItemsRepeater>
+                                </ScrollViewer>
+                            </StackPanel>
                         </Grid>
                     </Border>
 
-                    <Border
-                        Grid.Column="1"
-                        Padding="18"
-                        CornerRadius="8"
-                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                        BorderThickness="1">
-                        <Grid RowSpacing="14">
+                    <Grid Grid.Column="1" Background="{StaticResource DrawerContentBrush}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid
+                            Padding="16,14,14,12"
+                            BorderBrush="#80e7e5e4"
+                            BorderThickness="0,0,0,1"
+                            ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Spacing="2">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon Glyph="&#xE722;" FontSize="16" Foreground="{StaticResource DrawerAmberBrush}" />
+                                    <TextBlock x:Name="ContentTitle" Text="灵感抽屉" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource DrawerTextBrush}" />
+                                    <Ellipse Width="7" Height="7" Fill="{StaticResource DrawerAccentBrush}" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <TextBlock x:Name="StatusText" Text="正在读取旧版抽屉数据..." FontSize="11" Foreground="{StaticResource DrawerMutedBrush}" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                                <Button x:Name="SelectModeButton" Click="SelectModeButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="多选">
+                                    <SymbolIcon Symbol="Accept" />
+                                </Button>
+                                <Button Click="ToggleSearchButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="搜索">
+                                    <SymbolIcon Symbol="Find" />
+                                </Button>
+                                <Button Click="ToggleSettingsButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="设置与帮助">
+                                    <SymbolIcon Symbol="Setting" />
+                                </Button>
+                                <Button Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="钉住">
+                                    <FontIcon Glyph="&#xE718;" FontSize="14" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid
+                            Grid.Row="1"
+                            Padding="8,8,8,8"
+                            BorderBrush="#66e7e5e4"
+                            BorderThickness="0,0,0,1"
+                            ColumnSpacing="10">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
 
-                            <Grid ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Spacing="4">
-                                    <TextBlock x:Name="ContentTitle" Text="全部素材" FontSize="18" FontWeight="SemiBold" />
-                                    <TextBlock x:Name="ContentSubtitle" Text="只读预览旧版 Tauri 数据，下一步会迁移拖拽、画布和 AI 生图。" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                </StackPanel>
-                                <Button Grid.Column="1" Content="进入画布" Click="CanvasButton_Click" />
-                            </Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button x:Name="TabAllButton" Tag="all" Click="RailButton_Click" Content="全部" Style="{StaticResource TabPillButtonStyle}" />
+                                <Button x:Name="TabImageButton" Tag="image" Click="RailButton_Click" Content="图片" Style="{StaticResource TabPillButtonStyle}" />
+                                <Button x:Name="TabTextButton" Tag="text" Click="RailButton_Click" Content="文本" Style="{StaticResource TabPillButtonStyle}" />
+                                <Button x:Name="TabVideoButton" Tag="video" Click="RailButton_Click" Content="视频" Style="{StaticResource TabPillButtonStyle}" />
+                                <Button x:Name="TabFileButton" Tag="file" Click="RailButton_Click" Content="文件" Style="{StaticResource TabPillButtonStyle}" />
+                                <Button x:Name="TabAlchemyButton" Tag="ai" Click="RailButton_Click" Content="炼金" Style="{StaticResource TabPillButtonStyle}" />
+                                <Button x:Name="TabNotesButton" Tag="notes" Click="RailButton_Click" Content="便签" Style="{StaticResource TabPillButtonStyle}" />
+                            </StackPanel>
 
-                            <ScrollViewer Grid.Row="1">
+                            <AutoSuggestBox
+                                x:Name="SearchBox"
+                                Grid.Row="1"
+                                Grid.ColumnSpan="2"
+                                Margin="8,8,8,0"
+                                Visibility="Collapsed"
+                                QueryIcon="Find"
+                                PlaceholderText="搜索灵感、文件、备注"
+                                TextChanged="SearchBox_TextChanged" />
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                <Button x:Name="SelectAllButton" Click="SelectAllButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="全选">
+                                    <SymbolIcon Symbol="SelectAll" />
+                                </Button>
+                                <Button x:Name="MoveSelectedButton" Click="MoveSelectedButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="批量移动">
+                                    <SymbolIcon Symbol="MoveToFolder" />
+                                </Button>
+                                <Button x:Name="DeleteSelectedButton" Click="DeleteSelectedButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="批量删除">
+                                    <SymbolIcon Symbol="Delete" />
+                                </Button>
+                                <Button x:Name="ClearSelectionButton" Click="ClearSelectionButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="清空选择">
+                                    <SymbolIcon Symbol="Clear" />
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Grid.Row="2">
+                            <TextBlock x:Name="ContentSubtitle" Visibility="Collapsed" />
+
+                            <ScrollViewer x:Name="CardsScrollViewer" Padding="16,16,12,16" VerticalScrollBarVisibility="Auto">
                                 <ItemsRepeater x:Name="ItemRepeater">
                                     <ItemsRepeater.Layout>
-                                        <UniformGridLayout MinItemWidth="230" MinColumnSpacing="12" MinRowSpacing="12" />
+                                        <UniformGridLayout
+                                            MinItemWidth="320"
+                                            MinColumnSpacing="16"
+                                            MinRowSpacing="16"
+                                            ItemsStretch="None"
+                                            ItemsJustification="Start" />
                                     </ItemsRepeater.Layout>
                                     <ItemsRepeater.ItemTemplate>
                                         <DataTemplate>
                                             <Border
-                                                MinHeight="252"
-                                                Padding="12"
-                                                CornerRadius="8"
-                                                Background="{ThemeResource LayerFillColorDefaultBrush}"
-                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                Width="320"
+                                                MinHeight="168"
+                                                CornerRadius="22"
+                                                Background="{StaticResource DrawerCardBrush}"
+                                                BorderBrush="#bfffffff"
                                                 BorderThickness="1"
                                                 DoubleTapped="Card_DoubleTapped">
-                                                <Grid RowSpacing="10">
+                                                <Grid>
                                                     <Grid.RowDefinitions>
-                                                        <RowDefinition Height="132" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="0" />
                                                     </Grid.RowDefinitions>
 
-                                                    <Border
-                                                        CornerRadius="6"
-                                                        Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"
-                                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                                        BorderThickness="1">
+                                                    <Border Height="{Binding MediaHeight}" CornerRadius="22,22,0,0" Background="#f5f5f4">
                                                         <Grid>
-                                                            <Image
-                                                                Source="{Binding Image}"
-                                                                Stretch="UniformToFill"
-                                                                Visibility="{Binding HasImage, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                            <Image Source="{Binding Image}" Stretch="UniformToFill" Visibility="{Binding HasImage, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                                             <StackPanel
                                                                 Spacing="8"
                                                                 HorizontalAlignment="Center"
                                                                 VerticalAlignment="Center"
                                                                 Visibility="{Binding HasNoImage, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                                <FontIcon Glyph="{Binding IconGlyph}" FontSize="30" />
-                                                                <TextBlock Text="{Binding TypeLabel}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                <FontIcon Glyph="{Binding IconGlyph}" FontSize="28" Foreground="{StaticResource DrawerMutedBrush}" />
                                                             </StackPanel>
+                                                            <Border
+                                                                Margin="10"
+                                                                Padding="7,2"
+                                                                CornerRadius="999"
+                                                                Background="#ccffffff"
+                                                                BorderBrush="#ccffffff"
+                                                                BorderThickness="1"
+                                                                HorizontalAlignment="Left"
+                                                                VerticalAlignment="Bottom">
+                                                                <TextBlock Text="{Binding TypeLabel}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource DrawerTextBrush}" />
+                                                            </Border>
+                                                            <ToggleButton
+                                                                Width="22"
+                                                                Height="22"
+                                                                MinWidth="22"
+                                                                Margin="10"
+                                                                Padding="0"
+                                                                HorizontalAlignment="Left"
+                                                                VerticalAlignment="Top"
+                                                                Click="ToggleCardSelection_Click"
+                                                                IsChecked="{Binding IsSelected}">
+                                                                <FontIcon Glyph="&#xE73E;" FontSize="10" />
+                                                            </ToggleButton>
+                                                            <FontIcon
+                                                                Margin="12"
+                                                                Glyph="&#xE734;"
+                                                                FontSize="16"
+                                                                Foreground="{StaticResource DrawerAmberBrush}"
+                                                                HorizontalAlignment="Right"
+                                                                VerticalAlignment="Top"
+                                                                Visibility="{Binding IsQuickAccess, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                                         </Grid>
                                                     </Border>
 
                                                     <TextBlock
                                                         Grid.Row="1"
+                                                        Margin="14,12,14,0"
                                                         Text="{Binding Name}"
+                                                        FontSize="12"
                                                         FontWeight="SemiBold"
+                                                        Foreground="{StaticResource DrawerTextBrush}"
                                                         TextTrimming="CharacterEllipsis" />
                                                     <TextBlock
                                                         Grid.Row="2"
+                                                        Margin="14,8,14,0"
                                                         Text="{Binding Description}"
-                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                        FontSize="12"
+                                                        Foreground="{StaticResource DrawerMutedBrush}"
                                                         MaxLines="2"
                                                         TextWrapping="Wrap" />
-                                                    <Grid Grid.Row="3" ColumnSpacing="8">
+                                                    <TextBlock
+                                                        Grid.Row="2"
+                                                        Margin="14,48,14,0"
+                                                        Text="{Binding RemarkSummary}"
+                                                        FontSize="11"
+                                                        Foreground="{StaticResource DrawerAccentBrush}"
+                                                        FontWeight="SemiBold"
+                                                        MaxLines="1"
+                                                        TextTrimming="CharacterEllipsis" />
+                                                    <Grid Grid.Row="3" Margin="14,10,14,14" ColumnSpacing="8">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
                                                         </Grid.ColumnDefinitions>
-                                                        <TextBlock Text="{Binding FolderName}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextTrimming="CharacterEllipsis" />
-                                                        <TextBlock Grid.Column="1" Text="{Binding CreatedLabel}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                                        <TextBlock Text="{Binding FolderName}" FontSize="11" Foreground="{StaticResource DrawerMutedBrush}" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding CreatedLabel}" FontSize="11" Foreground="{StaticResource DrawerMutedBrush}" />
                                                     </Grid>
-                                                    <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8">
-                                                        <Button Content="打开" Click="OpenCard_Click" IsEnabled="{Binding CanOpen}" />
-                                                        <Button Content="定位" Click="RevealCard_Click" IsEnabled="{Binding CanReveal}" />
-                                                    </StackPanel>
+                                                    <Grid Grid.Row="0" Grid.RowSpan="4" Margin="8" RowSpacing="5" HorizontalAlignment="Right" VerticalAlignment="Top">
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="Auto" />
+                                                        </Grid.RowDefinitions>
+
+                                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                                            <Button Click="ToggleCardSelection_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="选择">
+                                                                <SymbolIcon Symbol="Accept" />
+                                                            </Button>
+                                                            <Button Click="PreviewCard_Click" IsEnabled="{Binding CanPreview}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="预览">
+                                                                <FontIcon Glyph="&#xE8A7;" FontSize="13" />
+                                                            </Button>
+                                                            <Button Click="TogglePinCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="星标">
+                                                                <FontIcon Glyph="&#xE734;" FontSize="13" />
+                                                            </Button>
+                                                            <Button Click="EditCard_Click" IsEnabled="{Binding CanEditText}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="编辑文本">
+                                                                <SymbolIcon Symbol="Edit" />
+                                                            </Button>
+                                                            <Button Click="EditRemarkCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="备注">
+                                                                <FontIcon Glyph="&#xE8D2;" FontSize="13" />
+                                                            </Button>
+                                                            <Button Click="CreateNoteCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="固定便签">
+                                                                <SymbolIcon Symbol="Library" />
+                                                            </Button>
+                                                        </StackPanel>
+
+                                                        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6">
+                                                            <Button Click="CopyCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="复制">
+                                                                <SymbolIcon Symbol="Copy" />
+                                                            </Button>
+                                                            <Button Click="OpenCard_Click" IsEnabled="{Binding CanOpen}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="打开">
+                                                                <SymbolIcon Symbol="OpenFile" />
+                                                            </Button>
+                                                            <Button Click="RevealCard_Click" IsEnabled="{Binding CanReveal}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="定位">
+                                                                <SymbolIcon Symbol="Folder" />
+                                                            </Button>
+                                                            <Button Click="MoveCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="移动">
+                                                                <SymbolIcon Symbol="MoveToFolder" />
+                                                            </Button>
+                                                            <Button Click="DeleteCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="删除">
+                                                                <SymbolIcon Symbol="Delete" />
+                                                            </Button>
+                                                        </StackPanel>
+                                                    </Grid>
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>
                                     </ItemsRepeater.ItemTemplate>
                                 </ItemsRepeater>
                             </ScrollViewer>
+
+                            <Button
+                                Width="48"
+                                Height="48"
+                                MinWidth="48"
+                                Margin="0,0,22,22"
+                                CornerRadius="24"
+                                Background="{StaticResource DrawerAccentBrush}"
+                                BorderThickness="0"
+                                Foreground="White"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Bottom"
+                                Click="AddTextButton_Click"
+                                ToolTipService.ToolTip="记录灵感">
+                                <SymbolIcon Symbol="Edit" />
+                            </Button>
+
+                            <Grid
+                                x:Name="NotesView"
+                                Padding="16,20,16,20"
+                                Background="{StaticResource DrawerContentBrush}"
+                                Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border
+                                    Padding="16,14"
+                                    CornerRadius="24"
+                                    Background="#d9ffffff"
+                                    BorderBrush="#f2ffffff"
+                                    BorderThickness="1">
+                                    <Grid ColumnSpacing="14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="4">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <FontIcon Glyph="&#xE70B;" FontSize="16" Foreground="{StaticResource DrawerAmberBrush}" />
+                                                <TextBlock Text="桌面便签" FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource DrawerTextBrush}" />
+                                            </StackPanel>
+                                            <TextBlock Text="管理从素材卡片固定出来的便签。图片、视频、文件和文本都会保留原始打开与定位动作。" FontSize="12" Foreground="{StaticResource DrawerMutedBrush}" TextWrapping="Wrap" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                            <Button Click="NewNoteButton_Click" Content="新增" />
+                                            <Button Click="DeleteAllNotesButton_Click" Content="全部删除" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+
+                                <ScrollViewer Grid.Row="1" Margin="0,16,0,0" VerticalScrollBarVisibility="Auto">
+                                    <ItemsRepeater x:Name="NoteRepeater">
+                                        <ItemsRepeater.Layout>
+                                            <UniformGridLayout
+                                                MinItemWidth="260"
+                                                MinColumnSpacing="18"
+                                                MinRowSpacing="18"
+                                                ItemsStretch="None"
+                                                ItemsJustification="Start" />
+                                        </ItemsRepeater.Layout>
+                                        <ItemsRepeater.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border
+                                                    Width="260"
+                                                    MinHeight="148"
+                                                    Padding="14"
+                                                    CornerRadius="22"
+                                                    Background="#e6ffffff"
+                                                    BorderBrush="#f2ffffff"
+                                                    BorderThickness="1"
+                                                    DoubleTapped="Card_DoubleTapped">
+                                                    <Grid RowSpacing="10">
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="Auto" />
+                                                            <RowDefinition Height="*" />
+                                                            <RowDefinition Height="Auto" />
+                                                        </Grid.RowDefinitions>
+                                                        <Grid ColumnSpacing="10">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="42" />
+                                                                <ColumnDefinition Width="*" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <Border Width="42" Height="42" CornerRadius="15" Background="#fef3c7">
+                                                                <Grid>
+                                                                    <Image Source="{Binding Image}" Stretch="UniformToFill" Visibility="{Binding HasImage, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                                    <FontIcon Glyph="{Binding IconGlyph}" FontSize="18" Foreground="{StaticResource DrawerAmberBrush}" Visibility="{Binding HasNoImage, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                                </Grid>
+                                                            </Border>
+                                                            <StackPanel Grid.Column="1" Spacing="4">
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{StaticResource DrawerTextBrush}" TextTrimming="CharacterEllipsis" />
+                                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                                    <Border Padding="7,2" CornerRadius="8" Background="#fef3c7">
+                                                                        <TextBlock Text="{Binding TypeLabel}" FontSize="10" FontWeight="SemiBold" Foreground="#92400e" />
+                                                                    </Border>
+                                                                    <TextBlock Text="{Binding CreatedLabel}" FontSize="10" Foreground="{StaticResource DrawerMutedBrush}" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+                                                        </Grid>
+                                                        <TextBlock Grid.Row="1" Text="{Binding RemarkSummary}" Foreground="{StaticResource DrawerAccentBrush}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Row="2" Text="{Binding Description}" Foreground="{StaticResource DrawerMutedBrush}" MaxLines="2" TextWrapping="Wrap" />
+                                                        <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="7">
+                                                            <Button Click="PreviewCard_Click" IsEnabled="{Binding CanPreview}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="预览">
+                                                                <FontIcon Glyph="&#xE8A7;" FontSize="13" />
+                                                            </Button>
+                                                            <Button Click="EditCard_Click" IsEnabled="{Binding CanEditText}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="编辑">
+                                                                <SymbolIcon Symbol="Edit" />
+                                                            </Button>
+                                                            <Button Click="OpenCard_Click" IsEnabled="{Binding CanOpen}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="打开">
+                                                                <SymbolIcon Symbol="OpenFile" />
+                                                            </Button>
+                                                            <Button Click="RevealCard_Click" IsEnabled="{Binding CanReveal}" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="定位">
+                                                                <SymbolIcon Symbol="Folder" />
+                                                            </Button>
+                                                            <Button Click="DeleteCard_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="删除便签">
+                                                                <SymbolIcon Symbol="Delete" />
+                                                            </Button>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsRepeater.ItemTemplate>
+                                    </ItemsRepeater>
+                                </ScrollViewer>
+                            </Grid>
+
+                            <Border
+                                x:Name="SettingsPanel"
+                                Margin="16,12,16,0"
+                                Padding="16"
+                                CornerRadius="24"
+                                Background="#f2ffffff"
+                                BorderBrush="#f2ffffff"
+                                BorderThickness="1"
+                                VerticalAlignment="Top"
+                                Visibility="Collapsed">
+                                <Grid RowSpacing="14">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="3">
+                                            <TextBlock Text="设置与帮助" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource DrawerTextBrush}" />
+                                            <TextBlock x:Name="SettingsDataPathText" Text="旧版数据目录" FontSize="11" Foreground="{StaticResource DrawerMutedBrush}" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <Button Grid.Column="1" Click="ToggleSettingsButton_Click" Style="{StaticResource CardIconButtonStyle}" ToolTipService.ToolTip="关闭">
+                                            <SymbolIcon Symbol="Cancel" />
+                                        </Button>
+                                    </Grid>
+                                    <Grid Grid.Row="1" ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Padding="12" CornerRadius="18" Background="#ecfdf5" BorderBrush="#bbf7d0" BorderThickness="1">
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="外观模式" FontWeight="SemiBold" Foreground="#065f46" />
+                                                <TextBlock Text="原生窗口已复刻圆角抽屉、玻璃感侧栏、卡片网格和预览遮罩。" FontSize="11" Foreground="#047857" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="1" Padding="12" CornerRadius="18" Background="#eff6ff" BorderBrush="#bfdbfe" BorderThickness="1">
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="快捷入口" FontWeight="SemiBold" Foreground="#1d4ed8" />
+                                                <TextBlock Text="拖入文件、添加文本、筛选搜索、多选移动删除、无限画布都在当前 WinUI 版内可用。" FontSize="11" Foreground="#2563eb" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="2" Padding="12" CornerRadius="18" Background="#fff7ed" BorderBrush="#fed7aa" BorderThickness="1">
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="AI / 手机" FontWeight="SemiBold" Foreground="#c2410c" />
+                                                <TextBlock Text="原 Tauri 的 AI 配置、手机扫码和全局快捷键会继续按原结构迁移。" FontSize="11" Foreground="#ea580c" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                    <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                                        <Button Click="OpenDataFolderButton_Click" Content="打开数据目录" />
+                                        <Button Click="RefreshButton_Click" Content="重新读取" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
                         </Grid>
+                    </Grid>
+                </Grid>
+
+                <Grid x:Name="CanvasView" Margin="18" RowSpacing="14" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid ColumnSpacing="14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="220" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="无限画布" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource DrawerTextBrush}" />
+                            <TextBlock x:Name="CanvasStatusText" Text="从当前分类读取图片素材，生成原生画布预览。" Foreground="{StaticResource DrawerMutedBrush}" />
+                        </StackPanel>
+
+                        <Slider
+                            x:Name="CanvasZoomSlider"
+                            Grid.Column="1"
+                            Header="缩放"
+                            Minimum="0.4"
+                            Maximum="1.4"
+                            StepFrequency="0.1"
+                            Value="0.8"
+                            ValueChanged="CanvasZoomSlider_ValueChanged" />
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                            <Button Click="BackToDrawerButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="抽屉">
+                                <SymbolIcon Symbol="Back" />
+                            </Button>
+                            <Button Click="FitCanvasButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="适应">
+                                <SymbolIcon Symbol="Zoom" />
+                            </Button>
+                            <Button Click="RefreshCanvasButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="重排">
+                                <SymbolIcon Symbol="Refresh" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <Border Grid.Row="1" CornerRadius="24" Background="#f5f5f4" BorderBrush="{StaticResource DrawerStrokeBrush}" BorderThickness="1">
+                        <ScrollViewer x:Name="CanvasScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                            <Canvas
+                                x:Name="CanvasBoard"
+                                Width="2600"
+                                Height="1800"
+                                Background="#f5f5f4"
+                                PointerWheelChanged="CanvasBoard_PointerWheelChanged">
+                                <Canvas.RenderTransform>
+                                    <ScaleTransform x:Name="CanvasScale" ScaleX="0.8" ScaleY="0.8" />
+                                </Canvas.RenderTransform>
+                            </Canvas>
+                        </ScrollViewer>
                     </Border>
                 </Grid>
+
+                <Grid
+                    x:Name="PreviewOverlay"
+                    Padding="32"
+                    Background="#b3000000"
+                    Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock x:Name="PreviewTitleText" FontSize="20" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis" />
+                            <TextBlock x:Name="PreviewMetaText" FontSize="12" Foreground="#d6d3d1" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Click="ClosePreviewButton_Click" Style="{StaticResource ToolIconButtonStyle}" ToolTipService.ToolTip="关闭">
+                            <SymbolIcon Symbol="Cancel" />
+                        </Button>
+                    </Grid>
+
+                    <Border
+                        x:Name="PreviewImageHost"
+                        Grid.Row="1"
+                        Margin="0,24"
+                        CornerRadius="18"
+                        Background="#1f1f1f"
+                        BorderBrush="#40ffffff"
+                        BorderThickness="1">
+                        <Image x:Name="PreviewImage" Stretch="Uniform" />
+                    </Border>
+
+                    <Border
+                        x:Name="PreviewVideoHost"
+                        Grid.Row="1"
+                        Margin="0,24"
+                        CornerRadius="18"
+                        Background="#0a0a0a"
+                        BorderBrush="#40ffffff"
+                        BorderThickness="1"
+                        Visibility="Collapsed">
+                        <MediaPlayerElement
+                            x:Name="PreviewVideoPlayer"
+                            AreTransportControlsEnabled="True"
+                            AutoPlay="True"
+                            Stretch="Uniform" />
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+                        <Button Click="CopyPreviewButton_Click" Content="复制信息" />
+                        <Button Click="OpenPreviewButton_Click" Content="打开" />
+                        <Button Click="RevealPreviewButton_Click" Content="定位" />
+                    </StackPanel>
+                </Grid>
             </Grid>
-        </NavigationView>
+        </Border>
     </Grid>
 </Window>

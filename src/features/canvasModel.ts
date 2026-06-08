@@ -21,8 +21,12 @@ export type CanvasAiItemData = {
   endpoint?: string;
   model?: string;
   prompt?: string;
+  presetId?: string;
+  presetLabel?: string;
+  presetPrompt?: string;
   aspectRatio?: string;
   resolution?: string;
+  outputFormat?: string;
   count?: number;
   status?: 'idle' | 'working' | 'success' | 'error';
   error?: string;

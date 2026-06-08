@@ -20,6 +20,10 @@ export const XAIS_CHAT_IMAGE_MODEL_OPTIONS = [
   { value: 'Nano_Banana_Pro_4K_0', label: 'Nano Banana Pro 4K' },
   { value: 'Nano_Banana_2_2K_0', label: 'Nano Banana 2 2K' },
   { value: 'Nano_Banana_2_4K_0', label: 'Nano Banana 2 4K' },
+  { value: 'Image2_1K', label: 'Xais img2 1K' },
+  { value: 'Image2_2K', label: 'Xais Img2 2K' },
+  { value: 'Image2_4K', label: 'Xais Img2 4K' },
+  { value: 'Image2_4K_HQ', label: 'Xais Img2 4K 高画质' },
   { value: 'Nano_Banana_Pro_2K_5', label: 'Nano Banana Pro 2K 5' },
   { value: 'Nano_Banana_Pro_4K_5', label: 'Nano Banana Pro 4K 5' },
   { value: 'c3f', label: 'c3f' },
@@ -48,6 +52,7 @@ export type CanvasAiBaseImageOptions = {
   inputImages?: string[];
   aspectRatio?: string;
   resolution?: string;
+  outputFormat?: string;
   count?: number;
 };
 
@@ -104,6 +109,14 @@ const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, res
   return `${prompt.trim()}\n${constraints.join('，')}`;
 };
 
+const normalizeOutputFormat = (format?: string | null) => (
+  String(format || '').trim().toLowerCase() === 'png' ? 'png' : 'jpg'
+);
+
+const outputMimeFromFormat = (format?: string | null) => (
+  normalizeOutputFormat(format) === 'png' ? 'image/png' : 'image/jpeg'
+);
+
 const normalizeOpenAiEndpoint = (endpoint: string, path: 'images/generations' | 'images/edits') => {
   const trimmed = (endpoint || OPENAI_COMPATIBLE_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
   if (/\/(?:images\/generations|images\/edits)$/i.test(trimmed)) return trimmed;
@@ -124,6 +137,22 @@ const normalizeImageGenerationsEndpoint = (endpoint: string) => {
   return `${trimmed}/v1/images/generations`;
 };
 
+const normalizeXaisWorkerEndpoint = (endpoint: string) => {
+  const fallback = 'https://xais.dchai.cn/xais';
+  let trimmed = (endpoint || fallback).trim().replace(/\/+$/, '');
+  if (!trimmed || /sg2c\.dchai\.cn/i.test(trimmed)) return fallback;
+  trimmed = trimmed
+    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '')
+    .replace(/\/workerTask(?:Start|Wait)$/i, '')
+    .replace(/\/attUrls$/i, '')
+    .replace(/\/v1$/i, '')
+    .replace(/\/models$/i, '')
+    .replace(/\/+$/, '');
+  if (/\/xais$/i.test(trimmed)) return trimmed;
+  if (/xais\.dchai\.cn$/i.test(trimmed)) return `${trimmed}/xais`;
+  return trimmed;
+};
+
 const normalizeAoduoEndpoint = (endpoint: string) => {
   const trimmed = (endpoint || AODUO_AI_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
   if (/\/v1(?:\/|$)/i.test(trimmed)) return trimmed;
@@ -133,6 +162,18 @@ const normalizeAoduoEndpoint = (endpoint: string) => {
 const postJsonViaTauri = async (url: string, apiKey: string, body: unknown) => {
   try {
     return await invoke<unknown>('post_ai_json', {
+      url,
+      apiKey,
+      body,
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
+};
+
+const postTextViaTauri = async (url: string, apiKey: string, body: unknown) => {
+  try {
+    return await invoke<string>('post_ai_text', {
       url,
       apiKey,
       body,
@@ -167,6 +208,17 @@ const postImageEditViaTauri = async (
 const getJsonViaTauri = async (url: string, apiKey: string) => {
   try {
     return await invoke<unknown>('get_ai_json', {
+      url,
+      apiKey,
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
+};
+
+const getTextViaTauri = async (url: string, apiKey: string) => {
+  try {
+    return await invoke<string>('get_ai_text', {
       url,
       apiKey,
     });
@@ -242,6 +294,162 @@ const collectImageStrings = (value: unknown, output: string[] = []): string[] =>
   return output;
 };
 
+const parseAiResponseText = (text: string): unknown => {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  try {
+    return JSON.parse(trimmed);
+  } catch (_) {
+    return trimmed;
+  }
+};
+
+const getTaskIdFromResponse = (value: unknown): string => {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value).trim().replace(/^"+|"+$/g, '');
+  }
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  const direct = record.task_id || record.taskId || record.id || record.data || record.result;
+  if (typeof direct === 'string' || typeof direct === 'number') return String(direct).trim();
+  if (Array.isArray(record.data)) {
+    for (const item of record.data) {
+      const nested = getTaskIdFromResponse(item);
+      if (nested) return nested;
+    }
+  }
+  return '';
+};
+
+const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
+const isXaisWorkerTaskModel = (model?: string | null) => {
+  const normalized = String(model || '').trim();
+  return /^(?:image2|img2)[_-]/i.test(normalized)
+    || /nano[_-]?banana/i.test(normalized);
+};
+
+const collectXaisAttachmentIds = (value: unknown, output: string[] = [], trusted = false): string[] => {
+  const pushAttachment = (raw: unknown) => {
+    const text = String(raw || '').trim().replace(/^"+|"+$/g, '');
+    if (!text || /^https?:\/\//i.test(text) || /^data:image\//i.test(text) || text.length > 512) return;
+    output.push(text);
+  };
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    if (trusted) pushAttachment(value);
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach(item => collectXaisAttachmentIds(item, output, trusted));
+    return output;
+  }
+
+  if (value && typeof value === 'object') {
+    Object.entries(value as Record<string, unknown>).forEach(([key, nested]) => {
+      const isAttachmentKey = /^(result|results|att|atts|attachment|attachments|output|outputs|file|files)$/i.test(key);
+      collectXaisAttachmentIds(nested, output, trusted || isAttachmentKey);
+    });
+  }
+
+  return Array.from(new Set(output));
+};
+
+const resolveXaisAttachmentUrls = async (endpoint: string, apiKey: string, attachments: string[]) => {
+  const images: string[] = [];
+  for (const att of Array.from(new Set(attachments.filter(Boolean)))) {
+    const raw = await getTextViaTauri(`${endpoint}/attUrls?att=${encodeURIComponent(att)}`, apiKey);
+    const parsed = parseAiResponseText(raw);
+    const parsedImages = collectImageStrings(parsed);
+    if (parsedImages.length > 0) {
+      images.push(...parsedImages);
+      continue;
+    }
+    const directUrl = String(raw || '').trim();
+    if (/^https?:\/\//i.test(directUrl)) images.push(directUrl);
+  }
+  return Array.from(new Set(images));
+};
+
+const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count: number) => {
+  const apiKey = options.apiKey.trim();
+  const prompt = options.prompt.trim();
+  if (!apiKey) throw new Error('请先填写 Xais API Key');
+  if (!prompt) throw new Error('请输入生图提示词');
+
+  const model = (options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT).trim();
+  const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
+  const requestCount = Math.max(1, Math.min(4, count));
+  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
+  const promptText = buildChinesePromptWithOptions(prompt, options.aspectRatio);
+  const output: string[] = [];
+
+  const runOneTask = async () => {
+    const customField: Record<string, unknown> = {
+      outputFormat: outputMimeFromFormat(options.outputFormat),
+      prompt: promptText,
+      input: promptText,
+    };
+    if (options.aspectRatio) customField.aspectRatio = options.aspectRatio;
+    if (inputImages.length > 0) {
+      customField.imageUrls = inputImages;
+      customField.image_urls = inputImages;
+      customField.referenceImages = inputImages;
+      customField.reference_images = inputImages;
+      customField.images = inputImages;
+    }
+
+    const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, {
+      model,
+      custom_field: customField,
+    });
+    const started = parseAiResponseText(startedRaw);
+    const immediateImages = collectImageStrings(started);
+    if (immediateImages.length > 0) return immediateImages;
+
+    const taskId = getTaskIdFromResponse(started);
+    if (!taskId) {
+      throw new Error(`Xais ${model} 没有返回任务 ID：${String(startedRaw).slice(0, 180)}`);
+    }
+
+    let lastWait: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) await delay(1500);
+      const waitedRaw = await getTextViaTauri(`${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}&`, apiKey);
+      const waited = parseAiResponseText(waitedRaw);
+      lastWait = waited;
+      const waitedImages = collectImageStrings(waited);
+      if (waitedImages.length > 0) return waitedImages;
+
+      const attachments = collectXaisAttachmentIds(waited);
+      if (attachments.length > 0) {
+        const urls = await resolveXaisAttachmentUrls(endpoint, apiKey, attachments);
+        if (urls.length > 0) return urls;
+      }
+    }
+
+    throw new Error(`Xais ${model} 任务完成但没有返回图片 URL：${getErrorMessage(lastWait)}`);
+  };
+
+  let lastError: unknown = null;
+  while (output.length < requestCount) {
+    try {
+      output.push(...await runOneTask());
+    } catch (error) {
+      lastError = error;
+      if (output.length === 0) throw error;
+      break;
+    }
+  }
+
+  const unique = Array.from(new Set(output));
+  if (unique.length === 0) {
+    throw new Error(lastError ? getErrorMessage(lastError) : `Xais ${model} 没有返回图片`);
+  }
+  return unique.slice(0, requestCount);
+};
+
 const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
@@ -285,6 +493,9 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
 
   const model = (options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT).trim() || XAIS_CHAT_IMAGE_MODEL_DEFAULT;
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  if (isXaisWorkerTaskModel(model)) {
+    return generateXaisWorkerTaskImages({ ...options, model }, count);
+  }
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
   const promptText = buildChinesePromptWithOptions(prompt, options.aspectRatio, options.resolution);
   const imageEndpoint = normalizeImageGenerationsEndpoint(options.endpoint || '');
@@ -430,22 +641,6 @@ const generateAoduoChatImages = async (options: CanvasAiImageOptions, count: num
   }
   return uniqueImages.slice(0, count);
 };
-
-const getTaskIdFromResponse = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  const direct = record.task_id || record.taskId || record.id;
-  if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
-  if (Array.isArray(record.data)) {
-    for (const item of record.data) {
-      const nested = getTaskIdFromResponse(item);
-      if (nested) return nested;
-    }
-  }
-  return '';
-};
-
-const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
 const generateAoduoGptImage2Images = async (options: CanvasAiImageOptions, count: number) => {
   const apiKey = options.apiKey.trim();
