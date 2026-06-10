@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT = 'gpt-image-1';
 export const OPENAI_COMPATIBLE_ENDPOINT_DEFAULT = 'https://api.openai.com/v1';
-export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://sg2c.dchai.cn';
+export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://sg2.dchai.cn';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Nano_Banana_Pro_2K_0';
 export const AODUO_AI_ENDPOINT_DEFAULT = 'https://api.lk888.ai';
 export const AODUO_AI_IMAGE_MODEL_DEFAULT = 'nanobanana-pro';
@@ -85,7 +85,7 @@ const getErrorMessage = (error: unknown) => {
 };
 
 const isUnauthorizedError = (error: unknown) => /(?:HTTP\s*)?401|unauthorized|invalid api key|invalid token/i.test(getErrorMessage(error));
-const isRetryableServerError = (error: unknown) => /HTTP\s*5\d\d|internal server error|bad gateway|service unavailable|gateway timeout|connection|连接/i.test(getErrorMessage(error));
+const isRetryableServerError = (error: unknown) => /HTTP\s*5\d\d|internal server error|bad gateway|service unavailable|gateway timeout|connection|error sending request|timed?\s*out|timeout|network|dns|reset|closed|连接|超时|断开/i.test(getErrorMessage(error));
 
 const isRemoteHttpImageSource = (source?: string | null) => (
   /^https?:\/\//i.test(String(source || '').trim()) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(String(source || ''))
@@ -140,7 +140,7 @@ const normalizeImageGenerationsEndpoint = (endpoint: string) => {
 const normalizeXaisWorkerEndpoint = (endpoint: string) => {
   const fallback = 'https://xais.dchai.cn/xais';
   let trimmed = (endpoint || fallback).trim().replace(/\/+$/, '');
-  if (!trimmed || /sg2c\.dchai\.cn/i.test(trimmed)) return fallback;
+  if (!trimmed || /sg2c?\.dchai\.cn/i.test(trimmed)) return fallback;
   trimmed = trimmed
     .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '')
     .replace(/\/workerTask(?:Start|Wait)$/i, '')
@@ -323,10 +323,34 @@ const getTaskIdFromResponse = (value: unknown): string => {
 
 const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
+const getTextViaTauriWithRetry = async (
+  url: string,
+  apiKey: string,
+  label: string,
+  attempts = 4,
+  delayMs = 1400
+) => {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await getTextViaTauri(url, apiKey);
+    } catch (error) {
+      lastError = error;
+      if (isUnauthorizedError(error) || (!isRetryableServerError(error) && /HTTP\s*4\d\d/i.test(getErrorMessage(error)))) {
+        throw error;
+      }
+      if (attempt < attempts - 1) {
+        await delay(delayMs * (attempt + 1));
+      }
+    }
+  }
+  throw new Error(`${label}失败：${getErrorMessage(lastError)}`);
+};
+
 const isXaisWorkerTaskModel = (model?: string | null) => {
   const normalized = String(model || '').trim();
-  return /^(?:image2|img2)[_-]/i.test(normalized)
-    || /nano[_-]?banana/i.test(normalized);
+  return /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
+    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
 };
 
 const collectXaisAttachmentIds = (value: unknown, output: string[] = [], trusted = false): string[] => {
@@ -359,7 +383,11 @@ const collectXaisAttachmentIds = (value: unknown, output: string[] = [], trusted
 const resolveXaisAttachmentUrls = async (endpoint: string, apiKey: string, attachments: string[]) => {
   const images: string[] = [];
   for (const att of Array.from(new Set(attachments.filter(Boolean)))) {
-    const raw = await getTextViaTauri(`${endpoint}/attUrls?att=${encodeURIComponent(att)}`, apiKey);
+    const raw = await getTextViaTauriWithRetry(
+      `${endpoint}/attUrls?att=${encodeURIComponent(att)}`,
+      apiKey,
+      'Xais 结果链接解析'
+    );
     const parsed = parseAiResponseText(raw);
     const parsedImages = collectImageStrings(parsed);
     if (parsedImages.length > 0) {
@@ -402,6 +430,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
 
     const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, {
       model,
+      prompt: promptText,
       custom_field: customField,
     });
     const started = parseAiResponseText(startedRaw);
@@ -414,9 +443,13 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     }
 
     let lastWait: unknown = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (attempt > 0) await delay(1500);
-      const waitedRaw = await getTextViaTauri(`${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}&`, apiKey);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt > 0) await delay(1800);
+      const waitedRaw = await getTextViaTauriWithRetry(
+        `${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}`,
+        apiKey,
+        `Xais ${model} 任务等待`
+      );
       const waited = parseAiResponseText(waitedRaw);
       lastWait = waited;
       const waitedImages = collectImageStrings(waited);

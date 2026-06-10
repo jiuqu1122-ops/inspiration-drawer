@@ -3,9 +3,9 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 're
 import { flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  File as FileIcon, X, Download, Check, Pin, FolderOpen, Camera,
+  File as FileIcon, X, Download, Check, Pin, FolderOpen, Lightbulb,
   Sun, RotateCcw, Settings, Image as ImageIcon, Type, Film, LayoutGrid,
-  Compass, HardDrive, Monitor, BookOpen, Sparkles,
+  Compass, HardDrive, Monitor, BookOpen, Sparkles, Play,
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload
@@ -21,6 +21,7 @@ import { listen, emitTo } from '@tauri-apps/api/event';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 
 import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
@@ -38,6 +39,7 @@ import {
   CANVAS_MIN_IMAGE_WIDTH,
   CANVAS_MIN_SCALE,
   type CanvasFolderImportPrompt,
+  type CanvasAiGeneratedOutput,
   type CanvasAiProvider,
   type CanvasImageItem,
   type CanvasItemBox,
@@ -143,6 +145,55 @@ import {
   generateCanvasAiProviderImages,
 } from './features/canvasAiImage';
 
+type CanvasGeneratedListEntry = {
+  id: string;
+  canvasItem: CanvasImageItem;
+  item: BufferItem;
+  ai?: NonNullable<CanvasImageItem['ai']>;
+};
+type CanvasWorkflowNodeTemplate = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  item: Pick<BufferItem, 'type' | 'content'> & Partial<BufferItem>;
+  inputs?: string[];
+  ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
+};
+type CanvasWorkflowTemplate = {
+  id: string;
+  label: string;
+  hint: string;
+  nodes: CanvasWorkflowNodeTemplate[];
+  createdAt?: number;
+  builtin?: boolean;
+};
+type CanvasWorkflowSaveDraft = {
+  label: string;
+  defaultLabel: string;
+  nodes: CanvasWorkflowNodeTemplate[];
+  bounds: CanvasItemBox;
+  externalInputIds: string[];
+  selectedItemIds: string[];
+  aiCount: number;
+};
+type CanvasWorkflowRuntimeNodeSnapshot = {
+  templateId: string;
+  item?: Partial<BufferItem>;
+  ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
+};
+type CanvasWorkflowExpandedGroup = {
+  groupId: string;
+  templateId: string;
+  workflowId: string;
+  workflowLabel: string;
+  workflowHint: string;
+  workflowBuiltin?: boolean;
+  module: CanvasImageItem;
+  expandedAt: number;
+};
+
 const appWindow = getCurrentWindow();
 clearLegacyStartupFlags();
 const LazyFloatingNoteHost = React.lazy(() => (
@@ -158,6 +209,19 @@ type DrawerUndoSnapshot = {
   floatingNotes: Array<{ label: string; snapshot: FloatingNoteSnapshot }>;
   label: string;
   createdAt: number;
+};
+type ConfirmDialogAction = {
+  label: string;
+  onClick: () => void | Promise<void>;
+  className?: string;
+  title?: string;
+};
+type ConfirmDialogState = {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  onConfirm: () => void | Promise<void>;
+  actions?: ConfirmDialogAction[];
 };
 
 const DRAWER_UNDO_LIMIT = 8;
@@ -349,14 +413,130 @@ const CANVAS_AI_COUNT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_COUNTS.map(coun
   value: String(count),
   label: String(count),
 }));
-const CANVAS_AI_NODE_ICON_SELECT_CLASS = 'h-7 w-9 justify-center gap-0.5 rounded-[10px] border border-stone-200/80 bg-white/78 px-0 text-stone-600 shadow-sm shadow-black/[0.03] hover:bg-white hover:text-cyan-700 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/76 dark:hover:bg-white/[0.13] dark:hover:text-cyan-200';
-const CANVAS_AI_NODE_TEXT_SELECT_CLASS = 'h-7 justify-center gap-0.5 rounded-[10px] border border-stone-200/80 bg-white/78 px-2 text-[10px] font-bold text-stone-600 shadow-sm shadow-black/[0.03] hover:bg-white hover:text-cyan-700 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/76 dark:hover:bg-white/[0.13] dark:hover:text-cyan-200';
-const CANVAS_AI_NODE_COUNT_SELECT_CLASS = 'h-7 w-10 justify-center gap-0.5 rounded-[10px] border border-stone-200/80 bg-white/78 px-1.5 text-[10px] font-bold text-stone-600 shadow-sm shadow-black/[0.03] hover:bg-white hover:text-cyan-700 dark:border-white/10 dark:bg-white/[0.07] dark:text-white/76 dark:hover:bg-white/[0.13] dark:hover:text-cyan-200';
+const CANVAS_AI_NODE_ICON_SELECT_CLASS = 'h-8 w-9 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-0 text-stone-500 hover:bg-stone-950/[0.04] hover:text-stone-800 dark:text-white/62 dark:hover:bg-white/[0.07] dark:hover:text-white';
+const CANVAS_AI_NODE_TEXT_SELECT_CLASS = 'h-8 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-2 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
+const CANVAS_AI_NODE_COUNT_SELECT_CLASS = 'h-8 w-11 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-1.5 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
 const CANVAS_AI_NODE_CHEVRON_CLASS = 'h-2.5 w-2.5';
-const CANVAS_AI_NODE_SELECT_MENU_CLASS = '!border-stone-200/80 !bg-white/96 !text-stone-700 shadow-2xl shadow-black/15 dark:!border-white/10 dark:!bg-stone-950/96 dark:!text-white';
-const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-700 hover:!bg-cyan-50 hover:!text-cyan-800 dark:!text-white dark:hover:!bg-white/10 dark:hover:!text-white';
-const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-cyan-100 !text-cyan-800 dark:!bg-cyan-400 dark:!text-stone-950';
+const CANVAS_AI_NODE_SELECT_MENU_CLASS = '!border-stone-200/80 !bg-white/98 !text-stone-700 shadow-2xl shadow-black/15 dark:!border-white/10 dark:!bg-[#171717]/98 dark:!text-white dark:shadow-black/35';
+const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-600 hover:!bg-stone-100 hover:!text-stone-950 dark:!text-white/78 dark:hover:!bg-white/10 dark:hover:!text-white';
+const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-stone-900 !text-white dark:!bg-white/14 dark:!text-white';
 const CANVAS_AI_PANEL_SELECT_CLASS = 'h-[34px] w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 text-xs font-medium text-stone-700 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:hover:bg-stone-900/70';
+const DRAWER_TOOL_BUTTON_BASE_CLASS = 'p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400';
+const CANVAS_SIDE_TOOL_CLASS = 'flex h-10 w-[68px] shrink-0 items-center justify-start gap-1.5 overflow-hidden rounded-full border bg-white/88 px-2 text-[10px] font-black text-stone-700 shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[transform,background-color,border-color] duration-200 hover:-translate-y-px dark:border-white/10 dark:bg-stone-950/70 dark:text-stone-100 dark:hover:bg-stone-900/90';
+const CANVAS_SIDE_SELECT_CLASS = 'relative h-10 w-[68px] shrink-0 items-center justify-start gap-1.5 overflow-hidden rounded-full border bg-white/88 px-2 text-[10px] font-black text-stone-700 shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[width,transform,background-color,border-color] duration-200 hover:w-[118px] hover:-translate-y-px dark:border-white/10 dark:bg-stone-950/70 dark:text-stone-100 dark:hover:bg-stone-900/90';
+const CANVAS_SIDE_CHEVRON_FLOAT_CLASS = 'pointer-events-none absolute right-2.5 top-1/2 z-10 h-3 w-3 -translate-y-1/2 rounded-full bg-white/90 opacity-0 shadow-sm ring-2 ring-white/80 transition-opacity group-hover/rounded-select:opacity-100 dark:bg-stone-950/90 dark:ring-stone-950/70';
+const CANVAS_SIDE_EXPAND_TOOL_CLASS = `group/canvas-tool ${CANVAS_SIDE_TOOL_CLASS} transition-[width,transform,background-color,border-color] hover:w-[118px] disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45`;
+const DRAWER_FOLDER_TONES = [
+  {
+    active: 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30',
+    soft: 'hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200',
+    drag: 'ring-2 ring-blue-300 bg-blue-50 text-blue-600 dark:ring-blue-400/40 dark:bg-blue-400/14 dark:text-blue-200',
+    label: 'text-blue-600 dark:text-blue-300',
+    badge: 'bg-blue-500 dark:bg-blue-400 dark:text-stone-950',
+  },
+];
+const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
+const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
+const CANVAS_AI_NODE_GRID_GAP = 8;
+const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
+const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
+const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
+  const [rawW, rawH] = aspectRatio.split(':').map(value => Number(value));
+  return rawW > 0 && rawH > 0 ? rawW / rawH : 16 / 9;
+};
+const getCanvasAiOutputTileLayout = (options?: {
+  width?: number;
+  aspectRatio?: string;
+  count?: number;
+  outputCount?: number;
+  isWorkflow?: boolean;
+}) => {
+  const width = options?.width || CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
+  const outputCount = clamp(
+    Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
+    1,
+    options?.isWorkflow ? CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS : CANVAS_AI_MAX_OUTPUT_COUNT
+  );
+  const columns = outputCount <= 1 ? 1 : outputCount > 12 ? 4 : outputCount > 4 ? 3 : 2;
+  const ratio = parseCanvasAspectRatioValue(options?.aspectRatio);
+  const gridWidth = width - 36 - 18;
+  const columnWidth = (gridWidth - CANVAS_AI_NODE_GRID_GAP * (columns - 1)) / columns;
+  const maxTileHeight = outputCount <= 1 ? 360 : outputCount > 8 ? 190 : 330;
+  const minTileHeight = outputCount <= 1 ? 230 : outputCount > 8 ? 108 : outputCount > 4 ? 124 : 150;
+  const rawHeight = columnWidth / ratio;
+  const tileHeight = clamp(rawHeight, minTileHeight, maxTileHeight);
+  const tileWidth = Math.min(columnWidth, tileHeight * ratio);
+  const rows = Math.max(1, Math.ceil(outputCount / columns));
+  return {
+    columns,
+    rows,
+    tileWidth: Math.round(tileWidth),
+    tileHeight: Math.round(tileHeight),
+    gridHeight: Math.round(rows * tileHeight + (rows - 1) * CANVAS_AI_NODE_GRID_GAP),
+  };
+};
+const getCanvasAiPromptAutoHeight = (promptText = '', width = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH, expanded = false) => {
+  if (!expanded) return 108;
+  const text = promptText.trim();
+  const charsPerLine = Math.max(26, Math.floor((width - 44) / 14));
+  const visualLines = text
+    ? Math.max(3, text.split(/\r?\n/).reduce((total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)), 0))
+    : 3;
+  return clamp(visualLines * 28 + 24, 180, 320);
+};
+const getCanvasAiNodeAutoSize = (options?: {
+  type?: 'image-generator' | 'workflow';
+  aspectRatio?: string;
+  count?: number;
+  outputCount?: number;
+  hasPreset?: boolean;
+  hasError?: boolean;
+  promptText?: string;
+  promptExpanded?: boolean;
+  showOutputPreview?: boolean;
+}) => {
+  const isWorkflow = options?.type === 'workflow';
+  const width = isWorkflow ? CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH : CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
+  const outputCount = clamp(
+    Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
+    1,
+    isWorkflow ? CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS : CANVAS_AI_MAX_OUTPUT_COUNT
+  );
+  const outputLayout = options?.showOutputPreview
+    ? getCanvasAiOutputTileLayout({
+      width,
+      aspectRatio: options?.aspectRatio,
+      outputCount,
+      isWorkflow,
+    })
+    : null;
+  const headerSectionHeight = 58;
+  const outputSectionHeight = outputLayout ? 36 + outputLayout.gridHeight : 220;
+  const metaSectionHeight = isWorkflow || options?.hasPreset ? 44 : 0;
+  const promptHeight = isWorkflow ? 118 : getCanvasAiPromptAutoHeight(options?.promptText, width, !!options?.promptExpanded);
+  const inputHeight = 52;
+  const errorHeight = options?.hasError ? 48 : 0;
+  const bodyGapCount = [
+    headerSectionHeight,
+    outputSectionHeight,
+    metaSectionHeight,
+    promptHeight,
+    inputHeight,
+    errorHeight,
+  ].filter(Boolean).length - 1;
+  const bodyHeight = headerSectionHeight
+    + outputSectionHeight
+    + metaSectionHeight
+    + promptHeight
+    + inputHeight
+    + errorHeight
+    + Math.max(0, bodyGapCount) * 12
+    + 32;
+  return {
+    width,
+    height: Math.ceil(bodyHeight),
+  };
+};
 type CanvasAiPromptPreset = {
   id: string;
   label: string;
@@ -396,7 +576,7 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     id: 'cmf-exploration',
     label: 'CMF 探索',
     hint: '材质与配色方向',
-    aspectRatio: '4:3',
+    aspectRatio: '16:9',
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品做一张 CMF 设计探索图。
 
@@ -429,7 +609,7 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     id: 'detail-hero',
     label: '细节特写',
     hint: '边缘高光与材质',
-    aspectRatio: '3:4',
+    aspectRatio: '16:9',
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品生成一张高级产品细节特写图。
 
@@ -445,10 +625,213 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
 - 不要文字、不要 logo 乱生成、不要说明标签`,
   },
 ];
+const makeCanvasWorkflowAiNode = (
+  id: string,
+  label: string,
+  hint: string,
+  prompt: string,
+  x: number,
+  y: number,
+  inputs: string[] = [],
+  aspectRatio = '16:9'
+): CanvasWorkflowNodeTemplate => {
+  const size = getCanvasAiNodeAutoSize({
+    type: 'image-generator',
+    aspectRatio,
+    count: 1,
+    hasPreset: true,
+  });
+  return {
+    id,
+    x,
+    y,
+    width: size.width,
+    height: size.height,
+    inputs,
+    item: {
+      id,
+      type: 'text',
+      content: '',
+      name: `AI ${label}`,
+      remark: hint,
+      createdAt: 0,
+      isQuickAccess: false,
+    },
+    ai: {
+      type: 'image-generator',
+      presetId: `workflow-${id}`,
+      presetLabel: label,
+      presetPrompt: prompt,
+      aspectRatio,
+      outputFormat: 'jpg',
+      count: 1,
+      status: 'idle',
+    },
+  };
+};
+const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+  {
+    id: 'industrial-design-basic',
+    label: '基础工业设计',
+    hint: '线稿 -> 效果图 -> 细节 / 多角度 / 场景',
+    builtin: true,
+    nodes: [
+      makeCanvasWorkflowAiNode(
+        'industrial-render',
+        '线稿转效果图',
+        '从线稿生成效果图',
+        `基于连接的线稿、草图或产品参考图，生成一张可信的工业设计效果图。
+
+要求：
+- 保留原始产品比例、结构、功能布局和关键轮廓
+- 将线稿转成真实可评审的产品渲染
+- 材质、倒角、分件线、按键、接口表现清晰
+- 构图干净，像工业设计评审里的主效果图
+- 不要文字、不要 logo 乱生成、不要说明标签`,
+        0,
+        0,
+        [],
+        '16:9'
+      ),
+      makeCanvasWorkflowAiNode(
+        'industrial-detail',
+        '细节图',
+        '从效果图生成细节特写',
+        `基于连接的产品效果图，生成一张高级产品细节特写图。
+
+要求：
+- 聚焦关键边缘、倒角、按键、接口、分件线或材质交界
+- 微距产品摄影质感，浅景深，边缘有精致高光
+- 保持产品结构与功能布局一致
+- 不要文字、不要 logo 乱生成、不要说明箭头`,
+        480,
+        -120,
+        ['industrial-render'],
+        '16:9'
+      ),
+      makeCanvasWorkflowAiNode(
+        'industrial-multiview',
+        '多角度设计图',
+        '从效果图生成多角度设计图',
+        `基于连接的产品效果图，生成同一产品的多角度设计图。
+
+要求：
+- 展示正面、侧面、背面、3/4 角度等多个视角
+- 所有视角保持同一产品结构、比例、CMF 和细节一致
+- 像工业设计评审板，排版干净，背景简洁
+- 不要文字标签、不要说明箭头、不要品牌 logo 乱生成`,
+        480,
+        420,
+        ['industrial-render'],
+        '16:9'
+      ),
+      makeCanvasWorkflowAiNode(
+        'industrial-scene',
+        '场景图',
+        '从效果图生成使用场景',
+        `基于连接的产品效果图，生成真实生活方式或办公使用场景图。
+
+要求：
+- 产品是画面主角，环境现代、干净、有审美
+- 光线柔和，有轻微景深，材质真实可信
+- 保持产品结构、比例、按键、接口和分件线一致
+- 不要文字、不要 logo 乱生成、不要夸张特效`,
+        960,
+        150,
+        ['industrial-render'],
+        '16:9'
+      ),
+    ],
+  },
+  {
+    id: 'cmf-review',
+    label: 'CMF 评审',
+    hint: '参考图 -> CMF 方向 -> 细节特写',
+    builtin: true,
+    nodes: [
+      makeCanvasWorkflowAiNode(
+        'cmf-board',
+        'CMF 方向板',
+        '生成材质与配色方向',
+        CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === 'cmf-exploration')?.prompt || '',
+        0,
+        0,
+        [],
+        '16:9'
+      ),
+      makeCanvasWorkflowAiNode(
+        'cmf-detail',
+        'CMF 细节特写',
+        '生成材质细节图',
+        `基于连接的 CMF 方向图，生成一张产品材质细节特写。
+
+要求：
+- 强调材质纹理、表面工艺、倒角高光和颜色过渡
+- 保持产品结构一致
+- 画面像设计评审中的材质细节页
+- 不要文字、不要品牌标识、不要说明箭头`,
+        480,
+        0,
+        ['cmf-board'],
+        '16:9'
+      ),
+    ],
+  },
+  {
+    id: 'ecommerce-showcase',
+    label: '电商展示',
+    hint: '主图 -> 细节图 / 场景图',
+    builtin: true,
+    nodes: [
+      makeCanvasWorkflowAiNode(
+        'commerce-hero',
+        '电商主图',
+        '生成产品主视觉',
+        `基于连接的产品参考图，生成一张干净高级的电商产品主图。
+
+要求：
+- 产品居中，轮廓清晰，材质真实
+- 背景简洁但不空洞，适合商品展示
+- 保持产品结构和功能布局一致
+- 不要促销文字、不要 logo 乱生成、不要水印`,
+        0,
+        0,
+        [],
+        '16:9'
+      ),
+      makeCanvasWorkflowAiNode(
+        'commerce-detail',
+        '卖点细节图',
+        '生成产品细节展示',
+        CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === 'detail-hero')?.prompt || '',
+        480,
+        -120,
+        ['commerce-hero'],
+        '16:9'
+      ),
+      makeCanvasWorkflowAiNode(
+        'commerce-scene',
+        '使用场景图',
+        '生成真实场景图',
+        CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === 'lifestyle-scene')?.prompt || '',
+        480,
+        420,
+        ['commerce-hero'],
+        '16:9'
+      ),
+    ],
+  },
+];
 const CANVAS_AI_PROMPT_PRESET_PLACEHOLDER = '__canvas_ai_prompt_preset__';
 const CANVAS_AI_PROMPT_PRESET_ADD_VALUE = '__canvas_ai_prompt_preset_add__';
 const CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE = '__canvas_ai_prompt_preset_manage__';
 const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
+const CANVAS_WORKFLOW_SELECT_PLACEHOLDER = '__canvas_workflow_select__';
+const CANVAS_WORKFLOW_SAVE_SELECTION_VALUE = '__canvas_workflow_save_selection__';
+const CANVAS_WORKFLOW_MANAGE_VALUE = '__canvas_workflow_manage__';
+const CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY = 'drawer_canvas_custom_workflows';
+const CANVAS_TEMPLATE_EXPORT_TYPE = 'inspiration-drawer-canvas-templates';
+const CANVAS_TEMPLATE_EXPORT_VERSION = 1;
 const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
 const normalizeCanvasAiPromptPreset = (value: unknown): CanvasAiPromptPreset | null => {
   const record = value && typeof value === 'object' ? value as Partial<CanvasAiPromptPreset> : {};
@@ -471,6 +854,85 @@ const readCustomCanvasAiPromptPresets = () => {
     const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY) || '[]');
     return Array.isArray(parsed)
       ? parsed.map(normalizeCanvasAiPromptPreset).filter((item): item is CanvasAiPromptPreset => !!item)
+      : [];
+  } catch (_) {
+    return [];
+  }
+};
+const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate | null => {
+  const record = value && typeof value === 'object' ? value as Partial<CanvasWorkflowTemplate> : {};
+  const label = typeof record.label === 'string' ? record.label.trim().slice(0, 32) : '';
+  const rawNodes = Array.isArray(record.nodes) ? record.nodes : [];
+  if (!label || rawNodes.length === 0) return null;
+
+  const nodes = rawNodes.map((nodeValue, index) => {
+    const node = nodeValue && typeof nodeValue === 'object'
+      ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
+      : {};
+    const rawItem = node.item && typeof node.item === 'object'
+      ? node.item as Partial<BufferItem>
+      : {};
+    const itemType = rawItem.type === 'text' || rawItem.type === 'image' || rawItem.type === 'file' || rawItem.type === 'video'
+      ? rawItem.type
+      : 'text';
+    const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
+    return {
+      id,
+      x: Number(node.x) || 0,
+      y: Number(node.y) || index * 220,
+      width: clamp(Number(node.width) || 390, 160, 1200),
+      height: clamp(Number(node.height) || 430, 120, 1200),
+      item: {
+        id,
+        type: itemType,
+        content: String(rawItem.content || ''),
+        name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : undefined,
+        path: typeof rawItem.path === 'string' ? rawItem.path : undefined,
+        url: typeof rawItem.url === 'string' ? rawItem.url : undefined,
+        thumbnail: typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined,
+        sourceUrl: typeof rawItem.sourceUrl === 'string' ? rawItem.sourceUrl : undefined,
+        originalUrl: typeof rawItem.originalUrl === 'string' ? rawItem.originalUrl : undefined,
+        remark: typeof rawItem.remark === 'string' ? rawItem.remark : undefined,
+        remarks: Array.isArray(rawItem.remarks)
+          ? rawItem.remarks.map(remark => String(remark || '').trim()).filter(Boolean).slice(0, 12)
+          : undefined,
+        createdAt: 0,
+        isQuickAccess: false,
+      },
+      inputs: Array.isArray(node.inputs)
+        ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
+        : [],
+      ai: node.ai && typeof node.ai === 'object'
+        ? {
+          ...(node.ai as Partial<NonNullable<CanvasImageItem['ai']>>),
+          outputs: [],
+          status: 'idle' as const,
+          error: undefined,
+          generatedAt: undefined,
+        }
+        : undefined,
+    } as CanvasWorkflowNodeTemplate;
+  }).filter(node => node.ai?.type === 'image-generator' || !!node.item.type);
+
+  if (nodes.length === 0 || !nodes.some(node => node.ai?.type === 'image-generator')) return null;
+  return {
+    id: typeof record.id === 'string' && record.id.trim()
+      ? record.id.trim()
+      : `workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+    label,
+    hint: typeof record.hint === 'string' && record.hint.trim()
+      ? record.hint.trim().slice(0, 80)
+      : '自定义工作流',
+    nodes,
+    createdAt: Number(record.createdAt) || Date.now(),
+    builtin: !!record.builtin,
+  };
+};
+const readCustomCanvasWorkflows = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed)
+      ? parsed.map(normalizeCanvasWorkflowTemplate).filter((item): item is CanvasWorkflowTemplate => !!item && !item.builtin)
       : [];
   } catch (_) {
     return [];
@@ -541,8 +1003,15 @@ const getCanvasAiEndpointForModels = (provider: CanvasAiProvider, endpoint: stri
 const isCanvasAiXaisImageModel = (model: string) => {
   const normalized = model.trim();
   return /nano[_-]?banana/i.test(normalized)
-    || /^(?:image2|img2)[_-]/i.test(normalized)
+    || /^xais[\s_-]?nano/i.test(normalized)
+    || /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
+    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
     || normalized.toLowerCase() === 'c3f';
+};
+const isCanvasAiXaisWorkerModel = (model?: string | null) => {
+  const normalized = String(model || '').trim();
+  return /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
+    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
 };
 const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (
   provider === 'xais-chat' ? CANVAS_AI_XAIS_MODELS_STORAGE_KEY : CANVAS_AI_OPENAI_MODELS_STORAGE_KEY
@@ -877,6 +1346,7 @@ function MainApp() {
   const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
+  const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
   const canvasContextMenuRef = useRef<CanvasContextMenuState | null>(null);
   const canvasInputPickTargetIdRef = useRef<string | null>(null);
@@ -897,14 +1367,22 @@ function MainApp() {
   const [isRefreshingCanvasAiOpenAiModels, setIsRefreshingCanvasAiOpenAiModels] = useState(false);
   const [canvasAiOpenAiModelError, setCanvasAiOpenAiModelError] = useState('');
   const [customCanvasAiPromptPresets, setCustomCanvasAiPromptPresets] = useState<CanvasAiPromptPreset[]>(() => readCustomCanvasAiPromptPresets());
+  const [customCanvasWorkflows, setCustomCanvasWorkflows] = useState<CanvasWorkflowTemplate[]>(() => readCustomCanvasWorkflows());
+  const [canvasWorkflowSaveDraft, setCanvasWorkflowSaveDraft] = useState<CanvasWorkflowSaveDraft | null>(null);
+  const [isCanvasWorkflowManagerOpen, setIsCanvasWorkflowManagerOpen] = useState(false);
+  const [canvasWorkflowEditingId, setCanvasWorkflowEditingId] = useState('');
+  const [canvasWorkflowNameDraft, setCanvasWorkflowNameDraft] = useState('');
+  const [canvasWorkflowHintDraft, setCanvasWorkflowHintDraft] = useState('');
   const [isCanvasPresetEditorOpen, setIsCanvasPresetEditorOpen] = useState(false);
   const [canvasPresetEditorMode, setCanvasPresetEditorMode] = useState<'create' | 'manage'>('create');
   const [canvasPresetEditingId, setCanvasPresetEditingId] = useState('');
   const [canvasPresetNameDraft, setCanvasPresetNameDraft] = useState('');
   const [canvasPresetPromptDraft, setCanvasPresetPromptDraft] = useState('');
+  const [canvasWorkflowSingleEditGroupIds, setCanvasWorkflowSingleEditGroupIds] = useState<string[]>([]);
   const isCanvasModeRef = useRef(false);
   const canvasItemsRef = useRef<CanvasImageItem[]>([]);
   const canvasSelectedIdsRef = useRef<string[]>([]);
+  const canvasWorkflowSingleEditGroupIdsRef = useRef<Set<string>>(new Set());
   const canvasScaleRef = useRef(1);
   const canvasSizeRef = useRef({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
   const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -913,6 +1391,7 @@ function MainApp() {
   const canvasItemsCommitFrameRef = useRef<number | null>(null);
   const pendingCanvasItemsCommitRef = useRef<CanvasImageItem[] | null>(null);
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
+  const canvasZoomScrollFrameRef = useRef<number | null>(null);
   const canvasInteractionTimerRef = useRef<number | null>(null);
   const isCanvasInteractingRef = useRef(false);
   const isCanvasPointerInsideRef = useRef(false);
@@ -1044,6 +1523,31 @@ function MainApp() {
   useEffect(() => { canvasScaleRef.current = canvasScale; }, [canvasScale]);
   useEffect(() => { canvasSizeRef.current = canvasSize; }, [canvasSize]);
   useEffect(() => { canvasContextMenuRef.current = canvasContextMenu; }, [canvasContextMenu]);
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const closeCanvasClickWindows = () => {
+      setCanvasContextMenu(null);
+      setCanvasInputMenuForId(null);
+      setCanvasFolderImportPrompt(null);
+      setIsCanvasAiPanelOpen(false);
+      setIsCanvasPresetEditorOpen(false);
+      setIsCanvasWorkflowManagerOpen(false);
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-canvas-floating-layer="true"]')) return;
+      closeCanvasClickWindows();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeCanvasClickWindows();
+    };
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+      document.removeEventListener('keydown', handleKeyDown, true);
+    };
+  }, [isCanvasMode]);
   useEffect(() => { canvasInputPickTargetIdRef.current = canvasInputPickTargetId; }, [canvasInputPickTargetId]);
   useEffect(() => { isCanvasSpacePressedRef.current = isCanvasSpacePressed; }, [isCanvasSpacePressed]);
   useEffect(() => { localStorage.setItem('drawer_canvas_navigator_visible', isCanvasNavigatorVisible ? 'true' : 'false'); }, [isCanvasNavigatorVisible]);
@@ -1062,6 +1566,12 @@ function MainApp() {
   useEffect(() => {
     localStorage.setItem(CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY, JSON.stringify(customCanvasAiPromptPresets));
   }, [customCanvasAiPromptPresets]);
+  useEffect(() => {
+    localStorage.setItem(CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY, JSON.stringify(customCanvasWorkflows));
+  }, [customCanvasWorkflows]);
+  useEffect(() => {
+    canvasWorkflowSingleEditGroupIdsRef.current = new Set(canvasWorkflowSingleEditGroupIds);
+  }, [canvasWorkflowSingleEditGroupIds]);
   useLayoutEffect(() => {
     if (!isCanvasMode) return;
     applyCanvasScaleStyles(canvasScaleRef.current, canvasSizeRef.current);
@@ -1071,6 +1581,10 @@ function MainApp() {
     if (canvasScaleCommitTimerRef.current !== null) {
       window.clearTimeout(canvasScaleCommitTimerRef.current);
       canvasScaleCommitTimerRef.current = null;
+    }
+    if (canvasZoomScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(canvasZoomScrollFrameRef.current);
+      canvasZoomScrollFrameRef.current = null;
     }
     if (canvasInteractionTimerRef.current !== null) {
       window.clearTimeout(canvasInteractionTimerRef.current);
@@ -1091,6 +1605,7 @@ function MainApp() {
   const triggerModeRef = useRef<TriggerMode>(triggerMode);
   useEffect(() => { triggerModeRef.current = triggerMode; }, [triggerMode]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const selectedImageReturnToCanvasRef = useRef(false);
   const [selectedVideo, setSelectedVideo] = useState<{url: string, path: string} | null>(null);
   const [selectedImageZoom, setSelectedImageZoom] = useState(1);
   const [selectedImagePan, setSelectedImagePan] = useState({ x: 0, y: 0 });
@@ -1661,7 +2176,7 @@ function MainApp() {
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const draggingItemIdRef = useRef<string | null>(null);
   useEffect(() => { draggingItemIdRef.current = draggingItemId; }, [draggingItemId]);
-  const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({ isOpen: false, title: '', message: '', onConfirm: () => {} });
   const closeConfirmDialog = () => {
     setConfirmDialog(prev => ({ ...prev, isOpen: false }));
   };
@@ -1862,14 +2377,46 @@ function MainApp() {
     ];
   }, [customCanvasAiPromptPresets]);
   const canvasAiPromptPresetSelectOptions = useMemo<RoundedSelectOption[]>(() => [
-    { value: CANVAS_AI_PROMPT_PRESET_PLACEHOLDER, label: '预设' },
+    { value: CANVAS_AI_PROMPT_PRESET_PLACEHOLDER, label: '节点…', hiddenInMenu: true },
     ...canvasAiPromptPresets.map(preset => ({
       value: preset.id,
       label: preset.label,
+      hint: preset.hint || '创建带固定提示词的 AI 节点',
+      meta: preset.aspectRatio,
+      section: '节点预设',
+      sectionHint: '选择后新增一个 AI 生图节点',
     })),
-    { value: CANVAS_AI_PROMPT_PRESET_ADD_VALUE, label: '+ 新增预设' },
-    { value: CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE, label: '管理预设' },
+    { value: CANVAS_AI_PROMPT_PRESET_ADD_VALUE, label: '+ 新增节点预设', hint: '保存常用节点提示词', section: '操作', kind: 'action' },
+    { value: CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE, label: '管理节点预设', hint: '编辑名称和提示词', section: '操作', kind: 'action' },
   ], [canvasAiPromptPresets]);
+  const canvasWorkflowTemplates = useMemo(() => {
+    const customIds = new Set(customCanvasWorkflows.map(workflow => workflow.id));
+    return [
+      ...CANVAS_BUILT_IN_WORKFLOWS.map(workflow => customIds.has(workflow.id)
+        ? customCanvasWorkflows.find(custom => custom.id === workflow.id) || workflow
+        : workflow),
+      ...customCanvasWorkflows.filter(workflow => !CANVAS_BUILT_IN_WORKFLOWS.some(builtIn => builtIn.id === workflow.id)),
+    ];
+  }, [customCanvasWorkflows]);
+  const canvasWorkflowSelectOptions = useMemo<RoundedSelectOption[]>(() => [
+    { value: CANVAS_WORKFLOW_SELECT_PLACEHOLDER, label: '工作…', hiddenInMenu: true },
+    ...canvasWorkflowTemplates.map(workflow => ({
+      value: workflow.id,
+      label: workflow.label,
+      hint: workflow.hint || '多节点自动生成流程',
+      meta: workflow.builtin ? '内置' : '自定义',
+      section: '工作流',
+      sectionHint: '插入可展开的工作流模块',
+    })),
+    { value: CANVAS_WORKFLOW_SAVE_SELECTION_VALUE, label: '+ 保存选中', hint: '把当前选择封装成工作流', section: '操作', kind: 'action' },
+    { value: CANVAS_WORKFLOW_MANAGE_VALUE, label: '管理工作流', hint: '编辑或另存工作流', section: '操作', kind: 'action' },
+  ], [canvasWorkflowTemplates]);
+  const canvasWorkflowManagerOptions = useMemo<RoundedSelectOption[]>(() => (
+    canvasWorkflowTemplates.map(workflow => ({
+      value: workflow.id,
+      label: workflow.builtin ? `${workflow.label} · 内置` : workflow.label,
+    }))
+  ), [canvasWorkflowTemplates]);
   const canvasAiRemoteModelCount = canvasAiProvider === 'xais-chat'
     ? canvasAiXaisModels.length
     : canvasAiOpenAiModels.length;
@@ -3474,6 +4021,142 @@ function MainApp() {
       .replace(/^\?\\(?=[a-zA-Z]:\\)/, '');
   };
 
+  const isDrawerLocalDeleteCandidate = (value?: unknown) => {
+    const raw = String(value || '').trim();
+    if (!raw || /^data:/i.test(raw)) return false;
+    if (/^https?:\/\//i.test(raw) && !raw.includes('asset.localhost')) return false;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^file:/i.test(raw) && !/^asset:/i.test(raw) && !raw.includes('asset.localhost')) return false;
+    return true;
+  };
+
+  const getDrawerImageLocalDeletePaths = (item: BufferItem) => {
+    if (item.type !== 'image') return [];
+    const rawItem = item as BufferItem & {
+      sourcePath?: string;
+      originalPath?: string;
+    };
+    const candidates = [
+      item.path,
+      item.path ? undefined : item.url,
+      item.sourceUrl,
+      item.originalUrl,
+      rawItem.sourcePath,
+      rawItem.originalPath,
+    ];
+    const seen = new Set<string>();
+
+    return candidates.reduce<string[]>((paths, value) => {
+      if (!isDrawerLocalDeleteCandidate(value)) return paths;
+      const normalized = /^file:/i.test(String(value || '').trim())
+        ? normalizeLocalDragPath(String(value))
+        : String(value || '').trim();
+      if (!normalized || seen.has(normalized)) return paths;
+      seen.add(normalized);
+      paths.push(normalized);
+      return paths;
+    }, []);
+  };
+
+  const deleteDrawerLocalFiles = async (paths: string[]) => {
+    let deleted = 0;
+    let missing = 0;
+    const failed: Array<{ path: string; error: unknown }> = [];
+
+    for (const path of Array.from(new Set(paths.filter(Boolean)))) {
+      try {
+        const didDelete = await invoke<boolean>('delete_local_file', { path });
+        if (didDelete) deleted += 1;
+        else missing += 1;
+      } catch (error) {
+        console.warn('删除本地文件失败:', path, error);
+        failed.push({ path, error });
+      }
+    }
+
+    return { deleted, missing, failed };
+  };
+
+  const removeDrawerItemsFromDrawer = (targetItems: BufferItem[], label = '删除卡片') => {
+    const ids = Array.from(new Set(targetItems.map(item => item.id).filter(Boolean)));
+    if (ids.length === 0) return 0;
+    const idSet = new Set(ids);
+    pushDrawerUndoSnapshot(label);
+    setItems(prev => prev.filter(item => !idSet.has(item.id)));
+    return ids.length;
+  };
+
+  const requestDeleteDrawerItems = (
+    targetItems: BufferItem[],
+    options: { label?: string; afterDelete?: () => void } = {}
+  ) => {
+    const deletableItems = targetItems.filter(item => item && !item.isQuickAccess);
+    if (deletableItems.length === 0) {
+      showToast('已开启星标保护，请先取消星标再删除');
+      return;
+    }
+
+    const label = options.label || (deletableItems.length > 1 ? '批量删除' : '删除卡片');
+    const localPaths = Array.from(new Set(deletableItems.flatMap(getDrawerImageLocalDeletePaths)));
+    const imageCount = deletableItems.filter(item => item.type === 'image').length;
+    const singleItem = deletableItems.length === 1 ? deletableItems[0] : null;
+    const singleName = singleItem ? (singleItem.name || singleItem.content || '这张图片') : '';
+
+    const finishDrawerDelete = (toastText: string) => {
+      const removedCount = removeDrawerItemsFromDrawer(deletableItems, label);
+      options.afterDelete?.();
+      setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+      if (removedCount > 0) showToast(toastText);
+    };
+
+    const deleteDrawerOnly = () => {
+      finishDrawerDelete(deletableItems.length > 1 ? `已从抽屉删除 ${deletableItems.length} 个卡片` : '已从抽屉删除');
+    };
+
+    const deleteDrawerAndLocal = async () => {
+      const result = await deleteDrawerLocalFiles(localPaths);
+      finishDrawerDelete(
+        result.failed.length > 0
+          ? `抽屉卡片已删除，本地文件 ${result.failed.length} 个删除失败`
+          : `已删除抽屉卡片和 ${result.deleted} 个本地文件`
+      );
+    };
+
+    if (localPaths.length > 0) {
+      const message = singleItem
+        ? `要删除「${singleName}」吗？可以只从抽屉移除，也可以同时删除 ${localPaths.length} 个本地文件。`
+        : `要删除 ${deletableItems.length} 个卡片吗？其中 ${imageCount} 张图片可同时删除 ${localPaths.length} 个本地文件。`;
+      setConfirmDialog({
+        isOpen: true,
+        title: singleItem ? '删除图片' : '批量删除',
+        message,
+        onConfirm: deleteDrawerOnly,
+        actions: [
+          {
+            label: '只删抽屉卡片',
+            onClick: deleteDrawerOnly,
+            className: 'rounded-[16px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700',
+          },
+          {
+            label: '本地也删除',
+            onClick: deleteDrawerAndLocal,
+            className: 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
+            title: '会删除本地源文件，无法通过抽屉撤销恢复',
+          },
+        ],
+      });
+      return;
+    }
+
+    setConfirmDialog({
+      isOpen: true,
+      title: singleItem?.type === 'image' ? '删除图片' : (deletableItems.length > 1 ? '批量删除' : '删除卡片'),
+      message: singleItem?.type === 'image'
+        ? `要从抽屉删除「${singleName}」吗？没有检测到可删除的本地文件。`
+        : `确定从抽屉删除 ${deletableItems.length} 个卡片吗？`,
+      onConfirm: deleteDrawerOnly,
+    });
+  };
+
   const createVideoThumbnailInWebview = (path: string) => new Promise<string>((resolve) => {
     const source = normalizeLocalDragPath(path);
     if (!source) {
@@ -4018,6 +4701,121 @@ function MainApp() {
     ''
   );
 
+  const getCanvasAiOutputDisplaySource = (output?: CanvasAiGeneratedOutput | null) => (
+    output?.url ||
+    (output?.path ? convertFileSrc(output.path) : '') ||
+    ''
+  );
+
+  const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
+    (canvasItem?.ai?.type === 'image-generator' || canvasItem?.ai?.type === 'workflow')
+      ? (canvasItem.ai.outputs || []).filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output))
+      : []
+  );
+
+  const getCanvasWorkflowAllRuntimeOutputSlots = (
+    canvasItem: CanvasImageItem,
+    workflow: CanvasWorkflowTemplate
+  ): CanvasAiGeneratedOutput[] => {
+    const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow, undefined, 'all');
+    const runtimeSnapshots = normalizeCanvasWorkflowRuntimeSnapshots(canvasItem.ai?.workflowRuntime);
+    const snapshotsByTemplateId = new Map(runtimeSnapshots.map(snapshot => [snapshot.templateId, snapshot]));
+    return drafts.map((draft) => {
+      const nodeId = draft.nodeId || '';
+      const outputIndex = Number(draft.id.split('_').pop()) || 0;
+      const snapshotOutputs = snapshotsByTemplateId.get(nodeId)?.ai?.outputs;
+      const output = Array.isArray(snapshotOutputs)
+        ? snapshotOutputs[outputIndex] as CanvasAiGeneratedOutput | undefined
+        : undefined;
+      if (!output) return draft;
+      return {
+        ...draft,
+        ...output,
+        id: draft.id,
+        name: output.name || draft.name,
+        nodeId: draft.nodeId,
+        nodeLabel: draft.nodeLabel,
+      };
+    });
+  };
+
+  const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | null): CanvasAiGeneratedOutput[] => {
+    if (canvasItem?.ai?.type !== 'image-generator' && canvasItem?.ai?.type !== 'workflow') return [];
+    const outputs = canvasItem.ai.outputs || [];
+    const workflow = getCanvasWorkflowTemplateFromNode(canvasItem);
+    if (workflow) {
+      if (canvasItem.ai.workflowOutputMode === 'all') {
+        return getCanvasWorkflowAllRuntimeOutputSlots(canvasItem, workflow);
+      }
+      const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow);
+      if (outputs.length === 0) return drafts;
+      const usedOutputIds = new Set<string>();
+      const merged = drafts.map((draft, index) => {
+        const output = outputs.find(item => item.id === draft.id && !usedOutputIds.has(item.id))
+          || outputs[index];
+        if (!output) return draft;
+        if (output.id) usedOutputIds.add(output.id);
+        return {
+          ...draft,
+          ...output,
+          id: output.id || draft.id,
+          name: output.name || draft.name,
+        };
+      });
+      const extras = outputs.filter(output => output.id && !usedOutputIds.has(output.id));
+      return [...merged, ...extras];
+    }
+    if (outputs.length > 0) return outputs;
+    const count = clamp(Math.round(Number(canvasItem.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
+    const size = getCanvasAiOutputSize(canvasItem.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
+    return Array.from({ length: count }, (_, index) => ({
+      id: `${canvasItem.id}_idle_output_${index}`,
+      name: `Output #${index + 1}`,
+      width: size.width,
+      height: size.height,
+    }));
+  };
+
+  const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
+    !!canvasItem
+  );
+
+  const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) => (
+    canvasItem?.ai?.type === 'image-generator' || canvasItem?.ai?.type === 'workflow'
+  );
+
+  const hasCanvasAiGeneratedResults = (canvasItem?: CanvasImageItem | null) => (
+    getCanvasAiSuccessfulOutputs(canvasItem).length > 0
+  );
+
+  const createCanvasAiOutputBufferItem = (
+    canvasItem: CanvasImageItem,
+    output: CanvasAiGeneratedOutput,
+    index: number
+  ): BufferItem | null => {
+    const source = getCanvasAiOutputDisplaySource(output);
+    if (!source && output.status !== 'working' && output.status !== 'error') return null;
+    const titleSeed = (canvasItem.ai?.presetLabel || canvasItem.item.name || canvasItem.item.content || '').trim();
+    const name = output.name || (titleSeed ? `${titleSeed} #${index + 1}` : `AI generated #${index + 1}`);
+    const generatedAt = output.generatedAt || canvasItem.ai?.generatedAt || canvasItem.item.createdAt || Date.now();
+    const rawUrl = (output.url || source).trim();
+    const rawPath = (output.path || '').trim();
+    const remoteSource = /^https?:\/\//i.test(rawUrl) ? rawUrl : '';
+    return {
+      id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
+      type: 'image',
+      content: name,
+      name,
+      url: rawUrl,
+      path: rawPath || undefined,
+      sourceUrl: remoteSource || undefined,
+      originalUrl: remoteSource || undefined,
+      remark: output.prompt || canvasItem.ai?.prompt || canvasItem.item.content || '',
+      createdAt: generatedAt,
+      isQuickAccess: false,
+    };
+  };
+
   const getCanvasItemNavSource = (item: BufferItem) => (
     item.thumbnail || getCanvasItemDisplaySource(item)
   );
@@ -4031,10 +4829,73 @@ function MainApp() {
       }, {})
   );
 
-  const updateCanvasSelection = (ids: string[]) => {
+  const getCanvasWorkflowGroupIdForSelection = (canvasItem?: CanvasImageItem | null) => {
+    const group = canvasItem?.workflowGroup;
+    if (!group || typeof group !== 'object') return '';
+    return String((group as Partial<CanvasWorkflowExpandedGroup>).groupId || '');
+  };
+
+  const getCanvasWorkflowGroupItemIdsForSelection = (
+    groupId: string,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => (
+    groupId
+      ? sourceItems
+        .filter(item => getCanvasWorkflowGroupIdForSelection(item) === groupId)
+        .map(item => item.id)
+      : []
+  );
+
+  const isCanvasWorkflowGroupInSingleEdit = (groupId?: string | null) => (
+    !!groupId && canvasWorkflowSingleEditGroupIdsRef.current.has(groupId)
+  );
+
+  const expandCanvasSelectionIdsWithWorkflowGroups = (
+    ids: string[],
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => {
+    const expanded = new Set(ids.filter(Boolean));
+    ids.forEach(id => {
+      const item = sourceItems.find(canvasItem => canvasItem.id === id);
+      const groupId = getCanvasWorkflowGroupIdForSelection(item);
+      if (!groupId || isCanvasWorkflowGroupInSingleEdit(groupId)) return;
+      getCanvasWorkflowGroupItemIdsForSelection(groupId, sourceItems).forEach(groupItemId => {
+        expanded.add(groupItemId);
+      });
+    });
+    return Array.from(expanded);
+  };
+
+  const getCanvasWorkflowSelectionIdsForItem = (
+    id: string,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => expandCanvasSelectionIdsWithWorkflowGroups([id], sourceItems);
+
+  const setCanvasSelectionWithoutWorkflowExpansion = (ids: string[]) => {
     const unique = Array.from(new Set(ids.filter(Boolean)));
     canvasSelectedIdsRef.current = unique;
     setCanvasSelectedIds(unique);
+  };
+
+  const updateCanvasSelection = (ids: string[]) => {
+    const unique = Array.from(new Set(expandCanvasSelectionIdsWithWorkflowGroups(ids)));
+    canvasSelectedIdsRef.current = unique;
+    setCanvasSelectedIds(unique);
+  };
+
+  const enableCanvasWorkflowSingleEditForItem = (id: string) => {
+    const item = canvasItemsRef.current.find(canvasItem => canvasItem.id === id);
+    const groupId = getCanvasWorkflowGroupIdForSelection(item);
+    if (!groupId) return false;
+    if (!canvasWorkflowSingleEditGroupIdsRef.current.has(groupId)) {
+      canvasWorkflowSingleEditGroupIdsRef.current.add(groupId);
+      setCanvasWorkflowSingleEditGroupIds(prev => prev.includes(groupId) ? prev : [...prev, groupId]);
+      showToast('已进入工作流单节点编辑：可单独移动、删除内部节点');
+    } else {
+      showToast('当前工作流已处于单节点编辑模式');
+    }
+    setCanvasSelectionWithoutWorkflowExpansion([id]);
+    return true;
   };
 
   const updateCanvasItemsImmediate = (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => {
@@ -4064,11 +4925,16 @@ function MainApp() {
     size: cloneDrawerValue(canvasSizeRef.current),
     scale: clamp(canvasScaleRef.current || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
     scroll: cloneDrawerValue(
+      canvasSurfaceRef.current
+        ? {
+          left: canvasSurfaceRef.current.scrollLeft,
+          top: canvasSurfaceRef.current.scrollTop,
+        }
+        : canvasScrollLockRef.current ||
       canvasReturnScrollRef.current ||
-      canvasScrollLockRef.current ||
       {
-        left: canvasSurfaceRef.current?.scrollLeft ?? 0,
-        top: canvasSurfaceRef.current?.scrollTop ?? 0,
+        left: 0,
+        top: 0,
       }
     ),
     updatedAt: Date.now(),
@@ -4214,10 +5080,7 @@ function MainApp() {
     updateCanvasItemsImmediate(prev => [...prev, ...clean]);
     if (select) {
       updateCanvasSelection(clean.map(item => item.id));
-      pendingCanvasFocusItemIdRef.current = clean[0].id;
-      window.requestAnimationFrame(() => {
-        focusCanvasItemById(pendingCanvasFocusItemIdRef.current);
-      });
+      scheduleCanvasFocusItemById(clean[0].id);
     }
     return clean.length;
   };
@@ -4244,6 +5107,136 @@ function MainApp() {
     const right = Math.max(...sourceItems.map(item => item.x + item.width));
     const bottom = Math.max(...sourceItems.map(item => item.y + item.height));
     return { x: left, y: top, width: right - left, height: bottom - top };
+  };
+
+  const organizeCanvasItems = (ids?: string[]) => {
+    if (!isCanvasModeRef.current) return 0;
+    const sourceItems = canvasItemsRef.current;
+    const selectedIds = canvasSelectedIdsRef.current;
+    const requestedIds = ids?.length
+      ? ids
+      : (selectedIds.length > 1 ? selectedIds : sourceItems.map(item => item.id));
+    const existingIds = new Set(sourceItems.map(item => item.id));
+    const targetIds = Array.from(new Set(requestedIds.filter(id => existingIds.has(id))));
+    const targetIdSet = new Set(targetIds);
+    const targetItems = sourceItems.filter(item => targetIdSet.has(item.id));
+
+    if (targetItems.length < 2) {
+      showToast(targetItems.length === 0 ? '画布里还没有可整理的元素' : '至少需要 2 个元素才能整理');
+      return 0;
+    }
+
+    const bounds = getCanvasBoundsFromItems(targetItems);
+    const snap = (value: number) => Math.max(24, Math.round(value / 8) * 8);
+    const startX = snap(Math.max(72, bounds?.x ?? 120));
+    const startY = snap(Math.max(72, bounds?.y ?? 120));
+    const sortedItems = [...targetItems].sort((a, b) => (
+      a.y - b.y ||
+      a.x - b.x ||
+      (a.item.createdAt || 0) - (b.item.createdAt || 0)
+    ));
+    const originalOrder = new Map(sortedItems.map((item, index) => [item.id, index]));
+    const itemById = new Map(sortedItems.map(item => [item.id, item]));
+    const placements = new Map<string, { x: number; y: number }>();
+    const hasInternalLinks = sortedItems.some(item => (item.inputs || []).some(inputId => targetIdSet.has(inputId)));
+    const columnGap = 104;
+    const rowGap = 46;
+
+    if (hasInternalLinks) {
+      const levelMemo = new Map<string, number>();
+      const visiting = new Set<string>();
+      const getLevel = (item: CanvasImageItem): number => {
+        const memo = levelMemo.get(item.id);
+        if (memo !== undefined) return memo;
+        if (visiting.has(item.id)) return 0;
+        visiting.add(item.id);
+        const parents = (item.inputs || [])
+          .map(inputId => itemById.get(inputId))
+          .filter((input): input is CanvasImageItem => !!input);
+        const level = parents.length > 0
+          ? Math.max(...parents.map(parent => getLevel(parent))) + 1
+          : 0;
+        visiting.delete(item.id);
+        levelMemo.set(item.id, level);
+        return level;
+      };
+
+      const grouped = new Map<number, CanvasImageItem[]>();
+      sortedItems.forEach(item => {
+        const level = getLevel(item);
+        grouped.set(level, [...(grouped.get(level) || []), item]);
+      });
+
+      let xCursor = startX;
+      Array.from(grouped.keys()).sort((a, b) => a - b).forEach(level => {
+        const column = [...(grouped.get(level) || [])].sort((a, b) => (
+          (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0)
+        ));
+        const columnWidth = Math.max(...column.map(item => item.width));
+        let yCursor = startY;
+
+        column.forEach(item => {
+          const parentCenters = (item.inputs || [])
+            .map(inputId => {
+              const parent = itemById.get(inputId);
+              const parentPos = placements.get(inputId);
+              return parent && parentPos ? parentPos.y + parent.height / 2 : null;
+            })
+            .filter((center): center is number => center !== null);
+          const parentAlignedY = parentCenters.length > 0
+            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length - item.height / 2
+            : null;
+          const y = snap(parentAlignedY === null ? yCursor : Math.max(yCursor, parentAlignedY));
+          placements.set(item.id, { x: snap(xCursor), y });
+          yCursor = y + item.height + rowGap;
+        });
+
+        xCursor += columnWidth + columnGap;
+      });
+    } else {
+      const maxWidth = Math.max(...sortedItems.map(item => item.width));
+      const maxHeight = Math.max(...sortedItems.map(item => item.height));
+      const columnCount = Math.max(1, Math.min(5, Math.ceil(Math.sqrt(sortedItems.length * 1.35))));
+      const cellWidth = maxWidth + 56;
+      const cellHeight = maxHeight + 56;
+
+      sortedItems.forEach((item, index) => {
+        const column = index % columnCount;
+        const row = Math.floor(index / columnCount);
+        placements.set(item.id, {
+          x: snap(startX + column * cellWidth),
+          y: snap(startY + row * cellHeight),
+        });
+      });
+    }
+
+    const arrangedIds = sortedItems.map(item => item.id);
+    const arrangedBoxes = sortedItems.map(item => {
+      const pos = placements.get(item.id) || { x: item.x, y: item.y };
+      return { ...item, x: pos.x, y: pos.y };
+    });
+    const arrangedBounds = getCanvasBoundsFromItems(arrangedBoxes);
+    const previousSelection = [...selectedIds];
+
+    pushCanvasUndoSnapshot('一键整理画布');
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      const pos = placements.get(item.id);
+      return pos ? { ...item, x: pos.x, y: pos.y } : item;
+    }));
+    setCanvasSelectionBox(null);
+    if (selectedIds.length > 1 || ids?.length) {
+      updateCanvasSelection(arrangedIds);
+    } else {
+      updateCanvasSelection(previousSelection.filter(id => existingIds.has(id)));
+    }
+    if (arrangedBounds) {
+      growCanvasToFit(arrangedBounds.x + arrangedBounds.width + 160, arrangedBounds.y + arrangedBounds.height + 160);
+    }
+    window.requestAnimationFrame(() => {
+      fitCanvasViewToItems(arrangedIds);
+    });
+    showToast(`已整理 ${targetItems.length} 个画布元素`);
+    return targetItems.length;
   };
 
   const removeCanvasConnection = (targetId: string, sourceId: string, label = '删除连接线') => {
@@ -4571,6 +5564,65 @@ function MainApp() {
     }
   };
 
+  const createCanvasTextItemFromContent = (content: string, index = 0, client?: { x: number; y: number }): CanvasImageItem | null => {
+    const normalized = String(content || '').replace(/\r\n?/g, '\n').trimEnd();
+    if (!normalized.trim()) return null;
+    const title = normalized.trim().split(/\n/)[0]?.slice(0, 32) || '剪贴板文字';
+    const lines = normalized.split('\n');
+    const longestLine = Math.max(4, ...lines.map(line => Array.from(line).length));
+    const pos = getCanvasDropPosition(index, client);
+    const item: BufferItem = {
+      id: Math.random().toString(36).substring(2, 9),
+      type: 'text',
+      content: normalized,
+      name: title,
+      createdAt: Date.now(),
+      isQuickAccess: false,
+    };
+    return {
+      id: `canvas_${item.id}`,
+      item,
+      x: pos.x,
+      y: pos.y,
+      width: clamp(longestLine * 7 + 56, 220, 420),
+      height: clamp(lines.length * 20 + 84, 130, 360),
+    };
+  };
+
+  const getCanvasClipboardImageFiles = (clipboardData: DataTransfer) => {
+    const files = Array.from(clipboardData.files || []).filter(file => (
+      file.type.startsWith('image/') || isCanvasImageFileName(file.name)
+    ));
+    if (files.length > 0) return files;
+
+    return Array.from(clipboardData.items || [])
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => !!file);
+  };
+
+  const pasteSystemClipboardToCanvas = async (clipboardData: DataTransfer, client?: { x: number; y: number }) => {
+    const imageFiles = getCanvasClipboardImageFiles(clipboardData);
+    const text = clipboardData.getData('text/plain') || '';
+    if (imageFiles.length === 0 && !text.trim()) return false;
+
+    const createdImages = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index, client)));
+    const images = createdImages.filter((item): item is CanvasImageItem => !!item);
+    const textItem = createCanvasTextItemFromContent(text, images.length, client);
+    const nextItems = textItem ? [...images, textItem] : images;
+    if (nextItems.length === 0) return false;
+
+    const addedCount = appendCanvasItems(nextItems, '粘贴剪贴板内容');
+    if (addedCount > 0) {
+      const parts = [
+        images.length > 0 ? `${images.length} 张图片` : '',
+        textItem ? '1 段文字' : '',
+      ].filter(Boolean).join('、');
+      showToast(`已粘贴${parts ? ` ${parts}` : '剪贴板内容'}到画布`);
+    }
+    return addedCount > 0;
+  };
+
   const updateCanvasTextItem = (canvasId: string, content: string) => {
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
       canvasItem.id === canvasId
@@ -4793,15 +5845,6 @@ function MainApp() {
     return { width: Math.round(height * ratio), height };
   };
 
-  const getCanvasAiOutputPosition = (
-    target: CanvasImageItem,
-    index: number,
-    size: { width: number; height: number }
-  ) => ({
-    x: target.x + target.width + 72 + (index % 2) * (size.width + 28),
-    y: Math.max(24, target.y + Math.floor(index / 2) * (size.height + 28)),
-  });
-
   const cacheCanvasGeneratedImageSource = async (source: string, name: string) => {
     const trimmed = source.trim();
     if (!trimmed || (!isDataImageSourceValue(trimmed) && !/^https?:\/\//i.test(trimmed))) {
@@ -4828,116 +5871,59 @@ function MainApp() {
     }
   };
 
-  const createCanvasAiOutputPlaceholders = (target: CanvasImageItem, prompt: string) => {
-    const count = clamp(Math.round(Number(target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, 4);
+  const createCanvasAiOutputDrafts = (target: CanvasImageItem, prompt: string): CanvasAiGeneratedOutput[] => {
+    const count = clamp(Math.round(Number(target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
     const size = getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const now = Date.now();
-    return Array.from({ length: count }, (_, index) => {
-      const itemId = Math.random().toString(36).substring(2, 9);
-      const pos = getCanvasAiOutputPosition(target, index, size);
-      return {
-        id: `canvas_ai_output_${itemId}`,
-        item: {
-          id: itemId,
-          type: 'image',
-          content: 'AI 生图生成中',
-          name: 'AI 生图生成中',
-          remark: prompt,
-          createdAt: now + index,
-          isQuickAccess: false,
-        } as BufferItem,
-        inputs: [target.id],
-        ai: {
-          type: 'generated-image',
-          prompt,
-          status: 'working',
-          generatedAt: now,
-        },
-        x: pos.x,
-        y: pos.y,
-        width: size.width,
-        height: size.height,
-      } as CanvasImageItem;
-    });
-  };
-
-  const createCanvasImageItemFromDataUrl = async (
-    dataUrl: string,
-    index = 0,
-    prompt = '',
-    inputIds: string[] = [],
-    layout?: CanvasItemBox
-  ): Promise<CanvasImageItem | null> => {
-    const imageUrl = dataUrl.trim();
-    if (!imageUrl) return null;
-    const itemId = Math.random().toString(36).substring(2, 9);
-    const titleSeed = prompt.trim().split(/\s+/).slice(0, 8).join(' ');
-    const displayName = titleSeed ? `AI 生图 - ${titleSeed}` : 'AI 生图';
-    const item: BufferItem = {
-      id: itemId,
-      type: 'image',
-      content: displayName,
-      name: displayName,
-      url: imageUrl,
-      path: imageUrl,
-      ...(isDataImageSourceValue(imageUrl) ? {} : {
-        sourceUrl: imageUrl,
-        originalUrl: imageUrl,
-      }),
-      remark: prompt,
-      createdAt: Date.now() + index,
-      isQuickAccess: false,
-    };
-    const size = layout
-      ? { width: layout.width, height: layout.height }
-      : await readImageDisplaySize(imageUrl);
-    const pos = layout || getCanvasDropPosition(index);
-    return {
-      id: `canvas_${itemId}`,
-      item,
-      inputs: inputIds,
-      ai: {
-        type: 'generated-image',
-        prompt,
-        generatedAt: Date.now(),
-      },
-      x: pos.x,
-      y: pos.y,
+    return Array.from({ length: count }, (_, index) => ({
+      id: `canvas_ai_output_${now.toString(36)}_${index}_${Math.random().toString(36).substring(2, 7)}`,
+      name: `AI generated #${index + 1}`,
+      prompt,
+      status: 'working',
+      generatedAt: now + index,
       width: size.width,
       height: size.height,
-    };
+    }));
   };
 
-  const getCanvasInputItemsForNode = (canvasItem: CanvasImageItem) => {
-    const itemsById = new Map(canvasItemsRef.current.map(item => [item.id, item]));
+  const getCanvasInputItemsForNode = (
+    canvasItem: CanvasImageItem,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => {
+    const itemsById = new Map(sourceItems.map(item => [item.id, item]));
     return (canvasItem.inputs || [])
       .map(inputId => itemsById.get(inputId))
       .filter((item): item is CanvasImageItem => !!item && item.id !== canvasItem.id);
   };
 
-  const getCanvasTextInputsForNode = (canvasItem: CanvasImageItem) => (
-    getCanvasInputItemsForNode(canvasItem)
-      .filter(item => item.item.type === 'text')
+  const getCanvasTextInputsForNode = (
+    canvasItem: CanvasImageItem,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => (
+    getCanvasInputItemsForNode(canvasItem, sourceItems)
+      .filter(item => item.item.type === 'text' && !item.ai)
       .map(item => item.item.content || '')
       .filter(Boolean)
   );
 
-  const getCanvasImageInputDescriptionsForNode = (canvasItem: CanvasImageItem) => (
-    getCanvasInputItemsForNode(canvasItem)
-      .filter(item => item.item.type === 'image')
-      .slice(0, 8)
-      .map((item, index) => {
-        const title = (item.item.name || item.item.content || '').trim();
-        const note = (item.item.remark || item.ai?.prompt || '').trim();
-        const parts = [
-          `Reference image ${index + 1}`,
-          title ? `title: ${title}` : '',
-          note ? `note: ${note}` : '',
-        ].filter(Boolean);
-        return parts.join('; ');
-      })
-      .filter(Boolean)
-  );
+  const getCanvasImageInputBufferItemsForNode = (
+    canvasItem: CanvasImageItem,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => {
+    const imageInputs: BufferItem[] = [];
+    for (const inputItem of getCanvasInputItemsForNode(canvasItem, sourceItems)) {
+      if (inputItem.item.type === 'image') {
+        imageInputs.push(inputItem.item);
+      } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
+        getCanvasAiSuccessfulOutputs(inputItem).forEach((output, index) => {
+          const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
+          if (outputItem) imageInputs.push(outputItem);
+        });
+      }
+      if (imageInputs.length >= 8) break;
+    }
+    return imageInputs.slice(0, 8);
+  };
 
   const stopTemporaryCloudflaredShares = async (shareIds: string[]) => {
     await Promise.all(shareIds.map(shareId => (
@@ -4967,13 +5953,14 @@ function MainApp() {
 
   const getCanvasImageInputsForNode = async (
     canvasItem: CanvasImageItem,
-    mode: 'stable' | 'remote-first' = 'stable'
+    mode: 'stable' | 'remote-first' = 'stable',
+    delivery: 'auto' | 'direct' = 'auto',
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
   ) => {
     const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
     const inputMode = provider === 'openai-compatible' ? 'stable' : mode;
-    const inputImageItems = getCanvasInputItemsForNode(canvasItem)
-      .filter(item => item.item.type === 'image')
-      .slice(0, 8);
+    const useDirectLocalInputs = provider === 'openai-compatible' || delivery === 'direct';
+    const inputImageItems = getCanvasImageInputBufferItemsForNode(canvasItem, sourceItems);
     const result: string[] = [];
     let usedRemoteFirst = false;
     const localInputsForCloudflared: Array<{
@@ -4984,9 +5971,9 @@ function MainApp() {
     const temporaryShareIds: string[] = [];
     const failedItems: string[] = [];
     for (const inputItem of inputImageItems) {
-      const label = inputItem.item.name || inputItem.item.content || '参考图';
+      const label = inputItem.name || inputItem.content || '参考图';
       try {
-        const prepared = await prepareCanvasAiInputSource(inputItem.item, inputMode);
+        const prepared = await prepareCanvasAiInputSource(inputItem, inputMode);
         if (prepared.usedRemoteFirst) usedRemoteFirst = true;
         if (prepared.warning) {
           console.warn('AI 节点参考图浏览器读取失败，改用本地源:', prepared.warning);
@@ -5010,6 +5997,17 @@ function MainApp() {
       const localSources = localInputsForCloudflared.map(item => item.source);
       if (provider === 'openai-compatible') {
         result.push(...localSources);
+      } else if (useDirectLocalInputs) {
+        localInputsForCloudflared.forEach(item => {
+          if (isDataImageSourceValue(item.source)) {
+            result.push(item.source);
+          } else if (item.remoteFallback) {
+            console.warn('本地参考图未能转成 data URL，改用原始公网 URL 兜底');
+            result.push(item.remoteFallback);
+          } else {
+            failedItems.push(item.label);
+          }
+        });
       } else {
         try {
           const published = await publishLocalAiInputs(localSources);
@@ -5041,7 +6039,8 @@ function MainApp() {
     }
 
     if (inputImageItems.length > 0 && result.length === 0) {
-      throw new Error(`参考图转公网 URL 失败：${failedItems.slice(0, 3).join('、') || '请确认 cloudflared 可用'}`);
+      const hint = delivery === 'direct' ? '请确认参考图可被读取为 jpg/png' : '请确认 cloudflared 可用';
+      throw new Error(`参考图准备失败：${failedItems.slice(0, 3).join('、') || hint}`);
     }
     return { images: Array.from(new Set(result)), temporaryShareIds, usedRemoteFirst };
   };
@@ -5049,7 +6048,7 @@ function MainApp() {
   const getSelectedCanvasAiInputIds = () => (
     canvasSelectedIdsRef.current.filter(id => {
       const item = canvasItemsRef.current.find(canvasItem => canvasItem.id === id);
-      return !!item && item.ai?.type !== 'image-generator';
+      return canUseCanvasItemAsAiInput(item);
     })
   );
 
@@ -5083,6 +6082,7 @@ function MainApp() {
   };
 
   const openCanvasPresetEditor = () => {
+    setIsCanvasWorkflowManagerOpen(false);
     setCanvasPresetEditorMode('create');
     setCanvasPresetEditingId('');
     setCanvasPresetNameDraft('');
@@ -5091,6 +6091,7 @@ function MainApp() {
   };
 
   const openCanvasPresetManager = (presetId?: string) => {
+    setIsCanvasWorkflowManagerOpen(false);
     const preset = canvasAiPromptPresets.find(item => item.id === presetId)
       || canvasAiPromptPresets[0]
       || null;
@@ -5168,6 +6169,150 @@ function MainApp() {
     showToast(`已删除预设「${customPreset.label}」`);
   };
 
+  const getCanvasTemplateImportPayload = (rawValue: unknown) => {
+    const record = rawValue && typeof rawValue === 'object' ? rawValue as Record<string, unknown> : {};
+    const rawPresets = Array.isArray(record.presets)
+      ? record.presets
+      : (record.prompt && record.label ? [record] : []);
+    const rawWorkflows = Array.isArray(record.workflows)
+      ? record.workflows
+      : (Array.isArray(record.nodes) && record.label ? [record] : []);
+    return {
+      presets: rawPresets
+        .map(normalizeCanvasAiPromptPreset)
+        .filter((item): item is CanvasAiPromptPreset => !!item),
+      workflows: rawWorkflows
+        .map(normalizeCanvasWorkflowTemplate)
+        .filter((item): item is CanvasWorkflowTemplate => !!item)
+        .map(workflow => ({ ...workflow, builtin: false })),
+    };
+  };
+
+  const chooseCanvasTemplateImportFile = async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    return Array.isArray(selected) ? selected[0] : selected;
+  };
+
+  const importCanvasTemplateFile = async (scope: 'preset' | 'workflow' | 'all') => {
+    try {
+      const filePath = await chooseCanvasTemplateImportFile();
+      if (!filePath) return;
+      const parsed = JSON.parse(await readTextFile(filePath));
+      const payload = getCanvasTemplateImportPayload(parsed);
+      const shouldImportPresets = scope === 'preset' || scope === 'all';
+      const shouldImportWorkflows = scope === 'workflow' || scope === 'all';
+      let importedPresetCount = 0;
+      let importedWorkflowCount = 0;
+
+      if (shouldImportPresets && payload.presets.length > 0) {
+        importedPresetCount = payload.presets.length;
+        setCustomCanvasAiPromptPresets(prev => {
+          const map = new Map(prev.map(item => [item.id, item]));
+          payload.presets.forEach(preset => {
+            map.set(preset.id, preset);
+          });
+          return Array.from(map.values()).slice(0, 48);
+        });
+        payload.presets.forEach(updateCanvasNodesForPreset);
+        const firstPreset = payload.presets[0];
+        if (scope === 'preset' && firstPreset) {
+          setCanvasPresetEditorMode('manage');
+          setCanvasPresetEditingId(firstPreset.id);
+          applyCanvasPresetDraft(firstPreset);
+        }
+      }
+
+      if (shouldImportWorkflows && payload.workflows.length > 0) {
+        const usedWorkflowIds = new Set(canvasWorkflowTemplates.map(workflow => workflow.id));
+        const importedWorkflows = payload.workflows.map((workflow, index) => {
+          let nextId = '';
+          do {
+            nextId = `imported-workflow-${Date.now().toString(36)}-${index}-${Math.random().toString(36).substring(2, 6)}`;
+          } while (usedWorkflowIds.has(nextId));
+          usedWorkflowIds.add(nextId);
+          return {
+            ...workflow,
+            id: nextId,
+            builtin: false,
+            createdAt: Date.now() + index,
+          };
+        });
+        importedWorkflowCount = importedWorkflows.length;
+        setCustomCanvasWorkflows(prev => {
+          return [...importedWorkflows, ...prev].slice(0, 48);
+        });
+        const firstWorkflow = importedWorkflows[0];
+        if (scope === 'workflow' && firstWorkflow) {
+          setCanvasWorkflowEditingId(firstWorkflow.id);
+          setCanvasWorkflowNameDraft(firstWorkflow.label);
+          setCanvasWorkflowHintDraft(firstWorkflow.hint || '');
+          setIsCanvasPresetEditorOpen(false);
+          setIsCanvasWorkflowManagerOpen(true);
+        }
+      }
+
+      if (importedPresetCount === 0 && importedWorkflowCount === 0) {
+        showToast('没有找到可导入的预设或工作流');
+        return;
+      }
+      showToast(`已导入 ${importedPresetCount} 个预设、${importedWorkflowCount} 个工作流`);
+    } catch (err) {
+      console.warn('导入画布模板失败:', err);
+      showToast('导入失败，请检查 JSON 文件');
+    }
+  };
+
+  const exportCanvasTemplateFile = async (
+    payload: { presets?: CanvasAiPromptPreset[]; workflows?: CanvasWorkflowTemplate[] },
+    defaultName: string
+  ) => {
+    const presets = (payload.presets || []).map(preset => ({ ...preset }));
+    const workflows = (payload.workflows || []).map(workflow => ({ ...workflow, builtin: false }));
+    if (presets.length === 0 && workflows.length === 0) {
+      showToast('没有可导出的内容');
+      return;
+    }
+    try {
+      const filePath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!filePath) return;
+      await invoke('save_item_source_as', {
+        source: '',
+        dest: filePath,
+        content: JSON.stringify({
+        type: CANVAS_TEMPLATE_EXPORT_TYPE,
+        version: CANVAS_TEMPLATE_EXPORT_VERSION,
+        exportedAt: new Date().toISOString(),
+        presets,
+        workflows,
+        }, null, 2),
+        itemType: 'text',
+      });
+      showToast('已导出 JSON 文件');
+    } catch (err) {
+      console.warn('导出画布模板失败:', err);
+      showToast('导出失败');
+    }
+  };
+
+  const exportCurrentCanvasPreset = () => {
+    const preset = canvasAiPromptPresets.find(item => item.id === canvasPresetEditingId);
+    if (!preset) {
+      showToast('请选择要导出的预设');
+      return;
+    }
+    void exportCanvasTemplateFile({ presets: [preset] }, `${preset.label || 'canvas-preset'}.json`);
+  };
+
+  const exportAllCustomCanvasPresets = () => {
+    void exportCanvasTemplateFile({ presets: customCanvasAiPromptPresets }, 'canvas-prompt-presets.json');
+  };
+
   const buildCanvasAiGeneratorNode = (
     pos: { x: number; y: number },
     preset?: CanvasAiPromptPreset,
@@ -5176,6 +6321,14 @@ function MainApp() {
     const itemId = Math.random().toString(36).substring(2, 9);
     const presetPrompt = getCanvasAiPresetPrompt(preset);
     const name = preset ? `AI ${preset.label}` : 'AI 生图节点';
+    const aspectRatio = preset?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+    const count = preset?.count || CANVAS_AI_DEFAULT_COUNT;
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: 'image-generator',
+      aspectRatio,
+      count,
+      hasPreset: !!preset,
+    });
     const item: BufferItem = {
       id: itemId,
       type: 'text',
@@ -5189,8 +6342,8 @@ function MainApp() {
       item,
       x: pos.x,
       y: pos.y,
-      width: preset ? 390 : 360,
-      height: preset ? 380 : 330,
+      width: nodeSize.width,
+      height: nodeSize.height,
       inputs: Array.from(new Set(inputIds)),
       ai: {
         type: 'image-generator',
@@ -5200,9 +6353,9 @@ function MainApp() {
         presetId: preset?.id,
         presetLabel: preset?.label,
         presetPrompt: presetPrompt || undefined,
-        aspectRatio: preset?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        aspectRatio,
         outputFormat: preset?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
-        count: preset?.count || CANVAS_AI_DEFAULT_COUNT,
+        count,
         status: 'idle',
       },
     };
@@ -5235,32 +6388,1105 @@ function MainApp() {
     }
   };
 
+  const getCanvasWorkflowTemplateFromNode = (canvasItem?: CanvasImageItem | null) => {
+    if (canvasItem?.ai?.type !== 'workflow') return null;
+    const snapshot = normalizeCanvasWorkflowTemplate(canvasItem.ai.workflow);
+    const builtInWorkflow = canvasItem.ai.presetId
+      ? CANVAS_BUILT_IN_WORKFLOWS.find(workflow => workflow.id === canvasItem.ai?.presetId)
+      : null;
+    return snapshot?.builtin && builtInWorkflow ? builtInWorkflow : snapshot;
+  };
+
+  const getCanvasWorkflowGeneratorNodes = (workflow: CanvasWorkflowTemplate) => (
+    workflow.nodes.filter(node => node.ai?.type === 'image-generator')
+  );
+
+  const getCanvasWorkflowTerminalNodeTemplates = (workflow: CanvasWorkflowTemplate) => {
+    const generatorIds = new Set(getCanvasWorkflowGeneratorNodes(workflow).map(node => node.id));
+    const upstreamGeneratorIds = new Set<string>();
+    workflow.nodes.forEach(node => {
+      if (node.ai?.type !== 'image-generator') return;
+      (node.inputs || []).forEach(inputId => {
+        if (generatorIds.has(inputId)) upstreamGeneratorIds.add(inputId);
+      });
+    });
+    const terminalNodes = getCanvasWorkflowGeneratorNodes(workflow).filter(node => !upstreamGeneratorIds.has(node.id));
+    return terminalNodes.length > 0 ? terminalNodes : getCanvasWorkflowGeneratorNodes(workflow).slice(-1);
+  };
+
+  const getCanvasWorkflowOutputLabel = (node: CanvasWorkflowNodeTemplate, index?: number) => {
+    const label = node.ai?.presetLabel || node.item.name || '工作流输出';
+    return index && index > 0 ? `${label} #${index + 1}` : label;
+  };
+
+  const getCanvasWorkflowOutputSlotTemplates = (
+    workflow: CanvasWorkflowTemplate,
+    mode: 'final' | 'all' = 'final'
+  ) => {
+    const outputNodes = mode === 'all'
+      ? getCanvasWorkflowGeneratorNodes(workflow)
+      : getCanvasWorkflowTerminalNodeTemplates(workflow);
+    const slots = outputNodes.flatMap(node => {
+      const count = clamp(Math.round(Number(node.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
+      return Array.from({ length: count }, (_, index) => ({ node, index }));
+    });
+    const fallbackNode = outputNodes[outputNodes.length - 1] || workflow.nodes.find(node => node.ai?.type === 'image-generator') || workflow.nodes[0];
+    if (slots.length > 0) return slots.slice(0, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
+    return fallbackNode ? [{ node: fallbackNode, index: 0 }] : [];
+  };
+
+  const createCanvasWorkflowOutputDrafts = (
+    canvasItem: CanvasImageItem,
+    workflow: CanvasWorkflowTemplate,
+    status?: CanvasAiGeneratedOutput['status'],
+    mode: 'final' | 'all' = 'final'
+  ): CanvasAiGeneratedOutput[] => {
+    const now = Date.now();
+    const slots = getCanvasWorkflowOutputSlotTemplates(workflow, mode);
+    return (slots.length > 0 ? slots : [{ node: workflow.nodes[0], index: 0 }]).map((slot, slotIndex) => {
+      const size = getCanvasAiOutputSize(slot.node.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
+      const label = getCanvasWorkflowOutputLabel(slot.node, slot.index);
+      return {
+        id: `${canvasItem.id}_workflow_${mode}_output_${slot.node.id}_${slot.index}`,
+        name: label || `输出 ${slotIndex + 1}`,
+        nodeId: slot.node.id,
+        nodeLabel: getCanvasWorkflowOutputLabel(slot.node),
+        prompt: slot.node.ai?.presetPrompt || slot.node.item.content || '',
+        status,
+        generatedAt: status ? now + slotIndex : undefined,
+        width: size.width,
+        height: size.height,
+      };
+    });
+  };
+
+  const normalizeCanvasWorkflowRuntimeSnapshots = (value: unknown): CanvasWorkflowRuntimeNodeSnapshot[] => {
+    if (!Array.isArray(value)) return [];
+    return value.map(item => {
+      const record = item && typeof item === 'object'
+        ? item as Partial<CanvasWorkflowRuntimeNodeSnapshot>
+        : {};
+      const templateId = typeof record.templateId === 'string' ? record.templateId : '';
+      if (!templateId) return null;
+      return {
+        templateId,
+        item: record.item && typeof record.item === 'object' ? cloneDrawerValue(record.item) : undefined,
+        ai: record.ai && typeof record.ai === 'object' ? cloneDrawerValue(record.ai) : undefined,
+      } as CanvasWorkflowRuntimeNodeSnapshot;
+    }).filter((item): item is CanvasWorkflowRuntimeNodeSnapshot => !!item);
+  };
+
+  const createCanvasWorkflowRuntimeSnapshots = (
+    workflow: CanvasWorkflowTemplate,
+    runtimeItems: CanvasImageItem[],
+    idMap: Map<string, string>
+  ): CanvasWorkflowRuntimeNodeSnapshot[] => (
+    workflow.nodes.map(node => {
+      const runtimeId = idMap.get(node.id);
+      const runtimeItem = runtimeItems.find(item => item.id === runtimeId);
+      if (!runtimeItem) return null;
+      return {
+        templateId: node.id,
+        item: {
+          content: runtimeItem.item.content,
+          name: runtimeItem.item.name,
+          remark: runtimeItem.item.remark,
+          remarks: runtimeItem.item.remarks,
+        },
+        ai: runtimeItem.ai
+          ? {
+            prompt: runtimeItem.ai.prompt,
+            status: runtimeItem.ai.status,
+            error: runtimeItem.ai.error,
+            generatedAt: runtimeItem.ai.generatedAt,
+            outputs: cloneDrawerValue(runtimeItem.ai.outputs || []),
+          }
+          : undefined,
+      } as CanvasWorkflowRuntimeNodeSnapshot;
+    }).filter((item): item is CanvasWorkflowRuntimeNodeSnapshot => !!item)
+  );
+
+  const getCanvasWorkflowGroup = (canvasItem?: CanvasImageItem | null): CanvasWorkflowExpandedGroup | null => {
+    const group = canvasItem?.workflowGroup;
+    if (!group || typeof group !== 'object') return null;
+    const record = group as Partial<CanvasWorkflowExpandedGroup>;
+    if (!record.groupId || !record.templateId || !record.workflowId || !record.module) return null;
+    return record as CanvasWorkflowExpandedGroup;
+  };
+
+  const getCanvasWorkflowExpandedGroupItems = (groupId: string) => (
+    canvasItemsRef.current.filter(item => getCanvasWorkflowGroup(item)?.groupId === groupId)
+  );
+
+  const applyCanvasWorkflowRuntimeSnapshots = (
+    workflow: CanvasWorkflowTemplate,
+    items: CanvasImageItem[],
+    idMap: Map<string, string>,
+    runtimeSnapshots: CanvasWorkflowRuntimeNodeSnapshot[]
+  ) => {
+    if (runtimeSnapshots.length === 0) return items;
+    const snapshotByTemplateId = new Map(runtimeSnapshots.map(snapshot => [snapshot.templateId, snapshot]));
+    return items.map(item => {
+      const templateEntry = Array.from(idMap.entries()).find(([, runtimeId]) => runtimeId === item.id);
+      const templateId = templateEntry?.[0];
+      if (!templateId) return item;
+      const snapshot = snapshotByTemplateId.get(templateId);
+      if (!snapshot) return item;
+      const templateNode = workflow.nodes.find(node => node.id === templateId);
+      return {
+        ...item,
+        item: {
+          ...item.item,
+          content: snapshot.item?.content ?? item.item.content,
+          name: snapshot.item?.name ?? item.item.name,
+          remark: snapshot.item?.remark ?? item.item.remark,
+          remarks: snapshot.item?.remarks ?? item.item.remarks,
+        },
+        ai: item.ai && snapshot.ai
+          ? {
+            ...item.ai,
+            prompt: snapshot.ai.prompt ?? item.ai.prompt,
+            status: snapshot.ai.status || item.ai.status,
+            error: snapshot.ai.error,
+            generatedAt: snapshot.ai.generatedAt,
+            outputs: cloneDrawerValue(snapshot.ai.outputs || []),
+            aspectRatio: templateNode?.ai?.aspectRatio || item.ai.aspectRatio,
+            outputFormat: templateNode?.ai?.outputFormat || item.ai.outputFormat,
+            count: templateNode?.ai?.count || item.ai.count,
+          }
+          : item.ai,
+      };
+    });
+  };
+
+  const instantiateCanvasWorkflowTemplateItems = (
+    workflow: CanvasWorkflowTemplate,
+    base: { x: number; y: number },
+    externalInputIds: string[] = []
+  ) => {
+    const cleanWorkflow = normalizeCanvasWorkflowTemplate(workflow);
+    if (!cleanWorkflow) {
+      return { workflow: null, items: [] as CanvasImageItem[], idMap: new Map<string, string>() };
+    }
+    const templateBounds = {
+      x: Math.min(...cleanWorkflow.nodes.map(node => node.x)),
+      y: Math.min(...cleanWorkflow.nodes.map(node => node.y)),
+    };
+    const templateAiNodeIds = new Set(cleanWorkflow.nodes
+      .filter(node => node.ai?.type === 'image-generator')
+      .map(node => node.id));
+    const idMap = new Map<string, string>();
+
+    cleanWorkflow.nodes.forEach(node => {
+      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      idMap.set(node.id, node.ai?.type === 'image-generator' ? `canvas_ai_${nextBufferId}` : `canvas_${nextBufferId}`);
+    });
+
+    const now = Date.now();
+    const nextItems = cleanWorkflow.nodes.map((node, index) => {
+      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextCanvasId = idMap.get(node.id) || (node.ai?.type === 'image-generator' ? `canvas_ai_${nextBufferId}` : `canvas_${nextBufferId}`);
+      const isAiGenerator = node.ai?.type === 'image-generator';
+      const provider = normalizeCanvasAiProvider(node.ai?.provider || canvasAiProvider);
+      const internalInputs = (node.inputs || [])
+        .map(inputId => idMap.get(inputId))
+        .filter((inputId): inputId is string => !!inputId);
+      const isRootAiNode = isAiGenerator && !(node.inputs || []).some(inputId => templateAiNodeIds.has(inputId));
+      const item: BufferItem = {
+        ...cloneDrawerValue(node.item),
+        id: nextBufferId,
+        type: node.item.type || 'text',
+        content: node.item.content || '',
+        name: node.item.name || (isAiGenerator ? `AI ${node.ai?.presetLabel || '生图节点'}` : '工作流卡片'),
+        createdAt: now + index,
+        isQuickAccess: false,
+      };
+      return {
+        id: nextCanvasId,
+        item,
+        x: Math.max(24, base.x + node.x - templateBounds.x),
+        y: Math.max(24, base.y + node.y - templateBounds.y),
+        width: node.width,
+        height: node.height,
+        inputs: Array.from(new Set([
+          ...internalInputs,
+          ...(isRootAiNode ? externalInputIds : []),
+        ])),
+        ai: isAiGenerator
+          ? {
+            ...cloneDrawerValue(node.ai || {}),
+            type: 'image-generator' as const,
+            provider,
+            model: node.ai?.model || getCanvasAiDefaultModel(provider),
+            status: 'idle' as const,
+            error: undefined,
+            generatedAt: undefined,
+            outputs: [],
+          }
+          : undefined,
+      } as CanvasImageItem;
+    });
+
+    return { workflow: cleanWorkflow, items: nextItems, idMap };
+  };
+
+  const buildCanvasWorkflowModuleNode = (
+    workflow: CanvasWorkflowTemplate,
+    pos: { x: number; y: number },
+    inputIds: string[] = []
+  ): CanvasImageItem | null => {
+    const cleanWorkflow = normalizeCanvasWorkflowTemplate(workflow);
+    if (!cleanWorkflow) return null;
+    const itemId = Math.random().toString(36).substring(2, 9);
+    const outputSlots = getCanvasWorkflowOutputSlotTemplates(cleanWorkflow);
+    const outputSlotCount = Math.max(1, outputSlots.length);
+    const firstOutputAspectRatio = outputSlots[0]?.node.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: 'workflow',
+      aspectRatio: firstOutputAspectRatio,
+      outputCount: outputSlotCount,
+    });
+    return {
+      id: `canvas_workflow_${itemId}`,
+      item: {
+        id: itemId,
+        type: 'text',
+        content: '',
+        name: `工作流 ${cleanWorkflow.label}`,
+        remark: cleanWorkflow.hint,
+        createdAt: Date.now(),
+        isQuickAccess: false,
+      },
+      x: Math.max(24, pos.x),
+      y: Math.max(24, pos.y),
+      width: nodeSize.width,
+      height: nodeSize.height,
+      inputs: Array.from(new Set(inputIds)),
+      ai: {
+        type: 'workflow',
+        provider: canvasAiProvider,
+        model: getCanvasAiDefaultModel(canvasAiProvider),
+        presetId: cleanWorkflow.id,
+        presetLabel: cleanWorkflow.label,
+        presetPrompt: cleanWorkflow.hint,
+        count: outputSlotCount,
+        status: 'idle',
+        outputs: [],
+        workflow: cleanWorkflow,
+      },
+    };
+  };
+
+  const addCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate, client?: { x: number; y: number }) => {
+    const cleanWorkflow = normalizeCanvasWorkflowTemplate(workflow);
+    if (!cleanWorkflow) {
+      showToast('工作流模板不可用');
+      return 0;
+    }
+    const selectedInputIds = getSelectedCanvasAiInputIds();
+    const inputBounds = selectedInputIds.length > 0 ? getCanvasItemsBounds(selectedInputIds) : null;
+    const targetPoint = client ? getCanvasPointFromClient(client.x, client.y) : null;
+    const base = inputBounds && !targetPoint
+      ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
+      : (targetPoint || getCanvasDropPosition(0, client));
+    const canvasItem = buildCanvasWorkflowModuleNode(cleanWorkflow, base, selectedInputIds);
+    if (!canvasItem) {
+      showToast('工作流模板不可用');
+      return 0;
+    }
+    const addedCount = appendCanvasItems([canvasItem], `添加工作流「${cleanWorkflow.label}」`);
+    if (addedCount > 0) {
+      showToast(`已添加工作流模块「${cleanWorkflow.label}」${selectedInputIds.length > 0 ? `，已接入 ${selectedInputIds.length} 个输入` : ''}`);
+    }
+    return addedCount;
+  };
+
+  const buildCanvasWorkflowSaveDraftFromSelection = (defaultName: string): CanvasWorkflowSaveDraft | null => {
+    const selectedIds = canvasSelectedIdsRef.current;
+    if (selectedIds.length === 0) {
+      showToast('先框选要保存为工作流的节点');
+      return null;
+    }
+    const selectedIdSet = new Set(selectedIds);
+    const selectedItems = canvasItemsRef.current.filter(item => selectedIdSet.has(item.id));
+    const workflowItems = selectedItems.filter(item => item.ai?.type !== 'workflow' && (item.ai?.type === 'image-generator' || canUseCanvasItemAsAiInput(item)));
+    const aiCount = workflowItems.filter(item => item.ai?.type === 'image-generator').length;
+    if (aiCount === 0) {
+      showToast('工作流至少需要包含一个生图节点');
+      return null;
+    }
+    const bounds = getCanvasBoundsFromItems(workflowItems);
+    if (!bounds) return null;
+    const workflowNodeIds = new Set(workflowItems.map(item => item.id));
+    const nodes = workflowItems.map((item): CanvasWorkflowNodeTemplate => {
+      const savedItem = stripHeavyDataThumbnail(item.item);
+      const safeUrl = savedItem.url && isDataImageSourceValue(savedItem.url) ? undefined : savedItem.url;
+      const safeThumbnail = savedItem.thumbnail && isDataImageSourceValue(savedItem.thumbnail) ? undefined : savedItem.thumbnail;
+      const safeSourceUrl = savedItem.sourceUrl && isDataImageSourceValue(savedItem.sourceUrl) ? undefined : savedItem.sourceUrl;
+      const safeOriginalUrl = savedItem.originalUrl && isDataImageSourceValue(savedItem.originalUrl) ? undefined : savedItem.originalUrl;
+      return {
+        id: item.id,
+        x: item.x - bounds.x,
+        y: item.y - bounds.y,
+        width: item.width,
+        height: item.height,
+        item: {
+          ...savedItem,
+          id: item.item.id,
+          type: item.item.type,
+          content: item.item.content || '',
+          name: item.item.name,
+          createdAt: 0,
+          isQuickAccess: false,
+          url: safeUrl,
+          thumbnail: safeThumbnail,
+          sourceUrl: safeSourceUrl,
+          originalUrl: safeOriginalUrl,
+        },
+        inputs: (item.inputs || []).filter(inputId => workflowNodeIds.has(inputId)),
+        ai: item.ai
+          ? {
+            ...cloneDrawerValue(item.ai),
+            status: 'idle' as const,
+            error: undefined,
+            generatedAt: undefined,
+            outputs: [],
+          }
+          : undefined,
+      };
+    });
+    const externalInputIds = Array.from(new Set(workflowItems.flatMap(item => (
+      (item.inputs || []).filter(inputId => !workflowNodeIds.has(inputId))
+    ))));
+    return {
+      label: defaultName,
+      defaultLabel: defaultName,
+      nodes,
+      bounds,
+      externalInputIds,
+      selectedItemIds: workflowItems.map(item => item.id),
+      aiCount,
+    };
+  };
+
+  const saveSelectedCanvasWorkflow = () => {
+    const selectedIds = canvasSelectedIdsRef.current;
+    const selectedIdSet = new Set(selectedIds);
+    const selectedItems = canvasItemsRef.current.filter(item => selectedIdSet.has(item.id));
+    const aiCount = selectedItems.filter(item => item.ai?.type === 'image-generator').length;
+    const defaultName = aiCount > 1 ? `我的工作流 ${customCanvasWorkflows.length + 1}` : '我的生图工作流';
+    const draft = buildCanvasWorkflowSaveDraftFromSelection(defaultName);
+    if (draft) setCanvasWorkflowSaveDraft(draft);
+  };
+
+  const closeCanvasWorkflowSaveDialog = () => {
+    setCanvasWorkflowSaveDraft(null);
+  };
+
+  const confirmSaveCanvasWorkflow = () => {
+    if (!canvasWorkflowSaveDraft) return;
+    const label = canvasWorkflowSaveDraft.label.trim().slice(0, 32);
+    if (!label) {
+      showToast('请输入工作流名称');
+      return;
+    }
+    const workflow: CanvasWorkflowTemplate = {
+      id: `custom-workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      label,
+      hint: `${canvasWorkflowSaveDraft.nodes.length} 个节点，${canvasWorkflowSaveDraft.aiCount} 个生图节点`,
+      nodes: canvasWorkflowSaveDraft.nodes,
+      createdAt: Date.now(),
+    };
+    const moduleNode = buildCanvasWorkflowModuleNode(
+      workflow,
+      { x: canvasWorkflowSaveDraft.bounds.x, y: canvasWorkflowSaveDraft.bounds.y },
+      canvasWorkflowSaveDraft.externalInputIds
+    );
+    if (!moduleNode) {
+      showToast('工作流封装失败');
+      return;
+    }
+    setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
+    pushCanvasUndoSnapshot('封装工作流');
+    updateCanvasItemsImmediate(prev => {
+      const selectedSet = new Set(canvasWorkflowSaveDraft.selectedItemIds);
+      const nextItems = prev
+        .filter(item => !selectedSet.has(item.id))
+        .map(item => {
+          const inputs = item.inputs || [];
+          if (!inputs.some(inputId => selectedSet.has(inputId))) return item;
+          return {
+            ...item,
+            inputs: Array.from(new Set(inputs.map(inputId => selectedSet.has(inputId) ? moduleNode.id : inputId))),
+          };
+        });
+      return [...nextItems, moduleNode];
+    });
+    updateCanvasSelection([moduleNode.id]);
+    closeCanvasWorkflowSaveDialog();
+    showToast(`已保存并封装工作流「${label}」`);
+  };
+
+  const updateCanvasWorkflowModuleNodesForTemplate = (
+    workflow: CanvasWorkflowTemplate,
+    resetOutputs = false
+  ) => {
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.ai?.type !== 'workflow' || item.ai.presetId !== workflow.id) return item;
+      return {
+        ...item,
+        item: {
+          ...item.item,
+          name: `工作流 ${workflow.label}`,
+          remark: workflow.hint,
+        },
+        ai: {
+          ...item.ai,
+          presetLabel: workflow.label,
+          presetPrompt: workflow.hint,
+          workflow,
+          outputs: resetOutputs ? [] : item.ai.outputs,
+          workflowRuntime: resetOutputs ? undefined : item.ai.workflowRuntime,
+          status: resetOutputs ? 'idle' as const : item.ai.status,
+          error: resetOutputs ? undefined : item.ai.error,
+          generatedAt: resetOutputs ? undefined : item.ai.generatedAt,
+        },
+      };
+    }));
+  };
+
+  const selectCanvasWorkflowForEdit = (workflowId: string) => {
+    const workflow = canvasWorkflowTemplates.find(item => item.id === workflowId) || canvasWorkflowTemplates[0];
+    if (!workflow) return;
+    setCanvasWorkflowEditingId(workflow.id);
+    setCanvasWorkflowNameDraft(workflow.label);
+    setCanvasWorkflowHintDraft(workflow.hint || '');
+  };
+
+  const openCanvasWorkflowManager = (workflowId?: string) => {
+    const workflow = (workflowId ? canvasWorkflowTemplates.find(item => item.id === workflowId) : null)
+      || canvasWorkflowTemplates.find(item => !item.builtin)
+      || canvasWorkflowTemplates[0];
+    if (!workflow) {
+      showToast('暂无可管理的工作流');
+      return;
+    }
+    setIsCanvasPresetEditorOpen(false);
+    selectCanvasWorkflowForEdit(workflow.id);
+    setIsCanvasWorkflowManagerOpen(true);
+  };
+
+  const closeCanvasWorkflowManager = () => {
+    setIsCanvasWorkflowManagerOpen(false);
+  };
+
+  const saveCanvasWorkflowManagerChanges = () => {
+    const source = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId);
+    if (!source) {
+      showToast('请选择要修改的工作流');
+      return;
+    }
+    const label = canvasWorkflowNameDraft.trim().slice(0, 32);
+    if (!label) {
+      showToast('请输入工作流名称');
+      return;
+    }
+    const hint = canvasWorkflowHintDraft.trim().slice(0, 80) || source.hint || '自定义工作流';
+    const hasCustomOverride = customCanvasWorkflows.some(item => item.id === source.id);
+    const nextWorkflow = normalizeCanvasWorkflowTemplate({
+      ...cloneDrawerValue(source),
+      id: source.id,
+      label,
+      hint,
+      createdAt: Date.now(),
+      builtin: false,
+    });
+    if (!nextWorkflow) {
+      showToast('工作流保存失败');
+      return;
+    }
+    setCustomCanvasWorkflows(prev => (
+      hasCustomOverride
+        ? prev.map(item => item.id === source.id ? nextWorkflow : item)
+        : [nextWorkflow, ...prev].slice(0, 24)
+    ));
+    setCanvasWorkflowEditingId(nextWorkflow.id);
+    setCanvasWorkflowNameDraft(nextWorkflow.label);
+    setCanvasWorkflowHintDraft(nextWorkflow.hint || '');
+    updateCanvasWorkflowModuleNodesForTemplate(nextWorkflow, false);
+    showToast(`已更新工作流「${nextWorkflow.label}」`);
+  };
+
+  const replaceCanvasWorkflowManagerWithSelection = () => {
+    const source = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId);
+    if (!source) {
+      showToast('请选择要修改的工作流');
+      return;
+    }
+    const hasCustomOverride = customCanvasWorkflows.some(item => item.id === source.id);
+    const label = (canvasWorkflowNameDraft.trim() || source.label).slice(0, 32);
+    const draft = buildCanvasWorkflowSaveDraftFromSelection(label);
+    if (!draft) return;
+    const hint = canvasWorkflowHintDraft.trim().slice(0, 80) || `${draft.nodes.length} 个节点，${draft.aiCount} 个生图节点`;
+    const nextWorkflow = normalizeCanvasWorkflowTemplate({
+      ...cloneDrawerValue(source),
+      id: source.id,
+      label,
+      hint,
+      nodes: draft.nodes,
+      createdAt: Date.now(),
+      builtin: false,
+    });
+    if (!nextWorkflow) {
+      showToast('工作流结构更新失败');
+      return;
+    }
+    setCustomCanvasWorkflows(prev => (
+      hasCustomOverride
+        ? prev.map(item => item.id === source.id ? nextWorkflow : item)
+        : [nextWorkflow, ...prev].slice(0, 24)
+    ));
+    setCanvasWorkflowEditingId(nextWorkflow.id);
+    setCanvasWorkflowNameDraft(nextWorkflow.label);
+    setCanvasWorkflowHintDraft(nextWorkflow.hint || '');
+    updateCanvasWorkflowModuleNodesForTemplate(nextWorkflow, true);
+    showToast(`已用选中节点更新「${nextWorkflow.label}」`);
+  };
+
+  const deleteCanvasWorkflowFromManager = () => {
+    const source = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId);
+    if (!source) {
+      showToast('请选择要删除的工作流');
+      return;
+    }
+    const isCustom = customCanvasWorkflows.some(item => item.id === source.id);
+    if (!isCustom) {
+      showToast('内置工作流还没有修改，不能删除');
+      return;
+    }
+    const isBuiltInOverride = CANVAS_BUILT_IN_WORKFLOWS.some(workflow => workflow.id === source.id);
+    setConfirmDialog({
+      isOpen: true,
+      title: isBuiltInOverride ? '恢复内置工作流？' : '删除工作流？',
+      message: isBuiltInOverride
+        ? `删除「${source.label}」的本地修改后，会恢复为内置工作流。画布上已经放置的模块会保留当前快照。`
+        : `删除「${source.label}」后，它会从工作流列表里移除。画布上已经放置的模块会保留当前快照。`,
+      onConfirm: () => {},
+      actions: [
+        {
+          label: isBuiltInOverride ? '恢复内置' : '删除',
+          onClick: () => {
+            setCustomCanvasWorkflows(prev => prev.filter(item => item.id !== source.id));
+            const restoredBuiltIn = CANVAS_BUILT_IN_WORKFLOWS.find(workflow => workflow.id === source.id);
+            const nextWorkflow = isBuiltInOverride
+              ? restoredBuiltIn
+              : canvasWorkflowTemplates.find(item => item.id !== source.id) || CANVAS_BUILT_IN_WORKFLOWS[0];
+            if (nextWorkflow) {
+              setCanvasWorkflowEditingId(nextWorkflow.id);
+              setCanvasWorkflowNameDraft(nextWorkflow.label);
+              setCanvasWorkflowHintDraft(nextWorkflow.hint || '');
+            }
+            closeConfirmDialog();
+            showToast(isBuiltInOverride ? `已恢复内置工作流「${source.label}」` : `已删除工作流「${source.label}」`);
+          },
+          className: 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
+        },
+      ],
+    });
+  };
+
+  const expandCanvasWorkflowModuleForEdit = (canvasId: string) => {
+    const moduleNode = canvasItemsRef.current.find(item => item.id === canvasId);
+    const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
+    if (!moduleNode || !workflow) {
+      showToast('没有可展开的工作流模块');
+      return;
+    }
+    const { items: rawExpandedItems, idMap } = instantiateCanvasWorkflowTemplateItems(
+      workflow,
+      { x: moduleNode.x, y: moduleNode.y },
+      moduleNode.inputs || []
+    );
+    const runtimeSnapshots = normalizeCanvasWorkflowRuntimeSnapshots(moduleNode.ai?.workflowRuntime);
+    const restoredItems = applyCanvasWorkflowRuntimeSnapshots(workflow, rawExpandedItems, idMap, runtimeSnapshots);
+    const groupId = `workflow_group_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    const expandedItems = restoredItems.map(item => {
+      const templateEntry = Array.from(idMap.entries()).find(([, runtimeId]) => runtimeId === item.id);
+      const templateId = templateEntry?.[0] || item.id;
+      return {
+        ...item,
+        workflowGroup: {
+          groupId,
+          templateId,
+          workflowId: workflow.id,
+          workflowLabel: workflow.label,
+          workflowHint: workflow.hint,
+          workflowBuiltin: workflow.builtin,
+          module: cloneDrawerValue(moduleNode),
+          expandedAt: Date.now(),
+        } satisfies CanvasWorkflowExpandedGroup,
+      };
+    });
+    if (expandedItems.length === 0) {
+      showToast('工作流内部没有可编辑节点');
+      return;
+    }
+    const terminalIds = getCanvasWorkflowTerminalNodeTemplates(workflow)
+      .map(node => idMap.get(node.id))
+      .filter((id): id is string => !!id);
+    pushCanvasUndoSnapshot('展开工作流');
+    updateCanvasItemsImmediate(prev => {
+      const nextItems = prev
+        .filter(item => item.id !== moduleNode.id)
+        .map(item => {
+          const inputs = item.inputs || [];
+          if (!inputs.includes(moduleNode.id)) return item;
+          const replacementInputs = terminalIds.length > 0 ? terminalIds : [];
+          return {
+            ...item,
+            inputs: Array.from(new Set(inputs.flatMap(inputId => (
+              inputId === moduleNode.id ? replacementInputs : [inputId]
+            )))),
+          };
+        });
+      return [...nextItems, ...expandedItems];
+    });
+    updateCanvasSelection(expandedItems.map(item => item.id));
+    showToast(`已展开「${workflow.label}」，可右键内部节点折叠回工作流`);
+  };
+
+  const buildCanvasWorkflowTemplateFromExpandedGroup = (
+    groupItems: CanvasImageItem[],
+    group: CanvasWorkflowExpandedGroup
+  ) => {
+    const bounds = getCanvasBoundsFromItems(groupItems);
+    if (!bounds) return null;
+    const templateIdByCanvasId = new Map(groupItems.map(item => [
+      item.id,
+      getCanvasWorkflowGroup(item)?.templateId || item.id,
+    ]));
+    const idMap = new Map<string, string>();
+    templateIdByCanvasId.forEach((templateId, canvasId) => {
+      idMap.set(templateId, canvasId);
+    });
+    const groupCanvasIds = new Set(groupItems.map(item => item.id));
+    const externalInputIds = Array.from(new Set(groupItems.flatMap(item => (
+      (item.inputs || []).filter(inputId => !groupCanvasIds.has(inputId))
+    ))));
+    const nodes = groupItems.map((item): CanvasWorkflowNodeTemplate => {
+      const templateId = templateIdByCanvasId.get(item.id) || item.id;
+      const savedItem = stripHeavyDataThumbnail(item.item);
+      const safeUrl = savedItem.url && isDataImageSourceValue(savedItem.url) ? undefined : savedItem.url;
+      const safeThumbnail = savedItem.thumbnail && isDataImageSourceValue(savedItem.thumbnail) ? undefined : savedItem.thumbnail;
+      const safeSourceUrl = savedItem.sourceUrl && isDataImageSourceValue(savedItem.sourceUrl) ? undefined : savedItem.sourceUrl;
+      const safeOriginalUrl = savedItem.originalUrl && isDataImageSourceValue(savedItem.originalUrl) ? undefined : savedItem.originalUrl;
+      return {
+        id: templateId,
+        x: item.x - bounds.x,
+        y: item.y - bounds.y,
+        width: item.width,
+        height: item.height,
+        item: {
+          ...savedItem,
+          id: templateId,
+          type: item.item.type,
+          content: item.item.content || '',
+          name: item.item.name,
+          createdAt: 0,
+          isQuickAccess: false,
+          url: safeUrl,
+          thumbnail: safeThumbnail,
+          sourceUrl: safeSourceUrl,
+          originalUrl: safeOriginalUrl,
+        },
+        inputs: (item.inputs || [])
+          .map(inputId => templateIdByCanvasId.get(inputId))
+          .filter((inputId): inputId is string => !!inputId),
+        ai: item.ai
+          ? {
+            ...cloneDrawerValue(item.ai),
+            status: 'idle' as const,
+            error: undefined,
+            generatedAt: undefined,
+            outputs: [],
+            workflow: undefined,
+            workflowRuntime: undefined,
+          }
+          : undefined,
+      };
+    });
+    const workflow = normalizeCanvasWorkflowTemplate({
+      id: group.workflowId,
+      label: group.workflowLabel,
+      hint: group.workflowHint,
+      nodes,
+      builtin: group.workflowBuiltin,
+      createdAt: Date.now(),
+    });
+    return workflow ? { workflow, bounds, externalInputIds, idMap } : null;
+  };
+
+  const getComparableCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate) => ({
+    nodes: workflow.nodes
+      .map(node => ({
+        id: node.id,
+        x: Math.round(node.x),
+        y: Math.round(node.y),
+        width: Math.round(node.width),
+        height: Math.round(node.height),
+        item: {
+          type: node.item.type,
+          content: node.item.content || '',
+          name: node.item.name || '',
+          remark: node.item.remark || '',
+        },
+        inputs: [...(node.inputs || [])].sort(),
+        ai: node.ai
+          ? {
+            type: node.ai.type,
+            provider: node.ai.provider,
+            model: node.ai.model,
+            prompt: node.ai.prompt || '',
+            presetId: node.ai.presetId || '',
+            presetLabel: node.ai.presetLabel || '',
+            presetPrompt: node.ai.presetPrompt || '',
+            aspectRatio: node.ai.aspectRatio || '',
+            outputFormat: node.ai.outputFormat || '',
+            count: node.ai.count || 1,
+          }
+          : null,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  });
+
+  const hasCanvasWorkflowTemplateChanged = (
+    currentWorkflow: CanvasWorkflowTemplate,
+    originalWorkflow: CanvasWorkflowTemplate
+  ) => (
+    JSON.stringify(getComparableCanvasWorkflowTemplate(currentWorkflow)) !==
+    JSON.stringify(getComparableCanvasWorkflowTemplate(originalWorkflow))
+  );
+
+  const createCanvasWorkflowModuleOutputsFromExpandedGroup = (
+    moduleNode: CanvasImageItem,
+    workflow: CanvasWorkflowTemplate,
+    groupItems: CanvasImageItem[],
+    idMap: Map<string, string>
+  ) => {
+    const drafts = createCanvasWorkflowOutputDrafts(moduleNode, workflow);
+    const slots = getCanvasWorkflowOutputSlotTemplates(workflow);
+    return drafts.map((draft, index) => {
+      const slot = slots[index];
+      const canvasId = slot ? idMap.get(slot.node.id) : '';
+      const source = canvasId ? groupItems.find(item => item.id === canvasId) : null;
+      const output = source?.ai?.outputs?.[slot?.index || 0];
+      return output
+        ? { ...draft, ...cloneDrawerValue(output), id: draft.id, name: draft.name }
+        : draft;
+    });
+  };
+
+  const exportCurrentCanvasWorkflow = () => {
+    const workflow = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId);
+    if (!workflow) {
+      showToast('请选择要导出的工作流');
+      return;
+    }
+    void exportCanvasTemplateFile({ workflows: [workflow] }, `${workflow.label || 'canvas-workflow'}.json`);
+  };
+
+  const exportAllCustomCanvasWorkflows = () => {
+    void exportCanvasTemplateFile({ workflows: customCanvasWorkflows }, 'canvas-workflows.json');
+  };
+
+  const collapseCanvasWorkflowGroupNow = (
+    group: CanvasWorkflowExpandedGroup,
+    saveTemplate: boolean,
+    changed: boolean
+  ) => {
+    const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId);
+    if (groupItems.length === 0) {
+      showToast('没有找到可折叠的工作流节点');
+      return;
+    }
+    const built = buildCanvasWorkflowTemplateFromExpandedGroup(groupItems, group);
+    if (!built) {
+      showToast('工作流折叠失败');
+      return;
+    }
+    const originalWorkflow = getCanvasWorkflowTemplateFromNode(group.module) || built.workflow;
+    let workflowForModule: CanvasWorkflowTemplate = changed ? { ...built.workflow, builtin: false } : originalWorkflow;
+    if (saveTemplate && changed) {
+      const isCustom = customCanvasWorkflows.some(item => item.id === originalWorkflow.id);
+      workflowForModule = {
+        ...built.workflow,
+        id: isCustom ? originalWorkflow.id : `custom-workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+        label: group.workflowLabel,
+        hint: group.workflowHint,
+        builtin: false,
+        createdAt: Date.now(),
+      };
+      setCustomCanvasWorkflows(prev => (
+        isCustom
+          ? prev.map(item => item.id === originalWorkflow.id ? workflowForModule : item)
+          : [workflowForModule, ...prev].slice(0, 24)
+      ));
+    } else if (changed) {
+      workflowForModule = {
+        ...workflowForModule,
+        id: `local-workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+        builtin: false,
+      };
+    }
+
+    const moduleDraft = buildCanvasWorkflowModuleNode(workflowForModule, { x: built.bounds.x, y: built.bounds.y }, built.externalInputIds);
+    if (!moduleDraft) {
+      showToast('工作流模块恢复失败');
+      return;
+    }
+    const moduleNode: CanvasImageItem = {
+      ...moduleDraft,
+      id: group.module.id,
+      item: {
+        ...moduleDraft.item,
+        id: group.module.item.id,
+        createdAt: group.module.item.createdAt,
+      },
+      ai: {
+        ...moduleDraft.ai,
+        type: 'workflow' as const,
+      },
+    };
+    const outputs = createCanvasWorkflowModuleOutputsFromExpandedGroup(moduleNode, workflowForModule, groupItems, built.idMap);
+    const successCount = outputs.filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output)).length;
+    const nextStatus = successCount > 0
+      ? (successCount === outputs.length ? 'success' as const : 'error' as const)
+      : 'idle' as const;
+    const runtimeSnapshots = createCanvasWorkflowRuntimeSnapshots(workflowForModule, groupItems, built.idMap);
+    const restoredModule: CanvasImageItem = {
+      ...moduleNode,
+      ai: {
+        ...(moduleNode.ai || { type: 'workflow' as const }),
+        type: 'workflow' as const,
+        outputs,
+        workflowRuntime: runtimeSnapshots,
+        status: nextStatus,
+        error: nextStatus === 'error' ? '部分内部输出缺失' : undefined,
+        generatedAt: successCount > 0 ? Date.now() : undefined,
+      },
+    };
+    const groupCanvasIds = new Set(groupItems.map(item => item.id));
+    canvasWorkflowSingleEditGroupIdsRef.current.delete(group.groupId);
+    setCanvasWorkflowSingleEditGroupIds(prev => prev.filter(groupId => groupId !== group.groupId));
+    pushCanvasUndoSnapshot('折叠工作流');
+    updateCanvasItemsImmediate(prev => {
+      const nextItems = prev
+        .filter(item => !groupCanvasIds.has(item.id))
+        .map(item => {
+          const inputs = item.inputs || [];
+          if (!inputs.some(inputId => groupCanvasIds.has(inputId))) return item;
+          return {
+            ...item,
+            inputs: Array.from(new Set(inputs.map(inputId => groupCanvasIds.has(inputId) ? restoredModule.id : inputId))),
+          };
+        });
+      return [...nextItems, restoredModule];
+    });
+    updateCanvasSelection([restoredModule.id]);
+    showToast(saveTemplate && changed
+      ? `已保存并折叠工作流「${workflowForModule.label}」`
+      : `已折叠工作流「${workflowForModule.label}」`);
+  };
+
+  const collapseCanvasWorkflowGroup = (canvasId: string) => {
+    const sourceItem = canvasItemsRef.current.find(item => item.id === canvasId);
+    const group = getCanvasWorkflowGroup(sourceItem);
+    if (!group) {
+      showToast('这个节点不属于已展开工作流');
+      return;
+    }
+    const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId);
+    const built = buildCanvasWorkflowTemplateFromExpandedGroup(groupItems, group);
+    const originalWorkflow = getCanvasWorkflowTemplateFromNode(group.module);
+    if (!built || !originalWorkflow) {
+      showToast('工作流折叠失败');
+      return;
+    }
+    const changed = hasCanvasWorkflowTemplateChanged(built.workflow, originalWorkflow);
+    if (!changed) {
+      collapseCanvasWorkflowGroupNow(group, false, false);
+      return;
+    }
+    setConfirmDialog({
+      isOpen: true,
+      title: '保存工作流修改？',
+      message: `「${group.workflowLabel}」的内部节点有调整。保存会更新工作流模板，但不会保存新生成的图片结果。`,
+      onConfirm: () => {},
+      actions: [
+        {
+          label: '不保存折叠',
+          onClick: () => {
+            closeConfirmDialog();
+            collapseCanvasWorkflowGroupNow(group, false, true);
+          },
+          className: 'rounded-[16px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700',
+        },
+        {
+          label: '保存并折叠',
+          onClick: () => {
+            closeConfirmDialog();
+            collapseCanvasWorkflowGroupNow(group, true, true);
+          },
+          className: 'rounded-[16px] bg-emerald-500 px-3 py-1.5 text-xs font-black text-white transition-colors hover:bg-emerald-400 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300',
+        },
+      ],
+    });
+  };
+
   const updateCanvasAiGeneratorData = (canvasId: string, patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
     updateCanvasItemsImmediate(prev => prev.map(item => (
       item.id === canvasId
-        ? {
-          ...item,
-          ai: {
-            type: 'image-generator',
+        ? (() => {
+          const nextAi = {
             ...(item.ai || {}),
             ...patch,
-          },
-          item: content === undefined ? item.item : {
+            type: patch.type || item.ai?.type || 'image-generator',
+          } as NonNullable<CanvasImageItem['ai']>;
+          const nextItem = content === undefined ? item.item : {
             ...item.item,
             content,
             name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : 'AI 生图节点'),
-          },
-        }
-        : item
+          };
+          const nextCanvasItem = {
+            ...item,
+            ai: nextAi,
+            item: nextItem,
+          };
+          if (item.ai?.type === 'image-generator' && (patch.aspectRatio !== undefined || patch.count !== undefined || content !== undefined)) {
+            const hasOutputPreview = (item.ai.outputs || []).length > 0;
+            const promptExpanded = canvasAiPromptEditingId === item.id;
+            const oldSize = getCanvasAiNodeAutoSize({
+              type: 'image-generator',
+              aspectRatio: item.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+              count: item.ai.count || CANVAS_AI_DEFAULT_COUNT,
+              hasPreset: !!item.ai.presetLabel,
+              hasError: !!item.ai.error,
+              promptText: item.item.content || '',
+              promptExpanded,
+              showOutputPreview: hasOutputPreview,
+            });
+            const nextSize = getCanvasAiNodeAutoSize({
+              type: 'image-generator',
+              aspectRatio: nextAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+              count: nextAi.count || CANVAS_AI_DEFAULT_COUNT,
+              hasPreset: !!nextAi.presetLabel,
+              hasError: !!nextAi.error,
+              promptText: nextItem.content || '',
+              promptExpanded,
+              showOutputPreview: hasOutputPreview,
+            });
+            const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
+            return {
+              ...nextCanvasItem,
+              width: nextSize.width * nodeScale,
+              height: nextSize.height * nodeScale,
+            };
+          }
+          return nextCanvasItem;
+        })()
+      : item
     )));
   };
 
+  const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => {
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== canvasId || item.ai?.type !== 'image-generator') return item;
+      const hasOutputPreview = (item.ai.outputs || []).length > 0;
+      const oldExpanded = previousExpanded ?? canvasAiPromptEditingId === item.id;
+      const oldSize = getCanvasAiNodeAutoSize({
+        type: 'image-generator',
+        aspectRatio: item.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        count: item.ai.count || CANVAS_AI_DEFAULT_COUNT,
+        hasPreset: !!item.ai.presetLabel,
+        hasError: !!item.ai.error,
+        promptText: item.item.content || '',
+        promptExpanded: oldExpanded,
+        showOutputPreview: hasOutputPreview,
+      });
+      const nextSize = getCanvasAiNodeAutoSize({
+        type: 'image-generator',
+        aspectRatio: item.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        count: item.ai.count || CANVAS_AI_DEFAULT_COUNT,
+        hasPreset: !!item.ai.presetLabel,
+        hasError: !!item.ai.error,
+        promptText: item.item.content || '',
+        promptExpanded: expanded,
+        showOutputPreview: hasOutputPreview,
+      });
+      const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
+      return {
+        ...item,
+        width: nextSize.width * nodeScale,
+        height: nextSize.height * nodeScale,
+      };
+    }));
+  };
+
+  const setCanvasWorkflowOutputMode = (canvasId: string, mode: 'final' | 'all') => {
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== canvasId || item.ai?.type !== 'workflow') return item;
+      const workflow = getCanvasWorkflowTemplateFromNode(item);
+      if (!workflow) return item;
+      const currentOutputs = getCanvasAiOutputPreviewSlots(item);
+      const nextItem: CanvasImageItem = {
+        ...item,
+        ai: {
+          ...item.ai,
+          workflowOutputMode: mode,
+        },
+      };
+      const nextOutputs = getCanvasAiOutputPreviewSlots(nextItem);
+      const getOutputAspectRatio = (outputs: CanvasAiGeneratedOutput[]) => (
+        outputs[0]?.width && outputs[0]?.height
+          ? `${outputs[0].width}:${outputs[0].height}`
+          : item.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
+      );
+      const currentSize = getCanvasAiNodeAutoSize({
+        type: 'workflow',
+        aspectRatio: getOutputAspectRatio(currentOutputs),
+        outputCount: currentOutputs.length || undefined,
+        hasError: !!item.ai?.error,
+        showOutputPreview: true,
+      });
+      const nextSize = getCanvasAiNodeAutoSize({
+        type: 'workflow',
+        aspectRatio: getOutputAspectRatio(nextOutputs),
+        outputCount: nextOutputs.length || undefined,
+        hasError: !!item.ai?.error,
+        showOutputPreview: true,
+      });
+      const currentScale = Math.min(item.width / currentSize.width, item.height / currentSize.height) || 1;
+      const nextScale = mode === 'all' ? Math.max(1, currentScale) : currentScale;
+      return {
+        ...nextItem,
+        width: nextSize.width * nextScale,
+        height: nextSize.height * nextScale,
+      };
+    }));
+    showToast(mode === 'all' ? '已显示工作流全部节点输出' : '已显示工作流最终输出');
+  };
+
   const connectSelectedCanvasItemsToGenerator = (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!canUseCanvasItemAsAiTarget(target)) {
+      showToast('目标节点不能接入输入');
+      return;
+    }
     const sourceIds = canvasSelectedIdsRef.current
       .filter(id => id !== targetId)
       .filter(id => {
         const source = canvasItemsRef.current.find(item => item.id === id);
-        return !!source && source.ai?.type !== 'image-generator';
+        return canUseCanvasItemAsAiInput(source);
       });
     if (sourceIds.length === 0) {
       showToast('先多选要接入的图片或文字节点');
@@ -5280,7 +7506,7 @@ function MainApp() {
     if (!sourceId || !targetId || sourceId === targetId) return false;
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!source || !target || target.ai?.type !== 'image-generator') return false;
+    if (!source || !target || !canUseCanvasItemAsAiTarget(target) || !canUseCanvasItemAsAiInput(source)) return false;
     if ((target.inputs || []).includes(sourceId)) {
       updateCanvasSelection([targetId]);
       return true;
@@ -5292,18 +7518,18 @@ function MainApp() {
         : item
     )));
     updateCanvasSelection([targetId]);
-    showToast('已连接到 AI 生图节点');
+    showToast(target.ai?.type === 'workflow' ? '已连接到工作流模块' : '已连接到 AI 生图节点');
     return true;
   };
 
   const connectCanvasItemsToGenerator = (sourceIds: string[], targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || target.ai?.type !== 'image-generator') return false;
+    if (!target || !canUseCanvasItemAsAiTarget(target)) return false;
     const validSourceIds = Array.from(new Set(sourceIds))
       .filter(sourceId => sourceId && sourceId !== targetId)
       .filter(sourceId => {
         const source = canvasItemsRef.current.find(item => item.id === sourceId);
-        return !!source && source.ai?.type !== 'image-generator';
+        return canUseCanvasItemAsAiInput(source);
       });
     if (validSourceIds.length === 0) return false;
 
@@ -5339,7 +7565,7 @@ function MainApp() {
     if (!targetId || files.length === 0) return;
 
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || target.ai?.type !== 'image-generator') return;
+    if (!target || !canUseCanvasItemAsAiTarget(target)) return;
 
     const imageFiles = files.filter(file => file.type.startsWith('image/') || isCanvasImageFileName(file.name));
     if (imageFiles.length === 0) {
@@ -5365,18 +7591,18 @@ function MainApp() {
 
   const startPickCanvasImageForGenerator = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || target.ai?.type !== 'image-generator') return;
+    if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     setCanvasInputMenuForId(null);
     setCanvasContextMenu(null);
     setCanvasInputPickTargetId(targetId);
     updateCanvasSelection([targetId]);
-    showToast('点击画布里的任意图片作为输入，Esc 取消');
+    showToast('点击画布里的图片、生图节点或工作流模块作为输入，Esc 取消');
   };
 
   const pickCanvasImageForGenerator = (sourceId: string, targetId: string) => {
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
-    if (!source || source.item.type !== 'image') {
-      showToast('请选择图片节点');
+    if (!source || (source.item.type !== 'image' && source.ai?.type !== 'image-generator' && source.ai?.type !== 'workflow')) {
+      showToast('请选择图片节点、生图节点或工作流模块');
       return false;
     }
     const connected = connectCanvasItems(sourceId, targetId);
@@ -5387,16 +7613,17 @@ function MainApp() {
   const startCanvasConnectionDrag = (event: React.PointerEvent, sourceId: string) => {
     if (event.button !== 0) return;
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
-    if (!source || source.ai?.type === 'image-generator') return;
+    if (!source || !canUseCanvasItemAsAiInput(source)) return;
     event.preventDefault();
     event.stopPropagation();
     setCanvasInteractionActive(true);
-    const fromX = source.x + source.width + CANVAS_CONNECTION_HANDLE_OUTSET;
-    const fromY = source.y + source.height / 2;
+    const sourceBox = getCanvasItemRenderedBox(source);
+    const fromX = sourceBox.x + sourceBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
+    const fromY = sourceBox.y + sourceBox.height / 2;
     const sourceIds = canvasSelectedIdsRef.current.includes(sourceId)
       ? canvasSelectedIdsRef.current.filter(id => {
         const item = canvasItemsRef.current.find(canvasItem => canvasItem.id === id);
-        return !!item && item.ai?.type !== 'image-generator';
+        return canUseCanvasItemAsAiInput(item);
       })
       : [sourceId];
     canvasConnectionDragRef.current = {
@@ -5455,99 +7682,153 @@ function MainApp() {
     )));
   };
 
-  const runCanvasAiGeneratorNode = async (targetId: string) => {
-    const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || target.ai?.type !== 'image-generator') return;
+  const getCanvasAiRerunNodePosition = (source: CanvasImageItem) => {
+    const gap = 64;
+    const step = 44;
+    let x = Math.max(24, source.x + source.width + gap);
+    let y = Math.max(24, source.y);
+    const items = canvasItemsRef.current;
+
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      const box = { x, y, width: source.width, height: source.height };
+      const overlaps = items.some(item => item.id !== source.id && canvasRectsIntersect(box, item));
+      if (!overlaps) return { x, y };
+      y += step;
+      if (attempt === 8) {
+        x += step;
+        y = Math.max(24, source.y + step);
+      }
+    }
+
+    return { x, y };
+  };
+
+  const cloneCanvasAiGeneratorForRerun = (source: CanvasImageItem) => {
+    if (source.ai?.type !== 'image-generator') return null;
+    const nextBufferId = Math.random().toString(36).substring(2, 9);
+    const nextCanvasId = `canvas_ai_${nextBufferId}`;
+    const pos = getCanvasAiRerunNodePosition(source);
+    const now = Date.now();
+    return {
+      ...cloneDrawerValue(source),
+      id: nextCanvasId,
+      x: pos.x,
+      y: pos.y,
+      item: {
+        ...cloneDrawerValue(source.item),
+        id: nextBufferId,
+        createdAt: now,
+      },
+      inputs: [...(source.inputs || [])],
+      ai: {
+        ...cloneDrawerValue(source.ai),
+        type: 'image-generator' as const,
+        status: 'idle' as const,
+        error: undefined,
+        generatedAt: undefined,
+        outputs: [],
+      },
+    } as CanvasImageItem;
+  };
+
+  const runCanvasAiGeneratorTarget = async (
+    target: CanvasImageItem,
+    options: {
+      sourceItems?: () => CanvasImageItem[];
+      updateAi: (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => void;
+      getLatestTarget?: () => CanvasImageItem | undefined;
+      selectTarget?: () => void;
+      showResultToast?: boolean;
+      toastLabel?: string;
+    }
+  ) => {
+    if (target.ai?.type !== 'image-generator') return [] as CanvasAiGeneratedOutput[];
 
     const provider = normalizeCanvasAiProvider(target.ai.provider || canvasAiProvider);
     const apiKey = canvasAiApiKey.trim();
+    const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
     const promptParts = [
-      ...getCanvasTextInputsForNode(target),
-      ...getCanvasImageInputDescriptionsForNode(target),
+      ...getCanvasTextInputsForNode(target, getSourceItems()),
       target.ai.presetPrompt || '',
       manualPrompt,
     ].map(text => text.trim()).filter(Boolean);
     const prompt = promptParts.join('\n\n');
     if (!prompt) {
-      updateCanvasAiGeneratorData(targetId, { status: 'error', error: '请输入提示词，或连接一个文字节点' });
-      return;
+      options.updateAi({ status: 'error', error: '请输入提示词，或连接一个文字节点' });
+      return [] as CanvasAiGeneratedOutput[];
     }
     if (!apiKey) {
-      updateCanvasAiGeneratorData(targetId, { status: 'error', error: '请先在 AI 设置里填写 API Key' });
-      return;
+      options.updateAi({ status: 'error', error: '请先在 AI 设置里填写 API Key' });
+      return [] as CanvasAiGeneratedOutput[];
     }
 
-    updateCanvasAiGeneratorData(targetId, { status: 'working', error: undefined, prompt: manualPrompt });
-    const placeholders = createCanvasAiOutputPlaceholders(target, prompt);
-    const placeholderIds = new Set(placeholders.map(item => item.id));
+    const outputDrafts = createCanvasAiOutputDrafts(target, prompt);
+    let currentOutputs = outputDrafts;
+    const setCanvasAiOutputs = (
+      outputs: CanvasAiGeneratedOutput[],
+      patch: Partial<NonNullable<CanvasImageItem['ai']>> = {}
+    ) => {
+      currentOutputs = outputs;
+      options.updateAi({ outputs, ...patch });
+    };
+    options.updateAi({
+      status: 'working',
+      error: undefined,
+      prompt: manualPrompt,
+      outputs: currentOutputs,
+      generatedAt: Date.now(),
+    });
     let temporaryCloudflaredShareIds: string[] = [];
-    if (placeholders.length > 0) appendCanvasItems(placeholders, '预留 AI 生图结果', false);
     try {
-      if (placeholders.length > 0) {
-        updateCanvasItemsImmediate(prev => prev.map(item => placeholderIds.has(item.id)
-          ? {
-            ...item,
-            item: {
-              ...item.item,
-              content: '正在处理参考图',
-              name: '正在处理参考图',
-            },
-          }
-          : item));
-      }
-      const inputMode = provider === 'openai-compatible' ? 'stable' : 'remote-first';
-      const preparedInputs = await getCanvasImageInputsForNode(target, inputMode);
+      const requestModel = target.ai.model || getCanvasAiDefaultModel(provider);
+      const useDirectReferenceImages = provider === 'openai-compatible'
+        || (provider === 'xais-chat' && !isCanvasAiXaisWorkerModel(requestModel));
+      const inputMode = provider === 'openai-compatible'
+        || (provider === 'xais-chat' && !isCanvasAiXaisWorkerModel(requestModel))
+        ? 'stable'
+        : 'remote-first';
+      const preparedInputs = await getCanvasImageInputsForNode(
+        target,
+        inputMode,
+        useDirectReferenceImages ? 'direct' : 'auto',
+        getSourceItems()
+      );
       let inputImages = preparedInputs.images;
       temporaryCloudflaredShareIds = preparedInputs.temporaryShareIds;
-      if (placeholders.length > 0) {
-        updateCanvasItemsImmediate(prev => prev.map(item => placeholderIds.has(item.id)
-          ? {
-            ...item,
-            item: {
-              ...item.item,
-              content: 'AI 生图生成中',
-              name: 'AI 生图生成中',
-            },
-          }
-          : item));
-      }
-      const requestedCount = clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, 4);
+      const requestedCount = currentOutputs.length || clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
       let generateOptions = {
         provider,
         apiKey,
         endpoint: getCanvasAiEndpointForRequest(provider, canvasAiEndpoint),
         prompt,
-        model: target.ai.model || getCanvasAiDefaultModel(provider),
+        model: requestModel,
         inputImages,
         aspectRatio: target.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
         outputFormat: target.ai.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         count: 1,
       };
-      const images: CanvasImageItem[] = [];
+      const generatedOutputs: CanvasAiGeneratedOutput[] = [];
       const seenGeneratedUrls = new Set<string>();
       let drawerUndoPushed = false;
       let lastPartialError: unknown = null;
       let didRetryWithStableInputs = false;
 
       const retryWithStableInputs = async (cause: unknown) => {
-        if (!preparedInputs.usedRemoteFirst || didRetryWithStableInputs || images.length > 0) return false;
+        if (!preparedInputs.usedRemoteFirst || didRetryWithStableInputs || generatedOutputs.length > 0) return false;
         didRetryWithStableInputs = true;
         console.warn('公网参考图生成失败，尝试切换本地缓存参考图:', cause);
-        if (placeholders.length > 0) {
-          updateCanvasItemsImmediate(prev => prev.map(item => placeholderIds.has(item.id)
-            ? {
-              ...item,
-              item: {
-                ...item.item,
-                content: '公网参考图失败，切换本地参考图',
-                name: '公网参考图失败，切换本地参考图',
-              },
-            }
-            : item));
-        }
+        setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
+          ? output
+          : { ...output, error: 'Switching to local reference images' }
+        ), { status: 'working', error: undefined });
         try {
-          const fallbackInputs = await getCanvasImageInputsForNode(target, 'stable');
+          const fallbackInputs = await getCanvasImageInputsForNode(
+            target,
+            'stable',
+            useDirectReferenceImages ? 'direct' : 'auto',
+            getSourceItems()
+          );
           inputImages = fallbackInputs.images;
           temporaryCloudflaredShareIds = [
             ...temporaryCloudflaredShareIds,
@@ -5564,69 +7845,51 @@ function MainApp() {
       };
 
       const placeGeneratedImage = async (url: string, index: number) => {
-        const placeholder = placeholders[index];
-        const size = placeholder
-          ? { width: placeholder.width, height: placeholder.height }
-          : getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
-        const pos = placeholder || getCanvasAiOutputPosition(target, index, size);
         const cached = await cacheCanvasGeneratedImageSource(url, `AI generated ${Date.now()}-${index + 1}`);
-        const next = await createCanvasImageItemFromDataUrl(cached.url || url, index, prompt, [target.id], {
-          x: pos.x,
-          y: pos.y,
+        const displayUrl = cached.url || url;
+        const size = await readImageDisplaySize(displayUrl);
+        const generatedAt = Date.now();
+        const output: CanvasAiGeneratedOutput = {
+          ...(currentOutputs[index] || {
+            id: `canvas_ai_output_${generatedAt.toString(36)}_${index}`,
+            prompt,
+          }),
+          url: displayUrl,
+          path: cached.path || undefined,
+          name: `AI generated #${index + 1}`,
+          prompt,
+          status: 'success',
+          error: undefined,
+          generatedAt,
           width: size.width,
           height: size.height,
-        });
-        if (!next) return null;
-        const nextItemSource = cached.path
-          ? {
-            ...next.item,
-            url: cached.url,
-            path: cached.path,
-            sourceUrl: undefined,
-            originalUrl: undefined,
-          }
-          : stripHeavyDataThumbnail(next.item);
-        const nextItem: CanvasImageItem = {
-          ...next,
-          item: nextItemSource,
-          id: placeholder?.id || next.id,
-          x: pos.x,
-          y: pos.y,
-          width: size.width,
-          height: size.height,
-          ai: {
-            ...(next.ai || { type: 'generated-image' as const }),
-            status: 'success' as const,
-          },
         };
-        updateCanvasItemsImmediate(prev => placeholder
-          ? prev.map(item => item.id === placeholder.id ? nextItem : item)
-          : [...prev, nextItem]);
-        images.push(nextItem);
-        updateCanvasSelection(images.map(item => item.id));
+        const nextOutputs = currentOutputs.map((item, itemIndex) => itemIndex === index ? output : item);
+        setCanvasAiOutputs(nextOutputs, { status: 'working', error: undefined, generatedAt });
+        generatedOutputs.push(output);
         if (!drawerUndoPushed) {
           pushDrawerUndoSnapshot('保存 AI 生图');
           drawerUndoPushed = true;
         }
-        addGeneratedImagesToDrawer([nextItem.item]);
-        return nextItem;
+        const latestTarget = options.getLatestTarget?.() || {
+          ...target,
+          ai: {
+            ...(target.ai || { type: 'image-generator' as const }),
+            outputs: nextOutputs,
+            generatedAt,
+          },
+        } as CanvasImageItem;
+        const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, index);
+        if (drawerItem) addGeneratedImagesToDrawer([drawerItem]);
+        return output;
       };
 
-      while (images.length < requestedCount) {
-        const index = images.length;
-        const placeholder = placeholders[index];
-        if (placeholder) {
-          updateCanvasItemsImmediate(prev => prev.map(item => item.id === placeholder.id
-            ? {
-              ...item,
-              item: {
-                ...item.item,
-                content: `正在生成第 ${index + 1}/${requestedCount} 张`,
-                name: `正在生成第 ${index + 1}/${requestedCount} 张`,
-              },
-            }
-            : item));
-        }
+      while (generatedOutputs.length < requestedCount) {
+        const index = generatedOutputs.length;
+        setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
+          ? { ...output, status: 'working' as const, error: undefined }
+          : output
+        ), { status: 'working', error: undefined });
 
         try {
           const batch = await generateCanvasAiProviderImages(generateOptions);
@@ -5637,79 +7900,425 @@ function MainApp() {
             throw new Error('接口没有返回新的图片数据');
           }
           for (const url of freshUrls) {
-            if (images.length >= requestedCount) break;
+            if (generatedOutputs.length >= requestedCount) break;
             seenGeneratedUrls.add(url);
-            await placeGeneratedImage(url, images.length);
+            await placeGeneratedImage(url, generatedOutputs.length);
           }
         } catch (error) {
           lastPartialError = error;
           if (await retryWithStableInputs(error)) {
             continue;
           }
-          if (images.length === 0) throw error;
+          if (generatedOutputs.length === 0) throw error;
           break;
         }
       }
 
-      if (images.length === 0) {
+      if (generatedOutputs.length === 0) {
         throw new Error('接口没有返回可用图片');
       }
-      const missingPlaceholderIds = new Set(placeholders.slice(images.length).map(item => item.id));
-      updateCanvasItemsImmediate(prev => prev
-        .map(item => {
-          if (missingPlaceholderIds.has(item.id)) {
-            return {
-              ...item,
-              item: {
-                ...item.item,
-                content: 'AI 生图未返回',
-                name: 'AI 生图未返回',
-              },
-              ai: {
-                ...(item.ai || { type: 'generated-image' as const }),
-                status: 'error' as const,
-                error: lastPartialError
-                  ? `已生成 ${images.length}/${requestedCount} 张，后续失败：${getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError))}`
-                  : `接口只返回了 ${images.length}/${requestedCount} 张图片`,
-              },
-            };
-          }
-          return item;
-        })
-        .filter(item => !placeholderIds.has(item.id) || images.some(image => image.id === item.id) || missingPlaceholderIds.has(item.id)));
-      updateCanvasAiGeneratorData(targetId, images.length >= requestedCount
-        ? { status: 'success', error: undefined, generatedAt: Date.now() }
-        : { status: 'error', error: `已生成 ${images.length}/${requestedCount} 张`, generatedAt: Date.now() });
-      showToast(images.length >= requestedCount
-        ? `AI 节点生成 ${images.length} 张图片，已放入「${AI_GENERATED_FOLDER_NAME}」`
-        : `AI 节点生成 ${images.length}/${requestedCount} 张图片`);
+      const finishedAt = Date.now();
+      if (generatedOutputs.length < requestedCount) {
+        const partialError = lastPartialError
+          ? `已生成 ${generatedOutputs.length}/${requestedCount} 张，后续失败：${getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError))}`
+          : `接口只返回了 ${generatedOutputs.length}/${requestedCount} 张图片`;
+        setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
+          ? output
+          : { ...output, status: 'error' as const, error: partialError, generatedAt: output.generatedAt || finishedAt }
+        ), { status: 'error', error: `已生成 ${generatedOutputs.length}/${requestedCount} 张`, generatedAt: finishedAt });
+      } else {
+        setCanvasAiOutputs(currentOutputs, { status: 'success', error: undefined, generatedAt: finishedAt });
+      }
+      options.selectTarget?.();
+      if (options.showResultToast !== false) {
+        const label = options.toastLabel || 'AI 节点';
+        showToast(generatedOutputs.length >= requestedCount
+          ? `${label}生成 ${generatedOutputs.length} 张图片，已放入「${AI_GENERATED_FOLDER_NAME}」`
+          : `${label}生成 ${generatedOutputs.length}/${requestedCount} 张图片`);
+      }
+      return generatedOutputs;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorSummary = getCanvasAiErrorSummary(message);
       console.warn('AI 节点生成失败:', err);
-      if (placeholders.length > 0) {
-        updateCanvasItemsImmediate(prev => prev.map(item => placeholderIds.has(item.id)
-          ? {
-            ...item,
-            item: {
-              ...item.item,
-              content: 'AI 生图失败',
-              name: 'AI 生图失败',
-            },
-            ai: {
-              ...(item.ai || { type: 'generated-image' as const }),
-              status: 'error' as const,
-              error: errorSummary,
-            },
-          }
-          : item));
+      const failedAt = Date.now();
+      setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
+        ? output
+        : { ...output, status: 'error' as const, error: errorSummary, generatedAt: output.generatedAt || failedAt }
+      ), { status: 'error', error: errorSummary, generatedAt: failedAt });
+      if (options.showResultToast !== false) {
+        showToast(`${options.toastLabel || 'AI 节点'}生成失败：${errorSummary.slice(0, 80)}`);
       }
-      updateCanvasAiGeneratorData(targetId, { status: 'error', error: errorSummary });
-      showToast(`AI 节点生成失败：${errorSummary.slice(0, 80)}`);
+      return [] as CanvasAiGeneratedOutput[];
     } finally {
       if (temporaryCloudflaredShareIds.length > 0) {
         void stopTemporaryCloudflaredShares(temporaryCloudflaredShareIds);
       }
+    }
+  };
+
+  const runCanvasAiGeneratorNode = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || !canUseCanvasItemAsAiTarget(target)) return;
+    await runCanvasAiGeneratorTarget(target, {
+      updateAi: (patch, content) => updateCanvasAiGeneratorData(targetId, patch, content),
+      getLatestTarget: () => canvasItemsRef.current.find(item => item.id === targetId),
+      selectTarget: () => updateCanvasSelection([targetId]),
+      showResultToast: true,
+      toastLabel: 'AI 节点',
+    });
+  };
+
+  const generateCanvasAiGeneratorNode = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || !canUseCanvasItemAsAiTarget(target)) return;
+    if (getCanvasWorkflowGroup(target) && target.ai?.type === 'image-generator') {
+      await runCanvasExpandedWorkflowFromNode(targetId);
+      return;
+    }
+    if (!hasCanvasAiGeneratedResults(target)) {
+      await runCanvasAiGeneratorNode(targetId);
+      return;
+    }
+
+    const nextNode = cloneCanvasAiGeneratorForRerun(target);
+    if (!nextNode) return;
+    if (appendCanvasItems([nextNode], '再次生成 AI 节点') <= 0) return;
+    showToast('已复制节点，开始再次生成');
+    await runCanvasAiGeneratorNode(nextNode.id);
+  };
+
+  const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
+    const itemsById = new Map(sourceItems.map(item => [item.id, item]));
+    const aiIds = sourceItems.filter(item => item.ai?.type === 'image-generator').map(item => item.id);
+    const nodeSet = new Set(aiIds);
+    const indegree = new Map(aiIds.map(id => [id, 0]));
+    const children = new Map<string, string[]>();
+
+    aiIds.forEach(targetId => {
+      const target = itemsById.get(targetId);
+      (target?.inputs || []).forEach(inputId => {
+        const source = itemsById.get(inputId);
+        if (!source || source.ai?.type !== 'image-generator' || !nodeSet.has(inputId)) return;
+        indegree.set(targetId, (indegree.get(targetId) || 0) + 1);
+        children.set(inputId, [...(children.get(inputId) || []), targetId]);
+      });
+    });
+
+    const byCanvasPosition = (a: string, b: string) => {
+      const itemA = itemsById.get(a);
+      const itemB = itemsById.get(b);
+      return (itemA?.x || 0) - (itemB?.x || 0) || (itemA?.y || 0) - (itemB?.y || 0);
+    };
+    const queue = aiIds.filter(id => (indegree.get(id) || 0) === 0).sort(byCanvasPosition);
+    const order: string[] = [];
+
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (!id) break;
+      order.push(id);
+      (children.get(id) || []).forEach(childId => {
+        const nextDegree = (indegree.get(childId) || 0) - 1;
+        indegree.set(childId, nextDegree);
+        if (nextDegree === 0) {
+          queue.push(childId);
+          queue.sort(byCanvasPosition);
+        }
+      });
+    }
+
+    if (order.length < aiIds.length) {
+      const ordered = new Set(order);
+      order.push(...aiIds.filter(id => !ordered.has(id)).sort(byCanvasPosition));
+    }
+    return order;
+  };
+
+  const getCanvasExpandedWorkflowDownstreamGeneratorIds = (
+    sourceId: string,
+    groupItems: CanvasImageItem[]
+  ) => {
+    const groupIds = new Set(groupItems.map(item => item.id));
+    const children = new Map<string, string[]>();
+    groupItems.forEach(item => {
+      (item.inputs || []).forEach(inputId => {
+        if (!groupIds.has(inputId)) return;
+        children.set(inputId, [...(children.get(inputId) || []), item.id]);
+      });
+    });
+
+    const reachable = new Set<string>([sourceId]);
+    const queue = [sourceId];
+    while (queue.length > 0) {
+      const currentId = queue.shift();
+      if (!currentId) break;
+      (children.get(currentId) || []).forEach(childId => {
+        if (reachable.has(childId)) return;
+        reachable.add(childId);
+        queue.push(childId);
+      });
+    }
+
+    const order = sortCanvasWorkflowRuntimeNodeIds(groupItems);
+    const orderedReachable = order.filter(id => reachable.has(id));
+    return orderedReachable.includes(sourceId)
+      ? orderedReachable
+      : [sourceId, ...orderedReachable];
+  };
+
+  const runCanvasExpandedWorkflowFromNode = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const group = getCanvasWorkflowGroup(target);
+    if (!target || target.ai?.type !== 'image-generator' || !group) return false;
+
+    const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId);
+    const runIds = getCanvasExpandedWorkflowDownstreamGeneratorIds(targetId, groupItems);
+    if (runIds.length === 0) {
+      showToast('这个展开工作流里没有可运行的后续生图节点');
+      return true;
+    }
+
+    const runIdSet = new Set(runIds);
+    const groupSelectionIds = getCanvasWorkflowGroupItemIdsForSelection(group.groupId);
+    pushCanvasUndoSnapshot('重新生成工作流内部节点');
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (!runIdSet.has(item.id) || item.ai?.type !== 'image-generator') return item;
+      return {
+        ...item,
+        ai: {
+          ...item.ai,
+          type: 'image-generator' as const,
+          status: item.id === targetId ? 'working' as const : 'idle' as const,
+          error: undefined,
+          generatedAt: undefined,
+          outputs: [],
+        },
+      };
+    }));
+    updateCanvasSelection(groupSelectionIds.length > 0 ? groupSelectionIds : [targetId]);
+    showToast(`开始从「${target.ai.presetLabel || target.item.name || '内部节点'}」重新生成，并更新 ${runIds.length - 1} 个后续节点`);
+
+    const failedIds = new Set<string>();
+    let successCount = 0;
+    for (const nodeId of runIds) {
+      const current = canvasItemsRef.current.find(item => item.id === nodeId);
+      if (!current || current.ai?.type !== 'image-generator') continue;
+
+      const upstreamAiIds = (current.inputs || []).filter(inputId => {
+        const source = canvasItemsRef.current.find(item => item.id === inputId);
+        return !!source && runIdSet.has(inputId) && source.ai?.type === 'image-generator';
+      });
+      if (upstreamAiIds.some(inputId => failedIds.has(inputId))) {
+        failedIds.add(nodeId);
+        updateCanvasAiGeneratorData(nodeId, {
+          status: 'error',
+          error: '上游节点生成失败，已跳过',
+          outputs: [],
+          generatedAt: Date.now(),
+        });
+        continue;
+      }
+
+      await runCanvasAiGeneratorTarget(current, {
+        sourceItems: () => canvasItemsRef.current,
+        updateAi: (patch, content) => updateCanvasAiGeneratorData(nodeId, patch, content),
+        getLatestTarget: () => canvasItemsRef.current.find(item => item.id === nodeId),
+        showResultToast: false,
+      });
+
+      const latest = canvasItemsRef.current.find(item => item.id === nodeId);
+      if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+        successCount += 1;
+      } else {
+        failedIds.add(nodeId);
+      }
+    }
+
+    showToast(failedIds.size > 0
+      ? `展开工作流已部分更新：成功 ${successCount} 个，失败/跳过 ${failedIds.size} 个`
+      : `展开工作流已更新 ${successCount} 个节点`);
+    return true;
+  };
+
+  const cloneCanvasWorkflowModuleForRerun = (source: CanvasImageItem): CanvasImageItem | null => {
+    const workflow = getCanvasWorkflowTemplateFromNode(source);
+    if (!workflow) return null;
+    const pos = getCanvasAiRerunNodePosition(source);
+    const nextNode = buildCanvasWorkflowModuleNode(workflow, pos, source.inputs || []);
+    if (!nextNode) return null;
+    return {
+      ...nextNode,
+      item: {
+        ...nextNode.item,
+        name: source.item.name || nextNode.item.name,
+        remark: source.item.remark || nextNode.item.remark,
+      },
+    };
+  };
+
+  const runCanvasWorkflowModuleNode = async (targetId: string) => {
+    const moduleNode = canvasItemsRef.current.find(item => item.id === targetId);
+    const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
+    if (!moduleNode || !workflow) {
+      showToast('请先选中一个工作流模块');
+      return;
+    }
+
+    const runtime = instantiateCanvasWorkflowTemplateItems(workflow, { x: moduleNode.x, y: moduleNode.y }, moduleNode.inputs || []);
+    let runtimeItems = runtime.items;
+    const runOrder = sortCanvasWorkflowRuntimeNodeIds(runtimeItems);
+    if (runOrder.length === 0) {
+      updateCanvasAiGeneratorData(targetId, { status: 'error', error: '工作流内部没有生图节点' });
+      showToast('工作流内部没有生图节点');
+      return;
+    }
+
+    const outputDrafts = createCanvasWorkflowOutputDrafts(moduleNode, workflow, 'working');
+    const outputSlots = getCanvasWorkflowOutputSlotTemplates(workflow)
+      .map(slot => ({
+        ...slot,
+        runtimeId: runtime.idMap.get(slot.node.id),
+      }))
+      .filter((slot): slot is { node: CanvasWorkflowNodeTemplate; index: number; runtimeId: string } => !!slot.runtimeId);
+    const runSet = new Set(runOrder);
+    const failedIds = new Set<string>();
+    let completedCount = 0;
+
+    const getRuntimeSourceItems = () => [
+      ...canvasItemsRef.current.filter(item => item.id !== targetId),
+      ...runtimeItems,
+    ];
+    const collectModuleOutputs = (
+      fallbackStatus?: CanvasAiGeneratedOutput['status'],
+      fallbackError?: string
+    ) => outputDrafts.map((draft, slotIndex) => {
+      const slot = outputSlots[slotIndex];
+      if (!slot) return fallbackStatus ? { ...draft, status: fallbackStatus, error: fallbackError } : draft;
+      const runtimeItem = runtimeItems.find(item => item.id === slot.runtimeId);
+      const output = getCanvasAiSuccessfulOutputs(runtimeItem)[slot.index];
+      if (!output) {
+        return fallbackStatus
+          ? { ...draft, status: fallbackStatus, error: fallbackError, generatedAt: draft.generatedAt || Date.now() }
+          : draft;
+      }
+      return {
+        ...draft,
+        ...output,
+        id: draft.id,
+        name: draft.name,
+      };
+    });
+    const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeSnapshots(workflow, runtimeItems, runtime.idMap);
+
+    updateCanvasAiGeneratorData(targetId, {
+      status: 'working',
+      error: undefined,
+      outputs: outputDrafts,
+      generatedAt: Date.now(),
+    });
+    updateCanvasSelection([targetId]);
+    showToast(`开始运行工作流「${workflow.label}」：${runOrder.length} 个内部生图节点`);
+
+    for (const nodeId of runOrder) {
+      const current = runtimeItems.find(item => item.id === nodeId);
+      if (!current || current.ai?.type !== 'image-generator') continue;
+      const upstreamAiIds = (current.inputs || []).filter(inputId => {
+        const source = runtimeItems.find(item => item.id === inputId);
+        return source?.ai?.type === 'image-generator' && runSet.has(inputId);
+      });
+      if (upstreamAiIds.some(inputId => failedIds.has(inputId))) {
+        failedIds.add(nodeId);
+        continue;
+      }
+      if (getCanvasAiSuccessfulOutputs(current).length > 0) {
+        completedCount += 1;
+        continue;
+      }
+      await runCanvasAiGeneratorTarget(current, {
+        sourceItems: getRuntimeSourceItems,
+        updateAi: (patch, content) => {
+          runtimeItems = runtimeItems.map(item => {
+            if (item.id !== nodeId) return item;
+            return {
+              ...item,
+              ai: {
+                ...(item.ai || {}),
+                ...patch,
+                type: patch.type || item.ai?.type || 'image-generator',
+              },
+              item: content === undefined ? item.item : {
+                ...item.item,
+                content,
+                name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || item.item.name,
+              },
+            };
+          });
+        },
+        getLatestTarget: () => runtimeItems.find(item => item.id === nodeId),
+        showResultToast: false,
+      });
+      const latest = runtimeItems.find(item => item.id === nodeId);
+      if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+        completedCount += 1;
+        updateCanvasAiGeneratorData(targetId, {
+          outputs: collectModuleOutputs('working'),
+          workflowRuntime: getRuntimeSnapshots(),
+          status: 'working',
+          error: undefined,
+          generatedAt: Date.now(),
+        });
+      } else {
+        failedIds.add(nodeId);
+      }
+    }
+
+    const finalOutputs = collectModuleOutputs('error', failedIds.size > 0 ? '内部节点生成失败' : '没有生成这个输出');
+    const finalSuccessCount = finalOutputs.filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output)).length;
+    if (failedIds.size > 0 || finalSuccessCount < outputSlots.length) {
+      updateCanvasAiGeneratorData(targetId, {
+        outputs: finalOutputs,
+        workflowRuntime: getRuntimeSnapshots(),
+        status: 'error',
+        error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败或被中断` : '部分终端输出没有生成',
+        generatedAt: Date.now(),
+      });
+      showToast(failedIds.size > 0
+        ? `工作流「${workflow.label}」部分完成：成功 ${completedCount} 个，失败/中断 ${failedIds.size} 个`
+        : `工作流「${workflow.label}」部分输出缺失`);
+      return;
+    }
+    updateCanvasAiGeneratorData(targetId, {
+      outputs: finalOutputs,
+      workflowRuntime: getRuntimeSnapshots(),
+      status: 'success',
+      error: undefined,
+      generatedAt: Date.now(),
+    });
+    showToast(`工作流「${workflow.label}」完成：生成 ${finalOutputs.filter(output => getCanvasAiOutputDisplaySource(output)).length} 张结果`);
+  };
+
+  const generateCanvasWorkflowModuleNode = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || target.ai?.type !== 'workflow') return;
+    if (!hasCanvasAiGeneratedResults(target)) {
+      await runCanvasWorkflowModuleNode(targetId);
+      return;
+    }
+    const nextNode = cloneCanvasWorkflowModuleForRerun(target);
+    if (!nextNode) return;
+    if (appendCanvasItems([nextNode], '再次运行工作流') <= 0) return;
+    showToast('已复制工作流模块，开始再次运行');
+    await runCanvasWorkflowModuleNode(nextNode.id);
+  };
+
+  const runSelectedCanvasWorkflowModules = async (seedIds = canvasSelectedIdsRef.current) => {
+    const workflowIds = seedIds.filter(id => canvasItemsRef.current.find(item => item.id === id)?.ai?.type === 'workflow');
+    if (workflowIds.length === 0) {
+      showToast('先选中一个工作流模块');
+      return;
+    }
+    for (const workflowId of workflowIds) {
+      await generateCanvasWorkflowModuleNode(workflowId);
     }
   };
 
@@ -5912,23 +8521,18 @@ function MainApp() {
     setIsSelectMode(false);
     setSelectedIds([]);
     setIsOpen(true);
-    setIsPinned(true);
-    isPinnedRef.current = true;
+    setIsPinned(false);
+    isPinnedRef.current = false;
     setDrawerState('open');
-    invoke('toggle_pin', { pinned: true }).catch(()=>{});
+    invoke('toggle_pin', { pinned: false }).catch(()=>{});
     showToast('已进入无限画布模式');
     window.requestAnimationFrame(() => {
       const surface = canvasSurfaceRef.current;
       const scroll = canvasReturnScrollRef.current;
-      if (surface && scroll) {
+      if (hasCanvasContent) {
+        scheduleCanvasFocusItemById(primaryImageId);
+      } else if (surface && scroll) {
         writeCanvasSurfaceScroll(surface, scroll.left, scroll.top);
-      } else if (hasCanvasContent) {
-        pendingCanvasFocusItemIdRef.current = primaryImageId;
-        if (!focusCanvasItemById(primaryImageId)) {
-          window.requestAnimationFrame(() => focusCanvasItemById(pendingCanvasFocusItemIdRef.current));
-        }
-      } else {
-        if (surface && scroll) writeCanvasSurfaceScroll(surface, scroll.left, scroll.top);
       }
       canvasSurfaceRef.current?.focus({ preventScroll: true });
     });
@@ -5978,13 +8582,17 @@ function MainApp() {
     setCanvasInteractionActive(true);
     const currentSelected = canvasSelectedIdsRef.current;
     const isAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
-    let nextSelected = currentSelected.includes(id) ? currentSelected : [id];
+    const itemSelectionIds = getCanvasWorkflowSelectionIdsForItem(id);
+    const isItemSelectionSelected = itemSelectionIds.every(selectionId => currentSelected.includes(selectionId));
+    let nextSelected = isItemSelectionSelected ? currentSelected : itemSelectionIds;
     if (isAdditive) {
-      nextSelected = currentSelected.includes(id)
-        ? currentSelected.filter(selectedId => selectedId !== id)
-        : [...currentSelected, id];
-      if (nextSelected.length === 0) nextSelected = [id];
+      const itemSelectionSet = new Set(itemSelectionIds);
+      nextSelected = isItemSelectionSelected
+        ? currentSelected.filter(selectedId => !itemSelectionSet.has(selectedId))
+        : [...currentSelected, ...itemSelectionIds];
+      if (nextSelected.length === 0) nextSelected = itemSelectionIds;
     }
+    nextSelected = expandCanvasSelectionIdsWithWorkflowGroups(nextSelected);
     updateCanvasSelection(nextSelected);
     const dragIds = nextSelected.includes(id) ? nextSelected : [id];
     canvasDragRef.current = {
@@ -6293,6 +8901,7 @@ function MainApp() {
     if (!surface || !canvasItem) return false;
     const scale = canvasScaleRef.current || 1;
     growCanvasToFit(canvasItem.x + canvasItem.width, canvasItem.y + canvasItem.height);
+    canvasReturnScrollRef.current = null;
     writeCanvasSurfaceScroll(
       surface,
       Math.max(0, (canvasItem.x + canvasItem.width / 2) * scale - surface.clientWidth / 2),
@@ -6335,6 +8944,26 @@ function MainApp() {
   const focusCanvasItemById = (id?: string | null) => {
     if (!id) return false;
     return centerCanvasItemInView(canvasItemsRef.current.find(item => item.id === id), { select: true });
+  };
+
+  const scheduleCanvasFocusItemById = (id?: string | null) => {
+    if (!id) return;
+    pendingCanvasFocusItemIdRef.current = id;
+    let frameAttempts = 0;
+    const tryFocus = () => {
+      if (!isCanvasModeRef.current || pendingCanvasFocusItemIdRef.current !== id) return;
+      if (focusCanvasItemById(id)) {
+        pendingCanvasFocusItemIdRef.current = null;
+        return;
+      }
+      frameAttempts += 1;
+      if (frameAttempts < 12) {
+        window.requestAnimationFrame(tryFocus);
+      }
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(tryFocus));
+    window.setTimeout(tryFocus, 80);
+    window.setTimeout(tryFocus, 220);
   };
 
   const startCanvasPan = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -6434,7 +9063,11 @@ function MainApp() {
     writeCanvasSurfaceScroll(surface, targetLeft, targetTop);
     commitCanvasScaleSoon();
     setCanvasInteractionActive(false, 180);
-    requestAnimationFrame(() => {
+    if (canvasZoomScrollFrameRef.current !== null) {
+      cancelAnimationFrame(canvasZoomScrollFrameRef.current);
+    }
+    canvasZoomScrollFrameRef.current = requestAnimationFrame(() => {
+      canvasZoomScrollFrameRef.current = null;
       const currentSurface = canvasSurfaceRef.current;
       if (!currentSurface) return;
       writeCanvasSurfaceScroll(currentSurface, targetLeft, targetTop);
@@ -6447,16 +9080,14 @@ function MainApp() {
     if (!surface) return;
 
     const handleCanvasWheel = (event: WheelEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest('textarea')) return;
       event.preventDefault();
       event.stopPropagation();
       zoomCanvasAt(event.clientX, event.clientY, event.deltaY);
     };
 
-    surface.addEventListener('wheel', handleCanvasWheel, { passive: false });
+    surface.addEventListener('wheel', handleCanvasWheel, { passive: false, capture: true });
     return () => {
-      surface.removeEventListener('wheel', handleCanvasWheel);
+      surface.removeEventListener('wheel', handleCanvasWheel, true);
     };
   }, [isCanvasMode]);
 
@@ -6738,14 +9369,32 @@ function MainApp() {
       canvasSpaceKeyCapturedRef.current = false;
       canvasPanRef.current = null;
     };
+    const handleCanvasPaste = (event: ClipboardEvent) => {
+      if (!isCanvasModeRef.current || isTextEntryActive()) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [data-canvas-edit-control="true"]')) return;
+      const clipboardData = event.clipboardData;
+      if (!clipboardData) return;
+      const hasImage = getCanvasClipboardImageFiles(clipboardData).length > 0;
+      const hasText = !!clipboardData.getData('text/plain').trim();
+      if (!hasImage && !hasText) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void pasteSystemClipboardToCanvas(clipboardData).catch((err) => {
+        console.warn('粘贴剪贴板内容到画布失败:', err);
+        showToast('粘贴失败');
+      });
+    };
 
     window.addEventListener('keydown', handleCanvasKeysDown, true);
     window.addEventListener('keyup', handleCanvasKeysUp, true);
     window.addEventListener('blur', handleCanvasKeyBlur);
+    document.addEventListener('paste', handleCanvasPaste, true);
     return () => {
       window.removeEventListener('keydown', handleCanvasKeysDown, true);
       window.removeEventListener('keyup', handleCanvasKeysUp, true);
       window.removeEventListener('blur', handleCanvasKeyBlur);
+      document.removeEventListener('paste', handleCanvasPaste, true);
     };
   }, []);
 
@@ -7426,7 +10075,13 @@ function MainApp() {
     const idSet = new Set(ids.filter(Boolean));
     const sourceItems = canvasItemsRef.current
       .filter(canvasItem => idSet.has(canvasItem.id))
-      .map(canvasItem => canvasItem.item);
+      .flatMap(canvasItem => {
+        if (canvasItem.ai?.type !== 'image-generator' && canvasItem.ai?.type !== 'workflow') return [canvasItem.item];
+        const outputItems = getCanvasAiSuccessfulOutputs(canvasItem)
+          .map((output, index) => createCanvasAiOutputBufferItem(canvasItem, output, index))
+          .filter((item): item is BufferItem => !!item);
+        return outputItems.length > 0 ? outputItems : [canvasItem.item];
+      });
     await downloadBufferItems(sourceItems);
   };
 
@@ -7676,6 +10331,44 @@ function MainApp() {
 
   useEffect(() => { drawerWidthRef.current = drawerWidth; }, [drawerWidth]);
   useEffect(() => { drawerHeightRef.current = drawerHeight; }, [drawerHeight]);
+
+  const openSelectedImagePreview = (url: string, options: { fromCanvas?: boolean } = {}) => {
+    const source = String(url || '').trim();
+    if (!source) return;
+    selectedImageReturnToCanvasRef.current = !!options.fromCanvas;
+    setSelectedImage(source);
+  };
+
+  const closeSelectedImagePreview = () => {
+    const shouldReturnToCanvas = selectedImageReturnToCanvasRef.current || isCanvasModeRef.current;
+    selectedImageReturnToCanvasRef.current = false;
+    setSelectedImage(null);
+
+    if (!shouldReturnToCanvas || !isCanvasModeRef.current) return;
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    if (idleAutoCloseTimerRef.current) {
+      clearTimeout(idleAutoCloseTimerRef.current);
+      idleAutoCloseTimerRef.current = null;
+    }
+    startupAutoCloseSuppressedRef.current = false;
+    isPointerInsideDrawerRef.current = true;
+    setIsOpen(true);
+    setIsPinned(true);
+    isPinnedRef.current = true;
+    setDrawerState('open');
+    invoke('toggle_pin', { pinned: true }).catch(() => {});
+    invoke('open_drawer', {
+      width: drawerWidthRef.current,
+      height: drawerHeightRef.current,
+      mode: triggerModeRef.current,
+    }).catch(() => {});
+    window.requestAnimationFrame(() => {
+      canvasSurfaceRef.current?.focus({ preventScroll: true });
+    });
+  };
 
   const isStartupOverlayActive = showLaunchIntro || isSplashVisible || showUpdateLog;
 
@@ -8593,7 +11286,7 @@ useEffect(() => {
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && selectedImage) setSelectedImage(null);
+      if (e.key === 'Escape' && selectedImage) closeSelectedImagePreview();
     };
     window.addEventListener('keydown', handleEsc);
     return () => { window.removeEventListener('keydown', handleEsc); };
@@ -9023,6 +11716,18 @@ useEffect(() => {
     isSnipSessionActive,
   ]);
 
+  useEffect(() => {
+    if (!canvasWorkflowSaveDraft) return;
+    const handleCanvasWorkflowSaveKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeCanvasWorkflowSaveDialog();
+    };
+    window.addEventListener('keydown', handleCanvasWorkflowSaveKeyDown, true);
+    return () => window.removeEventListener('keydown', handleCanvasWorkflowSaveKeyDown, true);
+  }, [canvasWorkflowSaveDraft]);
+
   const shouldBlockAutoClose = () => (
     // 只保留真正需要阻止自动缩回的情况：
     // 1. 用户手动点了钉住；2. 正在预览图片/视频；3. 正在拖动/缩放这类瞬时操作。
@@ -9053,8 +11758,6 @@ useEffect(() => {
     isResizingState.current ||
     isDraggingOver ||
     isPinned ||
-    isCanvasMode ||
-    isCanvasMode ||
     !!selectedImage ||
     !!selectedVideo ||
     isTextEntryActive() ||
@@ -9576,7 +12279,7 @@ useEffect(() => {
     const pathOrUrl = item.path || item.url || item.content || '';
 
     if (item.isDirectory) {
-      return { icon: <FolderOpen className="w-5 h-5 text-amber-500 dark:text-amber-400" />, label: '文件夹' };
+      return { icon: <FolderOpen className="w-5 h-5 text-blue-500 dark:text-blue-300" />, label: '文件夹' };
     }
     if (item.type === 'image') {
       return { icon: <ImageIcon className="w-5 h-5 text-pink-500 dark:text-pink-400" />, label: '图片' };
@@ -9617,7 +12320,7 @@ useEffect(() => {
     e.stopPropagation();
 
     if (item.type === 'image' && item.url) {
-      setSelectedImage(item.url);
+      openSelectedImagePreview(item.url);
       return;
     }
 
@@ -9662,9 +12365,31 @@ useEffect(() => {
     ? ({ width: CALENDAR_COMPACT_CANVAS_WIDTH, zoom: calendarPageScale } as React.CSSProperties & { zoom: number })
     : undefined;
   const canvasImageItemsForNav = canvasItems.filter(item => item.item.type === 'image');
-  const canvasGeneratedItemsForList = canvasItems
-    .filter(item => item.ai?.type === 'generated-image')
-    .sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0));
+  const canvasGeneratedItemsForList: CanvasGeneratedListEntry[] = [
+    ...canvasItems
+      .filter(item => item.ai?.type === 'generated-image')
+      .map(item => ({ id: item.id, canvasItem: item, item: item.item, ai: item.ai })),
+    ...canvasItems.flatMap((canvasItem): CanvasGeneratedListEntry[] => {
+      if (canvasItem.ai?.type !== 'image-generator' && canvasItem.ai?.type !== 'workflow') return [];
+      return (canvasItem.ai.outputs || []).reduce<CanvasGeneratedListEntry[]>((entries, output, outputIndex) => {
+        const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
+        if (!outputItem) return entries;
+        entries.push({
+          id: `${canvasItem.id}:${output.id || outputIndex}`,
+          canvasItem,
+          item: outputItem,
+          ai: {
+            type: 'generated-image',
+            prompt: output.prompt || canvasItem.ai?.prompt,
+            status: output.status,
+            error: output.error,
+            generatedAt: output.generatedAt || canvasItem.ai?.generatedAt,
+          },
+        });
+        return entries;
+      }, []);
+    }),
+  ].sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0));
   const canvasNavBounds = canvasImageItemsForNav.length > 0 ? {
     left: Math.min(...canvasImageItemsForNav.map(item => item.x)),
     top: Math.min(...canvasImageItemsForNav.map(item => item.y)),
@@ -9677,21 +12402,59 @@ useEffect(() => {
       (CANVAS_NAV_HEIGHT - 18) / Math.max(1, canvasNavBounds.bottom - canvasNavBounds.top),
     )
     : 1;
-  const canvasSelectedItemsForRender = canvasSelectedIds.length > 1
-    ? canvasItems.filter(item => canvasSelectedIds.includes(item.id))
+  const getCanvasItemRenderedBox = (canvasItem: CanvasImageItem): CanvasItemBox => {
+    const isCanvasAiNodeItem = canvasItem.ai?.type === 'image-generator' || canvasItem.ai?.type === 'workflow';
+    if (!isCanvasAiNodeItem) {
+      return {
+        x: canvasItem.x,
+        y: canvasItem.y,
+        width: canvasItem.width,
+        height: canvasItem.height,
+      };
+    }
+    const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
+    const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
+    const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
+      ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
+      : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+    const designSize = getCanvasAiNodeAutoSize({
+      type: canvasItem.ai?.type === 'workflow' ? 'workflow' : 'image-generator',
+      aspectRatio: canvasAiOutputAspectRatio,
+      count: canvasItem.ai?.count,
+      outputCount: canvasAiOutputs.length || undefined,
+      hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
+      hasError: !!canvasItem.ai?.error,
+      promptText: canvasItem.item.content || '',
+      promptExpanded: canvasAiPromptEditingId === canvasItem.id,
+      showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
+    });
+    const nodeScale = Math.min(canvasItem.width / designSize.width, canvasItem.height / designSize.height) || 1;
+    return {
+      x: canvasItem.x,
+      y: canvasItem.y,
+      width: designSize.width * nodeScale,
+      height: designSize.height * nodeScale,
+    };
+  };
+  const canvasSelectedBoxesForRender = canvasSelectedIds.length > 1
+    ? canvasItems.filter(item => canvasSelectedIds.includes(item.id)).map(getCanvasItemRenderedBox)
     : [];
-  const canvasSelectedBounds = canvasSelectedItemsForRender.length > 1 ? {
-    x: Math.min(...canvasSelectedItemsForRender.map(item => item.x)),
-    y: Math.min(...canvasSelectedItemsForRender.map(item => item.y)),
-    width: Math.max(...canvasSelectedItemsForRender.map(item => item.x + item.width)) - Math.min(...canvasSelectedItemsForRender.map(item => item.x)),
-    height: Math.max(...canvasSelectedItemsForRender.map(item => item.y + item.height)) - Math.min(...canvasSelectedItemsForRender.map(item => item.y)),
+  const canvasSelectedBounds = canvasSelectedBoxesForRender.length > 1 ? {
+    x: Math.min(...canvasSelectedBoxesForRender.map(box => box.x)),
+    y: Math.min(...canvasSelectedBoxesForRender.map(box => box.y)),
+    width: Math.max(...canvasSelectedBoxesForRender.map(box => box.x + box.width)) - Math.min(...canvasSelectedBoxesForRender.map(box => box.x)),
+    height: Math.max(...canvasSelectedBoxesForRender.map(box => box.y + box.height)) - Math.min(...canvasSelectedBoxesForRender.map(box => box.y)),
   } : null;
   const canvasSingleSelectedItemForRender = canvasSelectedIds.length === 1
     ? canvasItems.find(item => item.id === canvasSelectedIds[0]) || null
     : null;
+  const canvasSingleSelectedBoxForRender = canvasSingleSelectedItemForRender
+    ? getCanvasItemRenderedBox(canvasSingleSelectedItemForRender)
+    : null;
   const canvasSelectionRect = canvasSelectionBox ? normalizeCanvasSelectionBox(canvasSelectionBox) : null;
   const canvasScaledSelectionRadius = CANVAS_SELECTION_RADIUS;
   const canvasScaledNodeRadius = CANVAS_NODE_RADIUS;
+  const canvasRenderScale = clamp(canvasScaleRef.current || canvasScale || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
   const canvasItemsById = new Map(canvasItems.map(item => [item.id, item]));
   const canvasConnectionsForRender = canvasItems.flatMap(target => (
     (target.inputs || [])
@@ -9708,12 +12471,12 @@ useEffect(() => {
     const direction = canvasConnectionDraft.toX >= canvasConnectionDraft.fromX ? 1 : -1;
     return `M ${canvasConnectionDraft.fromX} ${canvasConnectionDraft.fromY} C ${canvasConnectionDraft.fromX + bend * direction} ${canvasConnectionDraft.fromY}, ${canvasConnectionDraft.toX - bend * direction} ${canvasConnectionDraft.toY}, ${canvasConnectionDraft.toX} ${canvasConnectionDraft.toY}`;
   })() : '';
-  const selectedCanvasAiGenerator = canvasItems.find(item => canvasSelectedIds.includes(item.id) && item.ai?.type === 'image-generator');
+  const selectedCanvasAiGenerator = canvasItems.find(item => canvasSelectedIds.includes(item.id) && canUseCanvasItemAsAiTarget(item));
   const selectedCanvasConnectableCount = selectedCanvasAiGenerator
     ? canvasSelectedIds.filter(id => {
       if (id === selectedCanvasAiGenerator.id) return false;
       const item = canvasItemsById.get(id);
-      return !!item && item.ai?.type !== 'image-generator';
+      return canUseCanvasItemAsAiInput(item);
     }).length
     : 0;
   const canvasFolderPickerItems = canvasFolderImportPrompt
@@ -9724,10 +12487,16 @@ useEffect(() => {
   const canvasPresetEditingCustom = customCanvasAiPromptPresets.some(item => item.id === canvasPresetEditingId);
   const canvasPresetEditorTitle = canvasPresetEditorMode === 'manage' ? '管理预设' : '新增预设';
   const canvasPresetDeleteLabel = canvasPresetEditingBuiltIn ? '恢复默认' : '删除';
+  const canvasWorkflowEditingTemplate = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId) || null;
+  const canvasWorkflowEditingCustom = customCanvasWorkflows.some(item => item.id === canvasWorkflowEditingId);
+  const canvasWorkflowEditingBuiltIn = !!canvasWorkflowEditingTemplate?.builtin && !canvasWorkflowEditingCustom;
+  const canvasWorkflowEditingNodeCount = canvasWorkflowEditingTemplate?.nodes.length || 0;
+  const canvasWorkflowEditingAiCount = canvasWorkflowEditingTemplate?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0;
 
   return (
     <div
-        className={`${isDark ? 'dark' : ''} w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
+        data-drawer-theme="true"
+        className={`${isDark ? 'dark' : ''} drawer-theme w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
         // 把全局拖拽接管挂在最外层
     >
       <AnimatePresence>
@@ -9890,10 +12659,23 @@ useEffect(() => {
                   }}
                   onPointerUp={finishMainDrawerPress}
                   onPointerLeave={finishMainDrawerPress}
-                  className={`relative mb-1 flex h-10 w-10 items-center justify-center rounded-[16px] cursor-pointer transition-all shadow-sm ${isCanvasMode ? 'bg-amber-500 text-white shadow-md scale-105' : dragOverFolderId === 'all' ? 'ring-2 ring-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 scale-105' : activeFolderId === 'all' ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 shadow-md scale-105' : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 hover:bg-white dark:hover:bg-stone-700 hover:scale-105'}`}
+                  className={`relative mb-1 flex h-10 w-10 items-center justify-center overflow-visible rounded-[16px] cursor-pointer transition-all shadow-sm ${isCanvasMode ? 'bg-blue-500 text-white shadow-md shadow-blue-500/20 scale-105 dark:bg-blue-400 dark:text-stone-950' : dragOverFolderId === 'all' ? 'ring-2 ring-blue-300 bg-blue-50 text-blue-600 dark:ring-blue-400/40 dark:bg-blue-400/14 dark:text-blue-200 scale-105' : activeFolderId === 'all' ? 'bg-blue-500 text-white dark:bg-blue-400 dark:text-stone-950 shadow-md shadow-blue-500/20 scale-105' : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200 hover:scale-105'}`}
                   title={isCanvasMode ? '点击把主抽屉图片加入画布，长按退出画布' : '长按进入无限画布'}
                 >
-                  <LayoutGrid className="w-5 h-5" />
+                    <span className="pointer-events-none absolute -right-1.5 -top-1.5 z-0 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white text-blue-600 ring-1 ring-blue-100 shadow-[0_4px_10px_rgba(37,99,235,0.28)] dark:bg-stone-950 dark:text-blue-300 dark:ring-blue-300/25">
+                      {isCanvasMode ? (
+                      <Lightbulb className="h-[12px] w-[12px]" strokeWidth={2.5} />
+                    ) : (
+                      <LayoutGrid className="h-[12px] w-[12px]" strokeWidth={2.5} />
+                    )}
+                  </span>
+                  <span className="relative z-10 flex h-7 w-7 items-center justify-center drop-shadow-[0_2px_4px_rgba(15,23,42,0.2)]">
+                    {isCanvasMode ? (
+                      <LayoutGrid className="h-[22px] w-[22px]" strokeWidth={2.25} />
+                    ) : (
+                      <Lightbulb className="h-[22px] w-[22px]" strokeWidth={2.25} />
+                    )}
+                  </span>
                 </div>
                 <span className={`text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 ${activeFolderId === 'all' ? 'text-stone-800 dark:text-stone-200 font-bold' : 'text-stone-500 dark:text-stone-400'}`}>主抽屉</span>
               </div>
@@ -9913,7 +12695,11 @@ useEffect(() => {
                       : undefined,
                   }}
                 >
-                  {folders.map(folder => (
+                  {folders.map((folder, folderIndex) => {
+                    const folderTone = DRAWER_FOLDER_TONES[folderIndex % DRAWER_FOLDER_TONES.length];
+                    const isFolderActive = activeFolderId === folder.id;
+                    const isFolderDragOver = dragOverFolderId === folder.id;
+                    return (
                     <div
                       key={folder.id}
                       className="relative shrink-0 flex flex-col items-center w-full group/folder"
@@ -9936,11 +12722,11 @@ useEffect(() => {
                           }
                           setActiveFolderId(folder.id);
                         }}
-                        className={`relative mb-1 w-10 h-10 rounded-[16px] flex items-center justify-center cursor-pointer transition-all shadow-sm ${dragOverFolderId === folder.id ? 'ring-2 ring-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-300 scale-105' : activeFolderId === folder.id ? 'bg-emerald-500 text-white shadow-md scale-105' : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 hover:bg-emerald-50 dark:hover:bg-stone-700 hover:scale-105'}`}
+                        className={`relative mb-1 w-10 h-10 rounded-[16px] flex items-center justify-center cursor-pointer transition-all shadow-sm ${isFolderDragOver ? `${folderTone.drag} scale-105` : isFolderActive ? `${folderTone.active} scale-105` : `bg-white/70 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 dark:text-stone-400 ${folderTone.soft} hover:scale-105`}`}
                         title={isCanvasMode ? `${folder.name}：点击把图片加入画布` : folder.name}
                       >
-                        <FolderOpen className={`w-5 h-5 ${activeFolderId === folder.id ? 'opacity-100' : 'opacity-80'}`} />
-                        <span className="absolute -top-1.5 -right-1.5 bg-stone-800 dark:bg-stone-600 text-white text-[9px] px-1 min-w-[16px] text-center rounded-full font-bold shadow-sm pointer-events-none">
+                        <FolderOpen className={`w-5 h-5 ${isFolderActive ? 'opacity-100' : 'opacity-85'}`} />
+                        <span className={`absolute -top-1.5 -right-1.5 ${folderTone.badge} text-white text-[9px] px-1 min-w-[16px] text-center rounded-full font-bold shadow-sm pointer-events-none ring-2 ring-white/80 dark:ring-stone-900/70`}>
                           {items.filter(i => i.folderId === folder.id).length}
                         </span>
                         <button
@@ -9969,20 +12755,21 @@ useEffect(() => {
                         <span
                           onDoubleClick={(e) => { e.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
                           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
-                          className={`text-[10px] w-14 text-center truncate px-0.5 cursor-text pb-1 ${activeFolderId === folder.id ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-stone-500 dark:text-stone-400 hover:text-emerald-500'}`}
+                          className={`text-[10px] w-14 text-center truncate px-0.5 cursor-text pb-1 ${isFolderActive ? `${folderTone.label} font-bold` : 'text-stone-500 dark:text-stone-400 hover:text-blue-500 dark:hover:text-blue-300'}`}
                           title="双击或右键改名"
                         >
                           {folder.name}
                         </span>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
 
                   {/* 新建收纳夹按钮保留在文件夹区域底部，文件夹列表滚动到底即可看到 */}
                   <div className="relative shrink-0 flex flex-col items-center w-full mt-1">
                     <button
                       onClick={handleOpenFolderModal}
-                      className="w-10 h-10 mb-1 rounded-[16px] flex items-center justify-center border-2 border-dashed border-stone-300 dark:border-stone-700 text-stone-400 hover:border-emerald-50 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all hover:scale-105 shrink-0"
+                      className={`w-10 h-10 mb-1 rounded-[16px] flex items-center justify-center border-2 border-dashed transition-all hover:scale-105 shrink-0 ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30' : 'border-blue-200 bg-blue-50/30 text-blue-400 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
                       title="新建收纳夹"
                     >
                       <Plus className="w-4 h-4" />
@@ -10023,7 +12810,7 @@ useEffect(() => {
                       }}
                       className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-all overflow-visible ${
                         quickRailMode === 'quick'
-                          ? 'bg-emerald-50 text-emerald-600 shadow-sm ring-1 ring-emerald-100 dark:bg-emerald-900/35 dark:text-emerald-300 dark:ring-emerald-800/55'
+                          ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/18 dark:text-blue-200 dark:ring-blue-400/25'
                           : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'
                       }`}
                       title="快速访问"
@@ -10061,7 +12848,7 @@ useEffect(() => {
                   {quickRailMode === 'quick' ? (
                     <>
                       <SystemQuickAccessIcon title="此电脑" icon={<HardDrive className="w-5 h-5 text-blue-500/90 dark:text-blue-400/90" />} path="SYSTEM_COMPUTER" />
-                      <SystemQuickAccessIcon title="桌面" icon={<Monitor className="w-5 h-5 text-emerald-500/90 dark:text-emerald-400/90" />} path="SYSTEM_DESKTOP" />
+                      <SystemQuickAccessIcon title="桌面" icon={<Monitor className="w-5 h-5 text-cyan-500/90 dark:text-cyan-300/90" />} path="SYSTEM_DESKTOP" />
                       <AnimatePresence>
                         {quickAccessItems.map(item => {
                           const visual = getQuickAccessVisual(item as BufferItem & { isDirectory?: boolean; isUrl?: boolean });
@@ -10084,7 +12871,7 @@ useEffect(() => {
                                 {visual.icon}
                               </button>
                               <span
-                                className="text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 text-stone-500 dark:text-stone-400 group-hover/quick:text-emerald-500 dark:group-hover/quick:text-emerald-400"
+                                className="text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 text-stone-500 dark:text-stone-400 group-hover/quick:text-blue-500 dark:group-hover/quick:text-blue-300"
                                 title={quickName}
                               >
                                 {quickName}
@@ -10191,10 +12978,10 @@ useEffect(() => {
                   onPointerDown={startDrawerTitleDrag}
                 >
                   <h2 className="flex h-9 min-w-[140px] max-w-full items-center gap-1.5 font-semibold leading-none text-stone-800 pointer-events-none relative dark:text-stone-100">
-                    {isCanvasMode
-                      ? <LayoutGrid className="w-4 h-4 text-amber-500" />
+                        {isCanvasMode
+                      ? <LayoutGrid className="w-4 h-4 text-blue-500 dark:text-blue-300" />
                       : activeFolderId === 'all'
-                        ? <Camera className="w-4 h-4 text-stone-400 dark:text-stone-500" />
+                        ? <Lightbulb className="w-4 h-4 text-blue-500 dark:text-blue-300" />
                         : <FolderOpen className="w-4 h-4 text-emerald-500" />}
                     {isCanvasMode ? '无限画布' : activeFolderId === 'all' ? '灵感抽屉' : folders.find(f => f.id === activeFolderId)?.name || '未知分类'}
 
@@ -10231,8 +13018,23 @@ useEffect(() => {
                             ><Move className="w-3.5 h-3.5" /> 移动</button>
                             <button
                               onClick={() => {
-                                const deletableIds = items.filter(i => selectedIds.includes(i.id) && !i.isQuickAccess).map(i => i.id);
-                                setConfirmDialog({ isOpen: true, title: '批量删除', message: `确定删除？`, onConfirm: () => { if (deletableIds.length > 0) pushDrawerUndoSnapshot('批量删除'); setItems(prev => prev.filter(i => !deletableIds.includes(i.id))); setSelectedIds([]); setIsSelectMode(false); setShowMoveFolderModal(false); setConfirmDialog(prev => ({...prev, isOpen: false})); } });
+                                const deletableItems = items.filter(i => selectedIds.includes(i.id) && !i.isQuickAccess);
+
+                                requestDeleteDrawerItems(deletableItems, {
+
+                                  label: '批量删除',
+
+                                  afterDelete: () => {
+
+                                    setSelectedIds([]);
+
+                                    setIsSelectMode(false);
+
+                                    setShowMoveFolderModal(false);
+
+                                  },
+
+                                });
                               }}
                               className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400 rounded-[14px] hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors shadow-sm"
                             ><Trash2 className="w-3.5 h-3.5" /> 删 ({selectedIds.length})</button>
@@ -10267,7 +13069,7 @@ useEffect(() => {
                           )}
                           <button
                             onClick={requestExitCanvasMode}
-                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-amber-100 text-amber-700 shadow-sm transition-colors hover:bg-amber-200 dark:bg-amber-900/35 dark:text-amber-300 dark:hover:bg-amber-900/55"
+                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-blue-50 text-blue-700 shadow-sm transition-colors hover:bg-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:hover:bg-blue-400/20"
                             title="退出无限画布"
                           >
                             <X className="w-3.5 h-3.5" /> 退出画布
@@ -10277,21 +13079,29 @@ useEffect(() => {
                         {!isCanvasMode && (
                           <>
                             <button
+                              onClick={enterCanvasMode}
+                              className={`flex items-center gap-1 text-xs font-medium ${DRAWER_TOOL_BUTTON_BASE_CLASS} hover:bg-cyan-50 hover:text-cyan-600 dark:hover:bg-cyan-400/12 dark:hover:text-cyan-200`}
+                              title={`进入生图画布 (${canvasShortcut})`}
+                            >
+                              <LayoutGrid className="w-3.5 h-3.5" />
+                              生图画布
+                            </button>
+                            <button
                               onClick={() => { setIsSelectMode(true); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null; setShowSettings(false); setIsSearchActive(false); }}
-                              className="p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/65 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30"
+                              className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200`}
                               title="多选"
                             >
                               <CheckSquare className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={toggleSearch} className={`p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm ${isSearchActive ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' : 'bg-white/65 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'}`} title="搜索 (Ctrl+F)">
+                            <button onClick={toggleSearch} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${isSearchActive ? 'bg-teal-50 text-teal-700 ring-1 ring-teal-100 dark:bg-teal-400/14 dark:text-teal-200 dark:ring-teal-400/20' : 'hover:bg-teal-50 hover:text-teal-600 dark:hover:bg-teal-400/12 dark:hover:text-teal-200'}`} title="搜索 (Ctrl+F)">
                               <Search className="w-3.5 h-3.5" />
                             </button>
                           </>
                         )}
-                        <button data-drawer-settings-toggle="true" onClick={toggleSettings} className={`p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm ${showSettings ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' : 'bg-white/65 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'}`} title="设置与帮助">
+                        <button data-drawer-settings-toggle="true" onClick={toggleSettings} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${showSettings ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-100 dark:bg-violet-400/14 dark:text-violet-200 dark:ring-violet-400/20' : 'hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-400/12 dark:hover:text-violet-200'}`} title="设置与帮助">
                           <Settings className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={handleTogglePin} className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm ${isPinned ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' : 'bg-white/65 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400 hover:bg-stone-200 dark:hover:bg-stone-700'}`}>
+                        <button onClick={handleTogglePin} className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 dark:bg-stone-800/65 backdrop-blur-md ${isPinned ? 'text-blue-700 bg-blue-50 ring-1 ring-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:ring-blue-400/20' : 'text-stone-500 dark:text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200'}`}>
                           {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />} {isPinned ? '复位' : '钉住'}
                         </button>
                       </>
@@ -10322,10 +13132,10 @@ useEffect(() => {
                     >
                       <div className="px-4 py-2 bg-stone-50/50 dark:bg-stone-900/50 border-b border-stone-200/50 dark:border-stone-800/50">
                         <div className="relative group">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 group-focus-within:text-emerald-500 transition-colors" />
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 group-focus-within:text-blue-500 transition-colors" />
                           <input
                             ref={searchInputRef} type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="搜索灵感、文件、备注标签..."
-                            className="w-full bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-[16px] pl-9 pr-8 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500/50 transition-all shadow-sm"
+                            className="w-full bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-[16px] pl-9 pr-8 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all shadow-sm"
                           />
                           {searchQuery && (
                             <button onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition-colors">
@@ -10677,7 +13487,7 @@ useEffect(() => {
                       ref={canvasSurfaceRef}
                       tabIndex={-1}
                       data-canvas-interacting={isCanvasInteracting ? 'true' : undefined}
-                      className={`relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(120,113,108,0.22)_1px,transparent_0)] bg-[length:26px_26px] bg-amber-50/34 shadow-inner outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-amber-100/80 dark:border-amber-900/34'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      className={`relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 shadow-inner outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto' }}
                       onPointerEnter={() => {
                         isCanvasPointerInsideRef.current = true;
@@ -10756,8 +13566,8 @@ useEffect(() => {
                         ref={canvasSizerRef}
                         className="relative"
                         style={{
-                          width: canvasSize.width * canvasScale,
-                          height: canvasSize.height * canvasScale,
+                          width: canvasSize.width * canvasRenderScale,
+                          height: canvasSize.height * canvasRenderScale,
                         }}
                       >
                         <div
@@ -10766,14 +13576,14 @@ useEffect(() => {
                           style={{
                             width: canvasSize.width,
                             height: canvasSize.height,
-                            transform: `scale(${canvasScale})`,
+                            transform: `scale(${canvasRenderScale})`,
                             transformOrigin: '0 0',
                           }}
                         >
                         {canvasItems.length === 0 && (
-                          <div className="absolute left-10 top-10 w-[320px] rounded-[26px] border border-dashed border-amber-200 bg-white/68 p-5 text-stone-500 shadow-sm backdrop-blur-xl dark:border-amber-900/50 dark:bg-stone-900/68 dark:text-stone-300">
+                          <div className="absolute left-10 top-10 w-[320px] rounded-[26px] border border-dashed border-blue-200 bg-white/68 p-5 text-stone-500 shadow-sm backdrop-blur-xl dark:border-blue-400/24 dark:bg-stone-900/68 dark:text-stone-300">
                             <div className="flex items-center gap-2 text-sm font-black text-stone-800 dark:text-stone-100">
-                              <LayoutGrid className="h-4 w-4 text-amber-500" />
+                              <LayoutGrid className="h-4 w-4 text-blue-500 dark:text-blue-300" />
                               无限画布
                             </div>
                             <p className="mt-2 text-xs leading-5">
@@ -10795,10 +13605,12 @@ useEffect(() => {
                               </linearGradient>
                             </defs>
                             {canvasConnectionsForRender.map(({ source, target }) => {
-                              const sourceX = source.x + source.width + CANVAS_CONNECTION_HANDLE_OUTSET;
-                              const sourceY = source.y + source.height / 2;
-                              const targetX = target.x - CANVAS_CONNECTION_HANDLE_OUTSET;
-                              const targetY = target.y + target.height / 2;
+                              const sourceBox = getCanvasItemRenderedBox(source);
+                              const targetBox = getCanvasItemRenderedBox(target);
+                              const sourceX = sourceBox.x + sourceBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
+                              const sourceY = sourceBox.y + sourceBox.height / 2;
+                              const targetX = targetBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
+                              const targetY = targetBox.y + targetBox.height / 2;
                               const bend = Math.max(80, Math.abs(targetX - sourceX) * 0.45);
                               const direction = targetX >= sourceX ? 1 : -1;
                               const d = `M ${sourceX} ${sourceY} C ${sourceX + bend * direction} ${sourceY}, ${targetX - bend * direction} ${targetY}, ${targetX} ${targetY}`;
@@ -10821,7 +13633,7 @@ useEffect(() => {
                                     }}
                                   />
                                   <circle className="pointer-events-none" cx={sourceX} cy={sourceY} r="5" fill="#22d3ee" opacity="0.88" />
-                                  <circle className="pointer-events-none" cx={targetX} cy={targetY} r="5" fill="#f59e0b" opacity="0.9" />
+                                  <circle className="pointer-events-none" cx={targetX} cy={targetY} r="5" fill="#3b82f6" opacity="0.9" />
                                 </g>
                               );
                             })}
@@ -10837,14 +13649,15 @@ useEffect(() => {
                             <path d={canvasConnectionDraftPath} stroke="rgba(8,145,178,0.22)" strokeWidth="8" fill="none" strokeLinecap="round" />
                             <path d={canvasConnectionDraftPath} stroke="#22d3ee" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeDasharray="8 7" />
                             <circle cx={canvasConnectionDraft.fromX} cy={canvasConnectionDraft.fromY} r="5" fill="#22d3ee" />
-                            <circle cx={canvasConnectionDraft.toX} cy={canvasConnectionDraft.toY} r="5" fill="#f59e0b" />
-                            {canvasItems.filter(item => item.ai?.type === 'image-generator').map(item => {
-                              const cx = item.x - CANVAS_CONNECTION_HANDLE_OUTSET;
-                              const cy = item.y + item.height / 2;
+                            <circle cx={canvasConnectionDraft.toX} cy={canvasConnectionDraft.toY} r="5" fill="#3b82f6" />
+                            {canvasItems.filter(item => canUseCanvasItemAsAiTarget(item)).map(item => {
+                              const itemBox = getCanvasItemRenderedBox(item);
+                              const cx = itemBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
+                              const cy = itemBox.y + itemBox.height / 2;
                               return (
                                 <g key={`canvas-ai-drop-${item.id}`} transform={`translate(${cx} ${cy})`}>
-                                  <circle r="12" fill="#f59e0b" opacity="0.95" />
-                                  <circle r="8" fill="#fbbf24" opacity="0.92" />
+                                  <circle r="12" fill="#3b82f6" opacity="0.95" />
+                                  <circle r="8" fill="#93c5fd" opacity="0.92" />
                                   <circle r="3.5" fill="#ffffff" opacity="0.96" />
                                 </g>
                               );
@@ -10864,6 +13677,14 @@ useEffect(() => {
                           const isMultiSelected = isSelected && canvasSelectedIds.length > 1;
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasAiGeneratorItem = canvasItem.ai?.type === 'image-generator';
+                          const isCanvasWorkflowItem = canvasItem.ai?.type === 'workflow';
+                          const isCanvasAiNodeItem = isCanvasAiGeneratorItem || isCanvasWorkflowItem;
+                          const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode === 'all';
+                          const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
+                          const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
+                          const canvasAiRealOutputs = isCanvasAiNodeItem ? canvasItem.ai?.outputs || [] : [];
+                          const showCanvasAiOutputPreview = isCanvasWorkflowItem || canvasAiRealOutputs.length > 0;
+                          const isCanvasAiPromptExpanded = canvasAiPromptEditingId === canvasItem.id;
                           const canvasImageSource = getCanvasItemDisplaySource(canvasItem.item);
                           const isGeneratedImageItem = canvasItem.ai?.type === 'generated-image';
                           const isGeneratedImagePending = isGeneratedImageItem && (canvasItem.ai?.status === 'working' || !canvasImageSource);
@@ -10871,11 +13692,45 @@ useEffect(() => {
                           const canvasInputPreviewItems = (canvasItem.inputs || [])
                             .map(inputId => canvasItemsById.get(inputId))
                             .filter((item): item is CanvasImageItem => !!item);
+                          const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
+                            ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
+                            : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+                          const canvasAiNodeDesignSize = isCanvasAiNodeItem
+                            ? getCanvasAiNodeAutoSize({
+                              type: isCanvasWorkflowItem ? 'workflow' : 'image-generator',
+                              aspectRatio: canvasAiOutputAspectRatio,
+                              count: canvasItem.ai?.count,
+                              outputCount: canvasAiOutputs.length || undefined,
+                              hasPreset: !isCanvasWorkflowItem && !!canvasItem.ai?.presetLabel,
+                              hasError: !!canvasItem.ai?.error,
+                              promptText: canvasItem.item.content || '',
+                              promptExpanded: isCanvasAiPromptExpanded,
+                              showOutputPreview: showCanvasAiOutputPreview,
+                            })
+                            : null;
+                          const canvasAiOutputTileLayout = isCanvasAiNodeItem && canvasAiNodeDesignSize && showCanvasAiOutputPreview
+                            ? getCanvasAiOutputTileLayout({
+                              width: canvasAiNodeDesignSize.width,
+                              aspectRatio: canvasAiOutputAspectRatio,
+                              outputCount: canvasAiOutputs.length || undefined,
+                              count: canvasItem.ai?.count,
+                              isWorkflow: isCanvasWorkflowItem,
+                            })
+                            : null;
+                          const canvasAiNodeScale = canvasAiNodeDesignSize
+                            ? Math.min(canvasItem.width / canvasAiNodeDesignSize.width, canvasItem.height / canvasAiNodeDesignSize.height)
+                            : 1;
+                          const canvasRenderedItemWidth = canvasAiNodeDesignSize
+                            ? canvasAiNodeDesignSize.width * (canvasAiNodeScale || 1)
+                            : canvasItem.width;
+                          const canvasAiPromptHeight = isCanvasAiGeneratorItem && canvasAiNodeDesignSize
+                            ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiNodeDesignSize.width, isCanvasAiPromptExpanded)
+                            : 0;
                           return (
                             <div
                             key={canvasItem.id}
                             data-canvas-item-id={canvasItem.id}
-                            data-canvas-ai-input-id={isCanvasAiGeneratorItem && canvasConnectionDraft ? canvasItem.id : undefined}
+                            data-canvas-ai-input-id={isCanvasAiNodeItem && canvasConnectionDraft ? canvasItem.id : undefined}
                             className="group/canvas-item absolute overflow-visible"
                             style={{
                               left: canvasItem.x,
@@ -10889,143 +13744,31 @@ useEffect(() => {
                               if (!canvasSelectedIdsRef.current.includes(canvasItem.id)) updateCanvasSelection([canvasItem.id]);
                               openCanvasContextMenu(e, 'item', { itemId: canvasItem.id });
                             }}
+                            onDoubleClick={(e) => {
+                              if (!enableCanvasWorkflowSingleEditForItem(canvasItem.id)) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
                             >
-                              {isCanvasAiGeneratorItem ? (
+                              {isCanvasAiNodeItem ? (
                                 <div
-                                  className={`flex h-full flex-col overflow-hidden border bg-gradient-to-b from-white/96 to-cyan-50/88 text-stone-800 shadow-[0_16px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl transition-[box-shadow,border-color] hover:shadow-[0_20px_44px_rgba(15,23,42,0.16)] dark:from-stone-950/94 dark:to-cyan-950/34 dark:text-stone-100 ${
-                                    isSelected ? 'border-cyan-200 dark:border-cyan-900/40' : 'border-white/90 dark:border-cyan-900/34'
-                                  }`}
+                                  className="relative h-full w-full overflow-hidden"
                                   style={{ borderRadius: canvasScaledNodeRadius }}
                                 >
-                                  <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-cyan-100/70 px-3 text-[11px] font-black dark:border-white/10">
-                                    <span className="flex min-w-0 items-center gap-1.5">
-                                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cyan-100 text-cyan-700 shadow-inner dark:bg-cyan-400/14 dark:text-cyan-200">
-                                        <Sparkles className="h-3.5 w-3.5" />
-                                      </span>
-                                      <span className="truncate">{canvasItem.ai?.presetLabel || 'AI 生图节点'}</span>
-                                    </span>
-                                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black ${
-                                      canvasItem.ai?.status === 'working'
-                                        ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-400/18 dark:text-cyan-200'
-                                        : canvasItem.ai?.status === 'error'
-                                          ? 'bg-red-100 text-red-600 dark:bg-red-400/18 dark:text-red-200'
-                                          : canvasItem.ai?.status === 'success'
-                                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/18 dark:text-emerald-200'
-                                            : 'bg-stone-100 text-stone-500 dark:bg-white/10 dark:text-white/55'
-                                    }`}>
-                                      {canvasItem.ai?.status === 'working'
-                                        ? '生成中'
-                                        : canvasItem.ai?.status === 'error'
-                                          ? '失败'
-                                          : canvasItem.ai?.status === 'success'
-                                            ? '完成'
-                                            : '待机'}
-                                    </span>
-                                  </div>
-                                  <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                                    {canvasItem.ai?.presetLabel && (
-                                      <div className="rounded-[15px] border border-cyan-100 bg-cyan-50/70 px-3 py-2 text-[10px] leading-4 text-cyan-800 shadow-sm shadow-cyan-950/[0.03] dark:border-cyan-400/16 dark:bg-cyan-400/10 dark:text-cyan-100">
-                                        <div className="flex items-center gap-1.5 font-black">
-                                          <Sparkles className="h-3 w-3" />
-                                          <span>预设卡片 · {canvasItem.ai.presetLabel}</span>
-                                        </div>
-                                        <div className="mt-0.5 text-cyan-700/72 dark:text-cyan-100/62">预设内容已内置，下面只写额外补充要求。</div>
-                                      </div>
-                                    )}
-                                    <textarea
-                                      data-no-drag="true"
-                                      value={canvasItem.item.content || ''}
-                                      onChange={(event) => updateCanvasAiGeneratorData(canvasItem.id, { prompt: event.target.value, status: 'idle', error: undefined }, event.target.value)}
-                                      onFocus={() => updateCanvasSelection([canvasItem.id])}
-                                      onPointerDown={(event) => event.stopPropagation()}
-                                      onWheel={(event) => event.stopPropagation()}
-                                      placeholder={canvasItem.ai?.presetLabel ? '补充这个预设的细节，不填也可以直接运行。' : '描述要生成的图片。也可以连接文字节点补充提示词。'}
-                                      className="min-h-24 max-h-[260px] w-full resize-y overflow-y-auto rounded-[15px] border border-cyan-100 bg-white/82 px-3 py-2 text-xs leading-5 text-stone-700 outline-none shadow-inner shadow-cyan-950/[0.03] placeholder:text-stone-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100 dark:border-white/10 dark:bg-white/[0.06] dark:text-white dark:placeholder:text-white/35 dark:focus:border-cyan-300/50 dark:focus:ring-cyan-900/35"
-                                    />
-                                    <div className="flex flex-wrap items-center gap-1.5">
-                                      <RoundedSelect
-                                        data-no-drag="true"
-                                        value={normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider)}
-                                        options={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
-                                        onChange={(value) => {
-                                          const provider = normalizeCanvasAiProvider(value);
-                                          updateCanvasAiGeneratorData(canvasItem.id, {
-                                            provider,
-                                            model: getCanvasAiDefaultModel(provider),
-                                          });
-                                        }}
-                                        icon={<Settings className="h-3 w-3" />}
-                                        hideLabel
-                                        chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                        title={`中转：${CANVAS_AI_PROVIDER_SELECT_OPTIONS.find(option => option.value === normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))?.label || ''}`}
-                                        className={CANVAS_AI_NODE_ICON_SELECT_CLASS}
-                                        menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                        optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                        selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                        menuMinWidth={190}
-                                      />
-                                      <RoundedSelect
-                                        data-no-drag="true"
-                                        value={canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}
-                                        options={CANVAS_AI_ASPECT_RATIO_OPTIONS}
-                                        onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
-                                        labelClassName="text-center leading-none"
-                                        chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                        title={`比例：${canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}`}
-                                        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[58px]`}
-                                        menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                        optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                        selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                        menuMinWidth={86}
-                                      />
-                                      <RoundedSelect
-                                        data-no-drag="true"
-                                        value={canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT}
-                                        options={CANVAS_AI_OUTPUT_FORMAT_OPTIONS}
-                                        onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                        labelClassName="text-center leading-none uppercase"
-                                        chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                        title={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
-                                        className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[54px]`}
-                                        menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                        optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                        selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                        menuMinWidth={78}
-                                      />
-                                      <RoundedSelect
-                                        data-no-drag="true"
-                                        value={String(canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT)}
-                                        options={CANVAS_AI_COUNT_OPTIONS}
-                                        onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { count: Number(value) || CANVAS_AI_DEFAULT_COUNT })}
-                                        labelClassName="text-center text-[10px] leading-none"
-                                        chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                        title={`张数：${canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT}`}
-                                        className={CANVAS_AI_NODE_COUNT_SELECT_CLASS}
-                                        menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                        optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                        selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                        menuMinWidth={86}
-                                      />
-                                      <RoundedSelect
-                                        data-no-drag="true"
-                                        data-canvas-edit-control="true"
-                                        value={canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))}
-                                        options={getCanvasAiModelOptionsForProvider(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))}
-                                        onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { model: value })}
-                                        icon={<Sparkles className="h-3 w-3" />}
-                                        hideLabel
-                                        chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                        title={`模型：${canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))}`}
-                                        className={CANVAS_AI_NODE_ICON_SELECT_CLASS}
-                                        menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                        optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                        selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                        menuMinWidth={260}
-                                      />
-                                    </div>
-                                    <div className="rounded-[15px] border border-cyan-100 bg-white/66 p-2 shadow-sm shadow-cyan-950/[0.03] dark:border-white/10 dark:bg-white/[0.04]">
-                                      <div className="mb-1 flex items-center justify-between text-[10px] font-black text-stone-500 dark:text-white/55">
-                                        <span>输入节点 {canvasInputPreviewItems.length}</span>
+                                  <div
+                                    className={`flex flex-col overflow-hidden border bg-gradient-to-br from-white/88 via-white/76 to-stone-100/72 text-stone-800 shadow-[0_8px_22px_rgba(15,23,42,0.08)] backdrop-blur-2xl transition-[box-shadow,border-color] hover:shadow-[0_12px_30px_rgba(15,23,42,0.10)] dark:from-[#272727]/96 dark:via-[#222222]/96 dark:to-[#1d1d1d]/96 dark:text-white dark:shadow-[0_10px_26px_rgba(0,0,0,0.20)] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.24)] ${
+                                      isSelected ? 'border-stone-300/62 ring-2 ring-stone-900/[0.05] dark:border-white/20 dark:ring-white/10' : 'border-white/80 dark:border-white/[0.08]'
+                                    }`}
+                                    style={{
+                                      width: canvasAiNodeDesignSize?.width || canvasItem.width,
+                                      height: canvasAiNodeDesignSize?.height || canvasItem.height,
+                                      borderRadius: canvasScaledNodeRadius,
+                                      transform: `scale(${canvasAiNodeScale || 1})`,
+                                      transformOrigin: 'left top',
+                                    }}
+                                  >
+                                    <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-3 pt-4">
+                                      <div className="flex items-start justify-between gap-3">
                                         <button
                                           data-no-drag="true"
                                           type="button"
@@ -11035,70 +13778,382 @@ useEffect(() => {
                                             event.stopPropagation();
                                             setCanvasInputMenuForId(prev => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
-                                          className="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500 text-white shadow-sm hover:bg-cyan-400 dark:bg-cyan-400 dark:text-stone-950 dark:hover:bg-cyan-300"
-                                          title="添加输入"
+                                          className="group/reference relative flex h-[58px] max-w-[330px] shrink-0 items-center justify-start overflow-visible rounded-[14px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64"
+                                          title="添加或管理参考图"
                                         >
-                                          <Plus className="h-3.5 w-3.5" />
-                                        </button>
-                                      </div>
-                                      {canvasInputPreviewItems.length > 0 ? (
-                                        <div className="flex flex-wrap gap-1.5">
-                                          {canvasInputPreviewItems.slice(0, 8).map(inputItem => (
-                                            <button
-                                              key={inputItem.id}
-                                              data-no-drag="true"
-                                              type="button"
-                                              onPointerDown={(event) => event.stopPropagation()}
-                                              onClick={() => disconnectCanvasInput(canvasItem.id, inputItem.id)}
-                                              className="group/input relative h-9 w-9 overflow-hidden rounded-[11px] border border-cyan-100 bg-white/78 shadow-sm dark:border-white/10 dark:bg-white/[0.06]"
-                                              title="点击移除输入"
-                                            >
-                                              {inputItem.item.type === 'image' ? (
-                                                <img src={getCanvasItemDisplaySource(inputItem.item)} alt="" className="h-full w-full object-cover" draggable={false} />
-                                              ) : (
-                                                <Type className="m-auto mt-2.5 h-3.5 w-3.5 text-amber-500 dark:text-amber-200" />
+                                          {canvasInputPreviewItems.length > 0 ? (
+                                            <span className="flex h-[58px] max-w-full items-center gap-1.5 overflow-hidden">
+                                              {canvasInputPreviewItems.slice(0, 6).map((inputItem, inputIndex) => {
+                                                const generatorOutputSource = getCanvasAiOutputDisplaySource(getCanvasAiSuccessfulOutputs(inputItem)[0]);
+                                                const inputPreviewSource = inputItem.item.type === 'image'
+                                                  ? getCanvasItemDisplaySource(inputItem.item)
+                                                  : generatorOutputSource;
+                                                return (
+                                                  <span
+                                                    key={inputItem.id}
+                                                    className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-visible text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60"
+                                                    style={{
+                                                      marginLeft: inputIndex > 0 ? -10 : 0,
+                                                    }}
+                                                    aria-label="双击移除输入"
+                                                    onPointerDown={(event) => event.stopPropagation()}
+                                                    onMouseDown={(event) => event.stopPropagation()}
+                                                    onDoubleClick={(event) => {
+                                                      event.preventDefault();
+                                                      event.stopPropagation();
+                                                      disconnectCanvasInput(canvasItem.id, inputItem.id);
+                                                    }}
+                                                  >
+                                                    {inputPreviewSource ? (
+                                                      <img
+                                                        src={inputPreviewSource}
+                                                        alt=""
+                                                        className="h-full w-full rounded-[14px] border border-stone-200/32 object-cover mix-blend-multiply shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:mix-blend-normal dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]"
+                                                        draggable={false}
+                                                      />
+                                                    ) : inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow' ? (
+                                                      <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                        <Sparkles className="h-4 w-4" />
+                                                      </span>
+                                                    ) : (
+                                                      <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                        <Type className="h-4 w-4" />
+                                                      </span>
+                                                    )}
+                                                  </span>
+                                                );
+                                              })}
+                                              {canvasInputPreviewItems.length > 6 && (
+                                                <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[14px] text-[11px] font-black text-stone-500 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:text-white/68 dark:shadow-[0_12px_28px_rgba(0,0,0,0.28)]">
+                                                  +{canvasInputPreviewItems.length - 6}
+                                                </span>
                                               )}
-                                              <span className="absolute inset-0 hidden items-center justify-center bg-red-500/70 text-white group-hover/input:flex">
-                                                <X className="h-3 w-3" />
-                                              </span>
-                                            </button>
-                                          ))}
+                                            </span>
+                                          ) : (
+                                            <span className="flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-stone-300/48 text-[9px] font-black text-stone-400 transition-colors group-hover/reference:border-stone-400/70 group-hover/reference:text-stone-500 dark:border-white/[0.12] dark:text-white/34 dark:group-hover/reference:border-white/24 dark:group-hover/reference:text-white/52">
+                                              <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                                              <span>参考图</span>
+                                            </span>
+                                          )}
+                                        </button>
+                                        <div className="ml-auto flex min-w-[132px] flex-col items-end gap-1.5 pt-0.5">
+                                          <span className="max-w-[250px] truncate text-[11px] font-black text-stone-500 dark:text-white/58">
+                                            {isCanvasWorkflowItem ? canvasItem.ai?.presetLabel || '工作流模块' : canvasItem.ai?.presetLabel || 'AI 生图节点'}
+                                          </span>
+                                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-black ${
+                                            canvasItem.ai?.status === 'working'
+                                              ? 'bg-stone-900/[0.08] text-stone-700 dark:bg-white/12 dark:text-white'
+                                              : canvasItem.ai?.status === 'error'
+                                                ? 'bg-red-500/10 text-red-600 dark:bg-red-500/18 dark:text-red-100'
+                                                : canvasItem.ai?.status === 'success'
+                                                  ? 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/16 dark:text-emerald-100'
+                                                  : 'bg-stone-900/[0.045] text-stone-400 dark:bg-white/[0.07] dark:text-white/42'
+                                          }`}>
+                                            {canvasItem.ai?.status === 'working'
+                                              ? (isCanvasWorkflowItem ? '运行中' : '生成中')
+                                              : canvasItem.ai?.status === 'error'
+                                                ? '失败'
+                                                : canvasItem.ai?.status === 'success'
+                                                  ? '完成'
+                                                  : '待机'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                      {!showCanvasAiOutputPreview && (
+                                        <div className="flex h-[220px] shrink-0 items-center justify-center">
+                                          <button
+                                            data-no-drag="true"
+                                            type="button"
+                                            onPointerDown={(event) => event.stopPropagation()}
+                                            onClick={(event) => {
+                                              event.preventDefault();
+                                              event.stopPropagation();
+                                              updateCanvasSelection([canvasItem.id]);
+                                            }}
+                                            className="flex h-full w-full items-center justify-center rounded-[20px] border border-dashed border-stone-300/46 bg-white/[0.28] text-[11px] font-black text-stone-400 transition-colors hover:border-stone-400/64 hover:bg-white/[0.42] hover:text-stone-500 dark:border-white/[0.11] dark:bg-white/[0.025] dark:text-white/30 dark:hover:border-white/22 dark:hover:bg-white/[0.045] dark:hover:text-white/48"
+                                            title="生成后图片会显示在这里"
+                                          >
+                                            <span className="flex flex-col items-center gap-2">
+                                              {isCanvasWorkflowItem ? <Link className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+                                              <span>{isCanvasWorkflowItem ? '工作流输出' : '生成图'}</span>
+                                            </span>
+                                          </button>
+                                        </div>
+                                      )}
+                                      {showCanvasAiOutputPreview && canvasAiOutputTileLayout && (
+                                        <div className="rounded-[18px] border border-transparent bg-stone-950/[0.035] p-2 dark:bg-white/[0.035]">
+                                          <div className="mb-2 flex items-center justify-between text-[10px] font-black text-stone-400 dark:text-white/38">
+                                            <span>{isCanvasWorkflowAllOutputMode ? '全部节点输出' : '输出'} {canvasAiOutputs.length}</span>
+                                            <div className="flex items-center gap-1.5">
+                                              {isCanvasWorkflowItem && (
+                                                <button
+                                                  data-no-drag="true"
+                                                  type="button"
+                                                  onPointerDown={(event) => event.stopPropagation()}
+                                                  onClick={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    setCanvasWorkflowOutputMode(canvasItem.id, isCanvasWorkflowAllOutputMode ? 'final' : 'all');
+                                                  }}
+                                                  className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-stone-500 transition-colors hover:bg-white hover:text-stone-900 dark:bg-white/10 dark:text-white/58 dark:hover:bg-white/16 dark:hover:text-white"
+                                                  title={isCanvasWorkflowAllOutputMode ? '只显示最终输出节点' : '显示所有中间节点和最终节点的输出'}
+                                                >
+                                                  {isCanvasWorkflowAllOutputMode ? '最终输出' : '全部节点'}
+                                                </button>
+                                              )}
+                                              <span>{canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}</span>
+                                            </div>
+                                          </div>
+                                          <div
+                                            className="grid justify-center gap-2"
+                                            style={{
+                                              gridTemplateColumns: `repeat(${canvasAiOutputTileLayout.columns}, ${canvasAiOutputTileLayout.tileWidth}px)`,
+                                            }}
+                                          >
+                                            {canvasAiOutputs.map((output, outputIndex) => {
+                                              const outputSource = getCanvasAiOutputDisplaySource(output);
+                                              const isOutputError = output.status === 'error';
+                                              const isOutputWorking = output.status === 'working';
+                                              const outputLabel = output.nodeLabel || output.name || (isCanvasWorkflowItem ? '工作流输出' : canvasItem.ai?.presetLabel || canvasItem.item.name || `输出 ${outputIndex + 1}`);
+                                              return (
+                                                <div
+                                                  key={output.id || `${canvasItem.id}-output-${outputIndex}`}
+                                                  data-no-drag="true"
+                                                  role="button"
+                                                  tabIndex={0}
+                                                  onPointerDown={(event) => event.stopPropagation()}
+                                                  onClick={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    if (outputSource) openSelectedImagePreview(outputSource, { fromCanvas: true });
+                                                  }}
+                                                  onKeyDown={(event) => {
+                                                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    if (outputSource) openSelectedImagePreview(outputSource, { fromCanvas: true });
+                                                  }}
+                                                  className={`relative overflow-hidden rounded-[14px] border text-center transition-colors ${
+                                                    isOutputError
+                                                      ? 'border-red-300/20 bg-red-500/12 text-red-100'
+                                                      : 'border-white/60 bg-white/58 text-stone-500 hover:bg-white/82 dark:border-white/[0.08] dark:bg-black/16 dark:text-white/56 dark:hover:bg-white/[0.06]'
+                                                  }`}
+                                                  style={{
+                                                    width: canvasAiOutputTileLayout.tileWidth,
+                                                    height: canvasAiOutputTileLayout.tileHeight,
+                                                  }}
+                                                  title={outputLabel}
+                                                  >
+                                                  <span className="pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-16px)] truncate rounded-full bg-white/86 px-2 py-0.5 text-[9px] font-black text-stone-700 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-stone-950/74 dark:text-white/82 dark:ring-white/[0.08]">
+                                                    {outputLabel}
+                                                  </span>
+                                                  {outputSource && !isOutputError && (
+                                                    <button
+                                                      data-no-drag="true"
+                                                      type="button"
+                                                      className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 opacity-0 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-opacity hover:bg-white hover:text-cyan-700 group-hover/canvas-item:opacity-100 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-cyan-200"
+                                                      title="下载这张图"
+                                                      onPointerDown={(event) => event.stopPropagation()}
+                                                      onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
+                                                        if (outputItem) {
+                                                          void downloadBufferItems([outputItem]);
+                                                        } else {
+                                                          showToast('这张图还不能下载');
+                                                        }
+                                                      }}
+                                                    >
+                                                      <Download className="h-3.5 w-3.5" />
+                                                    </button>
+                                                  )}
+                                                  {outputSource && !isOutputError ? (
+                                                    <img
+                                                      src={outputSource}
+                                                      alt={outputLabel}
+                                                      loading="lazy"
+                                                      decoding="async"
+                                                      className="h-full w-full object-contain"
+                                                      draggable={false}
+                                                    />
+                                                  ) : (
+                                                    <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2">
+                                                      <Sparkles className={`h-4 w-4 ${isOutputWorking ? 'animate-pulse' : ''}`} />
+                                                      <span className="line-clamp-2 px-2 pt-5 text-[9px] font-black leading-3">
+                                                        {isOutputError ? '生成失败' : isOutputWorking ? '生成中' : '无图片'}
+                                                      </span>
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {isCanvasWorkflowItem ? (
+                                        <div className="shrink-0 rounded-[14px] px-0.5 py-1 text-[13px] font-semibold leading-6 text-stone-500 dark:text-white/54">
+                                          <div className="flex items-center gap-2 text-stone-600 dark:text-white/68">
+                                            <Link className="h-4 w-4" />
+                                            <span>{canvasWorkflow?.label || canvasItem.ai?.presetLabel || '未命名工作流'}</span>
+                                          </div>
+                                          <div className="mt-2 line-clamp-3 text-[12px] leading-5 text-stone-400 dark:text-white/38">
+                                            {canvasWorkflow?.hint || '右键选择「展开工作流」可查看和修改内部节点。'}
+                                          </div>
+                                          <div className="mt-2 inline-flex rounded-full bg-stone-950/[0.045] px-2.5 py-1 text-[10px] font-black text-stone-500 dark:bg-white/[0.07] dark:text-white/50">
+                                            {canvasWorkflow?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0} 个生图步骤
+                                          </div>
                                         </div>
                                       ) : (
-                                        <div className="text-[10px] leading-4 text-stone-400 dark:text-white/35">多选图片/文字和此节点，然后点连接。</div>
+                                        <textarea
+                                          data-no-drag="true"
+                                          data-canvas-node-prompt="true"
+                                          rows={4}
+                                          value={canvasItem.item.content || ''}
+                                          onChange={(event) => updateCanvasAiGeneratorData(canvasItem.id, { prompt: event.target.value, status: 'idle', error: undefined }, event.target.value)}
+                                          onFocus={() => {
+                                            setCanvasAiPromptEditingId(canvasItem.id);
+                                            resizeCanvasAiPromptEditor(canvasItem.id, true, false);
+                                            updateCanvasSelection([canvasItem.id]);
+                                          }}
+                                          onBlur={() => {
+                                            setCanvasAiPromptEditingId(prev => prev === canvasItem.id ? null : prev);
+                                            resizeCanvasAiPromptEditor(canvasItem.id, false, true);
+                                          }}
+                                          onPointerDown={(event) => event.stopPropagation()}
+                                          onWheel={(event) => event.stopPropagation()}
+                                          placeholder={canvasItem.ai?.presetLabel ? '补充这个预设的细节，不填也可以直接生成。' : '描述你想要的画面...'}
+                                          className="shrink-0 resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
+                                          style={{
+                                            height: canvasAiPromptHeight || undefined,
+                                          }}
+                                        />
+                                      )}
+                                      {canvasItem.ai?.error && (
+                                        <div
+                                          className="max-h-16 overflow-y-auto rounded-[12px] bg-red-500/10 px-2.5 py-2 text-[10px] leading-4 text-red-600 dark:bg-red-500/14 dark:text-red-100"
+                                          title={canvasItem.ai.error}
+                                        >
+                                          {getCanvasAiErrorSummary(canvasItem.ai.error)}
+                                        </div>
                                       )}
                                     </div>
-                                    {canvasItem.ai?.error && (
-                                      <div
-                                        className="max-h-20 overflow-y-auto rounded-[12px] bg-red-50 px-2 py-1.5 text-[10px] leading-4 text-red-600 dark:bg-red-500/14 dark:text-red-100"
-                                        title={canvasItem.ai.error}
+                                    <div className="flex h-[52px] shrink-0 items-center gap-2 border-t border-stone-950/[0.045] px-4 pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70">
+                                      {!isCanvasWorkflowItem && (
+                                        <>
+                                          <RoundedSelect
+                                            data-no-drag="true"
+                                            value={normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider)}
+                                            options={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
+                                            onChange={(value) => {
+                                              const provider = normalizeCanvasAiProvider(value);
+                                              updateCanvasAiGeneratorData(canvasItem.id, {
+                                                provider,
+                                                model: getCanvasAiDefaultModel(provider),
+                                              });
+                                            }}
+                                            icon={<Settings className="h-3.5 w-3.5" />}
+                                            hideLabel
+                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                            title={`中转：${CANVAS_AI_PROVIDER_SELECT_OPTIONS.find(option => option.value === normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))?.label || ''}`}
+                                            className={CANVAS_AI_NODE_ICON_SELECT_CLASS}
+                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                            menuMinWidth={190}
+                                            menuScale={canvasAiNodeScale || 1}
+                                          />
+                                          <RoundedSelect
+                                            data-no-drag="true"
+                                            data-canvas-edit-control="true"
+                                            value={canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))}
+                                            options={getCanvasAiModelOptionsForProvider(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))}
+                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { model: value })}
+                                            labelClassName="max-w-[150px] truncate text-center leading-none"
+                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                            title={`模型：${canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider))}`}
+                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} max-w-[178px]`}
+                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                            menuMinWidth={260}
+                                            menuScale={canvasAiNodeScale || 1}
+                                          />
+                                          <RoundedSelect
+                                            data-no-drag="true"
+                                            value={canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}
+                                            options={CANVAS_AI_ASPECT_RATIO_OPTIONS}
+                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
+                                            labelClassName="text-center leading-none"
+                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                            title={`比例：${canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}`}
+                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[62px]`}
+                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                            menuMinWidth={86}
+                                            menuScale={canvasAiNodeScale || 1}
+                                          />
+                                          <RoundedSelect
+                                            data-no-drag="true"
+                                            value={canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT}
+                                            options={CANVAS_AI_OUTPUT_FORMAT_OPTIONS}
+                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
+                                            labelClassName="text-center leading-none uppercase"
+                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                            title={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
+                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[68px]`}
+                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                            menuMinWidth={78}
+                                            menuScale={canvasAiNodeScale || 1}
+                                          />
+                                          <RoundedSelect
+                                            data-no-drag="true"
+                                            value={String(canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT)}
+                                            options={CANVAS_AI_COUNT_OPTIONS}
+                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { count: Number(value) || CANVAS_AI_DEFAULT_COUNT })}
+                                            labelClassName="text-center text-[11px] leading-none"
+                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                            title={`张数：${canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT}`}
+                                            className={CANVAS_AI_NODE_COUNT_SELECT_CLASS}
+                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                            menuMinWidth={86}
+                                            menuScale={canvasAiNodeScale || 1}
+                                          />
+                                        </>
+                                      )}
+                                      <button
+                                        data-no-drag="true"
+                                        type="button"
+                                        disabled={canvasItem.ai?.status === 'working'}
+                                        onPointerDown={(event) => event.stopPropagation()}
+                                        onClick={() => void (isCanvasWorkflowItem ? generateCanvasWorkflowModuleNode(canvasItem.id) : generateCanvasAiGeneratorNode(canvasItem.id))}
+                                        className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
                                       >
-                                        {getCanvasAiErrorSummary(canvasItem.ai.error)}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="flex shrink-0 gap-2 px-2 pb-3 pt-1">
-                                    <button
-                                      data-no-drag="true"
-                                      type="button"
-                                      disabled={canvasItem.ai?.status === 'working'}
-                                      onPointerDown={(event) => event.stopPropagation()}
-                                      onClick={() => void runCanvasAiGeneratorNode(canvasItem.id)}
-                                      className="flex flex-1 items-center justify-center gap-1.5 rounded-[15px] bg-cyan-500 px-3 py-2 text-xs font-black text-white shadow-sm shadow-cyan-500/20 transition-colors hover:bg-cyan-400 disabled:cursor-wait disabled:bg-stone-200 disabled:text-stone-400 dark:bg-cyan-400 dark:text-stone-950 dark:hover:bg-cyan-300 dark:disabled:bg-white/10 dark:disabled:text-white/35"
-                                    >
-                                      <Sparkles className={`h-3.5 w-3.5 ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
-                                      {canvasItem.ai?.status === 'working' ? '生成中' : '运行'}
-                                    </button>
+                                        <Play className={`h-4 w-4 fill-current ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
+                                        {canvasItem.ai?.status === 'working'
+                                          ? (isCanvasWorkflowItem ? '运行中' : '生成中')
+                                          : isCanvasWorkflowItem
+                                            ? (hasCanvasAiGeneratedResults(canvasItem) ? '再次运行' : '运行')
+                                            : hasCanvasAiGeneratedResults(canvasItem)
+                                              ? '再次生成'
+                                              : '生成'}
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
                               ) : isTextCanvasItem ? (
                                 <div
-                                  className={`flex h-full flex-col overflow-hidden border bg-amber-50/92 text-stone-800 shadow-lg shadow-black/[0.08] transition-[box-shadow,border-color] hover:shadow-xl dark:bg-stone-900/92 dark:text-stone-100 ${
-                                    isSelected ? 'border-amber-200 dark:border-stone-700/70' : 'border-white/80 dark:border-stone-700/70'
+                                  className={`flex h-full flex-col overflow-hidden border bg-blue-50/72 text-stone-800 shadow-lg shadow-black/[0.08] transition-[box-shadow,border-color] hover:shadow-xl dark:bg-stone-900/92 dark:text-stone-100 ${
+                                    isSelected ? 'border-blue-200 dark:border-blue-400/24' : 'border-white/80 dark:border-stone-700/70'
                                   }`}
                                   style={{ borderRadius: canvasScaledNodeRadius }}
                                 >
-                                  <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-amber-200/70 px-2 text-[11px] font-black text-amber-700 dark:border-stone-700 dark:text-amber-300">
+                                  <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-blue-200/70 px-2 text-[11px] font-black text-blue-700 dark:border-stone-700 dark:text-blue-300">
                                     <Type className="h-3.5 w-3.5" />
                                     <span className="truncate">{canvasItem.item.name || '文字卡片'}</span>
                                   </div>
@@ -11153,6 +14208,11 @@ useEffect(() => {
                               data-no-drag="true"
                               type="button"
                               className="absolute right-1.5 top-1.5 z-50 rounded-full bg-white/82 p-1 text-stone-400 opacity-0 shadow-sm transition-all hover:bg-red-50 hover:text-red-500 group-hover/canvas-item:opacity-100 dark:bg-stone-900/82 dark:text-stone-500 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+                              style={isCanvasAiNodeItem ? {
+                                left: Math.max(6, canvasRenderedItemWidth - 30),
+                                right: 'auto',
+                                top: 6,
+                              } : undefined}
                               onPointerDown={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -11186,12 +14246,12 @@ useEffect(() => {
                           );
                         })}
                         {canvasItems.map(canvasItem => {
-                          const isCanvasAiGeneratorItem = canvasItem.ai?.type === 'image-generator';
                           const isSelected = canvasSelectedIds.includes(canvasItem.id);
                           const isCanvasConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
-                          if (isCanvasAiGeneratorItem || (!isSelected && !isCanvasConnectedSource)) return null;
-                          const centerX = canvasItem.x + canvasItem.width + CANVAS_CONNECTION_HANDLE_OUTSET;
-                          const centerY = canvasItem.y + canvasItem.height / 2;
+                          if (!canUseCanvasItemAsAiInput(canvasItem) || (!isSelected && !isCanvasConnectedSource)) return null;
+                          const itemBox = getCanvasItemRenderedBox(canvasItem);
+                          const centerX = itemBox.x + itemBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
+                          const centerY = itemBox.y + itemBox.height / 2;
                           return (
                             <button
                               key={`canvas-source-handle-${canvasItem.id}`}
@@ -11203,7 +14263,7 @@ useEffect(() => {
                                 top: centerY - 18,
                               }}
                               onPointerDown={(event) => startCanvasConnectionDrag(event, canvasItem.id)}
-                              title="拖出连接线到 AI 生图节点"
+                              title="拖出连接线到生图节点或工作流模块"
                             >
                               <span className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-cyan-500/95 text-white shadow-[0_5px_13px_rgba(8,145,178,0.28)] ring-2 ring-cyan-200/25 backdrop-blur-sm dark:border-white/20 dark:bg-cyan-400 dark:ring-cyan-900/30">
                                 <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
@@ -11212,14 +14272,14 @@ useEffect(() => {
                           );
                         })}
                         {canvasItems.map(canvasItem => {
-                          const isCanvasAiGeneratorItem = canvasItem.ai?.type === 'image-generator';
-                          if (!isCanvasAiGeneratorItem) return null;
+                          if (!canUseCanvasItemAsAiTarget(canvasItem)) return null;
                           const isSelected = canvasSelectedIds.includes(canvasItem.id);
                           const isCanvasConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
                           const showCanvasTargetHandle = canvasConnectionDraft || isSelected || isCanvasConnectedTarget || canvasInputMenuForId === canvasItem.id;
                           if (!showCanvasTargetHandle) return null;
-                          const centerX = canvasItem.x - CANVAS_CONNECTION_HANDLE_OUTSET;
-                          const centerY = canvasItem.y + canvasItem.height / 2;
+                          const itemBox = getCanvasItemRenderedBox(canvasItem);
+                          const centerX = itemBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
+                          const centerY = itemBox.y + itemBox.height / 2;
                           return (
                             <div
                               key={`canvas-target-handle-${canvasItem.id}`}
@@ -11233,80 +14293,113 @@ useEffect(() => {
                               onPointerDown={(event) => {
                                 event.stopPropagation();
                               }}
-                              title="连接到此 AI 节点"
+                              title={canvasItem.ai?.type === 'workflow' ? '连接到此工作流模块' : '连接到此 AI 节点'}
                             >
                               <button
                                 type="button"
                                 data-canvas-ai-input-id={canvasItem.id}
-                                title="连接到此 AI 节点"
-                                className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-amber-400 text-white shadow-[0_5px_13px_rgba(245,158,11,0.28)] ring-2 ring-amber-300/45 transition-all hover:scale-105 hover:bg-amber-300 dark:border-white/20 dark:text-stone-950"
+                                title={canvasItem.ai?.type === 'workflow' ? '连接到此工作流模块' : '连接到此 AI 节点'}
+                                className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-blue-500 text-white shadow-[0_5px_13px_rgba(59,130,246,0.28)] ring-2 ring-blue-300/45 transition-all hover:scale-105 hover:bg-blue-400 dark:border-white/20 dark:bg-blue-400 dark:text-stone-950"
                               >
                                 <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
                               </button>
-                              {canvasInputMenuForId === canvasItem.id && (
-                                <div
-                                  className="pointer-events-auto absolute left-10 top-1/2 w-32 -translate-y-1/2 rounded-[14px] border border-white/10 bg-stone-950/94 p-1 text-[11px] font-bold text-white shadow-2xl shadow-black/35 backdrop-blur-xl"
-                                  onPointerDown={(event) => {
-                                    event.stopPropagation();
-                                  }}
-                                >
-                                  <button
-                                    type="button"
-                                    className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left text-white/88 hover:bg-white/10 hover:text-white"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      chooseLocalImagesForCanvasGenerator(canvasItem.id);
-                                    }}
-                                  >
-                                    <Upload className="h-3.5 w-3.5 text-cyan-300" />
-                                    本地图片
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left text-white/88 hover:bg-white/10 hover:text-white"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      startPickCanvasImageForGenerator(canvasItem.id);
-                                    }}
-                                  >
-                                    <ImageIcon className="h-3.5 w-3.5 text-amber-300" />
-                                    画布图片
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left text-white/65 hover:bg-white/10 hover:text-white"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      connectSelectedCanvasItemsToGenerator(canvasItem.id);
-                                      setCanvasInputMenuForId(null);
-                                    }}
-                                  >
-                                    <Link className="h-3.5 w-3.5 text-emerald-300" />
-                                    已选节点
-                                  </button>
-                                </div>
-                              )}
                             </div>
                           );
                         })}
-                        {canvasSingleSelectedItemForRender && (
+                        {canvasInputMenuForId && (() => {
+                          const canvasItem = canvasItemsById.get(canvasInputMenuForId);
+                          if (!canvasItem || !canUseCanvasItemAsAiTarget(canvasItem)) return null;
+                          const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
+                          const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
+                          const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
+                            ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
+                            : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+                          const canvasAiNodeDesignSize = getCanvasAiNodeAutoSize({
+                            type: canvasItem.ai?.type === 'workflow' ? 'workflow' : 'image-generator',
+                            aspectRatio: canvasAiOutputAspectRatio,
+                            count: canvasItem.ai?.count,
+                            outputCount: canvasAiOutputs.length || undefined,
+                            hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
+                            hasError: !!canvasItem.ai?.error,
+                            promptText: canvasItem.item.content || '',
+                            promptExpanded: canvasAiPromptEditingId === canvasItem.id,
+                            showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
+                          });
+                          const nodeScale = Math.min(canvasItem.width / canvasAiNodeDesignSize.width, canvasItem.height / canvasAiNodeDesignSize.height) || 1;
+                          const referenceLeft = canvasItem.x + 16 * nodeScale;
+                          const referenceTop = canvasItem.y + 16 * nodeScale;
+                          const referenceSize = 58 * nodeScale;
+                          const menuScale = Math.max(0.35, Math.min(1, nodeScale));
+                          return (
+                            <div
+                              key={`canvas-input-menu-${canvasItem.id}`}
+                              data-canvas-floating-layer="true"
+                              className="pointer-events-auto absolute z-[120] w-36 rounded-[18px] border border-white/70 bg-white/94 p-1.5 text-[11px] font-bold text-stone-700 shadow-2xl shadow-black/18 backdrop-blur-xl dark:border-white/10 dark:bg-stone-950/94 dark:text-white"
+                              style={{
+                                left: referenceLeft + referenceSize + 10 * menuScale,
+                                top: referenceTop,
+                                transform: `scale(${menuScale})`,
+                                transformOrigin: 'left top',
+                              }}
+                              onPointerDown={(event) => {
+                                event.stopPropagation();
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  chooseLocalImagesForCanvasGenerator(canvasItem.id);
+                                }}
+                              >
+                                <Upload className="h-3.5 w-3.5 text-cyan-500 dark:text-cyan-300" />
+                                本地图片
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  startPickCanvasImageForGenerator(canvasItem.id);
+                                }}
+                              >
+                                <ImageIcon className="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />
+                                画布图片
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-500 hover:bg-stone-100 hover:text-stone-950 dark:text-white/65 dark:hover:bg-white/10 dark:hover:text-white"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  connectSelectedCanvasItemsToGenerator(canvasItem.id);
+                                  setCanvasInputMenuForId(null);
+                                }}
+                              >
+                                <Link className="h-3.5 w-3.5 text-emerald-500 dark:text-emerald-300" />
+                                已选节点
+                              </button>
+                            </div>
+                          );
+                        })()}
+                        {canvasSingleSelectedBoxForRender && (
                           <div
-                            className="pointer-events-none absolute z-[60] border-2 border-amber-300/90 bg-amber-300/[0.04] shadow-[0_0_0_3px_rgba(255,255,255,0.28)] dark:border-amber-400/50 dark:shadow-[0_0_0_3px_rgba(0,0,0,0.16)]"
+                            className="pointer-events-none absolute z-[60] border-2 border-blue-300/90 bg-blue-300/[0.04] shadow-[0_0_0_3px_rgba(255,255,255,0.28)] dark:border-blue-400/50 dark:shadow-[0_0_0_3px_rgba(0,0,0,0.16)]"
                             style={{
-                              left: canvasSingleSelectedItemForRender.x - 12,
-                              top: canvasSingleSelectedItemForRender.y - 12,
-                              width: canvasSingleSelectedItemForRender.width + 24,
-                              height: canvasSingleSelectedItemForRender.height + 24,
+                              left: canvasSingleSelectedBoxForRender.x - 12,
+                              top: canvasSingleSelectedBoxForRender.y - 12,
+                              width: canvasSingleSelectedBoxForRender.width + 24,
+                              height: canvasSingleSelectedBoxForRender.height + 24,
                               borderRadius: canvasScaledSelectionRadius,
                             }}
                           />
                         )}
                         {canvasSelectedBounds && (
                           <div
-                            className="pointer-events-none absolute z-[60] border-2 border-amber-400/85 bg-amber-300/[0.06]"
+                            className="pointer-events-none absolute z-[60] border-2 border-blue-400/85 bg-blue-300/[0.06]"
                             style={{
                               left: canvasSelectedBounds.x,
                               top: canvasSelectedBounds.y,
@@ -11335,7 +14428,7 @@ useEffect(() => {
                         )}
                         {canvasSelectionRect && (
                           <div
-                            className="pointer-events-none absolute border border-emerald-400 bg-emerald-300/16"
+                            className="pointer-events-none absolute border border-blue-400 bg-blue-300/16"
                             style={{
                               left: canvasSelectionRect.x,
                               top: canvasSelectionRect.y,
@@ -11352,6 +14445,7 @@ useEffect(() => {
                   {isCanvasMode && isCanvasAiPanelOpen && (
                     <motion.div
                       data-no-drag="true"
+                      data-canvas-floating-layer="true"
                       initial={{ opacity: 0, y: -8, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -8, scale: 0.98 }}
@@ -11443,6 +14537,7 @@ useEffect(() => {
                   {isCanvasMode && isCanvasPresetEditorOpen && (
                     <motion.div
                       data-no-drag="true"
+                      data-canvas-floating-layer="true"
                       initial={{ opacity: 0, y: -8, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -8, scale: 0.98 }}
@@ -11463,6 +14558,31 @@ useEffect(() => {
                           title="关闭"
                         >
                           <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="mb-2 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void importCanvasTemplateFile('preset')}
+                          className="rounded-[13px] bg-stone-100 px-2.5 py-1 text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/10 dark:text-stone-200 dark:hover:bg-white/14"
+                        >
+                          导入预设
+                        </button>
+                        {canvasPresetEditorMode === 'manage' && (
+                          <button
+                            type="button"
+                            onClick={exportCurrentCanvasPreset}
+                            className="rounded-[13px] bg-cyan-50 px-2.5 py-1 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-100 dark:bg-cyan-400/10 dark:text-cyan-100 dark:hover:bg-cyan-400/16"
+                          >
+                            导出当前
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={exportAllCustomCanvasPresets}
+                          className="rounded-[13px] bg-cyan-50 px-2.5 py-1 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-100 dark:bg-cyan-400/10 dark:text-cyan-100 dark:hover:bg-cyan-400/16"
+                        >
+                          导出自定义
                         </button>
                       </div>
                       <div className="grid gap-2">
@@ -11542,9 +14662,146 @@ useEffect(() => {
                       </div>
                     </motion.div>
                   )}
+                  {isCanvasMode && isCanvasWorkflowManagerOpen && (
+                    <motion.div
+                      data-no-drag="true"
+                      data-canvas-floating-layer="true"
+                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                      className="absolute left-1/2 top-14 z-[100070] w-[340px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onWheel={(event) => event.stopPropagation()}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-black">
+                          <BookOpen className="h-4 w-4 text-emerald-500" />
+                          <span>管理工作流</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={closeCanvasWorkflowManager}
+                          className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
+                          title="关闭"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      <div className="mb-2 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void importCanvasTemplateFile('workflow')}
+                          className="rounded-[13px] bg-stone-100 px-2.5 py-1 text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/10 dark:text-stone-200 dark:hover:bg-white/14"
+                        >
+                          导入工作流
+                        </button>
+                        <button
+                          type="button"
+                          onClick={exportCurrentCanvasWorkflow}
+                          className="rounded-[13px] bg-emerald-50 px-2.5 py-1 text-[10px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/16"
+                        >
+                          导出当前
+                        </button>
+                        <button
+                          type="button"
+                          onClick={exportAllCustomCanvasWorkflows}
+                          className="rounded-[13px] bg-emerald-50 px-2.5 py-1 text-[10px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/16"
+                        >
+                          导出自定义
+                        </button>
+                      </div>
+                      <div className="grid gap-2">
+                        <div className="grid gap-1.5 rounded-[16px] border border-emerald-100/80 bg-emerald-50/58 p-2 dark:border-emerald-400/16 dark:bg-emerald-400/10">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-200">选择工作流</span>
+                            {canvasWorkflowEditingBuiltIn && (
+                              <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-emerald-600 dark:bg-white/10 dark:text-emerald-100">
+                                内置
+                              </span>
+                            )}
+                            {canvasWorkflowEditingCustom && (
+                              <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-emerald-600 dark:bg-white/10 dark:text-emerald-100">
+                                自定义
+                              </span>
+                            )}
+                          </div>
+                          <RoundedSelect
+                            data-no-drag="true"
+                            data-canvas-edit-control="true"
+                            value={canvasWorkflowEditingId}
+                            options={canvasWorkflowManagerOptions}
+                            onChange={selectCanvasWorkflowForEdit}
+                            className="h-8 w-full rounded-[13px] border border-white/70 bg-white/84 px-3 text-xs font-bold text-stone-700 shadow-sm dark:border-white/10 dark:bg-stone-950/44 dark:text-stone-100"
+                            menuClassName="!z-[100090] !min-w-[230px]"
+                            menuMinWidth={230}
+                          />
+                        </div>
+                        <input
+                          data-no-drag="true"
+                          value={canvasWorkflowNameDraft}
+                          onChange={(event) => setCanvasWorkflowNameDraft(event.target.value)}
+                          placeholder="工作流名称"
+                          maxLength={32}
+                          className="h-9 rounded-[15px] border border-stone-200/80 bg-white/76 px-3 text-xs font-bold text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
+                        />
+                        <textarea
+                          data-no-drag="true"
+                          value={canvasWorkflowHintDraft}
+                          onChange={(event) => setCanvasWorkflowHintDraft(event.target.value)}
+                          onWheel={(event) => event.stopPropagation()}
+                          placeholder="工作流说明"
+                          maxLength={80}
+                          className="h-20 resize-y rounded-[16px] border border-stone-200/80 bg-white/76 px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
+                        />
+                        <div className="flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
+                          <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingNodeCount} 个节点</span>
+                          <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingAiCount} 个生图节点</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={replaceCanvasWorkflowManagerWithSelection}
+                          className="flex h-8 items-center justify-center gap-1.5 rounded-[14px] border border-emerald-200/80 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/16"
+                          title="用当前框选的节点替换这个工作流的内部结构；内置工作流会保存为本地修改"
+                        >
+                          <LayoutGrid className="h-3.5 w-3.5" />
+                          用当前选中覆盖结构
+                        </button>
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={deleteCanvasWorkflowFromManager}
+                            disabled={!canvasWorkflowEditingCustom}
+                            className="rounded-[15px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-300 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/16 dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
+                            title={canvasWorkflowEditingCustom ? '删除这个本地工作流修改' : '内置工作流还没有修改，不能删除'}
+                          >
+                            删除
+                          </button>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={closeCanvasWorkflowManager}
+                              className="rounded-[15px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              onClick={saveCanvasWorkflowManagerChanges}
+                              className="rounded-[15px] bg-emerald-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-emerald-500/20 transition-colors hover:bg-emerald-400 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300"
+                            >
+                              保存修改
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
                   {isCanvasMode && canvasContextMenu && (
                     <div
                       data-no-drag="true"
+                      data-canvas-floating-layer="true"
+                      data-canvas-context-menu="true"
                       className="fixed z-[100080] min-w-[176px] rounded-[16px] border border-white/55 bg-stone-950/86 p-1.5 text-stone-100 shadow-[0_18px_46px_rgba(0,0,0,0.28)] backdrop-blur-2xl dark:border-stone-700/70"
                       style={{
                         left: Math.min(canvasContextMenu.x, window.innerWidth - 196),
@@ -11606,11 +14863,23 @@ useEffect(() => {
                                 <Compass className="h-3.5 w-3.5 text-amber-300" />
                                 适配全部
                               </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                onClick={() => {
+                                  organizeCanvasItems();
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <LayoutGrid className="h-3.5 w-3.5 text-cyan-300" />
+                                一键整理
+                              </button>
                             </>
                           )}
                           {canvasContextMenu.type === 'item' && (() => {
                             const actionIds = getCanvasActionIds(canvasContextMenu.itemId);
                             const target = canvasItemsById.get(canvasContextMenu.itemId || '');
+                            const targetWorkflowGroup = getCanvasWorkflowGroup(target);
                             return (
                               <>
                                 <div className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white/38">节点</div>
@@ -11652,12 +14921,65 @@ useEffect(() => {
                                     type="button"
                                     className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-cyan-500/18 hover:text-cyan-200"
                                     onClick={() => {
-                                      void runCanvasAiGeneratorNode(target.id);
+                                      void generateCanvasAiGeneratorNode(target.id);
                                       setCanvasContextMenu(null);
                                     }}
                                   >
                                     <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
-                                    运行节点
+                                    {hasCanvasAiGeneratedResults(target) ? '再次生成' : '生成'}
+                                  </button>
+                                )}
+                                {target?.ai?.type === 'workflow' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-emerald-500/18 hover:text-emerald-200"
+                                      onClick={() => {
+                                        void generateCanvasWorkflowModuleNode(target.id);
+                                        setCanvasContextMenu(null);
+                                      }}
+                                    >
+                                      <Link className="h-3.5 w-3.5 text-emerald-300" />
+                                      {hasCanvasAiGeneratedResults(target) ? '再次运行工作流' : '运行工作流'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                      onClick={() => {
+                                        expandCanvasWorkflowModuleForEdit(target.id);
+                                        setCanvasContextMenu(null);
+                                      }}
+                                    >
+                                      <Edit3 className="h-3.5 w-3.5 text-amber-300" />
+                                      {hasCanvasAiGeneratedResults(target) ? '展开工作流' : '修改工作流'}
+                                    </button>
+                                  </>
+                                )}
+                                {targetWorkflowGroup && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-emerald-500/18 hover:text-emerald-200"
+                                    onClick={() => {
+                                      collapseCanvasWorkflowGroup(canvasContextMenu.itemId || '');
+                                      setCanvasContextMenu(null);
+                                    }}
+                                  >
+                                    <Link className="h-3.5 w-3.5 text-emerald-300" />
+                                    折叠工作流
+                                  </button>
+                                )}
+                                {target?.ai?.type !== 'workflow' && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                    onClick={() => {
+                                      updateCanvasSelection(actionIds);
+                                      saveSelectedCanvasWorkflow();
+                                      setCanvasContextMenu(null);
+                                    }}
+                                  >
+                                    <BookOpen className="h-3.5 w-3.5 text-violet-300" />
+                                    保存为工作流
                                   </button>
                                 )}
                                 <button
@@ -11671,6 +14993,19 @@ useEffect(() => {
                                   <Compass className="h-3.5 w-3.5 text-amber-300" />
                                   适配选中
                                 </button>
+                                {actionIds.length > 1 && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                    onClick={() => {
+                                      organizeCanvasItems(actionIds);
+                                      setCanvasContextMenu(null);
+                                    }}
+                                  >
+                                    <LayoutGrid className="h-3.5 w-3.5 text-cyan-300" />
+                                    整理选中
+                                  </button>
+                                )}
                                 <div className="my-1 h-px bg-white/10" />
                                 <button
                                   type="button"
@@ -11709,18 +15044,155 @@ useEffect(() => {
                   {isCanvasMode && (
                     <div
                       data-no-drag="true"
-                      className={`absolute top-4 z-[100055] flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${isCanvasNavigatorVisible ? 'right-[242px] max-w-[calc(100%_-_258px)]' : 'right-[58px] max-w-[calc(100%_-_74px)]'}`}
+                      data-canvas-toolbar="true"
+                      className="absolute right-4 top-1/2 z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                     >
                       <button
                         type="button"
+                        data-no-drag="true"
+                        onClick={() => setIsCanvasNavigatorVisible(value => !value)}
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[transform,background-color,border-color] duration-200 hover:-translate-y-px hover:border-blue-300 hover:bg-blue-50/90 dark:border-white/10 dark:bg-stone-950/70 dark:text-blue-300 dark:hover:border-blue-400/30 dark:hover:bg-stone-900/90 ${
+                          isCanvasNavigatorVisible ? 'border-blue-300 bg-blue-50/95 text-blue-600 ring-2 ring-blue-100/80 dark:border-blue-400/35 dark:bg-blue-400/12 dark:text-blue-200 dark:ring-blue-400/10' : 'border-blue-200/80 bg-white/88 text-blue-500'
+                        }`}
+                        title={isCanvasNavigatorVisible ? '隐藏导航' : '显示导航'}
+                      >
+                        <Compass className="h-3.5 w-3.5" />
+                      </button>
+                      {isCanvasNavigatorVisible && (
+                        <div
+                          data-no-drag="true"
+                          className="absolute bottom-full right-0 z-[100070] mb-2 w-[220px] rounded-[20px] border border-white/60 bg-white/78 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-600/80 dark:bg-stone-900/88 dark:text-stone-200"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-2 px-0.5">
+                            <div className="flex items-center gap-1.5 text-[11px] font-black">
+                              <Compass className="h-3.5 w-3.5 text-blue-500 dark:text-blue-300" />
+                              导航
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="font-mono text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                                {canvasImageItemsForNav.length}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setIsCanvasNavigatorVisible(false)}
+                                className="flex h-[18px] w-[18px] items-center justify-center rounded-[7px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                                title="隐藏导航"
+                              >
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          </div>
+                          <div
+                            className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[14px] border border-blue-100/80 bg-blue-50/45 dark:border-stone-700/70 dark:bg-stone-950/45"
+                            title="点击缩略图定位"
+                          >
+                            {canvasImageItemsForNav.length === 0 ? (
+                              <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                                暂无图片
+                              </div>
+                            ) : canvasNavBounds && canvasImageItemsForNav.map(item => {
+                              const left = 9 + (item.x - canvasNavBounds.left) * canvasNavScale;
+                              const top = 9 + (item.y - canvasNavBounds.top) * canvasNavScale;
+                              const width = Math.max(10, item.width * canvasNavScale);
+                              const height = Math.max(10, item.height * canvasNavScale);
+                              const selected = canvasSelectedIds.includes(item.id);
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  className={`absolute overflow-hidden rounded-[6px] border bg-white shadow-sm transition-transform hover:scale-110 dark:bg-stone-800 ${
+                                    selected ? 'border-blue-500 ring-2 ring-blue-300/70' : 'border-white/85 dark:border-stone-600/80'
+                                  }`}
+                                  style={{ left, top, width, height }}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    centerCanvasItemInView(item, { select: true });
+                                  }}
+                                  title={item.item.name || item.item.content || '定位图片'}
+                                >
+                                  <img
+                                    src={getCanvasItemNavSource(item.item)}
+                                    alt={item.item.name || '导航缩略图'}
+                                    loading="lazy"
+                                    decoding="async"
+                                    className="h-full w-full object-cover"
+                                    draggable={false}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-2 flex items-center justify-between gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const surface = canvasSurfaceRef.current;
+                                if (surface) zoomCanvasAt(surface.getBoundingClientRect().left + surface.clientWidth / 2, surface.getBoundingClientRect().top + surface.clientHeight / 2, 360);
+                              }}
+                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                              title="缩小"
+                            >
+                              <Minimize2 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                canvasScaleRef.current = 1;
+                                applyCanvasScaleStyles(1, canvasSizeRef.current);
+                                setCanvasScale(1);
+                              }}
+                              className="h-7 min-w-[58px] rounded-[11px] bg-stone-100 px-2 font-mono text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                              title="重置缩放"
+                            >
+                              {Math.round(canvasScale * 100)}%
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => fitCanvasViewToItems(canvasSelectedIds.length > 0 ? canvasSelectedIds : undefined)}
+                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-cyan-100 text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/38 dark:text-cyan-300 dark:hover:bg-cyan-900/55"
+                              title="适配全部 / 选中"
+                            >
+                              <LayoutGrid className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const surface = canvasSurfaceRef.current;
+                                if (surface) zoomCanvasAt(surface.getBoundingClientRect().left + surface.clientWidth / 2, surface.getBoundingClientRect().top + surface.clientHeight / 2, -360);
+                              }}
+                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                              title="放大"
+                            >
+                              <Maximize2 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => centerCanvasItemInView(getCanvasPrimaryImageItem(), { select: true })}
+                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-blue-100 text-blue-700 transition-colors hover:bg-blue-200 dark:bg-blue-900/38 dark:text-blue-300 dark:hover:bg-blue-900/55"
+                              title="定位最近图片"
+                            >
+                              <Compass className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <button
+                        type="button"
                         onClick={() => addCanvasAiGeneratorNode()}
-                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-cyan-200/80 bg-cyan-50/88 px-3 text-[11px] font-black text-cyan-800 shadow-[0_7px_18px_rgba(8,145,178,0.13)] backdrop-blur-2xl transition-all hover:-translate-y-px hover:bg-cyan-100 dark:border-cyan-400/20 dark:bg-cyan-950/72 dark:text-cyan-200 dark:hover:bg-cyan-900/80"
+                        className={`${CANVAS_SIDE_TOOL_CLASS} border-violet-200/80 hover:border-violet-300 hover:bg-violet-50/90 dark:hover:border-violet-400/30`}
                         title="新增 AI 生图节点"
                       >
-                        <Sparkles className="h-3.5 w-3.5" />
-                        AI
+                        <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-500 dark:text-violet-300" />
+                        <span className="min-w-0 flex-1 truncate text-left">AI</span>
                       </button>
                       <RoundedSelect
                         data-no-drag="true"
@@ -11739,162 +15211,81 @@ useEffect(() => {
                           const preset = canvasAiPromptPresets.find(item => item.id === value);
                           if (preset) addCanvasAiGeneratorNode(undefined, preset);
                         }}
-                        icon={<Sparkles className="h-3.5 w-3.5 text-cyan-500 dark:text-cyan-300" />}
-                        chevronClassName="h-3 w-3 text-stone-400 dark:text-stone-500"
+                        icon={<Palette className="h-3.5 w-3.5 shrink-0 text-sky-500 dark:text-sky-300" />}
+                        chevronClassName={`${CANVAS_SIDE_CHEVRON_FLOAT_CLASS} text-sky-500/80 dark:text-sky-300/80`}
                         labelClassName="text-left"
-                        className="h-8 w-[92px] shrink-0 justify-center rounded-full border border-white/70 bg-white/78 px-2.5 text-[11px] font-black text-stone-700 shadow-[0_8px_24px_rgba(15,23,42,0.10)] backdrop-blur-2xl hover:bg-white dark:border-white/10 dark:bg-stone-950/64 dark:text-stone-200 dark:hover:bg-stone-900/82"
-                        menuClassName="!z-[100080] !min-w-[150px] !rounded-[16px] !border-white/70 !bg-white/96 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-white/10 dark:!bg-stone-950/96 dark:!text-stone-100"
-                        optionClassName="!rounded-[11px] !px-3 !py-2 hover:!bg-cyan-50 hover:!text-cyan-800 dark:hover:!bg-white/10 dark:hover:!text-white"
-                        selectedOptionClassName="!bg-stone-100 !text-stone-400 dark:!bg-white/8 dark:!text-stone-500"
-                        title="选择 Prompt 预设"
-                        menuMinWidth={150}
+                        collapsedLabel="节点…"
+                        expandedLabel="节点预设"
+                        className={`${CANVAS_SIDE_SELECT_CLASS} border-sky-200/80 hover:border-sky-300 hover:bg-sky-50/90 dark:hover:border-sky-400/30`}
+                        menuClassName="!z-[100080] !min-w-[230px] !rounded-[18px] !border-sky-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-sky-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
+                        optionClassName="!rounded-[12px] !px-3 !py-2 hover:!bg-sky-50 hover:!text-sky-800 dark:hover:!bg-white/10 dark:hover:!text-white"
+                        selectedOptionClassName="!bg-sky-50 !text-sky-800 dark:!bg-sky-400/12 dark:!text-sky-100"
+                        title="选择节点预设"
+                        menuMinWidth={230}
+                      />
+                      <RoundedSelect
+                        data-no-drag="true"
+                        data-canvas-edit-control="true"
+                        value={CANVAS_WORKFLOW_SELECT_PLACEHOLDER}
+                        options={canvasWorkflowSelectOptions}
+                        onChange={(value) => {
+                          if (value === CANVAS_WORKFLOW_SAVE_SELECTION_VALUE) {
+                            saveSelectedCanvasWorkflow();
+                            return;
+                          }
+                          if (value === CANVAS_WORKFLOW_MANAGE_VALUE) {
+                            openCanvasWorkflowManager();
+                            return;
+                          }
+                          const workflow = canvasWorkflowTemplates.find(item => item.id === value);
+                          if (workflow) addCanvasWorkflowTemplate(workflow);
+                        }}
+                        icon={<Link className="h-3.5 w-3.5 shrink-0 text-teal-500 dark:text-teal-300" />}
+                        chevronClassName={`${CANVAS_SIDE_CHEVRON_FLOAT_CLASS} text-teal-500/80 dark:text-teal-300/80`}
+                        labelClassName="text-left"
+                        collapsedLabel="工作…"
+                        expandedLabel="工作流"
+                        className={`${CANVAS_SIDE_SELECT_CLASS} border-teal-200/80 hover:border-teal-300 hover:bg-teal-50/90 dark:hover:border-teal-400/30`}
+                        menuClassName="!z-[100080] !min-w-[250px] !rounded-[18px] !border-teal-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-teal-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
+                        optionClassName="!rounded-[12px] !px-3 !py-2 hover:!bg-teal-50 hover:!text-teal-800 dark:hover:!bg-white/10 dark:hover:!text-white"
+                        selectedOptionClassName="!bg-teal-50 !text-teal-800 dark:!bg-teal-400/12 dark:!text-teal-100"
+                        title="选择或保存工作流"
+                        menuMinWidth={250}
                       />
                       <button
                         type="button"
+                        onClick={() => void runSelectedCanvasWorkflowModules()}
+                        disabled={!canvasItems.some(item => item.ai?.type === 'workflow')}
+                        className={`${CANVAS_SIDE_EXPAND_TOOL_CLASS} border-indigo-200/80 hover:border-indigo-300 hover:bg-indigo-50/90 dark:hover:border-indigo-400/30`}
+                        title="运行选中的工作流模块"
+                      >
+                        <Send className="h-3.5 w-3.5 shrink-0 text-indigo-500 dark:text-indigo-300" />
+                        <span className="flex min-w-0 flex-1 items-center overflow-hidden text-left">
+                          <span className="shrink-0">运行</span>
+                          <span className="shrink-0 group-hover/canvas-tool:hidden">…</span>
+                          <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-[max-width,opacity] duration-200 group-hover/canvas-tool:max-w-[44px] group-hover/canvas-tool:opacity-100">工作流</span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => addCanvasTextItem()}
-                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-stone-200/80 bg-white/82 px-3 text-[11px] font-black text-stone-700 shadow-[0_7px_18px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-all hover:-translate-y-px hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/78 dark:text-stone-200 dark:hover:bg-stone-800"
+                        className={`${CANVAS_SIDE_TOOL_CLASS} border-slate-200/80 hover:border-slate-300 hover:bg-slate-50/90 dark:hover:border-slate-400/30`}
                         title="添加文字卡片"
                       >
-                        <Type className="h-3.5 w-3.5" />
-                        文字
+                        <Type className="h-3.5 w-3.5 shrink-0 text-slate-600 dark:text-slate-300" />
+                        <span className="min-w-0 flex-1 truncate text-left">文字</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => organizeCanvasItems()}
+                        disabled={canvasItems.length < 2}
+                        className={`${CANVAS_SIDE_TOOL_CLASS} border-orange-200/80 hover:border-orange-300 hover:bg-orange-50/90 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 dark:hover:border-orange-400/30`}
+                        title="一键整理画布；多选时只整理选中节点"
+                      >
+                        <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-orange-500 dark:text-orange-300" />
+                        <span className="min-w-0 flex-1 truncate text-left">整理</span>
                       </button>
                     </div>
-                  )}
-                  {isCanvasMode && isCanvasNavigatorVisible && (
-                    <div
-                      data-no-drag="true"
-                      className={`absolute right-4 top-4 z-[100050] w-[220px] rounded-[20px] border border-white/60 bg-white/78 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-900/76 dark:text-stone-200 ${isCanvasChromeHidden ? 'right-4 top-4' : 'right-4 top-4'}`}
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                      }}
-                      onMouseDown={(event) => {
-                        event.stopPropagation();
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2 px-0.5">
-                        <div className="flex items-center gap-1.5 text-[11px] font-black">
-                          <Compass className="h-3.5 w-3.5 text-amber-500" />
-                          导航
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="font-mono text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                            {canvasImageItemsForNav.length}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setIsCanvasNavigatorVisible(false)}
-                            className="flex h-[18px] w-[18px] items-center justify-center rounded-[7px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-200"
-                            title="隐藏导航"
-                          >
-                            <X className="h-2.5 w-2.5" />
-                          </button>
-                        </div>
-                      </div>
-                      <div
-                        className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[14px] border border-stone-200/70 bg-amber-50/65 dark:border-stone-700/70 dark:bg-stone-950/45"
-                        title="点击缩略图定位"
-                      >
-                        {canvasImageItemsForNav.length === 0 ? (
-                          <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                            暂无图片
-                          </div>
-                        ) : canvasNavBounds && canvasImageItemsForNav.map(item => {
-                          const left = 9 + (item.x - canvasNavBounds.left) * canvasNavScale;
-                          const top = 9 + (item.y - canvasNavBounds.top) * canvasNavScale;
-                          const width = Math.max(10, item.width * canvasNavScale);
-                          const height = Math.max(10, item.height * canvasNavScale);
-                          const selected = canvasSelectedIds.includes(item.id);
-                          return (
-                            <button
-                              key={item.id}
-                              type="button"
-                              className={`absolute overflow-hidden rounded-[6px] border bg-white shadow-sm transition-transform hover:scale-110 dark:bg-stone-800 ${
-                                selected ? 'border-amber-500 ring-2 ring-amber-300/70' : 'border-white/85 dark:border-stone-600/80'
-                              }`}
-                              style={{ left, top, width, height }}
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                centerCanvasItemInView(item, { select: true });
-                              }}
-                              title={item.item.name || item.item.content || '定位图片'}
-                            >
-                              <img
-                                src={getCanvasItemNavSource(item.item)}
-                                alt={item.item.name || '导航缩略图'}
-                                loading="lazy"
-                                decoding="async"
-                                className="h-full w-full object-cover"
-                                draggable={false}
-                              />
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <div className="mt-2 flex items-center justify-between gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const surface = canvasSurfaceRef.current;
-                            if (surface) zoomCanvasAt(surface.getBoundingClientRect().left + surface.clientWidth / 2, surface.getBoundingClientRect().top + surface.clientHeight / 2, 360);
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                          title="缩小"
-                        >
-                          <Minimize2 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            canvasScaleRef.current = 1;
-                            applyCanvasScaleStyles(1, canvasSizeRef.current);
-                            setCanvasScale(1);
-                          }}
-                          className="h-7 min-w-[58px] rounded-[11px] bg-stone-100 px-2 font-mono text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                          title="重置缩放"
-                        >
-                          {Math.round(canvasScale * 100)}%
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => fitCanvasViewToItems(canvasSelectedIds.length > 0 ? canvasSelectedIds : undefined)}
-                          className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-cyan-100 text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/38 dark:text-cyan-300 dark:hover:bg-cyan-900/55"
-                          title="适配全部 / 选中"
-                        >
-                          <LayoutGrid className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const surface = canvasSurfaceRef.current;
-                            if (surface) zoomCanvasAt(surface.getBoundingClientRect().left + surface.clientWidth / 2, surface.getBoundingClientRect().top + surface.clientHeight / 2, -360);
-                          }}
-                          className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                          title="放大"
-                        >
-                          <Maximize2 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => centerCanvasItemInView(getCanvasPrimaryImageItem(), { select: true })}
-                          className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-amber-100 text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/38 dark:text-amber-300 dark:hover:bg-amber-900/55"
-                          title="定位最近图片"
-                        >
-                          <Compass className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {isCanvasMode && !isCanvasNavigatorVisible && (
-                    <button
-                      type="button"
-                      data-no-drag="true"
-                      onClick={() => setIsCanvasNavigatorVisible(true)}
-                      className="absolute right-4 top-4 z-[100050] flex h-8 w-8 items-center justify-center rounded-full border border-white/45 bg-white/76 text-amber-600 shadow-[0_8px_20px_rgba(0,0,0,0.13)] backdrop-blur-xl transition-colors hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/76 dark:text-amber-300 dark:hover:bg-stone-800"
-                      title="显示导航"
-                    >
-                      <Compass className="h-3.5 w-3.5" />
-                    </button>
                   )}
                   {isCanvasMode && isCanvasGeneratedListVisible && (
                     <div
@@ -11916,7 +15307,7 @@ useEffect(() => {
                           {canvasGeneratedItemsForList.length > 0 && (
                             <button
                               type="button"
-                              onClick={() => fitCanvasViewToItems(canvasGeneratedItemsForList.map(item => item.id))}
+                              onClick={() => fitCanvasViewToItems(canvasGeneratedItemsForList.map(entry => entry.canvasItem.id))}
                               className="flex h-[18px] w-[18px] items-center justify-center rounded-[7px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-cyan-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-cyan-200"
                               title="适配全部已生成图片"
                             >
@@ -11955,16 +15346,16 @@ useEffect(() => {
                                   onClick={(event) => {
                                     event.preventDefault();
                                     event.stopPropagation();
-                                    centerCanvasItemInView(generatedItem, { select: true });
+                                    centerCanvasItemInView(generatedItem.canvasItem, { select: true });
                                   }}
                                   onKeyDown={(event) => {
                                     if (event.key !== 'Enter' && event.key !== ' ') return;
                                     event.preventDefault();
                                     event.stopPropagation();
-                                    centerCanvasItemInView(generatedItem, { select: true });
+                                    centerCanvasItemInView(generatedItem.canvasItem, { select: true });
                                   }}
                                   className={`group/generated flex w-full cursor-pointer items-center gap-2 rounded-[14px] border p-1.5 text-left transition-colors ${
-                                    canvasSelectedIds.includes(generatedItem.id)
+                                    canvasSelectedIds.includes(generatedItem.canvasItem.id)
                                       ? 'border-cyan-200 bg-cyan-50/76 dark:border-cyan-400/24 dark:bg-cyan-400/12'
                                       : 'border-white/70 bg-white/58 hover:bg-white/90 dark:border-stone-700/60 dark:bg-stone-950/28 dark:hover:bg-stone-800/70'
                                   }`}
@@ -12013,7 +15404,7 @@ useEffect(() => {
                                         onClick={(event) => {
                                           event.preventDefault();
                                           event.stopPropagation();
-                                          void downloadCanvasItemsByIds([generatedItem.id]);
+                                          void downloadBufferItems([generatedItem.item]);
                                         }}
                                         className="flex h-5 w-5 items-center justify-center rounded-[8px] text-stone-400 opacity-0 transition-all hover:bg-cyan-100 hover:text-cyan-700 group-hover/generated:opacity-100 dark:hover:bg-cyan-400/14 dark:hover:text-cyan-200"
                                         title="下载"
@@ -12451,7 +15842,7 @@ useEffect(() => {
                                 onAlchemy={() => runAlchemyAnalysis(item as AlchemyBufferItem)}
                                 onPreview={() => {
                                   const source = item.url || (item.path ? convertFileSrc(item.path) : '');
-                                  if (source) setSelectedImage(source);
+                                  if (source) openSelectedImagePreview(source);
                                 }}
                                 onRemove={() => {
                                   pushDrawerUndoSnapshot('删除炼金卡片');
@@ -12469,8 +15860,16 @@ useEffect(() => {
                                   onResize={(w: number, h: number) => { setCardWidth(w); setCardMediaHeight(h); }}
                                   onRemove={() => {
                                     if (item.isQuickAccess) { showToast('⚠️ 已开启星标保护，请先取消星标再删除'); return; }
-                                    pushDrawerUndoSnapshot('删除卡片');
-                                    setItems(prev => prev.filter(i => i.id !== item.id));
+
+                                    if (item.type === 'image') {
+
+                                      requestDeleteDrawerItems([item], { label: '删除图片' });
+
+                                      return;
+
+                                    }
+
+                                    removeDrawerItemsFromDrawer([item], '删除卡片');
                                   }}
                                   onRemoveFromFolder={() => {
                                     pushDrawerUndoSnapshot('移出文件夹');
@@ -12480,7 +15879,7 @@ useEffect(() => {
                                     pushDrawerUndoSnapshot(item.isQuickAccess ? '取消快速访问' : '固定快速访问');
                                     setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: !i.isQuickAccess } : i));
                                   }}
-                                  onImageClick={(url: string) => setSelectedImage(url)}
+                                  onImageClick={(url: string) => openSelectedImagePreview(url)}
                                   onVideoClick={() => {
                                     if (item.path) setSelectedVideo({ url: convertFileSrc(item.path), path: item.path });
                                   }}
@@ -12563,7 +15962,7 @@ useEffect(() => {
                     <motion.button
                       initial={isShortcutReveal ? false : { opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} transition={isShortcutReveal ? { duration: 0 } : { duration: 0.2, ease: "easeOut" }}
                       onClick={handleOpenTextInput}
-                      className="absolute bottom-6 right-6 z-[120] bg-emerald-500 hover:bg-emerald-600 text-white p-3.5 rounded-full shadow-[0_8px_16px_rgba(16,185,129,0.3)] transition-transform hover:scale-105 active:scale-95 will-change-transform"
+                      className="absolute bottom-6 right-6 z-[120] bg-blue-500 hover:bg-blue-600 text-white p-3.5 rounded-full shadow-[0_8px_16px_rgba(59,130,246,0.28)] transition-transform hover:scale-105 active:scale-95 will-change-transform"
                       title="写下灵感"
                     ><Edit3 className="w-5 h-5" /></motion.button>
                   )}
@@ -12573,7 +15972,7 @@ useEffect(() => {
                   {showTextInput && (
                     <motion.div initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
                       <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-emerald-500" /> 记录灵感</span>
+                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-blue-500" /> 记录灵感</span>
                         <button onClick={handleCloseTextInput} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <textarea
@@ -12586,7 +15985,7 @@ useEffect(() => {
                           if (e.key === 'Escape') handleCloseTextInput();
                         }}
                         placeholder={`随便写点什么...\n(Enter 提交，Shift+Enter 换行)`}
-                        className="w-full bg-stone-50/50 dark:bg-stone-900/50 rounded-[20px] p-3 border border-stone-200/50 dark:border-stone-700/50 outline-none resize-none text-sm text-stone-800 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 h-24 focus:ring-2 focus:ring-emerald-500/20 transition-all [&::-webkit-scrollbar]:hidden"
+                        className="w-full bg-stone-50/50 dark:bg-stone-900/50 rounded-[20px] p-3 border border-stone-200/50 dark:border-stone-700/50 outline-none resize-none text-sm text-stone-800 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 h-24 focus:ring-2 focus:ring-blue-500/20 transition-all [&::-webkit-scrollbar]:hidden"
                       />
                       <div className="flex justify-between items-center px-1">
                         <span className="text-[10px] text-stone-400 font-mono font-medium">{quickText.length} 字</span>
@@ -12595,7 +15994,7 @@ useEffect(() => {
                             commitQuickText();
                           }}
                           disabled={!quickText.trim()}
-                          className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none"
+                          className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none"
                         ><Send className="w-3.5 h-3.5" /> 保存</button>
                       </div>
                     </motion.div>
@@ -12683,14 +16082,14 @@ useEffect(() => {
             className="absolute inset-0 z-[9998] rounded-[30px] overflow-hidden bg-black/45 backdrop-blur-sm flex items-center justify-center p-5 pointer-events-auto"
             onPointerDown={(e) => {
               if (e.button === 0 && e.target === e.currentTarget) {
-                setSelectedImage(null);
+                closeSelectedImagePreview();
                 return;
               }
               if (e.button === 2) startPreviewWindowDrag(e);
             }}
             onMouseDown={(e) => {
               if (e.button === 0 && e.target === e.currentTarget) {
-                setSelectedImage(null);
+                closeSelectedImagePreview();
                 return;
               }
               if (e.button === 2) startPreviewWindowDrag(e);
@@ -12705,7 +16104,7 @@ useEffect(() => {
             <button
               onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSelectedImage(null); }}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); closeSelectedImagePreview(); }}
               className="absolute top-4 right-4 z-[10003] w-8 h-8 rounded-full bg-white dark:bg-stone-800 shadow-lg flex items-center justify-center text-stone-500 hover:text-red-500"
               title="关闭预览"
             >
@@ -12717,7 +16116,7 @@ useEffect(() => {
               className="relative w-full h-full pointer-events-auto flex items-center justify-center overflow-hidden rounded-[26px]"
               onPointerDown={(e) => {
                 if (e.button === 0 && e.target === e.currentTarget) {
-                  setSelectedImage(null);
+                  closeSelectedImagePreview();
                   return;
                 }
                 if (e.button === 2) {
@@ -12727,7 +16126,7 @@ useEffect(() => {
               }}
               onMouseDown={(e) => {
                 if (e.button === 0 && e.target === e.currentTarget) {
-                  setSelectedImage(null);
+                  closeSelectedImagePreview();
                   return;
                 }
                 if (e.button === 2) {
@@ -12852,7 +16251,7 @@ useEffect(() => {
                   <button
                     type="button"
                     onClick={leaveCanvasToDrawer}
-                    className="rounded-[16px] bg-amber-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-600"
+                    className="rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-600"
                   >
                     切换到抽屉
                   </button>
@@ -12876,7 +16275,7 @@ useEffect(() => {
                   <button
                     type="button"
                     onClick={saveCanvasToDrawer}
-                    className="rounded-[16px] bg-amber-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-600"
+                    className="rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-600"
                   >
                     保存到临时文件夹
                   </button>
@@ -12890,11 +16289,12 @@ useEffect(() => {
       <AnimatePresence>
         {canvasFolderImportPrompt && (
           <motion.div
+            data-canvas-floating-layer="true"
             initial={{ opacity: 0, scale: 0.96, x: -6 }}
             animate={{ opacity: 1, scale: 1, x: 0 }}
             exit={{ opacity: 0, scale: 0.96, x: -6 }}
             transition={{ duration: 0.16, ease: 'easeOut' }}
-            className="fixed z-[100120] w-[286px] overflow-hidden rounded-[18px] border border-amber-200/70 bg-white/96 p-2.5 text-stone-700 shadow-2xl shadow-black/15 backdrop-blur-xl pointer-events-auto dark:border-amber-400/20 dark:bg-stone-950/96 dark:text-stone-100"
+            className="fixed z-[100120] w-[286px] overflow-hidden rounded-[18px] border border-blue-200/70 bg-white/96 p-2.5 text-stone-700 shadow-2xl shadow-black/15 backdrop-blur-xl pointer-events-auto dark:border-blue-400/20 dark:bg-stone-950/96 dark:text-stone-100"
             style={{
               left: Math.min(canvasFolderImportPrompt.x, Math.max(78, window.innerWidth - 306)),
               top: Math.min(canvasFolderImportPrompt.y, Math.max(12, window.innerHeight - 430)),
@@ -12907,7 +16307,7 @@ useEffect(() => {
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200">
                   <FolderOpen className="h-4 w-4" />
                 </span>
                 <div className="min-w-0">
@@ -12928,7 +16328,7 @@ useEffect(() => {
             <button
               type="button"
               onClick={confirmAddFolderImagesToCanvas}
-              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-amber-500 text-[11px] font-black text-white shadow-sm shadow-amber-500/20 transition-colors hover:bg-amber-400"
+              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400"
             >
               <Plus className="h-3.5 w-3.5" />
               全部加入画布
@@ -12941,7 +16341,7 @@ useEffect(() => {
                     key={item.id}
                     type="button"
                     onClick={() => addFolderImagePickerItemToCanvas(item.id)}
-                    className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-amber-300 hover:ring-2 hover:ring-amber-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-amber-300/50 dark:hover:ring-amber-300/20"
+                    className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-blue-300 hover:ring-2 hover:ring-blue-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-blue-300/50 dark:hover:ring-blue-300/20"
                     title={item.name || item.content || '加入画布'}
                   >
                     <img
@@ -12962,14 +16362,112 @@ useEffect(() => {
       </AnimatePresence>
 
       <AnimatePresence>
+        {canvasWorkflowSaveDraft && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onMouseDown={(event) => { if (event.button === 0) closeCanvasWorkflowSaveDialog(); }}
+          >
+            <motion.form
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="w-full max-w-[360px] rounded-[28px] bg-white p-4 shadow-2xl border border-stone-200 dark:border-stone-700 dark:bg-stone-900"
+              onMouseDown={(event) => event.stopPropagation()}
+              onSubmit={(event) => {
+                event.preventDefault();
+                confirmSaveCanvasWorkflow();
+              }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-black text-stone-800 dark:text-stone-100">
+                  <BookOpen className="h-4 w-4 text-emerald-500" />
+                  保存工作流
+                </div>
+                <button
+                  type="button"
+                  onClick={closeCanvasWorkflowSaveDialog}
+                  className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
+                  title="关闭"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                将当前选中的 {canvasWorkflowSaveDraft.nodes.length} 个节点封装成一个工作流模块，之后可右键模块再展开修改。
+              </p>
+              <label className="mt-3 block">
+                <span className="mb-1.5 block text-[10px] font-black uppercase tracking-wide text-stone-400 dark:text-stone-500">名称</span>
+                <input
+                  data-no-drag="true"
+                  autoFocus
+                  value={canvasWorkflowSaveDraft.label}
+                  maxLength={32}
+                  onChange={(event) => setCanvasWorkflowSaveDraft(prev => prev ? { ...prev, label: event.target.value } : prev)}
+                  placeholder={canvasWorkflowSaveDraft.defaultLabel}
+                  className="h-10 w-full rounded-[16px] border border-stone-200/80 bg-stone-50/80 px-3 text-sm font-bold text-stone-700 outline-none transition focus:border-emerald-300 focus:bg-white focus:ring-2 focus:ring-emerald-200/55 dark:border-stone-700 dark:bg-stone-950/44 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-emerald-500/60 dark:focus:bg-stone-950 dark:focus:ring-emerald-900/35"
+                />
+              </label>
+              <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
+                <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowSaveDraft.aiCount} 个生图节点</span>
+                <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowSaveDraft.externalInputIds.length} 个外部输入</span>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeCanvasWorkflowSaveDialog}
+                  className="rounded-[16px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={!canvasWorkflowSaveDraft.label.trim()}
+                  className="rounded-[16px] bg-emerald-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-emerald-500/20 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300 dark:disabled:bg-white/10 dark:disabled:text-white/35"
+                >
+                  保存并封装
+                </button>
+              </div>
+            </motion.form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {confirmDialog.isOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
             <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
               <h3 className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
               <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">{confirmDialog.message || '确定继续吗？'}</p>
               <div className="mt-4 flex justify-end gap-2">
                 <button onClick={closeConfirmDialog} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
-                <button onClick={() => confirmDialog.onConfirm()} className="px-3 py-1.5 rounded-[16px] text-xs bg-red-500 text-white">确定</button>
+                {(confirmDialog.actions && confirmDialog.actions.length > 0
+                  ? confirmDialog.actions
+                  : [{
+                    label: '确定',
+                    onClick: confirmDialog.onConfirm,
+                    className: 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
+                  }]
+                ).map((action, index) => (
+                  <button
+                    key={`${action.label}-${index}`}
+                    onClick={() => {
+                      void Promise.resolve(action.onClick()).catch((err) => {
+                        console.warn('确认操作失败:', err);
+                        showToast('操作失败');
+                      });
+                    }}
+                    title={action.title}
+                    className={action.className || 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600'}
+                  >
+                    {action.label}
+                  </button>
+                ))}
               </div>
             </motion.div>
           </motion.div>
@@ -13005,6 +16503,7 @@ useEffect(() => {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: 12 }}
               transition={{ duration: 0.32, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
+              data-drawer-launch-intro="true"
               className="relative w-full max-w-[380px] overflow-hidden rounded-[32px] bg-white/92 dark:bg-stone-900/94 border border-white/70 dark:border-stone-700/70 shadow-2xl p-5"
               onMouseDown={e => e.stopPropagation()}
             >

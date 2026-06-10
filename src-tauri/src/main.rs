@@ -339,20 +339,44 @@ fn http_get_text(
     api_key: &str,
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
-    let client = build_http_client(Some(app_handle), explicit_proxy, 90)?;
-    let response = client
+    let timeout_secs = 300;
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let response_result = client
         .get(url)
         .header("accept", "application/json")
         .bearer_auth(api_key)
-        .send()
-        .map_err(|e| format!("模型列表请求失败：{}", e))?;
+        .send();
+
+    let response = match response_result {
+        Ok(response) => response,
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("AI GET 请求失败：{}", first_err));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            direct_client
+                .get(url)
+                .header("accept", "application/json")
+                .bearer_auth(api_key)
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "AI GET 请求失败：{}；无代理直连重试也失败：{}",
+                        first_err, second_err
+                    )
+                })?
+        }
+    };
 
     let status = response.status();
     let text = response.text().map_err(|e| e.to_string())?;
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("模型列表请求失败，HTTP {}：{}", status, text))
+        Err(format!("AI GET 请求失败，HTTP {}：{}", status, text))
     }
 }
 
@@ -704,6 +728,20 @@ fn path_kind(path: String) -> Result<String, String> {
     } else {
         Ok("missing".to_string())
     }
+}
+
+#[tauri::command]
+fn delete_local_file(path: String) -> Result<bool, String> {
+    let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
+    if !normalized.exists() {
+        return Ok(false);
+    }
+    if !normalized.is_file() {
+        return Err(format!("不是可删除的文件：{}", normalized.to_string_lossy()));
+    }
+    let resolved = fs::canonicalize(&normalized).unwrap_or_else(|_| normalized.clone());
+    fs::remove_file(&resolved).map_err(|e| format!("删除本地文件失败：{}", e))?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -5615,6 +5653,7 @@ fn main() {
             open_file,
             get_video_thumb,
             path_kind,
+            delete_local_file,
             show_in_folder,
             copy_local_file,
             cache_local_file_to_dir,

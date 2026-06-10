@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { LayoutGrid } from 'lucide-react';
+import { Lightbulb } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
@@ -774,7 +774,7 @@ export function EdgeTrigger() {
         onDrop={handleEdgeFileDrag}
       >
         <button
-          className={`absolute rounded-[22px] overflow-hidden isolate bg-amber-100/95 dark:bg-amber-200/90 backdrop-blur-xl border border-amber-200/80 dark:border-amber-300/60 shadow-xl shadow-amber-200/30 dark:shadow-black/20 flex items-center justify-center cursor-pointer opacity-100 transition-transform ${isFloatDragOverlay ? 'shadow-2xl' : 'hover:scale-[1.03] active:scale-95'}`}
+          className={`absolute rounded-[22px] overflow-hidden isolate bg-blue-500 text-white dark:bg-blue-400 dark:text-stone-950 backdrop-blur-xl border border-blue-300/80 dark:border-blue-300/55 shadow-xl shadow-blue-400/28 dark:shadow-black/24 flex items-center justify-center cursor-pointer opacity-100 transition-transform ${isFloatDragOverlay ? 'shadow-2xl' : 'hover:scale-[1.03] active:scale-95'}`}
           style={isFloatDragOverlay ? { left: floatVisualPos.x - floatOverlayOrigin.x, top: floatVisualPos.y - floatOverlayOrigin.y, width: FLOAT_TRIGGER_SIZE, height: FLOAT_TRIGGER_SIZE } : { left: 0, top: 0, width: FLOAT_TRIGGER_SIZE, height: FLOAT_TRIGGER_SIZE }}
           title="左键单击打开抽屉，按住左键拖动悬浮方块，拖入文件也可打开"
           onClick={(e) => {
@@ -795,8 +795,8 @@ export function EdgeTrigger() {
           onDragLeave={handleFloatHoverLeave}
           onDrop={handleEdgeFileDrag}
         >
-          <LayoutGrid className="w-5 h-5 text-amber-700 dark:text-amber-900 pointer-events-none" />
-          <span className="absolute right-2 bottom-2 w-2 h-2 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.65)] pointer-events-none" />
+          <Lightbulb className="w-5 h-5 text-white dark:text-stone-950 pointer-events-none" />
+          <span className="absolute right-2 bottom-2 w-2 h-2 rounded-full bg-cyan-200 dark:bg-cyan-100 shadow-[0_0_8px_rgba(34,211,238,0.7)] pointer-events-none" />
         </button>
       </div>
     );
@@ -825,8 +825,8 @@ export function EdgeTrigger() {
         onDragOver={handleEdgeFileDrag}
         onDrop={handleEdgeFileDrag}
       >
-        <div className="w-full h-24 bg-amber-100/95 dark:bg-amber-200/90 backdrop-blur-2xl rounded-l-[24px] shadow-sm shadow-amber-200/30 dark:shadow-black/20 border border-r-0 border-amber-200/80 dark:border-amber-300/60 flex items-center justify-center cursor-pointer transition-colors hover:bg-amber-100 dark:hover:bg-amber-200">
-          <div className="w-1.5 h-10 bg-amber-500/85 dark:bg-amber-700/80 rounded-full shadow-inner shadow-amber-300/50" />
+        <div className="w-full h-24 bg-blue-500/95 dark:bg-blue-400/95 backdrop-blur-2xl rounded-l-[24px] shadow-sm shadow-blue-400/25 dark:shadow-black/24 border border-r-0 border-blue-300/75 dark:border-blue-300/55 flex items-center justify-center cursor-pointer transition-colors hover:bg-blue-500 dark:hover:bg-blue-400">
+          <div className="w-1.5 h-10 bg-white/90 dark:bg-stone-950/85 rounded-full shadow-inner shadow-blue-200/50" />
         </div>
       </div>
     </div>

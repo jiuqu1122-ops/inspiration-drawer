@@ -40,3 +40,216 @@ body,
 [data-canvas-item-id] {
   contain: layout paint style;
 }
+
+/* Unified drawer theme. Keep light mode white; do not match dark:* utilities in light mode. */
+.drawer-theme {
+  --drawer-surface: rgba(255, 255, 255, 0.94);
+  --drawer-surface-strong: rgba(255, 255, 255, 0.98);
+  --drawer-surface-soft: rgba(246, 249, 255, 0.78);
+  --drawer-border: rgba(213, 223, 238, 0.74);
+  --drawer-text: #172033;
+  --drawer-muted: #6b788a;
+  --drawer-subtle: #9aa7b6;
+  --drawer-accent: #4f8cff;
+  --drawer-accent-soft: rgba(79, 140, 255, 0.1);
+  --drawer-accent-solid: #5e95ff;
+  --drawer-danger: #e06a76;
+  --drawer-danger-soft: rgba(224, 106, 118, 0.1);
+  --drawer-shadow: 0 18px 52px rgba(42, 64, 108, 0.14);
+}
+
+.drawer-theme.dark {
+  --drawer-surface: rgba(23, 23, 25, 0.92);
+  --drawer-surface-strong: rgba(15, 15, 17, 0.97);
+  --drawer-surface-soft: rgba(34, 35, 38, 0.86);
+  --drawer-surface-lifted: rgba(43, 44, 48, 0.82);
+  --drawer-border: rgba(130, 134, 145, 0.46);
+  --drawer-border-soft: rgba(105, 109, 120, 0.34);
+  --drawer-text: #eef4ff;
+  --drawer-muted: #9daabe;
+  --drawer-subtle: #657188;
+  --drawer-accent: #7c86ff;
+  --drawer-accent-soft: rgba(124, 134, 255, 0.16);
+  --drawer-accent-solid: #717cff;
+  --drawer-danger: #f07f8b;
+  --drawer-danger-soft: rgba(240, 127, 139, 0.14);
+  --drawer-shadow: 0 28px 74px rgba(0, 0, 0, 0.46);
+}
+
+.drawer-theme > .pointer-events-auto.absolute.inset-0 {
+  background:
+    radial-gradient(circle at 88% 8%, rgba(79, 140, 255, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 255, 0.92)) !important;
+  border-color: var(--drawer-border) !important;
+  box-shadow: var(--drawer-shadow) !important;
+}
+
+.drawer-theme.dark > .pointer-events-auto.absolute.inset-0 {
+  background:
+    radial-gradient(circle at 28% 12%, rgba(255, 255, 255, 0.035), transparent 34%),
+    linear-gradient(180deg, #141416 0%, #191a1d 52%, #101113 100%) !important;
+}
+
+.drawer-theme:not(.dark) .bg-stone-100\/60,
+.drawer-theme:not(.dark) .bg-stone-50\/30,
+.drawer-theme:not(.dark) .bg-stone-50\/50,
+.drawer-theme:not(.dark) .bg-stone-50\/70,
+.drawer-theme:not(.dark) .bg-stone-50\/95,
+.drawer-theme:not(.dark) .bg-white\/50,
+.drawer-theme:not(.dark) .bg-white\/58,
+.drawer-theme:not(.dark) .bg-white\/60,
+.drawer-theme:not(.dark) .bg-white\/62,
+.drawer-theme:not(.dark) .bg-white\/65,
+.drawer-theme:not(.dark) .bg-white\/70,
+.drawer-theme:not(.dark) .bg-white\/75,
+.drawer-theme:not(.dark) .bg-white\/76,
+.drawer-theme:not(.dark) .bg-white\/78,
+.drawer-theme:not(.dark) .bg-white\/80,
+.drawer-theme:not(.dark) .bg-white\/82,
+.drawer-theme:not(.dark) .bg-white\/86,
+.drawer-theme:not(.dark) .bg-white\/90,
+.drawer-theme:not(.dark) .bg-white\/92 {
+  background-color: var(--drawer-surface) !important;
+}
+
+.drawer-theme.dark [class*="dark:bg-stone-950"],
+.drawer-theme.dark [class*="dark:bg-black"] {
+  background-color: var(--drawer-surface-strong) !important;
+}
+
+.drawer-theme.dark [class*="dark:bg-stone-900"],
+.drawer-theme.dark [class*="dark:bg-slate-900"] {
+  background-color: var(--drawer-surface) !important;
+}
+
+.drawer-theme.dark [class*="dark:bg-stone-800"] {
+  background-color: var(--drawer-surface-soft) !important;
+}
+
+.drawer-theme.dark [class*="dark:border-stone-800"],
+.drawer-theme.dark [class*="dark:border-stone-700"],
+.drawer-theme.dark [class*="dark:border-stone-600"],
+.drawer-theme.dark [class*="dark:border-white"] {
+  border-color: var(--drawer-border-soft) !important;
+}
+
+.drawer-theme.dark [class*="dark:border-stone-700\/60"],
+.drawer-theme.dark [class*="dark:border-stone-700\/70"],
+.drawer-theme.dark [class*="dark:border-stone-800\/50"],
+.drawer-theme.dark [class*="dark:border-stone-800\/60"] {
+  border-color: var(--drawer-border) !important;
+}
+
+.drawer-theme.dark .border-b,
+.drawer-theme.dark .border-r,
+.drawer-theme.dark .border-l,
+.drawer-theme.dark .border-t {
+  border-color: var(--drawer-border-soft) !important;
+}
+
+.drawer-theme.dark .border-b[class*="dark:border-stone-800"],
+.drawer-theme.dark .border-r[class*="dark:border-stone-800"],
+.drawer-theme.dark .border-l[class*="dark:border-stone-800"],
+.drawer-theme.dark .border-t[class*="dark:border-stone-800"] {
+  border-color: var(--drawer-border) !important;
+}
+
+.drawer-theme input,
+.drawer-theme textarea,
+.drawer-theme select {
+  background-color: var(--drawer-surface-soft) !important;
+  border-color: var(--drawer-border) !important;
+  color: var(--drawer-text) !important;
+}
+
+.drawer-theme input::placeholder,
+.drawer-theme textarea::placeholder {
+  color: var(--drawer-subtle) !important;
+}
+
+.drawer-theme:not(.dark) textarea[data-canvas-node-prompt="true"] {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  color: rgba(68, 64, 60, 0.92) !important;
+}
+
+.drawer-theme:not(.dark) textarea[data-canvas-node-prompt="true"]::placeholder {
+  color: rgba(120, 113, 108, 0.58) !important;
+}
+
+.drawer-theme.dark textarea[data-canvas-node-prompt="true"] {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  color: rgba(255, 255, 255, 0.74) !important;
+}
+
+.drawer-theme.dark textarea[data-canvas-node-prompt="true"]::placeholder {
+  color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.drawer-theme [class*="ring-emerald"],
+.drawer-theme [class*="ring-cyan"],
+.drawer-theme [class*="ring-sky"],
+.drawer-theme [class*="ring-blue"],
+.drawer-theme [class*="ring-amber"],
+.drawer-theme [class*="ring-yellow"],
+.drawer-theme [class*="ring-orange"],
+.drawer-theme [class*="ring-purple"],
+.drawer-theme [class*="ring-indigo"],
+.drawer-theme [class*="ring-violet"] {
+  --tw-ring-color: color-mix(in srgb, var(--drawer-accent) 36%, transparent) !important;
+}
+
+.drawer-theme [data-drawer-launch-intro="true"],
+body:has(.drawer-theme) [data-canvas-floating-layer="true"] {
+  background-color: var(--drawer-surface-strong) !important;
+  border-color: var(--drawer-border) !important;
+  color: var(--drawer-text) !important;
+  box-shadow: var(--drawer-shadow) !important;
+}
+
+body:has(.drawer-theme) [data-canvas-context-menu="true"] {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+  border-color: rgba(203, 213, 225, 0.9) !important;
+  color: #2f3744 !important;
+}
+
+body:has(.drawer-theme) [data-canvas-context-menu="true"] button {
+  color: #3f4856 !important;
+}
+
+body:has(.drawer-theme) [data-canvas-context-menu="true"] button:hover {
+  background-color: rgba(59, 130, 246, 0.08) !important;
+  color: #182233 !important;
+}
+
+body:has(.drawer-theme) [data-canvas-context-menu="true"] [class*="uppercase"] {
+  color: rgba(100, 116, 139, 0.72) !important;
+}
+
+body:has(.drawer-theme) [data-canvas-context-menu="true"] .h-px {
+  background-color: rgba(203, 213, 225, 0.78) !important;
+}
+
+body:has(.drawer-theme.dark) [data-canvas-context-menu="true"] {
+  background-color: rgba(18, 18, 20, 0.94) !important;
+  border-color: rgba(105, 109, 120, 0.42) !important;
+  color: #eef4ff !important;
+}
+
+body:has(.drawer-theme.dark) [data-canvas-context-menu="true"] button {
+  color: #eef4ff !important;
+}
+
+body:has(.drawer-theme.dark) [data-canvas-context-menu="true"] button:hover {
+  background-color: rgba(255, 255, 255, 0.09) !important;
+  color: #ffffff !important;
+}
+
+body:has(.drawer-theme.dark) [data-canvas-context-menu="true"] [class*="uppercase"] {
+  color: rgba(226, 232, 240, 0.45) !important;
+}
+
+body:has(.drawer-theme.dark) [data-canvas-context-menu="true"] .h-px {
+  background-color: rgba(255, 255, 255, 0.12) !important;
+}

@@ -771,7 +771,7 @@ return (
                       transition={{ type: 'tween', duration: 0.22, delay: 0.05, ease: [0.16, 1, 0.3, 1] }}
                     >
                       {alchemyKeywords.map((tag: string) => (
-                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-white/80 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 dark:text-emerald-300">{tag}</span>
+                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300">{tag}</span>
                       ))}
                     </motion.div>
                   )}
