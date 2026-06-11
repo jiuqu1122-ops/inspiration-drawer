@@ -51,6 +51,8 @@ import {
 } from './floatingNotes';
 
 const appWindow = getCurrentWindow();
+const TEXT_NOTE_STORAGE_DEBOUNCE_MS = 350;
+const TEXT_NOTE_DRAWER_SYNC_DEBOUNCE_MS = 900;
 
 type FloatingNoteHostProps = {
   getStoredDrawerSize: () => { width: number; height: number };
@@ -108,6 +110,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const notePointerOperationRef = useRef(false);
   const noteProgrammaticResizeUntilRef = useRef(0);
   const noteWindowResizeTimerRef = useRef<number | null>(null);
+  const noteTextPersistTimerRef = useRef<number | null>(null);
+  const noteTextDrawerSyncTimerRef = useRef<number | null>(null);
   const lastWindowResizeSizeRef = useRef<any>(null);
   const isDark = localStorage.getItem('theme') === 'dark';
 
@@ -122,6 +126,22 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   useEffect(() => {
     isEditingNoteTextRef.current = isEditingNoteText;
   }, [isEditingNoteText]);
+
+  useEffect(() => () => {
+    if (noteTextPersistTimerRef.current !== null) {
+      window.clearTimeout(noteTextPersistTimerRef.current);
+      noteTextPersistTimerRef.current = null;
+    }
+    if (noteTextDrawerSyncTimerRef.current !== null) {
+      window.clearTimeout(noteTextDrawerSyncTimerRef.current);
+      noteTextDrawerSyncTimerRef.current = null;
+    }
+    const current = noteRef.current;
+    if (current?.type === 'text') {
+      localStorage.setItem(noteStorageKey, JSON.stringify(current));
+      syncTextToDrawer(current, current.content || '');
+    }
+  }, []);
 
   useEffect(() => {
     textNoteSizeModeRef.current = textNoteSizeMode;
@@ -533,10 +553,14 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   const syncTextToDrawer = (current: FloatingNoteSnapshot, nextContent: string) => {
     if (current.type !== 'text') return;
+    const scheduleItems = current.noteMode === 'schedule' && Array.isArray(current.scheduleItems)
+      ? current.scheduleItems
+      : undefined;
     const payload = {
       itemId: current.itemId,
       content: nextContent,
       noteMode: current.noteMode || 'text',
+      ...(scheduleItems ? { scheduleItems } : {}),
       sourceLabel: noteLabel,
       updatedAt: Date.now(),
     };
@@ -560,6 +584,47 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     emitTo('main', 'floating-note-title-updated', payload).catch(() => {});
   };
 
+  const persistTextSnapshotNow = (current = noteRef.current) => {
+    if (!current || current.type !== 'text') return;
+    if (noteTextPersistTimerRef.current !== null) {
+      window.clearTimeout(noteTextPersistTimerRef.current);
+      noteTextPersistTimerRef.current = null;
+    }
+    localStorage.setItem(noteStorageKey, JSON.stringify(current));
+  };
+
+  const syncTextToDrawerNow = (current = noteRef.current) => {
+    if (!current || current.type !== 'text') return;
+    if (noteTextDrawerSyncTimerRef.current !== null) {
+      window.clearTimeout(noteTextDrawerSyncTimerRef.current);
+      noteTextDrawerSyncTimerRef.current = null;
+    }
+    syncTextToDrawer(current, current.content || '');
+  };
+
+  const persistAndSyncTextNow = (current = noteRef.current) => {
+    persistTextSnapshotNow(current);
+    syncTextToDrawerNow(current);
+  };
+
+  const schedulePersistAndSyncText = () => {
+    if (noteTextPersistTimerRef.current !== null) {
+      window.clearTimeout(noteTextPersistTimerRef.current);
+    }
+    noteTextPersistTimerRef.current = window.setTimeout(() => {
+      noteTextPersistTimerRef.current = null;
+      persistTextSnapshotNow();
+    }, TEXT_NOTE_STORAGE_DEBOUNCE_MS);
+
+    if (noteTextDrawerSyncTimerRef.current !== null) {
+      window.clearTimeout(noteTextDrawerSyncTimerRef.current);
+    }
+    noteTextDrawerSyncTimerRef.current = window.setTimeout(() => {
+      noteTextDrawerSyncTimerRef.current = null;
+      syncTextToDrawerNow();
+    }, TEXT_NOTE_DRAWER_SYNC_DEBOUNCE_MS);
+  };
+
   const updateTextLive = (nextContent: string) => {
     setText(nextContent);
 
@@ -579,15 +644,29 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       updatedAt: Date.now(),
     } as FloatingNoteSnapshot;
     noteRef.current = next;
-    setNote(next);
-    localStorage.setItem(noteStorageKey, JSON.stringify(next));
-    syncTextToDrawer(next, nextContent);
+    schedulePersistAndSyncText();
   };
 
   const saveText = () => {
     const current = noteRef.current;
     if (!current) return;
-    updateTextLive(text);
+    const latestText = noteTextAreaRef.current?.value ?? text;
+    const next = current.content === latestText ? current : {
+      ...current,
+      content: latestText,
+      scheduleItems: current.noteMode === 'schedule'
+        ? buildScheduleItemsFromText(latestText, current.scheduleItems || [], {
+          tagIds: getFolderTagIds(current.folderId, current.tagIds),
+          sourceItemId: current.itemId,
+          defaultPriority: 'B',
+        })
+        : current.scheduleItems,
+      updatedAt: Date.now(),
+    } as FloatingNoteSnapshot;
+    noteRef.current = next;
+    setText(latestText);
+    setNote(next);
+    persistAndSyncTextNow(next);
   };
 
   const saveTitle = () => {
@@ -678,25 +757,20 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
     const nextMode = current.noteMode === 'schedule' ? 'text' : 'schedule';
     const existingItems = Array.isArray(current.scheduleItems) ? current.scheduleItems : [];
+    const latestContent = isEditingNoteTextRef.current
+      ? (noteTextAreaRef.current?.value ?? text)
+      : (current.content || text || '');
     const defaultTagIds = getDefaultScheduleTagIds(current);
-    const itemsFromText = (current.content || '')
-      .split(/\r?\n/)
-      .map(line => line.replace(/^\s*(?:[-*+•]|(?:\d+[\).、]))\s*/, '').trim())
-      .filter(Boolean)
-      .map((line, idx) => ({
-        id: `schedule_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
-        text: line,
-        done: false,
-        priority: 'B' as SchedulePriority,
-        allDay: true,
-        tagIds: defaultTagIds,
-        sourceItemId: current.itemId,
-        createdAt: Date.now() + idx,
-      }));
+    const itemsFromText = buildScheduleItemsFromText(latestContent, existingItems, {
+      tagIds: defaultTagIds,
+      sourceItemId: current.itemId,
+      defaultPriority: 'B',
+    });
 
     const next = persistFloatingNotePatch({
+      content: latestContent,
       noteMode: nextMode,
-      scheduleItems: nextMode === 'schedule' && existingItems.length === 0 ? itemsFromText : existingItems,
+      scheduleItems: nextMode === 'schedule' ? itemsFromText : existingItems,
     });
     if (nextMode === 'text') {
       const nextContent = next?.content || current.content || '';

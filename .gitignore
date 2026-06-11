@@ -29,3 +29,12 @@ pnpm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+.vs/
+.cursor/
+
+# Local scratch/plugin workspaces
+ai-api-skill/
+sunstudio/
+
+native-winui/**/bin/
+native-winui/**/obj/

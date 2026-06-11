@@ -29,6 +29,7 @@ use reqwest::redirect::Policy;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const APP_USER_AGENT: &str = "inspiration-drawer";
+const MAX_STORED_DATA_THUMBNAIL_CHARS: usize = 96 * 1024;
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
@@ -306,7 +307,7 @@ fn download_url_to_file(
     url: &str,
     out_path: &PathBuf,
     explicit_proxy: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let client = build_http_client(Some(app_handle), explicit_proxy, 90)?;
     let mut response = client
         .get(url)
@@ -316,6 +317,11 @@ fn download_url_to_file(
     if !response.status().is_success() {
         return Err(format!("下载失败，HTTP 状态码：{}", response.status()));
     }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
 
     let tmp_path = out_path.with_extension("download.tmp");
     {
@@ -329,7 +335,8 @@ fn download_url_to_file(
         fs::copy(&tmp_path, out_path).map(|_| ())?;
         let _ = fs::remove_file(&tmp_path);
         Ok::<(), std::io::Error>(())
-    }).map_err(|e| e.to_string())
+    }).map_err(|e| e.to_string())?;
+    Ok(content_type)
 }
 
 fn http_get_text(
@@ -338,21 +345,160 @@ fn http_get_text(
     api_key: &str,
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
-    let client = build_http_client(Some(app_handle), explicit_proxy, 90)?;
-    let response = client
+    let timeout_secs = 1600;
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let response_result = client
         .get(url)
-        .header("accept", "application/json")
+        .header("accept", "text/event-stream, application/json, text/plain, */*")
         .bearer_auth(api_key)
-        .send()
-        .map_err(|e| format!("模型列表请求失败：{}", e))?;
+        .send();
+
+    let response = match response_result {
+        Ok(response) => response,
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("AI GET 请求失败：{}", first_err));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            direct_client
+                .get(url)
+                .header("accept", "text/event-stream, application/json, text/plain, */*")
+                .bearer_auth(api_key)
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "AI GET 请求失败：{}；无代理直连重试也失败：{}",
+                        first_err, second_err
+                    )
+                })?
+        }
+    };
 
     let status = response.status();
-    let text = response.text().map_err(|e| e.to_string())?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let prefer_stream = url.contains("workerTaskWait") || content_type.contains("text/event-stream");
+    let text = if prefer_stream {
+        read_streaming_text_until_result(response)?
+    } else {
+        response.text().map_err(|e| e.to_string())?
+    };
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("模型列表请求失败，HTTP {}：{}", status, text))
+        Err(format!("AI GET 请求失败，HTTP {}：{}", status, text))
     }
+}
+
+fn xais_output_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "result" | "results"
+            | "att" | "atts"
+            | "attachment" | "attachments"
+            | "output" | "outputs"
+            | "file" | "files"
+            | "url" | "urls"
+            | "uri" | "uris"
+            | "href"
+            | "download" | "downloads"
+    )
+}
+
+fn xais_value_has_output(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let trimmed = text.trim();
+            !trimmed.is_empty()
+                && !trimmed.eq_ignore_ascii_case("null")
+                && !trimmed.eq_ignore_ascii_case("undefined")
+                && !trimmed.eq_ignore_ascii_case("unknown error")
+                && !matches!(
+                    trimmed.to_ascii_lowercase().as_str(),
+                    "pending" | "queued" | "queue" | "running" | "processing" | "in_progress"
+                        | "progress" | "waiting" | "created" | "submitted"
+                )
+        }
+        serde_json::Value::Array(items) => items.iter().any(xais_value_has_output),
+        serde_json::Value::Object(object) => object
+            .iter()
+            .any(|(key, nested)| xais_output_key(key) && xais_value_has_output(nested)),
+        _ => false,
+    }
+}
+
+fn xais_status_is_failure(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "fail" | "failed" | "failure" | "error" | "exception" | "cancelled" | "canceled"
+    )
+}
+
+fn xais_payload_is_terminal(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(items) => items.iter().any(xais_payload_is_terminal),
+        serde_json::Value::Object(object) => {
+            for key in ["status", "state"] {
+                if let Some(status) = object.get(key).and_then(|value| value.as_str()) {
+                    if xais_status_is_failure(status) {
+                        return true;
+                    }
+                }
+            }
+            object
+                .iter()
+                .any(|(key, nested)| xais_output_key(key) && xais_value_has_output(nested))
+                || object.values().any(xais_payload_is_terminal)
+        }
+        _ => false,
+    }
+}
+
+fn xais_stream_payload_from_line(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("data:") {
+        return Some(trimmed[5..].trim());
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return Some(trimmed);
+    }
+    None
+}
+
+fn read_streaming_text_until_result(response: reqwest::blocking::Response) -> Result<String, String> {
+    let mut reader = BufReader::new(response);
+    let mut text = String::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        text.push_str(&line);
+        if let Some(payload) = xais_stream_payload_from_line(&line) {
+            if payload.eq_ignore_ascii_case("[done]") {
+                break;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+                if xais_payload_is_terminal(&value) {
+                    break;
+                }
+            }
+        }
+        if text.len() > 2 * 1024 * 1024 {
+            break;
+        }
+    }
+    Ok(text)
 }
 
 fn http_post_json(
@@ -590,6 +736,30 @@ async fn post_ai_json(
 }
 
 #[tauri::command]
+async fn post_ai_text(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    body: serde_json::Value,
+    proxy: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("请先填写 API Key".to_string());
+        }
+        http_post_json(
+            &app_handle,
+            &url,
+            &api_key,
+            &body,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )
+    })
+    .await
+    .map_err(|e| format!("AI 请求任务失败：{}", e))?
+}
+
+#[tauri::command]
 async fn post_ai_image_edit(
     app_handle: tauri::AppHandle,
     url: String,
@@ -648,6 +818,28 @@ async fn get_ai_json(
 }
 
 #[tauri::command]
+async fn get_ai_text(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    proxy: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("Please enter API Key first.".to_string());
+        }
+        http_get_text(
+            &app_handle,
+            &url,
+            &api_key,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+        )
+    })
+    .await
+    .map_err(|e| format!("AI GET request task failed: {}", e))?
+}
+
+#[tauri::command]
 fn path_kind(path: String) -> Result<String, String> {
     let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(path));
     if normalized.is_dir() {
@@ -657,6 +849,20 @@ fn path_kind(path: String) -> Result<String, String> {
     } else {
         Ok("missing".to_string())
     }
+}
+
+#[tauri::command]
+fn delete_local_file(path: String) -> Result<bool, String> {
+    let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
+    if !normalized.exists() {
+        return Ok(false);
+    }
+    if !normalized.is_file() {
+        return Err(format!("不是可删除的文件：{}", normalized.to_string_lossy()));
+    }
+    let resolved = fs::canonicalize(&normalized).unwrap_or_else(|_| normalized.clone());
+    fs::remove_file(&resolved).map_err(|e| format!("删除本地文件失败：{}", e))?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -822,7 +1028,7 @@ fn save_item_source_as(
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        download_url_to_file(&app_handle, input, &dest_path, None)?;
+        let _ = download_url_to_file(&app_handle, input, &dest_path, None)?;
         return Ok(());
     }
 
@@ -918,20 +1124,91 @@ fn get_user_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
     path
 }
 
+fn is_data_image_string(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    let prefix = "data:image/";
+    trimmed
+        .get(..prefix.len())
+        .map(|head| head.eq_ignore_ascii_case(prefix))
+        .unwrap_or(false)
+}
+
+fn remove_data_image_field(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    max_chars: Option<usize>,
+) {
+    let should_remove = object
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| {
+            is_data_image_string(value)
+                && max_chars
+                    .map(|limit| value.len() > limit)
+                    .unwrap_or(true)
+        })
+        .unwrap_or(false);
+
+    if should_remove {
+        object.remove(key);
+    }
+}
+
+fn compact_item_json_object(object: &mut serde_json::Map<String, serde_json::Value>) {
+    remove_data_image_field(object, "sourceUrl", None);
+    remove_data_image_field(object, "originalUrl", None);
+    remove_data_image_field(object, "thumbnail", Some(MAX_STORED_DATA_THUMBNAIL_CHARS));
+    remove_data_image_field(object, "cover", Some(MAX_STORED_DATA_THUMBNAIL_CHARS));
+}
+
+fn compact_item_like_json(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut() {
+        compact_item_json_object(object);
+        if let Some(item) = object.get_mut("item") {
+            compact_item_like_json(item);
+        }
+    }
+}
+
+fn compact_items_payload(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                compact_item_like_json(item);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            compact_item_json_object(object);
+            if let Some(items) = object.get_mut("items").and_then(|value| value.as_array_mut()) {
+                for item in items {
+                    compact_item_like_json(item);
+                }
+            }
+            if let Some(item) = object.get_mut("item") {
+                compact_item_like_json(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tauri::command]
 fn load_items(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_items.json");
     if path.exists() {
         let content = fs::read_to_string(path).unwrap_or_else(|_| "[]".to_string());
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+        let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        compact_items_payload(&mut value);
+        Ok(value)
     } else {
         Ok(serde_json::json!([]))
     }
 }
 
 #[tauri::command]
-fn save_items(app_handle: tauri::AppHandle, items: serde_json::Value) -> Result<(), String> {
+fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_items.json");
+    compact_items_payload(&mut items);
     let content = serde_json::to_string(&items).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
 }
@@ -952,6 +1229,41 @@ fn save_folders(app_handle: tauri::AppHandle, folders: serde_json::Value) -> Res
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
     let content = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_canvas_state(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
+    if path.exists() {
+        let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".to_string());
+        let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        compact_items_payload(&mut value);
+        Ok(value)
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+#[tauri::command]
+fn save_canvas_state(app_handle: tauri::AppHandle, mut state: serde_json::Value) -> Result<(), String> {
+    let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
+    compact_items_payload(&mut state);
+    let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn append_ai_debug_log(app_handle: tauri::AppHandle, name: String, line: String) -> Result<(), String> {
+    let safe_name = sanitize_file_name(&name);
+    let dir = get_user_data_dir(&app_handle).join("logs");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.log", safe_name));
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    writeln!(file, "{}", line).map_err(|e| e.to_string())
 }
 
 fn web_image_cache_config_path(app_handle: &tauri::AppHandle) -> PathBuf {
@@ -1011,56 +1323,113 @@ fn image_ext_from_name_or_url(value: &str) -> Option<String> {
     let name = clean.split(['/', '\\']).filter(|part| !part.is_empty()).last().unwrap_or(clean);
     let ext = name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase())?;
     let ext = ext.trim().trim_matches('.');
-    if matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") {
+    if matches!(
+        ext,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+            | "mp4" | "webm" | "mov" | "m4v" | "avi" | "mkv"
+    ) {
         Some(ext.to_string())
     } else {
         None
     }
 }
 
-fn image_ext_from_mime(mime: &str) -> &'static str {
+fn media_ext_from_mime(mime: &str) -> Option<&'static str> {
     let lower = mime.to_ascii_lowercase();
     if lower.contains("jpeg") || lower.contains("jpg") {
-        "jpg"
+        Some("jpg")
     } else if lower.contains("gif") {
-        "gif"
+        Some("gif")
     } else if lower.contains("webp") {
-        "webp"
+        Some("webp")
     } else if lower.contains("bmp") {
-        "bmp"
+        Some("bmp")
     } else if lower.contains("svg") {
-        "svg"
+        Some("svg")
+    } else if lower.contains("png") || lower.contains("image/") {
+        Some("png")
+    } else if lower.contains("webm") {
+        Some("webm")
+    } else if lower.contains("quicktime") || lower.contains("mov") {
+        Some("mov")
+    } else if lower.contains("x-m4v") || lower.contains("m4v") {
+        Some("m4v")
+    } else if lower.contains("avi") {
+        Some("avi")
+    } else if lower.contains("matroska") || lower.contains("mkv") {
+        Some("mkv")
+    } else if lower.contains("mp4") || lower.contains("video/") {
+        Some("mp4")
     } else {
-        "png"
+        None
     }
+}
+
+fn image_ext_from_mime(mime: &str) -> &'static str {
+    media_ext_from_mime(mime).unwrap_or("png")
+}
+
+fn is_supported_media_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+            | "mp4" | "webm" | "mov" | "m4v" | "avi" | "mkv"
+    )
+}
+
+fn replace_media_extension(path: &Path, ext: &str) -> PathBuf {
+    let normalized_ext = ext.trim().trim_start_matches('.');
+    if normalized_ext.is_empty() {
+        return path.to_path_buf();
+    }
+    let current = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if current == normalized_ext.to_ascii_lowercase() {
+        return path.to_path_buf();
+    }
+    path.with_extension(normalized_ext)
+}
+
+fn cloudflared_ref_stem(index: usize) -> String {
+    const STEMS: [&str; 26] = [
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+        "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+    ];
+    STEMS
+        .get(index)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("r{}", index + 1))
 }
 
 fn source_to_cloudflared_image_file(source: &str, dir: &PathBuf, index: usize) -> Result<String, String> {
     let trimmed = source.trim();
     if trimmed.is_empty() {
-        return Err("参考图为空".to_string());
+        return Err("参考文件为空".to_string());
     }
 
-    if trimmed.starts_with("data:image/") {
+    if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
         let (mime, bytes) = decode_data_url(trimmed)?;
         let ext = image_ext_from_mime(&mime);
-        let file_name = format!("input-{}.{}", index + 1, ext);
+        let file_name = format!("{}.{}", cloudflared_ref_stem(index), ext);
         fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
         return Ok(file_name);
     }
 
     let local = local_path_from_url_like(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
     if !local.is_file() {
-        return Err("本地图生图需要本地图片或 data URL".to_string());
+        return Err("本地参考需要本地图片、视频或 data URL".to_string());
     }
 
     let ext = local
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg"))
+        .filter(|value| is_supported_media_ext(value))
         .unwrap_or_else(|| "jpg".to_string());
-    let file_name = format!("input-{}.{}", index + 1, ext);
+    let file_name = format!("{}.{}", cloudflared_ref_stem(index), ext);
     fs::copy(local, dir.join(&file_name)).map_err(|e| e.to_string())?;
     Ok(file_name)
 }
@@ -1152,11 +1521,43 @@ fn cloudflared_binary(app_handle: &tauri::AppHandle) -> (PathBuf, String) {
     (PathBuf::from(exe_name), checked)
 }
 
+fn parse_http_range_header(value: &str, total_len: usize) -> Option<(usize, usize)> {
+    if total_len == 0 {
+        return None;
+    }
+    let lower = value.trim().to_ascii_lowercase();
+    let range = lower.strip_prefix("bytes=")?;
+    let (start_text, end_text) = range.split_once('-')?;
+    let start = start_text.trim().parse::<usize>().ok()?;
+    if start >= total_len {
+        return None;
+    }
+    let end = end_text
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .unwrap_or(total_len.saturating_sub(1))
+        .min(total_len.saturating_sub(1));
+    if end < start {
+        return None;
+    }
+    Some((start, end))
+}
+
 fn serve_cloudflared_file(mut stream: TcpStream, dir: &PathBuf) -> std::io::Result<()> {
     let mut request_line = String::new();
+    let mut header_lines: Vec<String> = Vec::new();
     {
         let mut reader = BufReader::new(stream.try_clone()?);
         reader.read_line(&mut request_line)?;
+        loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line)?;
+            if read == 0 || line == "\r\n" || line == "\n" {
+                break;
+            }
+            header_lines.push(line);
+        }
     }
 
     let mut parts = request_line.split_whitespace();
@@ -1186,8 +1587,36 @@ fn serve_cloudflared_file(mut stream: TcpStream, dir: &PathBuf) -> std::io::Resu
 
     let bytes = fs::read(&path)?;
     let content_type = guess_mime_from_path(&path);
+    let range = header_lines
+        .iter()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("range") {
+                parse_http_range_header(value, bytes.len())
+            } else {
+                None
+            }
+        });
+
+    if method == "GET" {
+        if let Some((start, end)) = range {
+            let body = &bytes[start..=end];
+            let headers = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: {}\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                content_type,
+                body.len(),
+                start,
+                end,
+                bytes.len()
+            );
+            stream.write_all(headers.as_bytes())?;
+            stream.write_all(body)?;
+            return Ok(());
+        }
+    }
+
     let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         content_type,
         bytes.len()
     );
@@ -1320,11 +1749,10 @@ fn probe_cloudflared_public_url(client: &Client, url: &str) -> Result<bool, Stri
         .send();
 
     match head_result {
-        Ok(response) if response.status().is_success() => return Ok(true),
-        Ok(response) if response.status().as_u16() != 405 => {
+        Ok(response) if response.status().is_success() || response.status().as_u16() == 405 => {}
+        Ok(_) => {
             return Ok(false);
         }
-        Ok(_) => {}
         Err(err) => {
             return Err(format!("{} 访问失败：{}", url, err));
         }
@@ -1333,7 +1761,7 @@ fn probe_cloudflared_public_url(client: &Client, url: &str) -> Result<bool, Stri
     client
         .get(url)
         .header(reqwest::header::CACHE_CONTROL, "no-cache")
-        .header(reqwest::header::RANGE, "bytes=0-15")
+        .header(reqwest::header::RANGE, "bytes=0-31")
         .send()
         .map(|response| response.status().is_success())
         .map_err(|err| format!("{} 访问失败：{}", url, err))
@@ -1349,8 +1777,9 @@ fn warm_up_cloudflared_public_urls(app_handle: &tauri::AppHandle, urls: &[String
         .ok()?;
     let started_at = Instant::now();
     let mut last_error = String::new();
+    let mut ready_rounds = 0;
 
-    while started_at.elapsed() < Duration::from_secs(12) {
+    while started_at.elapsed() < Duration::from_secs(18) {
         let mut all_ready = true;
         for url in urls {
             match probe_cloudflared_public_url(&client, url) {
@@ -1361,19 +1790,26 @@ fn warm_up_cloudflared_public_urls(app_handle: &tauri::AppHandle, urls: &[String
                     break;
                 }
                 Err(err) => {
-                    return Some(format!("本机无法自检 cloudflared 公网图片 URL，将继续交给中转站请求。{}", err));
+                    all_ready = false;
+                    last_error = err;
+                    break;
                 }
             }
         }
 
         if all_ready {
-            return None;
+            ready_rounds += 1;
+            if ready_rounds >= 2 {
+                return None;
+            }
+        } else {
+            ready_rounds = 0;
         }
-        thread::sleep(Duration::from_millis(650));
+        thread::sleep(Duration::from_millis(800));
     }
 
     Some(format!(
-        "cloudflared 公网图片 URL 预热未确认完成，将继续交给中转站请求。{}",
+        "cloudflared 公网图片 URL 预热未确认完成。{}",
         last_error
     ))
 }
@@ -1402,7 +1838,7 @@ async fn create_cloudflared_public_image_urls(
         fs::create_dir_all(&share_dir).map_err(|e| e.to_string())?;
 
         let mut file_names = Vec::new();
-        for (index, source) in sources.iter().take(8).enumerate() {
+        for (index, source) in sources.iter().take(13).enumerate() {
             file_names.push(source_to_cloudflared_image_file(source, &share_dir, index)?);
         }
 
@@ -1414,25 +1850,54 @@ async fn create_cloudflared_public_image_urls(
             }
         };
 
-        let (base_url, child) = match spawn_cloudflared_tunnel(&app_handle, port) {
-            Ok(value) => value,
-            Err(err) => {
+        let mut selected_tunnel: Option<(String, Child, Vec<String>)> = None;
+        let mut last_tunnel_error = String::new();
+        for attempt in 0..5 {
+            let (base_url, mut child) = match spawn_cloudflared_tunnel(&app_handle, port) {
+                Ok(value) => value,
+                Err(err) => {
+                    last_tunnel_error = err;
+                    break;
+                }
+            };
+            let base = base_url.trim_end_matches('/').to_string();
+            let urls = file_names
+                .iter()
+                .map(|name| format!("{}/{}", base, name))
+                .collect::<Vec<_>>();
+            if urls.iter().all(|url| url.len() <= 64) {
+                if let Some(warning) = warm_up_cloudflared_public_urls(&app_handle, &urls) {
+                    last_tunnel_error = warning;
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                selected_tunnel = Some((base, child, urls));
+                break;
+            }
+            last_tunnel_error = format!(
+                "cloudflared 第 {} 次生成的公网 URL 超过 64 字符，已重试",
+                attempt + 1
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            thread::sleep(Duration::from_millis(500));
+        }
+
+        let (_base_url, child, urls) = match selected_tunnel {
+            Some(value) => value,
+            None => {
                 server_stop.store(true, Ordering::Relaxed);
                 let _ = server_thread.join();
                 let _ = fs::remove_dir_all(&share_dir);
-                return Err(err);
+                return Err(if last_tunnel_error.is_empty() {
+                    "cloudflared 没有生成符合 Xais 64 字符限制的公网 URL".to_string()
+                } else {
+                    last_tunnel_error
+                });
             }
         };
-
-        let base = base_url.trim_end_matches('/').to_string();
-        let urls = file_names
-            .iter()
-            .map(|name| format!("{}/{}", base, name))
-            .collect::<Vec<_>>();
-
-        if let Some(warning) = warm_up_cloudflared_public_urls(&app_handle, &urls) {
-            eprintln!("{}", warning);
-        }
 
         cloudflared_shares()
             .lock()
@@ -1546,7 +2011,12 @@ fn cache_web_image_impl(
         let comma = input.find(',').ok_or_else(|| "invalid data url".to_string())?;
         image_ext_from_mime(&input[..comma]).to_string()
     } else {
-        image_ext_from_name_or_url(input).unwrap_or_else(|| "png".to_string())
+        image_ext_from_name_or_url(input)
+            .or_else(|| {
+                image_ext_from_name_or_url(&requested_name)
+                    .filter(|value| is_supported_media_ext(value))
+            })
+            .unwrap_or_else(|| "png".to_string())
     };
 
     if image_ext_from_name_or_url(&safe_name).is_none() {
@@ -1557,18 +2027,34 @@ fn cache_web_image_impl(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_millis();
-    let out_path = dir.join(format!("{}_{}", stamp, safe_name));
+    let mut out_path = dir.join(format!("{}_{}", stamp, safe_name));
 
     if input.starts_with("data:") {
-        let (_mime, bytes) = decode_data_url(input)?;
+        let (mime, bytes) = decode_data_url(input)?;
+        let mime_ext = image_ext_from_mime(&mime);
+        out_path = replace_media_extension(&out_path, mime_ext);
         fs::write(&out_path, bytes).map_err(|e| e.to_string())?;
         return Ok(out_path.to_string_lossy().to_string());
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        if let Err(err) = download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
-            let _ = fs::remove_file(&out_path);
-            return Err(format!("缓存网页图片失败：{}", err));
+        let content_type = match download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = fs::remove_file(&out_path);
+                return Err(format!("缓存网页图片失败：{}", err));
+            }
+        };
+        if let Some(mime_ext) = content_type.as_deref().and_then(media_ext_from_mime) {
+            let next_path = replace_media_extension(&out_path, mime_ext);
+            if next_path != out_path {
+                if let Err(err) = fs::rename(&out_path, &next_path) {
+                    let _ = fs::copy(&out_path, &next_path)
+                        .map_err(|copy_err| format!("{}；fallback copy failed: {}", err, copy_err))?;
+                    let _ = fs::remove_file(&out_path);
+                }
+                out_path = next_path;
+            }
         }
         return Ok(out_path.to_string_lossy().to_string());
     }
@@ -1742,6 +2228,11 @@ fn guess_mime_from_path(path: &std::path::Path) -> &'static str {
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        "mkv" => "video/x-matroska",
         _ => "image/png",
     }
 }
@@ -2946,7 +3437,7 @@ fn get_video_thumb(path: String) -> Result<String, String> {
 
     let temp_dir = std::env::temp_dir();
     let file_name = format!(
-        "thumb_{}.png",
+        "thumb_{}.jpg",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2974,8 +3465,10 @@ fn get_video_thumb(path: String) -> Result<String, String> {
                 "-frames:v",
                 "1",
                 "-vf",
-                "scale=720:-2",
-                out_path.to_str().unwrap_or("thumb.png"),
+                "scale=360:-2",
+                "-q:v",
+                "6",
+                out_path.to_str().unwrap_or("thumb.jpg"),
             ])
             .output()
             .map_err(|e| format!("FFmpeg 调用失败: {}", e))?;
@@ -2994,7 +3487,7 @@ fn get_video_thumb(path: String) -> Result<String, String> {
         use base64::{engine::general_purpose, Engine as _};
         let b64 = general_purpose::STANDARD.encode(&img_bytes);
         let _ = fs::remove_file(&out_path);
-        Ok(format!("data:image/png;base64,{}", b64))
+        Ok(format!("data:image/jpeg;base64,{}", b64))
     } else {
         Err(if last_error.is_empty() {
             "video thumbnail generation failed".to_string()
@@ -3136,7 +3629,7 @@ fn auto_start_value_matches_current_exe(value: &str) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn get_auto_start_impl() -> Result<bool, String> {
+fn read_auto_start_value_impl() -> Result<Option<String>, String> {
     use std::ptr::null_mut;
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::winerror::ERROR_SUCCESS;
@@ -3148,7 +3641,7 @@ fn get_auto_start_impl() -> Result<bool, String> {
         let mut hkey = null_mut();
         let status = RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey);
         if status != ERROR_SUCCESS as i32 {
-            return Ok(false);
+            return Ok(None);
         }
 
         let name = auto_start_wide_null(AUTO_START_VALUE_NAME);
@@ -3165,7 +3658,7 @@ fn get_auto_start_impl() -> Result<bool, String> {
 
         if status != ERROR_SUCCESS as i32 || size_bytes == 0 {
             RegCloseKey(hkey);
-            return Ok(false);
+            return Ok(None);
         }
 
         let mut buffer = vec![0u16; ((size_bytes as usize) + 1) / 2];
@@ -3180,17 +3673,54 @@ fn get_auto_start_impl() -> Result<bool, String> {
         RegCloseKey(hkey);
 
         if status != ERROR_SUCCESS as i32 {
-            return Ok(false);
+            return Ok(None);
         }
 
         if value_type != REG_SZ && value_type != REG_EXPAND_SZ {
-            return Ok(false);
+            return Ok(None);
         }
 
         let end = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
-        let value = String::from_utf16_lossy(&buffer[..end]);
-        auto_start_value_matches_current_exe(&value)
+        Ok(Some(String::from_utf16_lossy(&buffer[..end])))
     }
+}
+
+#[cfg(all(target_os = "windows", debug_assertions))]
+fn auto_start_value_points_to_existing_same_named_exe(value: &str) -> bool {
+    let registered = parse_windows_run_exe_path(value);
+    if registered.as_os_str().is_empty() || !registered.exists() {
+        return false;
+    }
+
+    let Ok(current) = std::env::current_exe() else {
+        return false;
+    };
+
+    registered.file_name().is_some()
+        && registered.file_name() == current.file_name()
+}
+
+#[cfg(target_os = "windows")]
+fn get_auto_start_impl() -> Result<bool, String> {
+    let Some(value) = read_auto_start_value_impl()? else {
+        return Ok(false);
+    };
+
+    if auto_start_value_matches_current_exe(&value)? {
+        return Ok(true);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        // In `tauri dev`, the current executable is target/debug/inspiration-drawer.exe.
+        // Treat an existing installed app Run entry as enabled so the dev UI does not
+        // wrongly suggest that startup is off.
+        if auto_start_value_points_to_existing_same_named_exe(&value) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3214,6 +3744,17 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
         RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER,
     };
     use winapi::um::winnt::{KEY_SET_VALUE, REG_SZ};
+
+    #[cfg(debug_assertions)]
+    if auto_start {
+        if let Some(existing) = read_auto_start_value_impl()? {
+            if auto_start_value_points_to_existing_same_named_exe(&existing) {
+                return Ok(());
+            }
+        }
+
+        return Err("开发模式不会写入开机启动，避免把启动项指向 debug exe；请用正式安装版开启。".to_string());
+    }
 
     unsafe {
         let subkey = auto_start_wide_null(AUTO_START_REG_SUBKEY);
@@ -3524,8 +4065,18 @@ fn copy_image_impl(data_url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
-    native_drag::start_file_drag(paths)
+fn start_file_drag(app_handle: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let cancel_rect = app_handle.get_webview_window("main").and_then(|main| {
+        let pos = main.outer_position().ok()?;
+        let size = main.outer_size().ok()?;
+        Some(native_drag::CancelRect {
+            left: pos.x,
+            top: pos.y,
+            right: pos.x.saturating_add(size.width as i32),
+            bottom: pos.y.saturating_add(size.height as i32),
+        })
+    });
+    native_drag::start_file_drag(paths, cancel_rect)
 }
 
 #[tauri::command]
@@ -4308,7 +4859,7 @@ fn position_edge(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
-    if is_startup_close_locked() || is_anti_touch_locked() {
+    if is_anti_touch_locked() {
         if let Some(edge) = app_handle.get_webview_window("edge") {
             let _ = edge.hide();
         }
@@ -4808,20 +5359,58 @@ fn sync_drawer_bounds(app_handle: tauri::AppHandle, width: f64, height: f64) -> 
 }
 
 const MAX_FLOATING_NOTE_WINDOWS: u32 = 8;
+const MAX_PREWARMED_NOTE_WINDOWS: u32 = 2;
 
-fn validate_note_window_label(label: &str) -> Result<(), String> {
+fn note_window_index(label: &str) -> Result<Option<u32>, String> {
     if label == "note" {
-        return Ok(());
+        return Ok(None);
     }
 
     let Some(raw_index) = label.strip_prefix("note_") else {
         return Err(format!("invalid note window label: {}", label));
     };
 
-    let index = raw_index
+    raw_index
         .parse::<u32>()
-        .map_err(|_| format!("invalid note window label: {}", label))?;
-    if !(1..=MAX_FLOATING_NOTE_WINDOWS).contains(&index) {
+        .map(Some)
+        .map_err(|_| format!("invalid note window label: {}", label))
+}
+
+fn validate_note_window_label(label: &str) -> Result<(), String> {
+    if let Some(index) = note_window_index(label)? {
+        if !(1..=MAX_FLOATING_NOTE_WINDOWS).contains(&index) {
+            return Err(format!(
+                "桌面便签最多同时保留 {} 个，请先关闭一个便签。",
+                MAX_FLOATING_NOTE_WINDOWS
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn can_prewarm_note_window(label: &str) -> Result<bool, String> {
+    match note_window_index(label)? {
+        Some(index) => Ok(index <= MAX_PREWARMED_NOTE_WINDOWS),
+        None => Ok(MAX_PREWARMED_NOTE_WINDOWS > 0),
+    }
+}
+
+fn enforce_note_window_limit(app_handle: &tauri::AppHandle, target_label: &str) -> Result<(), String> {
+    let visible_count = (1..=MAX_FLOATING_NOTE_WINDOWS)
+        .filter(|index| {
+            let label = format!("note_{}", index);
+            if label == target_label {
+                return true;
+            }
+            app_handle
+                .get_webview_window(&label)
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false)
+        })
+        .count() as u32;
+
+    if visible_count > MAX_FLOATING_NOTE_WINDOWS {
         return Err(format!(
             "桌面便签最多同时保留 {} 个，请先关闭一个便签。",
             MAX_FLOATING_NOTE_WINDOWS
@@ -4853,6 +5442,9 @@ fn build_hidden_note_window(app_handle: &tauri::AppHandle, label: String) -> Res
 fn prewarm_note_window(app_handle: tauri::AppHandle, label: Option<String>) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
     validate_note_window_label(&label)?;
+    if !can_prewarm_note_window(&label)? {
+        return Ok(());
+    }
     if app_handle.get_webview_window(&label).is_none() {
         let _ = build_hidden_note_window(&app_handle, label)?;
     }
@@ -4872,7 +5464,24 @@ fn show_note_window(
 ) -> Result<(), String> {
     let label = label.unwrap_or_else(|| "note_1".to_string());
     validate_note_window_label(&label)?;
+    enforce_note_window_limit(&app_handle, &label)?;
+    thread::spawn(move || {
+        if let Err(err) = show_note_window_impl(app_handle, label, width, height, x, y, topmost) {
+            eprintln!("show note window failed: {err}");
+        }
+    });
+    Ok(())
+}
 
+fn show_note_window_impl(
+    app_handle: tauri::AppHandle,
+    label: String,
+    width: Option<f64>,
+    height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+    topmost: Option<bool>,
+) -> Result<(), String> {
     let note = if let Some(note) = app_handle.get_webview_window(&label) {
         note
     } else {
@@ -4929,7 +5538,15 @@ fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), S
         return Ok(());
     };
 
-    note.hide().map_err(|e| e.to_string())
+    note.hide().map_err(|e| e.to_string())?;
+    if can_prewarm_note_window(&label)? {
+        return Ok(());
+    }
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(160));
+        let _ = note.close();
+    });
+    Ok(())
 }
 
 
@@ -5276,9 +5893,64 @@ fn show_system_notification(title: String, body: String) -> Result<(), String> {
     show_windows_toast(&title, &body)
 }
 
+fn current_or_default_drawer_size(app: &tauri::AppHandle) -> (f64, f64) {
+    app.get_webview_window("main")
+        .and_then(|main| {
+            let factor = main.scale_factor().ok()?;
+            let size = main.outer_size().ok()?.to_logical::<f64>(factor);
+            if size.width >= DRAWER_MIN_WIDTH && size.height >= DRAWER_MIN_HEIGHT {
+                Some((size.width, size.height))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((400.0, 800.0))
+}
+
+fn request_force_rescue(app: &tauri::AppHandle) {
+    set_startup_close_lock(0);
+    ANTI_TOUCH_LOCKED.store(0, Ordering::Relaxed);
+
+    let (width, height) = current_or_default_drawer_size(app);
+    let _ = open_drawer(app.clone(), width, height, None);
+    let _ = app.emit("force-rescue", ());
+}
+
+fn window_is_visible(app: &tauri::AppHandle, label: &str) -> bool {
+    app.get_webview_window(label)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+fn schedule_startup_edge_rescue(app: tauri::AppHandle) {
+    let _ = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(1800));
+
+        if is_anti_touch_locked()
+            || window_is_visible(&app, "main")
+            || window_is_visible(&app, "edge")
+        {
+            return;
+        }
+
+        let height = app
+            .get_webview_window("main")
+            .and_then(|main| {
+                let factor = main.scale_factor().ok()?;
+                Some(main.outer_size().ok()?.to_logical::<f64>(factor).height)
+            })
+            .unwrap_or(800.0);
+
+        let _ = show_edge(app.clone(), height, None, None, None);
+    });
+}
+
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            request_force_rescue(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .manage(SnipState {
             pre_snip_bounds: std::sync::Mutex::new(None),
@@ -5293,6 +5965,9 @@ fn main() {
             save_items,
             load_folders,
             save_folders,
+            load_canvas_state,
+            save_canvas_state,
+            append_ai_debug_log,
             load_ai_analysis_config,
             save_ai_analysis_config,
             get_web_image_cache_dir,
@@ -5303,7 +5978,9 @@ fn main() {
             get_openai_compatible_models,
             get_ai_json,
             post_ai_json,
+            post_ai_text,
             post_ai_image_edit,
+            get_ai_text,
             create_cloudflared_public_image_urls,
             stop_cloudflared_share,
             cache_web_image,
@@ -5320,6 +5997,7 @@ fn main() {
             open_file,
             get_video_thumb,
             path_kind,
+            delete_local_file,
             show_in_folder,
             copy_local_file,
             cache_local_file_to_dir,
@@ -5386,6 +6064,7 @@ fn main() {
                 let _ = edge.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
                 let _ = position_edge(app.handle().clone(), 800.0, None, None, None);
             }
+            schedule_startup_edge_rescue(app.handle().clone());
 
             if let Some(snip) = app.get_webview_window("snip") {
                 let _ = snip.set_shadow(false);
@@ -5414,7 +6093,7 @@ fn main() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "open_drawer" => {
-                            let _ = open_drawer(app.clone(), 400.0, 800.0, None);
+                            request_force_rescue(app);
                         }
                         "toggle_trigger" => {
                             let _ = app.emit("tray-toggle-trigger-mode", ());
@@ -5435,7 +6114,7 @@ fn main() {
                         } = event
                         {
                             let app = tray.app_handle();
-                            let _ = open_drawer(app.clone(), 400.0, 800.0, None);
+                            request_force_rescue(&app);
                         }
                     })
                     .build(app);

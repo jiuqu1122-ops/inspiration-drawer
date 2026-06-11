@@ -87,6 +87,7 @@ export default function BufferItemCard({
   const [isExpanded, setIsExpanded] = useState(false);
   const isLongText = item.type === 'text' && item.content && item.content.length > 80;
   const [isEditingRemark, setIsEditingRemark] = useState(false);
+  const [areRemarksExpanded, setAreRemarksExpanded] = useState(false);
   const [editingRemarkIndex, setEditingRemarkIndex] = useState<number | null>(null);
   const [editRemarkText, setEditRemarkText] = useState(item.remark || '');
   const [isEditingText, setIsEditingText] = useState(false);
@@ -128,6 +129,8 @@ export default function BufferItemCard({
       ? item.remark.split(/\r?\n/).map((value: string) => value.trim()).filter(Boolean)
       : [];
   })();
+  const shouldShowRemarkToggle = remarkEntries.length > 2 || remarkEntries.some(remark => remark.length > 48);
+  const areRemarksClamped = shouldShowRemarkToggle && !areRemarksExpanded;
 
   const commitRemarkEdit = (options: { keepOpen?: boolean } = {}) => {
     skipRemarkEditSaveRef.current = false;
@@ -161,6 +164,7 @@ export default function BufferItemCard({
     setEditingRemarkIndex(latestEntries.length);
     setEditRemarkText('');
     setIsEditingRemark(true);
+    setAreRemarksExpanded(true);
   };
 
   const beginEditRemark = (index: number, e: React.MouseEvent) => {
@@ -175,6 +179,7 @@ export default function BufferItemCard({
     setEditingRemarkIndex(nextIndex);
     setEditRemarkText(latestEntries[nextIndex] || '');
     setIsEditingRemark(true);
+    setAreRemarksExpanded(true);
   };
 
   const cancelRemarkEdit = () => {
@@ -186,6 +191,7 @@ export default function BufferItemCard({
 
   useEffect(() => {
     setIsEditingRemark(false);
+    setAreRemarksExpanded(false);
     setEditingRemarkIndex(null);
     setEditRemarkText('');
   }, [item?.id]);
@@ -771,7 +777,7 @@ return (
                       transition={{ type: 'tween', duration: 0.22, delay: 0.05, ease: [0.16, 1, 0.3, 1] }}
                     >
                       {alchemyKeywords.map((tag: string) => (
-                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-white/80 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-emerald-700 dark:text-emerald-300">{tag}</span>
+                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300">{tag}</span>
                       ))}
                     </motion.div>
                   )}
@@ -819,7 +825,27 @@ return (
             className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0"
           >
             <div className="px-3 pb-3 pt-1">
-              <div className="flex flex-wrap items-start gap-1.5">
+              <div className="relative">
+                {shouldShowRemarkToggle && (
+                  <button
+                    type="button"
+                    className="absolute right-0 top-0 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-amber-100 bg-amber-50/95 text-amber-600 shadow-sm transition-colors hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/80 dark:text-amber-300 dark:hover:bg-amber-900"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setAreRemarksExpanded(value => !value);
+                    }}
+                    title={areRemarksExpanded ? '收起标签' : '展开全部标签'}
+                  >
+                    <span
+                      className={`block h-0 w-0 border-x-[4px] border-t-[5px] border-x-transparent border-t-current transition-transform ${areRemarksExpanded ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                )}
+                <div
+                  className={`flex flex-wrap items-start gap-1.5 ${shouldShowRemarkToggle ? 'pr-8' : ''}`}
+                  style={areRemarksClamped ? { maxHeight: 58, overflow: 'hidden' } : undefined}
+                >
                 {remarkEntries.map((remark, index) => {
                   const isUrlRemark = isExternalHttpUrl(remark);
                   return (
@@ -851,6 +877,7 @@ return (
                     </button>
                   );
                 })}
+                </div>
               </div>
             </div>
           </motion.div>

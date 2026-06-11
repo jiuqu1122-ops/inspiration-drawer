@@ -16,7 +16,7 @@ export function SystemQuickAccessIcon({ title, icon, path }: { title: string, ic
   return (
     <div className="relative shrink-0 flex flex-col items-center w-full">
       <div className="relative mb-1">
-        <button onClick={handleOpen} title={`打开${title}`} className="w-10 h-10 bg-white/60 dark:bg-stone-800/60 rounded-[10px] shadow-sm border border-stone-200/50 dark:border-stone-700/50 flex items-center justify-center hover:bg-white dark:hover:bg-stone-700 hover:shadow-md transition-all hover:scale-105 active:scale-95">{icon}</button>
+        <button onClick={handleOpen} title={`打开${title}`} className="w-10 h-10 bg-white/78 dark:bg-stone-800/64 rounded-[16px] shadow-sm border border-blue-100/70 dark:border-stone-700/60 flex items-center justify-center hover:bg-blue-50/70 dark:hover:bg-stone-700 hover:shadow-md transition-all hover:scale-105 active:scale-95">{icon}</button>
       </div>
       <span className="text-[10px] text-stone-500 dark:text-stone-400 w-14 text-center truncate px-0.5 cursor-default pb-1" title={title}>{title}</span>
     </div>
@@ -44,7 +44,7 @@ export function QuickAccessIcon({ item, onRemove, onImageClick }: any) {
     if ((item.type === 'image' || item.type === 'video') && item.url) return <img src={item.url} alt={item.name || ''} loading="lazy" decoding="async" draggable={false} className="w-full h-full object-cover rounded-[10px]" />;
     if (item.type === 'video') return <Film className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />;
     if (item.type === 'text') return <Type className="w-5 h-5 text-stone-500 dark:text-stone-400" />;
-    return <FolderOpen className="w-5 h-5 fill-amber-400/20 text-amber-500" />;
+    return <FolderOpen className="w-5 h-5 fill-blue-400/20 text-blue-500 dark:text-blue-300" />;
   };
 
   let displayName = item.name || '未命名';
@@ -54,7 +54,7 @@ export function QuickAccessIcon({ item, onRemove, onImageClick }: any) {
   return (
     <motion.div layout transition={{ type: 'tween', duration: 0.15, ease: "easeOut" }} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} className="relative group/qa shrink-0 flex flex-col items-center w-full">
       <div className="relative mb-1">
-        <button onClick={handleOpen} title={item.name || '快速访问'} className="w-10 h-10 bg-white/60 dark:bg-stone-800/60 rounded-[10px] shadow-sm border border-stone-200/50 dark:border-stone-700/50 flex items-center justify-center hover:bg-white dark:hover:bg-stone-700 hover:shadow-md transition-all hover:scale-105 active:scale-95">
+        <button onClick={handleOpen} title={item.name || '快速访问'} className="w-10 h-10 bg-white/78 dark:bg-stone-800/64 rounded-[16px] shadow-sm border border-blue-100/70 dark:border-stone-700/60 flex items-center justify-center hover:bg-blue-50/70 dark:hover:bg-stone-700 hover:shadow-md transition-all hover:scale-105 active:scale-95">
           {renderContent()}
         </button>
         <button 

@@ -6,7 +6,7 @@ mod win {
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
     use std::ptr::{copy_nonoverlapping, null_mut};
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use winapi::ctypes::c_void;
     use winapi::shared::guiddef::{GUID, REFIID};
@@ -27,8 +27,8 @@ mod win {
         GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
     };
     use winapi::um::winuser::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
-        CF_HDROP, MK_LBUTTON,
+        CloseClipboard, EmptyClipboard, GetCursorPos, OpenClipboard, RegisterClipboardFormatW,
+        SetClipboardData, CF_HDROP, MK_LBUTTON,
     };
 
     use crate::local_path_from_url_like;
@@ -76,6 +76,22 @@ mod win {
     struct FileDropSource {
         lp_vtbl: *const IDropSourceLocalVtbl,
         ref_count: AtomicU32,
+        cancel_rect: Option<CancelRect>,
+        has_left_cancel_rect: AtomicBool,
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct CancelRect {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
+    }
+
+    impl CancelRect {
+        fn contains(self, point: POINT) -> bool {
+            point.x >= self.left && point.x <= self.right && point.y >= self.top && point.y <= self.bottom
+        }
     }
 
     #[link(name = "ole32")]
@@ -939,7 +955,7 @@ mod win {
     }
 
     unsafe extern "system" fn drop_source_query_continue_drag(
-        _this: *mut IDropSourceLocal,
+        this: *mut IDropSourceLocal,
         escape_pressed: BOOL,
         key_state: DWORD,
     ) -> HRESULT {
@@ -947,6 +963,20 @@ mod win {
             DRAGDROP_S_CANCEL
         } else if (key_state & MK_LBUTTON as DWORD) == 0 {
             DRAGDROP_S_DROP
+        } else if !this.is_null() {
+            let source = this as *mut FileDropSource;
+            if let Some(rect) = (*source).cancel_rect {
+                let mut point = POINT { x: 0, y: 0 };
+                if GetCursorPos(&mut point) != FALSE {
+                    let inside = rect.contains(point);
+                    if !inside {
+                        (*source).has_left_cancel_rect.store(true, Ordering::Relaxed);
+                    } else if (*source).has_left_cancel_rect.load(Ordering::Relaxed) {
+                        return DRAGDROP_S_CANCEL;
+                    }
+                }
+            }
+            S_OK
         } else {
             S_OK
         }
@@ -959,7 +989,7 @@ mod win {
         DRAGDROP_S_USEDEFAULTCURSORS
     }
 
-    pub fn start_file_drag(paths: Vec<String>) -> Result<(), String> {
+    pub fn start_file_drag(paths: Vec<String>, cancel_rect: Option<CancelRect>) -> Result<(), String> {
         let paths = normalize_paths(paths)?;
         unsafe {
             let init_hr = OleInitialize(null_mut());
@@ -977,6 +1007,8 @@ mod win {
             let drop_source = Box::into_raw(Box::new(FileDropSource {
                 lp_vtbl: &DROP_SOURCE_VTBL,
                 ref_count: AtomicU32::new(1),
+                cancel_rect,
+                has_left_cancel_rect: AtomicBool::new(false),
             })) as *mut IDropSourceLocal;
 
             let mut effect: DWORD = 0;
@@ -1030,11 +1062,20 @@ mod win {
 }
 
 #[cfg(target_os = "windows")]
-pub use win::{copy_files_to_clipboard, start_file_drag};
+pub use win::{copy_files_to_clipboard, start_file_drag, CancelRect};
 
 #[cfg(not(target_os = "windows"))]
-pub fn start_file_drag(_paths: Vec<String>) -> Result<(), String> {
+pub fn start_file_drag(_paths: Vec<String>, _cancel_rect: Option<CancelRect>) -> Result<(), String> {
     Err("file drag is currently supported on Windows only".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Clone, Copy)]
+pub struct CancelRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
 }
 
 #[cfg(not(target_os = "windows"))]

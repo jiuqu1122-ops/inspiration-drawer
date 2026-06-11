@@ -2,8 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT = 'gpt-image-1';
 export const OPENAI_COMPATIBLE_ENDPOINT_DEFAULT = 'https://api.openai.com/v1';
-export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://sg2c.dchai.cn';
+export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://sg2.dchai.cn';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Nano_Banana_Pro_2K_0';
+export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
 export const AODUO_AI_ENDPOINT_DEFAULT = 'https://api.lk888.ai';
 export const AODUO_AI_IMAGE_MODEL_DEFAULT = 'nanobanana-pro';
 export const AODUO_AI_GPT_IMAGE_2_MODEL = 'gpt-image-2';
@@ -20,9 +21,17 @@ export const XAIS_CHAT_IMAGE_MODEL_OPTIONS = [
   { value: 'Nano_Banana_Pro_4K_0', label: 'Nano Banana Pro 4K' },
   { value: 'Nano_Banana_2_2K_0', label: 'Nano Banana 2 2K' },
   { value: 'Nano_Banana_2_4K_0', label: 'Nano Banana 2 4K' },
+  { value: 'Image2_1K', label: 'Xais img2 1K' },
+  { value: 'Image2_2K', label: 'Xais Img2 2K' },
+  { value: 'Image2_4K', label: 'Xais Img2 4K' },
+  { value: 'Image2_4K_HQ', label: 'Xais Img2 4K 高画质' },
   { value: 'Nano_Banana_Pro_2K_5', label: 'Nano Banana Pro 2K 5' },
   { value: 'Nano_Banana_Pro_4K_5', label: 'Nano Banana Pro 4K 5' },
   { value: 'c3f', label: 'c3f' },
+];
+
+export const XAIS_CHAT_VIDEO_MODEL_OPTIONS = [
+  { value: XAIS_CHAT_VIDEO_MODEL_DEFAULT, label: 'seedance2.0(支持真人上传)' },
 ];
 
 export const AODUO_AI_IMAGE_MODEL_OPTIONS = [
@@ -48,12 +57,20 @@ export type CanvasAiBaseImageOptions = {
   inputImages?: string[];
   aspectRatio?: string;
   resolution?: string;
+  outputFormat?: string;
   count?: number;
 };
+
+export type CanvasAiVideoInputMode = 'REF' | 'FLF';
 
 export type CanvasAiImageOptions = CanvasAiBaseImageOptions & {
   provider: CanvasAiImageProvider;
   endpoint?: string;
+};
+
+export type CanvasAiVideoOptions = CanvasAiImageOptions & {
+  duration?: number;
+  inputMode?: CanvasAiVideoInputMode;
 };
 
 const getErrorMessage = (error: unknown) => {
@@ -63,12 +80,14 @@ const getErrorMessage = (error: unknown) => {
   try {
     const value = error as {
       message?: string;
+      msg?: string;
       detail?: string;
       error?: string | { message?: string; detail?: string; code?: string | number };
       error_description?: string;
     };
     if (typeof value.error === 'string') return value.error;
     return value.message
+      || value.msg
       || value.error?.message
       || value.error?.detail
       || value.error_description
@@ -80,7 +99,7 @@ const getErrorMessage = (error: unknown) => {
 };
 
 const isUnauthorizedError = (error: unknown) => /(?:HTTP\s*)?401|unauthorized|invalid api key|invalid token/i.test(getErrorMessage(error));
-const isRetryableServerError = (error: unknown) => /HTTP\s*5\d\d|internal server error|bad gateway|service unavailable|gateway timeout|connection|连接/i.test(getErrorMessage(error));
+const isRetryableServerError = (error: unknown) => /HTTP\s*5\d\d|internal server error|bad gateway|service unavailable|gateway timeout|connection|error sending request|timed?\s*out|timeout|network|dns|reset|closed|连接|超时|断开/i.test(getErrorMessage(error));
 
 const isRemoteHttpImageSource = (source?: string | null) => (
   /^https?:\/\//i.test(String(source || '').trim()) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(String(source || ''))
@@ -104,6 +123,14 @@ const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, res
   return `${prompt.trim()}\n${constraints.join('，')}`;
 };
 
+const normalizeOutputFormat = (format?: string | null) => (
+  String(format || '').trim().toLowerCase() === 'png' ? 'png' : 'jpg'
+);
+
+const outputMimeFromFormat = (format?: string | null) => (
+  normalizeOutputFormat(format) === 'png' ? 'image/png' : 'image/jpeg'
+);
+
 const normalizeOpenAiEndpoint = (endpoint: string, path: 'images/generations' | 'images/edits') => {
   const trimmed = (endpoint || OPENAI_COMPATIBLE_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
   if (/\/(?:images\/generations|images\/edits)$/i.test(trimmed)) return trimmed;
@@ -124,6 +151,22 @@ const normalizeImageGenerationsEndpoint = (endpoint: string) => {
   return `${trimmed}/v1/images/generations`;
 };
 
+const normalizeXaisWorkerEndpoint = (endpoint: string) => {
+  const fallback = `${XAIS_CHAT_ENDPOINT_DEFAULT}/xais`;
+  let trimmed = (endpoint || fallback).trim().replace(/\/+$/, '');
+  if (!trimmed) return fallback;
+  trimmed = trimmed
+    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '')
+    .replace(/\/workerTask(?:Start|Wait)$/i, '')
+    .replace(/\/attUrls$/i, '')
+    .replace(/\/v1$/i, '')
+    .replace(/\/models$/i, '')
+    .replace(/\/+$/, '');
+  if (/\/xais$/i.test(trimmed)) return trimmed;
+  if (/(?:xais|sg2c?)\.dchai\.cn$/i.test(trimmed)) return `${trimmed}/xais`;
+  return trimmed;
+};
+
 const normalizeAoduoEndpoint = (endpoint: string) => {
   const trimmed = (endpoint || AODUO_AI_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
   if (/\/v1(?:\/|$)/i.test(trimmed)) return trimmed;
@@ -133,6 +176,18 @@ const normalizeAoduoEndpoint = (endpoint: string) => {
 const postJsonViaTauri = async (url: string, apiKey: string, body: unknown) => {
   try {
     return await invoke<unknown>('post_ai_json', {
+      url,
+      apiKey,
+      body,
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
+};
+
+const postTextViaTauri = async (url: string, apiKey: string, body: unknown) => {
+  try {
+    return await invoke<string>('post_ai_text', {
       url,
       apiKey,
       body,
@@ -167,6 +222,17 @@ const postImageEditViaTauri = async (
 const getJsonViaTauri = async (url: string, apiKey: string) => {
   try {
     return await invoke<unknown>('get_ai_json', {
+      url,
+      apiKey,
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
+};
+
+const getTextViaTauri = async (url: string, apiKey: string) => {
+  try {
+    return await invoke<string>('get_ai_text', {
       url,
       apiKey,
     });
@@ -242,6 +308,698 @@ const collectImageStrings = (value: unknown, output: string[] = []): string[] =>
   return output;
 };
 
+const cleanExtractedMediaUrl = (value: string) => (
+  String(value || '')
+    .trim()
+    .replace(/^["'`]+/g, '')
+    .replace(/["'`\\]+$/g, '')
+    .replace(/[.,;，。；]+$/g, '')
+);
+
+const hasImageFileExtension = (value: string) => {
+  const clean = cleanExtractedMediaUrl(value).split(/[?#]/)[0] || '';
+  return /\.(?:jpe?g|png|webp|gif|bmp|svg)$/i.test(clean);
+};
+
+const collectVideoStrings = (value: unknown, output: string[] = []): string[] => {
+  if (!value) return output;
+
+  if (typeof value === 'string') {
+    const dataUrls = value.match(/data:video\/[a-zA-Z0-9.+-]+;base64,[a-zA-Z0-9+/=]+/g);
+    if (dataUrls) output.push(...dataUrls);
+    const markdownUrls = Array.from(value.matchAll(/\[[^\]]*\]\(([^)]+)\)/g))
+      .map(match => match[1])
+      .filter(Boolean);
+    output.push(...markdownUrls.map(cleanExtractedMediaUrl).filter(url => /^https?:\/\//i.test(url)));
+    const urls = value.match(/https?:\/\/[^\s"'<>)}\]]+/gi);
+    if (urls) {
+      output.push(...urls.map(cleanExtractedMediaUrl));
+    }
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach(item => collectVideoStrings(item, output));
+    return output;
+  }
+
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(record)) {
+      const normalizedKey = key.toLowerCase();
+      if (/^(?:error|err|message|msg|detail|upret|trace|stack|raw|debug)$/i.test(normalizedKey)) {
+        continue;
+      }
+      if (typeof nested === 'string') {
+        if (
+          /^https?:\/\//i.test(nested) &&
+          /(url|uri|href|download|output|video|file|result)/i.test(normalizedKey)
+        ) {
+          output.push(cleanExtractedMediaUrl(nested));
+          continue;
+        }
+        if (
+          normalizedKey === 'b64_json' ||
+          normalizedKey === 'video_base64' ||
+          normalizedKey === 'base64'
+        ) {
+          output.push(`data:video/mp4;base64,${nested.replace(/^data:video\/[a-zA-Z0-9.+-]+;base64,/, '')}`);
+          continue;
+        }
+      }
+      collectVideoStrings(nested, output);
+    }
+  }
+
+  return output;
+};
+
+const collectXaisWorkerMediaStrings = (value: unknown, mediaType: 'image' | 'video') => (
+  mediaType === 'video' ? collectVideoStrings(value) : collectImageStrings(value)
+);
+
+const parseAiResponseText = (text: string): unknown => {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
+  const sseValues = Array.from(trimmed.matchAll(/^data:\s*(.+)$/gmi))
+    .map(match => match[1]?.trim())
+    .filter(value => value && !/^\[DONE\]$/i.test(value));
+  if (sseValues.length > 0) {
+    const parsedValues = sseValues.map(value => {
+      try {
+        return JSON.parse(value);
+      } catch (_) {
+        return value;
+      }
+    });
+    return parsedValues.length === 1 ? parsedValues[0] : parsedValues;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch (_) {
+    return trimmed;
+  }
+};
+
+const getTaskIdFromResponse = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = getTaskIdFromResponse(item);
+      if (nested) return nested;
+    }
+    return '';
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    return String(value).trim().replace(/^"+|"+$/g, '');
+  }
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  const direct = record.task_id || record.taskId || record.id || record.data || record.result;
+  if (typeof direct === 'string' || typeof direct === 'number') return String(direct).trim();
+  const arrays = [record.data, record.result, record.results, record.task, record.tasks];
+  for (const arrayValue of arrays) {
+    if (!Array.isArray(arrayValue)) continue;
+    for (const item of arrayValue) {
+      const nested = getTaskIdFromResponse(item);
+      if (nested) return nested;
+    }
+  }
+  const objects = [record.data, record.result, record.task, record.tasks, record.response];
+  for (const objectValue of objects) {
+    if (!objectValue || typeof objectValue !== 'object' || Array.isArray(objectValue)) continue;
+    const nested = getTaskIdFromResponse(objectValue);
+    if (nested) return nested;
+  }
+  return '';
+};
+
+const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
+const getTextViaTauriWithRetry = async (
+  url: string,
+  apiKey: string,
+  label: string,
+  attempts = 4,
+  delayMs = 1400
+) => {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await getTextViaTauri(url, apiKey);
+    } catch (error) {
+      lastError = error;
+      if (isUnauthorizedError(error) || (!isRetryableServerError(error) && /HTTP\s*4\d\d/i.test(getErrorMessage(error)))) {
+        throw error;
+      }
+      if (attempt < attempts - 1) {
+        await delay(delayMs * (attempt + 1));
+      }
+    }
+  }
+  throw new Error(`${label}失败：${getErrorMessage(lastError)}`);
+};
+
+const isXaisWorkerTaskModel = (model?: string | null) => {
+  const normalized = String(model || '').trim();
+  return /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
+    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
+};
+
+const collectXaisAttachmentIds = (value: unknown, output: string[] = [], trusted = false): string[] => {
+  const pushAttachment = (raw: unknown) => {
+    const text = String(raw || '').trim().replace(/^"+|"+$/g, '');
+    if (!text || /^https?:\/\//i.test(text) || /^data:(?:image|video)\//i.test(text) || text.length > 512) return;
+    output.push(text);
+  };
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    if (trusted) pushAttachment(value);
+    return output;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach(item => collectXaisAttachmentIds(item, output, trusted));
+    return output;
+  }
+
+  if (value && typeof value === 'object') {
+    Object.entries(value as Record<string, unknown>).forEach(([key, nested]) => {
+      const isAttachmentKey = /^(result|results|att|atts|attachment|attachments|output|outputs|file|files|url|urls|uri|uris|href|download|downloads)$/i.test(key);
+      collectXaisAttachmentIds(nested, output, trusted || isAttachmentKey);
+    });
+  }
+
+  return Array.from(new Set(output));
+};
+
+const resolveXaisAttachmentUrls = async (
+  endpoint: string,
+  apiKey: string,
+  attachments: string[],
+  mediaType: 'image' | 'video' = 'image'
+) => {
+  const mediaUrls: string[] = [];
+  for (const att of Array.from(new Set(attachments.filter(Boolean)))) {
+    const raw = await getTextViaTauriWithRetry(
+      `${endpoint}/attUrls?att=${encodeURIComponent(att)}`,
+      apiKey,
+      'Xais 结果链接解析'
+    );
+    const parsed = parseAiResponseText(raw);
+    const parsedMedia = collectXaisWorkerMediaStrings(parsed, mediaType);
+    if (parsedMedia.length > 0) {
+      mediaUrls.push(...parsedMedia);
+      continue;
+    }
+    const directUrl = String(raw || '').trim();
+    if (/^https?:\/\//i.test(directUrl)) mediaUrls.push(directUrl);
+  }
+  return Array.from(new Set(mediaUrls));
+};
+
+const resolveXaisVideoAttachmentUrls = async (
+  endpoint: string,
+  apiKey: string,
+  attachments: string[]
+) => {
+  const mediaUrls: string[] = [];
+  const cleanAttachments = Array.from(new Set(attachments
+    .map(att => att.trim())
+    .filter(Boolean)));
+  const pushResolvedMedia = (raw: string) => {
+    const parsed = parseAiResponseText(raw);
+    const parsedMedia = collectXaisWorkerMediaStrings(parsed, 'video');
+    if (parsedMedia.length > 0) {
+      mediaUrls.push(...parsedMedia);
+      return true;
+    }
+    const directUrl = String(raw || '').trim().replace(/^"+|"+$/g, '');
+    if (/^https?:\/\//i.test(directUrl)) {
+      mediaUrls.push(directUrl);
+      return true;
+    }
+    return false;
+  };
+
+  if (cleanAttachments.length > 1) {
+    const batchUrls = Array.from(new Set([
+      `${endpoint}/attUrls?att=${encodeURIComponent(JSON.stringify(cleanAttachments))}`,
+      `${endpoint}/attUrls?att=${encodeURIComponent(cleanAttachments.join(','))}`,
+    ]));
+    for (const url of batchUrls) {
+      try {
+        const raw = await getTextViaTauriWithRetry(url, apiKey, 'Xais video result link resolve', 2, 1000);
+        if (pushResolvedMedia(raw)) {
+          debugXaisVideo('attUrls batch resolved', {
+            count: cleanAttachments.length,
+            urls: mediaUrls.map(value => value.slice(0, 180)),
+          });
+          break;
+        }
+      } catch (error) {
+        if (isUnauthorizedError(error)) throw error;
+        debugXaisVideo('attUrls batch warning', getErrorMessage(error));
+      }
+    }
+  }
+
+  for (const att of cleanAttachments) {
+    const cleanAtt = att.trim();
+    const urls = Array.from(new Set([
+      `${endpoint}/attUrls?att=${encodeURIComponent(cleanAtt)}`,
+      `${endpoint}/attUrls?att=${cleanAtt}`,
+      `${endpoint}/attUrls?att=${encodeURIComponent(JSON.stringify([cleanAtt]))}`,
+    ]));
+    let lastError: unknown = null;
+    for (const url of urls) {
+      let raw = '';
+      try {
+        raw = await getTextViaTauriWithRetry(url, apiKey, 'Xais video result link resolve', 2, 1000);
+      } catch (error) {
+        lastError = error;
+        if (isUnauthorizedError(error)) throw error;
+        continue;
+      }
+      if (pushResolvedMedia(raw)) {
+        break;
+      }
+    }
+    if (lastError) {
+      debugXaisVideo('attUrls fallback warning', {
+        att: cleanAtt,
+        error: getErrorMessage(lastError),
+      });
+    }
+  }
+  return Array.from(new Set(mediaUrls));
+};
+
+const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count: number) => {
+  const apiKey = options.apiKey.trim();
+  const prompt = options.prompt.trim();
+  if (!apiKey) throw new Error('请先填写 Xais API Key');
+  if (!prompt) throw new Error('请输入生图提示词');
+
+  const model = (options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT).trim();
+  const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
+  const requestCount = Math.max(1, Math.min(4, count));
+  const inputImages = (options.inputImages || [])
+    .filter(image => isRemoteHttpImageSource(image))
+    .slice(0, 8);
+  const promptText = buildChinesePromptWithOptions(prompt, options.aspectRatio);
+  const output: string[] = [];
+
+  const runOneTask = async () => {
+    const customField: Record<string, unknown> = {
+      outputFormat: outputMimeFromFormat(options.outputFormat),
+      prompt: promptText,
+      input: inputImages.length > 0 ? 'REF' : promptText,
+    };
+    if (options.aspectRatio) customField.aspectRatio = options.aspectRatio;
+    if (inputImages.length > 0) {
+      customField.imageUrls = inputImages;
+      customField.image_urls = inputImages;
+      customField.referenceImages = inputImages;
+      customField.reference_images = inputImages;
+      customField.images = inputImages;
+    }
+
+    const taskBody: Record<string, unknown> = {
+      model,
+      prompt: promptText,
+      custom_field: customField,
+    };
+    if (inputImages.length > 0) taskBody.ref = inputImages;
+    if (options.aspectRatio) taskBody.ratio = options.aspectRatio;
+
+    const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
+    const started = parseAiResponseText(startedRaw);
+    const immediateImages = collectImageStrings(started);
+    if (immediateImages.length > 0) return immediateImages;
+
+    const taskId = getTaskIdFromResponse(started);
+    if (!taskId) {
+      throw new Error(`Xais ${model} 没有返回任务 ID：${String(startedRaw).slice(0, 180)}`);
+    }
+
+    let lastWait: unknown = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt > 0) await delay(1800);
+      const waitedRaw = await getTextViaTauriWithRetry(
+        `${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}`,
+        apiKey,
+        `Xais ${model} 任务等待`
+      );
+      const waited = parseAiResponseText(waitedRaw);
+      lastWait = waited;
+      const waitedImages = collectImageStrings(waited);
+      if (waitedImages.length > 0) return waitedImages;
+
+      const attachments = collectXaisAttachmentIds(waited);
+      if (attachments.length > 0) {
+        const urls = await resolveXaisAttachmentUrls(endpoint, apiKey, attachments);
+        if (urls.length > 0) return urls;
+      }
+    }
+
+    throw new Error(`Xais ${model} 任务完成但没有返回图片 URL：${getErrorMessage(lastWait)}`);
+  };
+
+  let lastError: unknown = null;
+  while (output.length < requestCount) {
+    try {
+      output.push(...await runOneTask());
+    } catch (error) {
+      lastError = error;
+      if (output.length === 0) throw error;
+      break;
+    }
+  }
+
+  const unique = Array.from(new Set(output));
+  if (unique.length === 0) {
+    throw new Error(lastError ? getErrorMessage(lastError) : `Xais ${model} 没有返回图片`);
+  }
+  return unique.slice(0, requestCount);
+};
+
+const normalizeXaisVideoInputMode = (mode?: string | null): CanvasAiVideoInputMode => (
+  String(mode || '').trim().toUpperCase() === 'FLF' ? 'FLF' : 'REF'
+);
+
+const normalizeXaisVideoDuration = (duration?: number | string | null) => {
+  const numeric = Number(duration);
+  const safeValue = Number.isFinite(numeric) ? numeric : 15;
+  const clamped = Math.max(1.8, Math.min(15.2, safeValue));
+  return Number(clamped.toFixed(1));
+};
+
+const normalizeXaisVideoResolution = (resolution?: string | null) => {
+  const trimmed = String(resolution || '').trim();
+  return ['480p', '720p', '1080p'].includes(trimmed) ? trimmed : '720p';
+};
+
+const XAIS_VIDEO_TASK_MAX_WAIT_MS = 25 * 60 * 1000;
+const XAIS_VIDEO_TASK_POLL_INTERVAL_MS = 2200;
+const XAIS_VIDEO_TASK_FAILURE_CONFIRM_MS = 15000;
+const XAIS_VIDEO_TASK_FAILURE_CONFIRM_COUNT = 3;
+const XAIS_VIDEO_REF_MODE_MAX_REFERENCES = 13;
+const XAIS_DEBUG_PREFIX = '[canvas:xais-video]';
+
+const trimDebugText = (value: unknown, max = 900) => {
+  const text = typeof value === 'string' ? value : getErrorMessage(value);
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+};
+
+const debugXaisVideo = (label: string, value?: unknown) => {
+  try {
+    if (typeof console === 'undefined') return;
+    const at = new Date().toISOString();
+    if (typeof window !== 'undefined') {
+      const target = window as unknown as {
+        __lastCanvasXaisVideoDebug?: Array<{ at: string; label: string; value?: unknown }>;
+      };
+      const previous = Array.isArray(target.__lastCanvasXaisVideoDebug)
+        ? target.__lastCanvasXaisVideoDebug
+        : [];
+      target.__lastCanvasXaisVideoDebug = [
+        ...previous.slice(-79),
+        { at, label, value },
+      ];
+    }
+    const line = JSON.stringify({ at, label, value }, (_key, nested) => (
+      typeof nested === 'string' && nested.length > 4000 ? `${nested.slice(0, 4000)}...` : nested
+    ));
+    void invoke('append_ai_debug_log', { name: 'xais-video', line }).catch(() => {});
+    if (value === undefined) console.info(XAIS_DEBUG_PREFIX, label);
+    else console.info(XAIS_DEBUG_PREFIX, label, value);
+  } catch (_) {
+    // Best-effort diagnostics only.
+  }
+};
+
+const isXaisWorkerTaskPendingMessage = (message: string) => (
+  /(?:pending|queued|queue|running|processing|in[_\s-]?progress|progress|waiting|not\s+ready|not\s+finished|unfinished|no\s+result|no\s+output|empty\s+result|result\s+empty|暂无|无结果|没有结果|未返回|进行中|生成中|排队|处理中|等待|未完成)/i.test(message)
+);
+
+const getXaisWorkerTaskFailureMessage = (value: unknown): string => {
+  if (!value) return '';
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const failure = getXaisWorkerTaskFailureMessage(item);
+      if (failure) return failure;
+    }
+    return '';
+  }
+  if (typeof value === 'string') {
+    if (/^unknown error$/i.test(value.trim())) return '';
+    return /(?:fail|failed|failure|error|exception|失败|错误)/i.test(value) ? value : '';
+  }
+  if (typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  const successValue = record.success ?? record.ok;
+  if (successValue === false) {
+    const message = getErrorMessage(record.error || record.message || record.msg || record.detail || value);
+    if (/^unknown error$/i.test(message.trim())) return '';
+    if (isXaisWorkerTaskPendingMessage(message)) return '';
+    return message;
+  }
+  const statusText = String(record.status || record.state || record.code || '').trim().toLowerCase();
+  if (/^(?:fail|failed|failure|error|exception|cancelled|canceled)$/i.test(statusText)) {
+    const message = getErrorMessage(record.error || record.message || record.msg || record.detail || value);
+    if (/^unknown error$/i.test(message.trim())) return '';
+    return message;
+  }
+  const rawMessage = record.error || record.message || record.msg || record.detail;
+  if (record.error) {
+    const message = getErrorMessage(record.error);
+    if (/^unknown error$/i.test(message.trim())) return '';
+    if (isXaisWorkerTaskPendingMessage(message)) return '';
+    return message;
+  }
+  const numericCode = Number(record.code ?? record.statusCode ?? record.errorCode ?? record.errcode);
+  if (rawMessage && Number.isFinite(numericCode) && numericCode !== 0 && numericCode !== 200) {
+    const message = getErrorMessage(rawMessage);
+    if (/^unknown error$/i.test(message.trim())) return '';
+    if (isXaisWorkerTaskPendingMessage(message)) return '';
+    return message;
+  }
+  if (!rawMessage) {
+    for (const nested of Object.values(record)) {
+      const failure = getXaisWorkerTaskFailureMessage(nested);
+      if (failure) return failure;
+    }
+    return '';
+  }
+  const message = getErrorMessage(rawMessage);
+  if (/^unknown error$/i.test(message.trim())) return '';
+  return message && /(?:fail|failed|failure|error|exception|失败|错误)/i.test(message) ? message : '';
+};
+
+const isFatalXaisWorkerTaskFailure = (message: string) => (
+  /(?:InvalidParameter|CreateAsset|DownloadFailed|Failed to download media|Name must be no more|Bad Gateway|fetch-object|unsupported|forbidden|not accessible)/i.test(message)
+);
+
+const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
+  const apiKey = options.apiKey.trim();
+  const prompt = options.prompt.trim();
+  if (!apiKey) throw new Error('请先填写 Xais API Key');
+  if (!prompt) throw new Error('请输入视频提示词');
+  if (options.provider !== 'xais-chat') throw new Error('视频模型当前使用 XAIS 异步接口，请切换到 Xais / DCHAI 中转');
+
+  const model = (options.model || XAIS_CHAT_VIDEO_MODEL_DEFAULT).trim() || XAIS_CHAT_VIDEO_MODEL_DEFAULT;
+  const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
+  const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const inputMode = normalizeXaisVideoInputMode(options.inputMode);
+  const maxReferenceCount = inputMode === 'FLF' ? 2 : XAIS_VIDEO_REF_MODE_MAX_REFERENCES;
+  const inputRefs = (options.inputImages || [])
+    .filter(source => isRemoteHttpImageSource(source))
+    .slice(0, maxReferenceCount);
+  if (inputRefs.length === 0) {
+    throw new Error('seedance2 参考模式没有拿到公网参考素材 URL：请确认视频节点已连接参考图/参考视频，且 cloudflared 公网分享可用');
+  }
+  if (inputMode === 'FLF' && inputRefs.length < 2) {
+    throw new Error('seedance2 首尾帧模式需要 2 张公网参考图：请分别连接首帧和尾帧');
+  }
+  const output: string[] = [];
+  const inputRefSet = new Set(inputRefs.map(cleanExtractedMediaUrl));
+  const isVideoOutputCandidate = (url: string) => {
+    const trimmed = cleanExtractedMediaUrl(url);
+    if (!/^https?:\/\//i.test(trimmed) && !/^data:video\//i.test(trimmed)) return false;
+    if (inputRefSet.has(trimmed)) return false;
+    if (hasImageFileExtension(trimmed)) return false;
+    return true;
+  };
+  const collectVideoOutputCandidates = (value: unknown) => (
+    Array.from(new Set(
+      collectVideoStrings(value)
+        .map(cleanExtractedMediaUrl)
+        .filter(url => isVideoOutputCandidate(url))
+    ))
+  );
+
+  const runOneTask = async () => {
+    const customField: Record<string, unknown> = {
+      res: normalizeXaisVideoResolution(options.resolution),
+      input: inputMode,
+      duration: String(normalizeXaisVideoDuration(options.duration)),
+      outputFormat: 'video/mp4',
+    };
+
+    const taskBody: Record<string, unknown> = {
+      prompt,
+      model,
+      ref: inputRefs,
+      custom_field: customField,
+    };
+    if (options.aspectRatio) taskBody.ratio = options.aspectRatio;
+    debugXaisVideo('start request', {
+      endpoint,
+      model,
+      refCount: inputRefs.length,
+      refs: inputRefs.map((value, index) => `${index + 1}:${value.slice(0, 120)}`),
+      custom_field: customField,
+      ratio: taskBody.ratio,
+    });
+
+    const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
+    const started = parseAiResponseText(startedRaw);
+    debugXaisVideo('start response', trimDebugText(startedRaw));
+    const startFailure = getXaisWorkerTaskFailureMessage(started);
+    if (startFailure) throw new Error(`Xais ${model} 视频任务启动失败：${startFailure}`);
+    const immediateVideos = collectVideoOutputCandidates(started);
+    if (immediateVideos.length > 0) return immediateVideos;
+
+    const taskId = getTaskIdFromResponse(started);
+    if (!taskId) {
+      throw new Error(`Xais ${model} 没有返回任务 ID：${String(startedRaw).slice(0, 180)}`);
+    }
+
+    let lastWait: unknown = null;
+    let lastWaitRaw = '';
+    let firstFailureAt = 0;
+    let failureCount = 0;
+    let lastFailure = '';
+    debugXaisVideo('task id', taskId);
+    const resolveTaskIdAttachmentUrls = async (label: string) => {
+      try {
+        const urls = await resolveXaisVideoAttachmentUrls(endpoint, apiKey, [taskId]);
+        debugXaisVideo(label, urls.map(url => url.slice(0, 180)));
+        return urls
+          .map(cleanExtractedMediaUrl)
+          .filter(url => isVideoOutputCandidate(url));
+      } catch (error) {
+        if (isUnauthorizedError(error)) throw error;
+        debugXaisVideo(`${label} warning`, getErrorMessage(error));
+        return [] as string[];
+      }
+    };
+    const waitUntil = Date.now() + XAIS_VIDEO_TASK_MAX_WAIT_MS;
+    let attempt = 0;
+    while (Date.now() <= waitUntil) {
+      if (attempt > 0) await delay(XAIS_VIDEO_TASK_POLL_INTERVAL_MS);
+      attempt += 1;
+      const waitUrls = [
+        `${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}`,
+        `${endpoint}/workerTaskWait?id=${encodeURIComponent(taskId)}`,
+      ];
+      let waitedRaw = '';
+      let waitError: unknown = null;
+      for (const waitUrl of waitUrls) {
+        try {
+          waitedRaw = await getTextViaTauriWithRetry(
+            waitUrl,
+            apiKey,
+            `Xais ${model} 视频任务等待`,
+            2,
+            1200
+          );
+          break;
+        } catch (error) {
+          waitError = error;
+        }
+      }
+      if (!waitedRaw) {
+        const waitErrorMessage = getErrorMessage(waitError);
+        lastWaitRaw = waitErrorMessage;
+        debugXaisVideo(`wait #${attempt} warning`, waitErrorMessage);
+        if (isUnauthorizedError(waitError)) {
+          throw new Error(`Xais ${model} 视频任务等待失败：${waitErrorMessage}`);
+        }
+        if (attempt % 8 === 0) {
+          const taskIdVideos = await resolveTaskIdAttachmentUrls(`task-id urls #${attempt}`);
+          if (taskIdVideos.length > 0) return taskIdVideos;
+        }
+        continue;
+      }
+      const waited = parseAiResponseText(waitedRaw);
+      lastWait = waited;
+      lastWaitRaw = waitedRaw;
+      if (attempt === 1 || attempt % 20 === 0 || /result|att|url|done|fail|error|失败|错误/i.test(waitedRaw)) {
+        debugXaisVideo(`wait #${attempt}`, trimDebugText(waitedRaw));
+      }
+      const failure = getXaisWorkerTaskFailureMessage(waited);
+      if (failure) {
+        if (!firstFailureAt) firstFailureAt = Date.now();
+        failureCount += 1;
+        lastFailure = failure;
+        debugXaisVideo(`failure candidate #${attempt}`, { failure, failureCount });
+        if (
+          isFatalXaisWorkerTaskFailure(failure)
+          || isFatalXaisWorkerTaskFailure(waitedRaw)
+          ||
+          failureCount >= XAIS_VIDEO_TASK_FAILURE_CONFIRM_COUNT
+          || Date.now() - firstFailureAt >= XAIS_VIDEO_TASK_FAILURE_CONFIRM_MS
+        ) {
+          throw new Error(`Xais ${model} 视频任务失败：${failure}`);
+        }
+        continue;
+      }
+      const attachments = collectXaisAttachmentIds(waited);
+      if (attachments.length > 0) {
+        debugXaisVideo(`attachments #${attempt}`, attachments);
+        const urls = await resolveXaisVideoAttachmentUrls(endpoint, apiKey, attachments);
+        debugXaisVideo(`resolved urls #${attempt}`, urls.map(url => url.slice(0, 180)));
+        const videoUrls = urls
+          .map(cleanExtractedMediaUrl)
+          .filter(url => isVideoOutputCandidate(url));
+        if (videoUrls.length > 0) return videoUrls;
+      }
+
+      const waitedVideos = collectVideoOutputCandidates(waited);
+      if (waitedVideos.length > 0) return waitedVideos;
+
+      if (attempt % 8 === 0) {
+        const taskIdVideos = await resolveTaskIdAttachmentUrls(`task-id urls #${attempt}`);
+        if (taskIdVideos.length > 0) return taskIdVideos;
+      }
+
+      firstFailureAt = 0;
+      failureCount = 0;
+      lastFailure = '';
+    }
+
+    throw new Error(`Xais ${model} 视频任务超时或没有返回视频 URL：${trimDebugText(lastFailure || lastWaitRaw || lastWait, 260)}`);
+  };
+
+  let lastError: unknown = null;
+  while (output.length < requestCount) {
+    try {
+      output.push(...await runOneTask());
+    } catch (error) {
+      lastError = error;
+      if (output.length === 0) throw error;
+      break;
+    }
+  }
+
+  const unique = Array.from(new Set(output));
+  if (unique.length === 0) {
+    throw new Error(lastError ? getErrorMessage(lastError) : `Xais ${model} 没有返回视频`);
+  }
+  return unique.slice(0, requestCount);
+};
+
 const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
@@ -285,6 +1043,9 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
 
   const model = (options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT).trim() || XAIS_CHAT_IMAGE_MODEL_DEFAULT;
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  if (isXaisWorkerTaskModel(model)) {
+    return generateXaisWorkerTaskImages({ ...options, model }, count);
+  }
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
   const promptText = buildChinesePromptWithOptions(prompt, options.aspectRatio, options.resolution);
   const imageEndpoint = normalizeImageGenerationsEndpoint(options.endpoint || '');
@@ -431,22 +1192,6 @@ const generateAoduoChatImages = async (options: CanvasAiImageOptions, count: num
   return uniqueImages.slice(0, count);
 };
 
-const getTaskIdFromResponse = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  const direct = record.task_id || record.taskId || record.id;
-  if (typeof direct === 'string' || typeof direct === 'number') return String(direct);
-  if (Array.isArray(record.data)) {
-    for (const item of record.data) {
-      const nested = getTaskIdFromResponse(item);
-      if (nested) return nested;
-    }
-  }
-  return '';
-};
-
-const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
-
 const generateAoduoGptImage2Images = async (options: CanvasAiImageOptions, count: number) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
@@ -543,4 +1288,8 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
   if (options.provider === 'xais-chat') return generateXaisChatImages(options);
   if (options.provider === 'aoduo-ai') return generateAoduoImages(options);
   return generateOpenAiCompatibleImages(options);
+};
+
+export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
+  return generateXaisWorkerTaskVideos(options);
 };

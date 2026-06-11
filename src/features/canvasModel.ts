@@ -9,11 +9,30 @@ export type CanvasImageItem = {
   height: number;
   inputs?: string[];
   ai?: CanvasAiItemData;
+  workflowGroup?: unknown;
 };
 
 export type CanvasAiProvider = 'openai-compatible' | 'xais-chat' | 'aoduo-ai';
 
-export type CanvasAiItemType = 'image-generator' | 'generated-image';
+export type CanvasAiMediaType = 'image' | 'video';
+
+export type CanvasAiItemType = 'image-generator' | 'video-generator' | 'generated-image' | 'generated-video' | 'workflow';
+
+export type CanvasAiGeneratedOutput = {
+  id: string;
+  mediaType?: CanvasAiMediaType;
+  url?: string;
+  path?: string;
+  name?: string;
+  prompt?: string;
+  status?: 'working' | 'success' | 'error';
+  error?: string;
+  generatedAt?: number;
+  width?: number;
+  height?: number;
+  nodeId?: string;
+  nodeLabel?: string;
+};
 
 export type CanvasAiItemData = {
   type: CanvasAiItemType;
@@ -21,12 +40,22 @@ export type CanvasAiItemData = {
   endpoint?: string;
   model?: string;
   prompt?: string;
+  presetId?: string;
+  presetLabel?: string;
+  presetPrompt?: string;
   aspectRatio?: string;
   resolution?: string;
+  outputFormat?: string;
   count?: number;
+  duration?: number;
+  videoInputMode?: 'REF' | 'FLF';
   status?: 'idle' | 'working' | 'success' | 'error';
   error?: string;
   generatedAt?: number;
+  outputs?: CanvasAiGeneratedOutput[];
+  workflow?: unknown;
+  workflowRuntime?: unknown;
+  workflowOutputMode?: 'final' | 'all';
 };
 
 export type CanvasResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
