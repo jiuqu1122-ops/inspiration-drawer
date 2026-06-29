@@ -1,11 +1,20 @@
 [package]
 name = "inspiration-drawer"
-version = "3.0.3"
+version = "4.0.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "inspiration-drawer"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+license-generator-app = []
+
+[[bin]]
+name = "license-generator-app"
+path = "src/bin/license-generator-app.rs"
+required-features = ["license-generator-app"]
 
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
@@ -15,6 +24,13 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 tauri = { version = "2.0.0", features = ["protocol-asset", "tray-icon"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+time = { version = "0.3", features = ["formatting"] }
 screenshots = "0.8"        # 截屏引擎
 base64 = "0.22"            # Base64 编码
 open = "5.3"               # 调用系统默认程序打开文件
@@ -50,3 +66,15 @@ winapi = { version = "0.3.9", features = [
   "unknwnbase",
   "wtypesbase"
 ] }
+
+[profile.release]
+strip = true
+lto = "thin"
+panic = "abort"
+codegen-units = 1
+
+[profile.generator]
+inherits = "dev"
+debug-assertions = false
+strip = true
+opt-level = 1

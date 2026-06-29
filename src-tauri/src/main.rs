@@ -1,30 +1,37 @@
-﻿// src-tauri/src/main.rs
+// src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod license;
 mod native_drag;
 mod native_drop;
 
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use hmac::{Hmac, Mac};
+use reqwest::blocking::multipart::{Form, Part};
+use reqwest::blocking::Client;
+use reqwest::redirect::Policy;
+use sha2::{Digest, Sha256};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command as SysCommand, Stdio};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command as SysCommand, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use reqwest::blocking::multipart::{Form, Part};
-use reqwest::blocking::Client;
-use reqwest::redirect::Policy;
+use tauri::{
+    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
+};
+use time::{format_description, OffsetDateTime};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -52,10 +59,46 @@ struct CloudflaredShare {
     server_thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct LocalVisionModelProgress {
+    stage: String,
+    message: String,
+    file: Option<String>,
+    loaded: u64,
+    total: u64,
+    progress: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct R2LocalConfig {
+    #[serde(alias = "accountId")]
+    account_id: String,
+    #[serde(alias = "accessKeyId")]
+    access_key_id: String,
+    #[serde(alias = "secretAccessKey")]
+    secret_access_key: String,
+    bucket: String,
+    #[serde(alias = "publicUrl")]
+    public_url: String,
+    prefix: Option<String>,
+    endpoint: Option<String>,
+}
+
+#[derive(Clone)]
+struct R2Share {
+    config: R2LocalConfig,
+    keys: Vec<String>,
+}
+
 static CLOUDFLARED_SHARES: OnceLock<Mutex<HashMap<String, CloudflaredShare>>> = OnceLock::new();
+static R2_SHARES: OnceLock<Mutex<HashMap<String, R2Share>>> = OnceLock::new();
 
 fn cloudflared_shares() -> &'static Mutex<HashMap<String, CloudflaredShare>> {
     CLOUDFLARED_SHARES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn r2_shares() -> &'static Mutex<HashMap<String, R2Share>> {
+    R2_SHARES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[derive(serde::Serialize)]
@@ -63,6 +106,15 @@ fn cloudflared_shares() -> &'static Mutex<HashMap<String, CloudflaredShare>> {
 struct CloudflaredPublicImageUrls {
     share_id: String,
     urls: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectedWebImage {
+    title: String,
+    image_url: String,
+    page_url: String,
+    path: String,
 }
 
 fn now_millis_u64() -> u64 {
@@ -132,7 +184,15 @@ fn normalize_proxy_endpoint(value: &str) -> Option<String> {
 
         selected = https_value
             .or(http_value)
-            .or_else(|| socks_value.map(|v| if v.contains("://") { v } else { format!("socks5h://{}", v) }))
+            .or_else(|| {
+                socks_value.map(|v| {
+                    if v.contains("://") {
+                        v
+                    } else {
+                        format!("socks5h://{}", v)
+                    }
+                })
+            })
             .or(first_value)
             .unwrap_or_default();
     }
@@ -156,7 +216,8 @@ fn windows_system_proxy() -> Option<String> {
     use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
 
     unsafe {
-        let subkey = auto_start_wide_null(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings");
+        let subkey =
+            auto_start_wide_null(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings");
         let mut hkey = null_mut();
         let status = RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey);
         if status != ERROR_SUCCESS as i32 {
@@ -236,7 +297,10 @@ fn network_proxy_config_path(app_handle: &tauri::AppHandle) -> PathBuf {
 
 fn read_network_proxy(app_handle: &tauri::AppHandle) -> String {
     let path = network_proxy_config_path(app_handle);
-    fs::read_to_string(path).unwrap_or_default().trim().to_string()
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 #[tauri::command]
@@ -258,7 +322,10 @@ fn set_network_proxy(app_handle: tauri::AppHandle, proxy: String) -> Result<Stri
     Ok(normalized)
 }
 
-fn effective_proxy(app_handle: Option<&tauri::AppHandle>, explicit_proxy: Option<&str>) -> Option<String> {
+fn effective_proxy(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+) -> Option<String> {
     // 优先级：请求显式代理 > App 内保存代理 > Windows 系统代理 > 环境变量
     // 这样既保留自动代理，又允许用户在特殊网络环境里手动覆盖。
     explicit_proxy
@@ -284,12 +351,13 @@ fn build_http_client(
         .timeout(Duration::from_secs(timeout_secs));
 
     if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
-        let proxy = reqwest::Proxy::all(&proxy)
-            .map_err(|e| format!("代理配置无效：{}", e))?;
+        let proxy = reqwest::Proxy::all(&proxy).map_err(|e| format!("代理配置无效：{}", e))?;
         builder = builder.proxy(proxy);
     }
 
-    builder.build().map_err(|e| format!("初始化网络客户端失败：{}", e))
+    builder
+        .build()
+        .map_err(|e| format!("初始化网络客户端失败：{}", e))
 }
 
 fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
@@ -331,11 +399,13 @@ fn download_url_to_file(
             .map_err(|e| format!("写入下载文件失败：{}", e))?;
     }
 
-    fs::rename(&tmp_path, out_path).or_else(|_| {
-        fs::copy(&tmp_path, out_path).map(|_| ())?;
-        let _ = fs::remove_file(&tmp_path);
-        Ok::<(), std::io::Error>(())
-    }).map_err(|e| e.to_string())?;
+    fs::rename(&tmp_path, out_path)
+        .or_else(|_| {
+            fs::copy(&tmp_path, out_path).map(|_| ())?;
+            let _ = fs::remove_file(&tmp_path);
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(|e| e.to_string())?;
     Ok(content_type)
 }
 
@@ -349,7 +419,10 @@ fn http_get_text(
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
     let response_result = client
         .get(url)
-        .header("accept", "text/event-stream, application/json, text/plain, */*")
+        .header(
+            "accept",
+            "text/event-stream, application/json, text/plain, */*",
+        )
         .bearer_auth(api_key)
         .send();
 
@@ -365,7 +438,10 @@ fn http_get_text(
             let direct_client = build_direct_http_client(timeout_secs)?;
             direct_client
                 .get(url)
-                .header("accept", "text/event-stream, application/json, text/plain, */*")
+                .header(
+                    "accept",
+                    "text/event-stream, application/json, text/plain, */*",
+                )
                 .bearer_auth(api_key)
                 .send()
                 .map_err(|second_err| {
@@ -384,7 +460,8 @@ fn http_get_text(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let prefer_stream = url.contains("workerTaskWait") || content_type.contains("text/event-stream");
+    let prefer_stream =
+        url.contains("workerTaskWait") || content_type.contains("text/event-stream");
     let text = if prefer_stream {
         read_streaming_text_until_result(response)?
     } else {
@@ -400,15 +477,23 @@ fn http_get_text(
 fn xais_output_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
-        "result" | "results"
-            | "att" | "atts"
-            | "attachment" | "attachments"
-            | "output" | "outputs"
-            | "file" | "files"
-            | "url" | "urls"
-            | "uri" | "uris"
+        "result"
+            | "results"
+            | "att"
+            | "atts"
+            | "attachment"
+            | "attachments"
+            | "output"
+            | "outputs"
+            | "file"
+            | "files"
+            | "url"
+            | "urls"
+            | "uri"
+            | "uris"
             | "href"
-            | "download" | "downloads"
+            | "download"
+            | "downloads"
     )
 }
 
@@ -422,8 +507,16 @@ fn xais_value_has_output(value: &serde_json::Value) -> bool {
                 && !trimmed.eq_ignore_ascii_case("unknown error")
                 && !matches!(
                     trimmed.to_ascii_lowercase().as_str(),
-                    "pending" | "queued" | "queue" | "running" | "processing" | "in_progress"
-                        | "progress" | "waiting" | "created" | "submitted"
+                    "pending"
+                        | "queued"
+                        | "queue"
+                        | "running"
+                        | "processing"
+                        | "in_progress"
+                        | "progress"
+                        | "waiting"
+                        | "created"
+                        | "submitted"
                 )
         }
         serde_json::Value::Array(items) => items.iter().any(xais_value_has_output),
@@ -473,7 +566,9 @@ fn xais_stream_payload_from_line(line: &str) -> Option<&str> {
     None
 }
 
-fn read_streaming_text_until_result(response: reqwest::blocking::Response) -> Result<String, String> {
+fn read_streaming_text_until_result(
+    response: reqwest::blocking::Response,
+) -> Result<String, String> {
     let mut reader = BufReader::new(response);
     let mut text = String::new();
     let mut line = String::new();
@@ -510,11 +605,7 @@ fn http_post_json(
 ) -> Result<String, String> {
     let timeout_secs = 300;
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
-    let response_result = client
-        .post(url)
-        .bearer_auth(api_key)
-        .json(body)
-        .send();
+    let response_result = client.post(url).bearer_auth(api_key).json(body).send();
 
     let response = match response_result {
         Ok(response) => response,
@@ -603,16 +694,21 @@ fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, 
             .and_then(|value| value.split(';').next())
             .filter(|value| value.starts_with("image/"))
             .map(str::to_string)
-            .or_else(|| image_ext_from_name_or_url(value).map(|ext| match ext.as_str() {
-                "jpg" | "jpeg" => "image/jpeg".to_string(),
-                "webp" => "image/webp".to_string(),
-                "gif" => "image/gif".to_string(),
-                "bmp" => "image/bmp".to_string(),
-                "svg" => "image/svg+xml".to_string(),
-                _ => "image/png".to_string(),
-            }))
+            .or_else(|| {
+                image_ext_from_name_or_url(value).map(|ext| match ext.as_str() {
+                    "jpg" | "jpeg" => "image/jpeg".to_string(),
+                    "webp" => "image/webp".to_string(),
+                    "gif" => "image/gif".to_string(),
+                    "bmp" => "image/bmp".to_string(),
+                    "svg" => "image/svg+xml".to_string(),
+                    _ => "image/png".to_string(),
+                })
+            })
             .unwrap_or_else(|| "image/png".to_string());
-        let bytes = response.bytes().map_err(|e| format!("读取参考图失败：{}", e))?.to_vec();
+        let bytes = response
+            .bytes()
+            .map_err(|e| format!("读取参考图失败：{}", e))?
+            .to_vec();
         return Ok((bytes, mime));
     }
 
@@ -673,7 +769,9 @@ fn http_post_image_edit(
     let response_result = client
         .post(url)
         .bearer_auth(api_key)
-        .multipart(build_ai_image_edit_form(&client, model, prompt, n, size, images)?)
+        .multipart(build_ai_image_edit_form(
+            &client, model, prompt, n, size, images,
+        )?)
         .send();
 
     let response = match response_result {
@@ -689,7 +787,14 @@ fn http_post_image_edit(
             direct_client
                 .post(url)
                 .bearer_auth(api_key)
-                .multipart(build_ai_image_edit_form(&direct_client, model, prompt, n, size, images)?)
+                .multipart(build_ai_image_edit_form(
+                    &direct_client,
+                    model,
+                    prompt,
+                    n,
+                    size,
+                    images,
+                )?)
                 .send()
                 .map_err(|second_err| {
                     format!(
@@ -810,8 +915,12 @@ async fn get_ai_json(
             &api_key,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
         )?;
-        serde_json::from_str(&raw)
-            .map_err(|e| format!("AI response JSON parse failed: {}; raw response: {}", e, raw))
+        serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "AI response JSON parse failed: {}; raw response: {}",
+                e, raw
+            )
+        })
     })
     .await
     .map_err(|e| format!("AI GET request task failed: {}", e))?
@@ -858,7 +967,10 @@ fn delete_local_file(path: String) -> Result<bool, String> {
         return Ok(false);
     }
     if !normalized.is_file() {
-        return Err(format!("不是可删除的文件：{}", normalized.to_string_lossy()));
+        return Err(format!(
+            "不是可删除的文件：{}",
+            normalized.to_string_lossy()
+        ));
     }
     let resolved = fs::canonicalize(&normalized).unwrap_or_else(|_| normalized.clone());
     fs::remove_file(&resolved).map_err(|e| format!("删除本地文件失败：{}", e))?;
@@ -997,7 +1109,16 @@ fn save_item_source_as(
     dest: String,
     content: Option<String>,
     item_type: Option<String>,
+    feature: Option<String>,
 ) -> Result<(), String> {
+    if let Some(feature) = feature
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        commands::license::require_feature(&app_handle, feature)?;
+    }
+
     let dest_path = PathBuf::from(dest);
     let kind = item_type.unwrap_or_default();
 
@@ -1023,7 +1144,9 @@ fn save_item_source_as(
 
     let local = local_path_from_url_like(input).unwrap_or_else(|| PathBuf::from(input));
     if local.exists() && local.is_file() {
-        fs::copy(local, dest_path).map(|_| ()).map_err(|e| e.to_string())?;
+        fs::copy(local, dest_path)
+            .map(|_| ())
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
 
@@ -1058,7 +1181,10 @@ fn unique_file_path(path: PathBuf) -> PathBuf {
         return path;
     }
 
-    let parent = path.parent().map(|value| value.to_path_buf()).unwrap_or_else(std::env::temp_dir);
+    let parent = path
+        .parent()
+        .map(|value| value.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -1124,6 +1250,221 @@ fn get_user_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
     path
 }
 
+fn emit_local_vision_model_progress(
+    app_handle: &tauri::AppHandle,
+    stage: &str,
+    message: String,
+    file: Option<String>,
+    loaded: u64,
+    total: u64,
+    progress: f64,
+) {
+    let payload = LocalVisionModelProgress {
+        stage: stage.to_string(),
+        message,
+        file,
+        loaded,
+        total,
+        progress: progress.clamp(0.0, 100.0),
+    };
+    let _ = app_handle.emit("local-vision-model-progress", payload);
+}
+
+#[tauri::command]
+fn get_local_vision_model_status(model: Option<String>) -> Result<serde_json::Value, String> {
+    let model = normalize_ollama_vision_model(model);
+    match read_ollama_model_ready(&model) {
+        Ok(true) => Ok(serde_json::json!({
+            "ready": true,
+            "model": model,
+            "progress": 100.0,
+        })),
+        Ok(false) => Ok(serde_json::json!({
+            "ready": false,
+            "model": model,
+            "progress": 0.0,
+        })),
+        Err(err) => Err(err),
+    }
+}
+
+#[tauri::command]
+async fn install_ollama_silent(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        emit_local_vision_model_progress(
+            &app_handle,
+            "installing",
+            "正在静默安装 Ollama".to_string(),
+            None,
+            0,
+            100,
+            2.0,
+        );
+
+        if read_ollama_model_ready(OLLAMA_DEFAULT_VISION_MODEL).is_ok() {
+            emit_local_vision_model_progress(
+                &app_handle,
+                "starting",
+                "Ollama 已安装并正在运行".to_string(),
+                None,
+                100,
+                100,
+                100.0,
+            );
+            return Ok(serde_json::json!({ "installed": true, "alreadyRunning": true }));
+        }
+
+        if try_spawn_ollama_service().is_ok() {
+            thread::sleep(Duration::from_millis(1200));
+            if read_ollama_model_ready(OLLAMA_DEFAULT_VISION_MODEL).is_ok() {
+                emit_local_vision_model_progress(
+                    &app_handle,
+                    "starting",
+                    "Ollama 已安装并已启动".to_string(),
+                    None,
+                    100,
+                    100,
+                    100.0,
+                );
+                return Ok(serde_json::json!({ "installed": true, "alreadyRunning": false }));
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = SysCommand::new("winget");
+            hide_console_window(&mut cmd);
+            let output = cmd
+                .args([
+                    "install",
+                    "--id",
+                    "Ollama.Ollama",
+                    "-e",
+                    "--silent",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                    "--disable-interactivity",
+                ])
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| {
+                    format!(
+                        "无法启动 winget 静默安装 Ollama：{}。请确认系统已安装 winget，或点击“下载页”手动安装。",
+                        e
+                    )
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if stderr.is_empty() { stdout } else { stderr };
+                return Err(if detail.is_empty() {
+                    "winget 静默安装 Ollama 失败，请打开下载页手动安装。".to_string()
+                } else {
+                    format!("winget 静默安装 Ollama 失败：{}", detail)
+                });
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            return Err("当前仅支持在 Windows 上通过 winget 静默安装 Ollama。".to_string());
+        }
+
+        emit_local_vision_model_progress(
+            &app_handle,
+            "starting",
+            "Ollama 已安装，正在启动服务".to_string(),
+            None,
+            90,
+            100,
+            90.0,
+        );
+
+        wait_for_ollama_service_ready(Duration::from_secs(18))
+            .map_err(|e| format!("Ollama 已安装，但服务暂未启动：{}。请稍后重试。", e))?;
+
+        Ok(serde_json::json!({ "installed": true, "alreadyRunning": false }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ensure_ollama_vision_model(
+    app_handle: tauri::AppHandle,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let model = normalize_ollama_vision_model(model);
+        emit_local_vision_model_progress(
+            &app_handle,
+            "checking",
+            format!("正在检查本地大模型：{}", model),
+            Some(model.clone()),
+            0,
+            100,
+            3.0,
+        );
+
+        let ready = match read_ollama_model_ready(&model) {
+            Ok(value) => value,
+            Err(_) => {
+                emit_local_vision_model_progress(
+                    &app_handle,
+                    "starting",
+                    "正在尝试启动 Ollama 服务".to_string(),
+                    Some(model.clone()),
+                    0,
+                    100,
+                    3.0,
+                );
+                let _ = try_spawn_ollama_service();
+                thread::sleep(Duration::from_millis(1200));
+                read_ollama_model_ready(&model)?
+            }
+        };
+
+        if ready {
+            emit_local_vision_model_progress(
+                &app_handle,
+                "ready",
+                "本地大模型已就绪".to_string(),
+                Some(model.clone()),
+                100,
+                100,
+                100.0,
+            );
+            return Ok(serde_json::json!({ "ready": true, "model": model }));
+        }
+
+        emit_local_vision_model_progress(
+            &app_handle,
+            "downloading",
+            format!("正在下载本地大模型增量包：{}", model),
+            Some(model.clone()),
+            3,
+            100,
+            3.0,
+        );
+
+        pull_ollama_vision_model(&app_handle, &model)?;
+
+        emit_local_vision_model_progress(
+            &app_handle,
+            "ready",
+            "本地大模型已下载完成".to_string(),
+            Some(model.clone()),
+            100,
+            100,
+            100.0,
+        );
+        Ok(serde_json::json!({ "ready": true, "model": model }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn is_data_image_string(value: &str) -> bool {
     let trimmed = value.trim_start();
     let prefix = "data:image/";
@@ -1143,9 +1484,7 @@ fn remove_data_image_field(
         .and_then(|value| value.as_str())
         .map(|value| {
             is_data_image_string(value)
-                && max_chars
-                    .map(|limit| value.len() > limit)
-                    .unwrap_or(true)
+                && max_chars.map(|limit| value.len() > limit).unwrap_or(true)
         })
         .unwrap_or(false);
 
@@ -1179,7 +1518,10 @@ fn compact_items_payload(value: &mut serde_json::Value) {
         }
         serde_json::Value::Object(object) => {
             compact_item_json_object(object);
-            if let Some(items) = object.get_mut("items").and_then(|value| value.as_array_mut()) {
+            if let Some(items) = object
+                .get_mut("items")
+                .and_then(|value| value.as_array_mut())
+            {
                 for item in items {
                     compact_item_like_json(item);
                 }
@@ -1245,7 +1587,10 @@ fn load_canvas_state(app_handle: tauri::AppHandle) -> Result<serde_json::Value, 
 }
 
 #[tauri::command]
-fn save_canvas_state(app_handle: tauri::AppHandle, mut state: serde_json::Value) -> Result<(), String> {
+fn save_canvas_state(
+    app_handle: tauri::AppHandle,
+    mut state: serde_json::Value,
+) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
     compact_items_payload(&mut state);
     let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
@@ -1253,7 +1598,11 @@ fn save_canvas_state(app_handle: tauri::AppHandle, mut state: serde_json::Value)
 }
 
 #[tauri::command]
-fn append_ai_debug_log(app_handle: tauri::AppHandle, name: String, line: String) -> Result<(), String> {
+fn append_ai_debug_log(
+    app_handle: tauri::AppHandle,
+    name: String,
+    line: String,
+) -> Result<(), String> {
     let safe_name = sanitize_file_name(&name);
     let dir = get_user_data_dir(&app_handle).join("logs");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1312,21 +1661,41 @@ fn set_web_image_cache_dir(app_handle: tauri::AppHandle, dir: String) -> Result<
 
     fs::create_dir_all(&next_dir).map_err(|e| e.to_string())?;
     let saved_dir = next_dir.canonicalize().unwrap_or_else(|_| next_dir.clone());
-    fs::write(web_image_cache_config_path(&app_handle), saved_dir.to_string_lossy().as_bytes())
-        .map_err(|e| e.to_string())?;
+    fs::write(
+        web_image_cache_config_path(&app_handle),
+        saved_dir.to_string_lossy().as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(saved_dir.to_string_lossy().to_string())
 }
 
 fn image_ext_from_name_or_url(value: &str) -> Option<String> {
     let clean = value.split(['?', '#']).next().unwrap_or(value);
-    let name = clean.split(['/', '\\']).filter(|part| !part.is_empty()).last().unwrap_or(clean);
-    let ext = name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase())?;
+    let name = clean
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .last()
+        .unwrap_or(clean);
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())?;
     let ext = ext.trim().trim_matches('.');
     if matches!(
         ext,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
-            | "mp4" | "webm" | "mov" | "m4v" | "avi" | "mkv"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "svg"
+            | "mp4"
+            | "webm"
+            | "mov"
+            | "m4v"
+            | "avi"
+            | "mkv"
     ) {
         Some(ext.to_string())
     } else {
@@ -1372,8 +1741,19 @@ fn image_ext_from_mime(mime: &str) -> &'static str {
 fn is_supported_media_ext(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
-            | "mp4" | "webm" | "mov" | "m4v" | "avi" | "mkv"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "svg"
+            | "mp4"
+            | "webm"
+            | "mov"
+            | "m4v"
+            | "avi"
+            | "mkv"
     )
 }
 
@@ -1395,8 +1775,8 @@ fn replace_media_extension(path: &Path, ext: &str) -> PathBuf {
 
 fn cloudflared_ref_stem(index: usize) -> String {
     const STEMS: [&str; 26] = [
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
-        "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v", "w", "x", "y", "z",
     ];
     STEMS
         .get(index)
@@ -1404,7 +1784,11 @@ fn cloudflared_ref_stem(index: usize) -> String {
         .unwrap_or_else(|| format!("r{}", index + 1))
 }
 
-fn source_to_cloudflared_image_file(source: &str, dir: &PathBuf, index: usize) -> Result<String, String> {
+fn source_to_cloudflared_image_file(
+    source: &str,
+    dir: &PathBuf,
+    index: usize,
+) -> Result<String, String> {
     let trimmed = source.trim();
     if trimmed.is_empty() {
         return Err("参考文件为空".to_string());
@@ -1434,9 +1818,462 @@ fn source_to_cloudflared_image_file(source: &str, dir: &PathBuf, index: usize) -
     Ok(file_name)
 }
 
+struct R2PreparedObject {
+    bytes: Vec<u8>,
+    content_type: String,
+    ext: String,
+}
+
+fn push_r2_config_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
+    if !candidates.iter().any(|candidate| candidate == &path) {
+        candidates.push(path);
+    }
+}
+
+fn r2_config_candidates(app_handle: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_r2_config_candidate(
+        &mut candidates,
+        get_user_data_dir(app_handle).join("r2.local.json"),
+    );
+
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        push_r2_config_candidate(&mut candidates, resource_dir.join("r2.local.json"));
+        push_r2_config_candidate(
+            &mut candidates,
+            resource_dir.join("_up_").join("r2.local.json"),
+        );
+    }
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            push_r2_config_candidate(&mut candidates, dir.join("r2.local.json"));
+            push_r2_config_candidate(&mut candidates, dir.join("_up_").join("r2.local.json"));
+            if let Some(parent) = dir.parent() {
+                push_r2_config_candidate(&mut candidates, parent.join("r2.local.json"));
+            }
+        }
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_r2_config_candidate(&mut candidates, current_dir.join("r2.local.json"));
+        push_r2_config_candidate(
+            &mut candidates,
+            current_dir.join("src-tauri").join("r2.local.json"),
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        push_r2_config_candidate(&mut candidates, manifest_dir.join("r2.local.json"));
+        if let Some(parent) = manifest_dir.parent() {
+            push_r2_config_candidate(&mut candidates, parent.join("r2.local.json"));
+        }
+    }
+
+    candidates
+}
+
+fn read_r2_local_config(app_handle: &tauri::AppHandle) -> Result<R2LocalConfig, String> {
+    let candidates = r2_config_candidates(app_handle);
+    for path in &candidates {
+        if !path.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(path)
+            .map_err(|e| format!("读取 R2 配置失败：{}：{}", path.to_string_lossy(), e))?;
+        let mut config: R2LocalConfig = serde_json::from_str(&text)
+            .map_err(|e| format!("解析 R2 配置失败：{}：{}", path.to_string_lossy(), e))?;
+        config.account_id = config.account_id.trim().to_string();
+        config.access_key_id = config.access_key_id.trim().to_string();
+        config.secret_access_key = config.secret_access_key.trim().to_string();
+        config.bucket = config.bucket.trim().to_string();
+        config.public_url = config.public_url.trim().trim_end_matches('/').to_string();
+        config.endpoint = config
+            .endpoint
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty());
+        config.prefix = config
+            .prefix
+            .map(|value| value.trim().trim_matches('/').replace('\\', "/"))
+            .filter(|value| !value.is_empty());
+        if config.account_id.is_empty()
+            || config.access_key_id.is_empty()
+            || config.secret_access_key.is_empty()
+            || config.bucket.is_empty()
+            || config.public_url.is_empty()
+        {
+            return Err(format!("R2 配置不完整：{}", path.to_string_lossy()));
+        }
+        return Ok(config);
+    }
+
+    let checked = candidates
+        .iter()
+        .take(8)
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join("；");
+    Err(format!("没有找到 r2.local.json。已检查：{}", checked))
+}
+
+fn source_to_r2_object(source: &str) -> Result<R2PreparedObject, String> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Err("R2 参考文件为空".to_string());
+    }
+
+    if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
+        let (mime, bytes) = decode_data_url(trimmed)?;
+        let ext = media_ext_from_mime(&mime).unwrap_or("png").to_string();
+        return Ok(R2PreparedObject {
+            bytes,
+            content_type: mime,
+            ext,
+        });
+    }
+
+    let path = local_path_from_url_like(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
+    if !path.is_file() {
+        return Err("R2 参考文件需要本地图片、视频或 data URL".to_string());
+    }
+
+    let bytes = fs::read(&path).map_err(|e| format!("读取 R2 参考文件失败：{}", e))?;
+    let content_type = guess_mime_from_path(&path).to_string();
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| is_supported_media_ext(value))
+        .unwrap_or_else(|| image_ext_from_mime(&content_type).to_string());
+    Ok(R2PreparedObject {
+        bytes,
+        content_type,
+        ext,
+    })
+}
+
+fn base36_u128(mut value: u128) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut output = Vec::new();
+    while value > 0 {
+        output.push(DIGITS[(value % 36) as usize] as char);
+        value /= 36;
+    }
+    output.iter().rev().collect()
+}
+
+fn short_r2_share_suffix() -> String {
+    let text = base36_u128(now_millis_u128());
+    let len = text.len();
+    text[len.saturating_sub(5)..].to_string()
+}
+
+fn r2_object_key(config: &R2LocalConfig, suffix: &str, index: usize, ext: &str) -> String {
+    let safe_ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    let file_name = format!(
+        "{}{}.{}",
+        suffix,
+        cloudflared_ref_stem(index),
+        if safe_ext.is_empty() {
+            "png"
+        } else {
+            safe_ext.as_str()
+        }
+    );
+    match config.prefix.as_deref() {
+        Some(prefix) if !prefix.is_empty() => format!("{}/{}", prefix.trim_matches('/'), file_name),
+        _ => file_name,
+    }
+}
+
+fn r2_endpoint(config: &R2LocalConfig) -> String {
+    config
+        .endpoint
+        .clone()
+        .unwrap_or_else(|| format!("https://{}.r2.cloudflarestorage.com", config.account_id))
+}
+
+fn r2_object_api_url(config: &R2LocalConfig, key: &str) -> String {
+    format!(
+        "{}/{}/{}",
+        r2_endpoint(config).trim_end_matches('/'),
+        config.bucket.trim_matches('/'),
+        key.trim_start_matches('/')
+    )
+}
+
+fn r2_object_public_url(config: &R2LocalConfig, key: &str) -> String {
+    format!(
+        "{}/{}",
+        config.public_url.trim_end_matches('/'),
+        key.trim_start_matches('/')
+    )
+}
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn hmac_sha256(key: &[u8], data: &str) -> Result<Vec<u8>, String> {
+    let mut mac = HmacSha256::new_from_slice(key).map_err(|e| e.to_string())?;
+    mac.update(data.as_bytes());
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn r2_amz_dates() -> Result<(String, String), String> {
+    let now = OffsetDateTime::now_utc();
+    let full_format = format_description::parse("[year][month][day]T[hour][minute][second]Z")
+        .map_err(|e| e.to_string())?;
+    let date_format = format_description::parse("[year][month][day]").map_err(|e| e.to_string())?;
+    let amz_date = now.format(&full_format).map_err(|e| e.to_string())?;
+    let date_stamp = now.format(&date_format).map_err(|e| e.to_string())?;
+    Ok((amz_date, date_stamp))
+}
+
+fn r2_host_header(url: &reqwest::Url) -> Result<String, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "R2 URL 缺少 host".to_string())?;
+    Ok(match url.port() {
+        Some(port) => format!("{}:{}", host, port),
+        None => host.to_string(),
+    })
+}
+
+fn r2_authorization_header(
+    config: &R2LocalConfig,
+    method: &str,
+    url: &reqwest::Url,
+    payload_hash: &str,
+    amz_date: &str,
+    date_stamp: &str,
+    host: &str,
+) -> Result<String, String> {
+    let canonical_headers = format!(
+        "host:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
+        host, payload_hash, amz_date
+    );
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method,
+        url.path(),
+        url.query().unwrap_or(""),
+        canonical_headers,
+        signed_headers,
+        payload_hash
+    );
+    let credential_scope = format!("{}/auto/s3/aws4_request", date_stamp);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        amz_date,
+        credential_scope,
+        sha256_hex(canonical_request.as_bytes())
+    );
+    let date_key = hmac_sha256(
+        format!("AWS4{}", config.secret_access_key).as_bytes(),
+        date_stamp,
+    )?;
+    let region_key = hmac_sha256(&date_key, "auto")?;
+    let service_key = hmac_sha256(&region_key, "s3")?;
+    let signing_key = hmac_sha256(&service_key, "aws4_request")?;
+    let signature = hex::encode(hmac_sha256(&signing_key, &string_to_sign)?);
+    Ok(format!(
+        "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
+        config.access_key_id, credential_scope, signed_headers, signature
+    ))
+}
+
+fn send_r2_signed_request(
+    client: &Client,
+    config: &R2LocalConfig,
+    method: &str,
+    key: &str,
+    bytes: &[u8],
+    content_type: Option<&str>,
+) -> Result<(), String> {
+    let url = r2_object_api_url(config, key);
+    let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("R2 URL 无效：{}", e))?;
+    let payload_hash = sha256_hex(bytes);
+    let (amz_date, date_stamp) = r2_amz_dates()?;
+    let host = r2_host_header(&parsed_url)?;
+    let authorization = r2_authorization_header(
+        config,
+        method,
+        &parsed_url,
+        &payload_hash,
+        &amz_date,
+        &date_stamp,
+        &host,
+    )?;
+
+    let builder = match method {
+        "PUT" => client.put(parsed_url.clone()).body(bytes.to_vec()),
+        "DELETE" => client.delete(parsed_url.clone()),
+        _ => return Err(format!("不支持的 R2 请求方法：{}", method)),
+    };
+    let mut builder = builder
+        .header(reqwest::header::HOST, host)
+        .header("x-amz-content-sha256", payload_hash)
+        .header("x-amz-date", amz_date)
+        .header(reqwest::header::AUTHORIZATION, authorization);
+    if let Some(content_type) = content_type {
+        builder = builder.header(reqwest::header::CONTENT_TYPE, content_type);
+    }
+    let response = builder.send().map_err(|e| format!("R2 请求失败：{}", e))?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let text = response.text().unwrap_or_default();
+    Err(format!("R2 请求失败，HTTP {}：{}", status, text))
+}
+
+fn upload_r2_object(
+    client: &Client,
+    config: &R2LocalConfig,
+    key: &str,
+    object: &R2PreparedObject,
+) -> Result<(), String> {
+    send_r2_signed_request(
+        client,
+        config,
+        "PUT",
+        key,
+        &object.bytes,
+        Some(&object.content_type),
+    )
+}
+
+fn delete_r2_object(client: &Client, config: &R2LocalConfig, key: &str) -> Result<(), String> {
+    send_r2_signed_request(client, config, "DELETE", key, &[], None)
+}
+
+fn litterbox_file_name(suffix: &str, index: usize, ext: &str) -> String {
+    let safe_ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    format!(
+        "{}{}.{}",
+        suffix,
+        cloudflared_ref_stem(index),
+        if safe_ext.is_empty() {
+            "png"
+        } else {
+            safe_ext.as_str()
+        }
+    )
+}
+
+fn normalize_litterbox_expiration(value: Option<String>) -> String {
+    match value.as_deref().map(str::trim) {
+        Some("12h") => "12h".to_string(),
+        Some("24h") => "24h".to_string(),
+        Some("72h") => "72h".to_string(),
+        _ => "1h".to_string(),
+    }
+}
+
+fn upload_litterbox_object(
+    client: &Client,
+    object: R2PreparedObject,
+    file_name: String,
+    expiration: &str,
+) -> Result<String, String> {
+    let part = Part::bytes(object.bytes)
+        .file_name(file_name)
+        .mime_str(&object.content_type)
+        .map_err(|e| format!("Litterbox MIME 设置失败：{}", e))?;
+    let form = Form::new()
+        .text("reqtype", "fileupload")
+        .text("time", expiration.to_string())
+        .part("fileToUpload", part);
+    let response = client
+        .post("https://litterbox.catbox.moe/resources/internals/api.php")
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("Litterbox 上传失败：{}", e))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("读取 Litterbox 响应失败：{}", e))?;
+    if !status.is_success() {
+        return Err(format!("Litterbox 上传失败，HTTP {}：{}", status, text));
+    }
+    let url = text.trim().trim_matches('"').to_string();
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Ok(url);
+    }
+    Err(format!("Litterbox 没有返回公网 URL：{}", text))
+}
+
+fn tmpfiles_direct_url(url: &str) -> String {
+    let trimmed = url.trim().trim_matches('"');
+    if trimmed.contains("://tmpfiles.org/dl/") {
+        return trimmed.to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("https://tmpfiles.org/") {
+        return format!("https://tmpfiles.org/dl/{}", rest.trim_start_matches('/'));
+    }
+    if let Some(rest) = trimmed.strip_prefix("http://tmpfiles.org/") {
+        return format!("https://tmpfiles.org/dl/{}", rest.trim_start_matches('/'));
+    }
+    trimmed.to_string()
+}
+
+fn upload_tmpfiles_object(
+    client: &Client,
+    object: R2PreparedObject,
+    file_name: String,
+) -> Result<String, String> {
+    let part = Part::bytes(object.bytes)
+        .file_name(file_name)
+        .mime_str(&object.content_type)
+        .map_err(|e| format!("Tmpfiles MIME 设置失败：{}", e))?;
+    let form = Form::new().part("file", part);
+    let response = client
+        .post("https://tmpfiles.org/api/v1/upload")
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("Tmpfiles 上传失败：{}", e))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| format!("读取 Tmpfiles 响应失败：{}", e))?;
+    if !status.is_success() {
+        return Err(format!("Tmpfiles 上传失败，HTTP {}：{}", status, text));
+    }
+
+    let parsed: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("解析 Tmpfiles 响应失败：{}：{}", e, text))?;
+    let raw_url = parsed
+        .get("data")
+        .and_then(|value| value.get("url"))
+        .and_then(|value| value.as_str())
+        .or_else(|| parsed.get("url").and_then(|value| value.as_str()))
+        .ok_or_else(|| format!("Tmpfiles 没有返回公网 URL：{}", text))?;
+    let direct_url = tmpfiles_direct_url(raw_url);
+    if direct_url.starts_with("http://") || direct_url.starts_with("https://") {
+        return Ok(direct_url);
+    }
+    Err(format!("Tmpfiles 返回的 URL 无效：{}", raw_url))
+}
+
 fn extract_trycloudflare_url(line: &str) -> Option<String> {
     line.split_whitespace()
-        .map(|part| part.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | ',')))
+        .map(|part| {
+            part.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | ','
+                )
+            })
+        })
         .map(|part| part.trim_end_matches(['.', ',', ';']).to_string())
         .filter(|part| part.starts_with("https://") && part.contains("trycloudflare.com"))
         .find(|url| url.contains("trycloudflare.com"))
@@ -1478,12 +2315,22 @@ fn add_cloudflared_candidates_from_dir(candidates: &mut Vec<PathBuf>, dir: &Path
     while let Some(dir) = current {
         push_cloudflared_candidate(candidates, dir.join(exe_name));
         push_cloudflared_candidate(candidates, dir.join("bin").join(exe_name));
+        push_cloudflared_candidate(candidates, dir.join("_up_").join(exe_name));
+        push_cloudflared_candidate(candidates, dir.join("resources").join(exe_name));
+        push_cloudflared_candidate(
+            candidates,
+            dir.join("resources").join("_up_").join(exe_name),
+        );
         current = dir.parent();
     }
 }
 
 fn cloudflared_binary(app_handle: &tauri::AppHandle) -> (PathBuf, String) {
-    let exe_name = if cfg!(target_os = "windows") { "cloudflared.exe" } else { "cloudflared" };
+    let exe_name = if cfg!(target_os = "windows") {
+        "cloudflared.exe"
+    } else {
+        "cloudflared"
+    };
     let mut candidates = Vec::new();
 
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
@@ -1508,7 +2355,10 @@ fn cloudflared_binary(app_handle: &tauri::AppHandle) -> (PathBuf, String) {
 
     for path in &candidates {
         if path.is_file() {
-            return (fs::canonicalize(path).unwrap_or_else(|_| path.clone()), String::new());
+            return (
+                fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+                String::new(),
+            );
         }
     }
 
@@ -1564,7 +2414,9 @@ fn serve_cloudflared_file(mut stream: TcpStream, dir: &PathBuf) -> std::io::Resu
     let method = parts.next().unwrap_or("");
     let raw_path = parts.next().unwrap_or("/");
     if method != "GET" && method != "HEAD" {
-        stream.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        stream.write_all(
+            b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )?;
         return Ok(());
     }
 
@@ -1574,29 +2426,35 @@ fn serve_cloudflared_file(mut stream: TcpStream, dir: &PathBuf) -> std::io::Resu
         .unwrap_or("/")
         .trim_start_matches('/');
 
-    if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
-        stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+    if file_name.is_empty()
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains("..")
+    {
+        stream.write_all(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )?;
         return Ok(());
     }
 
     let path = dir.join(file_name);
     if !path.is_file() {
-        stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+        stream.write_all(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )?;
         return Ok(());
     }
 
     let bytes = fs::read(&path)?;
     let content_type = guess_mime_from_path(&path);
-    let range = header_lines
-        .iter()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.trim().eq_ignore_ascii_case("range") {
-                parse_http_range_header(value, bytes.len())
-            } else {
-                None
-            }
-        });
+    let range = header_lines.iter().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("range") {
+            parse_http_range_header(value, bytes.len())
+        } else {
+            None
+        }
+    });
 
     if method == "GET" {
         if let Some((start, end)) = range {
@@ -1627,9 +2485,11 @@ fn serve_cloudflared_file(mut stream: TcpStream, dir: &PathBuf) -> std::io::Resu
     Ok(())
 }
 
-fn start_cloudflared_file_server(dir: PathBuf) -> Result<(u16, Arc<AtomicBool>, JoinHandle<()>), String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| format!("启动本地图片服务失败：{}", e))?;
+fn start_cloudflared_file_server(
+    dir: PathBuf,
+) -> Result<(u16, Arc<AtomicBool>, JoinHandle<()>), String> {
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("启动本地图片服务失败：{}", e))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("设置本地图片服务失败：{}", e))?;
@@ -1654,7 +2514,10 @@ fn start_cloudflared_file_server(dir: PathBuf) -> Result<(u16, Arc<AtomicBool>, 
     Ok((port, stop, handle))
 }
 
-fn spawn_cloudflared_tunnel(app_handle: &tauri::AppHandle, port: u16) -> Result<(String, Child), String> {
+fn spawn_cloudflared_tunnel(
+    app_handle: &tauri::AppHandle,
+    port: u16,
+) -> Result<(String, Child), String> {
     let (binary, checked_paths) = cloudflared_binary(app_handle);
     let url = format!("http://127.0.0.1:{}", port);
     let mut cmd = SysCommand::new(&binary);
@@ -1767,7 +2630,10 @@ fn probe_cloudflared_public_url(client: &Client, url: &str) -> Result<bool, Stri
         .map_err(|err| format!("{} 访问失败：{}", url, err))
 }
 
-fn warm_up_cloudflared_public_urls(app_handle: &tauri::AppHandle, urls: &[String]) -> Option<String> {
+fn warm_up_cloudflared_public_urls(
+    app_handle: &tauri::AppHandle,
+    urls: &[String],
+) -> Option<String> {
     if urls.is_empty() {
         return None;
     }
@@ -1842,13 +2708,14 @@ async fn create_cloudflared_public_image_urls(
             file_names.push(source_to_cloudflared_image_file(source, &share_dir, index)?);
         }
 
-        let (port, server_stop, server_thread) = match start_cloudflared_file_server(share_dir.clone()) {
-            Ok(value) => value,
-            Err(err) => {
-                let _ = fs::remove_dir_all(&share_dir);
-                return Err(err);
-            }
-        };
+        let (port, server_stop, server_thread) =
+            match start_cloudflared_file_server(share_dir.clone()) {
+                Ok(value) => value,
+                Err(err) => {
+                    let _ = fs::remove_dir_all(&share_dir);
+                    return Err(err);
+                }
+            };
 
         let mut selected_tunnel: Option<(String, Child, Vec<String>)> = None;
         let mut last_tunnel_error = String::new();
@@ -1902,12 +2769,15 @@ async fn create_cloudflared_public_image_urls(
         cloudflared_shares()
             .lock()
             .map_err(|_| "cloudflared 分享状态锁定失败".to_string())?
-            .insert(share_id.clone(), CloudflaredShare {
-                child,
-                dir: share_dir,
-                server_stop,
-                server_thread: Some(server_thread),
-            });
+            .insert(
+                share_id.clone(),
+                CloudflaredShare {
+                    child,
+                    dir: share_dir,
+                    server_stop,
+                    server_thread: Some(server_thread),
+                },
+            );
 
         Ok(CloudflaredPublicImageUrls { share_id, urls })
     })
@@ -1940,6 +2810,161 @@ async fn stop_cloudflared_share(share_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn create_r2_public_image_urls(
+    app_handle: tauri::AppHandle,
+    sources: Vec<String>,
+) -> Result<CloudflaredPublicImageUrls, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if sources.is_empty() {
+            return Err("没有需要上传到 R2 的本地参考图".to_string());
+        }
+
+        let config = read_r2_local_config(&app_handle)?;
+        let client = build_http_client(Some(&app_handle), None, 180)?;
+        let suffix = short_r2_share_suffix();
+        let share_id = format!("r2_{}", suffix);
+        let mut keys: Vec<String> = Vec::new();
+        let mut urls: Vec<String> = Vec::new();
+
+        for (index, source) in sources.iter().take(13).enumerate() {
+            let object = match source_to_r2_object(source) {
+                Ok(value) => value,
+                Err(err) => {
+                    for key in &keys {
+                        let _ = delete_r2_object(&client, &config, key);
+                    }
+                    return Err(err);
+                }
+            };
+            let key = r2_object_key(&config, &suffix, index, &object.ext);
+            if let Err(err) = upload_r2_object(&client, &config, &key, &object) {
+                for key in &keys {
+                    let _ = delete_r2_object(&client, &config, key);
+                }
+                return Err(err);
+            }
+            urls.push(r2_object_public_url(&config, &key));
+            keys.push(key);
+        }
+
+        if urls.is_empty() {
+            return Err("R2 没有返回可用公网 URL".to_string());
+        }
+
+        r2_shares()
+            .lock()
+            .map_err(|_| "R2 临时分享状态锁定失败".to_string())?
+            .insert(share_id.clone(), R2Share { config, keys });
+
+        Ok(CloudflaredPublicImageUrls { share_id, urls })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_r2_public_image_urls(
+    app_handle: tauri::AppHandle,
+    share_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let share = r2_shares()
+            .lock()
+            .map_err(|_| "R2 临时分享状态锁定失败".to_string())?
+            .remove(&share_id);
+
+        let Some(share) = share else {
+            return Ok(());
+        };
+
+        let client = build_http_client(Some(&app_handle), None, 90)?;
+        let mut last_error = String::new();
+        for key in &share.keys {
+            if let Err(err) = delete_r2_object(&client, &share.config, key) {
+                last_error = err;
+            }
+        }
+        if last_error.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("R2 临时参考图清理失败：{}", last_error))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_litterbox_public_image_urls(
+    app_handle: tauri::AppHandle,
+    sources: Vec<String>,
+    time: Option<String>,
+) -> Result<CloudflaredPublicImageUrls, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if sources.is_empty() {
+            return Err("没有需要上传到 Litterbox 的本地参考图".to_string());
+        }
+
+        let client = build_http_client(Some(&app_handle), None, 180)?;
+        let suffix = short_r2_share_suffix();
+        let expiration = normalize_litterbox_expiration(time);
+        let mut urls: Vec<String> = Vec::new();
+
+        for (index, source) in sources.iter().take(13).enumerate() {
+            let object = source_to_r2_object(source)?;
+            let file_name = litterbox_file_name(&suffix, index, &object.ext);
+            let url = upload_litterbox_object(&client, object, file_name, &expiration)?;
+            urls.push(url);
+        }
+
+        if urls.is_empty() {
+            return Err("Litterbox 没有返回可用公网 URL".to_string());
+        }
+
+        Ok(CloudflaredPublicImageUrls {
+            share_id: format!("litterbox_{}", suffix),
+            urls,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_tmpfiles_public_image_urls(
+    app_handle: tauri::AppHandle,
+    sources: Vec<String>,
+) -> Result<CloudflaredPublicImageUrls, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if sources.is_empty() {
+            return Err("没有需要上传到 Tmpfiles 的本地参考图".to_string());
+        }
+
+        let client = build_http_client(Some(&app_handle), None, 180)?;
+        let suffix = short_r2_share_suffix();
+        let mut urls: Vec<String> = Vec::new();
+
+        for (index, source) in sources.iter().take(13).enumerate() {
+            let object = source_to_r2_object(source)?;
+            let file_name = litterbox_file_name(&suffix, index, &object.ext);
+            let url = upload_tmpfiles_object(&client, object, file_name)?;
+            urls.push(url);
+        }
+
+        if urls.is_empty() {
+            return Err("Tmpfiles 没有返回可用的公网图片 URL".to_string());
+        }
+
+        Ok(CloudflaredPublicImageUrls {
+            share_id: format!("tmpfiles_{}", suffix),
+            urls,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn cache_web_image(
     app_handle: tauri::AppHandle,
     url: String,
@@ -1966,6 +2991,204 @@ async fn cache_web_image_to_dir(
     // 避开 cache_dir / cacheDir 在 Tauri 参数映射里的歧义。
     tauri::async_runtime::spawn_blocking(move || {
         cache_web_image_impl(app_handle, url, name, Some(dir), proxy)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn url_encode_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            encoded.push(c);
+        } else if c == ' ' {
+            encoded.push('+');
+        } else {
+            encoded.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    encoded
+}
+
+fn extract_between<'a>(text: &'a str, start: &str, end: char) -> Option<&'a str> {
+    let start_index = text.find(start)? + start.len();
+    let rest = &text[start_index..];
+    let end_index = rest.find(end)?;
+    Some(&rest[..end_index])
+}
+
+fn extract_duckduckgo_vqd(page: &str) -> Option<String> {
+    for pattern in ["vqd=\"", "vqd='", "vqd="] {
+        if let Some(value) = extract_between(
+            page,
+            pattern,
+            if pattern.ends_with('"') {
+                '"'
+            } else if pattern.ends_with('\'') {
+                '\''
+            } else {
+                '&'
+            },
+        ) {
+            let clean = value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim_matches(';')
+                .trim_matches(',')
+                .to_string();
+            if !clean.is_empty() {
+                return Some(clean);
+            }
+        }
+    }
+    None
+}
+
+fn collect_duckduckgo_image_candidates(
+    app_handle: &tauri::AppHandle,
+    query: &str,
+    limit: usize,
+    explicit_proxy: Option<&str>,
+) -> Result<Vec<(String, String, String)>, String> {
+    let encoded_query = url_encode_component(query);
+    let client = build_http_client(Some(app_handle), explicit_proxy, 45)?;
+    let page_url = format!(
+        "https://duckduckgo.com/?q={}&iax=images&ia=images",
+        encoded_query
+    );
+    let page = client
+        .get(&page_url)
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .send()
+        .map_err(|e| format!("打开搜图页失败：{}", e))?
+        .text()
+        .map_err(|e| format!("读取搜图页失败：{}", e))?;
+    let vqd =
+        extract_duckduckgo_vqd(&page).ok_or_else(|| "没有拿到搜图令牌，请稍后重试".to_string())?;
+    let api_url = format!(
+        "https://duckduckgo.com/i.js?l=wt-wt&o=json&q={}&vqd={}&f=,,,&p=1",
+        encoded_query,
+        url_encode_component(&vqd)
+    );
+    let value: serde_json::Value = client
+        .get(&api_url)
+        .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
+        .header(reqwest::header::REFERER, page_url)
+        .send()
+        .map_err(|e| format!("请求搜图结果失败：{}", e))?
+        .json()
+        .map_err(|e| format!("解析搜图结果失败：{}", e))?;
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    if let Some(results) = value.get("results").and_then(|value| value.as_array()) {
+        for item in results {
+            let Some(object) = item.as_object() else {
+                continue;
+            };
+            let image_url = get_json_string(object, &["image", "url", "thumbnail"]);
+            let Some(image_url) = image_url else {
+                continue;
+            };
+            let image_url = image_url.trim().to_string();
+            if !image_url.starts_with("http://") && !image_url.starts_with("https://") {
+                continue;
+            }
+            if !seen.insert(image_url.clone()) {
+                continue;
+            }
+            let title = get_json_string(object, &["title"])
+                .unwrap_or_else(|| query.to_string())
+                .trim()
+                .chars()
+                .take(80)
+                .collect::<String>();
+            let page_url = get_json_string(object, &["url", "source", "host"]).unwrap_or_default();
+            out.push((title, image_url, page_url));
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    if out.is_empty() {
+        Err("没有找到可用图片结果".to_string())
+    } else {
+        Ok(out)
+    }
+}
+
+#[tauri::command]
+async fn collect_web_images(
+    app_handle: tauri::AppHandle,
+    query: String,
+    count: Option<u32>,
+    dir: Option<String>,
+    proxy: Option<String>,
+) -> Result<Vec<CollectedWebImage>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let clean_query = query.trim();
+        if clean_query.is_empty() {
+            return Err("请输入要收集的图片关键词".to_string());
+        }
+        let target_count = count.unwrap_or(10).clamp(1, 30) as usize;
+        let candidates = collect_duckduckgo_image_candidates(
+            &app_handle,
+            clean_query,
+            (target_count * 4).max(20),
+            proxy.as_deref(),
+        )?;
+
+        let mut collected = Vec::new();
+        let mut last_error = String::new();
+        for (index, (title, image_url, page_url)) in candidates.into_iter().enumerate() {
+            if collected.len() >= target_count {
+                break;
+            }
+            let ext = image_ext_from_name_or_url(&image_url).unwrap_or_else(|| "jpg".to_string());
+            let name = format!(
+                "{}_{:02}.{}",
+                sanitize_file_name(clean_query),
+                index + 1,
+                ext
+            );
+            match cache_web_image_impl(
+                app_handle.clone(),
+                image_url.clone(),
+                Some(name),
+                dir.clone(),
+                proxy.clone(),
+            ) {
+                Ok(path) => collected.push(CollectedWebImage {
+                    title: if title.trim().is_empty() {
+                        clean_query.to_string()
+                    } else {
+                        title
+                    },
+                    image_url,
+                    page_url,
+                    path,
+                }),
+                Err(err) => {
+                    last_error = err;
+                }
+            }
+        }
+
+        if collected.is_empty() {
+            Err(if last_error.is_empty() {
+                "没有成功缓存图片，请换个关键词再试".to_string()
+            } else {
+                format!("没有成功缓存图片：{}", last_error)
+            })
+        } else {
+            Ok(collected)
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2008,7 +3231,9 @@ fn cache_web_image_impl(
     let ext = if let Some(ext) = image_ext_from_name_or_url(&safe_name) {
         ext
     } else if input.starts_with("data:") {
-        let comma = input.find(',').ok_or_else(|| "invalid data url".to_string())?;
+        let comma = input
+            .find(',')
+            .ok_or_else(|| "invalid data url".to_string())?;
         image_ext_from_mime(&input[..comma]).to_string()
     } else {
         image_ext_from_name_or_url(input)
@@ -2038,19 +3263,21 @@ fn cache_web_image_impl(
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        let content_type = match download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
-            Ok(value) => value,
-            Err(err) => {
-                let _ = fs::remove_file(&out_path);
-                return Err(format!("缓存网页图片失败：{}", err));
-            }
-        };
+        let content_type =
+            match download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
+                Ok(value) => value,
+                Err(err) => {
+                    let _ = fs::remove_file(&out_path);
+                    return Err(format!("缓存网页图片失败：{}", err));
+                }
+            };
         if let Some(mime_ext) = content_type.as_deref().and_then(media_ext_from_mime) {
             let next_path = replace_media_extension(&out_path, mime_ext);
             if next_path != out_path {
                 if let Err(err) = fs::rename(&out_path, &next_path) {
-                    let _ = fs::copy(&out_path, &next_path)
-                        .map_err(|copy_err| format!("{}；fallback copy failed: {}", err, copy_err))?;
+                    let _ = fs::copy(&out_path, &next_path).map_err(|copy_err| {
+                        format!("{}；fallback copy failed: {}", err, copy_err)
+                    })?;
                     let _ = fs::remove_file(&out_path);
                 }
                 out_path = next_path;
@@ -2078,7 +3305,10 @@ fn relocate_web_cache_file(
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") {
+    if !matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+    ) {
         return Ok(source.to_string_lossy().to_string());
     }
 
@@ -2144,9 +3374,6 @@ fn relocate_web_cache_file(
     }
 }
 
-
-
-
 #[tauri::command]
 fn load_ai_analysis_config(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("ai_analysis_config.json");
@@ -2164,7 +3391,10 @@ fn load_ai_analysis_config(app_handle: tauri::AppHandle) -> Result<serde_json::V
 }
 
 #[tauri::command]
-fn save_ai_analysis_config(app_handle: tauri::AppHandle, config: serde_json::Value) -> Result<(), String> {
+fn save_ai_analysis_config(
+    app_handle: tauri::AppHandle,
+    config: serde_json::Value,
+) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("ai_analysis_config.json");
     let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
@@ -2222,7 +3452,13 @@ fn normalize_siliconflow_endpoint(endpoint: &str) -> String {
 }
 
 fn guess_mime_from_path(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
@@ -2233,8 +3469,44 @@ fn guess_mime_from_path(path: &std::path::Path) -> &'static str {
         "mov" => "video/quicktime",
         "avi" => "video/x-msvideo",
         "mkv" => "video/x-matroska",
+        "json" => "application/json; charset=utf-8",
+        "wasm" => "application/wasm",
+        "onnx" => "application/octet-stream",
+        "txt" => "text/plain; charset=utf-8",
         _ => "image/png",
     }
+}
+
+fn is_ai_supported_image_mime(mime: &str) -> bool {
+    matches!(
+        mime.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/jpg" | "image/webp" | "image/gif"
+    )
+}
+
+fn image_bytes_to_png_data_url(bytes: &[u8]) -> Result<String, String> {
+    let image = screenshots::image::load_from_memory(bytes)
+        .map_err(|e| format!("参考图格式转换失败：{}", e))?
+        .to_rgba8();
+    let mut png_bytes = Vec::new();
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        &mut png_bytes,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::NoFilter,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|e| format!("参考图 PNG 编码失败：{}", e))?;
+    use base64::{engine::general_purpose, Engine as _};
+    Ok(format!(
+        "data:image/png;base64,{}",
+        general_purpose::STANDARD.encode(png_bytes)
+    ))
 }
 
 fn image_source_for_ai(input: &str) -> Result<String, String> {
@@ -2243,16 +3515,27 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
         return Err("empty image source".to_string());
     }
 
-    if trimmed.starts_with("data:image/") || trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    if trimmed.starts_with("data:image/") {
+        let (bytes, mime) = decode_data_image(trimmed)?;
+        if is_ai_supported_image_mime(&mime) {
+            return Ok(trimmed.to_string());
+        }
+        return image_bytes_to_png_data_url(&bytes);
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         return Ok(trimmed.to_string());
     }
 
     let path = local_path_from_url_like(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
     if path.exists() && path.is_file() {
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+        let mime = guess_mime_from_path(&path);
+        if !is_ai_supported_image_mime(mime) {
+            return image_bytes_to_png_data_url(&bytes);
+        }
         use base64::{engine::general_purpose, Engine as _};
         let b64 = general_purpose::STANDARD.encode(bytes);
-        let mime = guess_mime_from_path(&path);
         return Ok(format!("data:{};base64,{}", mime, b64));
     }
 
@@ -2260,11 +3543,13 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
 }
 
 fn model_supports_image(model: &str) -> bool {
-    is_siliconflow_vision_model_id(model)
-        || {
-            let lower = model.to_ascii_lowercase();
-            lower.contains("vision") || lower.contains("omni") || lower.contains("ocr") || lower.contains("qvq")
-        }
+    is_siliconflow_vision_model_id(model) || {
+        let lower = model.to_ascii_lowercase();
+        lower.contains("vision")
+            || lower.contains("omni")
+            || lower.contains("ocr")
+            || lower.contains("qvq")
+    }
 }
 
 fn cmf_system_prompt() -> &'static str {
@@ -2280,7 +3565,12 @@ fn cmf_user_text(item_name: &str, note: &str, with_image: bool) -> String {
     )
 }
 
-fn build_siliconflow_request_body(model: &str, image_url: &str, item_name: &str, note: &str) -> serde_json::Value {
+fn build_siliconflow_request_body(
+    model: &str,
+    image_url: &str,
+    item_name: &str,
+    note: &str,
+) -> serde_json::Value {
     let with_image = model_supports_image(model);
     let user_text = cmf_user_text(item_name, note, with_image);
 
@@ -2321,6 +3611,540 @@ fn build_siliconflow_request_body(model: &str, image_url: &str, item_name: &str,
     })
 }
 
+fn build_siliconflow_image_search_query_body(
+    model: &str,
+    image_url: &str,
+    hint: &str,
+) -> Result<serde_json::Value, String> {
+    if !model_supports_image(model) {
+        return Err(
+            "当前模型看起来不支持图片理解，请在设置里选择硅基流动视觉模型后再按参考图收图"
+                .to_string(),
+        );
+    }
+
+    let user_text = format!(
+        "请根据参考图做图片检索标签识别，只输出严格 JSON 对象，不要 Markdown，不要解释。JSON 字段：subject=图片里最主要的东西，必须是具体物件/空间/人物/建筑/平面视觉等；style=图片风格，无法判断则为空字符串；materials=材质标签数组；colors=色彩标签数组；composition=构图/光线/关键元素标签数组；tags=最终用于搜图的 4-8 个短标签，第一项必须是 subject，第二项优先是 style，不要写“设计”“图片”“参考图”这类泛词；query=把 tags 组合成一行适合网络搜图的简体中文关键词。只有画面明显是文字排版、广告、展览视觉或印刷物时，subject 才能写海报/平面海报。用户补充：{}",
+        if hint.trim().is_empty() { "无" } else { hint.trim() }
+    );
+
+    Ok(serde_json::json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是视觉检索标签生成器。你的输出会直接用于网络搜图和用户可编辑标签，只能返回一个严格 JSON 对象。"
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_url,
+                            "detail": "high"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": user_text
+                    }
+                ]
+            }
+        ],
+        "temperature": 0.2,
+        "top_p": 0.7,
+        "max_tokens": 320,
+        "stream": false
+    }))
+}
+
+fn clean_image_search_query(text: &str) -> String {
+    let mut clean = text
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('“')
+        .trim_matches('”')
+        .replace(['\r', '\n', '\t'], " ");
+
+    for prefix in [
+        "关键词：",
+        "搜索词：",
+        "检索词：",
+        "关键词:",
+        "搜索词:",
+        "检索词:",
+    ] {
+        if let Some(rest) = clean.trim_start().strip_prefix(prefix) {
+            clean = rest.trim().to_string();
+        }
+    }
+
+    clean
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(96)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn clean_image_search_tag(text: &str) -> String {
+    let clean = text
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('“')
+        .trim_matches('”')
+        .trim_matches('「')
+        .trim_matches('」')
+        .trim_matches('《')
+        .trim_matches('》')
+        .replace(['\r', '\n', '\t', ',', '，', '、'], " ");
+
+    clean
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(24)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn push_image_search_tag(tags: &mut Vec<String>, value: &str) {
+    let tag = clean_image_search_tag(value);
+    if tag.is_empty() || tags.len() >= 8 || tags.iter().any(|existing| existing == &tag) {
+        return;
+    }
+    tags.push(tag);
+}
+
+fn collect_image_search_tags(tags: &mut Vec<String>, value: Option<&serde_json::Value>) {
+    match value {
+        Some(serde_json::Value::String(text)) => push_image_search_tag(tags, text),
+        Some(serde_json::Value::Array(items)) => {
+            for item in items {
+                collect_image_search_tags(tags, Some(item));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn split_image_search_tags_from_query(query: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for part in query.split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | '，' | '、')) {
+        push_image_search_tag(&mut tags, part);
+    }
+    tags
+}
+
+fn normalize_image_search_description(content: &str) -> serde_json::Value {
+    let parsed = extract_json_object_text(content)
+        .and_then(|json_text| serde_json::from_str::<serde_json::Value>(&json_text).ok())
+        .filter(|value| value.is_object());
+
+    let subject = parsed
+        .as_ref()
+        .map(|value| clean_image_search_tag(&value_as_string(value, "subject")))
+        .unwrap_or_default();
+    let style = parsed
+        .as_ref()
+        .map(|value| clean_image_search_tag(&value_as_string(value, "style")))
+        .unwrap_or_default();
+
+    let mut tags = Vec::new();
+    push_image_search_tag(&mut tags, &subject);
+    push_image_search_tag(&mut tags, &style);
+
+    if let Some(value) = parsed.as_ref() {
+        collect_image_search_tags(&mut tags, value.get("tags"));
+        collect_image_search_tags(&mut tags, value.get("keywords"));
+        collect_image_search_tags(&mut tags, value.get("materials"));
+        collect_image_search_tags(&mut tags, value.get("material"));
+        collect_image_search_tags(&mut tags, value.get("colors"));
+        collect_image_search_tags(&mut tags, value.get("color"));
+        collect_image_search_tags(&mut tags, value.get("composition"));
+        collect_image_search_tags(&mut tags, value.get("elements"));
+    }
+
+    let model_query = parsed
+        .as_ref()
+        .map(|value| value_as_string(value, "query"))
+        .unwrap_or_default();
+    let mut query = clean_image_search_query(if model_query.trim().is_empty() {
+        content
+    } else {
+        &model_query
+    });
+
+    if tags.is_empty() {
+        tags = split_image_search_tags_from_query(&query);
+    }
+    if query.is_empty() && !tags.is_empty() {
+        query = tags.join(" ");
+    }
+
+    serde_json::json!({
+        "subject": subject,
+        "style": style,
+        "tags": tags,
+        "query": query,
+    })
+}
+
+const OLLAMA_VISION_CHAT_URL: &str = "http://127.0.0.1:11434/api/chat";
+const OLLAMA_TAGS_URL: &str = "http://127.0.0.1:11434/api/tags";
+const OLLAMA_PULL_URL: &str = "http://127.0.0.1:11434/api/pull";
+const OLLAMA_DEFAULT_VISION_MODEL: &str = "qwen2.5vl:3b";
+const OLLAMA_UNAVAILABLE_MESSAGE: &str =
+    "未检测到 Ollama 服务，无法下载本地大模型。请先安装并启动 Ollama，然后重试。";
+
+fn normalize_ollama_vision_model(model: Option<String>) -> String {
+    let model = model.unwrap_or_else(|| OLLAMA_DEFAULT_VISION_MODEL.to_string());
+    let model = model.trim();
+    if model.is_empty() {
+        OLLAMA_DEFAULT_VISION_MODEL.to_string()
+    } else {
+        model.to_string()
+    }
+}
+
+fn ollama_model_names_equal(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| {
+        let trimmed = value.trim().to_ascii_lowercase();
+        if trimmed.contains(':') {
+            trimmed
+        } else {
+            format!("{}:latest", trimmed)
+        }
+    };
+    normalize(left) == normalize(right)
+}
+
+fn read_ollama_model_ready(model: &str) -> Result<bool, String> {
+    let client = build_direct_http_client(8)?;
+    let response = client
+        .get(OLLAMA_TAGS_URL)
+        .send()
+        .map_err(|e| format!("{} 原因：{}", OLLAMA_UNAVAILABLE_MESSAGE, e))?;
+    let status = response.status();
+    let raw = response
+        .text()
+        .map_err(|e| format!("读取 Ollama 模型列表失败：{}", e))?;
+    if !status.is_success() {
+        return Err(format!("读取 Ollama 模型列表失败 HTTP {}：{}", status, raw));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("解析 Ollama 模型列表失败：{}；原始返回：{}", e, raw))?;
+    let models = parsed
+        .get("models")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| format!("Ollama 模型列表格式异常：{}", parsed))?;
+    Ok(models.iter().any(|item| {
+        item.get("name")
+            .and_then(|value| value.as_str())
+            .map(|name| ollama_model_names_equal(name, model))
+            .unwrap_or(false)
+    }))
+}
+
+fn ollama_executable_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    paths.push(PathBuf::from("ollama"));
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            paths.push(
+                PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("Ollama")
+                    .join("ollama.exe"),
+            );
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            paths.push(
+                PathBuf::from(program_files)
+                    .join("Ollama")
+                    .join("ollama.exe"),
+            );
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            paths.push(
+                PathBuf::from(program_files_x86)
+                    .join("Ollama")
+                    .join("ollama.exe"),
+            );
+        }
+    }
+
+    paths
+}
+
+fn try_spawn_ollama_service() -> Result<(), String> {
+    let mut errors = Vec::new();
+    for path in ollama_executable_candidates() {
+        let mut cmd = SysCommand::new(&path);
+        hide_console_window(&mut cmd);
+        cmd.arg("serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        match cmd.spawn() {
+            Ok(_) => return Ok(()),
+            Err(err) => errors.push(format!("{}: {}", path.display(), err)),
+        }
+    }
+
+    Err(if errors.is_empty() {
+        OLLAMA_UNAVAILABLE_MESSAGE.to_string()
+    } else {
+        format!(
+            "{} 尝试启动失败：{}",
+            OLLAMA_UNAVAILABLE_MESSAGE,
+            errors.join("；")
+        )
+    })
+}
+
+fn wait_for_ollama_service_ready(timeout: Duration) -> Result<(), String> {
+    let started_at = Instant::now();
+    let mut last_error = String::new();
+    while started_at.elapsed() < timeout {
+        match read_ollama_model_ready(OLLAMA_DEFAULT_VISION_MODEL) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                last_error = err;
+                let _ = try_spawn_ollama_service();
+                thread::sleep(Duration::from_millis(1000));
+            }
+        }
+    }
+
+    Err(if last_error.is_empty() {
+        OLLAMA_UNAVAILABLE_MESSAGE.to_string()
+    } else {
+        last_error
+    })
+}
+
+fn ollama_model_ready(model: &str) -> Result<bool, String> {
+    match read_ollama_model_ready(model) {
+        Ok(ready) => Ok(ready),
+        Err(first_err) => {
+            let _ = try_spawn_ollama_service();
+            thread::sleep(Duration::from_millis(1200));
+            read_ollama_model_ready(model).map_err(|second_err| {
+                format!(
+                    "{} 首次连接失败：{}；重试失败：{}",
+                    OLLAMA_UNAVAILABLE_MESSAGE, first_err, second_err
+                )
+            })
+        }
+    }
+}
+
+fn pull_ollama_vision_model(app_handle: &tauri::AppHandle, model: &str) -> Result<(), String> {
+    let client = build_direct_http_client(3600)?;
+    let response = client
+        .post(OLLAMA_PULL_URL)
+        .json(&serde_json::json!({
+            "name": model,
+            "stream": true
+        }))
+        .send()
+        .map_err(|e| {
+            format!(
+                "启动本地大模型下载失败：{}。{}",
+                e, OLLAMA_UNAVAILABLE_MESSAGE
+            )
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let raw = response.text().unwrap_or_default();
+        return Err(format!("本地大模型下载失败 HTTP {}：{}", status, raw));
+    }
+
+    let mut reader = BufReader::new(response);
+    let mut line = String::new();
+    let mut last_progress = 3.0;
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("读取本地大模型下载进度失败：{}", e))?;
+        if read == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let value: serde_json::Value = serde_json::from_str(trimmed)
+            .map_err(|e| format!("解析本地大模型下载进度失败：{}；内容：{}", e, trimmed))?;
+        if let Some(error) = value.get("error").and_then(|item| item.as_str()) {
+            return Err(format!("本地大模型下载失败：{}", error));
+        }
+
+        let completed = value
+            .get("completed")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(0);
+        let total = value
+            .get("total")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(0);
+        let status_text = value
+            .get("status")
+            .and_then(|item| item.as_str())
+            .unwrap_or("正在下载");
+        let progress = if total > 0 {
+            (completed as f64 * 100.0 / total as f64).clamp(last_progress, 99.0)
+        } else if status_text.contains("success") {
+            100.0
+        } else {
+            (last_progress + 0.4).min(12.0)
+        };
+        last_progress = progress;
+
+        emit_local_vision_model_progress(
+            app_handle,
+            "downloading",
+            format!("正在下载本地大模型增量包：{}", model),
+            Some(model.to_string()),
+            completed,
+            total.max(100),
+            progress,
+        );
+    }
+
+    if ollama_model_ready(model)? {
+        Ok(())
+    } else {
+        Err(format!("Ollama 下载结束，但没有在模型列表中找到 {}", model))
+    }
+}
+
+fn image_source_to_ollama_base64(source: &str) -> Result<String, String> {
+    let normalized = image_source_for_ai(source)?;
+    if normalized.starts_with("data:image/") {
+        let Some((_, payload)) = normalized.split_once(',') else {
+            return Err("本地图像 data URL 格式不正确".to_string());
+        };
+        return Ok(payload.trim().to_string());
+    }
+
+    if normalized.starts_with("http://") || normalized.starts_with("https://") {
+        let client = build_direct_http_client(120)?;
+        let bytes = client
+            .get(&normalized)
+            .send()
+            .map_err(|e| format!("读取远程参考图失败：{}", e))?
+            .bytes()
+            .map_err(|e| format!("读取远程参考图内容失败：{}", e))?;
+        use base64::{engine::general_purpose, Engine as _};
+        return Ok(general_purpose::STANDARD.encode(bytes));
+    }
+
+    Err("参考图无法转换为本地大模型需要的 Base64 图片".to_string())
+}
+
+fn ollama_image_search_prompt(hint: &str) -> String {
+    format!(
+        "请识别参考图并返回严格 JSON，不要 Markdown，不要解释。字段：subject=图片里最主要的具体东西；style=图片风格；materials=材质数组；colors=色彩数组；composition=构图/光线/关键元素数组；tags=4-8 个中文短标签，第一项必须是 subject，第二项优先是 style；query=把 tags 组合成适合网络搜图的一行中文关键词。不要把所有图都说成海报，只有画面明显是文字排版/广告/印刷物才写海报。用户补充：{}",
+        if hint.trim().is_empty() { "无" } else { hint.trim() }
+    )
+}
+
+#[tauri::command]
+async fn describe_image_for_search_local_vlm(
+    image_source: String,
+    hint: Option<String>,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let model = model
+            .unwrap_or_else(|| OLLAMA_DEFAULT_VISION_MODEL.to_string())
+            .trim()
+            .to_string();
+        let model = if model.is_empty() {
+            OLLAMA_DEFAULT_VISION_MODEL.to_string()
+        } else {
+            model
+        };
+        let image = image_source_to_ollama_base64(&image_source)?;
+        let body = serde_json::json!({
+            "model": model.clone(),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": ollama_image_search_prompt(hint.as_deref().unwrap_or("")),
+                    "images": [image]
+                }
+            ],
+            "stream": false,
+            "format": "json",
+            "options": {
+                "temperature": 0.1,
+                "top_p": 0.8
+            }
+        });
+
+        let client = build_direct_http_client(300)?;
+        let response = client
+            .post(OLLAMA_VISION_CHAT_URL)
+            .json(&body)
+            .send()
+            .map_err(|e| {
+                format!(
+                    "本地 Ollama 视觉模型不可用：{}。请确认 Ollama 已启动，并已执行 ollama pull {}",
+                    e, model
+                )
+            })?;
+
+        let status = response.status();
+        let raw = response
+            .text()
+            .map_err(|e| format!("读取 Ollama 响应失败：{}", e))?;
+        if !status.is_success() {
+            return Err(format!("Ollama 视觉模型请求失败 HTTP {}：{}", status, raw));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("解析 Ollama 响应失败：{}；原始返回：{}", e, raw))?;
+        let content = parsed
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(|value| value.as_str())
+            .or_else(|| parsed.get("response").and_then(|value| value.as_str()))
+            .ok_or_else(|| format!("Ollama 响应缺少 message.content：{}", parsed))?;
+        let description = normalize_image_search_description(content);
+        let query = description
+            .get("query")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if query.is_empty() {
+            Err("本地 Ollama 视觉模型没有生成可用标签".to_string())
+        } else {
+            Ok(description)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn is_siliconflow_vision_model_id(id: &str) -> bool {
     let model = id.to_ascii_lowercase();
     model.contains("qwen3-vl")
@@ -2357,8 +4181,8 @@ async fn get_siliconflow_vision_models(
     };
     tauri::async_runtime::spawn_blocking(move || {
         let raw = http_get_text(&app_handle, &url, &api_key, None)?;
-        let parsed: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| format!("模型列表 JSON 解析失败：{}", e))?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("模型列表 JSON 解析失败：{}", e))?;
         let data = parsed
             .get("data")
             .and_then(|value| value.as_array())
@@ -2481,22 +4305,45 @@ fn normalize_ai_result_json(item_name: &str, mut value: serde_json::Value) -> se
         .and_then(|v| v.as_array())
         .filter(|arr| !arr.is_empty())
         .cloned()
-        .unwrap_or_else(|| palette.get("colors").and_then(|v| v.as_array()).cloned().unwrap_or_default());
+        .unwrap_or_else(|| {
+            palette
+                .get("colors")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+        });
     let keywords = value
         .get("keywords")
         .and_then(|v| v.as_array())
         .filter(|arr| !arr.is_empty())
         .cloned()
-        .unwrap_or_else(|| palette.get("keywords").and_then(|v| v.as_array()).cloned().unwrap_or_default());
+        .unwrap_or_else(|| {
+            palette
+                .get("keywords")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+        });
     let materials = value
         .get("materials")
         .and_then(|v| v.as_array())
         .filter(|arr| !arr.is_empty())
         .cloned()
-        .unwrap_or_else(|| palette.get("materials").and_then(|v| v.as_array()).cloned().unwrap_or_default());
+        .unwrap_or_else(|| {
+            palette
+                .get("materials")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+        });
 
     let get_str = |key: &str, fallback: &str| {
-        value.get(key).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).unwrap_or(fallback).to_string()
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(fallback)
+            .to_string()
     };
     let get_arr = |key: &str, fallback: Vec<&str>| {
         value
@@ -2544,13 +4391,97 @@ fn call_siliconflow_cmf(
     let image_url = image_source_for_ai(image_source)?;
     let body = build_siliconflow_request_body(model, &image_url, item_name, note);
     let raw = http_post_json(app_handle, &url, api_key, &body, explicit_proxy)?;
-    let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
+    let response: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
     let content = get_chat_message_content(&response)?;
     let Some(json_text) = extract_json_object_text(&content) else {
         return Err(format!("模型没有返回 JSON：{}", content));
     };
-    let parsed: serde_json::Value = serde_json::from_str(&json_text).map_err(|e| format!("解析模型 JSON 失败：{}；内容：{}", e, json_text))?;
+    let parsed: serde_json::Value = serde_json::from_str(&json_text)
+        .map_err(|e| format!("解析模型 JSON 失败：{}；内容：{}", e, json_text))?;
     Ok(normalize_ai_result_json(item_name, parsed))
+}
+
+#[tauri::command]
+async fn describe_image_for_search(
+    app_handle: tauri::AppHandle,
+    image_source: String,
+    hint: Option<String>,
+    api_config: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        describe_image_for_search_impl(app_handle, image_source, hint, api_config)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn describe_image_for_search_impl(
+    app_handle: tauri::AppHandle,
+    image_source: String,
+    hint: Option<String>,
+    api_config: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let config = api_config.unwrap_or_else(|| serde_json::json!({}));
+    let provider = value_as_string(&config, "provider");
+    let endpoint = value_as_string(&config, "endpoint");
+    let model = value_as_string(&config, "model");
+    let api_key = value_as_string(&config, "apiKey");
+    let proxy = value_as_string(&config, "proxy");
+
+    if provider != "siliconflow" {
+        return Err("请先在设置里配置硅基流动视觉模型，才能按参考图收图".to_string());
+    }
+    if api_key.trim().is_empty() {
+        return Err("请先填写硅基流动 API Key，才能按参考图收图".to_string());
+    }
+    if model.trim().is_empty() {
+        return Err("请先选择硅基流动视觉模型，才能按参考图收图".to_string());
+    }
+    if !model_supports_image(&model) {
+        return Err(
+            "当前模型看起来不支持图片理解，请在设置里选择硅基流动视觉模型后再按参考图收图"
+                .to_string(),
+        );
+    }
+
+    let url = normalize_siliconflow_endpoint(if endpoint.is_empty() {
+        "https://api.siliconflow.cn/v1"
+    } else {
+        &endpoint
+    });
+    let image_url = image_source_for_ai(&image_source)?;
+    let body = build_siliconflow_image_search_query_body(
+        &model,
+        &image_url,
+        hint.as_deref().unwrap_or(""),
+    )?;
+    let raw = http_post_json(
+        &app_handle,
+        &url,
+        &api_key,
+        &body,
+        if proxy.trim().is_empty() {
+            None
+        } else {
+            Some(proxy.as_str())
+        },
+    )?;
+    let response: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
+    let content = get_chat_message_content(&response)?;
+    let description = normalize_image_search_description(&content);
+    let query = description
+        .get("query")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if query.is_empty() {
+        Err("模型没有生成可用的搜图关键词".to_string())
+    } else {
+        Ok(description)
+    }
 }
 
 #[tauri::command]
@@ -2581,25 +4512,47 @@ fn analyze_cmf_card_impl(
     let provider = value_as_string(&config, "provider");
     let api_key = value_as_string(&config, "apiKey");
     let proxy = value_as_string(&config, "proxy");
-    let provider = if provider.is_empty() { "openai-compatible".to_string() } else { provider };
+    let provider = if provider.is_empty() {
+        "openai-compatible".to_string()
+    } else {
+        provider
+    };
     let note_text = note.unwrap_or_default();
 
     if provider == "siliconflow" {
         return call_siliconflow_cmf(
             &app_handle,
-            if endpoint.is_empty() { "https://api.siliconflow.cn/v1" } else { &endpoint },
+            if endpoint.is_empty() {
+                "https://api.siliconflow.cn/v1"
+            } else {
+                &endpoint
+            },
             &api_key,
-            if model.is_empty() { "Qwen/Qwen3-VL-32B-Instruct" } else { &model },
+            if model.is_empty() {
+                "Qwen/Qwen3-VL-32B-Instruct"
+            } else {
+                &model
+            },
             &image_source,
             &item_name,
             &note_text,
-            if proxy.trim().is_empty() { None } else { Some(proxy.as_str()) },
+            if proxy.trim().is_empty() {
+                None
+            } else {
+                Some(proxy.as_str())
+            },
         );
     }
 
     let palette = cmf_palette_for_name(&item_name);
-    let colors = palette.get("colors").cloned().unwrap_or_else(|| serde_json::json!([]));
-    let keywords = palette.get("keywords").cloned().unwrap_or_else(|| serde_json::json!([]));
+    let colors = palette
+        .get("colors")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let keywords = palette
+        .get("keywords")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
 
     if endpoint.is_empty() {
         return Ok(serde_json::json!({
@@ -2621,7 +4574,10 @@ fn analyze_cmf_card_impl(
         }));
     }
 
-    let materials = palette.get("materials").cloned().unwrap_or_else(|| serde_json::json!([]));
+    let materials = palette
+        .get("materials")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
 
     Ok(serde_json::json!({
         "title": item_name,
@@ -2641,8 +4597,6 @@ fn analyze_cmf_card_impl(
         "generatedAt": now_millis_u128()
     }))
 }
-
-
 
 // src-tauri/src/main.rs
 
@@ -2730,7 +4684,6 @@ fn get_local_ip() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-
 static RECENT_MOBILE_SIGNATURES: OnceLock<Mutex<HashMap<String, u128>>> = OnceLock::new();
 
 fn now_millis_u128() -> u128 {
@@ -2772,17 +4725,30 @@ fn mobile_bytes_signature(item_type: &str, bytes: &[u8]) -> String {
     item_type.hash(&mut hasher);
     bytes.len().hash(&mut hasher);
     bytes.hash(&mut hasher);
-    format!("mobile-bytes:{}:{}:{:016x}", item_type, bytes.len(), hasher.finish())
+    format!(
+        "mobile-bytes:{}:{}:{:016x}",
+        item_type,
+        bytes.len(),
+        hasher.finish()
+    )
 }
 
 fn mobile_text_signature(text: &str) -> String {
     let normalized = text.trim();
-    format!("mobile-text:{}:{:016x}", normalized.len(), hash_u64(normalized))
+    format!(
+        "mobile-text:{}:{:016x}",
+        normalized.len(),
+        hash_u64(normalized)
+    )
 }
 
 fn mobile_url_signature(url: &str) -> String {
     let normalized = url.trim();
-    format!("mobile-url:{}:{:016x}", normalized.len(), hash_u64(normalized))
+    format!(
+        "mobile-url:{}:{:016x}",
+        normalized.len(),
+        hash_u64(normalized)
+    )
 }
 
 static MOBILE_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
@@ -2820,7 +4786,10 @@ fn start_mobile_server(app_handle: tauri::AppHandle) {
         };
 
         MOBILE_SERVER_PORT.store(bound_port, Ordering::Relaxed);
-        let _ = app_handle.emit("mobile-server-ready", get_mobile_pair_url().unwrap_or_default());
+        let _ = app_handle.emit(
+            "mobile-server-ready",
+            get_mobile_pair_url().unwrap_or_default(),
+        );
         eprintln!("mobile server listening on 0.0.0.0:{bound_port}");
 
         for stream in listener.incoming() {
@@ -2850,7 +4819,12 @@ fn handle_mobile_connection(mut stream: TcpStream, app_handle: tauri::AppHandle)
     let request = match read_mobile_http_request(&mut stream) {
         Ok(req) => req,
         Err(err) => {
-            let _ = write_mobile_response(&mut stream, "400 Bad Request", "application/json", &format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&err)));
+            let _ = write_mobile_response(
+                &mut stream,
+                "400 Bad Request",
+                "application/json",
+                &format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&err)),
+            );
             return;
         }
     };
@@ -2860,12 +4834,23 @@ fn handle_mobile_connection(mut stream: TcpStream, app_handle: tauri::AppHandle)
         return;
     }
 
-    let route = request.path.split('?').next().unwrap_or("/").trim_end_matches('/');
-    let query = request.path.split_once('?').map(|(_, q)| parse_query(q)).unwrap_or_default();
+    let route = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or("/")
+        .trim_end_matches('/');
+    let query = request
+        .path
+        .split_once('?')
+        .map(|(_, q)| parse_query(q))
+        .unwrap_or_default();
 
     let result = if request.method.eq_ignore_ascii_case("GET") {
         handle_mobile_get(route, &query, &app_handle)
-    } else if request.method.eq_ignore_ascii_case("POST") || request.method.eq_ignore_ascii_case("PUT") {
+    } else if request.method.eq_ignore_ascii_case("POST")
+        || request.method.eq_ignore_ascii_case("PUT")
+    {
         handle_mobile_post(route, &query, &request, &app_handle)
     } else {
         Err(format!("unsupported method: {}", request.method))
@@ -2874,11 +4859,21 @@ fn handle_mobile_connection(mut stream: TcpStream, app_handle: tauri::AppHandle)
     match result {
         Ok(message) => {
             let body = format!(r#"{{"ok":true,"message":"{}"}}"#, json_escape(&message));
-            let _ = write_mobile_response(&mut stream, "200 OK", "application/json; charset=utf-8", &body);
+            let _ = write_mobile_response(
+                &mut stream,
+                "200 OK",
+                "application/json; charset=utf-8",
+                &body,
+            );
         }
         Err(err) => {
             let body = format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&err));
-            let _ = write_mobile_response(&mut stream, "500 Internal Server Error", "application/json; charset=utf-8", &body);
+            let _ = write_mobile_response(
+                &mut stream,
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                &body,
+            );
         }
     }
 }
@@ -2905,7 +4900,9 @@ fn read_mobile_http_request(stream: &mut TcpStream) -> Result<MobileHttpRequest,
 
     let header_text = String::from_utf8_lossy(&buf[..header_end]).to_string();
     let mut lines = header_text.split("\r\n");
-    let request_line = lines.next().ok_or_else(|| "missing request line".to_string())?;
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "missing request line".to_string())?;
     let mut request_parts = request_line.split_whitespace();
     let method = request_parts.next().unwrap_or("").to_string();
     let path = request_parts.next().unwrap_or("/").to_string();
@@ -2937,10 +4934,20 @@ fn read_mobile_http_request(stream: &mut TcpStream) -> Result<MobileHttpRequest,
     let body_len = content_length.min(available);
     let body = buf[header_end..header_end + body_len].to_vec();
 
-    Ok(MobileHttpRequest { method, path, headers, body })
+    Ok(MobileHttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
 }
 
-fn write_mobile_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) -> std::io::Result<()> {
+fn write_mobile_response(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) -> std::io::Result<()> {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET,POST,PUT,OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-File-Name, X-Requested-With\r\nConnection: close\r\n\r\n{}",
         body.as_bytes().len(),
@@ -2949,7 +4956,11 @@ fn write_mobile_response(stream: &mut TcpStream, status: &str, content_type: &st
     stream.write_all(response.as_bytes())
 }
 
-fn handle_mobile_get(route: &str, query: &HashMap<String, String>, app_handle: &tauri::AppHandle) -> Result<String, String> {
+fn handle_mobile_get(
+    route: &str,
+    query: &HashMap<String, String>,
+    app_handle: &tauri::AppHandle,
+) -> Result<String, String> {
     let _ = app_handle.emit("mobile-connected", ());
 
     let text = query
@@ -2961,7 +4972,14 @@ fn handle_mobile_get(route: &str, query: &HashMap<String, String>, app_handle: &
 
     if !text.trim().is_empty() {
         if text.trim().starts_with("data:") {
-            emit_mobile_data_url(app_handle, &text, query.get("name").or_else(|| query.get("filename")).map(String::as_str))?;
+            emit_mobile_data_url(
+                app_handle,
+                &text,
+                query
+                    .get("name")
+                    .or_else(|| query.get("filename"))
+                    .map(String::as_str),
+            )?;
             return Ok("file received".to_string());
         }
         emit_mobile_text(app_handle, &text)?;
@@ -2974,7 +4992,11 @@ fn handle_mobile_get(route: &str, query: &HashMap<String, String>, app_handle: &
     }
 }
 
-fn emit_mobile_data_url(app_handle: &tauri::AppHandle, data_url: &str, fallback_name: Option<&str>) -> Result<(), String> {
+fn emit_mobile_data_url(
+    app_handle: &tauri::AppHandle,
+    data_url: &str,
+    fallback_name: Option<&str>,
+) -> Result<(), String> {
     let trimmed = data_url.trim();
     let (mime, bytes) = decode_data_url(trimmed)?;
     let name = fallback_name
@@ -2986,7 +5008,9 @@ fn emit_mobile_data_url(app_handle: &tauri::AppHandle, data_url: &str, fallback_
 }
 
 fn first_data_url_field<'a>(fields: &'a HashMap<String, String>) -> Option<(&'a str, &'a str)> {
-    for key in ["dataUrl", "data_url", "data", "image", "file", "content", "text", "message"] {
+    for key in [
+        "dataUrl", "data_url", "data", "image", "file", "content", "text", "message",
+    ] {
         if let Some(value) = fields.get(key) {
             let trimmed = value.trim();
             if trimmed.starts_with("data:") {
@@ -3013,17 +5037,23 @@ fn handle_mobile_post(
 ) -> Result<String, String> {
     let _ = app_handle.emit("mobile-connected", ());
 
-    let content_type = request.headers.get("content-type").cloned().unwrap_or_default();
+    let content_type = request
+        .headers
+        .get("content-type")
+        .cloned()
+        .unwrap_or_default();
     let lower_content_type = content_type.to_ascii_lowercase();
 
     if lower_content_type.contains("multipart/form-data") {
-        let boundary = extract_boundary(&content_type).ok_or_else(|| "missing multipart boundary".to_string())?;
+        let boundary = extract_boundary(&content_type)
+            .ok_or_else(|| "missing multipart boundary".to_string())?;
         let count = handle_mobile_multipart(app_handle, &request.body, &boundary)?;
         return Ok(format!("{} item(s) received", count));
     }
 
     if lower_content_type.contains("application/json") {
-        let value: serde_json::Value = serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&request.body).map_err(|e| e.to_string())?;
         let count = handle_mobile_json(app_handle, &value)?;
         return Ok(format!("{} item(s) received", count));
     }
@@ -3032,11 +5062,19 @@ fn handle_mobile_post(
         let text = String::from_utf8_lossy(&request.body).to_string();
         let fields = parse_query(&text);
         if let Some((_key, data_url)) = first_data_url_field(&fields) {
-            let fallback_name = fields.get("name").or_else(|| fields.get("filename")).or_else(|| fields.get("fileName")).map(String::as_str);
+            let fallback_name = fields
+                .get("name")
+                .or_else(|| fields.get("filename"))
+                .or_else(|| fields.get("fileName"))
+                .map(String::as_str);
             emit_mobile_data_url(app_handle, data_url, fallback_name)?;
             return Ok("file received".to_string());
         }
-        if let Some(value) = fields.get("text").or_else(|| fields.get("content")).or_else(|| fields.get("message")) {
+        if let Some(value) = fields
+            .get("text")
+            .or_else(|| fields.get("content"))
+            .or_else(|| fields.get("message"))
+        {
             emit_mobile_text(app_handle, value)?;
             return Ok("text received".to_string());
         }
@@ -3074,7 +5112,10 @@ fn handle_mobile_post(
     Err("empty mobile request".to_string())
 }
 
-fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) -> Result<usize, String> {
+fn handle_mobile_json(
+    app_handle: &tauri::AppHandle,
+    value: &serde_json::Value,
+) -> Result<usize, String> {
     if let Some(items) = value.as_array() {
         let mut count = 0;
         for item in items {
@@ -3091,11 +5132,17 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
         return Ok(count);
     }
 
-    let obj = value.as_object().ok_or_else(|| "json body must be object or array".to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "json body must be object or array".to_string())?;
 
     let text = get_json_string(obj, &["text", "content", "message"]);
-    let url = get_json_string(obj, &["url", "imageUrl", "image_url", "fileUrl", "file_url"]);
-    let name = get_json_string(obj, &["name", "filename", "fileName", "title"]).unwrap_or_else(|| "手机内容".to_string());
+    let url = get_json_string(
+        obj,
+        &["url", "imageUrl", "image_url", "fileUrl", "file_url"],
+    );
+    let name = get_json_string(obj, &["name", "filename", "fileName", "title"])
+        .unwrap_or_else(|| "手机内容".to_string());
     let explicit_type = get_json_string(obj, &["type", "kind"]).unwrap_or_default();
     let mime = get_json_string(obj, &["mime", "mimeType", "contentType"]).unwrap_or_default();
     let data_url = get_json_string(obj, &["dataUrl", "data_url", "data"]);
@@ -3103,25 +5150,55 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
 
     if let Some(data) = data_url.filter(|s| s.starts_with("data:")) {
         let (mime_from_data, bytes) = decode_data_url(&data)?;
-        let mime_used = if mime.is_empty() { mime_from_data } else { mime };
-        let file_name = if name == "手机内容" { default_mobile_file_name(&mime_used) } else { name };
-        let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime_used, &file_name) } else { normalize_mobile_item_type(&explicit_type) };
+        let mime_used = if mime.is_empty() {
+            mime_from_data
+        } else {
+            mime
+        };
+        let file_name = if name == "手机内容" {
+            default_mobile_file_name(&mime_used)
+        } else {
+            name
+        };
+        let item_type = if explicit_type.is_empty() {
+            guess_mobile_item_type(&mime_used, &file_name)
+        } else {
+            normalize_mobile_item_type(&explicit_type)
+        };
         emit_mobile_bytes(app_handle, &item_type, &file_name, &bytes)?;
         return Ok(1);
     }
 
     if let Some(b64) = base64_data {
         use base64::{engine::general_purpose, Engine as _};
-        let bytes = general_purpose::STANDARD.decode(b64.trim()).map_err(|e| e.to_string())?;
-        let file_name = if name == "手机内容" { default_mobile_file_name(&mime) } else { name };
-        let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime, &file_name) } else { normalize_mobile_item_type(&explicit_type) };
+        let bytes = general_purpose::STANDARD
+            .decode(b64.trim())
+            .map_err(|e| e.to_string())?;
+        let file_name = if name == "手机内容" {
+            default_mobile_file_name(&mime)
+        } else {
+            name
+        };
+        let item_type = if explicit_type.is_empty() {
+            guess_mobile_item_type(&mime, &file_name)
+        } else {
+            normalize_mobile_item_type(&explicit_type)
+        };
         emit_mobile_bytes(app_handle, &item_type, &file_name, &bytes)?;
         return Ok(1);
     }
 
     if let Some(url) = url {
-        let item_type = if explicit_type.is_empty() { guess_mobile_item_type(&mime, &name) } else { normalize_mobile_item_type(&explicit_type) };
-        let item_type = if item_type == "file" && looks_like_image_url(&url) { "image".to_string() } else { item_type };
+        let item_type = if explicit_type.is_empty() {
+            guess_mobile_item_type(&mime, &name)
+        } else {
+            normalize_mobile_item_type(&explicit_type)
+        };
+        let item_type = if item_type == "file" && looks_like_image_url(&url) {
+            "image".to_string()
+        } else {
+            item_type
+        };
         let signature = mobile_url_signature(&url);
         if !mobile_should_accept(&signature) {
             return Ok(1);
@@ -3135,7 +5212,9 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
             "mobileSignature": signature,
             "isQuickAccess": false
         });
-        app_handle.emit("mobile-data-received", payload).map_err(|e| e.to_string())?;
+        app_handle
+            .emit("mobile-data-received", payload)
+            .map_err(|e| e.to_string())?;
         return Ok(1);
     }
 
@@ -3151,7 +5230,11 @@ fn handle_mobile_json(app_handle: &tauri::AppHandle, value: &serde_json::Value) 
     Err("unsupported json payload".to_string())
 }
 
-fn handle_mobile_multipart(app_handle: &tauri::AppHandle, body: &[u8], boundary: &str) -> Result<usize, String> {
+fn handle_mobile_multipart(
+    app_handle: &tauri::AppHandle,
+    body: &[u8],
+    boundary: &str,
+) -> Result<usize, String> {
     let marker = format!("--{}", boundary).into_bytes();
     let mut fields: HashMap<String, String> = HashMap::new();
     let mut count = 0usize;
@@ -3165,19 +5248,26 @@ fn handle_mobile_multipart(app_handle: &tauri::AppHandle, body: &[u8], boundary:
         if body.get(start..start + 2) == Some(b"\r\n") {
             start += 2;
         }
-        let next = find_subslice(&body[start..], &marker).map(|p| start + p).unwrap_or(body.len());
+        let next = find_subslice(&body[start..], &marker)
+            .map(|p| start + p)
+            .unwrap_or(body.len());
         let mut part = &body[start..next];
         if part.ends_with(b"\r\n") {
             part = &part[..part.len().saturating_sub(2)];
         }
         cursor = next;
 
-        let Some(header_end) = find_subslice(part, b"\r\n\r\n") else { continue };
+        let Some(header_end) = find_subslice(part, b"\r\n\r\n") else {
+            continue;
+        };
         let header_text = String::from_utf8_lossy(&part[..header_end]).to_string();
         let content = &part[header_end + 4..];
         let disposition = header_text
             .lines()
-            .find(|line| line.to_ascii_lowercase().starts_with("content-disposition:"))
+            .find(|line| {
+                line.to_ascii_lowercase()
+                    .starts_with("content-disposition:")
+            })
             .unwrap_or("");
         let content_type = header_text
             .lines()
@@ -3192,7 +5282,10 @@ fn handle_mobile_multipart(app_handle: &tauri::AppHandle, body: &[u8], boundary:
             emit_mobile_bytes(app_handle, &item_type, &file_name, content)?;
             count += 1;
         } else if !field_name.is_empty() {
-            fields.insert(field_name, String::from_utf8_lossy(content).trim().to_string());
+            fields.insert(
+                field_name,
+                String::from_utf8_lossy(content).trim().to_string(),
+            );
         }
     }
 
@@ -3205,7 +5298,11 @@ fn handle_mobile_multipart(app_handle: &tauri::AppHandle, body: &[u8], boundary:
                 .map(String::as_str);
             emit_mobile_data_url(app_handle, data_url, fallback_name)?;
             count += 1;
-        } else if let Some(text) = fields.get("text").or_else(|| fields.get("content")).or_else(|| fields.get("message")) {
+        } else if let Some(text) = fields
+            .get("text")
+            .or_else(|| fields.get("content"))
+            .or_else(|| fields.get("message"))
+        {
             if !text.trim().is_empty() {
                 emit_mobile_text(app_handle, text)?;
                 count += 1;
@@ -3229,10 +5326,18 @@ fn emit_mobile_text(app_handle: &tauri::AppHandle, text: &str) -> Result<(), Str
         "mobileSignature": signature,
         "isQuickAccess": false
     });
-    app_handle.emit("mobile-data-received", payload).map_err(|e| e.to_string())
+    app_handle
+        .emit("mobile-data-received", payload)
+        .map_err(|e| e.to_string())
 }
 
-fn emit_mobile_file_with_signature(app_handle: &tauri::AppHandle, item_type: &str, name: &str, path: &str, signature: &str) -> Result<(), String> {
+fn emit_mobile_file_with_signature(
+    app_handle: &tauri::AppHandle,
+    item_type: &str,
+    name: &str,
+    path: &str,
+    signature: &str,
+) -> Result<(), String> {
     let payload = serde_json::json!({
         "type": item_type,
         "content": name,
@@ -3241,10 +5346,17 @@ fn emit_mobile_file_with_signature(app_handle: &tauri::AppHandle, item_type: &st
         "mobileSignature": signature,
         "isQuickAccess": false
     });
-    app_handle.emit("mobile-data-received", payload).map_err(|e| e.to_string())
+    app_handle
+        .emit("mobile-data-received", payload)
+        .map_err(|e| e.to_string())
 }
 
-fn emit_mobile_bytes(app_handle: &tauri::AppHandle, item_type: &str, name: &str, bytes: &[u8]) -> Result<(), String> {
+fn emit_mobile_bytes(
+    app_handle: &tauri::AppHandle,
+    item_type: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     let signature = mobile_bytes_signature(item_type, bytes);
     if !mobile_should_accept(&signature) {
         return Ok(());
@@ -3254,7 +5366,11 @@ fn emit_mobile_bytes(app_handle: &tauri::AppHandle, item_type: &str, name: &str,
     emit_mobile_file_with_signature(app_handle, item_type, name, &path, &signature)
 }
 
-fn save_mobile_bytes(app_handle: &tauri::AppHandle, name: &str, bytes: &[u8]) -> Result<String, String> {
+fn save_mobile_bytes(
+    app_handle: &tauri::AppHandle,
+    name: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
     let out_dir = get_user_data_dir(app_handle).join("mobile_uploads");
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let safe_name = sanitize_file_name(name);
@@ -3268,16 +5384,28 @@ fn save_mobile_bytes(app_handle: &tauri::AppHandle, name: &str, bytes: &[u8]) ->
 }
 
 fn decode_data_url(data_url: &str) -> Result<(String, Vec<u8>), String> {
-    let comma = data_url.find(',').ok_or_else(|| "invalid data url".to_string())?;
+    let comma = data_url
+        .find(',')
+        .ok_or_else(|| "invalid data url".to_string())?;
     let meta = &data_url[..comma];
     let encoded = &data_url[comma + 1..];
-    let mime = meta.trim_start_matches("data:").split(';').next().unwrap_or("application/octet-stream").to_string();
+    let mime = meta
+        .trim_start_matches("data:")
+        .split(';')
+        .next()
+        .unwrap_or("application/octet-stream")
+        .to_string();
     use base64::{engine::general_purpose, Engine as _};
-    let bytes = general_purpose::STANDARD.decode(encoded).map_err(|e| e.to_string())?;
+    let bytes = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| e.to_string())?;
     Ok((mime, bytes))
 }
 
-fn get_json_string(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+fn get_json_string(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
     for key in keys {
         if let Some(value) = obj.get(*key) {
             if let Some(s) = value.as_str() {
@@ -3311,7 +5439,8 @@ fn url_decode_component(value: &str) -> String {
 fn extract_boundary(content_type: &str) -> Option<String> {
     content_type.split(';').find_map(|part| {
         let part = part.trim();
-        part.strip_prefix("boundary=").map(|v| v.trim_matches('"').to_string())
+        part.strip_prefix("boundary=")
+            .map(|v| v.trim_matches('"').to_string())
     })
 }
 
@@ -3326,12 +5455,18 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn first_sentence_or_fallback(value: &str, fallback: &str) -> String {
     let clean = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let source = if clean.trim().is_empty() { fallback } else { clean.trim() };
+    let source = if clean.trim().is_empty() {
+        fallback
+    } else {
+        clean.trim()
+    };
     for (idx, ch) in source.char_indices() {
         if matches!(ch, '.' | '!' | '?') {
             return source[..idx + ch.len_utf8()].trim().to_string();
@@ -3364,9 +5499,13 @@ fn normalize_mobile_item_type(value: &str) -> String {
 fn guess_mobile_item_type(mime: &str, name: &str) -> String {
     let mime = mime.to_ascii_lowercase();
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if mime.starts_with("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].contains(&ext.as_str()) {
+    if mime.starts_with("image/")
+        || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].contains(&ext.as_str())
+    {
         "image".to_string()
-    } else if mime.starts_with("video/") || ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str()) {
+    } else if mime.starts_with("video/")
+        || ["mp4", "mov", "avi", "mkv", "webm"].contains(&ext.as_str())
+    {
         "video".to_string()
     } else if mime.starts_with("text/") {
         "text".to_string()
@@ -3391,7 +5530,14 @@ fn default_mobile_file_name(mime: &str) -> String {
     } else {
         "bin"
     };
-    format!("手机文件_{}.{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0), ext)
+    format!(
+        "手机文件_{}.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        ext
+    )
 }
 
 fn looks_like_image_url(url: &str) -> bool {
@@ -3432,7 +5578,10 @@ fn open_file(app_handle: tauri::AppHandle, path: String) -> Result<(), String> {
 fn get_video_thumb(path: String) -> Result<String, String> {
     let source = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
     if !source.is_file() {
-        return Err(format!("video file not found: {}", display_local_path(&source)));
+        return Err(format!(
+            "video file not found: {}",
+            display_local_path(&source)
+        ));
     }
 
     let temp_dir = std::env::temp_dir();
@@ -3552,7 +5701,11 @@ fn get_shortcut(app_handle: tauri::AppHandle, name: String) -> Result<String, St
 }
 
 #[tauri::command]
-fn update_shortcut(app_handle: tauri::AppHandle, name: String, shortcut: String) -> Result<(), String> {
+fn update_shortcut(
+    app_handle: tauri::AppHandle,
+    name: String,
+    shortcut: String,
+) -> Result<(), String> {
     let key = normalize_shortcut_name(&name);
     if default_shortcut(&key).is_none() {
         return Err(format!("unknown shortcut name: {}", key));
@@ -3633,8 +5786,8 @@ fn read_auto_start_value_impl() -> Result<Option<String>, String> {
     use std::ptr::null_mut;
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::winerror::ERROR_SUCCESS;
-    use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
     use winapi::um::winnt::{KEY_READ, REG_EXPAND_SZ, REG_SZ};
+    use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
 
     unsafe {
         let subkey = auto_start_wide_null(AUTO_START_REG_SUBKEY);
@@ -3696,8 +5849,7 @@ fn auto_start_value_points_to_existing_same_named_exe(value: &str) -> bool {
         return false;
     };
 
-    registered.file_name().is_some()
-        && registered.file_name() == current.file_name()
+    registered.file_name().is_some() && registered.file_name() == current.file_name()
 }
 
 #[cfg(target_os = "windows")]
@@ -3740,10 +5892,10 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
     use std::ptr::null_mut;
     use winapi::shared::minwindef::DWORD;
     use winapi::shared::winerror::ERROR_SUCCESS;
+    use winapi::um::winnt::{KEY_SET_VALUE, REG_SZ};
     use winapi::um::winreg::{
         RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY_CURRENT_USER,
     };
-    use winapi::um::winnt::{KEY_SET_VALUE, REG_SZ};
 
     #[cfg(debug_assertions)]
     if auto_start {
@@ -3753,7 +5905,10 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
             }
         }
 
-        return Err("开发模式不会写入开机启动，避免把启动项指向 debug exe；请用正式安装版开启。".to_string());
+        return Err(
+            "开发模式不会写入开机启动，避免把启动项指向 debug exe；请用正式安装版开启。"
+                .to_string(),
+        );
     }
 
     unsafe {
@@ -3771,7 +5926,10 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
             null_mut(),
         );
         if status != ERROR_SUCCESS as i32 {
-            return Err(format!("open autostart registry key failed: 0x{:08X}", status as u32));
+            return Err(format!(
+                "open autostart registry key failed: 0x{:08X}",
+                status as u32
+            ));
         }
 
         let name = auto_start_wide_null(AUTO_START_VALUE_NAME);
@@ -3790,7 +5948,10 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
             if status == ERROR_SUCCESS as i32 {
                 Ok(())
             } else {
-                Err(format!("write autostart registry value failed: 0x{:08X}", status as u32))
+                Err(format!(
+                    "write autostart registry value failed: 0x{:08X}",
+                    status as u32
+                ))
             }
         } else {
             let status = RegDeleteValueW(hkey, name.as_ptr());
@@ -3798,7 +5959,10 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
             if status == ERROR_SUCCESS as i32 || status == 2 {
                 Ok(())
             } else {
-                Err(format!("delete autostart registry value failed: 0x{:08X}", status as u32))
+                Err(format!(
+                    "delete autostart registry value failed: 0x{:08X}",
+                    status as u32
+                ))
             }
         };
 
@@ -3962,7 +6126,15 @@ throw $last
     let mut ps_cmd = SysCommand::new("powershell.exe");
     hide_console_window(&mut ps_cmd);
     let output = ps_cmd
-        .args(["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script, path])
+        .args([
+            "-NoProfile",
+            "-STA",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+            path,
+        ])
         .output()
         .map_err(|e| e.to_string())?;
     if output.status.success() {
@@ -4007,7 +6179,15 @@ throw $last
     let mut ps_cmd = SysCommand::new("powershell.exe");
     hide_console_window(&mut ps_cmd);
     let output = ps_cmd
-        .args(["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script, url])
+        .args([
+            "-NoProfile",
+            "-STA",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+            url,
+        ])
         .output()
         .map_err(|e| e.to_string())?;
     if output.status.success() {
@@ -4084,9 +6264,14 @@ fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
     native_drag::copy_files_to_clipboard(paths)
 }
 
-
 #[tauri::command]
-fn capture_screen_area(window: WebviewWindow, x: f64, y: f64, width: f64, height: f64) -> Result<String, String> {
+fn capture_screen_area(
+    window: WebviewWindow,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<String, String> {
     let saved_path = capture_screen_area_to_file_impl(None, window, x, y, width, height)?;
     let img_bytes = fs::read(&saved_path).map_err(|e| e.to_string())?;
     use base64::{engine::general_purpose, Engine as _};
@@ -4223,7 +6408,13 @@ async fn capture_screen_area_absolute_to_file(
         std::thread::sleep(std::time::Duration::from_millis(16));
 
         let _ = window.emit("snip-area-captured", ());
-        capture_physical_area_to_file(Some(&app_handle), physical_x, physical_y, physical_w, physical_h)
+        capture_physical_area_to_file(
+            Some(&app_handle),
+            physical_x,
+            physical_y,
+            physical_w,
+            physical_h,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4254,7 +6445,13 @@ async fn capture_snip_selection_to_file(
         let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
-        capture_physical_area_to_file(Some(&app_handle), physical_x, physical_y, physical_w, physical_h)
+        capture_physical_area_to_file(
+            Some(&app_handle),
+            physical_x,
+            physical_y,
+            physical_w,
+            physical_h,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4287,7 +6484,13 @@ async fn capture_snip_window_selection_to_file(
         let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
         std::thread::sleep(std::time::Duration::from_millis(16));
 
-        capture_physical_area_to_file(Some(&app_handle), physical_x, physical_y, physical_w, physical_h)
+        capture_physical_area_to_file(
+            Some(&app_handle),
+            physical_x,
+            physical_y,
+            physical_w,
+            physical_h,
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -4330,7 +6533,13 @@ async fn complete_snip_selection(
 
     let app_for_capture = app_handle.clone();
     let capture_result = tauri::async_runtime::spawn_blocking(move || {
-        capture_physical_area_to_bmp_file(Some(&app_for_capture), physical_x, physical_y, physical_w, physical_h)
+        capture_physical_area_to_bmp_file(
+            Some(&app_for_capture),
+            physical_x,
+            physical_y,
+            physical_w,
+            physical_h,
+        )
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -4388,7 +6597,13 @@ fn capture_screen_area_to_file_impl(
     let _ = window.set_position(LogicalPosition::new(-32000.0, -32000.0));
     std::thread::sleep(std::time::Duration::from_millis(16));
 
-    capture_physical_area_to_file(app_handle.as_ref(), physical_x, physical_y, physical_w, physical_h)
+    capture_physical_area_to_file(
+        app_handle.as_ref(),
+        physical_x,
+        physical_y,
+        physical_w,
+        physical_h,
+    )
 }
 
 fn capture_physical_area_to_file(
@@ -4398,7 +6613,8 @@ fn capture_physical_area_to_file(
     physical_w: u32,
     physical_h: u32,
 ) -> Result<String, String> {
-    let screen = screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
+    let screen =
+        screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
     let display = screen.display_info;
     let rel_x = physical_x - display.x;
     let rel_y = physical_y - display.y;
@@ -4421,7 +6637,9 @@ fn capture_physical_area_to_file(
             .map_err(|e| e.to_string())?
             .as_millis()
     );
-    let out_dir = app_handle.map(read_web_image_cache_dir).unwrap_or_else(std::env::temp_dir);
+    let out_dir = app_handle
+        .map(read_web_image_cache_dir)
+        .unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(file_name);
     let file = File::create(&out_path).map_err(|e| e.to_string())?;
@@ -4450,7 +6668,8 @@ fn capture_physical_area_to_bmp_file(
     physical_w: u32,
     physical_h: u32,
 ) -> Result<String, String> {
-    let screen = screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
+    let screen =
+        screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
     let display = screen.display_info;
     let rel_x = physical_x - display.x;
     let rel_y = physical_y - display.y;
@@ -4470,7 +6689,9 @@ fn capture_physical_area_to_bmp_file(
             .map_err(|e| e.to_string())?
             .as_millis()
     );
-    let out_dir = app_handle.map(read_web_image_cache_dir).unwrap_or_else(std::env::temp_dir);
+    let out_dir = app_handle
+        .map(read_web_image_cache_dir)
+        .unwrap_or_else(std::env::temp_dir);
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let out_path = out_dir.join(file_name);
     let file = File::create(&out_path).map_err(|e| e.to_string())?;
@@ -4487,8 +6708,6 @@ fn capture_physical_area_to_bmp_file(
 
     Ok(out_path.to_string_lossy().to_string())
 }
-
-
 
 const EDGE_WINDOW_WIDTH: f64 = 20.0;
 const EDGE_STRIP_HEIGHT: f64 = 96.0;
@@ -4635,10 +6854,7 @@ fn resize_window_preserve_right_physical(
         GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
     };
 
-    let hwnd = window
-        .hwnd()
-        .map_err(|e| e.to_string())?
-        .0 as winapi::shared::windef::HWND;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as winapi::shared::windef::HWND;
 
     let mut rect = RECT {
         left: 0,
@@ -4666,7 +6882,9 @@ fn resize_window_preserve_right_physical(
     let right_anchor_px = right_anchor_px.unwrap_or(rect.right);
     let max_x_px = work_right_px - width_px;
     let max_y_px = work_bottom_px - height_px;
-    let x_px = (right_anchor_px - width_px).max(work_left_px).min(max_x_px.max(work_left_px));
+    let x_px = (right_anchor_px - width_px)
+        .max(work_left_px)
+        .min(max_x_px.max(work_left_px));
     let y_px = rect.top.max(work_top_px).min(max_y_px.max(work_top_px));
 
     let ok = unsafe {
@@ -4706,10 +6924,7 @@ fn resize_window_preserve_left_physical(
         GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
     };
 
-    let hwnd = window
-        .hwnd()
-        .map_err(|e| e.to_string())?
-        .0 as winapi::shared::windef::HWND;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as winapi::shared::windef::HWND;
 
     let mut rect = RECT {
         left: 0,
@@ -4775,7 +6990,11 @@ fn is_float_mode(mode: Option<&str>) -> bool {
     matches!(mode, Some("float"))
 }
 
-fn position_side_edge(app_handle: tauri::AppHandle, height: f64, y: Option<f64>) -> Result<(), String> {
+fn position_side_edge(
+    app_handle: tauri::AppHandle,
+    height: f64,
+    y: Option<f64>,
+) -> Result<(), String> {
     let edge = app_handle
         .get_webview_window("edge")
         .ok_or_else(|| "edge window not found".to_string())?;
@@ -4905,7 +7124,12 @@ fn show_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     let monitor = anchor
         .current_monitor()
         .map_err(|e| e.to_string())?
-        .or_else(|| anchor.available_monitors().ok().and_then(|mut monitors| monitors.pop()))
+        .or_else(|| {
+            anchor
+                .available_monitors()
+                .ok()
+                .and_then(|mut monitors| monitors.pop())
+        })
         .ok_or_else(|| "no current monitor".to_string())?;
 
     if let Some(main) = main.as_ref() {
@@ -5028,8 +7252,12 @@ fn open_drawer(
         window_work_area_with_fallback(&main, None)?
     };
 
-    let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
-    let desired_h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+    let w = width
+        .max(DRAWER_MIN_WIDTH)
+        .min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
+    let desired_h = height
+        .max(DRAWER_MIN_HEIGHT)
+        .min(work_size.height.max(DRAWER_MIN_HEIGHT));
     let mut h = desired_h;
     let max_x = work_pos.x + work_size.width - w;
     let max_y = work_pos.y + work_size.height - h;
@@ -5041,8 +7269,9 @@ fn open_drawer(
     let looks_like_snip_fullscreen = current_visible_size
         .map(|size| size.width >= work_size.width - 4.0 && size.height >= work_size.height - 4.0)
         .unwrap_or(false);
-    let preserve_current_position =
-        main.is_visible().unwrap_or(false) && !looks_like_snip_fullscreen && !is_startup_close_locked();
+    let preserve_current_position = main.is_visible().unwrap_or(false)
+        && !looks_like_snip_fullscreen
+        && !is_startup_close_locked();
 
     let (x, y) = if preserve_current_position {
         // 如果 main 已经显示，说明抽屉可能被用户手动拖到了别的位置。
@@ -5052,7 +7281,10 @@ fn open_drawer(
             .outer_position()
             .ok()
             .map(|pos| pos.to_logical::<f64>(factor))
-            .unwrap_or(LogicalPosition::new(work_pos.x + work_size.width - w, work_pos.y));
+            .unwrap_or(LogicalPosition::new(
+                work_pos.x + work_size.width - w,
+                work_pos.y,
+            ));
         (
             clamp_f64(current_pos.x, work_pos.x, max_x.max(work_pos.x)),
             clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y)),
@@ -5123,7 +7355,8 @@ fn open_drawer(
         let available_h = (work_size.height - DRAWER_EDGE_MARGIN * 2.0).max(1.0);
         let min_h = DRAWER_MIN_HEIGHT.min(available_h);
         let top_space = (strip_center_y - work_pos.y - DRAWER_EDGE_MARGIN).max(0.0);
-        let bottom_space = (work_pos.y + work_size.height - DRAWER_EDGE_MARGIN - strip_center_y).max(0.0);
+        let bottom_space =
+            (work_pos.y + work_size.height - DRAWER_EDGE_MARGIN - strip_center_y).max(0.0);
         let max_centered_h = (top_space.min(bottom_space) * 2.0).max(1.0);
 
         h = if max_centered_h >= min_h {
@@ -5133,7 +7366,9 @@ fn open_drawer(
         };
 
         let min_y = work_pos.y + DRAWER_EDGE_MARGIN.min((work_size.height - h).max(0.0) / 2.0);
-        let max_y = work_pos.y + work_size.height - h - DRAWER_EDGE_MARGIN.min((work_size.height - h).max(0.0) / 2.0);
+        let max_y = work_pos.y + work_size.height
+            - h
+            - DRAWER_EDGE_MARGIN.min((work_size.height - h).max(0.0) / 2.0);
 
         (
             work_pos.x + work_size.width - w,
@@ -5141,9 +7376,12 @@ fn open_drawer(
         )
     };
 
-    main.set_min_size(Some(LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT))).ok();
-    main.set_size(LogicalSize::new(w, h)).map_err(|e| e.to_string())?;
-    main.set_position(LogicalPosition::new(x, y)).map_err(|e| e.to_string())?;
+    main.set_min_size(Some(LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT)))
+        .ok();
+    main.set_size(LogicalSize::new(w, h))
+        .map_err(|e| e.to_string())?;
+    main.set_position(LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
     main.set_always_on_top(true).ok();
     main.show().map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
@@ -5195,10 +7433,7 @@ fn get_drawer_right_edge(app_handle: tauri::AppHandle) -> Result<f64, String> {
         use winapi::shared::windef::RECT;
         use winapi::um::winuser::GetWindowRect;
 
-        let hwnd = main
-            .hwnd()
-            .map_err(|e| e.to_string())?
-            .0 as winapi::shared::windef::HWND;
+        let hwnd = main.hwnd().map_err(|e| e.to_string())?.0 as winapi::shared::windef::HWND;
         let mut rect = RECT {
             left: 0,
             top: 0,
@@ -5237,8 +7472,12 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
         .ok_or_else(|| "main window not found".to_string())?;
     let (work_pos, work_size, factor) = window_work_area(&main)?;
 
-    let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
-    let h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+    let w = width
+        .max(DRAWER_MIN_WIDTH)
+        .min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
+    let h = height
+        .max(DRAWER_MIN_HEIGHT)
+        .min(work_size.height.max(DRAWER_MIN_HEIGHT));
 
     #[cfg(target_os = "windows")]
     {
@@ -5248,27 +7487,30 @@ fn resize_drawer(app_handle: tauri::AppHandle, width: f64, height: f64) -> Resul
 
     #[cfg(not(target_os = "windows"))]
     {
-    let current_pos = main
-        .outer_position()
-        .ok()
-        .map(|pos| pos.to_logical::<f64>(factor))
-        .unwrap_or(LogicalPosition::new(work_pos.x + work_size.width - w, work_pos.y));
-    let current_size = main
-        .outer_size()
-        .ok()
-        .map(|size| size.to_logical::<f64>(factor))
-        .unwrap_or(LogicalSize::new(w, h));
+        let current_pos = main
+            .outer_position()
+            .ok()
+            .map(|pos| pos.to_logical::<f64>(factor))
+            .unwrap_or(LogicalPosition::new(
+                work_pos.x + work_size.width - w,
+                work_pos.y,
+            ));
+        let current_size = main
+            .outer_size()
+            .ok()
+            .map(|size| size.to_logical::<f64>(factor))
+            .unwrap_or(LogicalSize::new(w, h));
 
-    // 保持当前右边缘不移动，而不是每次缩放都吸附回屏幕最右侧。
-    // 这样移动后自动钉住的抽屉，缩放时仍会留在用户放置的位置附近。
-    let desired_right = current_pos.x + current_size.width;
-    let max_x = work_pos.x + work_size.width - w;
-    let max_y = work_pos.y + work_size.height - h;
-    let x = clamp_f64(desired_right - w, work_pos.x, max_x.max(work_pos.x));
-    let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
+        // 保持当前右边缘不移动，而不是每次缩放都吸附回屏幕最右侧。
+        // 这样移动后自动钉住的抽屉，缩放时仍会留在用户放置的位置附近。
+        let desired_right = current_pos.x + current_size.width;
+        let max_x = work_pos.x + work_size.width - w;
+        let max_y = work_pos.y + work_size.height - h;
+        let x = clamp_f64(desired_right - w, work_pos.x, max_x.max(work_pos.x));
+        let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
 
-    set_window_bounds_atomic(&main, x, y, w, h)?;
-    Ok(())
+        set_window_bounds_atomic(&main, x, y, w, h)?;
+        Ok(())
     }
 }
 
@@ -5284,8 +7526,12 @@ fn resize_drawer_at_right(
         .ok_or_else(|| "main window not found".to_string())?;
     let (work_pos, work_size, factor) = window_work_area(&main)?;
 
-    let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
-    let h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+    let w = width
+        .max(DRAWER_MIN_WIDTH)
+        .min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
+    let h = height
+        .max(DRAWER_MIN_HEIGHT)
+        .min(work_size.height.max(DRAWER_MIN_HEIGHT));
 
     #[cfg(target_os = "windows")]
     {
@@ -5307,7 +7553,10 @@ fn resize_drawer_at_right(
             .outer_position()
             .ok()
             .map(|pos| pos.to_logical::<f64>(factor))
-            .unwrap_or(LogicalPosition::new(work_pos.x + work_size.width - w, work_pos.y));
+            .unwrap_or(LogicalPosition::new(
+                work_pos.x + work_size.width - w,
+                work_pos.y,
+            ));
         let max_x = work_pos.x + work_size.width - w;
         let max_y = work_pos.y + work_size.height - h;
         let x = clamp_f64(right_edge - w, work_pos.x, max_x.max(work_pos.x));
@@ -5319,16 +7568,25 @@ fn resize_drawer_at_right(
 }
 
 #[tauri::command]
-fn resize_drawer_from_right(app_handle: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+fn resize_drawer_from_right(
+    app_handle: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
     let main = app_handle
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
     let (work_pos, work_size, factor) = window_work_area(&main)?;
 
-    let w = width.max(DRAWER_MIN_WIDTH).min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
-    let h = height.max(DRAWER_MIN_HEIGHT).min(work_size.height.max(DRAWER_MIN_HEIGHT));
+    let w = width
+        .max(DRAWER_MIN_WIDTH)
+        .min((work_size.width - 40.0).max(DRAWER_MIN_WIDTH));
+    let h = height
+        .max(DRAWER_MIN_HEIGHT)
+        .min(work_size.height.max(DRAWER_MIN_HEIGHT));
 
-    main.set_min_size(Some(LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT))).ok();
+    main.set_min_size(Some(LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT)))
+        .ok();
 
     #[cfg(target_os = "windows")]
     {
@@ -5338,18 +7596,18 @@ fn resize_drawer_from_right(app_handle: tauri::AppHandle, width: f64, height: f6
 
     #[cfg(not(target_os = "windows"))]
     {
-    let current_pos = main
-        .outer_position()
-        .ok()
-        .map(|pos| pos.to_logical::<f64>(factor))
-        .unwrap_or(LogicalPosition::new(work_pos.x, work_pos.y));
+        let current_pos = main
+            .outer_position()
+            .ok()
+            .map(|pos| pos.to_logical::<f64>(factor))
+            .unwrap_or(LogicalPosition::new(work_pos.x, work_pos.y));
 
-    let max_y = work_pos.y + work_size.height - h;
-    let x = current_pos.x.max(work_pos.x);
-    let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
+        let max_y = work_pos.y + work_size.height - h;
+        let x = current_pos.x.max(work_pos.x);
+        let y = clamp_f64(current_pos.y, work_pos.y, max_y.max(work_pos.y));
 
-    set_window_bounds_atomic(&main, x, y, w, h)?;
-    Ok(())
+        set_window_bounds_atomic(&main, x, y, w, h)?;
+        Ok(())
     }
 }
 
@@ -5396,7 +7654,10 @@ fn can_prewarm_note_window(label: &str) -> Result<bool, String> {
     }
 }
 
-fn enforce_note_window_limit(app_handle: &tauri::AppHandle, target_label: &str) -> Result<(), String> {
+fn enforce_note_window_limit(
+    app_handle: &tauri::AppHandle,
+    target_label: &str,
+) -> Result<(), String> {
     let visible_count = (1..=MAX_FLOATING_NOTE_WINDOWS)
         .filter(|index| {
             let label = format!("note_{}", index);
@@ -5420,7 +7681,10 @@ fn enforce_note_window_limit(app_handle: &tauri::AppHandle, target_label: &str) 
     Ok(())
 }
 
-fn build_hidden_note_window(app_handle: &tauri::AppHandle, label: String) -> Result<WebviewWindow, String> {
+fn build_hidden_note_window(
+    app_handle: &tauri::AppHandle,
+    label: String,
+) -> Result<WebviewWindow, String> {
     WebviewWindowBuilder::new(app_handle, label, WebviewUrl::App("note.html".into()))
         .title("Desktop note")
         .inner_size(360.0, 320.0)
@@ -5450,7 +7714,6 @@ fn prewarm_note_window(app_handle: tauri::AppHandle, label: Option<String>) -> R
     }
     Ok(())
 }
-
 
 #[tauri::command]
 fn show_note_window(
@@ -5549,9 +7812,6 @@ fn hide_note_window(app_handle: tauri::AppHandle, label: String) -> Result<(), S
     Ok(())
 }
 
-
-
-
 const NOTE_SNAP_THRESHOLD_LOGICAL: f64 = 7.0;
 
 #[derive(Clone, Copy)]
@@ -5566,7 +7826,13 @@ fn is_note_window_label(label: &str) -> bool {
     label == "note" || label.starts_with("note_")
 }
 
-fn ranges_near_or_overlap(a_start: i32, a_end: i32, b_start: i32, b_end: i32, threshold: i32) -> bool {
+fn ranges_near_or_overlap(
+    a_start: i32,
+    a_end: i32,
+    b_start: i32,
+    b_end: i32,
+    threshold: i32,
+) -> bool {
     a_start <= b_end.saturating_add(threshold) && b_start <= a_end.saturating_add(threshold)
 }
 
@@ -5649,13 +7915,25 @@ fn snapped_note_window_position(
             bottom: other_pos.y.saturating_add(other_height),
         };
 
-        let vertical_near = ranges_near_or_overlap(target.top, target.bottom, other_rect.top, other_rect.bottom, threshold);
+        let vertical_near = ranges_near_or_overlap(
+            target.top,
+            target.bottom,
+            other_rect.top,
+            other_rect.bottom,
+            threshold,
+        );
         if vertical_near {
             let candidates = [
                 (other_rect.left, (target.left - other_rect.left).abs()),
                 (other_rect.right, (target.left - other_rect.right).abs()),
-                (other_rect.left.saturating_sub(width), (target.right - other_rect.left).abs()),
-                (other_rect.right.saturating_sub(width), (target.right - other_rect.right).abs()),
+                (
+                    other_rect.left.saturating_sub(width),
+                    (target.right - other_rect.left).abs(),
+                ),
+                (
+                    other_rect.right.saturating_sub(width),
+                    (target.right - other_rect.right).abs(),
+                ),
             ];
             for (candidate, distance) in candidates {
                 if is_detaching_from_snap(current_x, candidate, move_x) {
@@ -5667,13 +7945,25 @@ fn snapped_note_window_position(
             }
         }
 
-        let horizontal_near = ranges_near_or_overlap(target.left, target.right, other_rect.left, other_rect.right, threshold);
+        let horizontal_near = ranges_near_or_overlap(
+            target.left,
+            target.right,
+            other_rect.left,
+            other_rect.right,
+            threshold,
+        );
         if horizontal_near {
             let candidates = [
                 (other_rect.top, (target.top - other_rect.top).abs()),
                 (other_rect.bottom, (target.top - other_rect.bottom).abs()),
-                (other_rect.top.saturating_sub(height), (target.bottom - other_rect.top).abs()),
-                (other_rect.bottom.saturating_sub(height), (target.bottom - other_rect.bottom).abs()),
+                (
+                    other_rect.top.saturating_sub(height),
+                    (target.bottom - other_rect.top).abs(),
+                ),
+                (
+                    other_rect.bottom.saturating_sub(height),
+                    (target.bottom - other_rect.bottom).abs(),
+                ),
             ];
             for (candidate, distance) in candidates {
                 if is_detaching_from_snap(current_y, candidate, move_y) {
@@ -5693,25 +7983,40 @@ fn snapped_note_window_position(
 }
 
 #[tauri::command]
-fn move_current_window_by(app_handle: tauri::AppHandle, window: WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
+fn move_current_window_by(
+    app_handle: tauri::AppHandle,
+    window: WebviewWindow,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
     if !dx.is_finite() || !dy.is_finite() {
         return Err("invalid move delta".to_string());
     }
     let factor = window.scale_factor().map_err(|e| e.to_string())?;
-    let current = window
-        .outer_position()
-        .map_err(|e| e.to_string())?;
-    let move_x = (dx * factor).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-    let move_y = (dy * factor).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let current = window.outer_position().map_err(|e| e.to_string())?;
+    let move_x = (dx * factor)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+    let move_y = (dy * factor)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
     let target_x = current.x.saturating_add(move_x);
     let target_y = current.y.saturating_add(move_y);
-    let (x, y) = snapped_note_window_position(&app_handle, &window, current.x, current.y, target_x, target_y, move_x, move_y);
+    let (x, y) = snapped_note_window_position(
+        &app_handle,
+        &window,
+        current.x,
+        current.y,
+        target_x,
+        target_y,
+        move_x,
+        move_y,
+    );
 
     window
         .set_position(PhysicalPosition::new(x, y))
         .map_err(|e| e.to_string())
 }
-
 
 #[tauri::command]
 fn resize_current_window(window: WebviewWindow, width: f64, height: f64) -> Result<(), String> {
@@ -5722,7 +8027,9 @@ fn resize_current_window(window: WebviewWindow, width: f64, height: f64) -> Resu
     let max_width = if is_note { f64::MAX } else { 920.0 };
     let max_height = if is_note { f64::MAX } else { 820.0 };
     if is_note {
-        window.set_min_size(Some(LogicalSize::new(min_width, min_height))).ok();
+        window
+            .set_min_size(Some(LogicalSize::new(min_width, min_height)))
+            .ok();
     }
     let w = clamp_f64(width, min_width, max_width);
     let h = clamp_f64(height, min_height, max_height);
@@ -5750,7 +8057,9 @@ fn animate_current_window_resize(
     let max_width = if is_note { f64::MAX } else { 920.0 };
     let max_height = if is_note { f64::MAX } else { 820.0 };
     if is_note {
-        window.set_min_size(Some(LogicalSize::new(min_width, min_height))).ok();
+        window
+            .set_min_size(Some(LogicalSize::new(min_width, min_height)))
+            .ok();
     }
 
     let factor = window.scale_factor().map_err(|e| e.to_string())?;
@@ -5945,7 +8254,6 @@ fn schedule_startup_edge_rescue(app: tauri::AppHandle) {
     });
 }
 
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -5972,6 +8280,9 @@ fn main() {
             save_ai_analysis_config,
             get_web_image_cache_dir,
             set_web_image_cache_dir,
+            get_local_vision_model_status,
+            install_ollama_silent,
+            ensure_ollama_vision_model,
             get_network_proxy,
             set_network_proxy,
             get_siliconflow_vision_models,
@@ -5983,9 +8294,16 @@ fn main() {
             get_ai_text,
             create_cloudflared_public_image_urls,
             stop_cloudflared_share,
+            create_tmpfiles_public_image_urls,
+            create_litterbox_public_image_urls,
+            create_r2_public_image_urls,
+            delete_r2_public_image_urls,
+            collect_web_images,
             cache_web_image,
             cache_web_image_to_dir,
             relocate_web_cache_file,
+            describe_image_for_search_local_vlm,
+            describe_image_for_search,
             analyze_cmf_card,
             sys_update_bounds,
             set_topmost,
@@ -6003,6 +8321,11 @@ fn main() {
             cache_local_file_to_dir,
             save_item_source_as,
             save_dropped_file,
+            commands::license::get_machine_id,
+            commands::license::get_license_status,
+            commands::license::import_license,
+            commands::license::remove_license,
+            commands::license::check_feature,
             commands::drag_window,
             commands::update_bounds,
             commands::set_ignore_mouse,
@@ -6024,10 +8347,8 @@ fn main() {
             copy_image,
             start_file_drag,
             copy_files_to_clipboard,
-
             set_startup_close_lock,
             set_anti_touch_lock,
-
             open_drawer,
             close_drawer,
             get_drawer_right_edge,
@@ -6048,14 +8369,18 @@ fn main() {
             resize_current_window,
             animate_current_window_resize,
             cancel_current_window_resize_animation,
-            show_system_notification,])
+            show_system_notification,
+        ])
         .setup(|app| {
             set_startup_close_lock(16_000);
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
                 let _ = main.set_always_on_top(true);
-                let _ = main.set_min_size(Some(tauri::LogicalSize::new(DRAWER_MIN_WIDTH, DRAWER_MIN_HEIGHT)));
+                let _ = main.set_min_size(Some(tauri::LogicalSize::new(
+                    DRAWER_MIN_WIDTH,
+                    DRAWER_MIN_HEIGHT,
+                )));
             }
 
             if let Some(edge) = app.get_webview_window("edge") {
@@ -6080,11 +8405,15 @@ fn main() {
             start_mobile_server(app.handle().clone());
 
             if let Some(icon) = app.default_window_icon().cloned() {
-                let open_item = MenuItem::with_id(app, "open_drawer", "打开抽屉", true, None::<&str>)?;
-                let trigger_item = MenuItem::with_id(app, "toggle_trigger", "切换入口", true, None::<&str>)?;
-                let theme_item = MenuItem::with_id(app, "toggle_theme", "切换主题", true, None::<&str>)?;
+                let open_item =
+                    MenuItem::with_id(app, "open_drawer", "打开抽屉", true, None::<&str>)?;
+                let trigger_item =
+                    MenuItem::with_id(app, "toggle_trigger", "切换入口", true, None::<&str>)?;
+                let theme_item =
+                    MenuItem::with_id(app, "toggle_theme", "切换主题", true, None::<&str>)?;
                 let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-                let tray_menu = Menu::with_items(app, &[&open_item, &trigger_item, &theme_item, &quit_item])?;
+                let tray_menu =
+                    Menu::with_items(app, &[&open_item, &trigger_item, &theme_item, &quit_item])?;
 
                 let _ = TrayIconBuilder::new()
                     .icon(icon)

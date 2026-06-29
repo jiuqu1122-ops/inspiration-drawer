@@ -19,7 +19,7 @@ type AlchemyResult = {
   borrow: string[];
   avoid: string[];
   materials: string[];
-  analysisMode?: 'palette' | 'ai' | 'mock';
+  analysisMode?: 'palette' | 'local' | 'ai' | 'mock';
   colorSource?: string;
   apiStatus?: string;
   generatedAt?: number;
@@ -410,7 +410,7 @@ function AlchemyDetailPanel({ result }: { result: AlchemyResult }) {
 
       {isPaletteOnly && (
         <div className="rounded-[18px] bg-stone-100/70 dark:bg-stone-900/45 border border-stone-200/70 dark:border-stone-700/60 px-3 py-2 text-[11px] leading-5 text-stone-600 dark:text-stone-300">
-          未配置 AI 接口时只做本地色板提取；在设置里填写 AI 分析软件 API 后，再生成造型语言、材料建议、可借鉴点和不适合照搬点。
+          当前是本地配色回退卡；点击炼金可尝试用本地大模型生成 CMF、造型语言、材料建议和可借鉴点。
         </div>
       )}
 
@@ -480,8 +480,8 @@ function AlchemyDrawerCard({
   const thumb = item.url || (item.path ? convertFileSrc(item.path) : '');
   const isDone = state === 'alchemy' && !!result;
   const isPaletteOnly = result?.analysisMode === 'palette';
-  const actionLabel = isPaletteOnly ? 'AI 炼金' : (hasAiAnalysis ? 'AI 炼金' : '分析配色');
-  const loadingLabel = isPaletteOnly ? 'AI 正在炼金...' : (hasAiAnalysis ? 'AI 正在炼金...' : '正在提取配色...');
+  const actionLabel = isPaletteOnly ? (hasAiAnalysis ? 'AI 炼金' : '本地炼金') : (hasAiAnalysis ? 'AI 炼金' : '本地炼金');
+  const loadingLabel = isPaletteOnly ? (hasAiAnalysis ? 'AI 正在炼金...' : '本地炼金中...') : (hasAiAnalysis ? 'AI 正在炼金...' : '本地炼金中...');
 
   return (
     <motion.section
@@ -502,7 +502,7 @@ function AlchemyDrawerCard({
               <div className="min-w-0">
                 <div className="truncate text-sm font-bold">{title}</div>
                 <div className={`mt-1 text-[11px] ${active ? 'text-white/65 dark:text-stone-600' : 'text-stone-500 dark:text-stone-400'}`}>
-                  {state === 'analyzing' ? loadingLabel : isDone ? (isPaletteOnly ? '配色分析卡' : 'CMF 炼金卡') : '普通灵感卡 · 待分析'}
+                  {state === 'analyzing' ? loadingLabel : isDone ? (isPaletteOnly ? '配色分析卡' : (result?.analysisMode === 'local' ? '本地 CMF 炼金卡' : 'CMF 炼金卡')) : '普通灵感卡 · 待分析'}
                 </div>
               </div>
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${active ? 'bg-white/10 dark:bg-stone-900/10 text-white/75 dark:text-stone-600' : 'bg-stone-100/85 dark:bg-stone-900/45 text-stone-500 dark:text-stone-300 border border-stone-200/60 dark:border-stone-700/50'}`}>{isDone ? (isPaletteOnly ? '配色' : 'CMF') : 'RAW'}</span>
@@ -526,9 +526,9 @@ function AlchemyDrawerCard({
             className={`flex-1 rounded-[16px] px-3 py-2 text-xs font-bold transition-colors disabled:opacity-60 ${active ? 'bg-white/12 dark:bg-stone-900/10 text-white dark:text-stone-900 hover:bg-white/18 dark:hover:bg-stone-900/20' : 'bg-stone-900 text-stone-50 hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white'}`}
           >
             {state === 'analyzing'
-              ? (isPaletteOnly ? '炼金中...' : hasAiAnalysis ? '炼金中...' : '提取中...')
+              ? (isPaletteOnly ? (hasAiAnalysis ? '炼金中...' : '本地炼金中...') : hasAiAnalysis ? '炼金中...' : '本地炼金中...')
               : isDone
-                ? (isPaletteOnly ? 'AI 炼金' : (active ? '收起详情' : '查看详情'))
+                ? (isPaletteOnly ? (hasAiAnalysis ? 'AI 炼金' : '本地炼金') : (active ? '收起详情' : '查看详情'))
                 : actionLabel}
           </button>
           {isDone && !isPaletteOnly && (

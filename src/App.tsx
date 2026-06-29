@@ -8,7 +8,8 @@ import {
   Compass, HardDrive, Monitor, BookOpen, Sparkles, Play,
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
-  StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload
+  StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
+  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
@@ -22,6 +23,7 @@ import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
@@ -146,6 +148,10 @@ import {
   XAIS_CHAT_VIDEO_MODEL_OPTIONS,
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
+  getXaisImage2RatioOptions,
+  isXaisImage2Model,
+  normalizeXaisImage2Model,
+  resolveXaisImage2Ratio,
 } from './features/canvasAiImage';
 
 type CanvasGeneratedListEntry = {
@@ -153,6 +159,57 @@ type CanvasGeneratedListEntry = {
   canvasItem: CanvasImageItem;
   item: BufferItem;
   ai?: NonNullable<CanvasImageItem['ai']>;
+};
+type CollectedWebImage = {
+  title: string;
+  imageUrl: string;
+  pageUrl?: string;
+  path: string;
+};
+type WebImageCollectorReference = {
+  source: string;
+  name: string;
+  preview?: string;
+  itemId?: string;
+};
+type WebImageSearchDescription = {
+  query: string;
+  source: 'ollama' | 'siliconflow';
+  tags?: string[];
+  subject?: string;
+  style?: string;
+};
+type LocalVisionModelProgressPayload = {
+  stage?: string;
+  message?: string;
+  file?: string | null;
+  loaded?: number;
+  total?: number;
+  progress?: number;
+};
+type LocalVisionModelDownloadState = {
+  visible: boolean;
+  message: string;
+  progress: number;
+  phase: 'idle' | 'downloading' | 'loading' | 'ready' | 'error';
+  startedAt?: number;
+  updatedAt?: number;
+};
+type LocalVisionModelStatusPayload = {
+  ready?: boolean;
+  model?: string;
+  progress?: number;
+};
+const LOCAL_VISION_MODEL_STORAGE_KEY = 'drawer_local_vision_model';
+const DEFAULT_LOCAL_VISION_MODEL = 'qwen2.5vl:3b';
+const LEGACY_LOCAL_VISION_MODEL = 'qwen2.5vl:7b';
+const getStoredLocalVisionModel = () => {
+  const stored = (localStorage.getItem(LOCAL_VISION_MODEL_STORAGE_KEY) || '').trim();
+  if (!stored || stored === LEGACY_LOCAL_VISION_MODEL) {
+    localStorage.setItem(LOCAL_VISION_MODEL_STORAGE_KEY, DEFAULT_LOCAL_VISION_MODEL);
+    return DEFAULT_LOCAL_VISION_MODEL;
+  }
+  return stored;
 };
 type CanvasWorkflowNodeTemplate = {
   id: string;
@@ -162,6 +219,7 @@ type CanvasWorkflowNodeTemplate = {
   height: number;
   item: Pick<BufferItem, 'type' | 'content'> & Partial<BufferItem>;
   inputs?: string[];
+  fixedInput?: boolean;
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
 type CanvasWorkflowTemplate = {
@@ -180,6 +238,8 @@ type CanvasWorkflowSaveDraft = {
   externalInputIds: string[];
   selectedItemIds: string[];
   aiCount: number;
+  fixedImageCount: number;
+  fixedTextCount: number;
 };
 type CanvasWorkflowRuntimeNodeSnapshot = {
   templateId: string;
@@ -250,6 +310,124 @@ type CanvasPersistedState = {
   updatedAt: number;
 };
 
+type CanvasAiXaisBalanceState = {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  balance?: number;
+  id?: number;
+  hasWx?: boolean;
+  isMgr?: boolean;
+  message?: string;
+  checkedAt?: number;
+};
+
+type LicenseState = 'unlicensed' | 'trial' | 'pro' | 'enterprise' | 'expired';
+type LicenseEdition = 'trial' | 'pro' | 'enterprise';
+type LicenseErrorCode =
+  | 'not_licensed'
+  | 'malformed_license'
+  | 'invalid_signature'
+  | 'machine_mismatch'
+  | 'product_mismatch'
+  | 'expired'
+  | 'feature_not_licensed'
+  | 'io_error'
+  | 'invalid_public_key';
+
+type LicenseStatus = {
+  state: LicenseState;
+  valid: boolean;
+  machine_id: string;
+  customer?: string | null;
+  edition?: LicenseEdition | null;
+  expire_at?: string | null;
+  features: string[];
+  message?: string | null;
+  error_code?: LicenseErrorCode | null;
+};
+
+const LICENSE_STATE_LABELS: Record<LicenseState, string> = {
+  unlicensed: '未授权',
+  trial: '试用版',
+  pro: '专业版',
+  enterprise: '企业版',
+  expired: '已过期',
+};
+
+const LICENSE_EDITION_LABELS: Record<LicenseEdition, string> = {
+  trial: '试用版',
+  pro: '专业版',
+  enterprise: '企业版',
+};
+
+const LICENSE_FEATURE_LABELS: Record<string, string> = {
+  hd_export: '高清导出',
+  batch_render: '批量处理',
+  commercial_export: '商用导出',
+  '*': '全部功能',
+};
+
+const formatLicenseCommandError = (err: unknown) => (
+  String(err || '授权操作失败').replace(/^[a-z_]+:\s*/i, '').trim() || '授权操作失败'
+);
+
+type CanvasBrushEditorMode = 'brush' | 'crop' | 'eraser' | 'rectangle' | 'circle' | 'ellipse';
+type CanvasBrushShapeMode = Extract<CanvasBrushEditorMode, 'rectangle' | 'circle' | 'ellipse'>;
+type CanvasBrushPoint = { x: number; y: number };
+
+type CanvasBrushCropRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type CanvasViewportRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type CanvasBrushEditorState = {
+  targetId: string;
+  source: string;
+  baseDataUrl: string;
+  name: string;
+  x: number;
+  y: number;
+  nodeWidth: number;
+  nodeHeight: number;
+  width: number;
+  height: number;
+};
+
+type CanvasBrushEditorOpenOptions = {
+  targetId: string;
+  source: string;
+  name: string;
+  x: number;
+  y: number;
+  nodeWidth: number;
+  nodeHeight: number;
+};
+
+const isCanvasBrushShapeMode = (mode: CanvasBrushEditorMode): mode is CanvasBrushShapeMode => (
+  mode === 'rectangle' || mode === 'circle' || mode === 'ellipse'
+);
+
+const CANVAS_BRUSH_COLORS = [
+  '#ef4444',
+  '#f59e0b',
+  '#22c55e',
+  '#06b6d4',
+  '#3b82f6',
+  '#a855f7',
+  '#ec4899',
+  '#ffffff',
+  '#111827',
+];
+const CANVAS_BRUSH_EDITOR_MAX_EDGE = 2048;
+
 const isDataImageSourceValue = (value?: string | null) => (
   /^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(String(value || '').trim())
 );
@@ -305,6 +483,32 @@ const stripHeavyDataThumbnail = (item: BufferItem): BufferItem => {
   }
   const next = nextItem === item ? { ...item } : { ...nextItem };
   next.thumbnail = undefined;
+  return next;
+};
+
+const getWorkflowEmbeddedImageDataSource = (item: BufferItem) => (
+  [item.url, item.path, item.thumbnail, item.sourceUrl, item.originalUrl]
+    .map(value => String(value || '').trim())
+    .find(isDataImageSourceValue) || ''
+);
+
+const prepareCanvasWorkflowTemplateItem = (item: BufferItem): BufferItem => {
+  let next = stripHeavyDataThumbnail(item);
+  if (item.type !== 'image') return next;
+
+  const embeddedSource = getWorkflowEmbeddedImageDataSource(item);
+  if (!embeddedSource) return next;
+
+  next = {
+    ...next,
+    url: embeddedSource,
+    path: undefined,
+    sourceUrl: undefined,
+    originalUrl: undefined,
+  };
+  if (next.thumbnail && isDataImageSourceValue(next.thumbnail) && next.thumbnail.length > DATA_THUMBNAIL_KEEP_MAX_CHARS) {
+    next.thumbnail = undefined;
+  }
   return next;
 };
 
@@ -404,6 +608,11 @@ type CloudflaredPublicImageUrlsResult = {
   urls: string[];
 };
 
+type TemporaryReferenceShare = {
+  kind: 'cloudflared' | 'r2';
+  id: string;
+};
+
 type CanvasFolderImagePickerState = CanvasFolderImportPrompt & {
   x: number;
   y: number;
@@ -412,6 +621,9 @@ type CanvasFolderImagePickerState = CanvasFolderImportPrompt & {
 const getCanvasAiErrorSummary = (error?: string | null) => {
   const message = String(error || '').replace(/\s+/g, ' ').trim();
   if (!message) return '生成失败，请重试';
+  if (/Tmpfiles|Litterbox|R2|r2\.local\.json|兜底|鍏滃簳/i.test(message)) {
+    return message.length > 260 ? `${message.slice(0, 260)}...` : message;
+  }
   if (/cloudflared|trycloudflare|Cloudflare Tunnel/i.test(message)) {
     return '本地参考图公网分享失败：cloudflared 没有拿到可用链接。请稍后重试，或先改用网络图片作为参考图。';
   }
@@ -484,6 +696,8 @@ const CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY = 'drawer_cloudflared_disclaim
 const CANVAS_CONNECTION_HANDLE_OUTSET = 10;
 const CANVAS_SELECTION_RADIUS = 18;
 const CANVAS_NODE_RADIUS = 20;
+const CANVAS_VIEWPORT_OVERSCAN_PX = 900;
+const CANVAS_INTERACTION_OVERSCAN_PX = 1300;
 const AI_GENERATED_FOLDER_ID = 'ai_generated_images';
 const AI_GENERATED_FOLDER_NAME = 'AI生图';
 const AI_GENERATED_FOLDER_COLOR = '#06b6d4';
@@ -549,8 +763,46 @@ const CANVAS_AI_NODE_GRID_GAP = 8;
 const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
 const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
 const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-  const [rawW, rawH] = aspectRatio.split(':').map(value => Number(value));
+  const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Number(value));
   return rawW > 0 && rawH > 0 ? rawW / rawH : 16 / 9;
+};
+const getCanvasAspectRatioLabel = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
+  const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Math.round(Number(value)));
+  if (!Number.isFinite(rawW) || !Number.isFinite(rawH) || rawW <= 0 || rawH <= 0) return CANVAS_AI_DEFAULT_ASPECT_RATIO;
+  let width = Math.abs(rawW);
+  let height = Math.abs(rawH);
+  while (height) {
+    const next = width % height;
+    width = height;
+    height = next;
+  }
+  const divisor = width || 1;
+  return `${Math.round(rawW / divisor)}:${Math.round(rawH / divisor)}`;
+};
+const formatCanvasAiResolutionOptionLabel = (value: string) => {
+  const trimmed = String(value || '').trim();
+  if (!/^\d+\s*[x×]\s*\d+$/i.test(trimmed)) return trimmed;
+  return `${trimmed} (${getCanvasAspectRatioLabel(trimmed)})`;
+};
+const getClosestCanvasAiStandardAspectRatio = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
+  const target = parseCanvasAspectRatioValue(aspectRatio);
+  return CANVAS_AI_ASPECT_RATIOS.reduce((best, option) => (
+    Math.abs(parseCanvasAspectRatioValue(option) - target) < Math.abs(parseCanvasAspectRatioValue(best) - target)
+      ? option
+      : best
+  ), CANVAS_AI_DEFAULT_ASPECT_RATIO);
+};
+const getCanvasAiAspectRatioOptionsForModel = (model?: string | null): RoundedSelectOption[] => {
+  if (isXaisImage2Model(model)) {
+    return getXaisImage2RatioOptions(model).map(value => ({ value, label: formatCanvasAiResolutionOptionLabel(value) }));
+  }
+  return CANVAS_AI_ASPECT_RATIO_OPTIONS;
+};
+const normalizeCanvasAiAspectRatioForModel = (model?: string | null, aspectRatio?: string | null) => {
+  const value = String(aspectRatio || '').trim();
+  if (isXaisImage2Model(model)) return resolveXaisImage2Ratio(model, value || CANVAS_AI_DEFAULT_ASPECT_RATIO);
+  if (/^\d+\s*[x×]\s*\d+$/i.test(value)) return getClosestCanvasAiStandardAspectRatio(value);
+  return CANVAS_AI_ASPECT_RATIOS.includes(value) ? value : CANVAS_AI_DEFAULT_ASPECT_RATIO;
 };
 const getCanvasAiOutputTileLayout = (options?: {
   width?: number;
@@ -660,6 +912,12 @@ type CanvasAiPromptPreset = {
   outputFormat?: string;
   count?: number;
 };
+const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量：
+- 4k resolution, highly detailed, photorealistic, industrial design render
+- Precision parting lines, physically credible 0.5mm micro-bevels
+- Three-point studio lighting, controlled anisotropic highlights, realistic subsurface scattering
+- 85mm prime lens, F/2.8 macro lens, natural depth of field
+- 关键结构、材质边界和功能细节保持清晰，景深不得遮蔽重要设计信息`;
 const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
   {
     id: 'product-render',
@@ -668,6 +926,8 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     aspectRatio: '16:9',
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品生成一张高级工业设计产品渲染图。
+
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 视觉风格：
 - 高端消费电子产品摄影
@@ -693,6 +953,8 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品做一张 CMF 设计探索图。
 
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
+
 要求：
 - 保持产品结构、比例、按键、接口、分件线不变
 - 展示 3 个克制且高级的配色/材质方向
@@ -707,6 +969,8 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     aspectRatio: '16:9',
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品生成一张真实生活方式场景图。
+
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 场景方向：
 - 现代、干净、有审美的居家或办公环境
@@ -725,6 +989,8 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     aspectRatio: '16:9',
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品生成一张高级产品细节特写图。
+
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 画面要求：
 - 聚焦关键边缘、倒角、按键、接口或分件线
@@ -746,12 +1012,13 @@ const makeCanvasWorkflowAiNode = (
   x: number,
   y: number,
   inputs: string[] = [],
-  aspectRatio = '16:9'
+  aspectRatio = '16:9',
+  options: { provider?: CanvasAiProvider; model?: string; count?: number; presetId?: string } = {}
 ): CanvasWorkflowNodeTemplate => {
   const size = getCanvasAiNodeAutoSize({
     type: 'image-generator',
     aspectRatio,
-    count: 1,
+    count: options.count || 1,
     hasPreset: true,
   });
   return {
@@ -772,17 +1039,375 @@ const makeCanvasWorkflowAiNode = (
     },
     ai: {
       type: 'image-generator',
-      presetId: `workflow-${id}`,
+      presetId: options.presetId || `workflow-${id}`,
       presetLabel: label,
       presetPrompt: prompt,
       aspectRatio,
       outputFormat: 'jpg',
-      count: 1,
+      count: options.count || 1,
+      provider: options.provider,
+      model: options.model,
       status: 'idle',
     },
   };
 };
 const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+  {
+    id: 'imported-workflow-mqxvzmig-0-epcv',
+    label: '单元剧｜固定场景与角色一致性增强版',
+    hint: '角色设定+场景设定+脚本 -> 联合母版 / 故事 / 表演 / 镜头 / 初稿 / 一致性修正',
+    builtin: true,
+    nodes: [
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_cast_scene_master_01',
+        '角色与固定场景联合母版',
+        '上排锁角色，下排锁场景空间与本集状态',
+        `基于封装节点外部连接的多个角色设定图、一个或多个场景设定图和本集文字分镜脚本，生成唯一的角色与固定场景联合母版。先按内容自动区分参考角色：角色设定图作为 CHARACTER_REF；纯环境、场景三视图、空间设定、室内外参考、平面图和道具陈设图作为 SCENE_REF；文字脚本负责本集角色出场、事件、动作、台词、音效和节奏。不得把角色图与场景图互相融合。
+
+角色身份锁定：
+- 逐张读取角色设定中的姓名或稳定称呼、角色职能、物种或性别、脸型、体型、相对身高、肤色或毛色花纹、眼色、耳形、尾巴、发型、服装、领结、围脖、饰品、道具和标志性表情
+- 人物保持五官、肤色、发型、体型、服装和配件；动物或拟人角色保持物种、脸部花纹、毛色分区、毛长、耳形、眼色、鼻口、尾巴、体型、服装与饰品
+- 不串脸、不换毛色、不交换服装或配件、不融合角色、不新增设定和脚本中不存在的角色
+
+固定场景锁定：
+- 从 SCENE_REF 严格提取建筑或房间轮廓、长宽高比例、墙面、地面、门窗、天花、桌椅、台面、灯具、主要道具、入口、背景层次、颜色、材质、照明方向和时间氛围
+- 同一场景的不同参考视角视为同一空间，不拼成新房间；冲突时以信息最完整、最清晰的主场景图为准
+- 不改变房间结构、家具数量与位置、门窗方向、主要道具、墙地材质和色彩；不添加无关装饰或把场景替换成其他类型空间
+
+严格2×4联合母版：
+- 输出一张 16:9 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
+- 上排用于角色：按本集重要度展示最多四名主要角色的标准三分之四视角、完整服装与中性表情；少于四名角色时，用主角侧视、背视、关键表情或全员比例合照补足；多于四名时优先本集有台词和关键动作的角色，其余角色只在下排本集状态格出现
+- 下排第1格：固定场景主视角或脚本指定主机位；第2格：同一空间的反向或侧向互补视角；第3格：俯视空间关系、门窗、家具、主要道具与角色初始站位；第4格：脚本核心冲突或群像状态在该固定场景中的标准画面
+- 每格上方是严格 16:9 画面，下方是窄浅色说明栏；四列等宽、两行等高；禁止跨格、合并、英雄大格、自由拼贴、缺格或第九格
+
+说明栏：
+- 上排：角色：姓名或称呼；识别：不超过 10 个汉字的外观锚点
+- 下排：场景：主视、反向、空间或剧情状态；锁定：不超过 12 个汉字的空间或道具锚点
+- 统一深灰小号中文印刷体、左对齐；不要英文、乱码、长段落或无关信息
+
+风格与比例：
+- 角色与场景统一到同一美术风格，但不得因此改变角色设计和场景结构
+- 群像中保持角色相对体型、座位高度、人与家具或动物与家具的尺度可信
+- 输出是图片，不是报告；该图是后续所有节点唯一的 CHARACTER_REF 和 SCENE_REF。
+
+Original request: "我还要固定场景的，一开始我会把场景设定和角色设定一起输入。现在到后面我发现角色的一致性没法保持了，特别是最终输出的那一张"。`,
+        0,
+        0,
+        [],
+        '16:9',
+        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-cast-scene-master-v2' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_episode_storyboard_02',
+        '固定场景分集故事板',
+        'Image2 1K；保持角色与场景的八镜头叙事',
+        `基于连接的角色与固定场景联合母版，生成本集八镜头故事板。若仍可读取外部文字脚本，以原脚本的时间、事件、动作、表情、对白、旁白和音效为最高优先级；否则围绕母版下排最后一格的核心剧情状态展开。
+
+本阶段只解决镜头内容、角色出场、事件顺序、情绪变化与对白落点，采用低饱和导演草图风格，不制作相机路径、站位俯视图、技术箭头、起止残影或最终商业渲染。
+
+4:3画布与2×4卡片：
+- 输出一张 4:3 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
+- 每卡上方是严格 16:9 故事画面，下方是同宽说明栏
+- 上排镜头1-4、下排镜头5-8；四列等宽、两行等高；禁止跨格、合并、英雄大格、画中画、缺格、重复格或第九格
+
+脚本转译：
+- 按原脚本时间顺序分配八格；段落不足时拆分关键动作、对话与反应，多于八段时只合并相邻且功能相同的动作
+- 开场快速交代固定场景和角色关系；中段保持对话、反应、冲突或任务递进；结尾明确落点、反转、笑点或余韵
+- 对话场景必须包含说话者、听者反应和必要群体反应，避免八格全是单人正面特写
+
+角色与场景连续性：
+- 上排角色卡是唯一身份标准；每个角色保持自己的脸、毛色或肤色、花纹、眼睛、耳尾、体型、发型、服装、饰品和道具
+- 下排场景卡是唯一空间标准；八格保持同一墙面、地面、门窗、桌椅、灯具、主要道具、背景方向、颜色材质和光线
+- 多人同框保持相对体型、座位或站位、左右关系和视线方向；不得换座位、换门窗方向、增加家具或改变场景类型
+- 不串脸、不换装、不交换配件、不新增角色，不产生多余头部、肢体、耳朵或尾巴
+
+说明栏：第一行写剧情，不超过14个汉字；第二行写关键对白、动作、旁白或音效，不超过12个汉字。文字统一深灰小号、左对齐，不写英文、乱码、长段落或摄影参数。
+
+输出必须是一张角色身份清楚、固定场景稳定、故事连续的分集草图板。`,
+        520,
+        220,
+        ['canvas_ai_cast_scene_master_01'],
+        '4:3',
+        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-storyboard-v2' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_performance_blocking_03',
+        '表演与固定场景调度',
+        'Image2 1K；锁定表情、视线、动作和空间位置',
+        `将第一张连接图作为 CONTENT_REF，继承八镜头剧情、角色出场和事件顺序；将第二张连接图同时作为 CHARACTER_REF 和 SCENE_REF，校准每名角色身份与固定空间。把故事板转换成表演与场景调度板，明确角色位置、朝向、视线、表情、姿态、动作节拍和相互反应，不要只复制故事板并换文字。
+
+使用中性浅灰或淡米色预演风格，角色轮廓、脸部表情、视线线条、动作方向、地面定位和家具关系清楚；可使用视线虚线和主体动作箭头，但不绘制相机路径、焦距或摄影蓝图。
+
+4:3画布与2×4卡片：输出一张4:3横版，严格2行×4列，共8张等大卡片；每卡上方严格16:9表演调度画面，下方说明栏；上排镜头1-4、下排镜头5-8；禁止跨格、合并、遗漏、重复或第九格。
+
+调度规则：
+- 固定场景的入口、墙面、门窗、桌椅、灯具与主要道具位置不变；角色移动必须有起点、终点和动机
+- 对话时明确说话者姿态、听者视线和反应；群戏避免所有角色同时做相同动作
+- 喜剧、悬疑或日常单元剧强调停顿、迟疑、对视、抢话、反应镜头和包袱落点，情绪变化逐镜可见
+- 动物或拟人角色的四肢、耳朵、尾巴、重心和道具接触自然；人物手部、关节、坐姿、站姿和接触可信
+
+说明栏第一行写表演，不超过12个汉字；第二行写调度，不超过10个汉字。统一中文小号印刷体、左对齐。
+
+角色外观以 CHARACTER_REF 为最高标准，家具与空间以 SCENE_REF 为最高标准。不得串脸、交换毛色或服装、改变体型、增加角色或多余肢体；不得移动固定家具、改变门窗方向或生成另一套场景。`,
+        1040,
+        440,
+        ['canvas_ai_episode_storyboard_02', 'canvas_ai_cast_scene_master_01'],
+        '4:3',
+        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-performance-v2' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_camera_edit_plan_04',
+        '固定场景镜头与剪辑',
+        'Image2 1K；景别、轴线、运镜与切点',
+        `将第一张连接图作为 CONTENT_REF，继承剧情和顺序；第二张作为 PERFORMANCE_REF，继承表演、视线、动作和站位；第三张作为 CHARACTER_REF 与 SCENE_REF，校准角色身份和固定空间。生成镜头与剪辑技术规划板，重点说明景别、机位、轴线、运镜、焦点和切点。
+
+使用蓝灰或深灰技术预演风格、简化角色和场景、相机图标、视锥、180度轴线、运动路径、焦点变化和剪辑方向。每格至少包含一种清楚摄影信息，不追求最终材质与漂亮静帧。
+
+4:3画布与2×4卡片：输出一张4:3横版，严格2行×4列，共8张等大卡片；每卡上方严格16:9技术图，下方说明栏；上排镜头1-4、下排镜头5-8；不得交换、遗漏、重复、跨格、合并或增加镜头。
+
+镜头与剪辑规则：
+- 依据脚本选择全景、中景、双人、过肩、近景、特写或反应镜头，避免八格同一正面景别
+- 对话遵守180度轴线和视线匹配，正反打保持左右方向稳定；固定机位脚本不得擅自改成复杂环绕
+- 每镜只设置一个主要摄影动作：固定、轻推、轻拉、横移、俯仰、跟随、焦点转移或自然切镜
+- 剪辑点落在停顿、动作完成、视线变化、信息揭示、反应或包袱落点；避免无动机跳切、越轴和方向反转
+- 相邻镜头保持动作接续、道具位置、角色座位、光线和视线连续
+- 相机变化只能在 SCENE_REF 已定义的同一空间内发生，不得生成不存在的走廊、门、窗、舞台、家具或另一间房
+
+说明栏第一行写镜头，不超过10个汉字；第二行写剪辑，不超过12个汉字。统一中文小号印刷体、左对齐。角色以 CHARACTER_REF 为准，空间以 SCENE_REF 为准。`,
+        1560,
+        660,
+        ['canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_cast_scene_master_01'],
+        '4:3',
+        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-camera-edit-v2' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_episode_draft_05',
+        '单元剧分镜初稿',
+        '2K全彩初稿；融合角色、场景、表演和镜头',
+        `综合四张连接图生成全彩单元剧分镜初稿。第一张联合母版是 CHARACTER_REF 与 SCENE_REF；第二张故事板是 CONTENT_REF；第三张表演调度板是 PERFORMANCE_REF；第四张镜头剪辑板是 CAMERA_REF。按四种职责重新渲染，不原样复制技术图。
+
+输出一张16:9横版、严格2行×4列、共8张等大卡片；每卡上方严格16:9全彩关键帧，下方说明栏；上排镜头1-4、下排镜头5-8。禁止跨格、合并、英雄大格、缺格、重复格或第九格。
+
+画面继承角色设定和场景设定的美术风格；清晰、细节充足、表情可读、毛发或材质可信、曝光稳定。去掉草图线、视线虚线、相机图标、箭头、视锥、轴线和蓝图元素。
+
+角色规则：每名角色回到联合母版上排校准，不串脸、不换毛色、不交换服装配件、不改变体型、不新增角色、不产生多余肢体耳尾；群像与正反打保持左右位置、视线和相对体型。
+
+场景规则：每镜回到联合母版下排校准，保持同一墙地、门窗、桌椅、灯具、主要道具、背景方向、颜色材质和光线；不得扩大房间、移动家具、换背景或创造新空间。
+
+表演和镜头：剧情对白以CONTENT_REF为准；表情动作和站位以PERFORMANCE_REF为准；景别机位与切点以CAMERA_REF为准。
+
+说明栏第一行写剧情，不超过14个汉字；第二行写镜头，不超过12个汉字。说明只在栏内，不覆盖画面。
+
+这是初稿，优先保证故事、构图和画面完成度；后续节点将进行角色与场景一致性校正。`,
+        2080,
+        880,
+        ['canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_camera_edit_plan_04'],
+        '16:9',
+        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-draft-2k-v2' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_continuity_fix_06',
+        '最终角色场景一致性修正',
+        '只校正身份和固定场景，不改镜头与剧情',
+        `执行一次严格的图像一致性校正。第一张连接图是唯一 BASE 和 LAYOUT_REF：已经确定好的八格全彩分镜初稿。第二张连接图是 CHARACTER_REF 与 SCENE_REF：角色身份和固定场景的最高标准。第三张连接图是 CONTENT_REF：用于核对每格应出现的角色、剧情和顺序。只修正角色身份、场景结构、比例、材质、肢体和连续性错误；不得重新创作、换镜头、换场景、改剧情、改站位、改机位或重新排版。
+
+必须完整保留 BASE：
+- 保留16:9横版、2行×4列、八张等大卡片、镜头1-8顺序、每格构图、景别、人物位置、动作、表情、视线、道具、光线和说明栏
+- 不删除、不新增、不交换、不重复、不合并镜头；不生成英雄大格、自由拼贴或第九格
+- 不把初稿重新渲染成另一套故事，只做局部、定向的一致性修复
+
+逐格角色审计与修正：
+- 先依据 CONTENT_REF 判断该格应该出现哪些角色，再逐一对照联合母版上排的对应角色
+- 校正脸型、五官、肤色或毛色花纹、眼色、耳形、尾巴、体型、发型、服装、领结、围脖、饰品和道具，使同名角色八格一致
+- 若初稿角色串脸、换毛色、换装、配件错位或长相漂移，只替换该角色的错误外观，保留原姿势、表情、动作方向、光线和遮挡关系
+- 不融合角色、不交换身份、不新增或删除角色；同一角色在同一格只出现一次
+- 修正多余或缺失的头、手臂、手指、腿、爪、耳朵、尾巴，修正肢体穿插、错误握持、漂浮和不自然接触
+- 群像中保持联合母版定义的相对体型，以及BASE已经确定的左右位置、座位和视线
+
+逐格固定场景审计与修正：
+- 每格背景对照联合母版下排的主视角、反向视角和空间关系，校正墙面、地面、门窗、桌椅、灯具、主要道具、入口、背景方向、颜色、材质和光线
+- 若初稿背景漂移，只修正错误区域；保留该镜头原机位、透视、人物构图和景别
+- 不改变房间大小和结构，不移动固定家具，不新增门窗、走廊、舞台、柜子、装饰或另一套空间
+- 保持跨镜头的道具数量、位置、开合状态、光照方向和时间连续
+
+最终质量：
+- 保持角色设定与场景设定的原始美术风格，画面清晰、细节准确、毛发或材质可信、边缘干净、曝光稳定
+- 不保留草图、箭头、相机图标、视锥、轴线、蓝图、残影或技术标记
+- 说明栏尽量原样保留；如必须重写，仅保留两行简短中文，不覆盖16:9画面
+
+输出前逐格核对：角色数量和身份正确；毛色脸型服装配件一致；无多余肢体耳尾；相对体型正确；固定场景结构一致；门窗家具道具不漂移；镜头、剧情、站位和构图未改变。全部满足后再输出最终2K分镜。
+
+Original request: "一开始我会把场景设定和角色设定一起输入，角色的一致性没法保持，特别是最终输出"。`,
+        2600,
+        1100,
+        ['canvas_ai_episode_draft_05', 'canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02'],
+        '16:9',
+        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-continuity-fix-2k-v2' }
+      ),
+    ],
+  },
+  {
+    id: 'imported-workflow-mqxu783h-0-kjaz',
+    label: '产品动画分镜｜2×2母版·2K高质量最终版',
+    hint: '2×2产品母版 -> Image2 1K 4:3故事板 -> Image2 1K 4:3运镜板 -> 2K最终2×4分镜',
+    builtin: true,
+    nodes: [
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_product_master_01',
+        '2×2产品母版',
+        '四格锁定产品结构、CMF、细节和情境',
+        `基于封装节点外部连接的产品参考图和文字脚本，生成唯一的 2×2 产品母版。此阶段只锁定产品身份、关键细节、功能状态与脚本情境，不制作故事分镜。
+
+输入角色：
+- 产品参考图均为 SUBJECT_REF，严格锁定外轮廓、比例、体块、曲面、按键、接口、屏幕、灯带、开孔、分件线、Logo 位置、真实颜色与 CMF
+- 文字脚本只用于确认核心卖点、必要功能状态、使用情境、广告气质与光线方向，不得借脚本重新设计产品
+- 多图是同一产品的多角度依据；冲突时以最清晰、结构最完整的参考为准，不融合矛盾特征
+
+严格2×2版式：
+- 输出一张 16:9 横版画布，严格 2 行 × 2 列，共 4 个完全等大的 16:9 画面
+- 左上：最准确的三分之四主视角，完整展示外轮廓与主要体块
+- 右上：与主视角互补的正面、侧面、背面或俯视角，补足结构信息
+- 左下：脚本核心卖点对应的真实按键、接口、屏幕、灯效、机构或 CMF 细节
+- 右下：产品在脚本要求的功能状态或最简使用情境中的标准姿态，用于锁定尺度、接触关系、背景与光线
+- 四格尺寸一致、边缘对齐、等距细窄留白；禁止跨格、合并、重叠、自由拼贴或第五格
+- 不生成编号、文字、参数、说明、箭头或 HUD
+
+产品锁定：
+- 四格必须是同一产品、同一结构、同一比例、同一 CMF、同一功能布局
+- 不重新设计、不镜像、不增减按键、接口、屏幕、灯带、开孔、分件线或部件，不添加新 Logo 和不存在的功能
+- 看不清的局部保持简洁，不凭空补造；脚本未要求时不添加人物、手和复杂道具
+- 统一色温、光线方向、中性高级背景、自然产品摄影透视、真实材质、清楚边缘和可信接地
+
+输出是无字的 2×2 产品身份母版，作为后续所有节点的 SUBJECT_REF。
+
+Original request: "产品母版改成2*2，然后注意最终分镜细节和质量一定要高"。`,
+        0,
+        0,
+        [],
+        '16:9',
+        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-product-master-2x2-v9' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_storyboard_02',
+        '4:3叙事草图故事板',
+        'Image2 1K；2行×4列叙事草图',
+        `基于连接的 2×2 产品母版生成八镜头故事板。若仍能读取外部文字脚本，以原脚本为最高优先级；否则围绕母版右下格的使用情境和功能状态展开。本阶段只解决故事顺序、画面内容、景别和叙事目的，不设计运镜，不追求最终商业渲染。
+
+阶段视觉语言：
+- 采用导演故事板草图风格：灰度或低饱和色块、简洁线稿、粗略光影、少量单一强调色
+- 不使用最终广告级材质高光，不制作技术箭头、相机图标、运动轨迹、起止残影或蓝图界面
+- 产品轮廓与关键结构仍以母版为准，草图风格不能成为改变结构的理由
+
+4:3画布与2×4版式：
+- 输出一张 4:3 横版画布，严格 2 行 × 4 列，共 8 张完全等大的卡片
+- 每卡上方是严格 16:9 故事画面，下方是同宽说明栏
+- 上排从左到右为镜头1-4，下排从左到右为镜头5-8；四列等宽、两行等高
+- 禁止跨格英雄图、合并、重叠、自由拼贴、缺格、重复格或第九格
+
+固定叙事位置：
+- 上排：情境钩子、轮廓揭示、完整亮相、第二角度或功能转折
+- 下排：卖点铺垫、核心功能或交互、结果或价值、片尾完整定格
+- 每格只表达一个主要信息，镜头有因果、节奏和景别变化，不能只是同一产品反复换角度
+
+说明栏写两行：
+- 第一行：画面：不超过 12 个汉字
+- 第二行：目的：不超过 8 个汉字
+- 深灰小号中文印刷体、左对齐；不要编号、英文、乱码、长段落、运镜术语或参数
+
+产品母版是唯一产品标准。八格保持同一外轮廓、比例、CMF、按键、接口、屏幕、灯带、开孔、分件线、Logo 位置与材质边界；不重设计、不镜像、不增减零件。
+
+输出是一张 4:3 横版、2行×4列的低精度叙事草图板。`,
+        520,
+        220,
+        ['canvas_ai_product_master_01'],
+        '4:3',
+        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-narrative-storyboard-4x3-v9' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_camera_plan_03',
+        '4:3技术运镜预演',
+        'Image2 1K；2行×4列技术图解',
+        `将第一张连接图作为 CONTENT_REF：继承八镜头故事内容、顺序和主体关系。将第二张连接图作为 SUBJECT_REF：校准产品结构。把故事板转换成明显不同的技术运镜预演板，不要只替换说明文字。
+
+阶段视觉语言：
+- 使用蓝灰色或深灰色技术预演风格、简化场景、清楚轮廓、半透明起止位置、相机图标、运动路径和方向箭头
+- 每个 16:9 图解至少出现一种可见技术信息：相机位置与朝向、起点与终点残影、运动路径、焦点平面或转场方向
+- 不是最终商业渲染；不要原样复制故事板图片，应保留同一镜头含义但转换成技术图解
+
+4:3画布与2×4版式：
+- 输出一张 4:3 横版画布，严格 2 行 × 4 列，共 8 张完全等大的卡片
+- 每卡上方是严格 16:9 运镜图解，下方是同宽说明栏
+- 上排从左到右对应镜头1-4，下排对应镜头5-8；四列等宽、两行等高
+- 与故事板逐格对应；禁止跨格、合并、放大英雄画面、遗漏、重复或第九格
+
+运镜规则：
+- 每镜只选一个主要运动：固定机位、缓慢推近、轻微拉远、平稳横移、克制环绕、俯仰揭示、焦点转移或整体切入细节
+- 运镜服务于揭示产品、说明尺度、强调卖点、跟随操作或衔接下一镜
+- 相邻镜头保持轴线、视线、主体位置、光线方向和运动方向连续；禁止甩镜、夸张变焦、无意义旋转、粒子爆炸、液化、解体或变形转场
+
+说明栏写两行：
+- 第一行：机位：不超过 8 个汉字
+- 第二行：运动：不超过 10 个汉字
+- 深灰小号中文印刷体、左对齐；不要编号、英文、乱码、长段落或复杂参数
+
+故事内容以 CONTENT_REF 为准，产品外观以 SUBJECT_REF 为准。不得重设计、镜像、增减按键、接口、屏幕、灯带、开孔、分件线、部件或 Logo。
+
+输出是一张 4:3 横版、2行×4列的技术运镜预演板，与故事板明显不同。`,
+        1040,
+        440,
+        ['canvas_ai_storyboard_02', 'canvas_ai_product_master_01'],
+        '4:3',
+        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-camera-tech-previz-4x3-v9' }
+      ),
+      makeCanvasWorkflowAiNode(
+        'canvas_ai_final_storyboard_04',
+        '最终2K高质量2×4分镜',
+        '2K商业渲染；强化产品细节与八格一致性',
+        `综合三张连接图生成最终 2K 高质量产品动画分镜。第一张 2×2 产品母版是 SUBJECT_REF，产品外观与结构的最高标准；第二张 4:3 故事板是 CONTENT_REF，只负责镜头内容、顺序、场景与叙事目的；第三张 4:3 运镜板是 MOTION_REF，只负责机位、运动方向、起止关系与转场。不要原样复制任何一张上游图，而要依据三种角色重新渲染最终商业关键帧。
+
+镜头与版式：
+- 上游两张 2×4 板均按上排镜头1-4、下排镜头5-8读取，最终必须逐格一一对应，不交换、遗漏、重复、合并或新增镜头
+- 输出一张 16:9 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
+- 每卡上方是严格 16:9 全彩关键帧，下方是同宽浅色说明栏
+- 四列等宽、两行等高；禁止英雄大格、跨格、合并、重叠、自由拼贴、缺格、重复格或第九格
+
+2K高质量商业渲染：
+- 八个关键帧必须清晰、锐利、细节充足，具备高端产品广告成片质感，不使用草图、低清贴图、过度降噪、塑料蜡感或模糊材质
+- 材质必须可辨：金属、哑光塑料、橡胶、玻璃、织物、皮革或涂层要有正确的粗糙度、反射、纹理尺度与边缘高光
+- 保持自然产品摄影透视、真实接地阴影、合理景深、干净轮廓、克制高光和稳定曝光；暗部仍要看清结构
+- 使用统一世界观、色温和光线逻辑，但每格应有明确景别与机位变化，不能反复使用同一正视产品图
+- 使用 MOTION_REF 确定相机角度、主体位置、空间方向与运动趋势，但最终画面不保留相机图标、箭头、残影、蓝图线或技术界面
+- 不继承故事板的草图质感，也不继承运镜板的蓝灰技术图风格
+
+产品细节一致性最高规则：
+- 每个镜头都必须回到 2×2 SUBJECT_REF 母版校准，严格保持同一外轮廓、尺寸比例、体块、曲面转折、CMF、按键数量与位置、接口、屏幕、灯带、开孔、分件线、Logo 位置和材质边界
+- 不重新设计、不镜像、不增减零件，不改变功能布局，不把不同角度的矛盾细节拼接到同一产品
+- 特写只拍母版中真实存在且清楚可见的细节；看不清的结构保持克制，不凭空添加按钮、接口、传感器、灯效或机械机构
+- 人物和手只在 CONTENT_REF 确有必要时出现；手指数目、关节、握持、接触点、受力方向和产品尺度必须正确，不能遮挡核心卖点
+- 避免产品变形、融化、重复、穿插、比例漂移、悬浮、错误反射、锯齿边缘、脏污噪点和不合理裁切
+
+八镜头完成度：
+- 镜头1建立情境，镜头2揭示轮廓，镜头3完整亮相，镜头4完成角度或功能转折
+- 镜头5铺垫卖点，镜头6清楚展示核心功能或交互，镜头7呈现结果或价值，镜头8形成完整稳定的英雄定格
+- 八格必须有叙事递进、构图差异和视觉连续性，不能用产品母版的四格简单重复填充
+
+说明栏写两行：
+- 第一行：分镜：不超过 12 个汉字，准确概括画面与叙事目的
+- 第二行：运镜：不超过 10 个汉字，准确概括相机、主体动作或转场
+- 深灰小号中文印刷体、左对齐；不写编号、英文、乱码、长段落、镜头参数或多余标题
+- 说明文字只放在说明栏，不得覆盖 16:9 画面
+
+输出前自检并修正：八格数量与顺序正确；产品结构一致；按键接口与母版一致；不存在重复镜头；特写真实；手部正确；材质清楚；无箭头技术图；无跨格；画面锐利；说明简洁可读。只有全部满足后再输出最终图片。
+
+Original request: "最终分镜还是2k就好"。`,
+        1560,
+        660,
+        ['canvas_ai_product_master_01', 'canvas_ai_storyboard_02', 'canvas_ai_camera_plan_03'],
+        '16:9',
+        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-final-commercial-storyboard-2k-v10' }
+      ),
+    ],
+  },
   {
     id: 'industrial-design-basic',
     label: '基础工业设计',
@@ -794,6 +1419,8 @@ const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
         '线稿转效果图',
         '从线稿生成效果图',
         `基于连接的线稿、草图或产品参考图，生成一张可信的工业设计效果图。
+
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 保留原始产品比例、结构、功能布局和关键轮廓
@@ -812,6 +1439,8 @@ const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
         '从效果图生成细节特写',
         `基于连接的产品效果图，生成一张高级产品细节特写图。
 
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
+
 要求：
 - 聚焦关键边缘、倒角、按键、接口、分件线或材质交界
 - 微距产品摄影质感，浅景深，边缘有精致高光
@@ -828,6 +1457,8 @@ const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
         '从效果图生成多角度设计图',
         `基于连接的产品效果图，生成同一产品的多角度设计图。
 
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
+
 要求：
 - 展示正面、侧面、背面、3/4 角度等多个视角
 - 所有视角保持同一产品结构、比例、CMF 和细节一致
@@ -843,6 +1474,8 @@ const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
         '场景图',
         '从效果图生成使用场景',
         `基于连接的产品效果图，生成真实生活方式或办公使用场景图。
+
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 产品是画面主角，环境现代、干净、有审美
@@ -878,6 +1511,8 @@ const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
         '生成材质细节图',
         `基于连接的 CMF 方向图，生成一张产品材质细节特写。
 
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
+
 要求：
 - 强调材质纹理、表面工艺、倒角高光和颜色过渡
 - 保持产品结构一致
@@ -901,6 +1536,8 @@ const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
         '电商主图',
         '生成产品主视觉',
         `基于连接的产品参考图，生成一张干净高级的电商产品主图。
+
+${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 产品居中，轮廓清晰，材质真实
@@ -939,13 +1576,26 @@ const CANVAS_AI_PROMPT_PRESET_PLACEHOLDER = '__canvas_ai_prompt_preset__';
 const CANVAS_AI_PROMPT_PRESET_ADD_VALUE = '__canvas_ai_prompt_preset_add__';
 const CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE = '__canvas_ai_prompt_preset_manage__';
 const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
+const CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_hidden_builtin_prompt_presets';
 const CANVAS_WORKFLOW_SELECT_PLACEHOLDER = '__canvas_workflow_select__';
 const CANVAS_WORKFLOW_SAVE_SELECTION_VALUE = '__canvas_workflow_save_selection__';
 const CANVAS_WORKFLOW_MANAGE_VALUE = '__canvas_workflow_manage__';
 const CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY = 'drawer_canvas_custom_workflows';
+const CANVAS_HIDDEN_BUILT_IN_WORKFLOWS_STORAGE_KEY = 'drawer_canvas_hidden_builtin_workflows';
 const CANVAS_TEMPLATE_EXPORT_TYPE = 'inspiration-drawer-canvas-templates';
 const CANVAS_TEMPLATE_EXPORT_VERSION = 1;
+const canvasWorkflowNormalizeCache = new WeakMap<object, CanvasWorkflowTemplate | null>();
 const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
+const readCanvasTemplateHiddenIds = (storageKey: string) => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    return Array.isArray(parsed)
+      ? Array.from(new Set(parsed.map(value => String(value || '').trim()).filter(Boolean)))
+      : [];
+  } catch (_) {
+    return [];
+  }
+};
 const normalizeCanvasAiPromptPreset = (value: unknown): CanvasAiPromptPreset | null => {
   const record = value && typeof value === 'object' ? value as Partial<CanvasAiPromptPreset> : {};
   const label = typeof record.label === 'string' ? record.label.trim().slice(0, 24) : '';
@@ -973,10 +1623,18 @@ const readCustomCanvasAiPromptPresets = () => {
   }
 };
 const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate | null => {
-  const record = value && typeof value === 'object' ? value as Partial<CanvasWorkflowTemplate> : {};
+  if (!value || typeof value !== 'object') return null;
+  const cacheKey = value as object;
+  if (canvasWorkflowNormalizeCache.has(cacheKey)) {
+    return canvasWorkflowNormalizeCache.get(cacheKey) || null;
+  }
+  const record = value as Partial<CanvasWorkflowTemplate>;
   const label = typeof record.label === 'string' ? record.label.trim().slice(0, 32) : '';
   const rawNodes = Array.isArray(record.nodes) ? record.nodes : [];
-  if (!label || rawNodes.length === 0) return null;
+  if (!label || rawNodes.length === 0) {
+    canvasWorkflowNormalizeCache.set(cacheKey, null);
+    return null;
+  }
 
   const nodes = rawNodes.map((nodeValue, index) => {
     const node = nodeValue && typeof nodeValue === 'object'
@@ -1015,6 +1673,9 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       inputs: Array.isArray(node.inputs)
         ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
         : [],
+      fixedInput: typeof node.fixedInput === 'boolean'
+        ? node.fixedInput
+        : (!node.ai && (itemType === 'image' || itemType === 'text')),
       ai: node.ai && typeof node.ai === 'object'
         ? {
           ...(node.ai as Partial<NonNullable<CanvasImageItem['ai']>>),
@@ -1027,8 +1688,11 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     } as CanvasWorkflowNodeTemplate;
   }).filter(node => node.ai?.type === 'image-generator' || !!node.item.type);
 
-  if (nodes.length === 0 || !nodes.some(node => node.ai?.type === 'image-generator')) return null;
-  return {
+  if (nodes.length === 0 || !nodes.some(node => node.ai?.type === 'image-generator')) {
+    canvasWorkflowNormalizeCache.set(cacheKey, null);
+    return null;
+  }
+  const normalized = {
     id: typeof record.id === 'string' && record.id.trim()
       ? record.id.trim()
       : `workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
@@ -1040,6 +1704,8 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     createdAt: Number(record.createdAt) || Date.now(),
     builtin: !!record.builtin,
   };
+  canvasWorkflowNormalizeCache.set(cacheKey, normalized);
+  return normalized;
 };
 const readCustomCanvasWorkflows = () => {
   try {
@@ -1123,6 +1789,21 @@ const getCanvasAiEndpointForModels = (provider: CanvasAiProvider, endpoint: stri
   const base = normalizeCanvasAiXaisEndpoint(endpoint);
   return /\/v1$/i.test(base) ? base : `${base}/v1`;
 };
+const getCanvasAiXaisUserProfileEndpoint = (endpoint: string) => {
+  const base = normalizeCanvasAiXaisEndpoint(endpoint)
+    .replace(/\/v1$/i, '')
+    .replace(/\/xais(?:\/userProfile)?$/i, '');
+  return `${base || XAIS_CHAT_ENDPOINT_DEFAULT}/xais/userProfile`;
+};
+const CANVAS_AI_XAIS_BALANCE_SCALE = 10000;
+const formatCanvasAiXaisBalance = (balance?: number) => (
+  Number.isFinite(balance)
+    ? new Intl.NumberFormat('zh-CN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format((balance as number) / CANVAS_AI_XAIS_BALANCE_SCALE)
+    : '未知'
+);
 const isCanvasAiXaisImageModel = (model: string) => {
   const normalized = model.trim();
   return /nano[_-]?banana/i.test(normalized)
@@ -1478,6 +2159,7 @@ function MainApp() {
   const floatingBridgeSeenRef = useRef<Record<string, number>>({});
   const drawerTextEditUndoIdsRef = useRef<Set<string>>(new Set());
   const floatingTextUndoTimersRef = useRef<Record<string, number>>({});
+  const localCmfRecoveryIdsRef = useRef<Set<string>>(new Set());
   const blankFloatingNoteCreateLockRef = useRef(false);
   const lastBlankFloatingNoteCreatedAtRef = useRef(0);
   useEffect(() => { itemsRef.current = items; }, [items]);
@@ -1495,6 +2177,7 @@ function MainApp() {
   const [showCanvasExitPrompt, setShowCanvasExitPrompt] = useState(false);
   const [canvasExitPromptStep, setCanvasExitPromptStep] = useState<'choice' | 'save'>('choice');
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
+  const [canvasViewport, setCanvasViewport] = useState<CanvasViewportRect | null>(null);
   const [canvasSelectionBox, setCanvasSelectionBox] = useState<CanvasSelectionBox | null>(null);
   const [canvasFolderImportPrompt, setCanvasFolderImportPrompt] = useState<CanvasFolderImagePickerState | null>(null);
   const [canvasConnectionDraft, setCanvasConnectionDraft] = useState<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number } | null>(null);
@@ -1504,8 +2187,23 @@ function MainApp() {
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
+  const [canvasBrushEditor, setCanvasBrushEditor] = useState<CanvasBrushEditorState | null>(null);
+  const [canvasBrushMode, setCanvasBrushMode] = useState<CanvasBrushEditorMode>('brush');
+  const [canvasBrushColor, setCanvasBrushColor] = useState(CANVAS_BRUSH_COLORS[0]);
+  const [canvasBrushSize, setCanvasBrushSize] = useState(26);
+  const [canvasBrushOpacity, setCanvasBrushOpacity] = useState(0.72);
+  const [canvasBrushHistory, setCanvasBrushHistory] = useState<string[]>([]);
+  const [canvasBrushCropRect, setCanvasBrushCropRect] = useState<CanvasBrushCropRect | null>(null);
   const canvasContextMenuRef = useRef<CanvasContextMenuState | null>(null);
   const canvasInputPickTargetIdRef = useRef<string | null>(null);
+  const canvasBrushCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasBrushBaseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasBrushDrawingRef = useRef(false);
+  const canvasBrushLastPointRef = useRef<CanvasBrushPoint | null>(null);
+  const canvasBrushCropStartRef = useRef<CanvasBrushPoint | null>(null);
+  const canvasBrushShapeStartRef = useRef<CanvasBrushPoint | null>(null);
+  const canvasBrushShapeSnapshotRef = useRef<ImageData | null>(null);
+  const canvasBrushPendingMarksRef = useRef<string | null>(null);
   const [isCanvasAiPanelOpen, setIsCanvasAiPanelOpen] = useState(false);
   const [canvasAiProvider, setCanvasAiProvider] = useState<CanvasAiProvider>(() => getStoredCanvasAiProvider());
   const [canvasAiApiKey, setCanvasAiApiKey] = useState(() => getStoredCanvasAiApiKey(getStoredCanvasAiProvider()));
@@ -1514,8 +2212,13 @@ function MainApp() {
   const [canvasAiXaisModels, setCanvasAiXaisModels] = useState<string[]>(() => readStoredCanvasAiXaisModels());
   const [isRefreshingCanvasAiOpenAiModels, setIsRefreshingCanvasAiOpenAiModels] = useState(false);
   const [canvasAiOpenAiModelError, setCanvasAiOpenAiModelError] = useState('');
+  const [canvasAiXaisBalance, setCanvasAiXaisBalance] = useState<CanvasAiXaisBalanceState>({ status: 'idle' });
   const [customCanvasAiPromptPresets, setCustomCanvasAiPromptPresets] = useState<CanvasAiPromptPreset[]>(() => readCustomCanvasAiPromptPresets());
   const [customCanvasWorkflows, setCustomCanvasWorkflows] = useState<CanvasWorkflowTemplate[]>(() => readCustomCanvasWorkflows());
+  const [hiddenBuiltInCanvasAiPromptPresetIds, setHiddenBuiltInCanvasAiPromptPresetIds] = useState<string[]>(() => readCanvasTemplateHiddenIds(CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY));
+  const [hiddenBuiltInCanvasWorkflowIds, setHiddenBuiltInCanvasWorkflowIds] = useState<string[]>(() => readCanvasTemplateHiddenIds(CANVAS_HIDDEN_BUILT_IN_WORKFLOWS_STORAGE_KEY));
+  const [selectedCanvasPresetDeleteIds, setSelectedCanvasPresetDeleteIds] = useState<string[]>([]);
+  const [selectedCanvasWorkflowDeleteIds, setSelectedCanvasWorkflowDeleteIds] = useState<string[]>([]);
   const [canvasWorkflowSaveDraft, setCanvasWorkflowSaveDraft] = useState<CanvasWorkflowSaveDraft | null>(null);
   const [isCanvasWorkflowManagerOpen, setIsCanvasWorkflowManagerOpen] = useState(false);
   const [canvasWorkflowEditingId, setCanvasWorkflowEditingId] = useState('');
@@ -1536,6 +2239,8 @@ function MainApp() {
   const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
   const canvasSizerRef = useRef<HTMLDivElement | null>(null);
   const canvasContentRef = useRef<HTMLDivElement | null>(null);
+  const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
+  const canvasViewportFrameRef = useRef<number | null>(null);
   const canvasItemsCommitFrameRef = useRef<number | null>(null);
   const pendingCanvasItemsCommitRef = useRef<CanvasImageItem[] | null>(null);
   const canvasAiRunTokensRef = useRef<Record<string, string>>({});
@@ -1614,6 +2319,10 @@ function MainApp() {
   const canvasScrollLockRef = useRef<{ left: number; top: number } | null>(null);
   const canvasScrollWriteGuardRef = useRef(false);
   const canvasScrollWriteFrameRef = useRef<number | null>(null);
+  const canvasAiPromptDraftTimersRef = useRef<Record<string, number>>({});
+  const canvasAiPromptDraftValuesRef = useRef<Record<string, string>>({});
+  const canvasTextDraftTimersRef = useRef<Record<string, number>>({});
+  const canvasTextDraftValuesRef = useRef<Record<string, string>>({});
   const isCanvasSpacePressedRef = useRef(false);
   const canvasSpaceKeyCapturedRef = useRef(false);
   const keepCanvasSessionOnLeaveRef = useRef(false);
@@ -1654,6 +2363,8 @@ function MainApp() {
       }
       setIsCanvasSpacePressed(false);
       setCanvasSelectedIds([]);
+      canvasViewportRef.current = null;
+      setCanvasViewport(null);
       setCanvasSelectionBox(null);
       setCanvasFolderImportPrompt(null);
       setCanvasConnectionDraft(null);
@@ -1664,6 +2375,12 @@ function MainApp() {
       setCanvasInputPickTargetId(null);
       setIsCanvasAiPanelOpen(false);
       setIsCanvasChromeHidden(false);
+      Object.values(canvasAiPromptDraftTimersRef.current).forEach(timer => window.clearTimeout(timer));
+      Object.values(canvasTextDraftTimersRef.current).forEach(timer => window.clearTimeout(timer));
+      canvasAiPromptDraftTimersRef.current = {};
+      canvasAiPromptDraftValuesRef.current = {};
+      canvasTextDraftTimersRef.current = {};
+      canvasTextDraftValuesRef.current = {};
       canvasPanRef.current = null;
       canvasDragRef.current = null;
       canvasResizeRef.current = null;
@@ -1733,17 +2450,43 @@ function MainApp() {
     localStorage.setItem(CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY, JSON.stringify(customCanvasAiPromptPresets));
   }, [customCanvasAiPromptPresets]);
   useEffect(() => {
+    localStorage.setItem(CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY, JSON.stringify(hiddenBuiltInCanvasAiPromptPresetIds));
+  }, [hiddenBuiltInCanvasAiPromptPresetIds]);
+  useEffect(() => {
     localStorage.setItem(CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY, JSON.stringify(customCanvasWorkflows));
   }, [customCanvasWorkflows]);
+  useEffect(() => {
+    localStorage.setItem(CANVAS_HIDDEN_BUILT_IN_WORKFLOWS_STORAGE_KEY, JSON.stringify(hiddenBuiltInCanvasWorkflowIds));
+  }, [hiddenBuiltInCanvasWorkflowIds]);
   useEffect(() => {
     canvasWorkflowSingleEditGroupIdsRef.current = new Set(canvasWorkflowSingleEditGroupIds);
   }, [canvasWorkflowSingleEditGroupIds]);
   useLayoutEffect(() => {
     if (!isCanvasMode) return;
     applyCanvasScaleStyles(canvasScaleRef.current, canvasSizeRef.current);
+    scheduleCanvasViewportUpdate();
   }, [isCanvasMode, canvasScale, canvasSize]);
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const surface = canvasSurfaceRef.current;
+    scheduleCanvasViewportUpdate();
+    const handleResize = () => scheduleCanvasViewportUpdate();
+    window.addEventListener('resize', handleResize);
+    const observer = typeof ResizeObserver !== 'undefined' && surface
+      ? new ResizeObserver(handleResize)
+      : null;
+    if (observer && surface) observer.observe(surface);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      observer?.disconnect();
+    };
+  }, [isCanvasMode]);
   useEffect(() => () => {
     flushCanvasItemsInFrame();
+    if (canvasViewportFrameRef.current !== null) {
+      window.cancelAnimationFrame(canvasViewportFrameRef.current);
+      canvasViewportFrameRef.current = null;
+    }
     if (canvasScaleCommitTimerRef.current !== null) {
       window.clearTimeout(canvasScaleCommitTimerRef.current);
       canvasScaleCommitTimerRef.current = null;
@@ -1906,7 +2649,7 @@ function MainApp() {
   const closeUpdateLog = () => {
     setShowUpdateLog(false);
     showUpdateLogRef.current = false;
-    localStorage.setItem('drawer_v3_update_shown', 'true');
+    localStorage.setItem('drawer_v4_update_shown', 'true');
   };
 
   const acceptUpdateLogAndClose = () => {
@@ -2272,6 +3015,11 @@ function MainApp() {
   const [mobilePairUrl, setMobilePairUrl] = useState('');
   const [isAutoStart, setIsAutoStart] = useState(false);
   const [isAutoStartChanging, setIsAutoStartChanging] = useState(false);
+  const [machineId, setMachineId] = useState('');
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
+  const [isLicenseLoading, setIsLicenseLoading] = useState(false);
+  const [licenseInputText, setLicenseInputText] = useState('');
+  const licenseGateActiveRef = useRef(true);
 
   const [shortcut, setShortcut] = useState('Alt+G');
   const [isRecording, setIsRecording] = useState(false);
@@ -2288,10 +3036,133 @@ function MainApp() {
   const [canvasShortcut, setCanvasShortcut] = useState('Alt+`');
   const [isRecordingCanvas, setIsRecordingCanvas] = useState(false);
 
+  const refreshLicenseStatus = async (silent = false) => {
+    setIsLicenseLoading(true);
+    try {
+      const [nextMachineId, nextStatus] = await Promise.all([
+        invoke<string>('get_machine_id'),
+        invoke<LicenseStatus>('get_license_status'),
+      ]);
+      setMachineId(nextMachineId || nextStatus.machine_id || '');
+      setLicenseStatus(nextStatus);
+      if (!silent) showToast('授权状态已刷新');
+    } catch (err) {
+      console.error('读取授权状态失败:', err);
+      if (!silent) showToast(formatLicenseCommandError(err));
+    } finally {
+      setIsLicenseLoading(false);
+    }
+  };
+
+  const copyMachineId = async () => {
+    const value = machineId || licenseStatus?.machine_id || '';
+    if (!value) {
+      showToast('机器码还没有生成');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast('机器码已复制');
+    } catch (err) {
+      console.warn('复制机器码失败:', err);
+      showToast('复制失败');
+    }
+  };
+
+  const importLicenseFile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'License', extensions: ['json', 'license'] }],
+      });
+      const licensePath = Array.isArray(selected) ? selected[0] : selected;
+      if (typeof licensePath !== 'string' || !licensePath) return;
+      setIsLicenseLoading(true);
+      const nextStatus = await invoke<LicenseStatus>('import_license', {
+        path: licensePath,
+        content: null,
+      });
+      setLicenseStatus(nextStatus);
+      setMachineId(nextStatus.machine_id);
+      showToast('授权已导入');
+    } catch (err) {
+      console.error('导入授权失败:', err);
+      showToast(formatLicenseCommandError(err));
+    } finally {
+      setIsLicenseLoading(false);
+    }
+  };
+
+  const importLicenseText = async () => {
+    const content = licenseInputText.trim();
+    if (!content) {
+      showToast('请先粘贴 license 内容');
+      return;
+    }
+
+    try {
+      setIsLicenseLoading(true);
+      const nextStatus = await invoke<LicenseStatus>('import_license', {
+        path: null,
+        content,
+      });
+      setLicenseStatus(nextStatus);
+      setMachineId(nextStatus.machine_id);
+      setLicenseInputText('');
+      showToast('授权已导入');
+    } catch (err) {
+      console.error('导入授权失败:', err);
+      showToast(formatLicenseCommandError(err));
+    } finally {
+      setIsLicenseLoading(false);
+    }
+  };
+
+  const removeLicenseFile = async () => {
+    try {
+      setIsLicenseLoading(true);
+      const nextStatus = await invoke<LicenseStatus>('remove_license');
+      setLicenseStatus(nextStatus);
+      setMachineId(nextStatus.machine_id);
+      showToast('授权已移除');
+    } catch (err) {
+      console.error('移除授权失败:', err);
+      showToast(formatLicenseCommandError(err));
+    } finally {
+      setIsLicenseLoading(false);
+    }
+  };
+
   const [showTextInput, setShowTextInput] = useState(false);
   const [quickText, setQuickText] = useState('');
+  const [showWebImageCollector, setShowWebImageCollector] = useState(false);
+  const webImageCollectorPanelRef = useRef<HTMLDivElement | null>(null);
+  const [webImageCollectorQuery, setWebImageCollectorQuery] = useState('');
+  const [webImageCollectorReference, setWebImageCollectorReference] = useState<WebImageCollectorReference | null>(null);
+  const [webImageCollectorTags, setWebImageCollectorTags] = useState<string[]>([]);
+  const [webImageCollectorTagDraft, setWebImageCollectorTagDraft] = useState('');
+  const [isCollectingWebImages, setIsCollectingWebImages] = useState(false);
+  const isCollectingWebImagesRef = useRef(false);
+  const [isGeneratingWebImageQuery, setIsGeneratingWebImageQuery] = useState(false);
+  const [webImageCollectorStatus, setWebImageCollectorStatus] = useState('');
+  const [localVisionModelDownload, setLocalVisionModelDownload] = useState<LocalVisionModelDownloadState>({
+    visible: false,
+    message: '',
+    progress: 0,
+    phase: 'idle',
+  });
+  const [isLocalVisionModelChecking, setIsLocalVisionModelChecking] = useState(false);
+  const [isInstallingOllama, setIsInstallingOllama] = useState(false);
+  const localVisionModelReadyRef = useRef(false);
+  const localVisionModelPreparingRef = useRef(false);
+  const localVisionModelDownloadStartedRef = useRef(false);
+  const localVisionModelReadyNotifiedRef = useRef(false);
+  const localVisionModelEnsurePromiseRef = useRef<Promise<void> | null>(null);
+  const [localVisionModelLastError, setLocalVisionModelLastError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchActive, setIsSearchActive] = useState(false);
+
+  useEffect(() => { isCollectingWebImagesRef.current = isCollectingWebImages; }, [isCollectingWebImages]);
 
   const [aiApiProvider, setAiApiProvider] = useState(() => localStorage.getItem('drawer_ai_provider') || 'siliconflow');
   const [aiApiEndpoint, setAiApiEndpoint] = useState(() => localStorage.getItem('drawer_ai_endpoint') || SILICONFLOW_DEFAULT_ENDPOINT);
@@ -2524,13 +3395,13 @@ function MainApp() {
   const canvasAiXaisModelOptions = useMemo(() => {
     const merged = new Set<string>();
     canvasAiXaisModels.forEach(model => {
-      const trimmed = model.trim();
+      const trimmed = normalizeXaisImage2Model(model.trim());
       if (trimmed && isCanvasAiXaisImageModel(trimmed)) merged.add(trimmed);
     });
     XAIS_CHAT_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
     canvasItemsRef.current.forEach(item => {
       if (item.ai?.type === 'image-generator' && normalizeCanvasAiProvider(item.ai?.provider || '') === 'xais-chat' && item.ai?.model?.trim()) {
-        merged.add(item.ai.model.trim());
+        merged.add(normalizeXaisImage2Model(item.ai.model.trim()));
       }
     });
     return sortCanvasAiModelsForProvider('xais-chat', Array.from(merged)).map(value => ({
@@ -2551,11 +3422,14 @@ function MainApp() {
   const canvasAiPromptPresets = useMemo(() => {
     const defaultIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
     const customById = new Map(customCanvasAiPromptPresets.map(preset => [preset.id, preset]));
+    const hiddenBuiltInIds = new Set(hiddenBuiltInCanvasAiPromptPresetIds);
     return [
-      ...CANVAS_AI_PROMPT_PRESETS.map(preset => customById.get(preset.id) || preset),
-      ...customCanvasAiPromptPresets.filter(preset => !defaultIds.has(preset.id)),
+      ...CANVAS_AI_PROMPT_PRESETS
+        .filter(preset => !hiddenBuiltInIds.has(preset.id))
+        .map(preset => customById.get(preset.id) || preset),
+      ...customCanvasAiPromptPresets.filter(preset => !defaultIds.has(preset.id) || hiddenBuiltInIds.has(preset.id)),
     ];
-  }, [customCanvasAiPromptPresets]);
+  }, [customCanvasAiPromptPresets, hiddenBuiltInCanvasAiPromptPresetIds]);
   const canvasAiPromptPresetSelectOptions = useMemo<RoundedSelectOption[]>(() => [
     { value: CANVAS_AI_PROMPT_PRESET_PLACEHOLDER, label: '节点…', hiddenInMenu: true },
     ...canvasAiPromptPresets.map(preset => ({
@@ -2571,13 +3445,16 @@ function MainApp() {
   ], [canvasAiPromptPresets]);
   const canvasWorkflowTemplates = useMemo(() => {
     const customIds = new Set(customCanvasWorkflows.map(workflow => workflow.id));
+    const hiddenBuiltInIds = new Set(hiddenBuiltInCanvasWorkflowIds);
     return [
-      ...CANVAS_BUILT_IN_WORKFLOWS.map(workflow => customIds.has(workflow.id)
-        ? customCanvasWorkflows.find(custom => custom.id === workflow.id) || workflow
-        : workflow),
-      ...customCanvasWorkflows.filter(workflow => !CANVAS_BUILT_IN_WORKFLOWS.some(builtIn => builtIn.id === workflow.id)),
+      ...CANVAS_BUILT_IN_WORKFLOWS
+        .filter(workflow => !hiddenBuiltInIds.has(workflow.id))
+        .map(workflow => customIds.has(workflow.id)
+          ? customCanvasWorkflows.find(custom => custom.id === workflow.id) || workflow
+          : workflow),
+      ...customCanvasWorkflows.filter(workflow => !CANVAS_BUILT_IN_WORKFLOWS.some(builtIn => builtIn.id === workflow.id) || hiddenBuiltInIds.has(workflow.id)),
     ];
-  }, [customCanvasWorkflows]);
+  }, [customCanvasWorkflows, hiddenBuiltInCanvasWorkflowIds]);
   const canvasWorkflowSelectOptions = useMemo<RoundedSelectOption[]>(() => [
     { value: CANVAS_WORKFLOW_SELECT_PLACEHOLDER, label: '工作…', hiddenInMenu: true },
     ...canvasWorkflowTemplates.map(workflow => ({
@@ -2591,18 +3468,79 @@ function MainApp() {
     { value: CANVAS_WORKFLOW_SAVE_SELECTION_VALUE, label: '+ 保存选中', hint: '把当前选择封装成工作流', section: '操作', kind: 'action' },
     { value: CANVAS_WORKFLOW_MANAGE_VALUE, label: '管理工作流', hint: '编辑或另存工作流', section: '操作', kind: 'action' },
   ], [canvasWorkflowTemplates]);
-  const canvasWorkflowManagerOptions = useMemo<RoundedSelectOption[]>(() => (
-    canvasWorkflowTemplates.map(workflow => ({
-      value: workflow.id,
-      label: workflow.builtin ? `${workflow.label} · 内置` : workflow.label,
-    }))
-  ), [canvasWorkflowTemplates]);
+  useEffect(() => {
+    const presetIds = new Set(canvasAiPromptPresets.map(preset => preset.id));
+    setSelectedCanvasPresetDeleteIds(prev => {
+      const next = prev.filter(id => presetIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [canvasAiPromptPresets]);
+  useEffect(() => {
+    const workflowIds = new Set(canvasWorkflowTemplates.map(workflow => workflow.id));
+    setSelectedCanvasWorkflowDeleteIds(prev => {
+      const next = prev.filter(id => workflowIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [canvasWorkflowTemplates]);
   const canvasAiRemoteModelCount = canvasAiProvider === 'xais-chat'
     ? canvasAiXaisModels.length
     : canvasAiOpenAiModels.length;
   const canvasAiRemoteModelEmptyHint = canvasAiProvider === 'xais-chat'
     ? '填入 Key 后自动读取 /v1/models'
     : '填入 Key 和 URL 后自动刷新';
+  const canvasAiXaisBalanceText = canvasAiXaisBalance.status === 'success'
+    ? `剩余积分 ${formatCanvasAiXaisBalance(canvasAiXaisBalance.balance)}`
+    : canvasAiXaisBalance.status === 'loading'
+      ? '正在查询余额'
+      : canvasAiXaisBalance.status === 'error'
+        ? canvasAiXaisBalance.message || '查询余额失败'
+        : '点击查询当前 Xais 剩余积分';
+
+  useEffect(() => {
+    if (canvasAiProvider !== 'xais-chat') {
+      setCanvasAiXaisBalance({ status: 'idle' });
+      return;
+    }
+    setCanvasAiXaisBalance(prev => (
+      prev.status === 'loading' ? prev : { status: 'idle' }
+    ));
+  }, [canvasAiProvider, canvasAiApiKey, canvasAiEndpoint]);
+
+  const checkCanvasAiXaisBalance = async () => {
+    if (canvasAiProvider !== 'xais-chat') return;
+    const apiKey = canvasAiApiKey.trim();
+    if (!apiKey) {
+      setCanvasAiXaisBalance({ status: 'error', message: '请先填写 Xais API Key' });
+      showToast('请先填写 Xais API Key');
+      return;
+    }
+
+    setCanvasAiXaisBalance({ status: 'loading' });
+    try {
+      const profile = await invoke<Record<string, unknown>>('get_ai_json', {
+        url: getCanvasAiXaisUserProfileEndpoint(canvasAiEndpoint),
+        apiKey,
+      });
+      const rawBalance = profile?.balance;
+      const balance = typeof rawBalance === 'number' ? rawBalance : Number(rawBalance);
+      if (!Number.isFinite(balance)) {
+        throw new Error('接口没有返回 balance 字段');
+      }
+      setCanvasAiXaisBalance({
+        status: 'success',
+        balance,
+        id: typeof profile.id === 'number' ? profile.id : Number(profile.id) || undefined,
+        hasWx: typeof profile.hasWx === 'boolean' ? profile.hasWx : undefined,
+        isMgr: typeof profile.isMgr === 'boolean' ? profile.isMgr : undefined,
+        checkedAt: Date.now(),
+      });
+      showToast(`Xais 剩余积分：${formatCanvasAiXaisBalance(balance)}`);
+    } catch (err: any) {
+      const message = String(err?.message || err || '查询余额失败');
+      setCanvasAiXaisBalance({ status: 'error', message });
+      showToast('查询 Xais 余额失败');
+    }
+  };
 
   const refreshCanvasAiOpenAiModels = async (silent = false) => {
     if (!isCanvasAiRemoteModelProvider(canvasAiProvider)) return;
@@ -2703,6 +3641,7 @@ function MainApp() {
   const hasAiAnalysis = isSiliconFlowProvider(aiApiProvider)
     ? aiApiEndpoint.trim().length > 0 && aiApiKey.trim().length > 0 && aiApiModel.trim().length > 0
     : aiApiEndpoint.trim().length > 0;
+  const hasRemoteImageSearch = hasAiAnalysis && isSiliconFlowProvider(aiApiProvider);
 
 
   useEffect(() => {
@@ -2728,10 +3667,638 @@ function MainApp() {
     invoke('get_local_ip').then((res: any) => setLocalIP(String(res || ''))).catch(()=>{});
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
     invoke('set_topmost', { topmost: true }).catch(()=>{});
+    void refreshLicenseStatus(true);
   }, []);
 
-  const handleOpenTextInput = () => { setShowTextInput(true); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
-  const handleOpenFolderModal = () => { setShowFolderModal(true); setIsSearchActive(false); setShowSettings(false); setShowTextInput(false); };
+  const handleOpenTextInput = () => { setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
+  const normalizeWebImageCollectorTag = (value: string) => (
+    String(value || '')
+      .trim()
+      .replace(/[，、,]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .slice(0, 24)
+  );
+
+  const normalizeWebImageCollectorTags = (values: string[]) => {
+    const tags: string[] = [];
+    values.forEach(value => {
+      const clean = normalizeWebImageCollectorTag(value);
+      if (!clean || tags.includes(clean)) return;
+      tags.push(clean);
+    });
+    return tags.slice(0, 8);
+  };
+
+  const splitWebImageTagsFromQuery = (query: string) => normalizeWebImageCollectorTags(
+    String(query || '')
+      .split(/[，,、\s]+/)
+      .filter(Boolean),
+  );
+
+  const normalizeRemoteImageSearchDescription = (value: unknown): WebImageSearchDescription => {
+    if (typeof value === 'string') {
+      const query = value.trim().replace(/\s+/g, ' ');
+      return {
+        query,
+        tags: splitWebImageTagsFromQuery(query),
+        source: 'siliconflow',
+      };
+    }
+
+    const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+    const query = String(data.query || '').trim().replace(/\s+/g, ' ');
+    const subject = normalizeWebImageCollectorTag(String(data.subject || ''));
+    const style = normalizeWebImageCollectorTag(String(data.style || ''));
+    const modelTags = Array.isArray(data.tags) ? data.tags.map(tag => String(tag || '')) : [];
+    const tags = normalizeWebImageCollectorTags([
+      subject,
+      style,
+      ...modelTags,
+      ...(query ? splitWebImageTagsFromQuery(query) : []),
+    ]);
+
+    return {
+      query: query || tags.join(' '),
+      tags,
+      subject,
+      style,
+      source: 'siliconflow',
+    };
+  };
+
+  const normalizeLocalVlmImageSearchDescription = (value: unknown): WebImageSearchDescription => ({
+    ...normalizeRemoteImageSearchDescription(value),
+    source: 'ollama',
+  });
+
+  const webImageSearchSourceLabel = (source: WebImageSearchDescription['source']) => {
+    if (source === 'ollama') return '本地大模型';
+    return '硅基流动';
+  };
+
+  const applyWebImageCollectorTags = (values: string[], fallbackQuery = '') => {
+    const tags = normalizeWebImageCollectorTags(values);
+    const query = tags.length ? tags.join(' ') : String(fallbackQuery || '').trim().replace(/\s+/g, ' ');
+    setWebImageCollectorTags(tags);
+    setWebImageCollectorQuery(query);
+    return { tags, query };
+  };
+
+  const updateWebImageCollectorTag = (index: number, value: string) => {
+    const next = [...webImageCollectorTags];
+    next[index] = value.replace(/[，、,]+/g, ' ').slice(0, 24);
+    applyWebImageCollectorTags(next, webImageCollectorQuery);
+  };
+
+  const removeWebImageCollectorTag = (index: number) => {
+    applyWebImageCollectorTags(webImageCollectorTags.filter((_, itemIndex) => itemIndex !== index), webImageCollectorQuery);
+  };
+
+  const addWebImageCollectorTag = (value = webImageCollectorTagDraft) => {
+    const parts = String(value || '').split(/[，,、\n]+/).filter(Boolean);
+    if (parts.length === 0) return;
+    applyWebImageCollectorTags([...webImageCollectorTags, ...parts], webImageCollectorQuery);
+    setWebImageCollectorTagDraft('');
+  };
+
+  const clearWebImageCollectorTags = () => {
+    setWebImageCollectorTags([]);
+    setWebImageCollectorTagDraft('');
+  };
+
+  const openWebImageCollector = (reference: WebImageCollectorReference | null = null) => {
+    if (isCollectingWebImages || isGeneratingWebImageQuery) return;
+    setWebImageCollectorReference(reference);
+    setWebImageCollectorStatus('');
+    setShowWebImageCollector(true);
+    setShowTextInput(false);
+    setIsSearchActive(false);
+    setShowSettings(false);
+    setShowFolderModal(false);
+    setShowMoveFolderModal(false);
+    setIsOpen(true);
+  };
+
+  const openWebImageCollectorWithReference = (reference: WebImageCollectorReference, toastMessage = '已把这张图设为收图参考图') => {
+    if (isCollectingWebImages || isGeneratingWebImageQuery) {
+      showToast('正在收图或识别参考图，请稍后再试');
+      return;
+    }
+    setWebImageCollectorQuery('');
+    clearWebImageCollectorTags();
+    openWebImageCollector(reference);
+    showToast(toastMessage);
+  };
+
+  const closeWebImageCollector = () => {
+    if (isCollectingWebImages || isGeneratingWebImageQuery) return;
+    setShowWebImageCollector(false);
+    setWebImageCollectorReference(null);
+    setWebImageCollectorStatus('');
+    setWebImageCollectorQuery('');
+    clearWebImageCollectorTags();
+  };
+
+  useEffect(() => {
+    if (!showWebImageCollector) return;
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node) || webImageCollectorPanelRef.current?.contains(target)) return;
+      closeWebImageCollector();
+    };
+    document.addEventListener('pointerdown', handleOutsidePointerDown, true);
+    return () => document.removeEventListener('pointerdown', handleOutsidePointerDown, true);
+  }, [showWebImageCollector, isCollectingWebImages, isGeneratingWebImageQuery]);
+
+  const announceLocalVisionModelReady = (options: { force?: boolean } = {}) => {
+    if ((!options.force && !localVisionModelDownloadStartedRef.current) || localVisionModelReadyNotifiedRef.current) return;
+    localVisionModelReadyNotifiedRef.current = true;
+    const message = '本地大模型已准备好，可以用参考图搜图了';
+    setLocalVisionModelLastError('');
+    setWebImageCollectorStatus(prev => prev ? message : prev);
+    showToast(message);
+    void invoke('show_system_notification', {
+      title: '本地大模型已下载完成',
+      body: '参考图搜图现在可以使用了。',
+    }).catch((err) => console.warn('本地大模型完成通知发送失败:', err));
+    setIsOpen(true);
+    void invoke('open_drawer', {
+      width: drawerWidthRef.current,
+      height: drawerHeightRef.current,
+      mode: triggerModeRef.current,
+    }).catch((err) => console.warn('本地大模型完成后打开抽屉失败:', err));
+  };
+
+  const handleLocalVisionModelProgress = (progress: { stage?: string; message: string; progress?: number }, itemId?: string) => {
+    const message = progress.message || '正在准备本地大模型';
+    const shouldHideDuringWebCollect = !itemId && isCollectingWebImagesRef.current;
+    if (progress.stage === 'downloading' || /下载|拉取/.test(message)) {
+      localVisionModelPreparingRef.current = true;
+      localVisionModelDownloadStartedRef.current = true;
+      setLocalVisionModelLastError('');
+    }
+    if (progress.stage === 'checking' || progress.stage === 'starting' || progress.stage === 'installing') {
+      localVisionModelPreparingRef.current = true;
+      setLocalVisionModelLastError('');
+    }
+    if (/正在识别/.test(message)) {
+      if (showWebImageCollector && !shouldHideDuringWebCollect) setWebImageCollectorStatus(message);
+      if (itemId) {
+        setItems(prev => prev.map(i => i.id === itemId ? {
+          ...i,
+          alchemy: {
+            ...(i as AlchemyBufferItem).alchemy,
+            state: 'analyzing',
+            note: message,
+            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+          },
+        } as BufferItem : i));
+      }
+      return;
+    }
+    const hasProgress = Number.isFinite(progress.progress);
+    const isReady = /已就绪|已下载完成/.test(message);
+    setLocalVisionModelDownload(prev => {
+      const isDownloading = progress.stage === 'downloading' || /下载|拉取/.test(message);
+      const value = hasProgress
+        ? clamp(Number(progress.progress), 0, 100)
+        : (prev.visible ? prev.progress : 3);
+      return {
+        visible: isDownloading && !isReady && !shouldHideDuringWebCollect,
+        message,
+        progress: isReady ? 100 : value,
+        phase: isReady ? 'ready' : isDownloading ? 'downloading' : progress.stage === 'installing' ? 'loading' : 'loading',
+        startedAt: isReady ? prev.startedAt : (prev.visible && prev.startedAt ? prev.startedAt : Date.now()),
+        updatedAt: Date.now(),
+      };
+    });
+    if (isReady) {
+      localVisionModelReadyRef.current = true;
+      localVisionModelPreparingRef.current = false;
+      setLocalVisionModelLastError('');
+      announceLocalVisionModelReady();
+      window.setTimeout(() => {
+        setLocalVisionModelDownload(prev => prev.phase === 'ready' ? { ...prev, visible: false, startedAt: undefined, updatedAt: Date.now() } : prev);
+      }, 900);
+    }
+    if (showWebImageCollector && !shouldHideDuringWebCollect) setWebImageCollectorStatus(message);
+    if (itemId) {
+      setItems(prev => prev.map(i => i.id === itemId ? {
+        ...i,
+        alchemy: {
+          ...(i as AlchemyBufferItem).alchemy,
+          state: 'analyzing',
+          note: message,
+          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+        },
+      } as BufferItem : i));
+    }
+  };
+
+  const showLocalVisionModelError = (err: unknown, itemId?: string, options: { silent?: boolean } = {}) => {
+    const message = `本地大模型不可用：${err instanceof Error ? err.message : String(err || '请检查 Ollama 后重试')}`;
+    localVisionModelReadyRef.current = false;
+    localVisionModelPreparingRef.current = false;
+    setLocalVisionModelLastError(message);
+    if (options.silent) {
+      setLocalVisionModelDownload(prev => ({ ...prev, visible: false, phase: 'idle', updatedAt: Date.now() }));
+      console.warn(message);
+      return;
+    }
+    setLocalVisionModelDownload({
+      visible: true,
+      message,
+      progress: 0,
+      phase: 'error',
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    window.setTimeout(() => {
+      setLocalVisionModelDownload(prev => prev.phase === 'error' ? { ...prev, visible: false, startedAt: undefined, updatedAt: Date.now() } : prev);
+    }, 5200);
+    if (showWebImageCollector) setWebImageCollectorStatus(message);
+    if (itemId) {
+      setItems(prev => prev.map(i => i.id === itemId ? {
+        ...i,
+        alchemy: {
+          ...(i as AlchemyBufferItem).alchemy,
+          state: 'analyzing',
+          note: message,
+          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+        },
+      } as BufferItem : i));
+    }
+  };
+
+  const checkLocalVisionModelStatus = async (options: { silent?: boolean } = {}) => {
+    const model = getStoredLocalVisionModel();
+    setIsLocalVisionModelChecking(true);
+    try {
+      const status = await invoke<LocalVisionModelStatusPayload>('get_local_vision_model_status', { model });
+      const ready = !!status?.ready;
+      localVisionModelReadyRef.current = ready;
+      localVisionModelPreparingRef.current = false;
+      if (ready) {
+        setLocalVisionModelLastError('');
+        setLocalVisionModelDownload(prev => ({
+          ...prev,
+          visible: false,
+          message: '本地大模型已就绪',
+          progress: 100,
+          phase: 'ready',
+          updatedAt: Date.now(),
+        }));
+      } else {
+        setLocalVisionModelDownload(prev => ({
+          ...prev,
+          visible: false,
+          message: '本地大模型增量包未下载',
+          progress: 0,
+          phase: 'idle',
+          updatedAt: Date.now(),
+        }));
+      }
+      return ready;
+    } catch (err) {
+      localVisionModelReadyRef.current = false;
+      localVisionModelPreparingRef.current = false;
+      if (!options.silent) showLocalVisionModelError(err, undefined, { silent: true });
+      return false;
+    } finally {
+      setIsLocalVisionModelChecking(false);
+    }
+  };
+
+  const ensureLocalVisionModel = (options: { silent?: boolean; toast?: boolean; notifyReady?: boolean } = {}) => {
+    if (localVisionModelReadyRef.current) return Promise.resolve();
+    if (localVisionModelEnsurePromiseRef.current) return localVisionModelEnsurePromiseRef.current;
+
+    const model = getStoredLocalVisionModel();
+    localVisionModelPreparingRef.current = true;
+    setLocalVisionModelLastError('');
+    localVisionModelDownloadStartedRef.current = true;
+    if (options.toast) showToast('正在下载本地大模型增量包');
+
+    const promise = invoke('ensure_ollama_vision_model', { model })
+      .then(() => {
+        localVisionModelReadyRef.current = true;
+        localVisionModelPreparingRef.current = false;
+        setLocalVisionModelLastError('');
+        setLocalVisionModelDownload(prev => ({
+          ...prev,
+          visible: false,
+          message: '本地大模型已就绪',
+          progress: 100,
+          phase: 'ready',
+          updatedAt: Date.now(),
+        }));
+        if (options.notifyReady) announceLocalVisionModelReady({ force: true });
+      })
+      .catch((err) => {
+        showLocalVisionModelError(err, undefined, { silent: options.silent ?? true });
+        throw err;
+      })
+      .finally(() => {
+        localVisionModelEnsurePromiseRef.current = null;
+      });
+
+    localVisionModelEnsurePromiseRef.current = promise;
+    return promise;
+  };
+
+  const retryLocalVisionModelDownload = async () => {
+    setWebImageCollectorStatus('正在下载本地大模型增量包');
+    try {
+      await ensureLocalVisionModel({ silent: false, toast: true, notifyReady: true });
+      showToast('本地大模型已准备好');
+    } catch (_) {
+      showToast('增量包下载失败，请先安装或启动 Ollama');
+    }
+  };
+
+  const installOllamaSilently = async () => {
+    if (isInstallingOllama) return;
+    setIsInstallingOllama(true);
+    localVisionModelPreparingRef.current = true;
+    setLocalVisionModelLastError('');
+    setLocalVisionModelDownload(prev => ({
+      ...prev,
+      visible: false,
+      message: '正在静默安装 Ollama',
+      progress: Math.max(prev.progress || 0, 2),
+      phase: 'loading',
+      updatedAt: Date.now(),
+    }));
+    showToast('正在静默安装 Ollama');
+    try {
+      await invoke('install_ollama_silent');
+      showToast('Ollama 已安装，开始下载增量包');
+      await ensureLocalVisionModel({ silent: false, toast: true, notifyReady: true });
+    } catch (err) {
+      console.warn('静默安装 Ollama 失败:', err);
+      showLocalVisionModelError(err, undefined, { silent: false });
+      showToast('静默安装失败，可打开下载页手动安装');
+    } finally {
+      setIsInstallingOllama(false);
+    }
+  };
+
+  const openOllamaDownloadPage = async () => {
+    try {
+      await openUrl('https://ollama.com/download/windows');
+    } catch (err) {
+      console.warn('打开 Ollama 下载页失败:', err);
+      showToast('无法打开 Ollama 下载页');
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    const startLocalVisionModelStatusWatcher = async () => {
+      try {
+        const cleanup = await listen<LocalVisionModelProgressPayload>('local-vision-model-progress', (event) => {
+          if (cancelled) return;
+          const payload = event.payload || {};
+          handleLocalVisionModelProgress({
+            stage: payload.stage,
+            message: payload.message || '正在准备本地大模型',
+            progress: typeof payload.progress === 'number' ? payload.progress : undefined,
+          });
+        });
+        if (cancelled) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      } catch (err) {
+        console.warn('监听本地大模型下载进度失败:', err);
+      }
+
+      if (!cancelled) void checkLocalVisionModelStatus({ silent: true });
+    };
+
+    void startLocalVisionModelStatusWatcher();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const collectWebImagesToDrawer = async (queryOverride?: string) => {
+    const query = (queryOverride ?? webImageCollectorQuery).trim().replace(/\s+/g, ' ');
+    if (!query || isCollectingWebImages) return;
+    const folderName = query.slice(0, 32);
+    const existingFolder = foldersRef.current.find(folder => folder.name === folderName);
+    const folder: Folder = existingFolder || {
+      id: Math.random().toString(36).substring(2, 9),
+      name: folderName,
+      color: '#0ea5e9',
+    };
+    const latestCacheDir = await getLatestFileCacheDir();
+
+    setIsCollectingWebImages(true);
+    setLocalVisionModelDownload(prev => ({ ...prev, visible: false, updatedAt: Date.now() }));
+    showToast(`开始收集「${query}」图片`);
+    try {
+      const collected = await invoke<CollectedWebImage[]>('collect_web_images', {
+        query,
+        count: 10,
+        dir: latestCacheDir || undefined,
+      });
+      if (!Array.isArray(collected) || collected.length === 0) {
+        showToast('没有收集到可用图片');
+        return;
+      }
+
+      const now = Date.now();
+      const newItems = collected.map((image, index) => {
+        const fileName = image.path.split(/[\\/]/).pop() || `${folderName}_${index + 1}.jpg`;
+        return {
+          id: `web_collect_${now}_${index}_${Math.random().toString(36).substring(2, 6)}`,
+          type: 'image',
+          content: image.title || fileName,
+          name: image.title || fileName,
+          path: image.path,
+          url: convertFileSrc(image.path),
+          sourceUrl: image.imageUrl,
+          originalUrl: image.imageUrl,
+          pageUrl: image.pageUrl || undefined,
+          createdAt: now + index,
+          isQuickAccess: false,
+          folderId: folder.id,
+        } as BufferItem;
+      });
+
+      pushDrawerUndoSnapshot('网络收集图片');
+      if (!existingFolder) {
+        setFolders(prev => prev.some(item => item.id === folder.id || item.name === folder.name) ? prev : [...prev, folder]);
+      }
+      setItems(prev => [...newItems, ...prev]);
+      triggerAutoPaletteForItems(newItems);
+      setActiveFolderId(folder.id);
+      setActiveTab('image');
+      setShowWebImageCollector(false);
+      setWebImageCollectorQuery('');
+      setWebImageCollectorReference(null);
+      clearWebImageCollectorTags();
+      setIsOpen(true);
+      showToast(`已收集 ${newItems.length} 张图片到「${folder.name}」`);
+    } catch (err) {
+      console.warn('网络图片收集失败:', err);
+      showToast(`收集失败：${err instanceof Error ? err.message : String(err || '请稍后重试')}`);
+    } finally {
+      setIsCollectingWebImages(false);
+    }
+  };
+
+  const describeReferenceImageForSearch = async (reference: WebImageCollectorReference, hint: string): Promise<WebImageSearchDescription> => {
+    const browserReadableSource = reference.preview || reference.source;
+    let aiReadableSource = reference.source;
+    let localSource = '';
+    try {
+      localSource = await imageSourceToModelDataUrl(browserReadableSource);
+      if (localSource) aiReadableSource = localSource;
+    } catch (imageErr) {
+      console.warn('参考图读取失败，将尝试使用原始路径:', imageErr);
+    }
+
+    if (hasRemoteImageSearch) {
+      setWebImageCollectorStatus(`正在使用硅基流动 ${aiApiModel || '视觉模型'} 识别参考图`);
+      try {
+        const remoteResult = await invoke<unknown>('describe_image_for_search', {
+          imageSource: aiReadableSource,
+          hint: hint.trim() || undefined,
+          apiConfig: getAiAnalysisConfig(),
+        });
+        const description = normalizeRemoteImageSearchDescription(remoteResult);
+        if (description.query.trim()) return description;
+      } catch (remoteErr) {
+        console.warn('硅基流动参考图识别失败:', remoteErr);
+        if (!localVisionModelReadyRef.current) {
+          const remoteMessage = remoteErr instanceof Error ? remoteErr.message : String(remoteErr || '请检查视觉模型配置');
+          throw new Error(`云端视觉模型识别失败：${remoteMessage}`);
+        }
+      }
+    }
+
+    if (localVisionModelReadyRef.current) {
+      setWebImageCollectorStatus('正在使用本地大模型识别参考图');
+      try {
+        const localVlmResult = await invoke<unknown>('describe_image_for_search_local_vlm', {
+          imageSource: aiReadableSource,
+          hint: hint.trim() || undefined,
+          model: getStoredLocalVisionModel(),
+        });
+        const description = normalizeLocalVlmImageSearchDescription(localVlmResult);
+        if (description.query.trim()) return description;
+      } catch (vlmErr) {
+        console.warn('本地 Ollama 视觉大模型识别失败:', vlmErr);
+        showLocalVisionModelError(vlmErr);
+        const vlmMessage = vlmErr instanceof Error ? vlmErr.message : String(vlmErr || '请检查 Ollama 本地视觉模型');
+        throw new Error(`本地大模型识别失败：${vlmMessage}`);
+      }
+    }
+
+    throw new Error('请先在设置里配置硅基流动视觉模型，或下载本地大模型增量包后再按参考图搜图。');
+  };
+
+  const generateQueryAndCollectFromReference = async (reference: WebImageCollectorReference | null = webImageCollectorReference, hintOverride?: string) => {
+    if (!reference?.source || isGeneratingWebImageQuery || isCollectingWebImages) return;
+
+    if (!hasRemoteImageSearch && !localVisionModelReadyRef.current) {
+      const message = localVisionModelPreparingRef.current
+        ? '本地大模型增量包正在下载，下载完成后会通知你。'
+        : localVisionModelLastError
+        ? localVisionModelLastError
+        : '请先在设置里配置硅基流动视觉模型，或下载本地大模型增量包后再按参考图搜图。';
+      setWebImageCollectorStatus(message);
+      setShowWebImageCollector(true);
+      setShowTextInput(false);
+      setIsSearchActive(false);
+      setShowSettings(true);
+      setActiveSettingCategory('ai');
+      setShowFolderModal(false);
+      setShowMoveFolderModal(false);
+      setIsOpen(true);
+      showToast(message);
+      return;
+    }
+
+    setIsGeneratingWebImageQuery(true);
+    setWebImageCollectorStatus(hasRemoteImageSearch ? '正在使用云端视觉模型识别参考图' : '正在使用本地大模型识别参考图');
+    setShowWebImageCollector(true);
+    setShowTextInput(false);
+    setIsSearchActive(false);
+    setShowSettings(false);
+    setShowFolderModal(false);
+    setShowMoveFolderModal(false);
+    setIsOpen(true);
+    showToast(hasRemoteImageSearch ? '正在用云端视觉模型识别参考图' : '正在用本地大模型识别参考图');
+    try {
+      const described = await describeReferenceImageForSearch(reference, hintOverride ?? webImageCollectorQuery);
+      const query = described.query;
+      const cleanQuery = String(query || '').trim().replace(/\s+/g, ' ');
+      if (!cleanQuery) {
+        showToast('没有生成可用的搜图关键词');
+        return;
+      }
+      const recognizedTags = described.tags?.length ? described.tags : splitWebImageTagsFromQuery(cleanQuery);
+      const applied = applyWebImageCollectorTags(recognizedTags, cleanQuery);
+      setWebImageCollectorTagDraft('');
+      setWebImageCollectorStatus(applied.tags.length > 0 ? '已识别标签，可修改后点击开始收集' : '已生成关键词，可修改后点击开始收集');
+      showToast(`${webImageSearchSourceLabel(described.source)}已识别标签，可修改后收集`);
+    } catch (err) {
+      console.warn('按参考图收图失败:', err);
+      setWebImageCollectorStatus('');
+      showToast(`按图收图失败：${err instanceof Error ? err.message : String(err || '请稍后重试')}`);
+    } finally {
+      setIsGeneratingWebImageQuery(false);
+    }
+  };
+
+  const chooseReferenceImageForCollector = async () => {
+    if (isGeneratingWebImageQuery || isCollectingWebImages) return;
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'] }],
+      });
+      if (typeof selected !== 'string') return;
+      const name = selected.split(/[\\/]/).pop() || '参考图';
+      setWebImageCollectorQuery('');
+      clearWebImageCollectorTags();
+      setWebImageCollectorStatus('');
+      setWebImageCollectorReference({
+        source: selected,
+        name,
+        preview: convertFileSrc(selected),
+      });
+    } catch (err) {
+      console.warn('选择参考图失败:', err);
+      showToast('选择参考图失败');
+    }
+  };
+
+  const collectSimilarImagesFromItem = (item: BufferItem) => {
+    if (item.type !== 'image') return;
+    const source = item.path || item.originalUrl || item.sourceUrl || item.url || item.thumbnail || '';
+    if (!source) {
+      showToast('这张图没有可用来源，不能按图收图');
+      return;
+    }
+    const reference = {
+      source,
+      name: item.name || item.content || '参考图',
+      preview: item.url || item.thumbnail || (item.path ? convertFileSrc(item.path) : ''),
+      itemId: item.id,
+    };
+    openWebImageCollectorWithReference(reference);
+  };
+
+  const handleOpenFolderModal = () => { setShowFolderModal(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowTextInput(false); };
   const commitQuickText = () => {
     if (!quickText.trim()) return;
     const newItem: BufferItem = createTextOrUrlItem(quickText, '灵感笔记');
@@ -2743,7 +4310,7 @@ function MainApp() {
   };
   const toggleSearch = () => {
     if (!isSearchActive) {
-      setIsSearchActive(true); setShowSettings(false); setShowTextInput(false); setShowFolderModal(false);
+      setIsSearchActive(true); setShowSettings(false); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
       setTimeout(() => searchInputRef.current?.focus(), 100);
     } else {
       setIsSearchActive(false); setSearchQuery('');
@@ -2751,7 +4318,7 @@ function MainApp() {
   };
   const toggleSettings = () => {
     if (!showSettings) {
-      setShowSettings(true); setIsSearchActive(false); setShowTextInput(false); setShowFolderModal(false);
+      setShowSettings(true); setIsSearchActive(false); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
     } else {
       setShowSettings(false);
     }
@@ -3273,6 +4840,167 @@ function MainApp() {
     };
   };
 
+  const materialHintsForLocalCmf = (material: string, style: string, scene: string) => {
+    const base = new Set<string>();
+    if (/木|胡桃/.test(material) || /中式|侘寂|自然|北欧|中古|奶油/.test(style)) {
+      base.add(/胡桃/.test(material) ? '胡桃木饰面' : '低饱和木质饰面');
+      base.add('哑光清漆或木蜡油');
+    }
+    if (/石|大理石|洞石/.test(material) || /轻奢|法式/.test(style)) {
+      base.add(/洞石/.test(material) ? '洞石纹理板' : '低光泽石材纹理');
+    }
+    if (/金属|科技|工业|产品/.test(material + style + scene)) {
+      base.add('细砂纹金属');
+      base.add('低光泽喷涂件');
+    }
+    if (/织物|皮革|藤编|家装|客厅|卧室|空间/.test(material + scene)) {
+      base.add(/皮革/.test(material) ? '细纹皮革' : '织物软包');
+      if (/藤编/.test(material)) base.add('藤编或编织纹理');
+    }
+    if (/玻璃/.test(material)) base.add('低反射玻璃');
+    if (/陶瓷/.test(material)) base.add('哑光陶瓷');
+    if (/混凝土/.test(material)) base.add('微水泥或混凝土肌理');
+    return Array.from(base).slice(0, 5).concat(['耐磨易清洁表面']).slice(0, 6);
+  };
+
+  const inferLocalCmfTerms = (item: AlchemyBufferItem, paletteKeywords: string[]) => {
+    const title = item.name || item.content || '参考图';
+    const text = `${title} ${item.content || ''} ${item.remark || ''} ${(item.remarks || []).join(' ')} ${paletteKeywords.join(' ')}`.toLowerCase();
+    const pick = (rules: Array<[RegExp, string]>, fallback: string) => (
+      rules.find(([pattern]) => pattern.test(text))?.[1] || fallback
+    );
+    const scene = pick([
+      [/家装|家居|客厅|卧室|厨房|餐厅|玄关|书房|interior|room|home/, '家装空间'],
+      [/产品|设备|硬件|工具|耳机|音箱|灯|包|鞋|椅|桌|product|device/, '产品设计'],
+      [/建筑|展厅|门店|空间|酒店|民宿|咖啡|店|architecture|store/, '商业空间'],
+      [/服装|饰品|面料|包袋|穿搭|fashion|wear/, '软装与配饰'],
+    ], '参考图');
+    const style = pick([
+      [/新中式|中式|东方|宋式|茶室|禅|胡桃|木/, '新中式克制'],
+      [/侘寂|wabi|原木|自然|肌理|微水泥/, '自然侘寂'],
+      [/奶油|法式|复古|中古|暖|米|cream|vintage/, '温暖复古'],
+      [/科技|金属|半透明|未来|冷静|灰|银|蓝|tech|metal/, '轻科技'],
+      [/极简|简约|minimal|干净|留白/, '极简现代'],
+    ], paletteKeywords[0] || '现代克制');
+    const material = pick([
+      [/木|胡桃|原木|橡木|wood/, '木质饰面'],
+      [/石|大理石|洞石|岩板|微水泥|stone|marble/, '石材肌理'],
+      [/金属|铝|钢|银|metal|aluminum/, '低光泽金属'],
+      [/玻璃|透明|亚克力|glass|acrylic/, '半透明材料'],
+      [/织物|布|软包|皮革|藤编|fabric|leather/, '织物与软包'],
+      [/陶瓷|瓷|ceramic/, '哑光陶瓷'],
+    ], '低光泽材料');
+    const color = paletteKeywords[0] || '中性配色';
+    const composition = pick([
+      [/对称|中式|东方|秩序|轴线/, '对称秩序'],
+      [/层次|叠加|景深|空间/, '层次递进'],
+      [/留白|极简|简约|minimal/, '大面积留白'],
+      [/细节|局部|特写|close/, '局部细节突出'],
+    ], '简洁构图');
+
+    return { scene, style, material, color, composition };
+  };
+
+  const buildLocalPaletteWithQuickFallback = async (item: AlchemyBufferItem, apiStatus: string) => {
+    const fallback = buildLocalAlchemyResult(item, `${apiStatus}_quick_fallback`);
+    let timer: number | undefined;
+    try {
+      return await Promise.race([
+        buildLocalPaletteOnlyResult(item, apiStatus),
+        new Promise<AlchemyResult>((resolve) => {
+          timer = window.setTimeout(() => resolve({
+            ...fallback,
+            analysisMode: 'local',
+            colorSource: 'quick-fallback',
+          }), 4500);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+  };
+
+  const buildLocalCmfFallbackResult = async (
+    item: AlchemyBufferItem,
+    apiStatus = 'local_cmf_fallback',
+  ): Promise<AlchemyResult> => {
+    const title = item.name || item.content || '参考图';
+    const palette = await buildLocalPaletteWithQuickFallback(item, apiStatus);
+    const colors = palette.colors.length > 0 ? palette.colors : buildLocalAlchemyResult(item).colors;
+    const { scene, style, material, color, composition } = inferLocalCmfTerms(item, palette.keywords);
+    const keywords = Array.from(new Set([
+      scene,
+      style,
+      material,
+      color,
+      composition,
+      ...palette.keywords.slice(0, 3),
+    ])).slice(0, 8);
+    const materials = materialHintsForLocalCmf(material, style, scene);
+    const primary = colors[0] || '#e7dfd2';
+    const secondary = colors[1] || colors[0] || '#b8aea1';
+    const accent = colors[2] || secondary;
+
+    return {
+      title,
+      colors,
+      keywords,
+      form: `基于「${title}」的名称、备注和本地色板判断，这张图可按「${scene} / ${style}」方向拆解；构图上优先借鉴「${composition}」带来的比例、层次和视觉重心，不直接复制原图轮廓。`,
+      cmf: `以「${style}」为主线，提取 ${primary} / ${secondary} / ${accent} 的色彩层次，结合「${material}」与低光泽表面建立 CMF 方向；整体适合作为${scene}的材料气质和配色参考。`,
+      summary: `本地大模型初始化较慢，已先用本地配色和启发式规则生成 ${scene}、${style}、${material}、${color} 方向。`,
+      borrow: [
+        `借鉴「${style}」的整体气质和色彩克制度`,
+        `借鉴「${composition}」带来的层次关系和视觉重心`,
+        `借鉴「${material}」的触感联想，但重新设计材料比例`,
+        `保留主色 ${primary} 与辅助色 ${secondary} 的明度关系`,
+      ],
+      avoid: [
+        '不要直接复制原图构图、家具/产品轮廓或装饰符号',
+        '避免把识别出的风格标签堆满，优先保留一条主风格线索',
+        '高反差或强调色需要控制面积，防止破坏整体克制度',
+        '落地到产品或空间前，需要重新验证耐脏、耐磨和维护成本',
+      ],
+      materials,
+      analysisMode: 'local',
+      colorSource: palette.colorSource,
+      apiStatus,
+      generatedAt: Date.now(),
+    };
+  };
+
+  useEffect(() => {
+    const stuckItems = items.filter((item): item is AlchemyBufferItem => {
+      if (!isAlchemyCandidate(item as AlchemyBufferItem)) return false;
+      const alchemy = (item as AlchemyBufferItem).alchemy;
+      if (alchemy?.state !== 'analyzing' || alchemy.result) return false;
+      const note = alchemy.note || '';
+      return /本地大模型|本地视觉模型|轻量本地视觉模型|模型文件已读取|正在读取/.test(note);
+    });
+    if (stuckItems.length === 0) return;
+
+    stuckItems.forEach((item) => {
+      if (localCmfRecoveryIdsRef.current.has(item.id)) return;
+      localCmfRecoveryIdsRef.current.add(item.id);
+      void buildLocalCmfFallbackResult(item, 'recovered_local_cmf')
+        .then((result) => {
+          setItems(prev => prev.map(current => current.id === item.id ? {
+            ...current,
+            alchemy: {
+              state: 'alchemy',
+              note: '本地大模型初始化较慢，已自动改用本地配色生成 CMF。',
+              result,
+              createdAt: (current as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+              analyzedAt: Date.now(),
+            },
+          } as BufferItem : current));
+        })
+        .catch((err) => {
+          console.warn('恢复卡住的本地 CMF 炼金失败:', err);
+          localCmfRecoveryIdsRef.current.delete(item.id);
+        });
+    });
+  }, [items]);
+
   const runLocalPaletteAnalysis = async (item: AlchemyBufferItem, options?: { silent?: boolean; note?: string }) => {
     if (!isAlchemyCandidate(item)) return null;
 
@@ -3484,7 +5212,7 @@ function MainApp() {
 
     focusAlchemyCard(item.id);
     if (!hasAiAnalysis) {
-      showToast('请先在设置中配置硅基流动 API 和模型');
+      await runAlchemyAnalysis(item);
       return;
     }
     await runAlchemyAnalysis(item);
@@ -3506,7 +5234,7 @@ function MainApp() {
       alchemy: {
         ...(i as AlchemyBufferItem).alchemy,
         state: 'analyzing',
-        note: useAi ? (isSiliconFlowProvider(aiApiProvider) ? `正在用硅基流动 ${aiApiModel || '视觉模型'} 分析 CMF、造型语言和可借鉴点...` : '正在用 AI 分析 CMF、造型语言和可借鉴点...') : '正在用本地算法提取图片配色...',
+        note: useAi ? (isSiliconFlowProvider(aiApiProvider) ? `正在用硅基流动 ${aiApiModel || '视觉模型'} 分析 CMF、造型语言和可借鉴点...` : '正在用 AI 分析 CMF、造型语言和可借鉴点...') : '正在用本地配色生成 CMF、造型语言和材料建议...',
         createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
       },
     } as BufferItem : i));
@@ -3514,7 +5242,23 @@ function MainApp() {
     await new Promise(resolve => requestAnimationFrame(() => window.setTimeout(resolve, 20)));
 
     if (!useAi) {
-      await runLocalPaletteAnalysis(item, { note: '本地算法已提取配色。' });
+      try {
+        const result = await buildLocalCmfFallbackResult(item, 'local_cmf_no_ai');
+        setItems(prev => prev.map(i => i.id === item.id ? {
+          ...i,
+          alchemy: {
+            state: 'alchemy',
+            note: '本地视觉模型初始化较慢，已先用本地配色生成 CMF、造型语言和材料建议。',
+            result,
+            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+            analyzedAt: Date.now(),
+          },
+        } as BufferItem : i));
+        showToast('已完成本地 CMF 炼金');
+      } catch (err) {
+        console.warn('本地 CMF 炼金失败:', err);
+        await runLocalPaletteAnalysis(item, { note: '本地 CMF 暂不可用，已先提取配色。' });
+      }
       return;
     }
 
@@ -3538,18 +5282,35 @@ function MainApp() {
       } as BufferItem : i));
       showToast(isSiliconFlowProvider(aiApiProvider) ? '硅基流动视觉模型分析完成' : 'CMF 炼金完成');
     } catch (err: any) {
-      const result = await buildLocalPaletteOnlyResult(item, 'ai_error_local_palette');
-      setItems(prev => prev.map(i => i.id === item.id ? {
-        ...i,
-        alchemy: {
-          state: 'alchemy',
-          note: 'AI 接口暂不可用，已先保留本地配色分析。',
-          result,
-          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-          analyzedAt: Date.now(),
-        },
-      } as BufferItem : i));
-      showToast('AI 接口暂不可用，已先完成本地配色分析');
+      console.warn('AI CMF 炼金失败，改用本地 CMF 兜底:', err);
+      try {
+        const result = await buildLocalCmfFallbackResult(item, 'ai_error_local_cmf');
+        setItems(prev => prev.map(i => i.id === item.id ? {
+          ...i,
+          alchemy: {
+            state: 'alchemy',
+            note: 'AI 接口暂不可用，已先用本地配色生成 CMF、造型语言和材料建议。',
+            result,
+            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+            analyzedAt: Date.now(),
+          },
+        } as BufferItem : i));
+        showToast('AI 接口暂不可用，已完成本地 CMF 炼金');
+      } catch (localErr) {
+        console.warn('本地 CMF 回退失败，保留本地配色分析:', localErr);
+        const result = await buildLocalPaletteOnlyResult(item, 'ai_error_local_palette');
+        setItems(prev => prev.map(i => i.id === item.id ? {
+          ...i,
+          alchemy: {
+            state: 'alchemy',
+            note: 'AI 和本地视觉模型暂不可用，已先保留本地配色分析。',
+            result,
+            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
+            analyzedAt: Date.now(),
+          },
+        } as BufferItem : i));
+        showToast('AI 和本地视觉模型暂不可用，已先完成本地配色分析');
+      }
     }
   };
 
@@ -3657,9 +5418,15 @@ function MainApp() {
           showToast(`快捷键报错: ${msg}`);
         }
       };
+      const blockShortcutWhenLicenseLocked = () => {
+        if (!licenseGateActiveRef.current) return false;
+        showToast('请先导入授权');
+        return true;
+      };
 
       await safeRegister(shortcut, (e) => {
         if (e.state === 'Pressed') {
+          if (blockShortcutWhenLicenseLocked()) return;
           const next = !stateRef.current.isAntiTouchMode;
           stateRef.current = { ...stateRef.current, isAntiTouchMode: next, isOpen: next ? false : stateRef.current.isOpen, isPinned: next ? false : stateRef.current.isPinned };
           localStorage.setItem('drawer_anti_touch_mode', next ? 'true' : 'false');
@@ -3673,6 +5440,7 @@ function MainApp() {
 
       await safeRegister(snipShortcut, (e) => {
   if (e.state === 'Pressed') {
+    if (blockShortcutWhenLicenseLocked()) return;
     if (stateRef.current.isAntiTouchMode) {
       enforceAntiTouchClosed(true);
       return;
@@ -3682,6 +5450,7 @@ function MainApp() {
 });
       await safeRegister(textShortcut, (e) => {
         if (e.state === 'Pressed') {
+           if (blockShortcutWhenLicenseLocked()) return;
            if (stateRef.current.isAntiTouchMode) {
                enforceAntiTouchClosed(true);
                return;
@@ -3695,6 +5464,7 @@ function MainApp() {
                  setShowTextInput(true);
                  setIsSearchActive(false);
                  setShowSettings(false);
+                 setShowWebImageCollector(false);
                  setShowFolderModal(false);
                  setIsOpen(true);
                });
@@ -3704,6 +5474,7 @@ function MainApp() {
 
       await safeRegister(searchShortcut, (e) => {
         if (e.state === 'Pressed') {
+           if (blockShortcutWhenLicenseLocked()) return;
            if (stateRef.current.isAntiTouchMode) {
                enforceAntiTouchClosed(true);
                return;
@@ -3717,6 +5488,7 @@ function MainApp() {
                  setIsSearchActive(true);
                  setShowSettings(false);
                  setShowTextInput(false);
+                 setShowWebImageCollector(false);
                  setShowFolderModal(false);
                  setIsOpen(true);
                });
@@ -3727,6 +5499,7 @@ function MainApp() {
 
       await safeRegister(triggerShortcut, (e) => {
         if (e.state === 'Pressed') {
+          if (blockShortcutWhenLicenseLocked()) return;
           if (stateRef.current.isAntiTouchMode) {
             enforceAntiTouchClosed(true);
             return;
@@ -3737,6 +5510,7 @@ function MainApp() {
 
       await safeRegister(noteShortcut, (e) => {
         if (e.state === 'Pressed') {
+          if (blockShortcutWhenLicenseLocked()) return;
           if (stateRef.current.isAntiTouchMode) {
             enforceAntiTouchClosed(true);
             return;
@@ -3747,6 +5521,7 @@ function MainApp() {
 
       await safeRegister(canvasShortcut, (e) => {
         if (e.state === 'Pressed') {
+          if (blockShortcutWhenLicenseLocked()) return;
           if (stateRef.current.isAntiTouchMode && !isCanvasModeRef.current) {
             enforceAntiTouchClosed(true);
             return;
@@ -3797,7 +5572,7 @@ function MainApp() {
       isPointerInsideDrawerRef.current = true;
       setIsPinned(false); setIsOpen(true); setShowSettings(false);
       setShowHelp(false); setShowQR(false); setConfirmDialog(prev => ({...prev, isOpen: false}));
-      setShowTextInput(false); setShowFolderModal(false); setShowUpdateLog(false);
+      setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false); setShowUpdateLog(false);
       invoke('toggle_pin', { pinned: false }).catch(() => {});
       await invoke('open_drawer', {
         width: drawerWidthRef.current,
@@ -3896,7 +5671,7 @@ function MainApp() {
     if (!isOpen && !isPinned) {
       setShowSettings(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false);
       setShowHelp(false); setShowQR(false); setIsSelectMode(false); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null;
-      setConfirmDialog(prev => ({...prev, isOpen: false})); setShowTextInput(false); setShowFolderModal(false);
+      setConfirmDialog(prev => ({...prev, isOpen: false})); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
       setIsSearchActive(false); setSearchQuery(''); setEditingFolderId(null); setShowUpdateLog(false);
     }
   }, [isOpen, isPinned]);
@@ -5051,9 +6826,79 @@ function MainApp() {
     };
   };
 
+  const collectSimilarImagesFromCanvasItem = (canvasItem: CanvasImageItem) => {
+    if (canvasItem.item.type !== 'image') {
+      showToast('只有画布图片可以作为收图参考图');
+      return;
+    }
+    const source = (
+      canvasItem.item.path ||
+      canvasItem.item.originalUrl ||
+      canvasItem.item.sourceUrl ||
+      canvasItem.item.url ||
+      canvasItem.item.thumbnail ||
+      getCanvasItemDisplaySource(canvasItem.item)
+    ).trim();
+    if (!source) {
+      showToast('这张画布图没有可用来源，不能按图收图');
+      return;
+    }
+    openWebImageCollectorWithReference({
+      source,
+      name: canvasItem.item.name || canvasItem.item.content || '画布参考图',
+      preview: getCanvasItemDisplaySource(canvasItem.item) || canvasItem.item.thumbnail || source,
+      itemId: canvasItem.item.id || canvasItem.id,
+    });
+  };
+
+  const collectSimilarImagesFromCanvasOutput = (
+    canvasItem: CanvasImageItem,
+    output: CanvasAiGeneratedOutput,
+    outputIndex: number,
+  ) => {
+    const outputSource = getCanvasAiOutputDisplaySource(output);
+    if (!outputSource || output.status === 'error') {
+      showToast('这张输出图还不能作为收图参考图');
+      return;
+    }
+    const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
+    openWebImageCollectorWithReference({
+      source: output.path || output.url || outputSource,
+      name: outputItem?.name || output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `输出图 ${outputIndex + 1}`,
+      preview: outputSource,
+      itemId: outputItem?.id || `${canvasItem.id}-output-${outputIndex}`,
+    });
+  };
+
   const getCanvasItemNavSource = (item: BufferItem) => (
     item.thumbnail || getCanvasItemDisplaySource(item)
   );
+
+  const getCanvasBufferItemNavPreview = (item?: BufferItem | null): { source: string; mediaType: 'image' | 'video' } | null => {
+    if (!item) return null;
+    if (item.type === 'image') {
+      const source = getCanvasItemNavSource(item);
+      return source ? { source, mediaType: 'image' } : null;
+    }
+    if (item.type === 'video') {
+      if (item.thumbnail) return { source: item.thumbnail, mediaType: 'image' };
+      const source = getCanvasItemDisplaySource(item);
+      return source ? { source, mediaType: 'video' } : null;
+    }
+    return null;
+  };
+
+  const getCanvasOutputNavPreview = (
+    canvasItem: CanvasImageItem,
+    output?: CanvasAiGeneratedOutput | null
+  ): { source: string; mediaType: 'image' | 'video' } | null => {
+    const source = getCanvasAiOutputDisplaySource(output);
+    if (!source || output?.status === 'error') return null;
+    return {
+      source,
+      mediaType: output?.mediaType || getCanvasAiMediaType(canvasItem.ai),
+    };
+  };
 
   const makeCanvasItemBoxMap = (ids: string[]) => (
     canvasItemsRef.current
@@ -5108,12 +6953,16 @@ function MainApp() {
 
   const setCanvasSelectionWithoutWorkflowExpansion = (ids: string[]) => {
     const unique = Array.from(new Set(ids.filter(Boolean)));
+    const current = canvasSelectedIdsRef.current;
+    if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     canvasSelectedIdsRef.current = unique;
     setCanvasSelectedIds(unique);
   };
 
   const updateCanvasSelection = (ids: string[]) => {
     const unique = Array.from(new Set(expandCanvasSelectionIdsWithWorkflowGroups(ids)));
+    const current = canvasSelectedIdsRef.current;
+    if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     canvasSelectedIdsRef.current = unique;
     setCanvasSelectedIds(unique);
   };
@@ -5225,6 +7074,38 @@ function MainApp() {
       content.style.height = `${size.height}px`;
       content.style.transform = `scale(${scale})`;
     }
+    scheduleCanvasViewportUpdate();
+  }
+
+  function readCanvasViewportRect(surface = canvasSurfaceRef.current): CanvasViewportRect | null {
+    if (!surface) return null;
+    const scale = clamp(canvasScaleRef.current || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
+    return {
+      x: surface.scrollLeft / scale,
+      y: surface.scrollTop / scale,
+      width: surface.clientWidth / scale,
+      height: surface.clientHeight / scale,
+    };
+  }
+
+  function updateCanvasViewportNow() {
+    canvasViewportFrameRef.current = null;
+    if (!isCanvasModeRef.current) return;
+    const next = readCanvasViewportRect();
+    const current = canvasViewportRef.current;
+    const isSame = current && next
+      && Math.abs(current.x - next.x) < 2
+      && Math.abs(current.y - next.y) < 2
+      && Math.abs(current.width - next.width) < 2
+      && Math.abs(current.height - next.height) < 2;
+    if (isSame) return;
+    canvasViewportRef.current = next;
+    setCanvasViewport(next);
+  }
+
+  function scheduleCanvasViewportUpdate() {
+    if (!isCanvasModeRef.current || canvasViewportFrameRef.current !== null) return;
+    canvasViewportFrameRef.current = window.requestAnimationFrame(updateCanvasViewportNow);
   }
 
   const commitCanvasScaleSoon = () => {
@@ -5235,7 +7116,7 @@ function MainApp() {
     canvasScaleCommitTimerRef.current = window.setTimeout(() => {
       canvasScaleCommitTimerRef.current = null;
       setCanvasScale(canvasScaleRef.current || 1);
-    }, 90);
+    }, 220);
   };
 
   const setCanvasSizeImmediate = (nextSize: { width: number; height: number }) => {
@@ -5323,6 +7204,90 @@ function MainApp() {
       scheduleCanvasFocusItemById(clean[0].id);
     }
     return clean.length;
+  };
+
+  const getCanvasAiOutputCopyPosition = (
+    sourceItem: CanvasImageItem,
+    size: { width: number; height: number },
+    outputIndex: number
+  ) => {
+    const gap = 64;
+    const step = 44;
+    let x = Math.max(24, sourceItem.x + sourceItem.width + gap);
+    let y = Math.max(24, sourceItem.y + Math.min(outputIndex * step, 260));
+    const items = canvasItemsRef.current;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const box = { x, y, width: size.width, height: size.height };
+      const overlaps = items.some(item => item.id !== sourceItem.id && canvasRectsIntersect(box, item));
+      if (!overlaps) return { x, y };
+      y += step;
+      if (attempt === 9) {
+        x += step;
+        y = Math.max(24, sourceItem.y + step);
+      }
+    }
+
+    return { x, y };
+  };
+
+  const copyCanvasAiOutputToCanvas = async (
+    sourceCanvasItem: CanvasImageItem,
+    output: CanvasAiGeneratedOutput,
+    outputIndex: number
+  ) => {
+    const outputSource = getCanvasAiOutputDisplaySource(output);
+    const outputMediaType = output.mediaType || getCanvasAiMediaType(sourceCanvasItem.ai);
+    if (!outputSource || output.status === 'error') {
+      showToast(outputMediaType === 'video' ? '这条视频还不能复制到画布' : '这张图还不能复制到画布');
+      return false;
+    }
+
+    const outputItem = createCanvasAiOutputBufferItem(sourceCanvasItem, output, outputIndex);
+    if (!outputItem) {
+      showToast(outputMediaType === 'video' ? '这条视频还不能复制到画布' : '这张图还不能复制到画布');
+      return false;
+    }
+
+    const size = output.width && output.height
+      ? getCanvasInitialImageSize(output.width, output.height)
+      : outputMediaType === 'image'
+        ? await readImageDisplaySize(outputSource)
+        : getCanvasAiOutputSize(sourceCanvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
+    const pos = getCanvasAiOutputCopyPosition(sourceCanvasItem, size, outputIndex);
+    const now = Date.now();
+    const itemId = Math.random().toString(36).substring(2, 9);
+    const canvasItem: CanvasImageItem = {
+      id: `canvas_${itemId}`,
+      item: {
+        ...cloneDrawerValue(outputItem),
+        id: itemId,
+        type: outputMediaType,
+        url: outputItem.url || outputSource,
+        path: outputItem.path,
+        createdAt: now,
+        isQuickAccess: false,
+      },
+      x: pos.x,
+      y: pos.y,
+      width: size.width,
+      height: size.height,
+      ai: {
+        type: outputMediaType === 'video' ? 'generated-video' : 'generated-image',
+        prompt: output.prompt || sourceCanvasItem.ai?.prompt || sourceCanvasItem.item.content || '',
+        status: 'success',
+        generatedAt: output.generatedAt || sourceCanvasItem.ai?.generatedAt || now,
+      },
+    };
+
+    const addedCount = appendCanvasItems(
+      [canvasItem],
+      outputMediaType === 'video' ? '复制输出视频到画布' : '复制输出图片到画布'
+    );
+    if (addedCount > 0) {
+      showToast(outputMediaType === 'video' ? '已复制这条视频到画布' : '已复制这张图到画布');
+    }
+    return addedCount > 0;
   };
 
   const removeCanvasItemsByIds = (ids: string[], label = '删除画布元素') => {
@@ -5939,6 +7904,32 @@ function MainApp() {
     )));
   };
 
+  const commitCanvasTextDraft = (canvasId: string, content?: string, sync = false) => {
+    const nextContent = content ?? canvasTextDraftValuesRef.current[canvasId];
+    if (nextContent === undefined) return;
+    const timer = canvasTextDraftTimersRef.current[canvasId];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete canvasTextDraftTimersRef.current[canvasId];
+    }
+    delete canvasTextDraftValuesRef.current[canvasId];
+    const current = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!current) return;
+    if ((current?.item.content || '') === nextContent) return;
+    const commit = () => updateCanvasTextItem(canvasId, nextContent);
+    if (sync) flushSync(commit);
+    else commit();
+  };
+
+  const scheduleCanvasTextDraftCommit = (canvasId: string, content: string) => {
+    canvasTextDraftValuesRef.current[canvasId] = content;
+    const timer = canvasTextDraftTimersRef.current[canvasId];
+    if (timer !== undefined) window.clearTimeout(timer);
+    canvasTextDraftTimersRef.current[canvasId] = window.setTimeout(() => {
+      commitCanvasTextDraft(canvasId);
+    }, 900);
+  };
+
   const createCanvasImageItemFromFile = (file: File, index = 0, client?: { x: number; y: number }) => new Promise<CanvasImageItem | null>((resolve) => {
     if (!file.type.startsWith('image/') && !isCanvasImageFileName(file.name)) {
       resolve(null);
@@ -5952,18 +7943,28 @@ function MainApp() {
         resolve(null);
         return;
       }
+      let savedPath = '';
+      try {
+        savedPath = await invoke<string>('save_dropped_file', {
+          fileName: file.name || 'canvas-image.png',
+          dataUrl: url,
+        });
+      } catch (err) {
+        console.warn('保存画布图片到本地缓存失败，暂用内存图片:', err);
+      }
+      const displayUrl = savedPath ? convertFileSrc(savedPath) : url;
       const item: BufferItem = {
         id: Math.random().toString(36).substring(2, 9),
         type: 'image',
         content: file.name || '画布图片',
         name: file.name || '画布图片',
-        url,
-        path: url,
+        url: displayUrl,
+        path: savedPath || undefined,
         createdAt: Date.now(),
         isQuickAccess: false,
       };
       const pos = getCanvasDropPosition(index, client);
-      const size = await readImageDisplaySize(url);
+      const size = await readImageDisplaySize(displayUrl);
       resolve({
         id: `canvas_${item.id}`,
         item,
@@ -5987,6 +7988,11 @@ function MainApp() {
   const isRemoteHttpImageSource = (source?: string | null) => {
     const value = String(source || '').trim();
     return /^https?:\/\//i.test(value) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(value);
+  };
+  const isLikelyJpegOrPngImageSource = (source?: string | null) => {
+    const value = String(source || '').trim();
+    return /^data:image\/(?:png|jpe?g);base64,/i.test(value)
+      || /\.(?:png|jpe?g)(?:[?#].*)?$/i.test(value);
   };
 
   const getDataUrlByteSize = (dataUrl: string) => {
@@ -6069,12 +8075,804 @@ function MainApp() {
     if (/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(source)) {
       return optimizeForAi ? optimizeCanvasAiInputDataUrl(source) : source;
     }
-    const response = await fetch(source);
+
+    let readableSource = source;
+    if (/^https?:\/\//i.test(source)) {
+      try {
+        const cachedPath = await invoke<string>('cache_web_image', {
+          url: source,
+          name: 'local-vision-reference',
+        });
+        if (cachedPath) readableSource = convertFileSrc(cachedPath);
+      } catch (err) {
+        console.warn('缓存本地模型参考图失败，尝试直接读取:', err);
+      }
+    }
+
+    const response = await fetch(readableSource);
     if (!response.ok) throw new Error('读取参考图失败');
     const blob = await response.blob();
     if (!blob.type.startsWith('image/')) throw new Error('参考图不是可用图片');
     const dataUrl = await blobToDataUrl(blob);
     return optimizeForAi ? optimizeCanvasAiInputDataUrl(dataUrl) : dataUrl;
+  };
+
+  const imageDataUrlToJpegDataUrl = (dataUrl: string) => new Promise<string>((resolve, reject) => {
+    if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
+      reject(new Error('invalid image data url'));
+      return;
+    }
+    const image = new window.Image();
+    image.onload = () => {
+      try {
+        const naturalWidth = image.naturalWidth || image.width;
+        const naturalHeight = image.naturalHeight || image.height;
+        if (!naturalWidth || !naturalHeight) {
+          reject(new Error('empty image'));
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('canvas context unavailable'));
+          return;
+        }
+
+        const candidates: string[] = [];
+        const maxEdges = Array.from(new Set([
+          Math.min(CANVAS_AI_INPUT_IMAGE_MAX_EDGE, Math.max(naturalWidth, naturalHeight)),
+          1600,
+          CANVAS_AI_INPUT_IMAGE_MIN_EDGE,
+        ])).filter(edge => edge > 0);
+        const qualities = Array.from(new Set([
+          CANVAS_AI_INPUT_IMAGE_QUALITY,
+          0.84,
+          CANVAS_AI_INPUT_IMAGE_MIN_QUALITY,
+          0.76,
+        ]));
+
+        for (const maxEdge of maxEdges) {
+          const scale = Math.min(1, maxEdge / Math.max(naturalWidth, naturalHeight));
+          const width = Math.max(1, Math.round(naturalWidth * scale));
+          const height = Math.max(1, Math.round(naturalHeight * scale));
+          canvas.width = width;
+          canvas.height = height;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, width, height);
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(image, 0, 0, width, height);
+
+          for (const quality of qualities) {
+            const candidate = canvas.toDataURL('image/jpeg', quality);
+            if (!candidate) continue;
+            candidates.push(candidate);
+            if (getDataUrlByteSize(candidate) <= CANVAS_AI_INPUT_IMAGE_TARGET_BYTES) {
+              canvas.width = 0;
+              canvas.height = 0;
+              resolve(candidate);
+              return;
+            }
+          }
+        }
+
+        canvas.width = 0;
+        canvas.height = 0;
+        const smallestCandidate = candidates.reduce((best, candidate) => (
+          getDataUrlByteSize(candidate) < getDataUrlByteSize(best) ? candidate : best
+        ), candidates[0] || '');
+        if (smallestCandidate) {
+          resolve(smallestCandidate);
+        } else {
+          reject(new Error('jpeg conversion failed'));
+        }
+      } catch (err) {
+        reject(err);
+      }
+    };
+    image.onerror = () => reject(new Error('image decode failed'));
+    image.decoding = 'async';
+    image.src = dataUrl;
+  });
+
+  const imageSourceToJpegDataUrl = async (source: string) => {
+    const dataUrl = await imageSourceToDataUrl(source, false);
+    return imageDataUrlToJpegDataUrl(dataUrl);
+  };
+
+  const imageSourceToModelDataUrl = async (source: string) => {
+    const dataUrl = await imageSourceToDataUrl(source, true);
+    if (!dataUrl) return '';
+
+    return await new Promise<string>((resolve) => {
+      const image = new window.Image();
+      image.onload = () => {
+        try {
+          const width = image.naturalWidth || image.width;
+          const height = image.naturalHeight || image.height;
+          if (!width || !height) {
+            resolve(dataUrl);
+            return;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(dataUrl);
+            return;
+          }
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(image, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.9));
+          canvas.width = 0;
+          canvas.height = 0;
+        } catch (_) {
+          resolve(dataUrl);
+        }
+      };
+      image.onerror = () => resolve(dataUrl);
+      image.decoding = 'async';
+      image.src = dataUrl;
+    });
+  };
+
+  const dataUrlToBlob = async (dataUrl: string) => {
+    const response = await fetch(dataUrl);
+    return await response.blob();
+  };
+
+  const imageDataUrlToPngDataUrl = async (dataUrl: string) => {
+    if (/^data:image\/png;base64,/i.test(dataUrl)) return dataUrl;
+    if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
+      throw new Error('invalid image data url');
+    }
+
+    return await new Promise<string>((resolve, reject) => {
+      const image = new window.Image();
+      image.onload = () => {
+        try {
+          const width = image.naturalWidth || image.width;
+          const height = image.naturalHeight || image.height;
+          if (!width || !height) {
+            reject(new Error('empty image'));
+            return;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            reject(new Error('canvas context unavailable'));
+            return;
+          }
+          ctx.clearRect(0, 0, width, height);
+          ctx.drawImage(image, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/png'));
+          canvas.width = 0;
+          canvas.height = 0;
+        } catch (err) {
+          reject(err);
+        }
+      };
+      image.onerror = () => reject(new Error('image decode failed'));
+      image.decoding = 'async';
+      image.src = dataUrl;
+    });
+  };
+
+  const copyImageDataUrlToSystemClipboard = async (dataUrl: string) => {
+    if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
+      throw new Error('invalid image data url');
+    }
+    const pngDataUrl = await imageDataUrlToPngDataUrl(dataUrl);
+
+    let backendError: unknown = null;
+    let pluginError: unknown = null;
+    let browserError: unknown = null;
+
+    try {
+      await invoke('copy_image', { dataUrl: pngDataUrl });
+      return;
+    } catch (err) {
+      backendError = err;
+      console.warn('backend copy canvas image failed:', err);
+    }
+
+    const blob = await dataUrlToBlob(pngDataUrl);
+
+    try {
+      const buffer = await blob.arrayBuffer();
+      const image = await TauriImage.fromBytes(new Uint8Array(buffer));
+      await writeImage(image);
+      return;
+    } catch (err) {
+      pluginError = err;
+      console.warn('clipboard-manager copy canvas image failed:', err);
+    }
+
+    try {
+      const ClipboardItemCtor = (window as any).ClipboardItem;
+      if (!navigator.clipboard || !ClipboardItemCtor) throw new Error('ClipboardItem unavailable');
+      await navigator.clipboard.write([
+        new ClipboardItemCtor({ 'image/png': blob })
+      ]);
+      return;
+    } catch (err) {
+      browserError = err;
+      console.warn('browser clipboard canvas image copy failed:', err);
+    }
+
+    throw backendError || pluginError || browserError || new Error('copy canvas image failed');
+  };
+
+  const getCopyableCanvasImageFromIds = (ids: string[]) => {
+    const idSet = new Set(ids.filter(Boolean));
+    return canvasItemsRef.current.find(item => (
+      idSet.has(item.id) &&
+      item.item.type === 'image' &&
+      !!getCanvasItemDisplaySource(item.item)
+    )) || null;
+  };
+
+  const shouldTryBackendImageCopyDirectly = (source: string) => {
+    const value = source.trim();
+    if (!value) return false;
+    if (/^data:image\//i.test(value)) {
+      return /^data:image\/(?:png|jpe?g|bmp|gif);base64,/i.test(value);
+    }
+    if (/^blob:/i.test(value)) return false;
+    if (/\.webp(?:[?#].*)?$/i.test(value)) return false;
+    return true;
+  };
+
+  const copyImageSourceToSystemClipboard = async (source: string) => {
+    let directError: unknown = null;
+
+    if (shouldTryBackendImageCopyDirectly(source)) {
+      try {
+        await invoke('copy_image', { dataUrl: source });
+        return;
+      } catch (err) {
+        directError = err;
+        console.warn('backend copy canvas image source failed:', err);
+      }
+    }
+
+    try {
+      const dataUrl = await imageSourceToDataUrl(source, false);
+      await copyImageDataUrlToSystemClipboard(dataUrl);
+      return;
+    } catch (err) {
+      console.warn('copy canvas image source via data url failed:', err);
+      throw err || directError;
+    }
+  };
+
+  const copySelectedImagePreviewToClipboard = async () => {
+    const source = String(selectedImage || '').trim();
+    if (!source) {
+      showToast('没有可复制的预览图片');
+      return false;
+    }
+
+    try {
+      await copyImageSourceToSystemClipboard(source);
+      showToast('图片已复制，可粘贴到微信等程序');
+      return true;
+    } catch (err) {
+      console.warn('copy selected image preview failed:', err);
+      showToast('图片复制失败');
+      return false;
+    }
+  };
+
+  const copyCanvasImageToSystemClipboard = async (
+    canvasItem?: CanvasImageItem | null,
+    options: { successToast?: string; missingToast?: string } = {}
+  ) => {
+    if (!canvasItem || canvasItem.item.type !== 'image') {
+      showToast(options.missingToast || '请选择画布里的图片');
+      return false;
+    }
+
+    const source = getCanvasItemDisplaySource(canvasItem.item);
+    if (!source) {
+      showToast(options.missingToast || '这张图片没有可复制的来源');
+      return false;
+    }
+
+    try {
+      await copyImageSourceToSystemClipboard(source);
+      showToast(options.successToast || '图片已复制，可粘贴到微信等程序');
+      return true;
+    } catch (err) {
+      console.warn('copy canvas image to system clipboard failed:', err);
+      showToast('图片复制失败');
+      return false;
+    }
+  };
+
+  const loadCanvasBrushImage = (source: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new window.Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图片加载失败'));
+    image.decoding = 'async';
+    image.src = source;
+  });
+
+  const drawCanvasBrushEditorBase = async (editor: CanvasBrushEditorState | null) => {
+    const canvas = canvasBrushCanvasRef.current;
+    const baseCanvas = canvasBrushBaseCanvasRef.current;
+    if (!canvas || !editor) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    canvas.width = editor.width;
+    canvas.height = editor.height;
+    ctx.clearRect(0, 0, editor.width, editor.height);
+    if (baseCanvas) {
+      baseCanvas.width = editor.width;
+      baseCanvas.height = editor.height;
+    }
+    try {
+      const image = await loadCanvasBrushImage(editor.baseDataUrl);
+      const baseCtx = baseCanvas?.getContext('2d');
+      if (baseCtx) {
+        baseCtx.clearRect(0, 0, editor.width, editor.height);
+        baseCtx.fillStyle = '#ffffff';
+        baseCtx.fillRect(0, 0, editor.width, editor.height);
+        baseCtx.imageSmoothingEnabled = true;
+        baseCtx.imageSmoothingQuality = 'high';
+        baseCtx.drawImage(image, 0, 0, editor.width, editor.height);
+      }
+      ctx.clearRect(0, 0, editor.width, editor.height);
+      const pendingMarks = canvasBrushPendingMarksRef.current;
+      canvasBrushPendingMarksRef.current = null;
+      if (pendingMarks) {
+        try {
+          const marksImage = await loadCanvasBrushImage(pendingMarks);
+          ctx.drawImage(marksImage, 0, 0, editor.width, editor.height);
+        } catch (err) {
+          console.warn('恢复裁剪标记层失败:', err);
+        }
+      }
+      setCanvasBrushHistory([canvas.toDataURL('image/png')]);
+    } catch (err) {
+      console.warn('画笔编辑器加载图片失败:', err);
+      showToast('图片加载失败，无法编辑');
+      setCanvasBrushEditor(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!canvasBrushEditor) return;
+    void drawCanvasBrushEditorBase(canvasBrushEditor);
+  }, [canvasBrushEditor?.targetId, canvasBrushEditor?.baseDataUrl]);
+
+  const openCanvasBrushEditorFromSource = async (options: CanvasBrushEditorOpenOptions) => {
+    const { targetId, source, name, x, y, nodeWidth, nodeHeight } = options;
+    setCanvasContextMenu(null);
+    setCanvasInputMenuForId(null);
+    if (canvasItemsRef.current.some(item => item.id === targetId)) {
+      updateCanvasSelection([targetId]);
+    }
+
+    try {
+      const baseDataUrl = await imageSourceToDataUrl(source, false);
+      const image = await loadCanvasBrushImage(baseDataUrl);
+      const naturalWidth = image.naturalWidth || image.width || Math.round(nodeWidth);
+      const naturalHeight = image.naturalHeight || image.height || Math.round(nodeHeight);
+      const scale = Math.min(1, CANVAS_BRUSH_EDITOR_MAX_EDGE / Math.max(naturalWidth, naturalHeight));
+      const width = Math.max(1, Math.round(naturalWidth * scale));
+      const height = Math.max(1, Math.round(naturalHeight * scale));
+      setCanvasBrushEditor({
+        targetId,
+        source,
+        baseDataUrl,
+        name: name || '画布图片',
+        x,
+        y,
+        nodeWidth,
+        nodeHeight,
+        width,
+        height,
+      });
+      setCanvasBrushMode('brush');
+      setCanvasBrushHistory([]);
+      setCanvasBrushCropRect(null);
+      canvasBrushCropStartRef.current = null;
+      canvasBrushShapeStartRef.current = null;
+      canvasBrushShapeSnapshotRef.current = null;
+      canvasBrushPendingMarksRef.current = null;
+      keepDrawerOpenByPointer();
+    } catch (err) {
+      console.warn('打开画笔编辑器失败:', err);
+      showToast('这张图片暂时无法编辑');
+    }
+  };
+
+  const openCanvasBrushEditor = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || target.item.type !== 'image') {
+      showToast('请选择画布里的图片进行标记');
+      return;
+    }
+
+    const source = getCanvasItemDisplaySource(target.item);
+    if (!source) {
+      showToast('这张图片没有可编辑的来源');
+      return;
+    }
+
+    await openCanvasBrushEditorFromSource({
+      targetId: target.id,
+      source,
+      name: target.item.name || target.item.content || '画布图片',
+      x: target.x,
+      y: target.y,
+      nodeWidth: target.width,
+      nodeHeight: target.height,
+    });
+  };
+
+  const getCanvasBrushPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasBrushCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width,
+      y: ((event.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height,
+    };
+  };
+
+  const paintCanvasBrushStroke = (from: CanvasBrushPoint, to: CanvasBrushPoint) => {
+    const canvas = canvasBrushCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (canvasBrushMode === 'eraser') {
+      ctx.lineWidth = canvasBrushSize;
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+    } else {
+      ctx.lineWidth = canvasBrushSize;
+      ctx.globalAlpha = canvasBrushOpacity;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = canvasBrushColor;
+      ctx.fillStyle = canvasBrushColor;
+    }
+    const radius = ctx.lineWidth / 2;
+    if (distance < 0.5) {
+      ctx.beginPath();
+      ctx.arc(to.x, to.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+
+  const getCanvasBrushShapeBox = (
+    mode: CanvasBrushShapeMode,
+    from: CanvasBrushPoint,
+    to: CanvasBrushPoint
+  ) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) {
+      const size = Math.max(16, canvasBrushSize);
+      const height = mode === 'ellipse' ? size * 0.62 : size;
+      return {
+        x: from.x - size / 2,
+        y: from.y - height / 2,
+        width: size,
+        height,
+      };
+    }
+
+    if (mode === 'circle') {
+      const size = Math.max(1, Math.min(Math.abs(dx), Math.abs(dy)));
+      return {
+        x: dx >= 0 ? from.x : from.x - size,
+        y: dy >= 0 ? from.y : from.y - size,
+        width: size,
+        height: size,
+      };
+    }
+
+    const x = Math.min(from.x, to.x);
+    const y = Math.min(from.y, to.y);
+    const width = Math.max(1, Math.abs(dx));
+    const height = Math.max(1, Math.abs(dy));
+    return { x, y, width, height };
+  };
+
+  const paintCanvasBrushShape = (
+    mode: CanvasBrushShapeMode,
+    from: CanvasBrushPoint,
+    to: CanvasBrushPoint
+  ) => {
+    const canvas = canvasBrushCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const box = getCanvasBrushShapeBox(mode, from, to);
+    ctx.save();
+    ctx.globalAlpha = canvasBrushOpacity;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = canvasBrushColor;
+    ctx.strokeStyle = canvasBrushColor;
+    ctx.lineWidth = 1;
+
+    if (mode === 'rectangle') {
+      ctx.fillRect(box.x, box.y, box.width, box.height);
+    } else {
+      ctx.beginPath();
+      ctx.ellipse(
+        box.x + box.width / 2,
+        box.y + box.height / 2,
+        Math.max(0.5, box.width / 2),
+        Math.max(0.5, box.height / 2),
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+    }
+    ctx.restore();
+  };
+
+  const restoreCanvasBrushShapeSnapshot = () => {
+    const canvas = canvasBrushCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    const snapshot = canvasBrushShapeSnapshotRef.current;
+    if (!canvas || !ctx || !snapshot) return false;
+    ctx.putImageData(snapshot, 0, 0);
+    return true;
+  };
+
+  const clearCanvasBrushShapeDraft = () => {
+    canvasBrushShapeStartRef.current = null;
+    canvasBrushShapeSnapshotRef.current = null;
+  };
+
+  const normalizeCanvasBrushCropRect = (
+    from: CanvasBrushPoint,
+    to: CanvasBrushPoint,
+    width: number,
+    height: number
+  ): CanvasBrushCropRect | null => {
+    const left = clamp(Math.min(from.x, to.x), 0, width);
+    const top = clamp(Math.min(from.y, to.y), 0, height);
+    const right = clamp(Math.max(from.x, to.x), 0, width);
+    const bottom = clamp(Math.max(from.y, to.y), 0, height);
+    const cropWidth = right - left;
+    const cropHeight = bottom - top;
+    if (cropWidth < 4 || cropHeight < 4) return null;
+    return {
+      x: Math.round(left),
+      y: Math.round(top),
+      width: Math.round(cropWidth),
+      height: Math.round(cropHeight),
+    };
+  };
+
+  const pushCanvasBrushHistory = () => {
+    const canvas = canvasBrushCanvasRef.current;
+    if (!canvas) return;
+    const snapshot = canvas.toDataURL('image/png');
+    setCanvasBrushHistory(prev => {
+      const last = prev[prev.length - 1];
+      if (last === snapshot) return prev;
+      return [...prev, snapshot].slice(-24);
+    });
+  };
+
+  const applyCanvasBrushCrop = () => {
+    const editor = canvasBrushEditor;
+    const rect = canvasBrushCropRect;
+    const canvas = canvasBrushCanvasRef.current;
+    const baseCanvas = canvasBrushBaseCanvasRef.current;
+    if (!editor || !rect || !canvas || !baseCanvas || rect.width < 4 || rect.height < 4) return;
+
+    const sourceMarks = document.createElement('canvas');
+    sourceMarks.width = canvas.width;
+    sourceMarks.height = canvas.height;
+    sourceMarks.getContext('2d')?.drawImage(canvas, 0, 0);
+
+    const sourceBase = document.createElement('canvas');
+    sourceBase.width = baseCanvas.width;
+    sourceBase.height = baseCanvas.height;
+    sourceBase.getContext('2d')?.drawImage(baseCanvas, 0, 0);
+
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    const markCtx = canvas.getContext('2d');
+    markCtx?.clearRect(0, 0, rect.width, rect.height);
+    markCtx?.drawImage(sourceMarks, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+
+    baseCanvas.width = rect.width;
+    baseCanvas.height = rect.height;
+    const baseCtx = baseCanvas.getContext('2d');
+    if (baseCtx) {
+      baseCtx.clearRect(0, 0, rect.width, rect.height);
+      baseCtx.drawImage(sourceBase, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+    }
+
+    const nextBaseDataUrl = baseCanvas.toDataURL('image/png');
+    canvasBrushPendingMarksRef.current = canvas.toDataURL('image/png');
+    setCanvasBrushEditor({
+      ...editor,
+      baseDataUrl: nextBaseDataUrl,
+      width: rect.width,
+      height: rect.height,
+      nodeWidth: rect.width,
+      nodeHeight: rect.height,
+    });
+    setCanvasBrushCropRect(null);
+    setCanvasBrushMode('brush');
+    clearCanvasBrushShapeDraft();
+    setCanvasBrushHistory([canvas.toDataURL('image/png')]);
+    showToast('已应用裁剪');
+  };
+
+  const clearCanvasBrushCrop = () => {
+    setCanvasBrushCropRect(null);
+    canvasBrushCropStartRef.current = null;
+  };
+
+  const handleCanvasBrushPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const canvas = canvasBrushCanvasRef.current;
+    if (!canvas) return;
+    canvas.setPointerCapture?.(event.pointerId);
+    const point = getCanvasBrushPoint(event);
+    if (canvasBrushMode === 'crop') {
+      canvasBrushCropStartRef.current = point;
+      setCanvasBrushCropRect(null);
+      return;
+    }
+    canvasBrushDrawingRef.current = true;
+    canvasBrushLastPointRef.current = point;
+    if (isCanvasBrushShapeMode(canvasBrushMode)) {
+      const ctx = canvas.getContext('2d');
+      canvasBrushShapeStartRef.current = point;
+      canvasBrushShapeSnapshotRef.current = ctx?.getImageData(0, 0, canvas.width, canvas.height) || null;
+      return;
+    }
+    paintCanvasBrushStroke(point, point);
+  };
+
+  const handleCanvasBrushPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!canvasBrushDrawingRef.current && canvasBrushMode !== 'crop') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = getCanvasBrushPoint(event);
+    if (canvasBrushMode === 'crop') {
+      const start = canvasBrushCropStartRef.current;
+      const canvas = canvasBrushCanvasRef.current;
+      if (start && canvas) setCanvasBrushCropRect(normalizeCanvasBrushCropRect(start, point, canvas.width, canvas.height));
+      return;
+    }
+    if (isCanvasBrushShapeMode(canvasBrushMode)) {
+      const start = canvasBrushShapeStartRef.current;
+      if (!start) return;
+      restoreCanvasBrushShapeSnapshot();
+      paintCanvasBrushShape(canvasBrushMode, start, point);
+      canvasBrushLastPointRef.current = point;
+      return;
+    }
+    const last = canvasBrushLastPointRef.current || point;
+    paintCanvasBrushStroke(last, point);
+    canvasBrushLastPointRef.current = point;
+  };
+
+  const finishCanvasBrushStroke = (event?: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    if (canvasBrushMode === 'crop') {
+      canvasBrushCropStartRef.current = null;
+      return;
+    }
+    if (!canvasBrushDrawingRef.current) return;
+    if (isCanvasBrushShapeMode(canvasBrushMode)) {
+      const start = canvasBrushShapeStartRef.current;
+      const end = event ? getCanvasBrushPoint(event) : canvasBrushLastPointRef.current || start;
+      canvasBrushDrawingRef.current = false;
+      canvasBrushLastPointRef.current = null;
+      if (start && end) {
+        restoreCanvasBrushShapeSnapshot();
+        paintCanvasBrushShape(canvasBrushMode, start, end);
+        pushCanvasBrushHistory();
+      }
+      clearCanvasBrushShapeDraft();
+      return;
+    }
+    canvasBrushDrawingRef.current = false;
+    canvasBrushLastPointRef.current = null;
+    pushCanvasBrushHistory();
+  };
+
+  const undoCanvasBrushStroke = () => {
+    const canvas = canvasBrushCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx || canvasBrushHistory.length <= 1) return;
+    const nextHistory = canvasBrushHistory.slice(0, -1);
+    const previous = nextHistory[nextHistory.length - 1];
+    const image = new window.Image();
+    image.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      setCanvasBrushHistory(nextHistory);
+    };
+    image.src = previous;
+  };
+
+  const clearCanvasBrushMarks = () => {
+    if (!canvasBrushEditor) return;
+    clearCanvasBrushShapeDraft();
+    void drawCanvasBrushEditorBase(canvasBrushEditor);
+  };
+
+  const saveCanvasBrushEditedImage = async () => {
+    const canvas = canvasBrushCanvasRef.current;
+    const baseCanvas = canvasBrushBaseCanvasRef.current;
+    const editor = canvasBrushEditor;
+    if (!canvas || !editor) return;
+    const outputCanvas = document.createElement('canvas');
+    outputCanvas.width = editor.width;
+    outputCanvas.height = editor.height;
+    const outputCtx = outputCanvas.getContext('2d');
+    if (!outputCtx) {
+      showToast('保存标记图失败');
+      return;
+    }
+    if (baseCanvas) outputCtx.drawImage(baseCanvas, 0, 0, editor.width, editor.height);
+    else {
+      const baseImage = await loadCanvasBrushImage(editor.baseDataUrl);
+      outputCtx.fillStyle = '#ffffff';
+      outputCtx.fillRect(0, 0, editor.width, editor.height);
+      outputCtx.drawImage(baseImage, 0, 0, editor.width, editor.height);
+    }
+    outputCtx.drawImage(canvas, 0, 0, editor.width, editor.height);
+    const dataUrl = outputCanvas.toDataURL('image/png');
+    const item: BufferItem = {
+      id: Math.random().toString(36).substring(2, 9),
+      type: 'image',
+      content: `${editor.name} 标记`,
+      name: `${editor.name} 标记.png`,
+      url: dataUrl,
+      path: dataUrl,
+      sourceUrl: editor.source,
+      originalUrl: editor.source,
+      remark: '画布画笔标记 / AI 修改参考图',
+      createdAt: Date.now(),
+      isQuickAccess: false,
+    };
+    const displaySize = getCanvasInitialImageSize(editor.width, editor.height);
+    const canvasItem: CanvasImageItem = {
+      id: `canvas_${item.id}`,
+      item,
+      x: editor.x + Math.min(editor.nodeWidth + 48, 360),
+      y: editor.y + 28,
+      width: displaySize.width,
+      height: displaySize.height,
+    };
+    if (appendCanvasItems([canvasItem], '保存画布标记图') > 0) {
+      showToast('已生成标记图，可直接连接到 AI 节点');
+      setCanvasBrushEditor(null);
+    }
   };
 
   const getCanvasAiInputSourceCandidates = (item: BufferItem) => {
@@ -6133,39 +8931,64 @@ function MainApp() {
       || /^\\\\/.test(value);
   };
 
-  const prepareCanvasAiInputSource = async (item: BufferItem, mode: 'stable' | 'remote-first' = 'stable') => {
+  const prepareCanvasAiInputSource = async (
+    item: BufferItem,
+    mode: 'stable' | 'remote-first' = 'stable',
+    delivery: 'auto' | 'direct' | 'remote-only' = 'auto',
+    referenceFormat: 'any' | 'jpeg' = 'any'
+  ) => {
     const candidates = getCanvasAiInputSourceCandidates(item);
     const remoteFallback = candidates.find(source => isRemoteHttpImageSource(source));
-    if (mode === 'remote-first' && remoteFallback) {
+    const forceJpegReference = referenceFormat === 'jpeg' && item.type === 'image';
+    if (mode === 'remote-first' && remoteFallback && !forceJpegReference) {
       return { source: remoteFallback, remoteFallback, usedRemoteFirst: true };
     }
     const localCandidates = candidates.filter(source => !isRemoteHttpImageSource(source));
+    const directSource = localCandidates.find(source => isDirectCanvasAiInputSource(source));
+    const publishableDirectSource = localCandidates.find(source => (
+      isDirectCanvasAiInputSource(source) && !isDataMediaSourceValue(source)
+    ));
     if (item.type === 'video') {
-      const directVideoSource = localCandidates.find(source => isDirectCanvasAiInputSource(source));
-      if (directVideoSource) return { source: directVideoSource, remoteFallback, usedRemoteFirst: false };
+      if (directSource) return { source: directSource, remoteFallback, usedRemoteFirst: false };
       if (remoteFallback) return { source: remoteFallback, remoteFallback, usedRemoteFirst: false };
       throw new Error('参考视频没有可用视频源');
     }
-    let lastError: unknown = null;
 
-    for (const source of localCandidates) {
+    if (delivery === 'remote-only' && publishableDirectSource && !forceJpegReference) {
+      return { source: publishableDirectSource, remoteFallback, usedRemoteFirst: false };
+    }
+
+    let lastError: unknown = null;
+    const readableCandidates = forceJpegReference
+      ? Array.from(new Set([...localCandidates, remoteFallback].filter((source): source is string => !!source)))
+      : localCandidates;
+
+    for (const source of readableCandidates) {
       try {
-        const dataUrl = await imageSourceToDataUrl(source, true);
+        const dataUrl = forceJpegReference
+          ? await imageSourceToJpegDataUrl(source)
+          : await imageSourceToDataUrl(source, true);
         if (dataUrl) return { source: dataUrl, remoteFallback, usedRemoteFirst: false };
       } catch (err) {
         lastError = err;
       }
     }
 
-    const directSource = localCandidates.find(source => isDirectCanvasAiInputSource(source));
+    if (forceJpegReference) {
+      const compatibleDirectSource = localCandidates.find(source => isLikelyJpegOrPngImageSource(source));
+      if (compatibleDirectSource) return { source: compatibleDirectSource, remoteFallback, warning: lastError, usedRemoteFirst: false };
+      if (remoteFallback && isLikelyJpegOrPngImageSource(remoteFallback)) {
+        return { source: remoteFallback, remoteFallback, warning: lastError, usedRemoteFirst: false };
+      }
+      throw lastError || new Error('Image2 reference image must be readable as JPG or PNG');
+    }
     if (directSource) return { source: directSource, remoteFallback, warning: lastError, usedRemoteFirst: false };
     if (remoteFallback) return { source: remoteFallback, remoteFallback, usedRemoteFirst: false };
     throw lastError || new Error('参考图没有可用图片源');
   };
 
   const getCanvasAiOutputSize = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-    const [rawW, rawH] = aspectRatio.split(':').map(value => Number(value));
-    const ratio = rawW > 0 && rawH > 0 ? rawW / rawH : 16 / 9;
+    const ratio = parseCanvasAspectRatioValue(aspectRatio);
     if (ratio >= 1) {
       const width = 320;
       return { width, height: Math.round(width / ratio) };
@@ -6276,37 +9099,107 @@ function MainApp() {
     return mediaInputs;
   };
 
-  const stopTemporaryCloudflaredShares = async (shareIds: string[]) => {
-    await Promise.all(shareIds.map(shareId => (
-      invoke('stop_cloudflared_share', { shareId }).catch(err => {
-        console.warn('cloudflared 临时分享清理失败:', err);
-      })
-    )));
+  const stopTemporaryReferenceShares = async (shares: TemporaryReferenceShare[]) => {
+    await Promise.all(shares.map(share => {
+      const command = share.kind === 'r2' ? 'delete_r2_public_image_urls' : 'stop_cloudflared_share';
+      return invoke(command, { shareId: share.id }).catch(err => {
+        console.warn(`${share.kind} 临时分享清理失败:`, err);
+      });
+    }));
   };
 
-  const publishLocalAiInputs = async (sources: string[]) => {
-    if (sources.length === 0) return { urls: [] as string[], shareIds: [] as string[] };
+  const publishLocalAiInputs = async (
+    sources: string[],
+    preference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first'
+  ) => {
+    if (sources.length === 0) return { urls: [] as string[], shareIds: [] as TemporaryReferenceShare[] };
     if (!isCloudflaredDisclaimerAccepted) {
       throw new Error('使用本地图生图前，需要先同意本软件免责声明');
     }
 
-    const cacheDir = await getLatestFileCacheDir();
-    const result = await invoke<CloudflaredPublicImageUrlsResult>('create_cloudflared_public_image_urls', {
-      sources,
-      dir: cacheDir,
-    });
-    const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
-    if (!result.shareId || urls.length === 0) {
-      throw new Error('cloudflared 没有返回可用的公网图片 URL');
+    const publishViaCloudflared = async () => {
+      const cacheDir = await getLatestFileCacheDir();
+      const result = await invoke<CloudflaredPublicImageUrlsResult>('create_cloudflared_public_image_urls', {
+        sources,
+        dir: cacheDir,
+      });
+      const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
+      if (!result.shareId || urls.length === 0) {
+        throw new Error('cloudflared 没有返回可用的公网图片 URL');
+      }
+      return { urls, shareIds: [{ kind: 'cloudflared' as const, id: result.shareId }] };
+    };
+
+    const publishViaLitterbox = async () => {
+      const result = await invoke<CloudflaredPublicImageUrlsResult>('create_litterbox_public_image_urls', {
+        sources,
+        time: '1h',
+      });
+      const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
+      if (urls.length === 0) {
+        throw new Error('Litterbox 没有返回可用的公网图片 URL');
+      }
+      return { urls, shareIds: [] as TemporaryReferenceShare[] };
+    };
+
+    const publishViaTmpfiles = async () => {
+      const result = await invoke<CloudflaredPublicImageUrlsResult>('create_tmpfiles_public_image_urls', { sources });
+      const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
+      if (urls.length === 0) {
+        throw new Error('Tmpfiles 没有返回可用的公网图片 URL');
+      }
+      return { urls, shareIds: [] as TemporaryReferenceShare[] };
+    };
+
+    const publishViaR2 = async () => {
+      const result = await invoke<CloudflaredPublicImageUrlsResult>('create_r2_public_image_urls', { sources });
+      const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
+      if (!result.shareId || urls.length === 0) {
+        throw new Error('R2 没有返回可用的公网图片 URL');
+      }
+      return { urls, shareIds: [{ kind: 'r2' as const, id: result.shareId }] };
+    };
+
+    const attempts = preference === 'hosted-first'
+      ? [
+        { label: 'Tmpfiles', run: publishViaTmpfiles },
+        { label: 'Litterbox', run: publishViaLitterbox },
+        { label: 'R2', run: publishViaR2 },
+        { label: 'cloudflared', run: publishViaCloudflared },
+      ]
+      : [
+        { label: 'cloudflared', run: publishViaCloudflared },
+        { label: 'Tmpfiles', run: publishViaTmpfiles },
+        { label: 'Litterbox', run: publishViaLitterbox },
+        { label: 'R2', run: publishViaR2 },
+      ];
+    const errors: Array<{ label: string; error: unknown }> = [];
+    for (const attempt of attempts) {
+      try {
+        return await attempt.run();
+      } catch (error) {
+        errors.push({ label: attempt.label, error });
+        const nextAttempt = attempts[errors.length];
+        console.warn(`${attempt.label} 参考图发布失败${nextAttempt ? `，尝试改用 ${nextAttempt.label}` : ''}:`, error);
+      }
     }
-    return { urls, shareIds: [result.shareId] };
+
+    const visibleErrors = errors.filter(({ label, error }) => {
+      if (label !== 'R2') return true;
+      return !/r2\.local\.json|R2 配置|没有找到 r2/i.test(error instanceof Error ? error.message : String(error));
+    });
+    const summary = (visibleErrors.length > 0 ? visibleErrors : errors)
+      .map(({ label, error }) => `${label}：${getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error))}`)
+      .join('；');
+    throw new Error(summary || '公网参考图发布失败');
   };
 
   const getCanvasImageInputsForNode = async (
     canvasItem: CanvasImageItem,
     mode: 'stable' | 'remote-first' = 'stable',
     delivery: 'auto' | 'direct' | 'remote-only' = 'auto',
-    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current,
+    referenceFormat: 'any' | 'jpeg' = 'any'
   ) => {
     const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
     const inputMode = provider === 'openai-compatible' ? 'stable' : mode;
@@ -6321,13 +9214,14 @@ function MainApp() {
       label: string;
       type: BufferItem['type'];
     }> = [];
-    const temporaryShareIds: string[] = [];
+    const temporaryShareIds: TemporaryReferenceShare[] = [];
     const failedItems: string[] = [];
     const failedVideoItems: string[] = [];
+    const preparationErrors: string[] = [];
     for (const inputItem of inputImageItems) {
       const label = inputItem.name || inputItem.content || (inputItem.type === 'video' ? '参考视频' : '参考图');
       try {
-        const prepared = await prepareCanvasAiInputSource(inputItem, inputMode);
+        const prepared = await prepareCanvasAiInputSource(inputItem, inputMode, delivery, referenceFormat);
         if (prepared.usedRemoteFirst) usedRemoteFirst = true;
         if (prepared.warning) {
           console.warn('AI 节点参考图浏览器读取失败，改用本地源:', prepared.warning);
@@ -6336,7 +9230,7 @@ function MainApp() {
           result.push(prepared.source);
           continue;
         }
-        if (requireRemoteInputs && prepared.remoteFallback) {
+        if (requireRemoteInputs && referenceFormat !== 'jpeg' && prepared.remoteFallback) {
           result.push(prepared.remoteFallback);
           continue;
         }
@@ -6348,6 +9242,7 @@ function MainApp() {
         });
       } catch (err) {
         console.warn('AI 节点参考图读取失败:', err);
+        preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
         failedItems.push(label);
         if (inputItem.type === 'video') failedVideoItems.push(label);
       }
@@ -6359,10 +9254,11 @@ function MainApp() {
         result.push(...localSources);
       } else if (requireRemoteInputs) {
         try {
-          const published = await publishLocalAiInputs(localSources);
+          const published = await publishLocalAiInputs(localSources, 'hosted-first');
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
         } catch (err) {
+          preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
           const remoteFallbacks = localInputsForCloudflared
             .map(item => item.remoteFallback)
             .filter((value): value is string => !!value);
@@ -6397,6 +9293,7 @@ function MainApp() {
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
         } catch (err) {
+          preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
           const remoteFallbacks = localInputsForCloudflared
             .map(item => item.remoteFallback)
             .filter((value): value is string => !!value);
@@ -6433,7 +9330,8 @@ function MainApp() {
         : delivery === 'direct'
           ? '请确认参考图可被读取为 jpg/png'
           : '请确认 cloudflared 可用';
-      throw new Error(`参考图准备失败：${failedItems.slice(0, 3).join('、') || hint}`);
+      const detail = Array.from(new Set(preparationErrors.filter(Boolean))).slice(0, 2).join('；');
+      throw new Error(`参考图准备失败：${failedItems.slice(0, 3).join('、') || hint}${detail ? `；${detail}` : ''}`);
     }
     return { images: Array.from(new Set(result)), temporaryShareIds, usedRemoteFirst };
   };
@@ -6476,6 +9374,7 @@ function MainApp() {
 
   const openCanvasPresetEditor = () => {
     setIsCanvasWorkflowManagerOpen(false);
+    setSelectedCanvasPresetDeleteIds([]);
     setCanvasPresetEditorMode('create');
     setCanvasPresetEditingId('');
     setCanvasPresetNameDraft('');
@@ -6495,6 +9394,7 @@ function MainApp() {
     setCanvasPresetEditorMode('manage');
     setCanvasPresetEditingId(preset.id);
     applyCanvasPresetDraft(preset);
+    setSelectedCanvasPresetDeleteIds([]);
     setIsCanvasPresetEditorOpen(true);
   };
 
@@ -6511,6 +9411,7 @@ function MainApp() {
     setCanvasPresetEditingId('');
     setCanvasPresetNameDraft('');
     setCanvasPresetPromptDraft('');
+    setSelectedCanvasPresetDeleteIds([]);
   };
 
   const saveCanvasAiCustomPromptPreset = () => {
@@ -6542,24 +9443,44 @@ function MainApp() {
     showToast(canvasPresetEditorMode === 'manage' ? `已更新预设「${label}」` : `已新增预设「${label}」`);
   };
 
+  const deleteCanvasAiPromptPresetIds = (presetIds: string[]) => {
+    const existingIds = new Set(canvasAiPromptPresets.map(item => item.id));
+    const targetIds = Array.from(new Set(presetIds)).filter(id => existingIds.has(id));
+    if (targetIds.length === 0) {
+      showToast('请先选择要删除的预设');
+      return;
+    }
+    const targetIdSet = new Set(targetIds);
+    const builtInIds = CANVAS_AI_PROMPT_PRESETS
+      .filter(item => targetIdSet.has(item.id))
+      .map(item => item.id);
+    const builtInIdSet = new Set(builtInIds);
+    setCustomCanvasAiPromptPresets(prev => prev.filter(item => !targetIdSet.has(item.id)));
+    if (builtInIds.length > 0) {
+      setHiddenBuiltInCanvasAiPromptPresetIds(prev => Array.from(new Set([...prev, ...builtInIds])));
+    }
+    setSelectedCanvasPresetDeleteIds(prev => prev.filter(id => !targetIdSet.has(id)));
+    const nextPreset = canvasAiPromptPresets.find(item => !targetIdSet.has(item.id)) || null;
+    if (nextPreset) {
+      setCanvasPresetEditorMode('manage');
+      setCanvasPresetEditingId(nextPreset.id);
+      applyCanvasPresetDraft(nextPreset);
+    } else {
+      setCanvasPresetEditorMode('create');
+      setCanvasPresetEditingId('');
+      setCanvasPresetNameDraft('');
+      setCanvasPresetPromptDraft('');
+    }
+    showToast(
+      builtInIdSet.size > 0
+        ? `已删除 ${targetIds.length} 个节点预设，内置项已从列表隐藏`
+        : `已删除 ${targetIds.length} 个节点预设`
+    );
+  };
+
   const deleteCanvasAiCustomPromptPreset = () => {
     if (!canvasPresetEditingId) return;
-    const editingId = canvasPresetEditingId;
-    const customPreset = customCanvasAiPromptPresets.find(item => item.id === editingId);
-    const builtInPreset = CANVAS_AI_PROMPT_PRESETS.find(item => item.id === editingId);
-    if (!customPreset) {
-      showToast('内置预设尚未修改，无需恢复');
-      return;
-    }
-    setCustomCanvasAiPromptPresets(prev => prev.filter(item => item.id !== editingId));
-    if (builtInPreset) {
-      updateCanvasNodesForPreset(builtInPreset);
-      applyCanvasPresetDraft(builtInPreset);
-      showToast(`已恢复「${builtInPreset.label}」默认预设`);
-      return;
-    }
-    closeCanvasPresetEditor();
-    showToast(`已删除预设「${customPreset.label}」`);
+    deleteCanvasAiPromptPresetIds([canvasPresetEditingId]);
   };
 
   const getCanvasTemplateImportPayload = (rawValue: unknown) => {
@@ -6581,20 +9502,25 @@ function MainApp() {
     };
   };
 
-  const chooseCanvasTemplateImportFile = async () => {
+  const chooseCanvasTemplateImportFiles = async () => {
     const selected = await open({
-      multiple: false,
+      multiple: true,
       filters: [{ name: 'JSON', extensions: ['json'] }],
     });
-    return Array.isArray(selected) ? selected[0] : selected;
+    return Array.isArray(selected) ? selected : (selected ? [selected] : []);
   };
 
   const importCanvasTemplateFile = async (scope: 'preset' | 'workflow' | 'all') => {
     try {
-      const filePath = await chooseCanvasTemplateImportFile();
-      if (!filePath) return;
-      const parsed = JSON.parse(await readTextFile(filePath));
-      const payload = getCanvasTemplateImportPayload(parsed);
+      const filePaths = await chooseCanvasTemplateImportFiles();
+      if (filePaths.length === 0) return;
+      const payload = { presets: [] as CanvasAiPromptPreset[], workflows: [] as CanvasWorkflowTemplate[] };
+      for (const filePath of filePaths) {
+        const parsed = JSON.parse(await readTextFile(filePath));
+        const filePayload = getCanvasTemplateImportPayload(parsed);
+        payload.presets.push(...filePayload.presets);
+        payload.workflows.push(...filePayload.workflows);
+      }
       const shouldImportPresets = scope === 'preset' || scope === 'all';
       const shouldImportWorkflows = scope === 'workflow' || scope === 'all';
       let importedPresetCount = 0;
@@ -6702,8 +9628,34 @@ function MainApp() {
     void exportCanvasTemplateFile({ presets: [preset] }, `${preset.label || 'canvas-preset'}.json`);
   };
 
-  const exportAllCustomCanvasPresets = () => {
-    void exportCanvasTemplateFile({ presets: customCanvasAiPromptPresets }, 'canvas-prompt-presets.json');
+  const exportAllCanvasPresets = () => {
+    void exportCanvasTemplateFile({ presets: canvasAiPromptPresets }, 'canvas-all-prompt-presets.json');
+  };
+
+  const deleteSelectedCanvasPromptPresets = () => {
+    const selectedIds = selectedCanvasPresetDeleteIds.filter(id => canvasAiPromptPresets.some(preset => preset.id === id));
+    if (selectedIds.length === 0) {
+      showToast('请先勾选要删除的节点预设');
+      return;
+    }
+    const count = selectedIds.length;
+    const builtInCount = selectedIds.filter(id => CANVAS_AI_PROMPT_PRESETS.some(preset => preset.id === id)).length;
+    setConfirmDialog({
+      isOpen: true,
+      title: '批量删除节点预设？',
+      message: `将删除已勾选的 ${count} 个节点预设${builtInCount > 0 ? `，其中 ${builtInCount} 个内置预设会从列表隐藏` : ''}。画布上已有节点会保留当前内容。`,
+      onConfirm: () => {},
+      actions: [
+        {
+          label: `删除 ${count} 个`,
+          onClick: () => {
+            deleteCanvasAiPromptPresetIds(selectedIds);
+            closeConfirmDialog();
+          },
+          className: 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
+        },
+      ],
+    });
   };
 
   const buildCanvasAiGeneratorNode = (
@@ -7128,10 +10080,21 @@ function MainApp() {
       showToast('先框选要保存为工作流的节点');
       return null;
     }
+    const canvasItemsById = new Map(canvasItemsRef.current.map(item => [item.id, item]));
     const selectedIdSet = new Set(selectedIds);
+    for (const item of canvasItemsRef.current) {
+      if (!selectedIdSet.has(item.id) || item.ai?.type !== 'image-generator') continue;
+      (item.inputs || []).forEach(inputId => {
+        const inputItem = canvasItemsById.get(inputId);
+        if (!inputItem || inputItem.ai || !['image', 'text'].includes(inputItem.item.type)) return;
+        selectedIdSet.add(inputId);
+      });
+    }
     const selectedItems = canvasItemsRef.current.filter(item => selectedIdSet.has(item.id));
     const workflowItems = selectedItems.filter(item => item.ai?.type !== 'workflow' && (item.ai?.type === 'image-generator' || canUseCanvasItemAsAiInput(item)));
     const aiCount = workflowItems.filter(item => item.ai?.type === 'image-generator').length;
+    const fixedImageCount = workflowItems.filter(item => !item.ai && item.item.type === 'image').length;
+    const fixedTextCount = workflowItems.filter(item => !item.ai && item.item.type === 'text').length;
     if (aiCount === 0) {
       showToast('工作流至少需要包含一个生图节点');
       return null;
@@ -7140,11 +10103,7 @@ function MainApp() {
     if (!bounds) return null;
     const workflowNodeIds = new Set(workflowItems.map(item => item.id));
     const nodes = workflowItems.map((item): CanvasWorkflowNodeTemplate => {
-      const savedItem = stripHeavyDataThumbnail(item.item);
-      const safeUrl = savedItem.url && isDataImageSourceValue(savedItem.url) ? undefined : savedItem.url;
-      const safeThumbnail = savedItem.thumbnail && isDataImageSourceValue(savedItem.thumbnail) ? undefined : savedItem.thumbnail;
-      const safeSourceUrl = savedItem.sourceUrl && isDataImageSourceValue(savedItem.sourceUrl) ? undefined : savedItem.sourceUrl;
-      const safeOriginalUrl = savedItem.originalUrl && isDataImageSourceValue(savedItem.originalUrl) ? undefined : savedItem.originalUrl;
+      const savedItem = prepareCanvasWorkflowTemplateItem(item.item);
       return {
         id: item.id,
         x: item.x - bounds.x,
@@ -7159,12 +10118,9 @@ function MainApp() {
           name: item.item.name,
           createdAt: 0,
           isQuickAccess: false,
-          url: safeUrl,
-          thumbnail: safeThumbnail,
-          sourceUrl: safeSourceUrl,
-          originalUrl: safeOriginalUrl,
         },
         inputs: (item.inputs || []).filter(inputId => workflowNodeIds.has(inputId)),
+        fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         ai: item.ai
           ? {
             ...cloneDrawerValue(item.ai),
@@ -7187,6 +10143,8 @@ function MainApp() {
       externalInputIds,
       selectedItemIds: workflowItems.map(item => item.id),
       aiCount,
+      fixedImageCount,
+      fixedTextCount,
     };
   };
 
@@ -7214,7 +10172,7 @@ function MainApp() {
     const workflow: CanvasWorkflowTemplate = {
       id: `custom-workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
       label,
-      hint: `${canvasWorkflowSaveDraft.nodes.length} 个节点，${canvasWorkflowSaveDraft.aiCount} 个生图节点`,
+      hint: `${canvasWorkflowSaveDraft.nodes.length} 个节点，${canvasWorkflowSaveDraft.aiCount} 个生图节点，固定 ${canvasWorkflowSaveDraft.fixedImageCount} 图/${canvasWorkflowSaveDraft.fixedTextCount} 文`,
       nodes: canvasWorkflowSaveDraft.nodes,
       createdAt: Date.now(),
     };
@@ -7293,12 +10251,14 @@ function MainApp() {
       return;
     }
     setIsCanvasPresetEditorOpen(false);
+    setSelectedCanvasWorkflowDeleteIds([]);
     selectCanvasWorkflowForEdit(workflow.id);
     setIsCanvasWorkflowManagerOpen(true);
   };
 
   const closeCanvasWorkflowManager = () => {
     setIsCanvasWorkflowManagerOpen(false);
+    setSelectedCanvasWorkflowDeleteIds([]);
   };
 
   const saveCanvasWorkflowManagerChanges = () => {
@@ -7348,7 +10308,7 @@ function MainApp() {
     const label = (canvasWorkflowNameDraft.trim() || source.label).slice(0, 32);
     const draft = buildCanvasWorkflowSaveDraftFromSelection(label);
     if (!draft) return;
-    const hint = canvasWorkflowHintDraft.trim().slice(0, 80) || `${draft.nodes.length} 个节点，${draft.aiCount} 个生图节点`;
+    const hint = canvasWorkflowHintDraft.trim().slice(0, 80) || `${draft.nodes.length} 个节点，${draft.aiCount} 个生图节点，固定 ${draft.fixedImageCount} 图/${draft.fixedTextCount} 文`;
     const nextWorkflow = normalizeCanvasWorkflowTemplate({
       ...cloneDrawerValue(source),
       id: source.id,
@@ -7374,41 +10334,59 @@ function MainApp() {
     showToast(`已用选中节点更新「${nextWorkflow.label}」`);
   };
 
+  const deleteCanvasWorkflowIds = (workflowIds: string[]) => {
+    const existingIds = new Set(canvasWorkflowTemplates.map(item => item.id));
+    const targetIds = Array.from(new Set(workflowIds)).filter(id => existingIds.has(id));
+    if (targetIds.length === 0) {
+      showToast('请先选择要删除的工作流');
+      return;
+    }
+    const targetIdSet = new Set(targetIds);
+    const builtInIds = CANVAS_BUILT_IN_WORKFLOWS
+      .filter(item => targetIdSet.has(item.id))
+      .map(item => item.id);
+    setCustomCanvasWorkflows(prev => prev.filter(item => !targetIdSet.has(item.id)));
+    if (builtInIds.length > 0) {
+      setHiddenBuiltInCanvasWorkflowIds(prev => Array.from(new Set([...prev, ...builtInIds])));
+    }
+    setSelectedCanvasWorkflowDeleteIds(prev => prev.filter(id => !targetIdSet.has(id)));
+    const nextWorkflow = canvasWorkflowTemplates.find(item => !targetIdSet.has(item.id)) || null;
+    if (nextWorkflow) {
+      setCanvasWorkflowEditingId(nextWorkflow.id);
+      setCanvasWorkflowNameDraft(nextWorkflow.label);
+      setCanvasWorkflowHintDraft(nextWorkflow.hint || '');
+    } else {
+      setCanvasWorkflowEditingId('');
+      setCanvasWorkflowNameDraft('');
+      setCanvasWorkflowHintDraft('');
+    }
+    showToast(
+      builtInIds.length > 0
+        ? `已删除 ${targetIds.length} 个工作流，内置项已从列表隐藏`
+        : `已删除 ${targetIds.length} 个工作流`
+    );
+  };
+
   const deleteCanvasWorkflowFromManager = () => {
     const source = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId);
     if (!source) {
       showToast('请选择要删除的工作流');
       return;
     }
-    const isCustom = customCanvasWorkflows.some(item => item.id === source.id);
-    if (!isCustom) {
-      showToast('内置工作流还没有修改，不能删除');
-      return;
-    }
-    const isBuiltInOverride = CANVAS_BUILT_IN_WORKFLOWS.some(workflow => workflow.id === source.id);
+    const isBuiltInWorkflow = CANVAS_BUILT_IN_WORKFLOWS.some(workflow => workflow.id === source.id);
     setConfirmDialog({
       isOpen: true,
-      title: isBuiltInOverride ? '恢复内置工作流？' : '删除工作流？',
-      message: isBuiltInOverride
-        ? `删除「${source.label}」的本地修改后，会恢复为内置工作流。画布上已经放置的模块会保留当前快照。`
+      title: '删除工作流？',
+      message: isBuiltInWorkflow
+        ? `删除「${source.label}」后，它会从工作流列表里隐藏。画布上已经放置的模块会保留当前快照。`
         : `删除「${source.label}」后，它会从工作流列表里移除。画布上已经放置的模块会保留当前快照。`,
       onConfirm: () => {},
       actions: [
         {
-          label: isBuiltInOverride ? '恢复内置' : '删除',
+          label: '删除',
           onClick: () => {
-            setCustomCanvasWorkflows(prev => prev.filter(item => item.id !== source.id));
-            const restoredBuiltIn = CANVAS_BUILT_IN_WORKFLOWS.find(workflow => workflow.id === source.id);
-            const nextWorkflow = isBuiltInOverride
-              ? restoredBuiltIn
-              : canvasWorkflowTemplates.find(item => item.id !== source.id) || CANVAS_BUILT_IN_WORKFLOWS[0];
-            if (nextWorkflow) {
-              setCanvasWorkflowEditingId(nextWorkflow.id);
-              setCanvasWorkflowNameDraft(nextWorkflow.label);
-              setCanvasWorkflowHintDraft(nextWorkflow.hint || '');
-            }
+            deleteCanvasWorkflowIds([source.id]);
             closeConfirmDialog();
-            showToast(isBuiltInOverride ? `已恢复内置工作流「${source.label}」` : `已删除工作流「${source.label}」`);
           },
           className: 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
         },
@@ -7496,11 +10474,7 @@ function MainApp() {
     ))));
     const nodes = groupItems.map((item): CanvasWorkflowNodeTemplate => {
       const templateId = templateIdByCanvasId.get(item.id) || item.id;
-      const savedItem = stripHeavyDataThumbnail(item.item);
-      const safeUrl = savedItem.url && isDataImageSourceValue(savedItem.url) ? undefined : savedItem.url;
-      const safeThumbnail = savedItem.thumbnail && isDataImageSourceValue(savedItem.thumbnail) ? undefined : savedItem.thumbnail;
-      const safeSourceUrl = savedItem.sourceUrl && isDataImageSourceValue(savedItem.sourceUrl) ? undefined : savedItem.sourceUrl;
-      const safeOriginalUrl = savedItem.originalUrl && isDataImageSourceValue(savedItem.originalUrl) ? undefined : savedItem.originalUrl;
+      const savedItem = prepareCanvasWorkflowTemplateItem(item.item);
       return {
         id: templateId,
         x: item.x - bounds.x,
@@ -7515,14 +10489,11 @@ function MainApp() {
           name: item.item.name,
           createdAt: 0,
           isQuickAccess: false,
-          url: safeUrl,
-          thumbnail: safeThumbnail,
-          sourceUrl: safeSourceUrl,
-          originalUrl: safeOriginalUrl,
         },
         inputs: (item.inputs || [])
           .map(inputId => templateIdByCanvasId.get(inputId))
           .filter((inputId): inputId is string => !!inputId),
+        fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         ai: item.ai
           ? {
             ...cloneDrawerValue(item.ai),
@@ -7560,8 +10531,11 @@ function MainApp() {
           content: node.item.content || '',
           name: node.item.name || '',
           remark: node.item.remark || '',
+          url: node.item.url || '',
+          path: node.item.path || '',
         },
         inputs: [...(node.inputs || [])].sort(),
+        fixedInput: !!node.fixedInput,
         ai: node.ai
           ? {
             type: node.ai.type,
@@ -7616,8 +10590,34 @@ function MainApp() {
     void exportCanvasTemplateFile({ workflows: [workflow] }, `${workflow.label || 'canvas-workflow'}.json`);
   };
 
-  const exportAllCustomCanvasWorkflows = () => {
-    void exportCanvasTemplateFile({ workflows: customCanvasWorkflows }, 'canvas-workflows.json');
+  const exportAllCanvasWorkflows = () => {
+    void exportCanvasTemplateFile({ workflows: canvasWorkflowTemplates }, 'canvas-all-workflows.json');
+  };
+
+  const deleteSelectedCanvasWorkflows = () => {
+    const selectedIds = selectedCanvasWorkflowDeleteIds.filter(id => canvasWorkflowTemplates.some(workflow => workflow.id === id));
+    if (selectedIds.length === 0) {
+      showToast('请先勾选要删除的工作流');
+      return;
+    }
+    const count = selectedIds.length;
+    const builtInCount = selectedIds.filter(id => CANVAS_BUILT_IN_WORKFLOWS.some(workflow => workflow.id === id)).length;
+    setConfirmDialog({
+      isOpen: true,
+      title: '批量删除工作流预设？',
+      message: `将删除已勾选的 ${count} 个工作流${builtInCount > 0 ? `，其中 ${builtInCount} 个内置工作流会从列表隐藏` : ''}。画布上已有工作流模块会保留当前快照。`,
+      onConfirm: () => {},
+      actions: [
+        {
+          label: `删除 ${count} 个`,
+          onClick: () => {
+            deleteCanvasWorkflowIds(selectedIds);
+            closeConfirmDialog();
+          },
+          className: 'rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
+        },
+      ],
+    });
   };
 
   const collapseCanvasWorkflowGroupNow = (
@@ -7817,6 +10817,36 @@ function MainApp() {
         })()
       : item
     )));
+  };
+
+  const commitCanvasAiPromptDraft = (canvasId: string, content?: string, sync = false) => {
+    const nextContent = content ?? canvasAiPromptDraftValuesRef.current[canvasId];
+    if (nextContent === undefined) return;
+    const timer = canvasAiPromptDraftTimersRef.current[canvasId];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete canvasAiPromptDraftTimersRef.current[canvasId];
+    }
+    delete canvasAiPromptDraftValuesRef.current[canvasId];
+    const current = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!current) return;
+    if ((current?.item.content || '') === nextContent) return;
+    const commit = () => updateCanvasAiGeneratorData(
+      canvasId,
+      { prompt: nextContent, status: 'idle', error: undefined },
+      nextContent
+    );
+    if (sync) flushSync(commit);
+    else commit();
+  };
+
+  const scheduleCanvasAiPromptDraftCommit = (canvasId: string, content: string) => {
+    canvasAiPromptDraftValuesRef.current[canvasId] = content;
+    const timer = canvasAiPromptDraftTimersRef.current[canvasId];
+    if (timer !== undefined) window.clearTimeout(timer);
+    canvasAiPromptDraftTimersRef.current[canvasId] = window.setTimeout(() => {
+      commitCanvasAiPromptDraft(canvasId);
+    }, 900);
   };
 
   const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => {
@@ -8396,10 +11426,13 @@ function MainApp() {
       outputs: currentOutputs,
       generatedAt: Date.now(),
     });
-    let temporaryCloudflaredShareIds: string[] = [];
+    let temporaryReferenceShares: TemporaryReferenceShare[] = [];
     try {
       const requestModel = target.ai.model || getCanvasAiDefaultModel(provider, mediaType);
       const isXaisWorkerRequest = mediaType === 'video' || (provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel));
+      const xaisReferenceFormat: 'any' | 'jpeg' = mediaType !== 'video' && provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel)
+        ? 'jpeg'
+        : 'any';
       const useDirectReferenceImages = provider === 'openai-compatible'
         || (provider === 'xais-chat' && !isXaisWorkerRequest);
       const inputMode = provider === 'openai-compatible'
@@ -8410,10 +11443,11 @@ function MainApp() {
         target,
         inputMode,
         isXaisWorkerRequest ? 'remote-only' : useDirectReferenceImages ? 'direct' : 'auto',
-        getSourceItems()
+        getSourceItems(),
+        xaisReferenceFormat
       );
       let inputImages = preparedInputs.images;
-      temporaryCloudflaredShareIds = preparedInputs.temporaryShareIds;
+      temporaryReferenceShares = preparedInputs.temporaryShareIds;
       const requestedCount = currentOutputs.length || clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
       let generateOptions = {
         provider,
@@ -8453,11 +11487,12 @@ function MainApp() {
             target,
             'stable',
             useDirectReferenceImages ? 'direct' : 'auto',
-            getSourceItems()
+            getSourceItems(),
+            xaisReferenceFormat
           );
           inputImages = fallbackInputs.images;
-          temporaryCloudflaredShareIds = [
-            ...temporaryCloudflaredShareIds,
+          temporaryReferenceShares = [
+            ...temporaryReferenceShares,
             ...fallbackInputs.temporaryShareIds,
           ];
           generateOptions = {
@@ -8473,7 +11508,7 @@ function MainApp() {
       const retryWithFreshRemoteInputs = async (cause: unknown) => {
         if (!isXaisWorkerRequest || generatedOutputs.length > 0 || xaisReferenceRetryCount >= 3) return false;
         const message = cause instanceof Error ? cause.message : String(cause || '');
-        if (!/(?:Failed to download media|DownloadFailed|Bad Gateway|fetch-object|CreateAsset|InvalidParameter\.Name|Name must be no more|trycloudflare|cloudflared|Cloudflare Tunnel)/i.test(message)) {
+        if (!/(?:Failed to download media|DownloadFailed|Bad Gateway|fetch-object|CreateAsset|InvalidParameter\.Name|Name must be no more|Invalid image file|image file or mode|Bad request to openai|trycloudflare|cloudflared|Cloudflare Tunnel)/i.test(message)) {
           return false;
         }
         xaisReferenceRetryCount += 1;
@@ -8487,12 +11522,13 @@ function MainApp() {
             target,
             inputMode,
             'remote-only',
-            getSourceItems()
+            getSourceItems(),
+            xaisReferenceFormat
           );
           if (freshInputs.images.length === 0) return false;
           inputImages = freshInputs.images;
-          temporaryCloudflaredShareIds = [
-            ...temporaryCloudflaredShareIds,
+          temporaryReferenceShares = [
+            ...temporaryReferenceShares,
             ...freshInputs.temporaryShareIds,
           ];
           generateOptions = {
@@ -8636,19 +11672,20 @@ function MainApp() {
       }
       return [] as CanvasAiGeneratedOutput[];
     } finally {
-      if (temporaryCloudflaredShareIds.length > 0) {
+      if (temporaryReferenceShares.length > 0) {
         if (mediaType === 'video') {
           window.setTimeout(() => {
-            void stopTemporaryCloudflaredShares(temporaryCloudflaredShareIds);
+            void stopTemporaryReferenceShares(temporaryReferenceShares);
           }, CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS);
         } else {
-          void stopTemporaryCloudflaredShares(temporaryCloudflaredShareIds);
+          void stopTemporaryReferenceShares(temporaryReferenceShares);
         }
       }
     }
   };
 
   const runCanvasAiGeneratorNode = async (targetId: string) => {
+    commitCanvasAiPromptDraft(targetId, undefined, true);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     const runToken = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -8677,6 +11714,7 @@ function MainApp() {
   };
 
   const generateCanvasAiGeneratorNode = async (targetId: string) => {
+    commitCanvasAiPromptDraft(targetId, undefined, true);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     if (getCanvasWorkflowGroup(target) && target.ai?.type === 'image-generator') {
@@ -9363,6 +12401,7 @@ function MainApp() {
         return next ? { ...item, x: next.x, y: next.y } : item;
       }));
     };
+
     const onUp = () => {
       flushCanvasItemsInFrame();
       canvasDragRef.current = null;
@@ -9850,6 +12889,7 @@ function MainApp() {
     };
 
     const handleCanvasScroll = () => {
+      scheduleCanvasViewportUpdate();
       const shouldLockScroll = isCanvasSpacePressedRef.current || canvasPanRef.current !== null;
       if (!shouldLockScroll) {
         canvasScrollLockRef.current = {
@@ -10000,6 +13040,12 @@ function MainApp() {
           event.stopPropagation();
           event.stopImmediatePropagation();
           copyCanvasItems(selectedIds);
+          if (selectedIds.length === 1) {
+            const imageTarget = getCopyableCanvasImageFromIds(selectedIds);
+            if (imageTarget) {
+              void copyCanvasImageToSystemClipboard(imageTarget);
+            }
+          }
           return;
         }
         if (isMod && !event.altKey && key === 'v') {
@@ -10732,6 +13778,7 @@ function MainApp() {
             dest,
             content: item.content || '',
             itemType: item.type,
+            feature: selectedItems.length > 1 ? 'batch_render' : 'hd_export',
           });
           exported += 1;
         } catch (err) {
@@ -10751,7 +13798,7 @@ function MainApp() {
     }
   };
 
-  const downloadBufferItems = async (sourceItems: BufferItem[]) => {
+  const downloadBufferItems = async (sourceItems: BufferItem[], options?: { feature?: string }) => {
     const cleanItems = sourceItems.filter(item => item && !(item as any).isDirectory);
     if (cleanItems.length === 0) {
       showToast('没有可下载的内容');
@@ -10779,6 +13826,7 @@ function MainApp() {
           dest: savePath,
           content: item.content || '',
           itemType: item.type,
+          feature: options?.feature || 'hd_export',
         });
         showToast('已下载');
         return;
@@ -10805,6 +13853,7 @@ function MainApp() {
             dest,
             content: item.content || '',
             itemType: item.type,
+            feature: options?.feature || 'batch_render',
           });
           downloaded += 1;
         } catch (err) {
@@ -10821,8 +13870,13 @@ function MainApp() {
 
   const downloadCanvasItemsByIds = async (ids: string[]) => {
     const idSet = new Set(ids.filter(Boolean));
-    const sourceItems = canvasItemsRef.current
-      .filter(canvasItem => idSet.has(canvasItem.id))
+    const selectedCanvasItems = canvasItemsRef.current.filter(canvasItem => idSet.has(canvasItem.id));
+    const needsCommercialExport = selectedCanvasItems.some(canvasItem => (
+      isCanvasAiGeneratorType(canvasItem.ai?.type)
+      || canvasItem.ai?.type === 'workflow'
+      || isCanvasAiGeneratedType(canvasItem.ai?.type)
+    ));
+    const sourceItems = selectedCanvasItems
       .flatMap(canvasItem => {
         if (!isCanvasAiGeneratorType(canvasItem.ai?.type) && canvasItem.ai?.type !== 'workflow') return [canvasItem.item];
         const outputItems = getCanvasAiSuccessfulOutputs(canvasItem)
@@ -10830,7 +13884,9 @@ function MainApp() {
           .filter((item): item is BufferItem => !!item);
         return outputItems.length > 0 ? outputItems : [canvasItem.item];
       });
-    await downloadBufferItems(sourceItems);
+    await downloadBufferItems(sourceItems, {
+      feature: needsCommercialExport && sourceItems.length === 1 ? 'commercial_export' : undefined,
+    });
   };
 
   const moveSelectedItemsToFolder = (folderId?: string, folderName?: string) => {
@@ -11512,6 +14568,8 @@ useEffect(() => {
       transformX = `${drawerWidth}px`;
       transitionStyle = 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
   }
+  const drawerShellTransform = transformX === '0px' ? 'none' : `translateX(${transformX})`;
+  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 w-full h-full min-w-[320px] bg-white/82 dark:bg-stone-900/94 backdrop-blur-2xl border border-white/60 dark:border-stone-800/60 shadow-[0_18px_50px_rgba(0,0,0,0.10)] flex flex-row rounded-[30px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
 
   // 🌟 退出截图时，必须先把 Tauri 窗口恢复到抽屉尺寸，再卸载全屏截图层。
   // 否则 React 会先把抽屉内容显示在全屏窗口里，视觉上就像“先放大再缩小”。
@@ -12057,7 +15115,6 @@ useEffect(() => {
     }
   };
 
-
   const finishResize = (anchor: 'left' | 'right' = 'right') => {
     const nextWidth = clamp(drawerWidthRef.current, MIN_DRAWER_WIDTH, MAX_DRAWER_WIDTH);
     const nextHeight = clamp(drawerHeightRef.current, MIN_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT);
@@ -12241,7 +15298,7 @@ useEffect(() => {
 
   useEffect(() => {
     const handlePaste = (e: any) => {
-      if (showTextInput || showFolderModal || isSearchActive || isTextEntryActive()) return;
+      if (showTextInput || showWebImageCollector || showFolderModal || isSearchActive || isTextEntryActive()) return;
       const clipboardItems = e.clipboardData?.items; if (!clipboardItems) return;
       for (let i = 0; i < clipboardItems.length; i++) {
         if (clipboardItems[i].type.startsWith('image/')) {
@@ -12270,7 +15327,7 @@ useEffect(() => {
       }
     };
     window.addEventListener('paste', handlePaste); return () => window.removeEventListener('paste', handlePaste);
-  }, [showTextInput, isSearchActive, showFolderModal, activeFolderId]);
+  }, [showTextInput, showWebImageCollector, isSearchActive, showFolderModal, activeFolderId]);
 
 
 
@@ -12464,6 +15521,7 @@ useEffect(() => {
         displayItems.length === 0 ||
         showSettings ||
         showTextInput ||
+        showWebImageCollector ||
         showFolderModal ||
         showMoveFolderModal ||
         isSearchActive ||
@@ -12492,6 +15550,7 @@ useEffect(() => {
     displayItems.length,
     showSettings,
     showTextInput,
+    showWebImageCollector,
     showFolderModal,
     showMoveFolderModal,
     isSearchActive,
@@ -12524,10 +15583,12 @@ useEffect(() => {
     isResizingState.current ||
     isDraggingOver ||
     isPinned ||
+    !!canvasBrushEditor ||
     !!selectedImage ||
     !!selectedVideo ||
     isTextEntryActive() ||
     showTextInput ||
+    showWebImageCollector ||
     showFolderModal ||
     isSearchActive ||
     editingFolderId !== null ||
@@ -12544,10 +15605,12 @@ useEffect(() => {
     isResizingState.current ||
     isDraggingOver ||
     isPinned ||
+    !!canvasBrushEditor ||
     !!selectedImage ||
     !!selectedVideo ||
     isTextEntryActive() ||
     showTextInput ||
+    showWebImageCollector ||
     editingFolderId !== null ||
     confirmDialog.isOpen ||
     showLaunchIntro ||
@@ -13150,7 +16213,7 @@ useEffect(() => {
   const calendarPageStyle = isCalendarCompactScale
     ? ({ width: CALENDAR_COMPACT_CANVAS_WIDTH, zoom: calendarPageScale } as React.CSSProperties & { zoom: number })
     : undefined;
-  const canvasImageItemsForNav = canvasItems.filter(item => item.item.type === 'image');
+  const canvasItemsForNav = canvasItems;
   const canvasGeneratedItemsForList: CanvasGeneratedListEntry[] = [
     ...canvasItems
       .filter(item => isCanvasAiGeneratedType(item.ai?.type))
@@ -13176,18 +16239,6 @@ useEffect(() => {
       }, []);
     }),
   ].sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0));
-  const canvasNavBounds = canvasImageItemsForNav.length > 0 ? {
-    left: Math.min(...canvasImageItemsForNav.map(item => item.x)),
-    top: Math.min(...canvasImageItemsForNav.map(item => item.y)),
-    right: Math.max(...canvasImageItemsForNav.map(item => item.x + item.width)),
-    bottom: Math.max(...canvasImageItemsForNav.map(item => item.y + item.height)),
-  } : null;
-  const canvasNavScale = canvasNavBounds
-    ? Math.min(
-      (CANVAS_NAV_WIDTH - 18) / Math.max(1, canvasNavBounds.right - canvasNavBounds.left),
-      (CANVAS_NAV_HEIGHT - 18) / Math.max(1, canvasNavBounds.bottom - canvasNavBounds.top),
-    )
-    : 1;
   const getCanvasItemRenderedBox = (canvasItem: CanvasImageItem): CanvasItemBox => {
     const isCanvasAiNodeItem = isCanvasAiGeneratorType(canvasItem.ai?.type) || canvasItem.ai?.type === 'workflow';
     if (!isCanvasAiNodeItem) {
@@ -13222,36 +16273,135 @@ useEffect(() => {
       height: designSize.height * nodeScale,
     };
   };
-  const canvasSelectedBoxesForRender = canvasSelectedIds.length > 1
-    ? canvasItems.filter(item => canvasSelectedIds.includes(item.id)).map(getCanvasItemRenderedBox)
-    : [];
-  const canvasSelectedBounds = canvasSelectedBoxesForRender.length > 1 ? {
+  const canvasNavItems = canvasItemsForNav.map(item => ({
+    item,
+    box: getCanvasItemRenderedBox(item),
+  }));
+  const canvasNavBounds = canvasNavItems.length > 0 ? {
+    left: Math.min(...canvasNavItems.map(entry => entry.box.x)),
+    top: Math.min(...canvasNavItems.map(entry => entry.box.y)),
+    right: Math.max(...canvasNavItems.map(entry => entry.box.x + entry.box.width)),
+    bottom: Math.max(...canvasNavItems.map(entry => entry.box.y + entry.box.height)),
+  } : null;
+  const canvasNavScale = canvasNavBounds
+    ? Math.min(
+      (CANVAS_NAV_WIDTH - 18) / Math.max(1, canvasNavBounds.right - canvasNavBounds.left),
+      (CANVAS_NAV_HEIGHT - 18) / Math.max(1, canvasNavBounds.bottom - canvasNavBounds.top),
+    )
+    : 1;
+  const canvasSelectedIdsSet = useMemo(() => new Set(canvasSelectedIds), [canvasSelectedIds]);
+  const canvasSelectedBoxesForRender = useMemo(() => (
+    canvasSelectedIds.length > 1
+      ? canvasItems.filter(item => canvasSelectedIdsSet.has(item.id)).map(getCanvasItemRenderedBox)
+      : []
+  ), [canvasItems, canvasSelectedIds, canvasSelectedIdsSet, canvasAiPromptEditingId]);
+  const canvasSelectedBounds = useMemo(() => (canvasSelectedBoxesForRender.length > 1 ? {
     x: Math.min(...canvasSelectedBoxesForRender.map(box => box.x)),
     y: Math.min(...canvasSelectedBoxesForRender.map(box => box.y)),
     width: Math.max(...canvasSelectedBoxesForRender.map(box => box.x + box.width)) - Math.min(...canvasSelectedBoxesForRender.map(box => box.x)),
     height: Math.max(...canvasSelectedBoxesForRender.map(box => box.y + box.height)) - Math.min(...canvasSelectedBoxesForRender.map(box => box.y)),
-  } : null;
-  const canvasSingleSelectedItemForRender = canvasSelectedIds.length === 1
-    ? canvasItems.find(item => item.id === canvasSelectedIds[0]) || null
-    : null;
-  const canvasSingleSelectedBoxForRender = canvasSingleSelectedItemForRender
-    ? getCanvasItemRenderedBox(canvasSingleSelectedItemForRender)
-    : null;
+  } : null), [canvasSelectedBoxesForRender]);
+  const canvasSingleSelectedItemForRender = useMemo(() => (
+    canvasSelectedIds.length === 1
+      ? canvasItems.find(item => item.id === canvasSelectedIds[0]) || null
+      : null
+  ), [canvasItems, canvasSelectedIds]);
+  const canvasSingleSelectedBoxForRender = useMemo(() => (
+    canvasSingleSelectedItemForRender
+      ? getCanvasItemRenderedBox(canvasSingleSelectedItemForRender)
+      : null
+  ), [canvasSingleSelectedItemForRender, canvasAiPromptEditingId]);
   const canvasSelectionRect = canvasSelectionBox ? normalizeCanvasSelectionBox(canvasSelectionBox) : null;
   const canvasScaledSelectionRadius = CANVAS_SELECTION_RADIUS;
   const canvasScaledNodeRadius = CANVAS_NODE_RADIUS;
   const canvasRenderScale = clamp(canvasScaleRef.current || canvasScale || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
-  const canvasItemsById = new Map(canvasItems.map(item => [item.id, item]));
-  const canvasConnectionsForRender = canvasItems.flatMap(target => (
+  const canvasItemsById = useMemo(() => new Map(canvasItems.map(item => [item.id, item])), [canvasItems]);
+  const canvasRenderViewport = useMemo<CanvasItemBox | null>(() => {
+    if (!canvasViewport) return null;
+    const overscan = isCanvasInteracting ? CANVAS_INTERACTION_OVERSCAN_PX : CANVAS_VIEWPORT_OVERSCAN_PX;
+    return {
+      x: canvasViewport.x - overscan,
+      y: canvasViewport.y - overscan,
+      width: canvasViewport.width + overscan * 2,
+      height: canvasViewport.height + overscan * 2,
+    };
+  }, [canvasViewport, isCanvasInteracting]);
+  const canvasAlwaysRenderedIds = useMemo(() => {
+    const ids = new Set(canvasSelectedIds);
+    if (canvasSingleSelectedItemForRender) ids.add(canvasSingleSelectedItemForRender.id);
+    if (canvasInputMenuForId) ids.add(canvasInputMenuForId);
+    if (canvasAiPromptEditingId) ids.add(canvasAiPromptEditingId);
+    if (canvasInputPickTargetId) ids.add(canvasInputPickTargetId);
+    if (canvasConnectionDraft) {
+      ids.add(canvasConnectionDraft.fromId);
+      canvasConnectionDraft.sourceIds.forEach(id => ids.add(id));
+    }
+    if (canvasInputActionDraft) ids.add(canvasInputActionDraft.targetId);
+    return ids;
+  }, [
+    canvasAiPromptEditingId,
+    canvasConnectionDraft,
+    canvasInputActionDraft,
+    canvasInputMenuForId,
+    canvasInputPickTargetId,
+    canvasSelectedIds,
+    canvasSingleSelectedItemForRender,
+  ]);
+  const canvasRenderableItems = useMemo(() => {
+    if (!canvasRenderViewport) return canvasItems;
+    return canvasItems.filter(item => (
+      canvasAlwaysRenderedIds.has(item.id)
+      || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(item))
+    ));
+  }, [
+    canvasAlwaysRenderedIds,
+    canvasAiPromptEditingId,
+    canvasItems,
+    canvasRenderViewport,
+  ]);
+  const getCanvasItemNavPreview = (canvasItem: CanvasImageItem): { source: string; mediaType: 'image' | 'video' } | null => {
+    const directPreview = getCanvasBufferItemNavPreview(canvasItem.item);
+    if (directPreview) return directPreview;
+
+    const outputPreview = getCanvasAiOutputPreviewSlots(canvasItem)
+      .map(output => getCanvasOutputNavPreview(canvasItem, output))
+      .find((preview): preview is { source: string; mediaType: 'image' | 'video' } => !!preview);
+    if (outputPreview) return outputPreview;
+
+    for (const inputId of canvasItem.inputs || []) {
+      const inputItem = canvasItemsById.get(inputId);
+      if (!inputItem) continue;
+      const inputDirectPreview = getCanvasBufferItemNavPreview(inputItem.item);
+      if (inputDirectPreview) return inputDirectPreview;
+      const inputOutputPreview = getCanvasAiSuccessfulOutputs(inputItem)
+        .map(output => getCanvasOutputNavPreview(inputItem, output))
+        .find((preview): preview is { source: string; mediaType: 'image' | 'video' } => !!preview);
+      if (inputOutputPreview) return inputOutputPreview;
+    }
+
+    return null;
+  };
+  const canvasConnections = useMemo(() => canvasItems.flatMap(target => (
     (target.inputs || [])
       .map(sourceId => {
         const source = canvasItemsById.get(sourceId);
         return source ? { source, target } : null;
       })
       .filter((item): item is { source: CanvasImageItem; target: CanvasImageItem } => !!item)
-  ));
-  const canvasConnectedSourceIds = new Set(canvasConnectionsForRender.map(connection => connection.source.id));
-  const canvasConnectedTargetIds = new Set(canvasConnectionsForRender.map(connection => connection.target.id));
+  )), [canvasItems, canvasItemsById]);
+  const canvasConnectionsForRender = useMemo(() => {
+    if (!canvasRenderViewport) return canvasConnections;
+    return canvasConnections.filter(({ source, target }) => (
+      canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(source))
+      || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(target))
+    ));
+  }, [canvasAiPromptEditingId, canvasConnections, canvasRenderViewport]);
+  const canvasConnectedSourceIds = useMemo(() => (
+    new Set(canvasConnections.map(connection => connection.source.id))
+  ), [canvasConnections]);
+  const canvasConnectedTargetIds = useMemo(() => (
+    new Set(canvasConnections.map(connection => connection.target.id))
+  ), [canvasConnections]);
   const canvasConnectionDraftPath = canvasConnectionDraft ? (() => {
     const bend = Math.max(80, Math.abs(canvasConnectionDraft.toX - canvasConnectionDraft.fromX) * 0.45);
     const direction = canvasConnectionDraft.toX >= canvasConnectionDraft.fromX ? 1 : -1;
@@ -13262,7 +16412,7 @@ useEffect(() => {
     const direction = canvasInputActionDraft.toX <= canvasInputActionDraft.fromX ? -1 : 1;
     return `M ${canvasInputActionDraft.fromX} ${canvasInputActionDraft.fromY} C ${canvasInputActionDraft.fromX + bend * direction} ${canvasInputActionDraft.fromY}, ${canvasInputActionDraft.toX - bend * direction} ${canvasInputActionDraft.toY}, ${canvasInputActionDraft.toX} ${canvasInputActionDraft.toY}`;
   })() : '';
-  const selectedCanvasAiGenerator = canvasItems.find(item => canvasSelectedIds.includes(item.id) && canUseCanvasItemAsAiTarget(item));
+  const selectedCanvasAiGenerator = canvasItems.find(item => canvasSelectedIdsSet.has(item.id) && canUseCanvasItemAsAiTarget(item));
   const selectedCanvasConnectableCount = selectedCanvasAiGenerator
     ? canvasSelectedIds.filter(id => {
       if (id === selectedCanvasAiGenerator.id) return false;
@@ -13274,15 +16424,63 @@ useEffect(() => {
     ? getFolderImageItemsForCanvas(canvasFolderImportPrompt.folderId)
     : [];
   const canvasPresetEditingPreset = canvasAiPromptPresets.find(item => item.id === canvasPresetEditingId) || null;
-  const canvasPresetEditingBuiltIn = CANVAS_AI_PROMPT_PRESETS.some(item => item.id === canvasPresetEditingId);
-  const canvasPresetEditingCustom = customCanvasAiPromptPresets.some(item => item.id === canvasPresetEditingId);
   const canvasPresetEditorTitle = canvasPresetEditorMode === 'manage' ? '管理预设' : '新增预设';
-  const canvasPresetDeleteLabel = canvasPresetEditingBuiltIn ? '恢复默认' : '删除';
   const canvasWorkflowEditingTemplate = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId) || null;
-  const canvasWorkflowEditingCustom = customCanvasWorkflows.some(item => item.id === canvasWorkflowEditingId);
-  const canvasWorkflowEditingBuiltIn = !!canvasWorkflowEditingTemplate?.builtin && !canvasWorkflowEditingCustom;
   const canvasWorkflowEditingNodeCount = canvasWorkflowEditingTemplate?.nodes.length || 0;
   const canvasWorkflowEditingAiCount = canvasWorkflowEditingTemplate?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0;
+  const isLicenseUnlocked = licenseStatus?.valid === true;
+  const isLicenseGateActive = !isLicenseUnlocked;
+  licenseGateActiveRef.current = isLicenseGateActive;
+  const licenseGateState = licenseStatus?.state || 'unlicensed';
+  const licenseGateTitle = isLicenseLoading && !licenseStatus
+    ? '正在读取授权'
+    : isLicenseUnlocked
+      ? '授权有效'
+      : LICENSE_STATE_LABELS[licenseGateState] || '未授权';
+  const licenseGateMessage = isLicenseLoading && !licenseStatus
+    ? '正在读取本机授权状态，请稍候。'
+    : licenseStatus?.message || '请导入有效 license 后使用抽屉。';
+
+  useEffect(() => {
+    if (!isLicenseGateActive) return;
+
+    const blockWhenOutsideLicenseGate = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-license-gate="true"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+
+    const events = [
+      'keydown',
+      'keyup',
+      'keypress',
+      'paste',
+      'drop',
+      'dragover',
+      'dragenter',
+      'pointerdown',
+      'mousedown',
+      'mouseup',
+      'click',
+      'dblclick',
+      'contextmenu',
+      'wheel',
+    ];
+
+    events.forEach(eventName => {
+      window.addEventListener(eventName, blockWhenOutsideLicenseGate, true);
+      document.addEventListener(eventName, blockWhenOutsideLicenseGate, true);
+    });
+
+    return () => {
+      events.forEach(eventName => {
+        window.removeEventListener(eventName, blockWhenOutsideLicenseGate, true);
+        document.removeEventListener(eventName, blockWhenOutsideLicenseGate, true);
+      });
+    };
+  }, [isLicenseGateActive]);
 
   return (
     <div
@@ -13359,17 +16557,116 @@ useEffect(() => {
         )}
       </AnimatePresence>
 
+      <AnimatePresence>
+        {isLicenseGateActive && (
+          <motion.div
+            data-license-gate="true"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
+            className="absolute inset-0 z-[100000] flex items-center justify-center rounded-[30px] bg-stone-100/78 p-5 text-stone-900 shadow-inner backdrop-blur-md dark:bg-stone-950/74 dark:text-stone-50 pointer-events-auto"
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <motion.div
+              initial={{ scale: 0.96, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 10 }}
+              transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
+              className="w-full max-w-[430px] rounded-[24px] border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-800 dark:bg-stone-900"
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-stone-900 text-white dark:bg-white dark:text-stone-950">
+                  <KeyRound className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-base font-black">{licenseGateTitle}</h2>
+                  <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">{licenseGateMessage}</p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[14px] border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-black text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                请联系开发者取得授权 <span className="font-mono">VX:jiuquz</span>
+              </div>
+
+              <div className="mt-4 rounded-[16px] border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-950/60">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-black text-stone-500 dark:text-stone-400">本机机器码</span>
+                  <button
+                    type="button"
+                    onClick={() => void copyMachineId()}
+                    disabled={!machineId && !licenseStatus?.machine_id}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-[10px] bg-white px-2 text-[10px] font-black text-stone-600 ring-1 ring-stone-200 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-900 dark:text-stone-200 dark:ring-stone-700 dark:hover:bg-stone-800"
+                  >
+                    <Copy className="h-3 w-3" />
+                    复制
+                  </button>
+                </div>
+                <div className="max-h-16 overflow-auto break-all font-mono text-[10px] leading-4 text-stone-600 dark:text-stone-300">
+                  {machineId || licenseStatus?.machine_id || '读取中...'}
+                </div>
+              </div>
+
+              <label className="mt-4 grid gap-2">
+                <span className="text-[11px] font-black text-stone-500 dark:text-stone-400">粘贴 license 内容</span>
+                <textarea
+                  value={licenseInputText}
+                  onChange={(event) => setLicenseInputText(event.target.value)}
+                  rows={5}
+                  spellCheck={false}
+                  placeholder="粘贴 .license / .json 文件中的 license JSON"
+                  className="w-full resize-none rounded-[16px] border border-stone-200 bg-stone-50 p-3 font-mono text-xs leading-5 text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100 dark:focus:border-blue-500"
+                />
+              </label>
+
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void importLicenseText()}
+                  disabled={isLicenseLoading}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-[14px] bg-blue-600 text-xs font-black text-white transition-colors hover:bg-blue-500 disabled:cursor-wait disabled:bg-stone-300 dark:disabled:bg-stone-700"
+                >
+                  <Check className="h-4 w-4" />
+                  导入文本
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void importLicenseFile()}
+                  disabled={isLicenseLoading}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-[14px] bg-stone-900 text-xs font-black text-white transition-colors hover:bg-stone-700 disabled:cursor-wait disabled:bg-stone-300 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200 dark:disabled:bg-stone-700"
+                >
+                  <Upload className="h-4 w-4" />
+                  选择文件
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void refreshLicenseStatus(false)}
+                  disabled={isLicenseLoading}
+                  className="col-span-2 inline-flex h-9 items-center justify-center gap-2 rounded-[13px] border border-stone-200 bg-white text-xs font-black text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isLicenseLoading ? 'animate-spin' : ''}`} />
+                  刷新授权状态
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 🌟 抽屉主体窗口：主窗口里不再包含小条，关闭时直接隐藏整个 main 窗口 */}
       <div
-        className="pointer-events-auto absolute inset-0 z-40 w-full h-full min-w-[320px] bg-white/82 dark:bg-stone-900/94 backdrop-blur-2xl border border-white/60 dark:border-stone-800/60 shadow-[0_18px_50px_rgba(0,0,0,0.10)] flex flex-row rounded-[30px] overflow-hidden isolate will-change-transform"
+        className={drawerShellClassName}
         style={{
-          opacity: snipMode.active ? 0 : 1,
-          transform: `translateX(${transformX})`,
+          opacity: isLicenseGateActive ? 0.42 : snipMode.active ? 0 : 1,
+          transform: drawerShellTransform,
           transition: transitionStyle,
+          filter: isLicenseGateActive ? 'grayscale(1) saturate(0)' : undefined,
           borderRadius: 30,
           clipPath: 'inset(0 round 30px)',
           contain: 'paint',
-          pointerEvents: isDrawerActive && (isStartupOverlayActive || (drawerState !== 'closed' && drawerState !== 'closing')) ? 'auto' : 'none',
+          pointerEvents: !isLicenseGateActive && isDrawerActive && (isStartupOverlayActive || (drawerState !== 'closed' && drawerState !== 'closing')) ? 'auto' : 'none',
         }}
         onPointerEnter={() => {
           startupAutoCloseSuppressedRef.current = false;
@@ -13413,10 +16710,30 @@ useEffect(() => {
           scheduleAutoClose(isLeftEdge || isBottomEdge ? 500 : 180);
         }}
       >
-            {(isOpen || isPinned || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-l-[30px]" onPointerDown={startResizingWidth} />}
-            {(isOpen || isPinned || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-b-[30px]" onPointerDown={startResizingHeight} />}
-            {(isOpen || isPinned || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
-            {(isOpen || isPinned || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-l-[30px]" onPointerDown={startResizingWidth} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-b-[30px]" onPointerDown={startResizingHeight} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
+
+            <AnimatePresence>
+              {localVisionModelDownload.visible && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ type: 'tween', duration: 0.18, ease: "easeOut" }}
+                  className="pointer-events-none absolute inset-x-8 bottom-[5px] z-[100020] h-[3px] overflow-hidden rounded-full bg-stone-200/70 shadow-[0_0_10px_rgba(14,165,233,0.18)] dark:bg-stone-700/70"
+                  title={localVisionModelDownload.message || '正在静默准备本地大模型'}
+                >
+                  <motion.div
+                    className={`h-full rounded-full ${localVisionModelDownload.phase === 'error' ? 'bg-red-400' : 'bg-sky-500'}`}
+                    initial={false}
+                    animate={{ width: `${clamp(localVisionModelDownload.progress, 0, 100)}%` }}
+                    transition={{ type: 'tween', duration: 0.25, ease: 'easeOut' }}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <div className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'w-16 h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col items-center pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden'}>
               {/* 主抽屉：固定在侧边栏顶部，不参与文件夹滚动 */}
@@ -13640,6 +16957,28 @@ useEffect(() => {
                     <>
                       <SystemQuickAccessIcon title="此电脑" icon={<HardDrive className="w-5 h-5 text-blue-500/90 dark:text-blue-400/90" />} path="SYSTEM_COMPUTER" />
                       <SystemQuickAccessIcon title="桌面" icon={<Monitor className="w-5 h-5 text-cyan-500/90 dark:text-cyan-300/90" />} path="SYSTEM_DESKTOP" />
+                      <div className="relative shrink-0 group/collector flex flex-col items-center w-full">
+                        <button
+                          type="button"
+                          onClick={() => openWebImageCollector()}
+                          disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                          title="网络收图"
+                          className={`w-10 h-10 mb-1 rounded-[16px] border shadow-sm flex items-center justify-center transition-all ${
+                            showWebImageCollector
+                              ? 'bg-sky-500 text-white border-sky-300 shadow-sky-500/20 scale-105 dark:bg-sky-400 dark:text-stone-950 dark:border-sky-300/50'
+                              : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md border-white/70 dark:border-stone-700/60 text-sky-500 hover:scale-105 hover:bg-sky-50 hover:text-sky-600 dark:hover:bg-sky-400/12 dark:hover:text-sky-200'
+                          } disabled:cursor-wait disabled:opacity-65 disabled:hover:scale-100`}
+                        >
+                          {isCollectingWebImages || isGeneratingWebImageQuery ? (
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          ) : (
+                            <ImageIcon className="w-5 h-5" />
+                          )}
+                        </button>
+                        <span className={`text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 ${showWebImageCollector ? 'text-sky-700 dark:text-sky-200 font-bold' : 'text-stone-500 dark:text-stone-400 group-hover/collector:text-sky-600 dark:group-hover/collector:text-sky-200'}`}>
+                          收图
+                        </span>
+                      </div>
                       <AnimatePresence>
                         {quickAccessItems.map(item => {
                           const visual = getQuickAccessVisual(item as BufferItem & { isDirectory?: boolean; isUrl?: boolean });
@@ -14059,6 +17398,26 @@ useEffect(() => {
                                         className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
                                       />
                                     </label>
+                                    {canvasAiProvider === 'xais-chat' && (
+                                      <div className="flex items-center justify-between gap-2 rounded-[14px] border border-cyan-100/80 bg-white/62 px-2.5 py-2 dark:border-cyan-900/38 dark:bg-stone-900/38">
+                                        <div className="flex min-w-0 items-center gap-2">
+                                          <Wallet className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
+                                          <span className={`truncate text-[10px] font-bold ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-cyan-700 dark:text-cyan-200'}`}>
+                                            {canvasAiXaisBalanceText}
+                                          </span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => void checkCanvasAiXaisBalance()}
+                                          disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiApiKey.trim()}
+                                          className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-cyan-100 px-2 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-900/42 dark:text-cyan-100 dark:hover:bg-cyan-900/70"
+                                          title="查询 Xais 余额"
+                                        >
+                                          <RefreshCw className={`h-3 w-3 ${canvasAiXaisBalance.status === 'loading' ? 'animate-spin' : ''}`} />
+                                          查余额
+                                        </button>
+                                      </div>
+                                    )}
                                     {isCanvasAiEndpointVisible(canvasAiProvider) && (
                                       <div className="flex flex-col gap-1">
                                         <div className="flex items-center justify-between gap-2">
@@ -14147,9 +17506,187 @@ useEffect(() => {
                                     )}
                                   </label>
                                   <div className="flex items-center justify-between pt-1 text-[11px] text-stone-500 dark:text-stone-400">
-                                    <span>{hasAiAnalysis ? (isSiliconFlowProvider(aiApiProvider) ? `已启用硅基流动：${aiApiModel}` : '已启用 AI 分析：配色 + CMF / 造型 / 材料 / 借鉴判断。') : (isSiliconFlowProvider(aiApiProvider) ? '未填写完整硅基流动配置：仅使用本地算法分析配色。' : '未配置 AI：仅使用本地算法分析配色。')}</span>
+                                    <span>{hasAiAnalysis ? (isSiliconFlowProvider(aiApiProvider) ? `已启用硅基流动：${aiApiModel}` : '已启用 AI 分析：配色 + CMF / 造型 / 材料 / 借鉴判断。') : (isSiliconFlowProvider(aiApiProvider) ? '未填写完整硅基流动配置：将使用本地大模型炼金。' : '未配置 AI：将使用本地大模型炼金。')}</span>
                                     <button onClick={() => { setAiApiEndpoint(isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_ENDPOINT : ''); setAiApiKey(''); setAiApiModel(isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_MODEL : ''); }} className="rounded-full bg-stone-100 dark:bg-stone-700 px-3 py-1 text-[10px] font-bold text-stone-500 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-600">清空</button>
                                   </div>
+                                  </div>
+                                  <div className="flex flex-col gap-2 rounded-[18px] border border-sky-100 bg-sky-50/50 px-3 py-2.5 dark:border-sky-400/20 dark:bg-sky-400/10">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="flex items-center gap-1.5 text-[11px] font-black text-sky-800 dark:text-sky-100">
+                                        <Download className="h-3.5 w-3.5" />
+                                        本地大模型增量包
+                                      </span>
+                                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                        localVisionModelDownload.phase === 'ready'
+                                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200'
+                                          : localVisionModelDownload.phase === 'downloading' || localVisionModelDownload.phase === 'loading'
+                                          ? 'bg-sky-100 text-sky-700 dark:bg-sky-400/15 dark:text-sky-100'
+                                          : localVisionModelDownload.phase === 'error'
+                                          ? 'bg-red-100 text-red-600 dark:bg-red-400/15 dark:text-red-200'
+                                          : 'bg-white/75 text-stone-500 dark:bg-stone-900/35 dark:text-stone-300'
+                                      }`}>
+                                        {localVisionModelDownload.phase === 'ready'
+                                          ? '已就绪'
+                                          : localVisionModelDownload.phase === 'downloading'
+                                          ? `${Math.round(localVisionModelDownload.progress)}%`
+                                          : localVisionModelDownload.phase === 'loading' || isLocalVisionModelChecking
+                                          ? '检查中'
+                                          : localVisionModelDownload.phase === 'error'
+                                          ? '不可用'
+                                          : '未下载'}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] leading-4 text-stone-500 dark:text-stone-400">
+                                      主安装包不包含 Ollama 和本地视觉模型。需要离线或本地参考图识别时，可静默安装 Ollama，并下载 qwen2.5vl:3b 增量包，约 3.2GB。
+                                    </div>
+                                    {(localVisionModelDownload.phase === 'downloading' || localVisionModelDownload.phase === 'loading') && (
+                                      <div className="h-1 overflow-hidden rounded-full bg-white/80 dark:bg-stone-900/50">
+                                        <div
+                                          className="h-full rounded-full bg-sky-500 transition-all"
+                                          style={{ width: `${clamp(localVisionModelDownload.progress || 3, 3, 100)}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                    {localVisionModelLastError && (
+                                      <div className="rounded-[12px] border border-amber-200/70 bg-white/68 px-2 py-1.5 text-[10px] leading-4 text-amber-700 dark:border-amber-400/20 dark:bg-stone-900/30 dark:text-amber-100">
+                                        {localVisionModelLastError}
+                                      </div>
+                                    )}
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => void retryLocalVisionModelDownload()}
+                                        disabled={isInstallingOllama || localVisionModelDownload.phase === 'downloading' || localVisionModelDownload.phase === 'loading'}
+                                        className="rounded-[13px] bg-sky-500 px-3 py-1.5 text-[10px] font-bold text-white shadow-sm transition-colors hover:bg-sky-600 disabled:cursor-wait disabled:bg-stone-200 disabled:text-stone-400 dark:disabled:bg-stone-700"
+                                      >
+                                        {localVisionModelDownload.phase === 'ready' ? '重新检查/补齐' : '下载增量包'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void checkLocalVisionModelStatus({ silent: false })}
+                                        disabled={isInstallingOllama || isLocalVisionModelChecking || localVisionModelDownload.phase === 'downloading'}
+                                        className="rounded-[13px] border border-sky-100 bg-white/75 px-3 py-1.5 text-[10px] font-bold text-sky-700 transition-colors hover:bg-sky-50 disabled:cursor-wait disabled:opacity-50 dark:border-sky-400/20 dark:bg-stone-900/35 dark:text-sky-100 dark:hover:bg-sky-400/10"
+                                      >
+                                        {isLocalVisionModelChecking ? '检查中' : '检查状态'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void installOllamaSilently()}
+                                        disabled={isInstallingOllama || localVisionModelDownload.phase === 'downloading'}
+                                        className="rounded-[13px] border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-55 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/15"
+                                      >
+                                        {isInstallingOllama ? '安装中' : '静默安装 Ollama'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void openOllamaDownloadPage()}
+                                        disabled={isInstallingOllama}
+                                        className="rounded-[13px] border border-stone-200 bg-white/75 px-3 py-1.5 text-[10px] font-bold text-stone-500 transition-colors hover:bg-stone-100 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300 dark:hover:bg-stone-800"
+                                      >
+                                        下载页
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+
+                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 离线授权</span>
+                            <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
+                          </button>
+                          <AnimatePresence>
+                            {activeSettingCategory === 'license' && (
+                              <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
+                                <div className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
+                                  <div className="flex items-center justify-between gap-2 pt-1">
+                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">授权状态</span>
+                                    <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-black text-stone-700 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200">
+                                      {isLicenseLoading ? '读取中' : LICENSE_STATE_LABELS[licenseStatus?.state || 'unlicensed']}
+                                    </span>
+                                  </div>
+
+                                  <div className="rounded-[16px] border border-stone-200 bg-white/70 px-3 py-2 dark:border-stone-700 dark:bg-stone-900/35">
+                                    <div className="mb-1 flex items-center justify-between gap-2">
+                                      <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400">机器码</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => void copyMachineId()}
+                                        disabled={!machineId && !licenseStatus?.machine_id}
+                                        className="rounded-[12px] bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600 transition-colors hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-stone-700 dark:text-stone-200 dark:hover:bg-stone-600"
+                                      >
+                                        复制
+                                      </button>
+                                    </div>
+                                    <div className="break-all font-mono text-[10px] leading-4 text-stone-600 dark:text-stone-300">
+                                      {machineId || licenseStatus?.machine_id || '读取中...'}
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-1 gap-1.5 text-[11px]">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="text-stone-500 dark:text-stone-400">客户</span>
+                                      <span className="min-w-0 truncate font-bold text-stone-700 dark:text-stone-200">{licenseStatus?.customer || '-'}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="text-stone-500 dark:text-stone-400">版本</span>
+                                      <span className="font-bold text-stone-700 dark:text-stone-200">{licenseStatus?.edition ? LICENSE_EDITION_LABELS[licenseStatus.edition] : '-'}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="text-stone-500 dark:text-stone-400">到期</span>
+                                      <span className="font-bold text-stone-700 dark:text-stone-200">{licenseStatus?.expire_at || '-'}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex flex-col gap-1.5">
+                                    <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400">功能</span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {(licenseStatus?.features || []).length > 0 ? (
+                                        (licenseStatus?.features || []).map(feature => (
+                                          <span key={feature} className="rounded-full border border-stone-200 bg-white/70 px-2 py-0.5 text-[10px] font-bold text-stone-600 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300">
+                                            {LICENSE_FEATURE_LABELS[feature] || feature}
+                                          </span>
+                                        ))
+                                      ) : (
+                                        <span className="text-[10px] text-stone-400 dark:text-stone-500">-</span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {licenseStatus?.message && (
+                                    <div className="rounded-[14px] border border-stone-200 bg-white/70 px-3 py-2 text-[10px] leading-4 text-stone-500 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300">
+                                      {licenseStatus.message}
+                                    </div>
+                                  )}
+
+                                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => void importLicenseFile()}
+                                      disabled={isLicenseLoading}
+                                      className="rounded-[13px] bg-blue-500 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-blue-600 disabled:cursor-wait disabled:bg-stone-200 disabled:text-stone-400 dark:disabled:bg-stone-700"
+                                    >
+                                      导入授权
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void refreshLicenseStatus(false)}
+                                      disabled={isLicenseLoading}
+                                      className="rounded-[13px] border border-stone-200 bg-white/75 px-3 py-1.5 text-[10px] font-bold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300 dark:hover:bg-stone-800"
+                                    >
+                                      刷新
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void removeLicenseFile()}
+                                      disabled={isLicenseLoading}
+                                      className="rounded-[13px] border border-red-100 bg-red-50 px-3 py-1.5 text-[10px] font-bold text-red-600 transition-colors hover:bg-red-100 disabled:cursor-wait disabled:opacity-55 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15"
+                                    >
+                                      移除
+                                    </button>
                                   </div>
                                 </div>
                               </motion.div>
@@ -14278,7 +17815,7 @@ useEffect(() => {
                       ref={canvasSurfaceRef}
                       tabIndex={-1}
                       data-canvas-interacting={isCanvasInteracting ? 'true' : undefined}
-                      className={`relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 shadow-inner outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      className={`relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto', overflowAnchor: 'none' }}
                       onPointerEnter={() => {
                         isCanvasPointerInsideRef.current = true;
@@ -14447,7 +17984,7 @@ useEffect(() => {
                             <path d={canvasConnectionDraftPath} stroke="#22d3ee" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeDasharray="8 7" />
                             <circle cx={canvasConnectionDraft.fromX} cy={canvasConnectionDraft.fromY} r="5" fill="#22d3ee" />
                             <circle cx={canvasConnectionDraft.toX} cy={canvasConnectionDraft.toY} r="5" fill="#3b82f6" />
-                            {canvasItems.filter(item => canUseCanvasItemAsAiTarget(item)).map(item => {
+                            {canvasRenderableItems.filter(item => canUseCanvasItemAsAiTarget(item)).map(item => {
                               const itemBox = getCanvasItemRenderedBox(item);
                               const cx = itemBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
                               const cy = itemBox.y + itemBox.height / 2;
@@ -14482,8 +18019,8 @@ useEffect(() => {
                             <circle cx={canvasInputActionDraft.toX} cy={canvasInputActionDraft.toY} r="5" fill="#22d3ee" />
                           </svg>
                         )}
-                        {canvasItems.map(canvasItem => {
-                          const isSelected = canvasSelectedIds.includes(canvasItem.id);
+                        {canvasRenderableItems.map(canvasItem => {
+                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isMultiSelected = isSelected && canvasSelectedIds.length > 1;
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasAiGeneratorItem = isCanvasAiGeneratorType(canvasItem.ai?.type);
@@ -14498,7 +18035,6 @@ useEffect(() => {
                           const isCanvasAiPromptExpanded = canvasAiPromptEditingId === canvasItem.id;
                           const canvasImageSource = getCanvasItemDisplaySource(canvasItem.item);
                           const isGeneratedMediaItem = isCanvasAiGeneratedType(canvasItem.ai?.type);
-                          const isGeneratedImageItem = canvasItem.ai?.type === 'generated-image';
                           const isGeneratedVideoItem = canvasItem.ai?.type === 'generated-video';
                           const isGeneratedMediaPending = isGeneratedMediaItem && (canvasItem.ai?.status === 'working' || !canvasImageSource);
                           const isGeneratedMediaError = isGeneratedMediaItem && canvasItem.ai?.status === 'error';
@@ -14659,6 +18195,8 @@ useEffect(() => {
                                                       <img
                                                         src={inputPreviewSource}
                                                         alt=""
+                                                        loading="lazy"
+                                                        decoding="async"
                                                         className="h-full w-full rounded-[14px] border border-stone-200/32 object-cover mix-blend-multiply shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:mix-blend-normal dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]"
                                                         draggable={false}
                                                       />
@@ -14720,6 +18258,8 @@ useEffect(() => {
                                                       <img
                                                         src={inputPreviewSource}
                                                         alt=""
+                                                        loading="lazy"
+                                                        decoding="async"
                                                         className="h-full w-full rounded-[14px] border border-stone-200/32 object-cover mix-blend-multiply shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:mix-blend-normal dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]"
                                                         draggable={false}
                                                       />
@@ -14861,29 +18401,85 @@ useEffect(() => {
                                                   }}
                                                   title={outputLabel}
                                                   >
-                                                  <span className="pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-16px)] truncate rounded-full bg-white/86 px-2 py-0.5 text-[9px] font-black text-stone-700 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-stone-950/74 dark:text-white/82 dark:ring-white/[0.08]">
+                                                  <span className="pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-112px)] truncate rounded-full bg-white/86 px-2 py-0.5 text-[9px] font-black text-stone-700 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-stone-950/74 dark:text-white/82 dark:ring-white/[0.08]">
                                                     {outputLabel}
                                                   </span>
                                                   {outputSource && !isOutputError && (
-                                                    <button
-                                                      data-no-drag="true"
-                                                      type="button"
-                                                      className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 opacity-0 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-opacity hover:bg-white hover:text-cyan-700 group-hover/canvas-item:opacity-100 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-cyan-200"
-                                                      title={outputMediaType === 'video' ? '下载这条视频' : '下载这张图'}
-                                                      onPointerDown={(event) => event.stopPropagation()}
-                                                      onClick={(event) => {
-                                                        event.preventDefault();
-                                                        event.stopPropagation();
-                                                        const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
-                                                        if (outputItem) {
-                                                          void downloadBufferItems([outputItem]);
-                                                        } else {
-                                                          showToast(outputMediaType === 'video' ? '这条视频还不能下载' : '这张图还不能下载');
-                                                        }
-                                                      }}
-                                                    >
-                                                      <Download className="h-3.5 w-3.5" />
-                                                    </button>
+                                                    <div className="absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover/canvas-item:opacity-100">
+                                                      {outputMediaType === 'image' && (
+                                                        <button
+                                                          data-no-drag="true"
+                                                          type="button"
+                                                          className="flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-colors hover:bg-white hover:text-blue-700 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-blue-200"
+                                                          title="画笔标记"
+                                                          onPointerDown={(event) => event.stopPropagation()}
+                                                          onClick={(event) => {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
+                                                            void openCanvasBrushEditorFromSource({
+                                                              targetId: canvasItem.id,
+                                                              source: outputSource,
+                                                              name: outputLabel,
+                                                              x: canvasItem.x + ((outputIndex % Math.max(1, canvasAiOutputTileLayout.columns)) * (canvasAiOutputTileLayout.tileWidth + 8)) * (canvasAiNodeScale || 1),
+                                                              y: canvasItem.y + 92,
+                                                              nodeWidth: canvasAiOutputTileLayout.tileWidth * (canvasAiNodeScale || 1),
+                                                              nodeHeight: canvasAiOutputTileLayout.tileHeight * (canvasAiNodeScale || 1),
+                                                            });
+                                                          }}
+                                                        >
+                                                          <Brush className="h-3.5 w-3.5" />
+                                                        </button>
+                                                      )}
+                                                      {outputMediaType === 'image' && (
+                                                        <button
+                                                          data-no-drag="true"
+                                                          type="button"
+                                                          className="flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-colors hover:bg-white hover:text-sky-700 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-sky-200"
+                                                          title="作为参考图收图"
+                                                          onPointerDown={(event) => event.stopPropagation()}
+                                                          onClick={(event) => {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
+                                                            collectSimilarImagesFromCanvasOutput(canvasItem, output, outputIndex);
+                                                          }}
+                                                        >
+                                                          <Search className="h-3.5 w-3.5" />
+                                                        </button>
+                                                      )}
+                                                      <button
+                                                        data-no-drag="true"
+                                                        type="button"
+                                                        className="flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-colors hover:bg-white hover:text-emerald-700 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-emerald-200"
+                                                        title={outputMediaType === 'video' ? '复制这条视频到画布' : '复制这张图到画布'}
+                                                        onPointerDown={(event) => event.stopPropagation()}
+                                                        onClick={(event) => {
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                          void copyCanvasAiOutputToCanvas(canvasItem, output, outputIndex);
+                                                        }}
+                                                      >
+                                                        <Copy className="h-3.5 w-3.5" />
+                                                      </button>
+                                                      <button
+                                                        data-no-drag="true"
+                                                        type="button"
+                                                        className="flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-colors hover:bg-white hover:text-cyan-700 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-cyan-200"
+                                                        title={outputMediaType === 'video' ? '下载这条视频' : '下载这张图'}
+                                                        onPointerDown={(event) => event.stopPropagation()}
+                                                        onClick={(event) => {
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                          const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
+                                                          if (outputItem) {
+                                                            void downloadBufferItems([outputItem], { feature: 'commercial_export' });
+                                                          } else {
+                                                            showToast(outputMediaType === 'video' ? '这条视频还不能下载' : '这张图还不能下载');
+                                                          }
+                                                        }}
+                                                      >
+                                                        <Download className="h-3.5 w-3.5" />
+                                                      </button>
+                                                    </div>
                                                   )}
                                                   {outputSource && !isOutputError && outputMediaType === 'video' ? (
                                                     <video
@@ -14937,14 +18533,15 @@ useEffect(() => {
                                           data-no-drag="true"
                                           data-canvas-node-prompt="true"
                                           rows={4}
-                                          value={canvasItem.item.content || ''}
-                                          onChange={(event) => updateCanvasAiGeneratorData(canvasItem.id, { prompt: event.target.value, status: 'idle', error: undefined }, event.target.value)}
+                                          defaultValue={canvasItem.item.content || ''}
+                                          onChange={(event) => scheduleCanvasAiPromptDraftCommit(canvasItem.id, event.currentTarget.value)}
                                           onFocus={() => {
                                             setCanvasAiPromptEditingId(canvasItem.id);
                                             resizeCanvasAiPromptEditor(canvasItem.id, true, false);
                                             updateCanvasSelection([canvasItem.id]);
                                           }}
-                                          onBlur={() => {
+                                          onBlur={(event) => {
+                                            commitCanvasAiPromptDraft(canvasItem.id, event.currentTarget.value, true);
                                             setCanvasAiPromptEditingId(prev => prev === canvasItem.id ? null : prev);
                                             resizeCanvasAiPromptEditor(canvasItem.id, false, true);
                                           }}
@@ -14996,12 +18593,21 @@ useEffect(() => {
                                           <RoundedSelect
                                             data-no-drag="true"
                                             data-canvas-edit-control="true"
-                                            value={canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)}
+                                            value={normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))}
                                             options={getCanvasAiModelOptionsForProvider(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { model: value })}
+                                            onChange={(value) => {
+                                              const model = normalizeXaisImage2Model(value);
+                                              updateCanvasAiGeneratorData(canvasItem.id, {
+                                                model,
+                                                aspectRatio: normalizeCanvasAiAspectRatioForModel(
+                                                  model,
+                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
+                                                ),
+                                              });
+                                            }}
                                             labelClassName={`${canvasAiMediaType === 'video' ? 'max-w-[104px]' : 'max-w-[150px]'} truncate text-center leading-none`}
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`模型：${canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)}`}
+                                            title={`模型：${normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))}`}
                                             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -15011,17 +18617,25 @@ useEffect(() => {
                                           />
                                           <RoundedSelect
                                             data-no-drag="true"
-                                            value={canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}
-                                            options={CANVAS_AI_ASPECT_RATIO_OPTIONS}
+                                            value={normalizeCanvasAiAspectRatioForModel(
+                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
+                                              canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
+                                            )}
+                                            options={getCanvasAiAspectRatioOptionsForModel(
+                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))
+                                            )}
                                             onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
                                             labelClassName="text-center leading-none"
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`比例：${canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[62px]`}
+                                            title={`${isXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? '分辨率' : '比例'}：${normalizeCanvasAiAspectRatioForModel(
+                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
+                                              canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
+                                            )}`}
+                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${isXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 'w-[156px]' : 'w-[62px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={86}
+                                            menuMinWidth={isXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 188 : 86}
                                             menuScale={canvasAiNodeScale || 1}
                                           />
                                           {canvasAiMediaType !== 'video' ? (
@@ -15140,8 +18754,9 @@ useEffect(() => {
                                   </div>
                                   <textarea
                                     data-no-drag="true"
-                                    value={canvasItem.item.content || ''}
-                                    onChange={(event) => updateCanvasTextItem(canvasItem.id, event.target.value)}
+                                    defaultValue={canvasItem.item.content || ''}
+                                    onChange={(event) => scheduleCanvasTextDraftCommit(canvasItem.id, event.currentTarget.value)}
+                                    onBlur={(event) => commitCanvasTextDraft(canvasItem.id, event.currentTarget.value, true)}
                                     onFocus={() => updateCanvasSelection([canvasItem.id])}
                                     onPointerDown={(event) => event.stopPropagation()}
                                     onWheel={(event) => event.stopPropagation()}
@@ -15173,6 +18788,7 @@ useEffect(() => {
                                       controls
                                       muted
                                       playsInline
+                                      preload="metadata"
                                       className="h-full w-full select-none object-contain"
                                       draggable={false}
                                     />
@@ -15181,8 +18797,8 @@ useEffect(() => {
                                       key={canvasImageSource}
                                       src={canvasImageSource}
                                       alt={canvasItem.item.name || '画布图片'}
-                                      loading="eager"
-                                      decoding={isGeneratedImageItem ? 'sync' : 'async'}
+                                      loading="lazy"
+                                      decoding="async"
                                       className="h-full w-full select-none object-contain"
                                       style={{ imageRendering: 'auto' }}
                                       draggable={false}
@@ -15195,6 +18811,75 @@ useEffect(() => {
                                   )}
                                 </div>
                               )}
+                            {canvasItem.item.type === 'image' && canvasImageSource && !isGeneratedMediaPending && !isGeneratedMediaError && (
+                              <button
+                                data-no-drag="true"
+                                type="button"
+                                className="absolute left-1.5 top-1.5 z-50 rounded-full bg-white/86 p-1.5 text-blue-500 opacity-0 shadow-sm transition-all hover:bg-blue-50 hover:text-blue-600 group-hover/canvas-item:opacity-100 dark:bg-stone-900/86 dark:text-blue-300 dark:hover:bg-blue-950/36 dark:hover:text-blue-200"
+                                style={isCanvasAiNodeItem ? {
+                                  left: 6,
+                                  top: 6,
+                                } : undefined}
+                                onPointerDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  void openCanvasBrushEditor(canvasItem.id);
+                                }}
+                                title="画笔标记"
+                              >
+                                <Brush className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            {canvasItem.item.type === 'image' && canvasImageSource && !isGeneratedMediaPending && !isGeneratedMediaError && (
+                              <button
+                                data-no-drag="true"
+                                type="button"
+                                className="absolute left-10 top-1.5 z-50 rounded-full bg-white/86 p-1.5 text-emerald-500 opacity-0 shadow-sm transition-all hover:bg-emerald-50 hover:text-emerald-600 group-hover/canvas-item:opacity-100 dark:bg-stone-900/86 dark:text-emerald-300 dark:hover:bg-emerald-950/36 dark:hover:text-emerald-200"
+                                style={isCanvasAiNodeItem ? {
+                                  left: 38,
+                                  top: 6,
+                                } : undefined}
+                                onPointerDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  void copyCanvasImageToSystemClipboard(canvasItem);
+                                }}
+                                title="复制图片"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            {canvasItem.item.type === 'image' && canvasImageSource && !isGeneratedMediaPending && !isGeneratedMediaError && (
+                              <button
+                                data-no-drag="true"
+                                type="button"
+                                className="absolute left-[72px] top-1.5 z-50 rounded-full bg-white/86 p-1.5 text-sky-500 opacity-0 shadow-sm transition-all hover:bg-sky-50 hover:text-sky-600 group-hover/canvas-item:opacity-100 dark:bg-stone-900/86 dark:text-sky-300 dark:hover:bg-sky-950/36 dark:hover:text-sky-200"
+                                style={isCanvasAiNodeItem ? {
+                                  left: 70,
+                                  top: 6,
+                                } : undefined}
+                                onPointerDown={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  collectSimilarImagesFromCanvasItem(canvasItem);
+                                }}
+                                title="作为参考图收图"
+                              >
+                                <Search className="h-3.5 w-3.5" />
+                              </button>
+                            )}
                             <button
                               data-no-drag="true"
                               type="button"
@@ -15236,8 +18921,8 @@ useEffect(() => {
                             </div>
                           );
                         })}
-                        {canvasItems.map(canvasItem => {
-                          const isSelected = canvasSelectedIds.includes(canvasItem.id);
+                        {canvasRenderableItems.map(canvasItem => {
+                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isCanvasConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
                           if (!canUseCanvasItemAsAiInput(canvasItem) || (!isSelected && !isCanvasConnectedSource)) return null;
                           const itemBox = getCanvasItemRenderedBox(canvasItem);
@@ -15262,9 +18947,9 @@ useEffect(() => {
                             </button>
                           );
                         })}
-                        {canvasItems.map(canvasItem => {
+                        {canvasRenderableItems.map(canvasItem => {
                           if (!canUseCanvasItemAsAiTarget(canvasItem)) return null;
-                          const isSelected = canvasSelectedIds.includes(canvasItem.id);
+                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isCanvasConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
                           const showCanvasTargetHandle = canvasConnectionDraft || canvasInputActionDraft || isSelected || isCanvasConnectedTarget || canvasInputMenuForId === canvasItem.id;
                           if (!showCanvasTargetHandle) return null;
@@ -15457,6 +19142,7 @@ useEffect(() => {
                     <motion.div
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
+                      data-canvas-soft-panel="true"
                       initial={{ opacity: 0, y: -8, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -8, scale: 0.98 }}
@@ -15509,6 +19195,30 @@ useEffect(() => {
                           placeholder={getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
                           className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                         />
+                        {canvasAiProvider === 'xais-chat' && (
+                          <div className="flex items-center justify-between gap-2 rounded-[14px] border border-stone-200/80 bg-white/64 px-2.5 py-2 dark:border-stone-700 dark:bg-stone-950/34">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Wallet className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
+                              <span className={`truncate text-[10px] font-bold ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-stone-500 dark:text-stone-300'}`}>
+                                {canvasAiXaisBalanceText}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              data-no-drag="true"
+                              data-canvas-edit-control="true"
+                              onPointerDown={stopCanvasEditEvent}
+                              onMouseDown={stopCanvasEditEvent}
+                              onClick={() => void checkCanvasAiXaisBalance()}
+                              disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiApiKey.trim()}
+                              className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-cyan-100 px-2 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-900/42 dark:text-cyan-100 dark:hover:bg-cyan-900/70"
+                              title="查询 Xais 余额"
+                            >
+                              <RefreshCw className={`h-3 w-3 ${canvasAiXaisBalance.status === 'loading' ? 'animate-spin' : ''}`} />
+                              查询
+                            </button>
+                          </div>
+                        )}
                         {isCanvasAiEndpointVisible(canvasAiProvider) && (
                           <div className="grid gap-1">
                             <div className="flex items-center gap-1.5">
@@ -15549,10 +19259,11 @@ useEffect(() => {
                     <motion.div
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
+                      data-canvas-template-panel="true"
                       initial={{ opacity: 0, y: -8, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="absolute left-1/2 top-14 z-[100070] w-[320px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
+                      className="absolute left-1/2 top-14 z-[100070] w-[460px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
@@ -15577,7 +19288,7 @@ useEffect(() => {
                           onClick={() => void importCanvasTemplateFile('preset')}
                           className="rounded-[13px] bg-stone-100 px-2.5 py-1 text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/10 dark:text-stone-200 dark:hover:bg-white/14"
                         >
-                          导入预设
+                          批量导入
                         </button>
                         {canvasPresetEditorMode === 'manage' && (
                           <button
@@ -15590,38 +19301,105 @@ useEffect(() => {
                         )}
                         <button
                           type="button"
-                          onClick={exportAllCustomCanvasPresets}
+                          onClick={exportAllCanvasPresets}
                           className="rounded-[13px] bg-cyan-50 px-2.5 py-1 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-100 dark:bg-cyan-400/10 dark:text-cyan-100 dark:hover:bg-cyan-400/16"
                         >
-                          导出自定义
+                          批量导出
+                        </button>
+                        <button
+                          type="button"
+                          onClick={deleteSelectedCanvasPromptPresets}
+                          disabled={selectedCanvasPresetDeleteIds.length === 0}
+                          className="rounded-[13px] bg-red-50 px-2.5 py-1 text-[10px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-300 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/16 dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
+                        >
+                          {selectedCanvasPresetDeleteIds.length > 0 ? `删除已选 ${selectedCanvasPresetDeleteIds.length}` : '批量删除'}
                         </button>
                       </div>
                       <div className="grid gap-2">
                         {canvasPresetEditorMode === 'manage' && (
                           <div className="grid gap-1.5 rounded-[16px] border border-cyan-100/80 bg-cyan-50/58 p-2 dark:border-cyan-400/16 dark:bg-cyan-400/10">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">选择预设</span>
-                              {canvasPresetEditingBuiltIn && !canvasPresetEditingCustom && (
-                                <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-cyan-600 dark:bg-white/10 dark:text-cyan-100">
-                                  内置
-                                </span>
-                              )}
-                              {canvasPresetEditingCustom && (
-                                <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-cyan-600 dark:bg-white/10 dark:text-cyan-100">
-                                  {canvasPresetEditingBuiltIn ? '已修改' : '自定义'}
-                                </span>
-                              )}
+                              <span className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">节点预设列表</span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedCanvasPresetDeleteIds(canvasAiPromptPresets.map(preset => preset.id))}
+                                  disabled={canvasAiPromptPresets.length === 0}
+                                  className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-cyan-600 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:text-stone-300 dark:bg-white/10 dark:text-cyan-100 dark:hover:bg-white/16 dark:disabled:text-stone-600"
+                                >
+                                  全选
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedCanvasPresetDeleteIds([])}
+                                  disabled={selectedCanvasPresetDeleteIds.length === 0}
+                                  className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-cyan-600 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:text-stone-300 dark:bg-white/10 dark:text-cyan-100 dark:hover:bg-white/16 dark:disabled:text-stone-600"
+                                >
+                                  清空
+                                </button>
+                              </div>
                             </div>
-                            <RoundedSelect
-                              data-no-drag="true"
-                              data-canvas-edit-control="true"
-                              value={canvasPresetEditingId}
-                              options={canvasAiPromptPresets.map(preset => ({ value: preset.id, label: preset.label }))}
-                              onChange={selectCanvasPresetForEdit}
-                              className="h-8 w-full rounded-[13px] border border-white/70 bg-white/84 px-3 text-xs font-bold text-stone-700 shadow-sm dark:border-white/10 dark:bg-stone-950/44 dark:text-stone-100"
-                              menuClassName="!z-[100090] !min-w-[220px]"
-                              menuMinWidth={220}
-                            />
+                            <div className="grid max-h-44 gap-1 overflow-y-auto pr-1">
+                              {canvasAiPromptPresets.length === 0 ? (
+                                <div className="rounded-[12px] border border-dashed border-cyan-200/80 bg-white/50 px-3 py-4 text-center text-[11px] font-bold text-cyan-700/70 dark:border-cyan-400/20 dark:bg-white/5 dark:text-cyan-100/70">
+                                  暂无节点预设
+                                </div>
+                              ) : canvasAiPromptPresets.map(preset => {
+                                const isSelectedForDelete = selectedCanvasPresetDeleteIds.includes(preset.id);
+                                const isEditing = canvasPresetEditingId === preset.id;
+                                const isBuiltIn = CANVAS_AI_PROMPT_PRESETS.some(item => item.id === preset.id);
+                                const isCustom = customCanvasAiPromptPresets.some(item => item.id === preset.id);
+                                return (
+                                  <div
+                                    key={preset.id}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => selectCanvasPresetForEdit(preset.id)}
+                                    onKeyDown={(event) => {
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        selectCanvasPresetForEdit(preset.id);
+                                      }
+                                    }}
+                                    className={`grid cursor-pointer grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-[12px] border px-2 py-2 text-left transition-colors ${
+                                      isEditing
+                                        ? 'border-cyan-300 bg-white text-stone-800 shadow-sm dark:border-cyan-500/50 dark:bg-cyan-400/12 dark:text-stone-100'
+                                        : 'border-white/60 bg-white/58 text-stone-700 hover:bg-white/82 dark:border-white/10 dark:bg-stone-950/24 dark:text-stone-200 dark:hover:bg-white/8'
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      aria-pressed={isSelectedForDelete}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedCanvasPresetDeleteIds(prev => (
+                                          prev.includes(preset.id)
+                                            ? prev.filter(id => id !== preset.id)
+                                            : [...prev, preset.id]
+                                        ));
+                                      }}
+                                      className={`flex h-5 w-5 items-center justify-center rounded-[7px] border transition-colors ${
+                                        isSelectedForDelete
+                                          ? 'border-red-400 bg-red-500 text-white'
+                                          : 'border-cyan-200 bg-white/80 text-transparent hover:border-red-300 dark:border-cyan-400/20 dark:bg-stone-950/40'
+                                      }`}
+                                      title={`选择删除「${preset.label}」`}
+                                    >
+                                      <Check className="h-3 w-3" strokeWidth={3} />
+                                    </button>
+                                    <div className="min-w-0">
+                                      <div className="truncate text-xs font-black">{preset.label}</div>
+                                      <div className="truncate text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                                        {preset.hint || preset.aspectRatio || '节点预设'}
+                                      </div>
+                                    </div>
+                                    <span className="rounded-full bg-cyan-50 px-2 py-0.5 text-[9px] font-black text-cyan-700 dark:bg-cyan-400/10 dark:text-cyan-100">
+                                      {isBuiltIn && isCustom ? '已修改' : isBuiltIn ? '内置' : '自定义'}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         )}
                         <input
@@ -15646,10 +19424,9 @@ useEffect(() => {
                               <button
                                 type="button"
                                 onClick={deleteCanvasAiCustomPromptPreset}
-                                disabled={!canvasPresetEditingCustom}
                                 className="rounded-[15px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-300 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/16 dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
                               >
-                                {canvasPresetDeleteLabel}
+                                删除
                               </button>
                             )}
                           </div>
@@ -15677,10 +19454,11 @@ useEffect(() => {
                     <motion.div
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
+                      data-canvas-template-panel="true"
                       initial={{ opacity: 0, y: -8, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="absolute left-1/2 top-14 z-[100070] w-[340px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
+                      className="absolute left-1/2 top-14 z-[100070] w-[480px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
@@ -15705,7 +19483,7 @@ useEffect(() => {
                           onClick={() => void importCanvasTemplateFile('workflow')}
                           className="rounded-[13px] bg-stone-100 px-2.5 py-1 text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/10 dark:text-stone-200 dark:hover:bg-white/14"
                         >
-                          导入工作流
+                          批量导入
                         </button>
                         <button
                           type="button"
@@ -15716,37 +19494,105 @@ useEffect(() => {
                         </button>
                         <button
                           type="button"
-                          onClick={exportAllCustomCanvasWorkflows}
+                          onClick={exportAllCanvasWorkflows}
                           className="rounded-[13px] bg-emerald-50 px-2.5 py-1 text-[10px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/16"
                         >
-                          导出自定义
+                          批量导出
+                        </button>
+                        <button
+                          type="button"
+                          onClick={deleteSelectedCanvasWorkflows}
+                          disabled={selectedCanvasWorkflowDeleteIds.length === 0}
+                          className="rounded-[13px] bg-red-50 px-2.5 py-1 text-[10px] font-black text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-300 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/16 dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
+                        >
+                          {selectedCanvasWorkflowDeleteIds.length > 0 ? `删除已选 ${selectedCanvasWorkflowDeleteIds.length}` : '批量删除'}
                         </button>
                       </div>
                       <div className="grid gap-2">
                         <div className="grid gap-1.5 rounded-[16px] border border-emerald-100/80 bg-emerald-50/58 p-2 dark:border-emerald-400/16 dark:bg-emerald-400/10">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-200">选择工作流</span>
-                            {canvasWorkflowEditingBuiltIn && (
-                              <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-emerald-600 dark:bg-white/10 dark:text-emerald-100">
-                                内置
-                              </span>
-                            )}
-                            {canvasWorkflowEditingCustom && (
-                              <span className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-emerald-600 dark:bg-white/10 dark:text-emerald-100">
-                                自定义
-                              </span>
-                            )}
+                            <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-200">工作流列表</span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedCanvasWorkflowDeleteIds(canvasWorkflowTemplates.map(workflow => workflow.id))}
+                                disabled={canvasWorkflowTemplates.length === 0}
+                                className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-emerald-600 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:text-stone-300 dark:bg-white/10 dark:text-emerald-100 dark:hover:bg-white/16 dark:disabled:text-stone-600"
+                              >
+                                全选
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedCanvasWorkflowDeleteIds([])}
+                                disabled={selectedCanvasWorkflowDeleteIds.length === 0}
+                                className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-emerald-600 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:text-stone-300 dark:bg-white/10 dark:text-emerald-100 dark:hover:bg-white/16 dark:disabled:text-stone-600"
+                              >
+                                清空
+                              </button>
+                            </div>
                           </div>
-                          <RoundedSelect
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            value={canvasWorkflowEditingId}
-                            options={canvasWorkflowManagerOptions}
-                            onChange={selectCanvasWorkflowForEdit}
-                            className="h-8 w-full rounded-[13px] border border-white/70 bg-white/84 px-3 text-xs font-bold text-stone-700 shadow-sm dark:border-white/10 dark:bg-stone-950/44 dark:text-stone-100"
-                            menuClassName="!z-[100090] !min-w-[230px]"
-                            menuMinWidth={230}
-                          />
+                          <div className="grid max-h-44 gap-1 overflow-y-auto pr-1">
+                            {canvasWorkflowTemplates.length === 0 ? (
+                              <div className="rounded-[12px] border border-dashed border-emerald-200/80 bg-white/50 px-3 py-4 text-center text-[11px] font-bold text-emerald-700/70 dark:border-emerald-400/20 dark:bg-white/5 dark:text-emerald-100/70">
+                                暂无工作流
+                              </div>
+                            ) : canvasWorkflowTemplates.map(workflow => {
+                              const isSelectedForDelete = selectedCanvasWorkflowDeleteIds.includes(workflow.id);
+                              const isEditing = canvasWorkflowEditingId === workflow.id;
+                              const isBuiltIn = CANVAS_BUILT_IN_WORKFLOWS.some(item => item.id === workflow.id);
+                              const isCustom = customCanvasWorkflows.some(item => item.id === workflow.id);
+                              const aiNodeCount = workflow.nodes.filter(node => node.ai?.type === 'image-generator').length;
+                              return (
+                                <div
+                                  key={workflow.id}
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => selectCanvasWorkflowForEdit(workflow.id)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      selectCanvasWorkflowForEdit(workflow.id);
+                                    }
+                                  }}
+                                  className={`grid cursor-pointer grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-[12px] border px-2 py-2 text-left transition-colors ${
+                                    isEditing
+                                      ? 'border-emerald-300 bg-white text-stone-800 shadow-sm dark:border-emerald-500/50 dark:bg-emerald-400/12 dark:text-stone-100'
+                                      : 'border-white/60 bg-white/58 text-stone-700 hover:bg-white/82 dark:border-white/10 dark:bg-stone-950/24 dark:text-stone-200 dark:hover:bg-white/8'
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    aria-pressed={isSelectedForDelete}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedCanvasWorkflowDeleteIds(prev => (
+                                        prev.includes(workflow.id)
+                                          ? prev.filter(id => id !== workflow.id)
+                                          : [...prev, workflow.id]
+                                      ));
+                                    }}
+                                    className={`flex h-5 w-5 items-center justify-center rounded-[7px] border transition-colors ${
+                                      isSelectedForDelete
+                                        ? 'border-red-400 bg-red-500 text-white'
+                                        : 'border-emerald-200 bg-white/80 text-transparent hover:border-red-300 dark:border-emerald-400/20 dark:bg-stone-950/40'
+                                    }`}
+                                    title={`选择删除「${workflow.label}」`}
+                                  >
+                                    <Check className="h-3 w-3" strokeWidth={3} />
+                                  </button>
+                                  <div className="min-w-0">
+                                    <div className="truncate text-xs font-black">{workflow.label}</div>
+                                    <div className="truncate text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                                      {workflow.nodes.length} 个节点 / {aiNodeCount} 个生图节点
+                                    </div>
+                                  </div>
+                                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-black text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-100">
+                                    {isBuiltIn && isCustom ? '已修改' : isBuiltIn ? '内置' : '自定义'}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                         <input
                           data-no-drag="true"
@@ -15782,9 +19628,9 @@ useEffect(() => {
                           <button
                             type="button"
                             onClick={deleteCanvasWorkflowFromManager}
-                            disabled={!canvasWorkflowEditingCustom}
                             className="rounded-[15px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-500 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-300 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/16 dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
-                            title={canvasWorkflowEditingCustom ? '删除这个本地工作流修改' : '内置工作流还没有修改，不能删除'}
+                            disabled={!canvasWorkflowEditingTemplate}
+                            title="删除这个工作流预设"
                           >
                             删除
                           </button>
@@ -15901,6 +19747,7 @@ useEffect(() => {
                           {canvasContextMenu.type === 'item' && (() => {
                             const actionIds = getCanvasActionIds(canvasContextMenu.itemId);
                             const target = canvasItemsById.get(canvasContextMenu.itemId || '');
+                            const firstCopyableImageTarget = getCopyableCanvasImageFromIds(actionIds);
                             const targetWorkflowGroup = getCanvasWorkflowGroup(target);
                             return (
                               <>
@@ -15916,6 +19763,19 @@ useEffect(() => {
                                   <Copy className="h-3.5 w-3.5 text-cyan-300" />
                                   复制
                                 </button>
+                                {firstCopyableImageTarget && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                    onClick={() => {
+                                      void copyCanvasImageToSystemClipboard(firstCopyableImageTarget);
+                                      setCanvasContextMenu(null);
+                                    }}
+                                  >
+                                    <Copy className="h-3.5 w-3.5 text-emerald-300" />
+                                    复制图片
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
@@ -16003,6 +19863,19 @@ useEffect(() => {
                                   >
                                     <BookOpen className="h-3.5 w-3.5 text-violet-300" />
                                     保存为工作流
+                                  </button>
+                                )}
+                                {target?.item.type === 'image' && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                    onClick={() => {
+                                      void openCanvasBrushEditor(target.id);
+                                      setCanvasContextMenu(null);
+                                    }}
+                                  >
+                                    <Brush className="h-3.5 w-3.5 text-blue-300" />
+                                    画笔标记
                                   </button>
                                 )}
                                 <button
@@ -16207,7 +20080,7 @@ useEffect(() => {
                             </div>
                             <div className="flex items-center gap-1">
                               <span className="font-mono text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                                {canvasImageItemsForNav.length}
+                                {canvasItemsForNav.length}
                               </span>
                               <button
                                 type="button"
@@ -16223,16 +20096,25 @@ useEffect(() => {
                             className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[14px] border border-blue-100/80 bg-blue-50/45 dark:border-stone-700/70 dark:bg-stone-950/45"
                             title="点击缩略图定位"
                           >
-                            {canvasImageItemsForNav.length === 0 ? (
+                            {canvasNavItems.length === 0 ? (
                               <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                                暂无图片
+                                暂无节点
                               </div>
-                            ) : canvasNavBounds && canvasImageItemsForNav.map(item => {
-                              const left = 9 + (item.x - canvasNavBounds.left) * canvasNavScale;
-                              const top = 9 + (item.y - canvasNavBounds.top) * canvasNavScale;
-                              const width = Math.max(10, item.width * canvasNavScale);
-                              const height = Math.max(10, item.height * canvasNavScale);
-                              const selected = canvasSelectedIds.includes(item.id);
+                            ) : canvasNavBounds && canvasNavItems.map(({ item, box }) => {
+                              const left = 9 + (box.x - canvasNavBounds.left) * canvasNavScale;
+                              const top = 9 + (box.y - canvasNavBounds.top) * canvasNavScale;
+                              const width = Math.max(10, box.width * canvasNavScale);
+                              const height = Math.max(10, box.height * canvasNavScale);
+                              const selected = canvasSelectedIdsSet.has(item.id);
+                              const preview = getCanvasItemNavPreview(item);
+                              const source = preview?.source || '';
+                              const label = item.ai?.type === 'workflow'
+                                ? item.ai?.presetLabel || '工作流'
+                                : isCanvasAiGeneratorType(item.ai?.type)
+                                  ? item.ai?.presetLabel || (getCanvasAiMediaType(item.ai) === 'video' ? '视频' : '生图')
+                                  : item.item.type === 'text'
+                                    ? '文字'
+                                    : item.item.name || item.item.type || '节点';
                               return (
                                 <button
                                   key={item.id}
@@ -16246,16 +20128,31 @@ useEffect(() => {
                                     event.stopPropagation();
                                     centerCanvasItemInView(item, { select: true });
                                   }}
-                                  title={item.item.name || item.item.content || '定位图片'}
+                                  title={item.item.name || item.item.content || label}
                                 >
-                                  <img
-                                    src={getCanvasItemNavSource(item.item)}
-                                    alt={item.item.name || '导航缩略图'}
-                                    loading="lazy"
-                                    decoding="async"
-                                    className="h-full w-full object-cover"
-                                    draggable={false}
-                                  />
+                                  {source && preview?.mediaType === 'video' ? (
+                                    <video
+                                      src={source}
+                                      muted
+                                      playsInline
+                                      preload="metadata"
+                                      className="h-full w-full object-cover"
+                                      draggable={false}
+                                    />
+                                  ) : source ? (
+                                    <img
+                                      src={source}
+                                      alt={item.item.name || '导航缩略图'}
+                                      loading="lazy"
+                                      decoding="async"
+                                      className="h-full w-full object-cover"
+                                      draggable={false}
+                                    />
+                                  ) : (
+                                    <div className="flex h-full w-full items-center justify-center bg-white/70 px-1 text-[7px] font-black leading-none text-stone-500 dark:bg-stone-800 dark:text-stone-300">
+                                      <span className="truncate">{label}</span>
+                                    </div>
+                                  )}
                                 </button>
                               );
                             })}
@@ -16493,7 +20390,7 @@ useEffect(() => {
                                     centerCanvasItemInView(generatedItem.canvasItem, { select: true });
                                   }}
                                   className={`group/generated flex w-full cursor-pointer items-center gap-2 rounded-[14px] border p-1.5 text-left transition-colors ${
-                                    canvasSelectedIds.includes(generatedItem.canvasItem.id)
+                                    canvasSelectedIdsSet.has(generatedItem.canvasItem.id)
                                       ? 'border-cyan-200 bg-cyan-50/76 dark:border-cyan-400/24 dark:bg-cyan-400/12'
                                       : 'border-white/70 bg-white/58 hover:bg-white/90 dark:border-stone-700/60 dark:bg-stone-950/28 dark:hover:bg-stone-800/70'
                                   }`}
@@ -16552,18 +20449,34 @@ useEffect(() => {
                                       <span className="font-mono text-[9px] font-bold text-stone-400 dark:text-stone-500">
                                         {generatedAt ? new Date(generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
                                       </span>
-                                      <button
-                                        type="button"
-                                        onClick={(event) => {
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          void downloadBufferItems([generatedItem.item]);
-                                        }}
-                                        className="flex h-5 w-5 items-center justify-center rounded-[8px] text-stone-400 opacity-0 transition-all hover:bg-cyan-100 hover:text-cyan-700 group-hover/generated:opacity-100 dark:hover:bg-cyan-400/14 dark:hover:text-cyan-200"
-                                        title="下载"
-                                      >
-                                        <Download className="h-3 w-3" />
-                                      </button>
+                                      <span className="flex items-center gap-1">
+                                        {!isPending && !isError && generatedItem.item.type === 'image' && (
+                                          <button
+                                            type="button"
+                                            onClick={(event) => {
+                                              event.preventDefault();
+                                              event.stopPropagation();
+                                              void openCanvasBrushEditor(generatedItem.canvasItem.id);
+                                            }}
+                                            className="flex h-5 w-5 items-center justify-center rounded-[8px] text-stone-400 opacity-0 transition-all hover:bg-blue-100 hover:text-blue-700 group-hover/generated:opacity-100 dark:hover:bg-blue-400/14 dark:hover:text-blue-200"
+                                            title="画笔标记"
+                                          >
+                                            <Brush className="h-3 w-3" />
+                                          </button>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            void downloadBufferItems([generatedItem.item], { feature: 'commercial_export' });
+                                          }}
+                                          className="flex h-5 w-5 items-center justify-center rounded-[8px] text-stone-400 opacity-0 transition-all hover:bg-cyan-100 hover:text-cyan-700 group-hover/generated:opacity-100 dark:hover:bg-cyan-400/14 dark:hover:text-cyan-200"
+                                          title="下载"
+                                        >
+                                          <Download className="h-3 w-3" />
+                                        </button>
+                                      </span>
                                     </div>
                                   </div>
                                 </div>
@@ -16957,7 +20870,7 @@ useEffect(() => {
                   )}
                   {activeTab === 'alchemy' && displayItems.length > 0 && (
                     <div className="mb-3 rounded-[24px] bg-emerald-50/70 dark:bg-emerald-900/15 border border-emerald-100 dark:border-emerald-800/40 px-4 py-3 text-xs leading-5 text-emerald-800 dark:text-emerald-200">
-                      炼金台：共 {alchemyCount} 张图片灵感，已分析 {finishedAlchemyCount} 张。未配置 AI 时只提取配色；配置 AI 后再生成 CMF、造型语言、材料建议和可借鉴判断。
+                      炼金台：共 {alchemyCount} 张图片灵感，已分析 {finishedAlchemyCount} 张。未配置 AI 时使用本地大模型生成 CMF、造型语言、材料建议和可借鉴判断；模型不可用时才回退到本地配色。
                     </div>
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
@@ -17080,6 +20993,7 @@ useEffect(() => {
                                   onCreateFloatingNote={createFloatingNote}
                                   showAlchemy={isAlchemyCandidate(item as AlchemyBufferItem)}
                                   onAlchemy={() => runAiAlchemyFromCard(item as AlchemyBufferItem)}
+                                  onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
                                   preferFullImageSource={
                                     item.folderId === AI_GENERATED_FOLDER_ID ||
                                     String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
@@ -17149,6 +21063,219 @@ useEffect(() => {
                           disabled={!quickText.trim()}
                           className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-500 hover:bg-blue-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none"
                         ><Send className="w-3.5 h-3.5" /> 保存</button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {showWebImageCollector && (
+                    <motion.div
+                      ref={webImageCollectorPanelRef}
+                      initial={{ opacity: 0, y: 40, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 40, scale: 0.95 }}
+                      transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }}
+                      className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform"
+                      onMouseDown={e => e.stopPropagation()}
+                    >
+                      <div className="flex justify-between items-center px-1">
+                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><ImageIcon className="w-4 h-4 text-sky-500" /> 网络收图</span>
+                        <button
+                          onClick={closeWebImageCollector}
+                          disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                          className="text-stone-400 hover:text-stone-600 disabled:cursor-wait disabled:opacity-45 dark:hover:text-stone-300 transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                      {webImageCollectorReference && (
+                        <div className="flex items-center gap-3 rounded-[20px] border border-sky-100/80 bg-sky-50/55 p-2.5 dark:border-sky-400/20 dark:bg-sky-400/10">
+                          <div className="h-12 w-12 shrink-0 overflow-hidden rounded-[14px] bg-white/80 dark:bg-stone-900/55">
+                            {(webImageCollectorReference.preview || webImageCollectorReference.source) ? (
+                              <img
+                                src={webImageCollectorReference.preview || webImageCollectorReference.source}
+                                alt={webImageCollectorReference.name}
+                                className="h-full w-full object-cover"
+                                draggable={false}
+                              />
+                            ) : (
+                              <ImageIcon className="m-3 h-6 w-6 text-sky-400" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-xs font-bold text-stone-700 dark:text-stone-100">{webImageCollectorReference.name}</div>
+                            <div className="mt-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-200">参考图</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWebImageCollectorReference(null);
+                              setWebImageCollectorQuery('');
+                              clearWebImageCollectorTags();
+                              setWebImageCollectorStatus('');
+                            }}
+                            disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                            className="rounded-[12px] p-1.5 text-stone-400 transition-colors hover:bg-white/70 hover:text-stone-600 disabled:cursor-wait disabled:opacity-45 dark:hover:bg-stone-700/70 dark:hover:text-stone-200"
+                            title="移除参考图"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+                      <input
+                        autoFocus
+                        value={webImageCollectorQuery}
+                        onChange={e => setWebImageCollectorQuery(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void collectWebImagesToDrawer();
+                          }
+                          if (e.key === 'Escape') closeWebImageCollector();
+                        }}
+                        disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                        placeholder={webImageCollectorReference ? "识别后可修改主体、风格、材质等标签" : "输入图片需求，比如：新中式的家装效果图"}
+                        className="w-full bg-stone-50/50 dark:bg-stone-900/50 rounded-[20px] p-3 border border-stone-200/50 dark:border-stone-700/50 outline-none text-sm text-stone-800 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:ring-2 focus:ring-sky-500/20 transition-all disabled:cursor-wait disabled:opacity-70"
+                      />
+                      {webImageCollectorReference && (
+                        <div className="rounded-[18px] border border-stone-200/60 bg-stone-50/60 px-3 py-2.5 dark:border-stone-700/60 dark:bg-stone-900/35">
+                          <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
+                            <Tag className="h-3.5 w-3.5 text-sky-500" />
+                            识别标签，可编辑
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {webImageCollectorTags.map((tag, index) => (
+                              <span
+                                key={`web_image_tag_${index}`}
+                                className="flex max-w-full items-center gap-1 rounded-[13px] border border-sky-100 bg-white/85 px-2 py-1 text-[11px] font-bold text-sky-700 shadow-sm dark:border-sky-400/20 dark:bg-stone-800/80 dark:text-sky-100"
+                              >
+                                <input
+                                  value={tag}
+                                  onChange={event => updateWebImageCollectorTag(index, event.target.value)}
+                                  onKeyDown={event => {
+                                    if (event.key === 'Enter') {
+                                      event.preventDefault();
+                                      (event.currentTarget as HTMLInputElement).blur();
+                                    }
+                                    if (event.key === 'Backspace' && !event.currentTarget.value) {
+                                      event.preventDefault();
+                                      removeWebImageCollectorTag(index);
+                                    }
+                                  }}
+                                  disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                                  style={{ width: `${Math.max(4, Math.min(12, tag.length + 1))}em` }}
+                                  className="min-w-0 bg-transparent outline-none disabled:cursor-wait"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeWebImageCollectorTag(index)}
+                                  disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                                  className="rounded-full p-0.5 text-sky-300 transition-colors hover:bg-sky-50 hover:text-sky-600 disabled:cursor-wait disabled:opacity-45 dark:hover:bg-sky-400/10 dark:hover:text-sky-100"
+                                  title="删除标签"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </span>
+                            ))}
+                            <div className="flex items-center gap-1 rounded-[13px] border border-dashed border-stone-300/80 bg-white/55 px-2 py-1 dark:border-stone-600 dark:bg-stone-800/45">
+                              <input
+                                value={webImageCollectorTagDraft}
+                                onChange={event => setWebImageCollectorTagDraft(event.target.value)}
+                                onKeyDown={event => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    addWebImageCollectorTag();
+                                  }
+                                }}
+                                disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                                placeholder="添加标签"
+                                className="w-16 bg-transparent text-[11px] font-bold text-stone-600 outline-none placeholder:text-stone-400 disabled:cursor-wait dark:text-stone-200 dark:placeholder:text-stone-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => addWebImageCollectorTag()}
+                                disabled={!webImageCollectorTagDraft.trim() || isCollectingWebImages || isGeneratingWebImageQuery}
+                                className="rounded-full p-0.5 text-stone-400 transition-colors hover:bg-sky-50 hover:text-sky-600 disabled:cursor-not-allowed disabled:opacity-35 dark:hover:bg-sky-400/10 dark:hover:text-sky-100"
+                                title="添加标签"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 px-1">
+                        <button
+                          type="button"
+                          onClick={() => void chooseReferenceImageForCollector()}
+                          disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                          className="flex items-center gap-1.5 rounded-[15px] border border-stone-200/70 bg-white/65 px-3 py-1.5 text-[11px] font-bold text-stone-500 shadow-sm transition-colors hover:bg-stone-100 hover:text-sky-600 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700/70 dark:bg-stone-900/40 dark:text-stone-300 dark:hover:bg-stone-700"
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          选择参考图
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void generateQueryAndCollectFromReference()}
+                          disabled={!webImageCollectorReference || isCollectingWebImages || isGeneratingWebImageQuery}
+                          className="flex items-center gap-1.5 rounded-[15px] border border-sky-100 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-600 shadow-sm transition-colors hover:bg-sky-100 disabled:border-stone-200 disabled:bg-stone-100 disabled:text-stone-400 disabled:cursor-wait dark:border-sky-400/20 dark:bg-sky-400/10 dark:text-sky-200 dark:hover:bg-sky-400/18 dark:disabled:border-stone-700 dark:disabled:bg-stone-800 dark:disabled:text-stone-500"
+                        >
+                          {isGeneratingWebImageQuery ? (
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          ) : (
+                            <Search className="h-3.5 w-3.5" />
+                          )}
+                          {isGeneratingWebImageQuery ? '识别中' : '识别标签'}
+                        </button>
+                      </div>
+                      {webImageCollectorStatus && (
+                        <div className="rounded-[16px] border border-sky-100/75 bg-sky-50/45 px-3 py-2 text-[11px] font-bold text-sky-700 dark:border-sky-400/18 dark:bg-sky-400/10 dark:text-sky-100">
+                          {webImageCollectorStatus}
+                        </div>
+                      )}
+                      {webImageCollectorReference && !hasRemoteImageSearch && localVisionModelLastError && !localVisionModelReadyRef.current && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[16px] border border-amber-200/75 bg-amber-50/70 px-3 py-2 text-[11px] font-bold text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                          <span className="min-w-[160px] flex-1">云端视觉模型未配置，本地增量包也不可用。可先安装 Ollama 后下载增量包。</span>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void installOllamaSilently()}
+                              disabled={isInstallingOllama}
+                              className="rounded-full bg-white/75 px-2.5 py-1 text-[10px] text-amber-700 shadow-sm transition-colors hover:bg-white dark:bg-stone-900/45 dark:text-amber-100 dark:hover:bg-stone-800"
+                            >
+                              {isInstallingOllama ? '安装中' : '静默安装 Ollama'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void retryLocalVisionModelDownload()}
+                              className="rounded-full bg-amber-500 px-2.5 py-1 text-[10px] text-white shadow-sm transition-colors hover:bg-amber-600"
+                            >
+                              下载增量包
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between px-1 gap-3">
+                        <span className="min-w-0 truncate text-[10px] text-stone-400 font-medium">
+                          {webImageCollectorReference
+                            ? hasRemoteImageSearch
+                              ? '优先使用已配置的云端视觉模型识别主体和风格；也可在设置里下载本地增量包。'
+                              : '未配置云端视觉模型时，需要下载本地大模型增量包才能按参考图识别。'
+                            : '自动收集 10 张网络图片，并新建同名文件夹保存。'}
+                        </span>
+                        <button
+                          onClick={() => void collectWebImagesToDrawer()}
+                          disabled={!webImageCollectorQuery.trim() || isCollectingWebImages || isGeneratingWebImageQuery}
+                          className="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-sky-500 hover:bg-sky-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none disabled:cursor-wait"
+                        >
+                          {isCollectingWebImages ? (
+                            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          ) : (
+                            <ImageIcon className="w-3.5 h-3.5" />
+                          )}
+                          {isCollectingWebImages ? '收集中' : '开始收集'}
+                        </button>
                       </div>
                     </motion.div>
                   )}
@@ -17228,6 +21355,257 @@ useEffect(() => {
 
               </div>
         </div>
+      <AnimatePresence>
+        {canvasBrushEditor && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100120] flex items-center justify-center p-4 pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onPointerDown={(event) => {
+              keepDrawerOpenByPointer();
+              if (event.target === event.currentTarget) setCanvasBrushEditor(null);
+            }}
+          >
+            <motion.div
+              initial={{ y: 18, scale: 0.98 }}
+              animate={{ y: 0, scale: 1 }}
+              exit={{ y: 14, scale: 0.98 }}
+              transition={{ type: 'tween', duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+              data-no-drag="true"
+              className="flex max-h-[92vh] w-full max-w-[1180px] overflow-hidden rounded-[28px] border border-stone-200/80 bg-white/96 text-stone-900 shadow-[0_24px_80px_rgba(15,23,42,0.20)] dark:border-white/12 dark:bg-stone-950/94 dark:text-white dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
+              onPointerDown={(event) => {
+                keepDrawerOpenByPointer();
+                event.stopPropagation();
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+              onWheel={(event) => event.stopPropagation()}
+            >
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-stone-200/70 px-4 dark:border-white/10">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Brush className="h-4 w-4 shrink-0 text-blue-500 dark:text-blue-300" />
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-black">{canvasBrushEditor.name}</div>
+                      <div className="text-[10px] font-bold text-stone-400 dark:text-white/40">
+                        {canvasBrushEditor.width} x {canvasBrushEditor.height}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCanvasBrushEditor(null)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:text-white/48 dark:hover:bg-white/10 dark:hover:text-white"
+                    title="关闭"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-stone-100 p-5 dark:bg-stone-950">
+                  <div
+                    className="relative overflow-hidden rounded-[18px] bg-white shadow-2xl shadow-stone-900/12 dark:shadow-black/35"
+                    style={{
+                      width: `min(${canvasBrushEditor.width}px, 100%, calc((92vh - 104px) * ${canvasBrushEditor.width / Math.max(1, canvasBrushEditor.height)}))`,
+                      aspectRatio: `${canvasBrushEditor.width} / ${canvasBrushEditor.height}`,
+                    }}
+                  >
+                    <img
+                      src={canvasBrushEditor.baseDataUrl}
+                      alt={canvasBrushEditor.name}
+                      className="absolute inset-0 h-full w-full select-none object-contain"
+                      draggable={false}
+                    />
+                    <canvas
+                      ref={canvasBrushCanvasRef}
+                      width={canvasBrushEditor.width}
+                      height={canvasBrushEditor.height}
+                      className="absolute inset-0 h-full w-full touch-none"
+                      style={{
+                        cursor: canvasBrushMode === 'crop' ? 'crosshair' : canvasBrushMode === 'eraser' ? 'cell' : 'crosshair',
+                      }}
+                      onPointerDown={handleCanvasBrushPointerDown}
+                      onPointerMove={handleCanvasBrushPointerMove}
+                      onPointerUp={finishCanvasBrushStroke}
+                      onPointerCancel={finishCanvasBrushStroke}
+                      onPointerLeave={finishCanvasBrushStroke}
+                    />
+                    {canvasBrushMode === 'crop' && canvasBrushCropRect && (
+                      <div
+                        className="pointer-events-none absolute border-2 border-blue-500 bg-blue-400/10 shadow-[0_0_0_9999px_rgba(15,23,42,0.36)]"
+                        style={{
+                          left: `${(canvasBrushCropRect.x / canvasBrushEditor.width) * 100}%`,
+                          top: `${(canvasBrushCropRect.y / canvasBrushEditor.height) * 100}%`,
+                          width: `${(canvasBrushCropRect.width / canvasBrushEditor.width) * 100}%`,
+                          height: `${(canvasBrushCropRect.height / canvasBrushEditor.height) * 100}%`,
+                        }}
+                      />
+                    )}
+                    <canvas ref={canvasBrushBaseCanvasRef} className="hidden" />
+                  </div>
+                </div>
+              </div>
+              <div className="flex w-[250px] shrink-0 flex-col gap-4 border-l border-stone-200/70 bg-stone-50/80 p-4 dark:border-white/10 dark:bg-white/[0.035]">
+                <div className="grid grid-cols-3 gap-1.5 rounded-[16px] bg-stone-100 p-1 dark:bg-white/6">
+                  {([
+                    { mode: 'brush' as const, icon: Brush, label: '画笔' },
+                    { mode: 'crop' as const, icon: Crop, label: '裁剪' },
+                    { mode: 'eraser' as const, icon: Eraser, label: '橡皮' },
+                    { mode: 'rectangle' as const, icon: Square, label: '矩形' },
+                    { mode: 'circle' as const, icon: Circle, label: '圆形' },
+                    { mode: 'ellipse' as const, icon: Circle, label: '椭圆' },
+                  ]).map(option => {
+                    const Icon = option.icon;
+                    const active = canvasBrushMode === option.mode;
+                    return (
+                      <button
+                        key={option.mode}
+                        type="button"
+                        onClick={() => {
+                          setCanvasBrushMode(option.mode);
+                          if (option.mode !== 'crop') clearCanvasBrushCrop();
+                          clearCanvasBrushShapeDraft();
+                          canvasBrushDrawingRef.current = false;
+                          canvasBrushLastPointRef.current = null;
+                        }}
+                        className={`flex h-16 flex-col items-center justify-center gap-1 rounded-[13px] text-[10px] font-black transition-colors ${
+                          active ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/20 dark:bg-blue-500' : 'text-stone-500 hover:bg-white hover:text-stone-900 dark:text-white/56 dark:hover:bg-white/10 dark:hover:text-white'
+                        }`}
+                        title={option.label}
+                      >
+                        <Icon className={`h-4 w-4 ${option.mode === 'ellipse' ? 'scale-x-150' : ''}`} />
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {canvasBrushMode === 'crop' ? (
+                  <div className="grid gap-3 rounded-[18px] border border-blue-100 bg-blue-50/70 p-3 text-[11px] font-bold text-blue-800 dark:border-blue-400/18 dark:bg-blue-400/10 dark:text-blue-100">
+                    <div className="flex items-center gap-2">
+                      <Crop className="h-4 w-4 shrink-0" />
+                      <span>拖动画面选择裁剪范围</span>
+                    </div>
+                    <div className="font-mono text-[10px] text-blue-700/70 dark:text-blue-100/60">
+                      {canvasBrushCropRect
+                        ? `${canvasBrushCropRect.width} x ${canvasBrushCropRect.height}`
+                        : '未选择区域'}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={clearCanvasBrushCrop}
+                        disabled={!canvasBrushCropRect}
+                        className="flex h-9 items-center justify-center gap-1.5 rounded-[13px] bg-white/70 text-[11px] font-black text-blue-700 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:text-blue-100 dark:hover:bg-white/14"
+                      >
+                        重选
+                      </button>
+                      <button
+                        type="button"
+                        onClick={applyCanvasBrushCrop}
+                        disabled={!canvasBrushCropRect}
+                        className="flex h-9 items-center justify-center gap-1.5 rounded-[13px] bg-blue-600 text-[11px] font-black text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-blue-500 dark:hover:bg-blue-400"
+                      >
+                        应用裁剪
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {isCanvasBrushShapeMode(canvasBrushMode) && (
+                      <div className="rounded-[18px] border border-emerald-100 bg-emerald-50/70 p-3 text-[11px] font-bold leading-5 text-emerald-800 dark:border-emerald-400/18 dark:bg-emerald-400/10 dark:text-emerald-100">
+                        拖动画面绘制填色形状，松手确认；颜色和不透明度会直接应用到形状填充。
+                      </div>
+                    )}
+                    <div>
+                      <div className="mb-2 flex items-center justify-between text-[11px] font-black text-stone-500 dark:text-white/68">
+                        <span>颜色</span>
+                        <span className="font-mono text-stone-400 dark:text-white/40">{canvasBrushColor.toUpperCase()}</span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-2">
+                        {CANVAS_BRUSH_COLORS.map(color => (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`h-8 rounded-[11px] border transition-transform hover:scale-105 ${
+                              canvasBrushColor === color ? 'border-blue-500 ring-2 ring-blue-300/70 dark:border-white' : 'border-stone-200 dark:border-white/18'
+                            }`}
+                            style={{ backgroundColor: color }}
+                            onClick={() => setCanvasBrushColor(color)}
+                            title={color}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
+                    <label className="grid gap-2 text-[11px] font-black text-stone-500 dark:text-white/68">
+                      <span className="flex items-center justify-between">
+                        <span>{isCanvasBrushShapeMode(canvasBrushMode) ? '点按默认尺寸' : '笔刷大小'}</span>
+                        <span className="font-mono text-stone-400 dark:text-white/40">{canvasBrushSize}px</span>
+                      </span>
+                      <input
+                        type="range"
+                        min={4}
+                        max={120}
+                        value={canvasBrushSize}
+                        onChange={(event) => setCanvasBrushSize(Number(event.target.value) || 4)}
+                        className="accent-blue-500"
+                      />
+                    </label>
+
+                    <label className="grid gap-2 text-[11px] font-black text-stone-500 dark:text-white/68">
+                      <span className="flex items-center justify-between">
+                        <span>不透明度</span>
+                        <span className="font-mono text-stone-400 dark:text-white/40">{Math.round(canvasBrushOpacity * 100)}%</span>
+                      </span>
+                      <input
+                        type="range"
+                        min={10}
+                        max={100}
+                        value={Math.round(canvasBrushOpacity * 100)}
+                        onChange={(event) => setCanvasBrushOpacity(clamp((Number(event.target.value) || 10) / 100, 0.1, 1))}
+                        className="accent-blue-500"
+                      />
+                    </label>
+                  </>
+                )}
+
+                <div className="mt-auto grid gap-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={undoCanvasBrushStroke}
+                      disabled={canvasBrushHistory.length <= 1}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-[14px] bg-stone-100 text-[11px] font-black text-stone-600 transition-colors hover:bg-stone-200 hover:text-stone-900 disabled:cursor-not-allowed disabled:opacity-35 dark:bg-white/8 dark:text-white/72 dark:hover:bg-white/12 dark:hover:text-white"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      撤销
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearCanvasBrushMarks}
+                      className="flex h-9 items-center justify-center gap-1.5 rounded-[14px] bg-stone-100 text-[11px] font-black text-stone-600 transition-colors hover:bg-stone-200 hover:text-stone-900 dark:bg-white/8 dark:text-white/72 dark:hover:bg-white/12 dark:hover:text-white"
+                    >
+                      <Eraser className="h-3.5 w-3.5" />
+                      清空
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void saveCanvasBrushEditedImage()}
+                    className="flex h-10 items-center justify-center gap-2 rounded-[15px] bg-blue-600 text-xs font-black text-white shadow-lg shadow-blue-500/20 transition-colors hover:bg-blue-500 dark:bg-blue-500 dark:hover:bg-blue-400"
+                  >
+                    <Check className="h-4 w-4" />
+                    保存为标记图
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {selectedImage && (
           <motion.div
@@ -17328,7 +21706,8 @@ useEffect(() => {
                 draggable={false}
                 onPointerDown={(e) => {
                   if (e.button === 2) {
-                    startPreviewWindowDrag(e);
+                    e.preventDefault();
+                    e.stopPropagation();
                     return;
                   }
                   if (e.button === 0) {
@@ -17339,7 +21718,8 @@ useEffect(() => {
                 }}
                 onMouseDown={(e) => {
                   if (e.button === 2) {
-                    startPreviewWindowDrag(e);
+                    e.preventDefault();
+                    e.stopPropagation();
                     return;
                   }
                   if (e.button === 0) {
@@ -17348,7 +21728,11 @@ useEffect(() => {
                   }
                   e.stopPropagation();
                 }}
-                onContextMenu={(e) => e.preventDefault()}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void copySelectedImagePreviewToClipboard();
+                }}
               />
             </motion.div>
           </motion.div>
@@ -17530,6 +21914,7 @@ useEffect(() => {
               initial={{ scale: 0.95, y: 10 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 10 }}
+              data-canvas-template-panel="true"
               className="w-full max-w-[360px] rounded-[28px] bg-white p-4 shadow-2xl border border-stone-200 dark:border-stone-700 dark:bg-stone-900"
               onMouseDown={(event) => event.stopPropagation()}
               onSubmit={(event) => {
@@ -17568,6 +21953,8 @@ useEffect(() => {
               </label>
               <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
                 <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowSaveDraft.aiCount} 个生图节点</span>
+                <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200">{canvasWorkflowSaveDraft.fixedImageCount} 张固定图</span>
+                <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200">{canvasWorkflowSaveDraft.fixedTextCount} 段固定文字</span>
                 <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowSaveDraft.externalInputIds.length} 个外部输入</span>
               </div>
               <div className="mt-4 flex justify-end gap-2">
@@ -17677,7 +22064,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v3.0.2</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v4.0.0</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -17690,7 +22077,8 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>画布里的本地参考图会先复制到用户缓存目录，再临时转换为可被 API 访问的 URL。</p>
+                  <p>新增画布工作流：可把多个 AI 节点折叠成工作流模块，一键复用完整生成链路。</p>
+                  <p className="mt-1">新增节点预设管理：常用 Prompt 可保存、导入导出，并快速创建固定风格节点。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -17783,9 +22171,9 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v3.0.2 画布 AI 与 API 接口工具</p>
-                <p>画布本地参考图会复制到用户设置的缓存目录下，再临时转换为可被 API 访问的 URL。</p>
-                <p>生成结束后会关闭临时通道并删除临时文件。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.0.0 工作流与节点预设</p>
+                <p>画布新增工作流模块，可把多节点生成链路保存为可复用模板，并支持运行、折叠、展开和输出管理。</p>
+                <p>节点预设升级为可管理资产，支持保存常用 Prompt、编辑内置/自定义预设，以及单个或批量导入导出。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

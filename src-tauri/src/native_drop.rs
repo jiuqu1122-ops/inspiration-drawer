@@ -22,16 +22,14 @@ mod win {
     use winapi::shared::ntdef::HRESULT;
     use winapi::shared::windef::{HWND, POINTL};
     use winapi::shared::winerror::{E_NOINTERFACE, E_POINTER, S_OK};
-    use winapi::um::objidl::{FORMATETC, IDataObject, STGMEDIUM};
+    use winapi::um::objidl::{IDataObject, FORMATETC, STGMEDIUM};
     use winapi::um::objidlbase::{ISequentialStream, IStream};
     use winapi::um::ole2::{OleInitialize, RegisterDragDrop, RevokeDragDrop};
     use winapi::um::oleidl::{IDropTarget, IDropTargetVtbl};
     use winapi::um::shellapi::{DragQueryFileW, HDROP};
     use winapi::um::unknwnbase::{IUnknown, IUnknownVtbl};
     use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock};
-    use winapi::um::winuser::{
-        EnumChildWindows, FindWindowW, RegisterClipboardFormatW,
-    };
+    use winapi::um::winuser::{EnumChildWindows, FindWindowW, RegisterClipboardFormatW};
 
     const DROPEFFECT_COPY_VALUE: DWORD = 1;
     const CF_UNICODETEXT_VALUE: u16 = 13;
@@ -211,7 +209,10 @@ mod win {
             let mut payload = parse_data_object(data_object, &target.app);
             payload.source = target.label.clone();
 
-            if !payload.paths.is_empty() || !payload.web_images.is_empty() || !payload.texts.is_empty() {
+            if !payload.paths.is_empty()
+                || !payload.web_images.is_empty()
+                || !payload.texts.is_empty()
+            {
                 let _ = target.app.emit("native-drop", payload);
             }
         }
@@ -284,7 +285,12 @@ mod win {
         TRUE
     }
 
-    fn register_single_hwnd(app: AppHandle, label: String, hwnd: HWND, debug_label: &str) -> Result<(), String> {
+    fn register_single_hwnd(
+        app: AppHandle,
+        label: String,
+        hwnd: HWND,
+        debug_label: &str,
+    ) -> Result<(), String> {
         unsafe {
             let _ = RevokeDragDrop(hwnd);
 
@@ -298,11 +304,17 @@ mod win {
             let raw_target = Box::into_raw(target) as *mut IDropTarget;
             let hr = RegisterDragDrop(hwnd, raw_target);
             if hr < 0 {
-                return Err(format!("RegisterDragDrop({debug_label}) failed: HRESULT=0x{:08X}", hr as u32));
+                return Err(format!(
+                    "RegisterDragDrop({debug_label}) failed: HRESULT=0x{:08X}",
+                    hr as u32
+                ));
             }
 
             REGISTERED_TARGETS.with(|targets| {
-                targets.borrow_mut().push(RegisteredTarget { hwnd, _target: raw_target });
+                targets.borrow_mut().push(RegisteredTarget {
+                    hwnd,
+                    _target: raw_target,
+                });
             });
         }
 
@@ -375,7 +387,8 @@ mod win {
                         continue;
                     }
                     let mut buffer = vec![0u16; len as usize + 1];
-                    let copied = DragQueryFileW(hdrop, i, buffer.as_mut_ptr(), buffer.len() as UINT);
+                    let copied =
+                        DragQueryFileW(hdrop, i, buffer.as_mut_ptr(), buffer.len() as UINT);
                     if copied > 0 {
                         buffer.truncate(copied as usize);
                         let path = String::from_utf16_lossy(&buffer);
@@ -407,11 +420,20 @@ mod win {
         None
     }
 
-    fn get_hglobal_medium(data: *const IDataObject, cf_format: u16, lindex: i32) -> Option<STGMEDIUM> {
+    fn get_hglobal_medium(
+        data: *const IDataObject,
+        cf_format: u16,
+        lindex: i32,
+    ) -> Option<STGMEDIUM> {
         get_medium(data, cf_format, lindex, TYMED_HGLOBAL_VALUE)
     }
 
-    fn get_medium(data: *const IDataObject, cf_format: u16, lindex: i32, tymed: DWORD) -> Option<STGMEDIUM> {
+    fn get_medium(
+        data: *const IDataObject,
+        cf_format: u16,
+        lindex: i32,
+        tymed: DWORD,
+    ) -> Option<STGMEDIUM> {
         if data.is_null() {
             return None;
         }
@@ -424,8 +446,16 @@ mod win {
                 tymed,
             };
             let mut medium: STGMEDIUM = mem::zeroed();
-            let hr = ((*(*(data as *mut IDataObject)).lpVtbl).GetData)(data as *mut IDataObject, &mut format, &mut medium);
-            if hr < 0 { None } else { Some(medium) }
+            let hr = ((*(*(data as *mut IDataObject)).lpVtbl).GetData)(
+                data as *mut IDataObject,
+                &mut format,
+                &mut medium,
+            );
+            if hr < 0 {
+                None
+            } else {
+                Some(medium)
+            }
         }
     }
 
@@ -436,21 +466,23 @@ mod win {
         text
     }
 
-    fn read_hglobal_ansi_or_utf8(data: *const IDataObject, cf_format: u16, lindex: i32) -> Option<String> {
+    fn read_hglobal_ansi_or_utf8(
+        data: *const IDataObject,
+        cf_format: u16,
+        lindex: i32,
+    ) -> Option<String> {
         let mut medium = get_hglobal_medium(data, cf_format, lindex)?;
-        let text = unsafe { hglobal_to_bytes(medium_hglobal(&mut medium)) }
-            .and_then(|bytes| {
-                if bytes.is_empty() {
-                    return None;
-                }
-                let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-                let slice = &bytes[..end];
-                Some(String::from_utf8_lossy(slice).to_string())
-            });
+        let text = unsafe { hglobal_to_bytes(medium_hglobal(&mut medium)) }.and_then(|bytes| {
+            if bytes.is_empty() {
+                return None;
+            }
+            let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+            let slice = &bytes[..end];
+            Some(String::from_utf8_lossy(slice).to_string())
+        });
         unsafe { ReleaseStgMedium(&mut medium) };
         text
     }
-
 
     #[derive(Debug, Clone)]
     struct VirtualFileDescriptor {
@@ -534,7 +566,11 @@ mod win {
         parse_file_group_descriptor(bytes, FILEDESCRIPTORA_SIZE, false)
     }
 
-    fn parse_file_group_descriptor(bytes: &[u8], descriptor_size: usize, wide_name: bool) -> Vec<VirtualFileDescriptor> {
+    fn parse_file_group_descriptor(
+        bytes: &[u8],
+        descriptor_size: usize,
+        wide_name: bool,
+    ) -> Vec<VirtualFileDescriptor> {
         if bytes.len() < 4 {
             return Vec::new();
         }
@@ -556,7 +592,11 @@ mod win {
             };
             let size = read_descriptor_size(descriptor);
             out.push(VirtualFileDescriptor {
-                name: if name.trim().is_empty() { format!("web_image_{}", idx + 1) } else { name },
+                name: if name.trim().is_empty() {
+                    format!("web_image_{}", idx + 1)
+                } else {
+                    name
+                },
                 size,
             });
         }
@@ -581,7 +621,11 @@ mod win {
             descriptor[FILEDESCRIPTOR_SIZE_LOW_OFFSET + 3],
         ]) as u64;
         let size = ((high << 32) | low) as usize;
-        if size == 0 || size > MAX_VIRTUAL_FILE_BYTES { None } else { Some(size) }
+        if size == 0 || size > MAX_VIRTUAL_FILE_BYTES {
+            None
+        } else {
+            Some(size)
+        }
     }
 
     fn read_utf16_name_at(bytes: &[u8], offset: usize, max_units: usize) -> String {
@@ -593,7 +637,9 @@ mod win {
         for i in 0..available {
             let at = offset + i * 2;
             let unit = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
-            if unit == 0 { break; }
+            if unit == 0 {
+                break;
+            }
             units.push(unit);
         }
         String::from_utf16_lossy(&units)
@@ -609,9 +655,18 @@ mod win {
         String::from_utf8_lossy(&raw[..end]).to_string()
     }
 
-    fn read_file_contents(data: *const IDataObject, lindex: i32, expected_size: Option<usize>) -> Option<Vec<u8>> {
+    fn read_file_contents(
+        data: *const IDataObject,
+        lindex: i32,
+        expected_size: Option<usize>,
+    ) -> Option<Vec<u8>> {
         let format = register_clipboard_format("FileContents")?;
-        let mut medium = get_medium(data, format, lindex, TYMED_HGLOBAL_VALUE | TYMED_ISTREAM_VALUE)?;
+        let mut medium = get_medium(
+            data,
+            format,
+            lindex,
+            TYMED_HGLOBAL_VALUE | TYMED_ISTREAM_VALUE,
+        )?;
         let bytes = unsafe {
             if medium.tymed == TYMED_HGLOBAL_VALUE {
                 hglobal_to_bytes(medium_hglobal(&mut medium))
@@ -630,13 +685,18 @@ mod win {
         *(*medium.u).pstm()
     }
 
-    unsafe fn istream_to_bytes(stream: *mut IStream, expected_size: Option<usize>) -> Option<Vec<u8>> {
+    unsafe fn istream_to_bytes(
+        stream: *mut IStream,
+        expected_size: Option<usize>,
+    ) -> Option<Vec<u8>> {
         if stream.is_null() {
             return None;
         }
 
         let mut out = Vec::new();
-        let mut remaining = expected_size.unwrap_or(MAX_VIRTUAL_FILE_BYTES).min(MAX_VIRTUAL_FILE_BYTES);
+        let mut remaining = expected_size
+            .unwrap_or(MAX_VIRTUAL_FILE_BYTES)
+            .min(MAX_VIRTUAL_FILE_BYTES);
         let mut buffer = vec![0u8; 64 * 1024];
 
         while remaining > 0 {
@@ -659,7 +719,11 @@ mod win {
             }
         }
 
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 
     fn virtual_file_name(raw_name: &str, bytes: &[u8], idx: usize) -> String {
@@ -687,26 +751,47 @@ mod win {
     }
 
     fn has_extension(name: &str) -> bool {
-        PathBuf::from(name).extension().and_then(|e| e.to_str()).is_some()
+        PathBuf::from(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some()
     }
 
     fn infer_extension(bytes: &[u8]) -> &'static str {
-        if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) { "png" }
-        else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) { "jpg" }
-        else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") { "gif" }
-        else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" { "webp" }
-        else if bytes.starts_with(b"BM") { "bmp" }
-        else if bytes.starts_with(b"%PDF") { "pdf" }
-        else { "bin" }
+        if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+            "png"
+        } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            "jpg"
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            "gif"
+        } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            "webp"
+        } else if bytes.starts_with(b"BM") {
+            "bmp"
+        } else if bytes.starts_with(b"%PDF") {
+            "pdf"
+        } else {
+            "bin"
+        }
     }
 
     fn unique_path(path: PathBuf) -> PathBuf {
         if !path.exists() {
             return path;
         }
-        let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir);
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("web_drop").to_string();
-        let ext = path.extension().and_then(|e| e.to_str()).map(|s| s.to_string());
+        let parent = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(std::env::temp_dir);
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("web_drop")
+            .to_string();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_string());
         for i in 1..1000 {
             let file_name = match &ext {
                 Some(ext) if !ext.is_empty() => format!("{}_{}.{}", stem, i, ext),
@@ -738,7 +823,11 @@ mod win {
         let text = String::from_utf16_lossy(&slice[..end]);
         let _ = GlobalUnlock(hglobal);
         let text = text.trim_matches('\u{feff}').trim().to_string();
-        if text.is_empty() { None } else { Some(text) }
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     }
 
     unsafe fn hglobal_to_bytes(hglobal: HGLOBAL) -> Option<Vec<u8>> {
@@ -760,7 +849,11 @@ mod win {
     fn register_clipboard_format(name: &str) -> Option<u16> {
         let wide = to_wide_null(name);
         let id = unsafe { RegisterClipboardFormatW(wide.as_ptr()) };
-        if id == 0 { None } else { Some(id as u16) }
+        if id == 0 {
+            None
+        } else {
+            Some(id as u16)
+        }
     }
 
     fn extract_urls_from_drag_text(input: &str) -> Vec<String> {
@@ -791,19 +884,32 @@ mod win {
             if line.starts_with('#') || line.is_empty() {
                 continue;
             }
-            if line.starts_with("http://") || line.starts_with("https://") || line.starts_with("data:image/") {
+            if line.starts_with("http://")
+                || line.starts_with("https://")
+                || line.starts_with("data:image/")
+            {
                 out.push(line.trim_matches(['\'', '"']).to_string());
             }
         }
 
-        for token in text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>') {
+        for token in
+            text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
+        {
             let token = token.trim_matches([')', '(', ',', ';']);
-            if token.starts_with("http://") || token.starts_with("https://") || token.starts_with("data:image/") {
+            if token.starts_with("http://")
+                || token.starts_with("https://")
+                || token.starts_with("data:image/")
+            {
                 out.push(token.to_string());
             }
         }
 
-        dedupe(out.into_iter().map(normalize_url_candidate).filter(|s| !s.is_empty()).collect())
+        dedupe(
+            out.into_iter()
+                .map(normalize_url_candidate)
+                .filter(|s| !s.is_empty())
+                .collect(),
+        )
     }
 
     fn looks_like_image_url(url: &str) -> bool {
@@ -860,7 +966,10 @@ mod win {
     }
 
     fn to_wide_null(value: &str) -> Vec<u16> {
-        OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 }
 

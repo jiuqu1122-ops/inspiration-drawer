@@ -24,7 +24,7 @@ export const XAIS_CHAT_IMAGE_MODEL_OPTIONS = [
   { value: 'Image2_1K', label: 'Xais img2 1K' },
   { value: 'Image2_2K', label: 'Xais Img2 2K' },
   { value: 'Image2_4K', label: 'Xais Img2 4K' },
-  { value: 'Image2_4K_HQ', label: 'Xais Img2 4K 高画质' },
+  { value: 'Xais Img2_4K_H', label: 'Xais Img2 4K 高画质' },
   { value: 'Nano_Banana_Pro_2K_5', label: 'Nano Banana Pro 2K 5' },
   { value: 'Nano_Banana_Pro_4K_5', label: 'Nano Banana Pro 4K 5' },
   { value: 'c3f', label: 'c3f' },
@@ -261,6 +261,125 @@ const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string)
     default: return isHighResolution ? '2880x2880' : '1024x1024';
   }
 };
+
+export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
+  Image2_1K: ['1:1', '9:16', '4:3', '3:4', '5:4'],
+  Image2_2K: [
+    '2048x2048',
+    '2048x1152',
+    '1152x2048',
+    '2064x1376',
+    '1376x2064',
+    '2048x1536',
+    '1536x2048',
+    '2016x864',
+    '864x2016',
+    '2080x1664',
+    '1664x2080',
+    '2048x1024',
+    '2064x688',
+  ],
+  Image2_4K: [
+    '2880x2880',
+    '3840x2160',
+    '2160x3840',
+    '3520x2352',
+    '2352x3520',
+    '3312x2480',
+    '2480x3312',
+    '3840x1648',
+    '1648x3840',
+    '3216x2576',
+    '2576x3216',
+    '3840x1920',
+    '3840x1280',
+    '1280x3840',
+  ],
+  'Xais Img2_4K_H': [
+    '2880x2880',
+    '3840x2160',
+    '2160x3840',
+    '3520x2352',
+    '2352x3520',
+    '3312x2480',
+    '2480x3312',
+    '3840x1648',
+    '1648x3840',
+    '3216x2576',
+    '2576x3216',
+    '3840x1920',
+    '3840x1280',
+    '1280x3840',
+  ],
+};
+
+export const normalizeXaisImage2Model = (model?: string | null) => {
+  const trimmed = String(model || '').trim();
+  if (/^image2_4k_hq$/i.test(trimmed) || /^image2_4k_h$/i.test(trimmed) || /^xais\s+img2_4k_h$/i.test(trimmed)) {
+    return 'Xais Img2_4K_H';
+  }
+  if (/^image2_4k$/i.test(trimmed)) return 'Image2_4K';
+  if (/^image2_2k$/i.test(trimmed)) return 'Image2_2K';
+  if (/^image2_1k$/i.test(trimmed)) return 'Image2_1K';
+  return trimmed;
+};
+
+export const isXaisImage2Model = (model?: string | null) => (
+  !!XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL[normalizeXaisImage2Model(model)]
+);
+
+export const getXaisImage2RatioOptions = (model?: string | null) => (
+  XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL[normalizeXaisImage2Model(model)] || []
+);
+
+const parseRatioParts = (value?: string | null) => {
+  const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*(?::|x|×)\s*(\d+(?:\.\d+)?)$/i);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  return { width, height };
+};
+
+const gcd = (a: number, b: number): number => {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y) {
+    const next = x % y;
+    x = y;
+    y = next;
+  }
+  return x || 1;
+};
+
+const parseAspectRatio = (aspectRatio?: string) => {
+  const parsed = parseRatioParts(aspectRatio) || { width: 1, height: 1 };
+  const widthRatio = parsed.width;
+  const heightRatio = parsed.height;
+  const divisor = gcd(widthRatio, heightRatio);
+  return {
+    ratio: `${Math.round(widthRatio / divisor)}:${Math.round(heightRatio / divisor)}`,
+    value: widthRatio / heightRatio,
+  };
+};
+
+export const resolveXaisImage2Ratio = (model?: string | null, aspectRatio?: string | null) => {
+  const options = getXaisImage2RatioOptions(model);
+  if (options.length === 0) return String(aspectRatio || '1:1');
+  const value = String(aspectRatio || '').trim();
+  if (options.includes(value)) return value;
+
+  const target = parseAspectRatio(value || '1:1').value;
+  return options.reduce((best, option) => {
+    const bestDiff = Math.abs(parseAspectRatio(best).value - target);
+    const optionDiff = Math.abs(parseAspectRatio(option).value - target);
+    return optionDiff < bestDiff ? option : best;
+  }, options[0]);
+};
+
+const xaisImage2QualityFromModel = (model?: string | null) => (
+  normalizeXaisImage2Model(model) === 'Xais Img2_4K_H' ? 'high' : 'medium'
+);
 
 const collectImageStrings = (value: unknown, output: string[] = []): string[] => {
   if (!value) return output;
@@ -600,37 +719,30 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
   if (!apiKey) throw new Error('请先填写 Xais API Key');
   if (!prompt) throw new Error('请输入生图提示词');
 
-  const model = (options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT).trim();
+  const model = normalizeXaisImage2Model(options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
   const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
   const requestCount = Math.max(1, Math.min(4, count));
   const inputImages = (options.inputImages || [])
     .filter(image => isRemoteHttpImageSource(image))
     .slice(0, 8);
-  const promptText = buildChinesePromptWithOptions(prompt, options.aspectRatio);
+  const image2Ratio = resolveXaisImage2Ratio(model, options.aspectRatio);
+  const promptText = prompt;
   const output: string[] = [];
 
   const runOneTask = async () => {
     const customField: Record<string, unknown> = {
+      quality: xaisImage2QualityFromModel(model),
       outputFormat: outputMimeFromFormat(options.outputFormat),
-      prompt: promptText,
-      input: inputImages.length > 0 ? 'REF' : promptText,
     };
-    if (options.aspectRatio) customField.aspectRatio = options.aspectRatio;
-    if (inputImages.length > 0) {
-      customField.imageUrls = inputImages;
-      customField.image_urls = inputImages;
-      customField.referenceImages = inputImages;
-      customField.reference_images = inputImages;
-      customField.images = inputImages;
-    }
 
     const taskBody: Record<string, unknown> = {
-      model,
       prompt: promptText,
+      model,
       custom_field: customField,
+      ratio: image2Ratio,
+      client: 'XAIS',
     };
     if (inputImages.length > 0) taskBody.ref = inputImages;
-    if (options.aspectRatio) taskBody.ratio = options.aspectRatio;
 
     const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
     const started = parseAiResponseText(startedRaw);
@@ -1099,8 +1211,9 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
       })),
     ]
     : promptText;
-  const urlTextContent = inputImages.length > 0
-    ? `${promptText}\n\n参考图片 URL：\n${inputImages.join('\n')}`
+  const urlTextImages = inputImages.filter(image => isRemoteHttpImageSource(image));
+  const urlTextContent = urlTextImages.length > 0
+    ? `${promptText}\n\n参考图片 URL：\n${urlTextImages.join('\n')}`
     : promptText;
   const chatBodies = [
     {
@@ -1117,7 +1230,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
         max_tokens: 8192,
       },
     },
-    ...(inputImages.length > 0 ? [{
+    ...(urlTextImages.length > 0 ? [{
       label: 'Xais Chat URL 文本接口',
       body: {
         model,

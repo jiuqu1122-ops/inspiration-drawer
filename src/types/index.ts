@@ -19,7 +19,7 @@ export type AlchemyResult = {
   borrow: string[];
   avoid: string[];
   materials: string[];
-  analysisMode?: 'palette' | 'ai' | 'mock';
+  analysisMode?: 'palette' | 'local' | 'ai' | 'mock';
   colorSource?: string;
   apiStatus?: string;
   generatedAt?: number;

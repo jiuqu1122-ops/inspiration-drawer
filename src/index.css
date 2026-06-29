@@ -1,4 +1,7 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "./";
+@source "../index.html";
+@source "../note.html";
 @custom-variant dark (&:where(.dark, .dark *));
 
 html,
@@ -37,8 +40,133 @@ body,
   transition: none !important;
 }
 
+[data-canvas-interacting="true"] [data-canvas-item-id] {
+  will-change: left, top, width, height;
+}
+
+[data-canvas-interacting="true"] [data-canvas-item-id] :is(button, [role="button"]) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+[data-canvas-interacting="true"] [data-canvas-item-id] * {
+  box-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+}
+
 [data-canvas-item-id] {
   contain: layout paint style;
+}
+
+:is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) {
+  --soft-panel-ink: #57534e;
+  --soft-panel-line: rgba(216, 222, 231, 0.92);
+  --soft-panel-card: rgba(255, 255, 255, 0.6);
+  --soft-panel-card-hover: rgba(255, 255, 255, 0.82);
+  --soft-panel-focus: rgba(168, 162, 158, 0.95);
+  color: var(--soft-panel-ink) !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 250, 251, 0.92)) !important;
+  border-color: rgba(226, 232, 240, 0.82) !important;
+  box-shadow: 0 20px 54px rgba(15, 23, 42, 0.08) !important;
+  backdrop-filter: blur(22px);
+}
+
+.dark :is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) {
+  --soft-panel-ink: #e7e5e4;
+  --soft-panel-line: rgba(87, 83, 78, 0.72);
+  --soft-panel-card: rgba(28, 25, 23, 0.62);
+  --soft-panel-card-hover: rgba(41, 37, 36, 0.72);
+  --soft-panel-focus: rgba(168, 162, 158, 0.7);
+  color: var(--soft-panel-ink) !important;
+  background: linear-gradient(180deg, rgba(28, 25, 23, 0.96), rgba(12, 10, 9, 0.92)) !important;
+  border-color: var(--soft-panel-line) !important;
+  box-shadow: 0 24px 68px rgba(0, 0, 0, 0.42) !important;
+}
+
+[data-drawer-settings-panel="true"] {
+  border-bottom-style: solid;
+}
+
+[data-canvas-template-panel="true"] {
+  border-style: solid !important;
+  border-radius: 28px !important;
+}
+
+[data-drawer-settings-panel="true"] > div > div {
+  background: var(--soft-panel-card) !important;
+  border-color: var(--soft-panel-line) !important;
+  box-shadow: none !important;
+}
+
+[data-drawer-settings-panel="true"] > div > div {
+  border-style: dashed !important;
+}
+
+[data-drawer-settings-panel="true"] > div > div {
+  border-radius: 24px !important;
+}
+
+:is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) :is(input, textarea, select) {
+  color: var(--soft-panel-ink) !important;
+  background-color: rgba(255, 255, 255, 0.62) !important;
+  border-color: var(--soft-panel-line) !important;
+  border-style: dashed !important;
+  box-shadow: none !important;
+}
+
+.dark :is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) :is(input, textarea, select) {
+  background-color: rgba(28, 25, 23, 0.72) !important;
+}
+
+:is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) :is(input, textarea, select):focus {
+  border-color: var(--soft-panel-focus) !important;
+  background-color: var(--soft-panel-card-hover) !important;
+  outline: none !important;
+  --tw-ring-color: rgba(168, 162, 158, 0.18) !important;
+}
+
+:is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) :where(:not(button, button *)):is(
+  [class*="bg-cyan-"],
+  [class*="bg-emerald-"],
+  [class*="bg-amber-"],
+  [class*="bg-sky-"],
+  [class*="bg-blue-"],
+  [class*="bg-purple-"],
+  [class*="bg-violet-"],
+  [class*="bg-red-"]
+) {
+  background-color: transparent !important;
+}
+
+:is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) :where(:not(button, button *)):is(
+  [class*="border-cyan-"],
+  [class*="border-emerald-"],
+  [class*="border-amber-"],
+  [class*="border-sky-"],
+  [class*="border-blue-"],
+  [class*="border-purple-"],
+  [class*="border-violet-"],
+  [class*="border-red-"]
+) {
+  border-color: var(--soft-panel-line) !important;
+}
+
+:is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) :where(:not(button, button *)):is(
+  [class*="text-cyan-"],
+  [class*="text-emerald-"],
+  [class*="text-amber-"],
+  [class*="text-sky-"],
+  [class*="text-blue-"],
+  [class*="text-purple-"],
+  [class*="text-violet-"],
+  [class*="text-red-"]
+) {
+  color: var(--soft-panel-ink) !important;
+}
+
+[data-canvas-template-panel="true"] textarea {
+  line-height: 1.65;
 }
 
 /* Unified drawer theme. Keep light mode white; do not match dark:* utilities in light mode. */

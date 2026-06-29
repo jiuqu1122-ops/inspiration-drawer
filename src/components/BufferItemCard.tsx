@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Tag, Star, FolderMinus, FolderOpen, Download, Copy,
-  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, Sparkles, StickyNote
+  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, Sparkles, StickyNote, Search
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
@@ -80,7 +80,7 @@ export default function BufferItemCard({
   onRemove, onRemoveFromFolder, onTogglePin,
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
-  showAlchemy = false, onAlchemy, onEnsureThumbnail, onCreateFloatingNote, onLiveTextChange,
+  showAlchemy = false, onAlchemy, onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote, onLiveTextChange,
   onTextEditStart, onTextEditEnd, preferFullImageSource = false
 }: any) {
   const [copied, setCopied] = useState(false);
@@ -483,6 +483,7 @@ export default function BufferItemCard({
   const isAlchemyDone = alchemyState === 'alchemy' && !!alchemyResult;
   const isAlchemyLoading = alchemyState === 'analyzing';
   const canShowAlchemy = !!showAlchemy && item.type === 'image' && !isSelectMode;
+  const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
   const alchemyColors = Array.isArray(alchemyResult?.colors) ? alchemyResult.colors.slice(0, 4) : [];
   const alchemyKeywords = Array.isArray(alchemyResult?.keywords) ? alchemyResult.keywords.slice(0, 3) : [];
   const isPaletteOnlyAlchemy = alchemyResult?.analysisMode === 'palette';
@@ -497,6 +498,12 @@ export default function BufferItemCard({
     e.stopPropagation();
     if (isAlchemyLoading) return;
     if (typeof onAlchemy === 'function') onAlchemy(item);
+  };
+
+  const handleCollectSimilarImagesClick = (e: React.MouseEvent | any) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof onCollectSimilarImages === 'function') onCollectSimilarImages(item);
   };
 
   const saveTextContent = () => {
@@ -614,6 +621,17 @@ return (
               title={isAlchemyLoading ? 'AI 炼金中' : hasAiAlchemyDone ? '重新 AI 炼金' : 'AI 炼金'}
               className={`${btnClass} ${hasAiAlchemyDone ? 'text-amber-500' : ''}`}
             ><Sparkles className={`${iconClass} ${hasAiAlchemyDone ? 'fill-amber-300/60 text-amber-500' : ''}`} /></button>
+          )}
+
+          {canCollectSimilarImages && (
+            <button
+              type="button"
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onClick={handleCollectSimilarImagesClick}
+              title="作为参考图收图"
+              className={`${btnClass} hover:text-sky-600`}
+            ><Search className={iconClass} /></button>
           )}
 
           {item.folderId && (

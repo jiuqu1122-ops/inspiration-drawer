@@ -1,11 +1,16 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "3.0.3",
+  "version": "4.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "license-generator:frontend": "tsc && vite build --config vite.generator.config.ts",
+    "license-generator:dev": "tauri dev --config src-tauri/tauri.generator.conf.json --features license-generator-app -- --bin license-generator-app",
+    "license-generator:build": "node scripts/build-license-generator.mjs",
+    "license-generator:bundle": "tauri build --config src-tauri/tauri.generator.conf.json --features license-generator-app -- --bin license-generator-app",
+    "license-generator:open": "npm run license-generator:build && start \"\" \"src-tauri\\target\\generator\\license-generator-app.exe\"",
     "preview": "vite preview",
     "tauri": "tauri"
   },

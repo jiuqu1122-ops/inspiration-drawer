@@ -18,7 +18,7 @@ mod win {
         E_NOINTERFACE, E_NOTIMPL, E_POINTER, OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK,
     };
     use winapi::um::objidl::{
-        DATADIR_GET, FORMATETC, IDataObject, IDataObjectVtbl, IEnumFORMATETC, IEnumFORMATETCVtbl,
+        IDataObject, IDataObjectVtbl, IEnumFORMATETC, IEnumFORMATETCVtbl, DATADIR_GET, FORMATETC,
         STGMEDIUM,
     };
     use winapi::um::oleidl::DROPEFFECT_COPY;
@@ -90,7 +90,10 @@ mod win {
 
     impl CancelRect {
         fn contains(self, point: POINT) -> bool {
-            point.x >= self.left && point.x <= self.right && point.y >= self.top && point.y <= self.bottom
+            point.x >= self.left
+                && point.x <= self.right
+                && point.y >= self.top
+                && point.y <= self.bottom
         }
     }
 
@@ -201,7 +204,9 @@ mod win {
             }
             let path = local_path_from_url_like(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
             if path.exists() {
-                out.push(strip_windows_verbatim_path(path.canonicalize().unwrap_or(path)));
+                out.push(strip_windows_verbatim_path(
+                    path.canonicalize().unwrap_or(path),
+                ));
             }
         }
         if out.is_empty() {
@@ -253,7 +258,11 @@ mod win {
                 f_wide: TRUE,
             };
             (ptr as *mut DropFiles).write(header);
-            copy_nonoverlapping(wide_paths.as_ptr() as *const u8, ptr.add(header_size), wide_bytes);
+            copy_nonoverlapping(
+                wide_paths.as_ptr() as *const u8,
+                ptr.add(header_size),
+                wide_bytes,
+            );
             GlobalUnlock(hglobal);
             Ok(hglobal)
         }
@@ -346,7 +355,9 @@ mod win {
         let count = pidls.len();
         let header_size = mem::size_of::<u32>() * (count + 2);
         let empty_parent_pidl_size = 2usize;
-        let total_size = header_size + empty_parent_pidl_size + pidls.iter().map(|(_, size)| *size).sum::<usize>();
+        let total_size = header_size
+            + empty_parent_pidl_size
+            + pidls.iter().map(|(_, size)| *size).sum::<usize>();
         let mut bytes = vec![0u8; total_size];
         bytes[0..4].copy_from_slice(&(count as u32).to_le_bytes());
 
@@ -411,7 +422,10 @@ mod win {
 
     fn create_shell_data_object_from_parent(paths: &[PathBuf]) -> Option<*mut IDataObject> {
         let parent = paths.first()?.parent()?.to_path_buf();
-        if !paths.iter().all(|path| path.parent().map(|value| value == parent).unwrap_or(false)) {
+        if !paths
+            .iter()
+            .all(|path| path.parent().map(|value| value == parent).unwrap_or(false))
+        {
             return None;
         }
 
@@ -881,7 +895,10 @@ mod win {
             return E_POINTER;
         }
         let enumerator = this as *mut FormatEtcEnumerator;
-        let remaining = (*enumerator).formats.len().saturating_sub((*enumerator).index);
+        let remaining = (*enumerator)
+            .formats
+            .len()
+            .saturating_sub((*enumerator).index);
         let skipped = remaining.min(celt as usize);
         (*enumerator).index += skipped;
         if skipped == celt as usize {
@@ -970,7 +987,9 @@ mod win {
                 if GetCursorPos(&mut point) != FALSE {
                     let inside = rect.contains(point);
                     if !inside {
-                        (*source).has_left_cancel_rect.store(true, Ordering::Relaxed);
+                        (*source)
+                            .has_left_cancel_rect
+                            .store(true, Ordering::Relaxed);
                     } else if (*source).has_left_cancel_rect.load(Ordering::Relaxed) {
                         return DRAGDROP_S_CANCEL;
                     }
@@ -989,7 +1008,10 @@ mod win {
         DRAGDROP_S_USEDEFAULTCURSORS
     }
 
-    pub fn start_file_drag(paths: Vec<String>, cancel_rect: Option<CancelRect>) -> Result<(), String> {
+    pub fn start_file_drag(
+        paths: Vec<String>,
+        cancel_rect: Option<CancelRect>,
+    ) -> Result<(), String> {
         let paths = normalize_paths(paths)?;
         unsafe {
             let init_hr = OleInitialize(null_mut());
@@ -1065,7 +1087,10 @@ mod win {
 pub use win::{copy_files_to_clipboard, start_file_drag, CancelRect};
 
 #[cfg(not(target_os = "windows"))]
-pub fn start_file_drag(_paths: Vec<String>, _cancel_rect: Option<CancelRect>) -> Result<(), String> {
+pub fn start_file_drag(
+    _paths: Vec<String>,
+    _cancel_rect: Option<CancelRect>,
+) -> Result<(), String> {
     Err("file drag is currently supported on Windows only".to_string())
 }
 

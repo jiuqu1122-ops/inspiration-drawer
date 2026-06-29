@@ -1,3 +1,5 @@
+pub mod license;
+
 // 🌟 换成这行：
 use base64::{engine::general_purpose, Engine as _};
 use screenshots::Screen;

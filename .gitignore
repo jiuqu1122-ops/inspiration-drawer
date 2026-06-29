@@ -1,5 +1,6 @@
 ﻿node_modules/
 dist/
+dist-generator/
 src-tauri/target/
 
 .env
@@ -8,16 +9,20 @@ src-tauri/target/
 *.key
 *.p12
 *.pfx
+signing-key*.json
 
 ai_analysis_config.json
 drawer_items.json
 drawer_folders.json
 web_image_cache_dir.txt
 network_proxy.txt
+r2.local.json
 
 web_image_cache/
 cache/
 uploads/
+public/models/
+local_models/
 
 *.log
 npm-debug.log*
