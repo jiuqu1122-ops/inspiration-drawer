@@ -1991,16 +1991,7 @@ const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
 );
 const shouldShowRifeEngineProgress = (progress?: RifeEngineProgress | null) => {
   if (!progress?.stage) return false;
-  const stage = progress.stage;
-  if (stage.startsWith('downloading-')) return getRifeEngineProgressPercent(progress) < 100;
-  return (
-    stage.startsWith('connecting-')
-    || stage.startsWith('extracting-')
-    || stage.startsWith('starting-')
-    || stage.startsWith('decoding-')
-    || stage.startsWith('enhancing-')
-    || stage.startsWith('encoding-')
-  );
+  return progress.stage.startsWith('downloading-') && getRifeEngineProgressPercent(progress) < 100;
 };
 const isRifeFixed2xMode = (mode?: string | null) => (
   mode === 'hd' || mode === 'uhd' || mode === 'hd-slow'
@@ -2895,7 +2886,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.0.9');
+        setAppVersion('4.1.0');
       });
   }, []);
 
@@ -19016,7 +19007,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.0.9'}
+                                      v{appVersion || '4.1.0'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -23765,7 +23756,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.0.9'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.0'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -23903,7 +23894,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.0.9'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.0'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -23996,7 +23987,7 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.0.9 清晰度增强下载修复</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.0 清晰度增强下载修复</p>
                 <p>RIFE 和 ffmpeg / ffprobe 首次下载时，会在补帧节点里显示下载与解压进度。</p>
                 <p>HD / UHD 模型遇到自定义目标帧数时会自动切换到 v4.6，避免引擎兼容性报错。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
