@@ -51,7 +51,8 @@ run('cargo', [
   resolve(root, 'src-tauri', 'Cargo.toml'),
   '--target-dir',
   generatorTargetDir,
-  '--release',
+  '--profile',
+  'generator',
   '--bin',
   'license-generator-app',
   '--features',
@@ -63,7 +64,7 @@ run('cargo', [
   },
 });
 
-const builtExe = resolve(generatorTargetDir, 'release', 'license-generator-app.exe');
+const builtExe = resolve(generatorTargetDir, 'generator', 'license-generator-app.exe');
 const stableExe = resolve(root, 'src-tauri', 'target', 'generator', 'license-generator-app.exe');
 const releaseMirrorExe = resolve(root, 'src-tauri', 'target', 'release', 'license-generator-app.exe');
 mkdirSync(dirname(stableExe), { recursive: true });

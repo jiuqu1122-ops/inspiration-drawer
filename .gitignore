@@ -1,6 +1,7 @@
 ﻿node_modules/
 dist/
 dist-generator/
+dist-updater/
 src-tauri/target/
 
 .env
@@ -21,8 +22,10 @@ r2.local.json
 web_image_cache/
 cache/
 uploads/
+outputs/
 public/models/
 local_models/
+external-engines/
 
 *.log
 npm-debug.log*

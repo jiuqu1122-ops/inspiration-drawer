@@ -13,6 +13,7 @@ import { listen, emitTo } from '@tauri-apps/api/event';
 import { Folder, FloatingNoteSnapshot, FloatingNoteScheduleItem } from '../types';
 import { RoundedSelect } from '../components/RoundedSelect';
 import { clamp } from './common';
+import { getDrawerFolderPathName } from './folderModel';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -1224,7 +1225,10 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const schedulePriorityOptions = SCHEDULE_PRIORITY_OPTIONS.map(priority => ({ value: priority, label: priority }));
   const scheduleTagOptions = [
     { value: '', label: '无标签' },
-    ...cachedFolders.map(folder => ({ value: folder.id, label: folder.name })),
+    ...cachedFolders.map(folder => ({
+      value: folder.id,
+      label: getDrawerFolderPathName(cachedFolders, folder.id),
+    })),
   ];
   const shouldShowScheduleComposerOptions = isScheduleComposerActive || scheduleDraft.trim().length > 0;
   const scheduleTextClass = isCharcoalTextNote

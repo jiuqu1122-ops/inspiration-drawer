@@ -1,7 +1,7 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "4.0.0",
+  "version": "4.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,8 @@
     "license-generator:build": "node scripts/build-license-generator.mjs",
     "license-generator:bundle": "tauri build --config src-tauri/tauri.generator.conf.json --features license-generator-app -- --bin license-generator-app",
     "license-generator:open": "npm run license-generator:build && start \"\" \"src-tauri\\target\\generator\\license-generator-app.exe\"",
+    "updater:release": "node scripts/build-github-release.mjs",
+    "updater:prepare": "node scripts/prepare-github-release.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -21,7 +23,9 @@
     "@tauri-apps/plugin-fs": "^2.5.0",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "framer-motion": "^12.35.2",
     "lucide-react": "^0.577.0",
     "react": "^19.1.0",

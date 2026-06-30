@@ -5,6 +5,7 @@ export type Folder = {
   id: string; 
   name: string; 
   color: string; 
+  parentId?: string;
 };
 
 export type AlchemyState = 'raw' | 'analyzing' | 'alchemy' | 'error';

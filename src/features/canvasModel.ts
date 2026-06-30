@@ -16,7 +16,15 @@ export type CanvasAiProvider = 'openai-compatible' | 'xais-chat' | 'aoduo-ai';
 
 export type CanvasAiMediaType = 'image' | 'video';
 
-export type CanvasAiItemType = 'image-generator' | 'video-generator' | 'generated-image' | 'generated-video' | 'workflow';
+export type CanvasAiItemType =
+  | 'image-generator'
+  | 'video-generator'
+  | 'frame-interpolation'
+  | 'image-enhancement'
+  | 'video-enhancement'
+  | 'generated-image'
+  | 'generated-video'
+  | 'workflow';
 
 export type CanvasAiGeneratedOutput = {
   id: string;
@@ -34,6 +42,25 @@ export type CanvasAiGeneratedOutput = {
   nodeLabel?: string;
 };
 
+export type CanvasRifeInterpolationEstimate = {
+  durationSec?: number | null;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+  outputFps?: number | null;
+  estimatedSecondsMin?: number | null;
+  estimatedSecondsMax?: number | null;
+};
+
+export type CanvasRifeEngineProgress = {
+  progressId?: string;
+  stage?: string;
+  label?: string;
+  loaded?: number;
+  total?: number;
+  progress?: number;
+};
+
 export type CanvasAiItemData = {
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;
@@ -49,6 +76,21 @@ export type CanvasAiItemData = {
   count?: number;
   duration?: number;
   videoInputMode?: 'REF' | 'FLF';
+  interpolationFactor?: number;
+  interpolationTargetFps?: number;
+  interpolationMode?: string;
+  interpolationQuality?: string;
+  interpolationKeepAudio?: boolean;
+  interpolationEstimate?: CanvasRifeInterpolationEstimate;
+  interpolationEstimateKey?: string;
+  interpolationProgress?: CanvasRifeEngineProgress;
+  enhancementScale?: number;
+  enhancementMode?: string;
+  enhancementResizeMode?: string;
+  enhancementKeepAudio?: boolean;
+  enhancementEstimate?: CanvasRifeInterpolationEstimate;
+  enhancementEstimateKey?: string;
+  enhancementProgress?: CanvasRifeEngineProgress;
   status?: 'idle' | 'working' | 'success' | 'error';
   error?: string;
   generatedAt?: number;

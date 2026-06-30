@@ -370,6 +370,26 @@ fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
         .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
 }
 
+fn build_engine_download_http_client(
+    app_handle: &tauri::AppHandle,
+    timeout_secs: u64,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(Policy::limited(10))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(timeout_secs));
+
+    if let Some(proxy) = effective_proxy(Some(app_handle), None) {
+        let proxy = reqwest::Proxy::all(&proxy).map_err(|e| format!("代理配置无效：{}", e))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("初始化引擎下载客户端失败：{}", e))
+}
+
 fn download_url_to_file(
     app_handle: &tauri::AppHandle,
     url: &str,
@@ -407,6 +427,1721 @@ fn download_url_to_file(
         })
         .map_err(|e| e.to_string())?;
     Ok(content_type)
+}
+
+const RIFE_ENGINE_VERSION: &str = "20221029";
+const RIFE_ENGINE_DIR_NAME: &str = "rife-ncnn-vulkan-20221029-windows";
+const RIFE_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
+const RIFE_ENGINE_SHA256: &str = "A4DA55EC5629DBD5E9C6594D96225308325FC39A3DF67CD8E77010207525CE77";
+const RIFE_ENGINE_ZIP_SIZE: u64 = 123_750_542;
+const FFMPEG_TOOLS_DIR_NAME: &str = "ffmpeg-tools-n8.1-win64-gpl";
+const FFMPEG_TOOLS_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
+const FFMPEG_TOOLS_SHA256: &str =
+    "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
+const FFMPEG_TOOLS_ZIP_SIZE: u64 = 109_205_730;
+const REALESRGAN_ENGINE_VERSION: &str = "20220424";
+const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
+const REALESRGAN_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
+const REALESRGAN_ENGINE_SHA256: &str =
+    "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D";
+const REALESRGAN_ENGINE_ZIP_SIZE: u64 = 45_474_481;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RifeEngineStatus {
+    installed: bool,
+    version: String,
+    install_dir: String,
+    engine_dir: String,
+    exe_path: String,
+    asset_url: String,
+    zip_sha256: String,
+    zip_size: u64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RifeFrameInterpolationResult {
+    output_path: String,
+    engine_dir: String,
+    fps: f64,
+    output_fps: f64,
+    factor: u32,
+    input_frames: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RifeEngineProgress {
+    progress_id: String,
+    stage: String,
+    label: String,
+    loaded: u64,
+    total: u64,
+    progress: f64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RifeFrameInterpolationEstimate {
+    duration_sec: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+    output_fps: Option<f64>,
+    estimated_seconds_min: Option<f64>,
+    estimated_seconds_max: Option<f64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RealEsrganEngineStatus {
+    installed: bool,
+    version: String,
+    install_dir: String,
+    engine_dir: String,
+    exe_path: String,
+    asset_url: String,
+    zip_sha256: String,
+    zip_size: u64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RealEsrganEnhancementResult {
+    output_path: String,
+    engine_dir: String,
+    scale: u32,
+    mode: String,
+    resize_mode: String,
+    output_format: String,
+    fps: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RealEsrganEnhancementEstimate {
+    duration_sec: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+    output_width: Option<u32>,
+    output_height: Option<u32>,
+    estimated_seconds_min: Option<f64>,
+    estimated_seconds_max: Option<f64>,
+}
+
+struct VideoProbeInfo {
+    duration_sec: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    fps: Option<f64>,
+}
+
+fn app_install_dir() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("获取程序路径失败: {}", e))?;
+    exe.parent()
+        .map(|value| value.to_path_buf())
+        .ok_or_else(|| "获取程序安装目录失败".to_string())
+}
+
+fn rife_engine_base_dir() -> Result<PathBuf, String> {
+    Ok(app_install_dir()?
+        .join("engines")
+        .join("frame-interpolation"))
+}
+
+fn rife_engine_dir() -> Result<PathBuf, String> {
+    Ok(rife_engine_base_dir()?.join(RIFE_ENGINE_DIR_NAME))
+}
+
+fn rife_engine_exe_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(rife_engine_dir()?.join("rife-ncnn-vulkan.exe"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(rife_engine_dir()?.join("rife-ncnn-vulkan"))
+    }
+}
+
+fn realesrgan_engine_base_dir() -> Result<PathBuf, String> {
+    Ok(app_install_dir()?.join("engines").join("upscaling"))
+}
+
+fn realesrgan_engine_dir() -> Result<PathBuf, String> {
+    Ok(realesrgan_engine_base_dir()?.join(REALESRGAN_ENGINE_DIR_NAME))
+}
+
+fn realesrgan_engine_exe_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(realesrgan_engine_dir()?.join("realesrgan-ncnn-vulkan.exe"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(realesrgan_engine_dir()?.join("realesrgan-ncnn-vulkan"))
+    }
+}
+
+fn media_tools_base_dir() -> Result<PathBuf, String> {
+    Ok(app_install_dir()?.join("engines").join("media-tools"))
+}
+
+fn ffmpeg_tools_dir() -> Result<PathBuf, String> {
+    Ok(media_tools_base_dir()?.join(FFMPEG_TOOLS_DIR_NAME))
+}
+
+fn media_tool_binary_name(tool: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!("{}.exe", tool)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        tool.to_string()
+    }
+}
+
+fn bundled_media_tool_path(tool: &str) -> Result<PathBuf, String> {
+    Ok(ffmpeg_tools_dir()?
+        .join("bin")
+        .join(media_tool_binary_name(tool)))
+}
+
+fn find_system_tool_path(tool: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let finder = "where";
+    #[cfg(not(target_os = "windows"))]
+    let finder = "which";
+
+    let mut finder_cmd = SysCommand::new(finder);
+    finder_cmd.arg(tool);
+    if let Ok(output) = hide_console_window(&mut finder_cmd).output() {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let path = PathBuf::from(trimmed);
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    let mut version_cmd = SysCommand::new(tool);
+    version_cmd.arg("-version");
+    if let Ok(output) = hide_console_window(&mut version_cmd).output() {
+        if output.status.success() {
+            return Some(PathBuf::from(tool));
+        }
+    }
+    None
+}
+
+fn resolve_system_media_tools() -> Option<(PathBuf, PathBuf)> {
+    let ffmpeg = find_system_tool_path("ffmpeg")?;
+    let ffprobe = find_system_tool_path("ffprobe")?;
+    Some((ffmpeg, ffprobe))
+}
+
+fn build_rife_engine_status() -> Result<RifeEngineStatus, String> {
+    let install_dir = app_install_dir()?;
+    let engine_dir = rife_engine_dir()?;
+    let exe_path = rife_engine_exe_path()?;
+    Ok(RifeEngineStatus {
+        installed: exe_path.is_file(),
+        version: RIFE_ENGINE_VERSION.to_string(),
+        install_dir: display_local_path(&install_dir),
+        engine_dir: display_local_path(&engine_dir),
+        exe_path: display_local_path(&exe_path),
+        asset_url: RIFE_ENGINE_ASSET_URL.to_string(),
+        zip_sha256: RIFE_ENGINE_SHA256.to_string(),
+        zip_size: RIFE_ENGINE_ZIP_SIZE,
+    })
+}
+
+fn build_realesrgan_engine_status() -> Result<RealEsrganEngineStatus, String> {
+    let install_dir = app_install_dir()?;
+    let engine_dir = realesrgan_engine_dir()?;
+    let exe_path = realesrgan_engine_exe_path()?;
+    Ok(RealEsrganEngineStatus {
+        installed: exe_path.is_file(),
+        version: REALESRGAN_ENGINE_VERSION.to_string(),
+        install_dir: display_local_path(&install_dir),
+        engine_dir: display_local_path(&engine_dir),
+        exe_path: display_local_path(&exe_path),
+        asset_url: REALESRGAN_ENGINE_ASSET_URL.to_string(),
+        zip_sha256: REALESRGAN_ENGINE_SHA256.to_string(),
+        zip_size: REALESRGAN_ENGINE_ZIP_SIZE,
+    })
+}
+
+fn sha256_file_upper(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("计算 SHA256 失败: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()).to_ascii_uppercase())
+}
+
+fn emit_rife_engine_progress(
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+    stage: &str,
+    label: &str,
+    loaded: u64,
+    total: u64,
+) {
+    let Some(progress_id) = progress_id else {
+        return;
+    };
+    if progress_id.trim().is_empty() {
+        return;
+    }
+    let progress = if total > 0 {
+        (loaded as f64 / total as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let payload = RifeEngineProgress {
+        progress_id: progress_id.to_string(),
+        stage: stage.to_string(),
+        label: label.to_string(),
+        loaded,
+        total,
+        progress,
+    };
+    let _ = app_handle.emit("rife-engine-progress", payload);
+}
+
+fn copy_response_to_file_with_progress(
+    response: &mut reqwest::blocking::Response,
+    file: &mut File,
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+    stage: &str,
+    label: &str,
+    fallback_total: u64,
+) -> Result<(), String> {
+    let total = response.content_length().unwrap_or(fallback_total);
+    let mut loaded = 0u64;
+    let mut buffer = [0u8; 1024 * 1024];
+    let mut last_emit_at = Instant::now() - Duration::from_secs(1);
+    emit_rife_engine_progress(app_handle, progress_id, stage, label, loaded, total);
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|e| format!("读取下载内容失败: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|e| format!("写入下载文件失败: {}", e))?;
+        loaded = loaded.saturating_add(read as u64);
+        if last_emit_at.elapsed() >= Duration::from_millis(220) || (total > 0 && loaded >= total) {
+            last_emit_at = Instant::now();
+            emit_rife_engine_progress(app_handle, progress_id, stage, label, loaded, total);
+        }
+    }
+    emit_rife_engine_progress(app_handle, progress_id, stage, label, loaded, total);
+    Ok(())
+}
+
+fn download_rife_engine_archive(
+    app_handle: &tauri::AppHandle,
+    archive_path: &Path,
+    progress_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建引擎下载目录失败: {}", e))?;
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "connecting-rife",
+        "连接 RIFE 下载源",
+        0,
+        0,
+    );
+    let client = build_engine_download_http_client(app_handle, 1800)?;
+    let mut response = client
+        .get(RIFE_ENGINE_ASSET_URL)
+        .send()
+        .map_err(|e| format!("下载 RIFE 引擎失败: {}。请检查网络/代理后重试，或稍后再试。", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "下载 RIFE 引擎失败，HTTP 状态码: {}",
+            response.status()
+        ));
+    }
+
+    let tmp_path = archive_path.with_extension("download.tmp");
+    {
+        let mut file = File::create(&tmp_path).map_err(|e| format!("创建下载文件失败: {}", e))?;
+        copy_response_to_file_with_progress(
+            &mut response,
+            &mut file,
+            app_handle,
+            progress_id,
+            "downloading-rife",
+            "下载 RIFE 引擎",
+            RIFE_ENGINE_ZIP_SIZE,
+        )?;
+    }
+    fs::rename(&tmp_path, archive_path)
+        .or_else(|_| {
+            fs::copy(&tmp_path, archive_path).map(|_| ())?;
+            let _ = fs::remove_file(&tmp_path);
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(|e| format!("保存 RIFE 引擎失败: {}", e))
+}
+
+fn download_realesrgan_engine_archive(
+    app_handle: &tauri::AppHandle,
+    archive_path: &Path,
+    progress_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建 Real-ESRGAN 下载目录失败: {}", e))?;
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "connecting-realesrgan",
+        "连接 Real-ESRGAN 下载源",
+        0,
+        0,
+    );
+    let client = build_engine_download_http_client(app_handle, 1800)?;
+    let mut response = client
+        .get(REALESRGAN_ENGINE_ASSET_URL)
+        .send()
+        .map_err(|e| format!("下载 Real-ESRGAN 引擎失败: {}。请检查网络/代理后重试，或稍后再试。", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "下载 Real-ESRGAN 引擎失败，HTTP 状态码: {}",
+            response.status()
+        ));
+    }
+
+    let tmp_path = archive_path.with_extension("download.tmp");
+    {
+        let mut file = File::create(&tmp_path).map_err(|e| format!("创建下载文件失败: {}", e))?;
+        copy_response_to_file_with_progress(
+            &mut response,
+            &mut file,
+            app_handle,
+            progress_id,
+            "downloading-realesrgan",
+            "下载 Real-ESRGAN 引擎",
+            REALESRGAN_ENGINE_ZIP_SIZE,
+        )?;
+    }
+    fs::rename(&tmp_path, archive_path)
+        .or_else(|_| {
+            fs::copy(&tmp_path, archive_path).map(|_| ())?;
+            let _ = fs::remove_file(&tmp_path);
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(|e| format!("保存 Real-ESRGAN 引擎失败: {}", e))
+}
+
+fn extract_rife_engine_archive(archive_path: &Path, base_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(base_dir).map_err(|e| format!("创建引擎目录失败: {}", e))?;
+    let file = File::open(archive_path).map_err(|e| format!("打开 RIFE 压缩包失败: {}", e))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("读取 RIFE 压缩包失败: {}", e))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("读取 RIFE 压缩包条目失败: {}", e))?;
+        let Some(enclosed_name) = entry.enclosed_name().map(|value| value.to_path_buf()) else {
+            continue;
+        };
+        let out_path = base_dir.join(enclosed_name);
+        if !out_path.starts_with(base_dir) {
+            continue;
+        }
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path).map_err(|e| format!("创建引擎目录失败: {}", e))?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建引擎目录失败: {}", e))?;
+            }
+            let mut out_file =
+                File::create(&out_path).map_err(|e| format!("写入引擎文件失败: {}", e))?;
+            std::io::copy(&mut entry, &mut out_file)
+                .map_err(|e| format!("解压引擎文件失败: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn download_ffmpeg_tools_archive(
+    app_handle: &tauri::AppHandle,
+    archive_path: &Path,
+    progress_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建 FFmpeg 工具下载目录失败: {}", e))?;
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "connecting-ffmpeg-tools",
+        "连接 FFmpeg / FFprobe 下载源",
+        0,
+        0,
+    );
+    let client = build_engine_download_http_client(app_handle, 1800)?;
+    let mut response = client
+        .get(FFMPEG_TOOLS_ASSET_URL)
+        .send()
+        .map_err(|e| format!("下载 FFmpeg / FFprobe 工具失败: {}。请检查网络/代理后重试，或稍后再试。", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "下载 FFmpeg / FFprobe 工具失败，HTTP 状态码: {}",
+            response.status()
+        ));
+    }
+
+    let tmp_path = archive_path.with_extension("download.tmp");
+    {
+        let mut file =
+            File::create(&tmp_path).map_err(|e| format!("创建工具下载文件失败: {}", e))?;
+        copy_response_to_file_with_progress(
+            &mut response,
+            &mut file,
+            app_handle,
+            progress_id,
+            "downloading-ffmpeg-tools",
+            "下载 FFmpeg / FFprobe",
+            FFMPEG_TOOLS_ZIP_SIZE,
+        )?;
+    }
+    fs::rename(&tmp_path, archive_path)
+        .or_else(|_| {
+            fs::copy(&tmp_path, archive_path).map(|_| ())?;
+            let _ = fs::remove_file(&tmp_path);
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(|e| format!("保存 FFmpeg / FFprobe 工具失败: {}", e))
+}
+
+fn ensure_ffmpeg_tools_installed(
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+) -> Result<(), String> {
+    let ffmpeg_path = bundled_media_tool_path("ffmpeg")?;
+    let ffprobe_path = bundled_media_tool_path("ffprobe")?;
+    if ffmpeg_path.is_file() && ffprobe_path.is_file() {
+        return Ok(());
+    }
+
+    let base_dir = media_tools_base_dir()?;
+    let tools_dir = ffmpeg_tools_dir()?;
+    let download_dir = base_dir.join("_downloads");
+    fs::create_dir_all(&download_dir)
+        .map_err(|e| format!("创建 FFmpeg 工具下载目录失败: {}", e))?;
+    let archive_path = download_dir.join("ffmpeg-tools-n8.1-win64-gpl.zip");
+
+    let archive_ready = archive_path.is_file()
+        && sha256_file_upper(&archive_path)
+            .map(|value| value == FFMPEG_TOOLS_SHA256)
+            .unwrap_or(false);
+    if !archive_ready {
+        let _ = fs::remove_file(&archive_path);
+        download_ffmpeg_tools_archive(app_handle, &archive_path, progress_id)?;
+    }
+
+    let hash = sha256_file_upper(&archive_path)?;
+    if hash != FFMPEG_TOOLS_SHA256 {
+        let _ = fs::remove_file(&archive_path);
+        return Err(format!(
+            "FFmpeg 工具校验失败: 期望 {}，实际 {}",
+            FFMPEG_TOOLS_SHA256, hash
+        ));
+    }
+
+    if tools_dir.exists() && (!ffmpeg_path.is_file() || !ffprobe_path.is_file()) {
+        fs::remove_dir_all(&tools_dir).map_err(|e| format!("清理旧 FFmpeg 工具失败: {}", e))?;
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "extracting-ffmpeg-tools",
+        "解压 FFmpeg / FFprobe",
+        0,
+        0,
+    );
+    extract_rife_engine_archive(&archive_path, &base_dir)?;
+    let _ = fs::remove_file(&archive_path);
+
+    if !ffmpeg_path.is_file() || !ffprobe_path.is_file() {
+        return Err("FFmpeg / FFprobe 工具解压完成，但没有找到可执行文件".to_string());
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "ffmpeg-tools-ready",
+        "FFmpeg / FFprobe 已就绪",
+        1,
+        1,
+    );
+    Ok(())
+}
+
+fn ensure_media_tools_available(
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+) -> Result<(PathBuf, PathBuf), String> {
+    if let Some(paths) = resolve_system_media_tools() {
+        return Ok(paths);
+    }
+
+    ensure_ffmpeg_tools_installed(app_handle, progress_id)?;
+    let ffmpeg_path = bundled_media_tool_path("ffmpeg")?;
+    let ffprobe_path = bundled_media_tool_path("ffprobe")?;
+    if ffmpeg_path.is_file() && ffprobe_path.is_file() {
+        return Ok((ffmpeg_path, ffprobe_path));
+    }
+    Err("没有找到 FFmpeg / FFprobe，也无法安装内置工具包".to_string())
+}
+
+fn ensure_rife_engine_installed(
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+) -> Result<RifeEngineStatus, String> {
+    let status = build_rife_engine_status()?;
+    if status.installed {
+        return Ok(status);
+    }
+
+    let base_dir = rife_engine_base_dir()?;
+    let engine_dir = rife_engine_dir()?;
+    let exe_path = rife_engine_exe_path()?;
+    let download_dir = base_dir.join("_downloads");
+    fs::create_dir_all(&download_dir).map_err(|e| format!("创建 RIFE 下载目录失败: {}", e))?;
+    let archive_path = download_dir.join("rife-ncnn-vulkan-20221029-windows-lite.zip");
+
+    let archive_ready = archive_path.is_file()
+        && sha256_file_upper(&archive_path)
+            .map(|value| value == RIFE_ENGINE_SHA256)
+            .unwrap_or(false);
+    if !archive_ready {
+        let _ = fs::remove_file(&archive_path);
+        download_rife_engine_archive(app_handle, &archive_path, progress_id)?;
+    }
+
+    let hash = sha256_file_upper(&archive_path)?;
+    if hash != RIFE_ENGINE_SHA256 {
+        let _ = fs::remove_file(&archive_path);
+        return Err(format!(
+            "RIFE 引擎校验失败: 期望 {}，实际 {}",
+            RIFE_ENGINE_SHA256, hash
+        ));
+    }
+
+    if engine_dir.exists() && !exe_path.is_file() {
+        fs::remove_dir_all(&engine_dir).map_err(|e| format!("清理旧 RIFE 引擎失败: {}", e))?;
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "extracting-rife",
+        "解压 RIFE 引擎",
+        0,
+        0,
+    );
+    extract_rife_engine_archive(&archive_path, &base_dir)?;
+    let _ = fs::remove_file(&archive_path);
+
+    let status = build_rife_engine_status()?;
+    if !status.installed {
+        return Err("RIFE 引擎解压完成，但没有找到 rife-ncnn-vulkan.exe".to_string());
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "rife-ready",
+        "RIFE 引擎已就绪",
+        1,
+        1,
+    );
+    Ok(status)
+}
+
+#[tauri::command]
+async fn get_rife_engine_status() -> Result<RifeEngineStatus, String> {
+    build_rife_engine_status()
+}
+
+#[tauri::command]
+async fn install_rife_engine(app_handle: tauri::AppHandle) -> Result<RifeEngineStatus, String> {
+    ensure_rife_engine_installed(&app_handle, None)
+}
+
+fn ensure_realesrgan_engine_installed(
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+) -> Result<RealEsrganEngineStatus, String> {
+    let status = build_realesrgan_engine_status()?;
+    if status.installed {
+        return Ok(status);
+    }
+
+    let base_dir = realesrgan_engine_base_dir()?;
+    let engine_dir = realesrgan_engine_dir()?;
+    let exe_path = realesrgan_engine_exe_path()?;
+    let download_dir = base_dir.join("_downloads");
+    fs::create_dir_all(&download_dir)
+        .map_err(|e| format!("创建 Real-ESRGAN 下载目录失败: {}", e))?;
+    let archive_path = download_dir.join("realesrgan-ncnn-vulkan-20220424-windows.zip");
+
+    let archive_ready = archive_path.is_file()
+        && sha256_file_upper(&archive_path)
+            .map(|value| value == REALESRGAN_ENGINE_SHA256)
+            .unwrap_or(false);
+    if !archive_ready {
+        let _ = fs::remove_file(&archive_path);
+        download_realesrgan_engine_archive(app_handle, &archive_path, progress_id)?;
+    }
+
+    let hash = sha256_file_upper(&archive_path)?;
+    if hash != REALESRGAN_ENGINE_SHA256 {
+        let _ = fs::remove_file(&archive_path);
+        return Err(format!(
+            "Real-ESRGAN 引擎校验失败: 期望 {}，实际 {}",
+            REALESRGAN_ENGINE_SHA256, hash
+        ));
+    }
+
+    if engine_dir.exists() && !exe_path.is_file() {
+        fs::remove_dir_all(&engine_dir)
+            .map_err(|e| format!("清理旧 Real-ESRGAN 引擎失败: {}", e))?;
+    }
+    fs::create_dir_all(&engine_dir).map_err(|e| format!("创建 Real-ESRGAN 引擎目录失败: {}", e))?;
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "extracting-realesrgan",
+        "解压 Real-ESRGAN 引擎",
+        0,
+        0,
+    );
+    extract_rife_engine_archive(&archive_path, &engine_dir)?;
+    let _ = fs::remove_file(&archive_path);
+
+    let status = build_realesrgan_engine_status()?;
+    if !status.installed {
+        return Err("Real-ESRGAN 引擎解压完成，但没有找到 realesrgan-ncnn-vulkan.exe".to_string());
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "realesrgan-ready",
+        "Real-ESRGAN 引擎已就绪",
+        1,
+        1,
+    );
+    Ok(status)
+}
+
+#[tauri::command]
+async fn get_realesrgan_engine_status() -> Result<RealEsrganEngineStatus, String> {
+    build_realesrgan_engine_status()
+}
+
+#[tauri::command]
+async fn install_realesrgan_engine(
+    app_handle: tauri::AppHandle,
+) -> Result<RealEsrganEngineStatus, String> {
+    ensure_realesrgan_engine_installed(&app_handle, None)
+}
+
+fn run_hidden_command(command: &mut SysCommand, label: &str) -> Result<String, String> {
+    hide_console_window(command);
+    let output = command
+        .output()
+        .map_err(|e| format!("{} 调用失败: {}", label, e))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    Err(if detail.is_empty() {
+        format!("{} 执行失败", label)
+    } else {
+        format!("{} 执行失败: {}", label, detail)
+    })
+}
+
+fn parse_fps_value(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "0/0" {
+        return None;
+    }
+    if let Some((num, den)) = trimmed.split_once('/') {
+        let n = num.trim().parse::<f64>().ok()?;
+        let d = den.trim().parse::<f64>().ok()?;
+        if n > 0.0 && d > 0.0 {
+            return Some(n / d);
+        }
+        return None;
+    }
+    let parsed = trimmed.parse::<f64>().ok()?;
+    (parsed > 0.0).then_some(parsed)
+}
+
+fn probe_video_fps(ffprobe_path: &Path, source: &Path) -> Option<f64> {
+    let mut cmd = SysCommand::new(ffprobe_path);
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+    ])
+    .arg(source);
+    run_hidden_command(&mut cmd, "FFprobe")
+        .ok()
+        .and_then(|text| parse_fps_value(text.lines().next().unwrap_or("")))
+}
+
+fn probe_video_info(ffprobe_path: &Path, source: &Path) -> Result<VideoProbeInfo, String> {
+    let mut cmd = SysCommand::new(ffprobe_path);
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate,duration:format=duration",
+        "-of",
+        "json",
+    ])
+    .arg(source);
+    let text = run_hidden_command(&mut cmd, "FFprobe 视频信息")?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 FFprobe 视频信息失败: {}", e))?;
+    let stream = value
+        .get("streams")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.get(0));
+    let format = value.get("format");
+    let width = stream
+        .and_then(|value| value.get("width"))
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32);
+    let height = stream
+        .and_then(|value| value.get("height"))
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32);
+    let fps = stream
+        .and_then(|value| value.get("avg_frame_rate"))
+        .and_then(|value| value.as_str())
+        .and_then(parse_fps_value);
+    let stream_duration = stream
+        .and_then(|value| value.get("duration"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| value.parse::<f64>().ok());
+    let format_duration = format
+        .and_then(|value| value.get("duration"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| value.parse::<f64>().ok());
+    let duration_sec = stream_duration
+        .or(format_duration)
+        .filter(|value| value.is_finite() && *value > 0.0);
+
+    Ok(VideoProbeInfo {
+        duration_sec,
+        width,
+        height,
+        fps,
+    })
+}
+
+fn estimate_rife_seconds(
+    duration_sec: f64,
+    width: u32,
+    height: u32,
+    fps: f64,
+    output_fps: f64,
+    factor: u32,
+    mode: &str,
+    quality: &str,
+    output_format: &str,
+) -> (f64, f64) {
+    let pixels = (width.max(1) as f64) * (height.max(1) as f64);
+    let pixel_scale = (pixels / (1920.0 * 1080.0)).clamp(0.35, 6.0);
+    let generated_ratio = (output_fps / fps.max(1.0)).clamp(1.0, factor as f64);
+    let frame_scale = (generated_ratio / 2.0).clamp(0.5, 2.5);
+    let duration_scale = (duration_sec.max(1.0) / 15.0).clamp(0.08, 240.0);
+    let mode_scale = match mode.trim() {
+        "hd" | "hd-slow" => 1.35,
+        "uhd" => 1.9,
+        _ => 1.0,
+    };
+    let quality_scale = match quality.trim() {
+        "fast" => 0.68,
+        "high" => 1.55,
+        _ => 1.0,
+    };
+    let format_scale = match output_format.trim().to_ascii_lowercase().as_str() {
+        "webm" => 1.18,
+        _ => 1.0,
+    };
+    let factor_scale = if factor >= 4 { 1.18 } else { 1.0 };
+    let seconds = 60.0
+        * duration_scale
+        * pixel_scale
+        * frame_scale
+        * mode_scale
+        * quality_scale
+        * format_scale
+        * factor_scale;
+    let uncertainty = if pixels >= 3840.0 * 2160.0 {
+        0.55
+    } else {
+        0.38
+    };
+    let min = (seconds * (1.0 - uncertainty)).max(10.0);
+    let max = (seconds * (1.0 + uncertainty)).max(min + 8.0);
+    (min, max)
+}
+
+fn count_frame_images(dir: &Path) -> Result<usize, String> {
+    let entries = fs::read_dir(dir).map_err(|e| format!("读取视频帧目录失败: {}", e))?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let path = entry.path();
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "png" | "jpg" | "jpeg" | "webp"
+                        )
+                    })
+                    .unwrap_or(false)
+        })
+        .count())
+}
+
+fn normalize_realesrgan_scale(scale: Option<u32>) -> u32 {
+    match scale.unwrap_or(2) {
+        4 => 4,
+        _ => 2,
+    }
+}
+
+fn normalize_realesrgan_mode(mode: Option<String>) -> String {
+    match mode
+        .unwrap_or_else(|| "general".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "anime" | "illustration" | "anime-video" => "anime".to_string(),
+        _ => "general".to_string(),
+    }
+}
+
+fn normalize_realesrgan_resize_mode(resize_mode: Option<String>) -> String {
+    match resize_mode
+        .unwrap_or_else(|| "upscale".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "keep" | "original" | "same-size" => "keep".to_string(),
+        _ => "upscale".to_string(),
+    }
+}
+
+fn normalize_realesrgan_image_format(output_format: Option<String>) -> String {
+    match output_format
+        .unwrap_or_else(|| "png".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "jpg".to_string(),
+        "webp" => "webp".to_string(),
+        _ => "png".to_string(),
+    }
+}
+
+fn normalize_realesrgan_video_format(output_format: Option<String>) -> String {
+    match output_format
+        .unwrap_or_else(|| "mp4".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mov" => "mov".to_string(),
+        "webm" => "webm".to_string(),
+        _ => "mp4".to_string(),
+    }
+}
+
+fn realesrgan_model_name(mode: &str, _scale: u32) -> &'static str {
+    match mode {
+        "anime" => "realesr-animevideov3",
+        _ => "realesrgan-x4plus",
+    }
+}
+
+fn estimate_realesrgan_seconds(
+    duration_sec: f64,
+    width: u32,
+    height: u32,
+    scale: u32,
+    resize_mode: &str,
+    media_type: &str,
+) -> (f64, f64) {
+    let pixels = (width.max(1) as f64) * (height.max(1) as f64);
+    let pixel_scale = (pixels / (1920.0 * 1080.0)).clamp(0.18, 8.0);
+    let duration_scale = if media_type == "video" {
+        (duration_sec.max(1.0) / 15.0).clamp(0.08, 240.0)
+    } else {
+        0.10
+    };
+    let scale_cost = if scale >= 4 { 2.35 } else { 1.0 };
+    let resize_cost = if resize_mode == "keep" { 1.12 } else { 1.0 };
+    let base = if media_type == "video" { 90.0 } else { 18.0 };
+    let seconds = base * duration_scale * pixel_scale * scale_cost * resize_cost;
+    let uncertainty = if pixels >= 3840.0 * 2160.0 {
+        0.55
+    } else {
+        0.38
+    };
+    let min = (seconds * (1.0 - uncertainty)).max(if media_type == "video" { 12.0 } else { 3.0 });
+    let max =
+        (seconds * (1.0 + uncertainty)).max(min + if media_type == "video" { 8.0 } else { 2.0 });
+    (min, max)
+}
+
+fn run_realesrgan_on_path(
+    exe_path: &Path,
+    engine_dir: &Path,
+    input: &Path,
+    output: &Path,
+    mode: &str,
+    scale: u32,
+    output_format: &str,
+) -> Result<(), String> {
+    let model_name = realesrgan_model_name(mode, scale);
+    let mut cmd = SysCommand::new(exe_path);
+    cmd.current_dir(engine_dir)
+        .arg("-i")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .arg("-n")
+        .arg(model_name)
+        .arg("-s")
+        .arg(scale.to_string())
+        .arg("-f")
+        .arg(output_format);
+    run_hidden_command(&mut cmd, "Real-ESRGAN 清晰度增强")?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_rife_frame_interpolation_estimate(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    factor: Option<u32>,
+    target_fps: Option<f64>,
+    mode: Option<String>,
+    quality: Option<String>,
+    output_format: Option<String>,
+    progress_id: Option<String>,
+) -> Result<RifeFrameInterpolationEstimate, String> {
+    let mode = mode.unwrap_or_else(|| "normal".to_string());
+    let fixed_2x_mode = matches!(mode.trim(), "hd" | "hd-slow" | "uhd");
+    let factor = if fixed_2x_mode {
+        2
+    } else {
+        factor.unwrap_or(2).clamp(2, 4)
+    };
+    let target_fps = target_fps.unwrap_or(60.0).clamp(1.0, 240.0);
+    let quality = quality.unwrap_or_else(|| "standard".to_string());
+    let output_format = output_format.unwrap_or_else(|| "mp4".to_string());
+    let (_ffmpeg_path, ffprobe_path) =
+        ensure_media_tools_available(&app_handle, progress_id.as_deref())?;
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要估算的补帧视频: {}",
+            display_local_path(&source)
+        ));
+    }
+    let info = probe_video_info(&ffprobe_path, &source)?;
+    let fps = info.fps.unwrap_or(30.0).max(1.0);
+    let output_fps = if fixed_2x_mode {
+        fps * 2.0
+    } else {
+        target_fps.min(fps * factor as f64).max(fps).min(240.0)
+    };
+    let duration_for_estimate = info.duration_sec.unwrap_or(15.0).max(1.0);
+    let width_for_estimate = info.width.unwrap_or(1920).max(1);
+    let height_for_estimate = info.height.unwrap_or(1080).max(1);
+    let (estimated_seconds_min, estimated_seconds_max) = estimate_rife_seconds(
+        duration_for_estimate,
+        width_for_estimate,
+        height_for_estimate,
+        fps,
+        output_fps,
+        factor,
+        &mode,
+        &quality,
+        &output_format,
+    );
+
+    Ok(RifeFrameInterpolationEstimate {
+        duration_sec: info.duration_sec,
+        width: info.width,
+        height: info.height,
+        fps: Some(fps),
+        output_fps: Some(output_fps),
+        estimated_seconds_min: Some(estimated_seconds_min),
+        estimated_seconds_max: Some(estimated_seconds_max),
+    })
+}
+
+#[tauri::command]
+async fn run_rife_frame_interpolation(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    factor: Option<u32>,
+    model: Option<String>,
+    target_fps: Option<f64>,
+    mode: Option<String>,
+    quality: Option<String>,
+    keep_audio: Option<bool>,
+    output_format: Option<String>,
+    progress_id: Option<String>,
+) -> Result<RifeFrameInterpolationResult, String> {
+    let mode = mode.unwrap_or_else(|| "normal".to_string());
+    let fixed_2x_mode = matches!(mode.trim(), "hd" | "hd-slow" | "uhd");
+    let factor = if fixed_2x_mode {
+        2
+    } else {
+        factor.unwrap_or(2).clamp(2, 4)
+    };
+    let target_fps = target_fps.unwrap_or(60.0).clamp(1.0, 240.0);
+    let quality = quality.unwrap_or_else(|| "standard".to_string());
+    let keep_audio = keep_audio.unwrap_or(true);
+    let output_format = match output_format
+        .unwrap_or_else(|| "mp4".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mov" => "mov".to_string(),
+        "webm" => "webm".to_string(),
+        _ => "mp4".to_string(),
+    };
+    let progress_id_ref = progress_id.as_deref();
+    let status = ensure_rife_engine_installed(&app_handle, progress_id_ref)?;
+    let (ffmpeg_path, ffprobe_path) = ensure_media_tools_available(&app_handle, progress_id_ref)?;
+    let engine_dir = PathBuf::from(&status.engine_dir);
+    let exe_path = PathBuf::from(&status.exe_path);
+    if !exe_path.is_file() {
+        return Err("RIFE 引擎不可用，请重新安装引擎".to_string());
+    }
+
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要补帧的视频: {}",
+            display_local_path(&source)
+        ));
+    }
+
+    let base_dir = rife_engine_base_dir()?;
+    let work_root = base_dir.join("_work");
+    let outputs_dir = base_dir.join("outputs");
+    fs::create_dir_all(&work_root).map_err(|e| format!("创建 RIFE 工作目录失败: {}", e))?;
+    fs::create_dir_all(&outputs_dir).map_err(|e| format!("创建 RIFE 输出目录失败: {}", e))?;
+
+    let run_id = format!("{}_{}", now_millis_u64(), std::process::id());
+    let work_dir = work_root.join(run_id);
+    let input_frames_dir = work_dir.join("input_frames");
+    let output_frames_dir = work_dir.join("output_frames");
+    fs::create_dir_all(&input_frames_dir).map_err(|e| format!("创建输入帧目录失败: {}", e))?;
+    fs::create_dir_all(&output_frames_dir).map_err(|e| format!("创建输出帧目录失败: {}", e))?;
+
+    let result = (|| -> Result<RifeFrameInterpolationResult, String> {
+        let fps = probe_video_fps(&ffprobe_path, &source).unwrap_or(30.0);
+        let output_fps = if fixed_2x_mode {
+            fps * 2.0
+        } else {
+            target_fps.min(fps * factor as f64).max(fps).min(240.0)
+        };
+        let source_stem = source
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(sanitize_file_name)
+            .unwrap_or_else(|| "video".to_string());
+        let output_path = unique_file_path(outputs_dir.join(format!(
+            "{}_rife_{}x_{}fps.{}",
+            source_stem,
+            factor,
+            output_fps.round() as u32,
+            output_format
+        )));
+        let audio_path = work_dir.join("audio.m4a");
+
+        let has_audio = if keep_audio {
+            let mut audio_cmd = SysCommand::new(&ffmpeg_path);
+            audio_cmd
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+                .arg(&source)
+                .args(["-vn", "-acodec", "copy"])
+                .arg(&audio_path);
+            run_hidden_command(&mut audio_cmd, "FFmpeg 音频提取").is_ok() && audio_path.is_file()
+        } else {
+            false
+        };
+
+        let mut decode_cmd = SysCommand::new(&ffmpeg_path);
+        decode_cmd
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&source)
+            .arg(input_frames_dir.join("frame_%08d.png"));
+        run_hidden_command(&mut decode_cmd, "FFmpeg 视频解帧")?;
+
+        let input_frame_count = count_frame_images(&input_frames_dir)?;
+        if input_frame_count == 0 {
+            return Err("视频解帧失败，没有得到可用帧".to_string());
+        }
+        let target_frame_count = ((input_frame_count as f64) * (output_fps / fps))
+            .round()
+            .max(input_frame_count as f64)
+            .min((input_frame_count.saturating_mul(factor as usize)) as f64)
+            as usize;
+        let mode_model = match mode.trim() {
+            "hd" | "hd-slow" => "rife-HD",
+            "uhd" => "rife-UHD",
+            _ => "rife-v4.6",
+        };
+        let requested_model = model
+            .unwrap_or_else(|| mode_model.to_string())
+            .trim()
+            .to_string();
+        let model_name = if fixed_2x_mode {
+            mode_model.to_string()
+        } else if requested_model.contains('/') || requested_model.contains('\\') {
+            "rife-v4.6".to_string()
+        } else {
+            requested_model
+        };
+        let model_path = {
+            let candidate = engine_dir.join(&model_name);
+            if candidate.is_dir() {
+                candidate
+            } else {
+                engine_dir.join("rife-v4.6")
+            }
+        };
+
+        let mut rife_cmd = SysCommand::new(&exe_path);
+        rife_cmd
+            .current_dir(&engine_dir)
+            .arg("-i")
+            .arg(&input_frames_dir)
+            .arg("-o")
+            .arg(&output_frames_dir)
+            .arg("-m")
+            .arg(&model_path);
+        if model_name == "rife-v4.6" {
+            rife_cmd.arg("-n").arg(target_frame_count.to_string());
+        }
+        match quality.trim() {
+            "fast" => {
+                rife_cmd.arg("-j").arg("2:2:2");
+            }
+            "high" => {
+                rife_cmd.arg("-x");
+            }
+            _ => {}
+        }
+        run_hidden_command(&mut rife_cmd, "RIFE 补帧")?;
+
+        let mut encode_cmd = SysCommand::new(&ffmpeg_path);
+        encode_cmd
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-framerate"])
+            .arg(format!("{:.3}", output_fps))
+            .arg("-i")
+            .arg(output_frames_dir.join("%08d.png"));
+        if has_audio {
+            encode_cmd.arg("-i").arg(&audio_path);
+        }
+        if output_format == "webm" {
+            let webm_crf = match quality.trim() {
+                "fast" => "36",
+                "high" => "24",
+                _ => "30",
+            };
+            encode_cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                webm_crf,
+                "-pix_fmt",
+                "yuv420p",
+            ]);
+            if has_audio {
+                encode_cmd.args(["-c:a", "libopus", "-b:a", "160k", "-shortest"]);
+            }
+        } else {
+            let crf = match quality.trim() {
+                "fast" => "23",
+                "high" => "15",
+                _ => "18",
+            };
+            encode_cmd.args(["-c:v", "libx264", "-crf", crf, "-pix_fmt", "yuv420p"]);
+            if has_audio {
+                encode_cmd.args(["-c:a", "copy", "-shortest"]);
+            }
+        }
+        encode_cmd.arg(&output_path);
+        run_hidden_command(&mut encode_cmd, "FFmpeg 视频合成")?;
+
+        if !output_path.is_file() {
+            return Err("RIFE 补帧完成，但没有生成输出视频".to_string());
+        }
+
+        Ok(RifeFrameInterpolationResult {
+            output_path: display_local_path(&output_path),
+            engine_dir: status.engine_dir.clone(),
+            fps,
+            output_fps,
+            factor,
+            input_frames: input_frame_count,
+        })
+    })();
+
+    let _ = fs::remove_dir_all(&work_dir);
+    result
+}
+
+#[tauri::command]
+async fn get_realesrgan_enhancement_estimate(
+    _app_handle: tauri::AppHandle,
+    input_path: String,
+    media_type: Option<String>,
+    scale: Option<u32>,
+    resize_mode: Option<String>,
+    _progress_id: Option<String>,
+) -> Result<RealEsrganEnhancementEstimate, String> {
+    let media_type = media_type
+        .unwrap_or_else(|| "image".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let is_video = media_type == "video";
+    let scale = normalize_realesrgan_scale(scale);
+    let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要增强的素材: {}",
+            display_local_path(&source)
+        ));
+    }
+
+    let (duration_sec, width, height, fps) = if is_video {
+        if let Some((_ffmpeg_path, ffprobe_path)) = resolve_system_media_tools().or_else(|| {
+            bundled_media_tool_path("ffmpeg")
+                .ok()
+                .zip(bundled_media_tool_path("ffprobe").ok())
+                .filter(|(ffmpeg_path, ffprobe_path)| ffmpeg_path.is_file() && ffprobe_path.is_file())
+        }) {
+            match probe_video_info(&ffprobe_path, &source) {
+                Ok(info) => (
+                    info.duration_sec,
+                    info.width,
+                    info.height,
+                    info.fps.or(Some(30.0)),
+                ),
+                Err(_) => (Some(15.0), None, None, Some(30.0)),
+            }
+        } else {
+            (Some(15.0), None, None, Some(30.0))
+        }
+    } else {
+        (Some(1.0), None, None, None)
+    };
+
+    let width_for_estimate = width.unwrap_or(if is_video { 1920 } else { 1024 }).max(1);
+    let height_for_estimate = height.unwrap_or(if is_video { 1080 } else { 1024 }).max(1);
+    let output_width = if resize_mode == "keep" {
+        width
+    } else {
+        width.map(|value| value.saturating_mul(scale))
+    };
+    let output_height = if resize_mode == "keep" {
+        height
+    } else {
+        height.map(|value| value.saturating_mul(scale))
+    };
+    let (estimated_seconds_min, estimated_seconds_max) = estimate_realesrgan_seconds(
+        duration_sec.unwrap_or(if is_video { 15.0 } else { 1.0 }),
+        width_for_estimate,
+        height_for_estimate,
+        scale,
+        &resize_mode,
+        if is_video { "video" } else { "image" },
+    );
+
+    Ok(RealEsrganEnhancementEstimate {
+        duration_sec,
+        width,
+        height,
+        fps,
+        output_width,
+        output_height,
+        estimated_seconds_min: Some(estimated_seconds_min),
+        estimated_seconds_max: Some(estimated_seconds_max),
+    })
+}
+
+#[tauri::command]
+async fn run_realesrgan_image_enhancement(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    scale: Option<u32>,
+    mode: Option<String>,
+    resize_mode: Option<String>,
+    output_format: Option<String>,
+    progress_id: Option<String>,
+) -> Result<RealEsrganEnhancementResult, String> {
+    let scale = normalize_realesrgan_scale(scale);
+    let mode = normalize_realesrgan_mode(mode);
+    let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
+    let output_format = normalize_realesrgan_image_format(output_format);
+    let progress_id_ref = progress_id.as_deref();
+    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
+    let engine_dir = PathBuf::from(&status.engine_dir);
+    let exe_path = PathBuf::from(&status.exe_path);
+    if !exe_path.is_file() {
+        return Err("Real-ESRGAN 引擎不可用，请重新安装引擎".to_string());
+    }
+
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要增强的图片: {}",
+            display_local_path(&source)
+        ));
+    }
+
+    let base_dir = realesrgan_engine_base_dir()?;
+    let work_root = base_dir.join("_work");
+    let outputs_dir = base_dir.join("outputs");
+    fs::create_dir_all(&work_root).map_err(|e| format!("创建 Real-ESRGAN 工作目录失败: {}", e))?;
+    fs::create_dir_all(&outputs_dir)
+        .map_err(|e| format!("创建 Real-ESRGAN 输出目录失败: {}", e))?;
+
+    let run_id = format!("{}_{}", now_millis_u64(), std::process::id());
+    let work_dir = work_root.join(run_id);
+    fs::create_dir_all(&work_dir).map_err(|e| format!("创建图片增强临时目录失败: {}", e))?;
+
+    let result = (|| -> Result<RealEsrganEnhancementResult, String> {
+        let source_stem = source
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(sanitize_file_name)
+            .unwrap_or_else(|| "image".to_string());
+        let output_path = unique_file_path(outputs_dir.join(format!(
+            "{}_realesrgan_{}x_{}.{}",
+            source_stem, scale, resize_mode, output_format
+        )));
+        let enhanced_path = if resize_mode == "keep" {
+            work_dir.join(format!("enhanced.{}", output_format))
+        } else {
+            output_path.clone()
+        };
+
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "enhancing-image",
+            "Real-ESRGAN 增强图片",
+            0,
+            0,
+        );
+        run_realesrgan_on_path(
+            &exe_path,
+            &engine_dir,
+            &source,
+            &enhanced_path,
+            &mode,
+            scale,
+            &output_format,
+        )?;
+
+        if resize_mode == "keep" {
+            let (ffmpeg_path, _ffprobe_path) =
+                ensure_media_tools_available(&app_handle, progress_id_ref)?;
+            let mut resize_cmd = SysCommand::new(&ffmpeg_path);
+            resize_cmd
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+                .arg(&enhanced_path)
+                .args([
+                    "-vf",
+                    &format!("scale=iw/{}:ih/{}", scale, scale),
+                    "-frames:v",
+                    "1",
+                ]);
+            if output_format == "jpg" {
+                resize_cmd.args(["-q:v", "2"]);
+            }
+            resize_cmd.arg(&output_path);
+            run_hidden_command(&mut resize_cmd, "FFmpeg 图片缩回原尺寸")?;
+        }
+
+        if !output_path.is_file() {
+            return Err("图片增强完成，但没有生成输出图片".to_string());
+        }
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "realesrgan-image-ready",
+            "图片增强完成",
+            1,
+            1,
+        );
+        Ok(RealEsrganEnhancementResult {
+            output_path: display_local_path(&output_path),
+            engine_dir: status.engine_dir.clone(),
+            scale,
+            mode,
+            resize_mode,
+            output_format,
+            fps: None,
+            width: None,
+            height: None,
+        })
+    })();
+
+    let _ = fs::remove_dir_all(&work_dir);
+    result
+}
+
+#[tauri::command]
+async fn run_realesrgan_video_enhancement(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    scale: Option<u32>,
+    mode: Option<String>,
+    resize_mode: Option<String>,
+    keep_audio: Option<bool>,
+    output_format: Option<String>,
+    progress_id: Option<String>,
+) -> Result<RealEsrganEnhancementResult, String> {
+    let scale = normalize_realesrgan_scale(scale);
+    let mode = normalize_realesrgan_mode(mode);
+    let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
+    let keep_audio = keep_audio.unwrap_or(true);
+    let output_format = normalize_realesrgan_video_format(output_format);
+    let progress_id_ref = progress_id.as_deref();
+    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
+    let (ffmpeg_path, ffprobe_path) = ensure_media_tools_available(&app_handle, progress_id_ref)?;
+    let engine_dir = PathBuf::from(&status.engine_dir);
+    let exe_path = PathBuf::from(&status.exe_path);
+    if !exe_path.is_file() {
+        return Err("Real-ESRGAN 引擎不可用，请重新安装引擎".to_string());
+    }
+
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要增强的视频: {}",
+            display_local_path(&source)
+        ));
+    }
+
+    let base_dir = realesrgan_engine_base_dir()?;
+    let work_root = base_dir.join("_work");
+    let outputs_dir = base_dir.join("outputs");
+    fs::create_dir_all(&work_root).map_err(|e| format!("创建 Real-ESRGAN 工作目录失败: {}", e))?;
+    fs::create_dir_all(&outputs_dir)
+        .map_err(|e| format!("创建 Real-ESRGAN 输出目录失败: {}", e))?;
+
+    let run_id = format!("{}_{}", now_millis_u64(), std::process::id());
+    let work_dir = work_root.join(run_id);
+    let input_frames_dir = work_dir.join("input_frames");
+    let enhanced_frames_dir = work_dir.join("enhanced_frames");
+    fs::create_dir_all(&input_frames_dir).map_err(|e| format!("创建输入帧目录失败: {}", e))?;
+    fs::create_dir_all(&enhanced_frames_dir).map_err(|e| format!("创建增强帧目录失败: {}", e))?;
+
+    let result = (|| -> Result<RealEsrganEnhancementResult, String> {
+        let info = probe_video_info(&ffprobe_path, &source)?;
+        let fps = info.fps.unwrap_or(30.0).max(1.0);
+        let source_stem = source
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(sanitize_file_name)
+            .unwrap_or_else(|| "video".to_string());
+        let output_path = unique_file_path(outputs_dir.join(format!(
+            "{}_realesrgan_{}x_{}.{}",
+            source_stem, scale, resize_mode, output_format
+        )));
+
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "decoding-video",
+            "解析视频帧",
+            0,
+            0,
+        );
+        let mut decode_cmd = SysCommand::new(&ffmpeg_path);
+        decode_cmd
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&source)
+            .arg(input_frames_dir.join("frame_%08d.png"));
+        run_hidden_command(&mut decode_cmd, "FFmpeg 视频解帧")?;
+        let input_frame_count = count_frame_images(&input_frames_dir)?;
+        if input_frame_count == 0 {
+            return Err("视频解帧失败，没有得到可用帧".to_string());
+        }
+
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "enhancing-video",
+            "Real-ESRGAN 增强视频帧",
+            0,
+            0,
+        );
+        run_realesrgan_on_path(
+            &exe_path,
+            &engine_dir,
+            &input_frames_dir,
+            &enhanced_frames_dir,
+            &mode,
+            scale,
+            "png",
+        )?;
+        let enhanced_frame_count = count_frame_images(&enhanced_frames_dir)?;
+        if enhanced_frame_count == 0 {
+            return Err("视频增强完成，但没有生成增强帧".to_string());
+        }
+
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "encoding-video",
+            "合成增强视频",
+            0,
+            0,
+        );
+        let mut encode_cmd = SysCommand::new(&ffmpeg_path);
+        encode_cmd
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-framerate"])
+            .arg(format!("{:.3}", fps))
+            .arg("-i")
+            .arg(enhanced_frames_dir.join("frame_%08d.png"));
+        if keep_audio {
+            encode_cmd.arg("-i").arg(&source);
+        }
+        if resize_mode == "keep" {
+            if let (Some(width), Some(height)) = (info.width, info.height) {
+                encode_cmd.args(["-vf", &format!("scale={}:{}", width.max(1), height.max(1))]);
+            } else {
+                encode_cmd.args(["-vf", &format!("scale=iw/{}:ih/{}", scale, scale)]);
+            }
+        }
+        if keep_audio {
+            encode_cmd.args(["-map", "0:v:0", "-map", "1:a?"]);
+        }
+        if output_format == "webm" {
+            encode_cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                "28",
+                "-pix_fmt",
+                "yuv420p",
+            ]);
+            if keep_audio {
+                encode_cmd.args(["-c:a", "libopus", "-b:a", "160k", "-shortest"]);
+            }
+        } else {
+            encode_cmd.args(["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"]);
+            if keep_audio {
+                encode_cmd.args(["-c:a", "copy", "-shortest"]);
+            }
+        }
+        encode_cmd.arg(&output_path);
+        run_hidden_command(&mut encode_cmd, "FFmpeg 增强视频合成")?;
+
+        if !output_path.is_file() {
+            return Err("视频增强完成，但没有生成输出视频".to_string());
+        }
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "realesrgan-video-ready",
+            "视频增强完成",
+            1,
+            1,
+        );
+        Ok(RealEsrganEnhancementResult {
+            output_path: display_local_path(&output_path),
+            engine_dir: status.engine_dir.clone(),
+            scale,
+            mode,
+            resize_mode,
+            output_format,
+            fps: Some(fps),
+            width: info.width,
+            height: info.height,
+        })
+    })();
+
+    let _ = fs::remove_dir_all(&work_dir);
+    result
 }
 
 fn http_get_text(
@@ -8260,6 +9995,8 @@ fn main() {
             request_force_rescue(app);
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SnipState {
             pre_snip_bounds: std::sync::Mutex::new(None),
         })
@@ -8283,6 +10020,15 @@ fn main() {
             get_local_vision_model_status,
             install_ollama_silent,
             ensure_ollama_vision_model,
+            get_rife_engine_status,
+            install_rife_engine,
+            get_rife_frame_interpolation_estimate,
+            run_rife_frame_interpolation,
+            get_realesrgan_engine_status,
+            install_realesrgan_engine,
+            get_realesrgan_enhancement_estimate,
+            run_realesrgan_image_enhancement,
+            run_realesrgan_video_enhancement,
             get_network_proxy,
             set_network_proxy,
             get_siliconflow_vision_models,

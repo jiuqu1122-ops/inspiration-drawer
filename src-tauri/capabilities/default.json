@@ -20,6 +20,9 @@
   "permissions": [
     "core:default",
     "core:window:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
     "core:window:allow-set-resizable",
     "core:window:allow-start-dragging",
     "fs:default",
@@ -28,6 +31,8 @@
     "clipboard-manager:default",
     "dialog:default",
     "opener:default",
+    "updater:default",
+    "process:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered"

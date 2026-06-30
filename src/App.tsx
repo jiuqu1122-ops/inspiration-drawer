@@ -9,11 +9,12 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound
+  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { invoke } from '@tauri-apps/api/core';
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
@@ -24,12 +25,20 @@ import { Image as TauriImage } from '@tauri-apps/api/image';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { check as checkForAppUpdate } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 
 import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
 import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSelect';
 import { clamp } from './features/common';
+import {
+  getDrawerFolderDeletionPlan,
+  getDrawerFolderPathName,
+  getDrawerFolderScopeIds,
+  normalizeDrawerFolders,
+} from './features/folderModel';
 import {
   CANVAS_BASE_HEIGHT,
   CANVAS_BASE_WIDTH,
@@ -734,6 +743,54 @@ const CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS: RoundedSelectOption[] = [
   { value: 'REF', label: '参考图' },
   { value: 'FLF', label: '首尾帧' },
 ];
+const CANVAS_RIFE_INTERPOLATION_FACTOR_OPTIONS: RoundedSelectOption[] = [
+  { value: '2', label: '2× 补帧' },
+  { value: '4', label: '4× 补帧' },
+];
+const CANVAS_RIFE_TARGET_FPS_OPTIONS: RoundedSelectOption[] = [
+  { value: '30', label: '30fps' },
+  { value: '60', label: '60fps' },
+  { value: '120', label: '120fps' },
+];
+const CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS: RoundedSelectOption[] = [
+  { value: 'auto-2x', label: '自动 2x' },
+];
+const CANVAS_RIFE_MODE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'normal', label: '普通' },
+  { value: 'hd', label: 'HD' },
+  { value: 'uhd', label: 'UHD' },
+];
+const CANVAS_RIFE_QUALITY_OPTIONS: RoundedSelectOption[] = [
+  { value: 'fast', label: '快速' },
+  { value: 'standard', label: '标准' },
+  { value: 'high', label: '高质量' },
+];
+const CANVAS_RIFE_KEEP_AUDIO_OPTIONS: RoundedSelectOption[] = [
+  { value: 'yes', label: '保留音频' },
+  { value: 'no', label: '静音输出' },
+];
+const CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = [
+  { value: 'mp4', label: 'MP4' },
+  { value: 'mov', label: 'MOV' },
+  { value: 'webm', label: 'WebM' },
+];
+const CANVAS_ESRGAN_SCALE_OPTIONS: RoundedSelectOption[] = [
+  { value: '2', label: '2× 增强' },
+  { value: '4', label: '4× 增强' },
+];
+const CANVAS_ESRGAN_MODE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'general', label: '通用增强' },
+  { value: 'anime', label: '动漫插画' },
+];
+const CANVAS_ESRGAN_RESIZE_MODE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'upscale', label: '放大并增强' },
+  { value: 'keep', label: '保持原尺寸' },
+];
+const CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS: RoundedSelectOption[] = [
+  { value: 'png', label: 'PNG' },
+  { value: 'jpg', label: 'JPG' },
+  { value: 'webp', label: 'WebP' },
+];
 const CANVAS_AI_NODE_ICON_SELECT_CLASS = 'h-8 w-9 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-0 text-stone-500 hover:bg-stone-950/[0.04] hover:text-stone-800 dark:text-white/62 dark:hover:bg-white/[0.07] dark:hover:text-white';
 const CANVAS_AI_NODE_TEXT_SELECT_CLASS = 'h-8 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-2 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
 const CANVAS_AI_NODE_COUNT_SELECT_CLASS = 'h-8 w-11 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-1.5 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
@@ -756,6 +813,7 @@ const DRAWER_FOLDER_TONES = [
     badge: 'bg-blue-500 dark:bg-blue-400 dark:text-stone-950',
   },
 ];
+const DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY = 'drawer_collapsed_folder_ids';
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
 const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
@@ -922,22 +980,28 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
   {
     id: 'product-render',
     label: '产品渲染',
-    hint: '高级工业设计棚拍',
+    hint: '自动选择深浅场景',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
     prompt: `基于连接的参考图，为图中的产品生成一张高级工业设计产品渲染图。
 
+先分析参考图里的产品形态、主色、材质、价格感和情绪气质，只在「浅色场景」和「深色场景」两种方向中选择一个更适合产品的渲染环境。不要把所有产品都默认放进深色棚拍。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
-视觉风格：
-- 高端消费电子产品摄影
-- 简约深色背景
-- 暗光环境
-- 柔和轮廓光
-- 产品边缘有高级高光
-- 轻微虚焦背景
-- 真实材质表现
-- 干净、克制、有质感
+场景选择规则：
+- 浅色场景：白色、浅灰、米色或柔和自然光背景；适合浅色产品、生活方式产品、家居小物、医疗/清洁感产品、柔和材质、温暖亲和或清爽高级的产品
+- 深色场景：深灰、黑色或暗调渐变背景；适合黑色/深色产品、金属质感、性能感、专业设备、电竞/科技感、力量感或奢华冷峻的产品
+- 如果产品没有明显暗调气质，优先使用浅色场景；只有产品本身适合深色氛围时才选择深色场景
+- 场景只做简洁背景和台面/地面暗示，不要扩展成复杂生活空间，不要加入无关道具
+
+视觉要求：
+- 产品是绝对主角，场景服务于产品，不喧宾夺主
+- 背景应在深色或浅色中二选一，并与产品主色、材质和价格带匹配
+- 浅色场景使用柔和棚光或自然窗光；深色场景使用克制轮廓光和受控高光
+- 保留产品原有主色和材质气质，不要强行改成黑色科技风
+- 轻微虚焦背景，真实材质表现，干净、克制、有质感
+- 禁止默认深色背景；也不要为了浅色而把深色产品洗白，必须根据产品适配
 
 产品要求：
 - 保持原产品结构、比例、按键、接口、分件线不变
@@ -1586,6 +1650,11 @@ const CANVAS_TEMPLATE_EXPORT_TYPE = 'inspiration-drawer-canvas-templates';
 const CANVAS_TEMPLATE_EXPORT_VERSION = 1;
 const canvasWorkflowNormalizeCache = new WeakMap<object, CanvasWorkflowTemplate | null>();
 const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
+const PRODUCT_RENDER_PRESET_ID = 'product-render';
+const isLegacyProductRenderPrompt = (prompt: string) =>
+  prompt.includes('简约深色背景') && prompt.includes('暗光环境');
+const getBuiltInProductRenderPrompt = () =>
+  CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === PRODUCT_RENDER_PRESET_ID)?.prompt || '';
 const readCanvasTemplateHiddenIds = (storageKey: string) => {
   try {
     const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
@@ -1877,10 +1946,115 @@ const getCanvasAiApiKeyPlaceholder = (provider: CanvasAiProvider) => (
       ? '中转2 API Key'
       : 'API Key'
 );
-const isCanvasAiGeneratorType = (type?: string | null) => type === 'image-generator' || type === 'video-generator';
+type RifeFrameInterpolationResult = {
+  outputPath: string;
+  engineDir?: string;
+  fps?: number;
+  outputFps?: number;
+  factor?: number;
+  inputFrames?: number;
+};
+type RifeFrameInterpolationEstimate = {
+  durationSec?: number | null;
+  width?: number | null;
+  height?: number | null;
+  fps?: number | null;
+  outputFps?: number | null;
+  estimatedSecondsMin?: number | null;
+  estimatedSecondsMax?: number | null;
+};
+type RealEsrganEnhancementResult = {
+  outputPath: string;
+  engineDir?: string;
+  scale?: number;
+  mode?: string;
+  resizeMode?: string;
+  outputFormat?: string;
+  fps?: number | null;
+  width?: number | null;
+  height?: number | null;
+};
+type RealEsrganEnhancementEstimate = RifeFrameInterpolationEstimate & {
+  outputWidth?: number | null;
+  outputHeight?: number | null;
+};
+type RifeEngineProgress = {
+  progressId?: string;
+  stage?: string;
+  label?: string;
+  loaded?: number;
+  total?: number;
+  progress?: number;
+};
+const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
+  Math.max(0, Math.min(100, Math.round(Number(progress?.progress || 0) * 100)))
+);
+const shouldShowRifeEngineProgress = (progress?: RifeEngineProgress | null) => {
+  if (!progress?.stage) return false;
+  const stage = progress.stage;
+  if (stage.startsWith('downloading-')) return getRifeEngineProgressPercent(progress) < 100;
+  return (
+    stage.startsWith('connecting-')
+    || stage.startsWith('extracting-')
+    || stage.startsWith('starting-')
+    || stage.startsWith('decoding-')
+    || stage.startsWith('enhancing-')
+    || stage.startsWith('encoding-')
+  );
+};
+const isRifeFixed2xMode = (mode?: string | null) => (
+  mode === 'hd' || mode === 'uhd' || mode === 'hd-slow'
+);
+const formatRifeEstimateSeconds = (seconds?: number | null) => {
+  if (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return '';
+  const safeSeconds = Math.max(1, Math.round(Number(seconds)));
+  if (safeSeconds < 60) return `${safeSeconds}秒`;
+  const minutes = Math.max(1, Math.round(safeSeconds / 60));
+  if (minutes < 60) return `${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours}小时${rest}分钟` : `${hours}小时`;
+};
+const formatRifeEstimateRange = (estimate?: RifeFrameInterpolationEstimate | null) => {
+  const min = Number(estimate?.estimatedSecondsMin);
+  const max = Number(estimate?.estimatedSecondsMax);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) return '接入视频后自动估算';
+  const minText = formatRifeEstimateSeconds(min);
+  const maxText = formatRifeEstimateSeconds(max);
+  return minText && maxText && minText !== maxText ? `约 ${minText}～${maxText}` : `约 ${maxText || minText}`;
+};
+const formatRifeEstimateVideoMeta = (estimate?: RifeFrameInterpolationEstimate | null) => {
+  const parts: string[] = [];
+  if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
+    parts.push(formatRifeEstimateSeconds(estimate?.durationSec));
+  }
+  if (Number.isFinite(Number(estimate?.width)) && Number.isFinite(Number(estimate?.height)) && Number(estimate?.width) > 0 && Number(estimate?.height) > 0) {
+    parts.push(`${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`);
+  }
+  if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
+    parts.push(`${Number(estimate?.fps).toFixed(Number(estimate?.fps) >= 10 ? 0 : 1)}fps`);
+  }
+  if (Number.isFinite(Number(estimate?.outputFps)) && Number(estimate?.outputFps) > 0) {
+    parts.push(`→ ${Number(estimate?.outputFps).toFixed(0)}fps`);
+  }
+  return parts.join(' · ');
+};
+const isCanvasAiFrameInterpolationType = (type?: string | null) => type === 'frame-interpolation';
+const isCanvasAiEnhancementType = (type?: string | null) => type === 'image-enhancement' || type === 'video-enhancement';
+const isCanvasAiGeneratorType = (type?: string | null) => (
+  type === 'image-generator'
+  || type === 'video-generator'
+  || isCanvasAiFrameInterpolationType(type)
+  || isCanvasAiEnhancementType(type)
+);
 const isCanvasAiGeneratedType = (type?: string | null) => type === 'generated-image' || type === 'generated-video';
 const getCanvasAiMediaType = (ai?: CanvasImageItem['ai'] | null): 'image' | 'video' => (
-  ai?.type === 'video-generator' || ai?.type === 'generated-video' ? 'video' : 'image'
+  ai?.type === 'video-generator'
+  || ai?.type === 'frame-interpolation'
+  || ai?.type === 'video-enhancement'
+  || ai?.type === 'generated-video'
+    ? 'video'
+    : 'image'
 );
 const getCanvasAiNodeAutoSizeType = (ai?: CanvasImageItem['ai'] | null): 'image-generator' | 'video-generator' | 'workflow' => (
   ai?.type === 'workflow'
@@ -1889,8 +2063,17 @@ const getCanvasAiNodeAutoSizeType = (ai?: CanvasImageItem['ai'] | null): 'image-
       ? 'video-generator'
       : 'image-generator'
 );
-const getCanvasAiNodeTitle = (ai?: CanvasImageItem['ai'] | null) => (
+const getCanvasAiNodeTitleBase = (ai?: CanvasImageItem['ai'] | null) => (
   getCanvasAiMediaType(ai) === 'video' ? 'AI 视频节点' : 'AI 生图节点'
+);
+const getCanvasAiNodeTitle = (ai?: CanvasImageItem['ai'] | null) => (
+  ai?.type === 'frame-interpolation'
+    ? '视频补帧节点'
+    : ai?.type === 'video-enhancement'
+      ? '视频清晰度增强'
+      : ai?.type === 'image-enhancement'
+        ? '图片清晰度增强'
+        : getCanvasAiNodeTitleBase(ai)
 );
 type CanvasContextMenuState = {
   x: number;
@@ -2453,6 +2636,24 @@ function MainApp() {
     localStorage.setItem(CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY, JSON.stringify(hiddenBuiltInCanvasAiPromptPresetIds));
   }, [hiddenBuiltInCanvasAiPromptPresetIds]);
   useEffect(() => {
+    const builtInPrompt = getBuiltInProductRenderPrompt();
+    if (!builtInPrompt) return;
+
+    setCustomCanvasAiPromptPresets(prev => {
+      let changed = false;
+      const next = prev.map(preset => {
+        if (preset.id !== PRODUCT_RENDER_PRESET_ID || !isLegacyProductRenderPrompt(preset.prompt || '')) return preset;
+        changed = true;
+        return {
+          ...preset,
+          hint: '自动选择深浅场景',
+          prompt: builtInPrompt,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+  useEffect(() => {
     localStorage.setItem(CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY, JSON.stringify(customCanvasWorkflows));
   }, [customCanvasWorkflows]);
   useEffect(() => {
@@ -2511,7 +2712,8 @@ function MainApp() {
   useEffect(() => { triggerModeRef.current = triggerMode; }, [triggerMode]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const selectedImageReturnToCanvasRef = useRef(false);
-  const [selectedVideo, setSelectedVideo] = useState<{url: string, path: string} | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<{url: string, path: string, fromCanvas?: boolean} | null>(null);
+  const selectedVideoReturnToCanvasRef = useRef(false);
   const [selectedImageZoom, setSelectedImageZoom] = useState(1);
   const [selectedImagePan, setSelectedImagePan] = useState({ x: 0, y: 0 });
   const selectedImagePanRef = useRef(selectedImagePan);
@@ -2610,6 +2812,17 @@ function MainApp() {
   useEffect(() => {
     localStorage.setItem('drawer_folder_rail_height', String(Math.round(folderRailHeight)));
   }, [folderRailHeight]);
+  const [collapsedFolderIds, setCollapsedFolderIds] = useState<string[]>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string') : [];
+    } catch (_) {
+      return [];
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem(DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY, JSON.stringify(collapsedFolderIds));
+  }, [collapsedFolderIds]);
 
   const [isResizingCards, setIsResizingCards] = useState(false);
   const [drawerRenderLimit, setDrawerRenderLimit] = useState(DRAWER_INITIAL_RENDER_LIMIT);
@@ -2659,6 +2872,8 @@ function MainApp() {
 
   const [toast, setToast] = useState({ show: false, msg: '' });
   const toastTimerRef = useRef<any | null>(null);
+  const [appVersion, setAppVersion] = useState('');
+  const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
   const [isMobileConnected, setIsMobileConnected] = useState(false);
   const disconnectTimerRef = useRef<any | null>(null);
   const recentMobilePayloadsRef = useRef<Record<string, number>>({});
@@ -2673,6 +2888,139 @@ function MainApp() {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast({ show: false, msg: '' }), 2500);
   };
+
+  useEffect(() => {
+    if (!isMainDrawerWindow) return;
+    getVersion()
+      .then(setAppVersion)
+      .catch(err => {
+        console.warn('获取应用版本失败:', err);
+        setAppVersion('4.0.9');
+      });
+  }, []);
+
+  const formatAppUpdateErrorMessage = (err: unknown) => {
+    const raw = err instanceof Error ? err.message : String(err || '未知错误');
+    const lower = raw.toLowerCase();
+
+    if (lower.includes('url field was not set') || lower.includes('signature field was not set')) {
+      return '检查更新失败：备用更新源还没同步，请稍后重试';
+    }
+
+    if (
+      raw.includes('github.com') ||
+      lower.includes('sending request') ||
+      lower.includes('timed out') ||
+      lower.includes('timeout') ||
+      lower.includes('dns') ||
+      lower.includes('network') ||
+      lower.includes('connection')
+    ) {
+      return '检查更新失败：更新源连接不稳定，请稍后重试';
+    }
+
+    return `检查更新失败：${raw}`;
+  };
+
+  const checkAndInstallAppUpdate = async (options: { silent?: boolean } = {}) => {
+    if (!isMainDrawerWindow) return;
+    if (isCheckingAppUpdate) {
+      if (!options.silent) showToast('正在检查更新...');
+      return;
+    }
+
+    setIsCheckingAppUpdate(true);
+    try {
+      if (!options.silent) showToast('正在检查更新...');
+      const update = await checkForAppUpdate({ timeout: 8000 });
+      if (!update) {
+        if (!options.silent) showToast('当前已是最新版本');
+        return;
+      }
+
+      showToast(`发现新版本 ${update.version}，正在下载更新`);
+      let downloadedBytes = 0;
+      let totalBytes = 0;
+      let lastToastAt = 0;
+
+      await update.downloadAndInstall(event => {
+        if (event.event === 'Started') {
+          totalBytes = event.data.contentLength || 0;
+          showToast(totalBytes > 0
+            ? `开始下载更新包 ${Math.max(1, Math.round(totalBytes / 1024 / 1024))}MB`
+            : '开始下载更新包');
+          return;
+        }
+
+        if (event.event === 'Progress') {
+          downloadedBytes += event.data.chunkLength;
+          const now = Date.now();
+          if (totalBytes > 0 && now - lastToastAt > 1200) {
+            lastToastAt = now;
+            showToast(`正在更新 ${Math.min(99, Math.round((downloadedBytes / totalBytes) * 100))}%`);
+          }
+          return;
+        }
+
+        if (event.event === 'Finished') {
+          showToast('更新已安装，准备重启');
+        }
+      });
+
+      window.setTimeout(() => {
+        void relaunch().catch(err => {
+          console.warn('relaunch after update failed:', err);
+          showToast('更新已安装，请手动重启应用');
+        });
+      }, 900);
+    } catch (err) {
+      console.warn('检查更新失败:', err);
+      if (!options.silent) showToast(formatAppUpdateErrorMessage(err));
+    } finally {
+      setIsCheckingAppUpdate(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isMainDrawerWindow) return;
+
+    const autoUpdateCheckKey = 'drawer_auto_update_checked_at';
+    const autoUpdateCheckIntervalMs = 5 * 60 * 60 * 1000;
+    const lastCheckedAt = Number(localStorage.getItem(autoUpdateCheckKey) || 0);
+    const now = Date.now();
+    if (Number.isFinite(lastCheckedAt) && lastCheckedAt > 0 && now - lastCheckedAt < autoUpdateCheckIntervalMs) {
+      return;
+    }
+
+    const startupDelayMs = 20_000 + Math.round(Math.random() * 10_000);
+    const timer = window.setTimeout(() => {
+      localStorage.setItem(autoUpdateCheckKey, String(Date.now()));
+      void checkAndInstallAppUpdate({ silent: true });
+    }, startupDelayMs);
+
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!isMainDrawerWindow) return;
+    let disposed = false;
+    const unlistenPromise = listen<RifeEngineProgress>('rife-engine-progress', (event) => {
+      if (disposed) return;
+      const progress = event.payload;
+      const progressId = (progress?.progressId || '').trim();
+      if (!progressId) return;
+      const target = canvasItemsRef.current.find(item => item.id === progressId);
+      if (target?.ai?.type === 'frame-interpolation') {
+        updateCanvasAiGeneratorData(progressId, { interpolationProgress: progress });
+      } else if (isCanvasAiEnhancementType(target?.ai?.type)) {
+        updateCanvasAiGeneratorData(progressId, { enhancementProgress: progress });
+      }
+    });
+    return () => {
+      disposed = true;
+      void unlistenPromise.then(unlisten => unlisten()).catch(() => {});
+    };
+  }, []);
 
   const takeDrawerUndoSnapshot = (label: string): DrawerUndoSnapshot => {
     const openFloatingNoteLabels = readOpenFloatingNoteLabels();
@@ -3010,6 +3358,8 @@ function MainApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [activeSettingCategory, setActiveSettingCategory] = useState<string>('appearance');
   const [showHelp, setShowHelp] = useState(false);
+  const [showAboutSoftware, setShowAboutSoftware] = useState(false);
+  const [showStoragePath, setShowStoragePath] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [localIP, setLocalIP] = useState('');
   const [mobilePairUrl, setMobilePairUrl] = useState('');
@@ -3216,6 +3566,7 @@ function MainApp() {
 
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderParentId, setNewFolderParentId] = useState<string | null>(null);
   const [showMoveFolderModal, setShowMoveFolderModal] = useState(false);
   const [moveFolderName, setMoveFolderName] = useState('');
 
@@ -4298,7 +4649,21 @@ function MainApp() {
     openWebImageCollectorWithReference(reference);
   };
 
-  const handleOpenFolderModal = () => { setShowFolderModal(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowTextInput(false); };
+  const handleOpenFolderModal = (parentId?: string) => {
+    const parent = parentId ? foldersRef.current.find(folder => folder.id === parentId && !folder.parentId) : null;
+    setNewFolderParentId(parent?.id || null);
+    setNewFolderName('');
+    setShowFolderModal(true);
+    setShowWebImageCollector(false);
+    setIsSearchActive(false);
+    setShowSettings(false);
+    setShowTextInput(false);
+  };
+  const closeFolderModal = () => {
+    setShowFolderModal(false);
+    setNewFolderName('');
+    setNewFolderParentId(null);
+  };
   const commitQuickText = () => {
     if (!quickText.trim()) return;
     const newItem: BufferItem = createTextOrUrlItem(quickText, '灵感笔记');
@@ -4353,6 +4718,33 @@ function MainApp() {
     showToast(next === 'float' ? '已切换为悬浮方块模式' : '已切换为侧边小条模式');
   };
 
+  const toggleAutoStartSetting = async () => {
+    if (isAutoStartChanging) return;
+    const previous = isAutoStart;
+    const next = !isAutoStart;
+    setIsAutoStartChanging(true);
+    setIsAutoStart(next);
+    try {
+      await invoke('set_auto_start', { autoStart: next });
+      const persisted = await invoke('get_auto_start');
+      if (!!persisted !== next) throw new Error('autostart state verification failed');
+      setIsAutoStart(!!persisted);
+      showToast(next ? '已开启开机自动启动' : '已关闭开机自动启动');
+    } catch (err) {
+      console.error('设置开机启动失败:', err);
+      setIsAutoStart(previous);
+      showToast('开机启动设置失败');
+    } finally {
+      setIsAutoStartChanging(false);
+    }
+  };
+
+  const toggleCalendarNotificationsSetting = () => {
+    const next = !calendarNotificationsEnabled;
+    setCalendarNotificationsEnabled(next);
+    showToast(next ? '已开启日程通知' : '已关闭日程通知');
+  };
+
   useEffect(() => {
     let unlistenTrayTrigger: (() => void) | undefined;
     let unlistenTrayTheme: (() => void) | undefined;
@@ -4381,6 +4773,23 @@ function MainApp() {
     };
   }, [triggerMode]);
 
+  const rootFolders = useMemo(() => folders.filter(folder => !folder.parentId), [folders]);
+  const folderChildrenByParent = useMemo(() => {
+    const grouped = new Map<string, Folder[]>();
+    folders.forEach(folder => {
+      if (!folder.parentId) return;
+      grouped.set(folder.parentId, [...(grouped.get(folder.parentId) || []), folder]);
+    });
+    return grouped;
+  }, [folders]);
+  const orderedFolders = useMemo(() => (
+    rootFolders.flatMap(folder => [folder, ...(folderChildrenByParent.get(folder.id) || [])])
+  ), [rootFolders, folderChildrenByParent]);
+  const visibleFolderRailEntryCount = useMemo(() => (
+    rootFolders.reduce((count, folder) => (
+      count + 1 + (collapsedFolderIds.includes(folder.id) ? 0 : (folderChildrenByParent.get(folder.id)?.length || 0))
+    ), 0)
+  ), [rootFolders, folderChildrenByParent, collapsedFolderIds]);
   const displayItems = useMemo(() => {
     let result = items as AlchemyBufferItem[];
     if (searchQuery.trim()) {
@@ -4390,7 +4799,8 @@ function MainApp() {
     if (activeFolderId === 'all') {
       result = result.filter(item => !item.folderId);
     } else {
-      result = result.filter(item => item.folderId === activeFolderId);
+      const folderScopeIds = getDrawerFolderScopeIds(folders, activeFolderId);
+      result = result.filter(item => !!item.folderId && folderScopeIds.has(item.folderId));
     }
     if (activeTab === 'notes' || activeTab === 'calendar') {
       return [];
@@ -4399,7 +4809,7 @@ function MainApp() {
       return result.filter(item => isAlchemyCandidate(item));
     }
     return result.filter(item => activeTab === 'all' || item.type === activeTab);
-  }, [items, activeTab, searchQuery, activeFolderId]);
+  }, [items, folders, activeTab, searchQuery, activeFolderId]);
 
   const alchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => isAlchemyCandidate(item)).length, [items]);
   const finishedAlchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => getAlchemyState(item) === 'alchemy').length, [items]);
@@ -4462,14 +4872,15 @@ function MainApp() {
     calendarEvents.filter(event => {
       if (calendarTagFilter === 'all') return true;
       if (calendarTagFilter === 'untagged') return event.tagIds.length === 0;
-      return event.tagIds.includes(calendarTagFilter);
+      const folderScopeIds = getDrawerFolderScopeIds(folders, calendarTagFilter);
+      return event.tagIds.some(tagId => folderScopeIds.has(tagId));
     })
-  ), [calendarEvents, calendarTagFilter]);
+  ), [calendarEvents, calendarTagFilter, folders]);
   const calendarTagOptions = useMemo(() => ([
     { value: 'all', label: '全部' },
     { value: 'untagged', label: '无标签' },
-    ...folders.map(folder => ({ value: folder.id, label: folder.name })),
-  ]), [folders]);
+    ...orderedFolders.map(folder => ({ value: folder.id, label: getDrawerFolderPathName(folders, folder.id) })),
+  ]), [folders, orderedFolders]);
   const calendarTagFilterLabel = calendarTagOptions.find(option => option.value === calendarTagFilter)?.label || '全部';
   const calendarScheduleNoteOptions = useMemo<RoundedSelectOption[]>(() => {
     const sourceById = new Map(items.map(item => [item.id, item]));
@@ -4758,7 +5169,7 @@ function MainApp() {
 
   const getCalendarTagName = (tagId?: string) => {
     if (!tagId) return '无标签';
-    return folders.find(folder => folder.id === tagId)?.name || '未知标签';
+    return getDrawerFolderPathName(folders, tagId) || '未知标签';
   };
 
   const renderCalendarEvent = (event: CalendarScheduleEvent) => {
@@ -5723,8 +6134,9 @@ function MainApp() {
     });
     invoke('load_folders').then((savedFolders: any) => {
       if (savedFolders && savedFolders.length > 0) {
-        setFolders(savedFolders);
-        localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(savedFolders));
+        const normalizedFolders = normalizeDrawerFolders(savedFolders);
+        setFolders(normalizedFolders);
+        localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
       }
     }).catch(()=>{});
   }, []);
@@ -6787,6 +7199,39 @@ function MainApp() {
 
   const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
     !!canvasItem
+  );
+
+  const canUseCanvasItemAsFrameInterpolationVideoInput = (canvasItem?: CanvasImageItem | null) => {
+    if (!canvasItem) return false;
+    if (canvasItem.item.type === 'video') return true;
+    return getCanvasAiSuccessfulOutputs(canvasItem).some(output => (
+      (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'video' && !!getCanvasAiOutputDisplaySource(output)
+    ));
+  };
+
+  const canUseCanvasItemAsImageEnhancementInput = (canvasItem?: CanvasImageItem | null) => {
+    if (!canvasItem) return false;
+    if (canvasItem.item.type === 'image') return true;
+    return getCanvasAiSuccessfulOutputs(canvasItem).some(output => (
+      (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'image' && !!getCanvasAiOutputDisplaySource(output)
+    ));
+  };
+
+  const canUseCanvasItemAsVideoEnhancementInput = (canvasItem?: CanvasImageItem | null) => (
+    canUseCanvasItemAsFrameInterpolationVideoInput(canvasItem)
+  );
+
+  const canUseCanvasItemAsInputForTarget = (
+    source?: CanvasImageItem | null,
+    target?: CanvasImageItem | null,
+  ) => (
+    target?.ai?.type === 'frame-interpolation'
+      ? canUseCanvasItemAsFrameInterpolationVideoInput(source)
+      : target?.ai?.type === 'image-enhancement'
+        ? canUseCanvasItemAsImageEnhancementInput(source)
+        : target?.ai?.type === 'video-enhancement'
+          ? canUseCanvasItemAsVideoEnhancementInput(source)
+      : canUseCanvasItemAsAiInput(source)
   );
 
   const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) => (
@@ -9761,6 +10206,162 @@ function MainApp() {
     }
   };
 
+  const getSelectedFrameInterpolationInputIds = () => (
+    getSelectedCanvasAiInputIds().filter(inputId => {
+      const source = canvasItemsRef.current.find(item => item.id === inputId);
+      return canUseCanvasItemAsFrameInterpolationVideoInput(source);
+    }).slice(0, 1)
+  );
+
+  const buildCanvasFrameInterpolationNode = (pos: { x: number; y: number }, inputIds: string[] = []): CanvasImageItem => {
+    const itemId = Math.random().toString(36).substring(2, 9);
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: 'video-generator',
+      aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
+      count: 1,
+    });
+    return {
+      id: `canvas_rife_${itemId}`,
+      item: {
+        id: itemId,
+        type: 'text',
+        content: '',
+        name: '视频补帧',
+        remark: '使用本地 RIFE 引擎把视频补到 2× 或 4× 帧率。',
+        createdAt: Date.now(),
+        isQuickAccess: false,
+      },
+      x: Math.max(24, pos.x),
+      y: Math.max(24, pos.y),
+      width: nodeSize.width,
+      height: nodeSize.height,
+      inputs: Array.from(new Set(inputIds)),
+      ai: {
+        type: 'frame-interpolation',
+        model: 'rife-v4.6',
+        aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        count: 1,
+        interpolationFactor: 2,
+        interpolationTargetFps: 60,
+        interpolationMode: 'normal',
+        interpolationQuality: 'standard',
+        interpolationKeepAudio: true,
+        outputFormat: 'mp4',
+        status: 'idle',
+        outputs: [],
+      },
+    };
+  };
+
+  const addCanvasFrameInterpolationNode = (client?: { x: number; y: number }) => {
+    const inputIds = getSelectedFrameInterpolationInputIds();
+    const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+    const pos = inputBounds && !client
+      ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+      : getCanvasDropPosition(0, client);
+    const canvasItem = buildCanvasFrameInterpolationNode(pos, inputIds);
+    if (appendCanvasItems([canvasItem], '新增视频补帧节点') > 0) {
+      showToast(`已添加视频补帧节点${inputIds.length > 0 ? `，已连接 ${inputIds.length} 个视频输入` : ''}`);
+    }
+  };
+
+  const addCanvasFrameInterpolationNodeAtWorld = (world: { x: number; y: number }) => {
+    const inputIds = getSelectedFrameInterpolationInputIds();
+    const canvasItem = buildCanvasFrameInterpolationNode({
+      x: Math.max(24, world.x),
+      y: Math.max(24, world.y),
+    }, inputIds);
+    if (appendCanvasItems([canvasItem], '新增视频补帧节点') > 0) {
+      showToast(`已添加视频补帧节点${inputIds.length > 0 ? `，已连接 ${inputIds.length} 个视频输入` : ''}`);
+    }
+  };
+
+  const getSelectedEnhancementInputIds = (mediaType: 'image' | 'video') => (
+    getSelectedCanvasAiInputIds().filter(inputId => {
+      const source = canvasItemsRef.current.find(item => item.id === inputId);
+      return mediaType === 'video'
+        ? canUseCanvasItemAsVideoEnhancementInput(source)
+        : canUseCanvasItemAsImageEnhancementInput(source);
+    }).slice(0, 1)
+  );
+
+  const buildCanvasEnhancementNode = (
+    pos: { x: number; y: number },
+    mediaType: 'image' | 'video',
+    inputIds: string[] = [],
+  ): CanvasImageItem => {
+    const itemId = Math.random().toString(36).substring(2, 9);
+    const isVideo = mediaType === 'video';
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: isVideo ? 'video-generator' : 'image-generator',
+      aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
+      count: 1,
+    });
+    return {
+      id: `canvas_realesrgan_${mediaType}_${itemId}`,
+      item: {
+        id: itemId,
+        type: 'text',
+        content: '',
+        name: isVideo ? '视频清晰度增强' : '图片清晰度增强',
+        remark: isVideo
+          ? '使用本地 Real-ESRGAN 增强视频清晰度，可输出 2× / 4×。'
+          : '使用本地 Real-ESRGAN 增强图片清晰度，可输出 2× / 4×。',
+        createdAt: Date.now(),
+        isQuickAccess: false,
+      },
+      x: Math.max(24, pos.x),
+      y: Math.max(24, pos.y),
+      width: nodeSize.width,
+      height: nodeSize.height,
+      inputs: Array.from(new Set(inputIds)).slice(0, 1),
+      ai: {
+        type: isVideo ? 'video-enhancement' : 'image-enhancement',
+        model: 'realesrgan-x4plus',
+        aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        count: 1,
+        enhancementScale: 2,
+        enhancementMode: 'general',
+        enhancementResizeMode: 'upscale',
+        enhancementKeepAudio: true,
+        outputFormat: isVideo ? 'mp4' : 'png',
+        status: 'idle',
+        outputs: [],
+      },
+    };
+  };
+
+  const addCanvasEnhancementNode = (
+    mediaType: 'image' | 'video',
+    client?: { x: number; y: number },
+  ) => {
+    const inputIds = getSelectedEnhancementInputIds(mediaType);
+    const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+    const pos = inputBounds && !client
+      ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+      : getCanvasDropPosition(0, client);
+    const canvasItem = buildCanvasEnhancementNode(pos, mediaType, inputIds);
+    const label = mediaType === 'video' ? '视频清晰度增强' : '图片清晰度增强';
+    if (appendCanvasItems([canvasItem], `新增${label}节点`) > 0) {
+      showToast(`已添加${label}节点${inputIds.length > 0 ? '，并连接输入素材' : ''}`);
+    }
+  };
+
+  const addCanvasEnhancementNodeAtWorld = (
+    mediaType: 'image' | 'video',
+    world: { x: number; y: number },
+  ) => {
+    const inputIds = getSelectedEnhancementInputIds(mediaType);
+    const canvasItem = buildCanvasEnhancementNode({
+      x: Math.max(24, world.x),
+      y: Math.max(24, world.y),
+    }, mediaType, inputIds);
+    const label = mediaType === 'video' ? '视频清晰度增强' : '图片清晰度增强';
+    if (appendCanvasItems([canvasItem], `新增${label}节点`) > 0) {
+      showToast(`已添加${label}节点${inputIds.length > 0 ? '，并连接输入素材' : ''}`);
+    }
+  };
+
   const getCanvasWorkflowTemplateFromNode = (canvasItem?: CanvasImageItem | null) => {
     if (canvasItem?.ai?.type !== 'workflow') return null;
     const snapshot = normalizeCanvasWorkflowTemplate(canvasItem.ai.workflow);
@@ -10937,7 +11538,7 @@ function MainApp() {
       .filter(id => id !== targetId)
       .filter(id => {
         const source = canvasItemsRef.current.find(item => item.id === id);
-        return canUseCanvasItemAsAiInput(source);
+        return canUseCanvasItemAsInputForTarget(source, target);
       });
     if (sourceIds.length === 0) {
       showToast('先多选要接入的图片或文字节点');
@@ -10957,7 +11558,8 @@ function MainApp() {
     if (!sourceId || !targetId || sourceId === targetId) return false;
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!source || !target || !canUseCanvasItemAsAiTarget(target) || !canUseCanvasItemAsAiInput(source)) return false;
+    if (!source || !target || !canUseCanvasItemAsAiTarget(target) || !canUseCanvasItemAsInputForTarget(source, target)) return false;
+    const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
     if ((target.inputs || []).includes(sourceId)) {
       updateCanvasSelection([targetId]);
       return true;
@@ -10965,7 +11567,7 @@ function MainApp() {
     pushCanvasUndoSnapshot('连接 AI 输入');
     updateCanvasItemsImmediate(prev => prev.map(item => (
       item.id === targetId
-        ? { ...item, inputs: Array.from(new Set([...(item.inputs || []), sourceId])) }
+        ? { ...item, inputs: isSingleMediaInputTarget ? [sourceId] : Array.from(new Set([...(item.inputs || []), sourceId])) }
         : item
     )));
     updateCanvasSelection([targetId]);
@@ -10980,14 +11582,19 @@ function MainApp() {
       .filter(sourceId => sourceId && sourceId !== targetId)
       .filter(sourceId => {
         const source = canvasItemsRef.current.find(item => item.id === sourceId);
-        return canUseCanvasItemAsAiInput(source);
+        return canUseCanvasItemAsInputForTarget(source, target);
       });
     if (validSourceIds.length === 0) return false;
 
     const previousInputs = target.inputs || [];
-    const nextInputs = Array.from(new Set([...previousInputs, ...validSourceIds]));
+    const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
+    const nextInputs = isSingleMediaInputTarget
+      ? validSourceIds.slice(0, 1)
+      : Array.from(new Set([...previousInputs, ...validSourceIds]));
+    const inputsChanged = previousInputs.length !== nextInputs.length
+      || previousInputs.some((inputId, index) => inputId !== nextInputs[index]);
     const addedCount = nextInputs.length - previousInputs.length;
-    if (addedCount <= 0) {
+    if (!inputsChanged) {
       updateCanvasSelection([targetId]);
       showToast('这些输入已经连接过了');
       return true;
@@ -10998,7 +11605,7 @@ function MainApp() {
       item.id === targetId ? { ...item, inputs: nextInputs } : item
     )));
     updateCanvasSelection([targetId]);
-    showToast(`已连接 ${addedCount} 个输入节点`);
+    showToast(isSingleMediaInputTarget ? '已更换输入素材' : `已连接 ${Math.max(1, addedCount)} 个输入节点`);
     return true;
   };
 
@@ -11036,6 +11643,55 @@ function MainApp() {
     }
   };
 
+  const addCanvasFrameInterpolationNodeForSources = (sourceIds: string[], world: { x: number; y: number }) => {
+    const validSourceIds = Array.from(new Set(sourceIds))
+      .filter(sourceId => {
+        const source = canvasItemsRef.current.find(item => item.id === sourceId);
+        return canUseCanvasItemAsFrameInterpolationVideoInput(source);
+      })
+      .slice(0, 1);
+    if (validSourceIds.length === 0) {
+      showToast('请先选择视频素材或视频生成结果');
+      return;
+    }
+    const canvasItem = buildCanvasFrameInterpolationNode({
+      x: Math.max(24, world.x),
+      y: Math.max(24, world.y),
+    }, validSourceIds);
+    if (appendCanvasItems([canvasItem], '新增视频补帧节点') > 0) {
+      updateCanvasSelection([canvasItem.id]);
+      showToast('已新建视频补帧节点，并连接视频输入');
+    }
+  };
+
+  const addCanvasEnhancementNodeForSources = (
+    sourceIds: string[],
+    mediaType: 'image' | 'video',
+    world: { x: number; y: number },
+  ) => {
+    const validSourceIds = Array.from(new Set(sourceIds))
+      .filter(sourceId => {
+        const source = canvasItemsRef.current.find(item => item.id === sourceId);
+        return mediaType === 'video'
+          ? canUseCanvasItemAsVideoEnhancementInput(source)
+          : canUseCanvasItemAsImageEnhancementInput(source);
+      })
+      .slice(0, 1);
+    if (validSourceIds.length === 0) {
+      showToast(mediaType === 'video' ? '请先选择视频素材或视频生成结果' : '请先选择图片素材或图片生成结果');
+      return;
+    }
+    const canvasItem = buildCanvasEnhancementNode({
+      x: Math.max(24, world.x),
+      y: Math.max(24, world.y),
+    }, mediaType, validSourceIds);
+    const label = mediaType === 'video' ? '视频清晰度增强' : '图片清晰度增强';
+    if (appendCanvasItems([canvasItem], `新增${label}节点`) > 0) {
+      updateCanvasSelection([canvasItem.id]);
+      showToast(`已新建${label}节点并连接素材`);
+    }
+  };
+
   const addCanvasTextInputForGenerator = (targetId: string, world: { x: number; y: number }) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
@@ -11069,6 +11725,11 @@ function MainApp() {
   };
 
   const chooseLocalImagesForCanvasGenerator = (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (target?.ai?.type === 'frame-interpolation' || target?.ai?.type === 'video-enhancement') {
+      void chooseLocalVideosForCanvasGenerator(targetId);
+      return;
+    }
     pendingCanvasUploadTargetIdRef.current = targetId;
     setCanvasInputMenuForId(null);
     canvasUploadInputRef.current?.click();
@@ -11109,7 +11770,11 @@ function MainApp() {
   const chooseLocalVideosForCanvasGenerator = async (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
-    if (target.ai?.type !== 'video-generator' || target.ai?.videoInputMode === 'FLF') {
+    if (
+      target.ai?.type !== 'frame-interpolation'
+      && target.ai?.type !== 'video-enhancement'
+      && (target.ai?.type !== 'video-generator' || target.ai?.videoInputMode === 'FLF')
+    ) {
       showToast('只有视频节点的参考图模式支持参考视频');
       return;
     }
@@ -11148,27 +11813,53 @@ function MainApp() {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     const allowVideoReference = target.ai?.type === 'video-generator' && target.ai?.videoInputMode !== 'FLF';
+    const isFrameInterpolationTarget = target.ai?.type === 'frame-interpolation';
+    const isVideoEnhancementTarget = target.ai?.type === 'video-enhancement';
+    const isImageEnhancementTarget = target.ai?.type === 'image-enhancement';
     setCanvasInputMenuForId(null);
     setCanvasContextMenu(null);
     setCanvasInputPickTargetId(targetId);
     updateCanvasSelection([targetId]);
-    showToast(allowVideoReference
-      ? '点击画布里的图片、视频、生图/视频节点或工作流模块作为输入，Esc 取消'
-      : '点击画布里的图片、生图节点或工作流模块作为输入，Esc 取消');
+    showToast(
+      isFrameInterpolationTarget
+        ? '点击画布里的视频素材或视频生成结果作为补帧输入，Esc 取消'
+        : isVideoEnhancementTarget
+          ? '点击画布里的视频素材或视频生成结果作为清晰度增强输入，Esc 取消'
+          : isImageEnhancementTarget
+            ? '点击画布里的图片素材或图片生成结果作为清晰度增强输入，Esc 取消'
+            : allowVideoReference
+              ? '点击画布里的图片、视频或生成节点作为输入，Esc 取消'
+              : '点击画布里的图片或图片生成节点作为输入，Esc 取消'
+    );
   };
 
   const pickCanvasImageForGenerator = (sourceId: string, targetId: string) => {
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     const allowVideoReference = target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF';
+    const isFrameInterpolationTarget = target?.ai?.type === 'frame-interpolation';
+    const isVideoEnhancementTarget = target?.ai?.type === 'video-enhancement';
+    const isImageEnhancementTarget = target?.ai?.type === 'image-enhancement';
     const canPickSource = !!source && (
-      source.item.type === 'image'
-      || source.ai?.type === 'image-generator'
-      || source.ai?.type === 'workflow'
-      || (allowVideoReference && (source.item.type === 'video' || source.ai?.type === 'video-generator'))
+      isFrameInterpolationTarget
+        ? canUseCanvasItemAsFrameInterpolationVideoInput(source)
+        : isVideoEnhancementTarget
+          ? canUseCanvasItemAsVideoEnhancementInput(source)
+          : isImageEnhancementTarget
+            ? canUseCanvasItemAsImageEnhancementInput(source)
+        : (
+          source.item.type === 'image'
+          || source.ai?.type === 'image-generator'
+          || source.ai?.type === 'workflow'
+          || (allowVideoReference && (source.item.type === 'video' || source.ai?.type === 'video-generator'))
+        )
     );
     if (!canPickSource) {
-      showToast(allowVideoReference ? '请选择图片、视频、生图/视频节点或工作流模块' : '请选择图片节点、生图节点或工作流模块');
+      showToast(
+        isFrameInterpolationTarget || isVideoEnhancementTarget
+          ? '请选择视频素材或视频生成结果'
+          : '请选择图片素材或图片生成结果'
+      );
       return false;
     }
     const connected = connectCanvasItems(sourceId, targetId);
@@ -11684,6 +12375,378 @@ function MainApp() {
     }
   };
 
+  const getFrameInterpolationVideoInput = (target: CanvasImageItem) => {
+    const inputItems = (target.inputs || [])
+      .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+      .filter((item): item is CanvasImageItem => !!item);
+    for (const inputItem of inputItems) {
+      if (inputItem.item.type === 'video') {
+        const source = (inputItem.item.path || inputItem.item.url || '').trim();
+        if (source) return { source, item: inputItem };
+      }
+      const videoOutput = getCanvasAiSuccessfulOutputs(inputItem).find(output => (
+        (output.mediaType || getCanvasAiMediaType(inputItem.ai)) === 'video' && !!getCanvasAiOutputDisplaySource(output)
+      ));
+      if (videoOutput) {
+        const source = (videoOutput.path || videoOutput.url || getCanvasAiOutputDisplaySource(videoOutput)).trim();
+        if (source) return { source, item: inputItem, output: videoOutput };
+      }
+    }
+    return null;
+  };
+
+  const getFrameInterpolationEstimateKey = (target: CanvasImageItem, source: string) => {
+    const ai = target.ai;
+    const fixed2xMode = isRifeFixed2xMode(ai?.interpolationMode);
+    return [
+      source,
+      fixed2xMode ? 2 : clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4),
+      fixed2xMode ? 'auto-2x' : Number(ai?.interpolationTargetFps) || 60,
+      ai?.interpolationMode || 'normal',
+      ai?.interpolationQuality || 'standard',
+      String(ai?.outputFormat || 'mp4').toLowerCase(),
+    ].join('|');
+  };
+
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const requests = canvasItems
+      .filter(item => item.ai?.type === 'frame-interpolation' && item.ai?.status !== 'working')
+      .map(item => {
+        const videoInput = getFrameInterpolationVideoInput(item);
+        if (!videoInput?.source) return null;
+        const estimateKey = getFrameInterpolationEstimateKey(item, videoInput.source);
+        if (item.ai?.interpolationEstimateKey === estimateKey) return null;
+        return { item, source: videoInput.source, estimateKey };
+      })
+      .filter((value): value is { item: CanvasImageItem; source: string; estimateKey: string } => !!value);
+
+    requests.forEach(({ item, source, estimateKey }) => {
+      updateCanvasAiGeneratorData(item.id, {
+        interpolationEstimateKey: estimateKey,
+        interpolationEstimate: undefined,
+      });
+      void invoke<RifeFrameInterpolationEstimate>('get_rife_frame_interpolation_estimate', {
+        inputPath: source,
+        factor: isRifeFixed2xMode(item.ai?.interpolationMode) ? 2 : clamp(Math.round(Number(item.ai?.interpolationFactor) || 2), 2, 4),
+        targetFps: isRifeFixed2xMode(item.ai?.interpolationMode) ? undefined : Number(item.ai?.interpolationTargetFps) || 60,
+        mode: item.ai?.interpolationMode || 'normal',
+        quality: item.ai?.interpolationQuality || 'standard',
+        outputFormat: item.ai?.outputFormat || 'mp4',
+        progressId: item.id,
+      })
+        .then((estimate) => {
+          const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
+          if (latest?.ai?.interpolationEstimateKey !== estimateKey) return;
+          updateCanvasAiGeneratorData(item.id, { interpolationEstimate: estimate });
+        })
+        .catch(() => {
+          const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
+          if (latest?.ai?.interpolationEstimateKey !== estimateKey) return;
+          updateCanvasAiGeneratorData(item.id, {
+            interpolationEstimate: {
+              estimatedSecondsMin: null,
+              estimatedSecondsMax: null,
+            },
+          });
+        });
+    });
+  }, [canvasItems, isCanvasMode]);
+
+  const runCanvasFrameInterpolationNode = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || target.ai?.type !== 'frame-interpolation') return;
+
+    const videoInput = getFrameInterpolationVideoInput(target);
+    if (!videoInput) {
+      updateCanvasAiGeneratorData(targetId, {
+        status: 'error',
+        error: '请先接入一个视频素材或视频生成结果',
+        outputs: [],
+        generatedAt: Date.now(),
+      });
+      showToast('请先给补帧节点接入一个视频');
+      return;
+    }
+
+    const fixed2xMode = isRifeFixed2xMode(target.ai.interpolationMode);
+    const factor = fixed2xMode ? 2 : clamp(Math.round(Number(target.ai.interpolationFactor) || 2), 2, 4);
+    const startedAt = Date.now();
+    const draft: CanvasAiGeneratedOutput = {
+      id: `${target.id}_rife_output_${startedAt}`,
+      mediaType: 'video',
+      name: `RIFE ${factor}× 补帧`,
+      status: 'working',
+      generatedAt: startedAt,
+      width: 16,
+      height: 9,
+    };
+    updateCanvasAiGeneratorData(targetId, {
+      status: 'working',
+      error: undefined,
+      interpolationProgress: {
+        progressId: targetId,
+        stage: 'starting-rife',
+        label: '准备补帧',
+        loaded: 0,
+        total: 0,
+        progress: 0,
+      },
+      outputs: [draft],
+      generatedAt: startedAt,
+    });
+    updateCanvasSelection([targetId]);
+    showToast('开始补帧；首次使用会先下载 RIFE 引擎，可能需要几分钟');
+
+    try {
+      const result = await invoke<RifeFrameInterpolationResult>('run_rife_frame_interpolation', {
+        inputPath: videoInput.source,
+        factor,
+        model: target.ai.model || 'rife-v4.6',
+        targetFps: fixed2xMode ? undefined : Number(target.ai.interpolationTargetFps) || 60,
+        mode: target.ai.interpolationMode || 'normal',
+        quality: target.ai.interpolationQuality || 'standard',
+        keepAudio: target.ai.interpolationKeepAudio !== false,
+        outputFormat: target.ai.outputFormat || 'mp4',
+        progressId: targetId,
+      });
+      const outputPath = (result.outputPath || '').trim();
+      if (!outputPath) throw new Error('RIFE 没有返回输出视频路径');
+      const outputUrl = convertFileSrc(outputPath);
+      const finishedAt = Date.now();
+      const sourceName = videoInput.output?.name || videoInput.item.item.name || videoInput.item.item.content || '视频';
+      const output: CanvasAiGeneratedOutput = {
+        ...draft,
+        mediaType: 'video',
+        url: outputUrl,
+        path: outputPath,
+        name: `${sourceName} · RIFE ${result.factor || factor}×`,
+        prompt: `RIFE frame interpolation ${result.factor || factor}x`,
+        status: 'success',
+        error: undefined,
+        generatedAt: finishedAt,
+        width: target.width,
+        height: Math.max(1, Math.round(target.width / parseCanvasAspectRatioValue(target.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO))),
+      };
+      updateCanvasAiGeneratorData(targetId, {
+        status: 'success',
+        error: undefined,
+        interpolationProgress: undefined,
+        outputs: [output],
+        generatedAt: finishedAt,
+      });
+      const latestTarget = {
+        ...target,
+        ai: {
+          ...target.ai,
+          outputs: [output],
+          generatedAt: finishedAt,
+        },
+      } as CanvasImageItem;
+      const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, 0);
+      if (drawerItem) addGeneratedVideosToDrawer([drawerItem]);
+      showToast(`补帧完成：${(result.outputFps || 0).toFixed(1)} fps，已放入「${AI_GENERATED_VIDEO_FOLDER_NAME}」`);
+    } catch (err) {
+      const message = getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err));
+      const failedAt = Date.now();
+      updateCanvasAiGeneratorData(targetId, {
+        status: 'error',
+        error: message,
+        interpolationProgress: undefined,
+        outputs: [{ ...draft, status: 'error', error: message, generatedAt: failedAt }],
+        generatedAt: failedAt,
+      });
+      showToast(`补帧失败：${message.slice(0, 80)}`);
+    }
+  };
+
+  const getCanvasEnhancementInput = (target: CanvasImageItem) => {
+    const mediaType = getCanvasAiMediaType(target.ai);
+    const inputItems = (target.inputs || [])
+      .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+      .filter((item): item is CanvasImageItem => !!item);
+    for (const inputItem of inputItems) {
+      if (inputItem.item.type === mediaType) {
+        const source = (inputItem.item.path || inputItem.item.url || '').trim();
+        if (source) return { source, item: inputItem };
+      }
+      const output = getCanvasAiSuccessfulOutputs(inputItem).find(candidate => (
+        (candidate.mediaType || getCanvasAiMediaType(inputItem.ai)) === mediaType
+        && !!getCanvasAiOutputDisplaySource(candidate)
+      ));
+      if (output) {
+        const source = (output.path || output.url || getCanvasAiOutputDisplaySource(output)).trim();
+        if (source) return { source, item: inputItem, output };
+      }
+    }
+    return null;
+  };
+
+  const getEnhancementEstimateKey = (target: CanvasImageItem, source: string) => [
+    source,
+    target.ai?.type || 'image-enhancement',
+    clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4),
+    target.ai?.enhancementMode || 'general',
+    target.ai?.enhancementResizeMode || 'upscale',
+    String(target.ai?.outputFormat || (getCanvasAiMediaType(target.ai) === 'video' ? 'mp4' : 'png')).toLowerCase(),
+  ].join('|');
+
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const requests = canvasItems
+      .filter(item => isCanvasAiEnhancementType(item.ai?.type) && item.ai?.status !== 'working')
+      .map(item => {
+        const input = getCanvasEnhancementInput(item);
+        if (!input?.source) return null;
+        const estimateKey = getEnhancementEstimateKey(item, input.source);
+        if (item.ai?.enhancementEstimateKey === estimateKey) return null;
+        return { item, source: input.source, estimateKey };
+      })
+      .filter((value): value is { item: CanvasImageItem; source: string; estimateKey: string } => !!value);
+
+    requests.forEach(({ item, source, estimateKey }) => {
+      updateCanvasAiGeneratorData(item.id, {
+        enhancementEstimateKey: estimateKey,
+        enhancementEstimate: undefined,
+      });
+      void invoke<RealEsrganEnhancementEstimate>('get_realesrgan_enhancement_estimate', {
+        inputPath: source,
+        mediaType: getCanvasAiMediaType(item.ai),
+        scale: clamp(Math.round(Number(item.ai?.enhancementScale) || 2), 2, 4),
+        resizeMode: item.ai?.enhancementResizeMode || 'upscale',
+        progressId: item.id,
+      })
+        .then((estimate) => {
+          const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
+          if (latest?.ai?.enhancementEstimateKey !== estimateKey) return;
+          updateCanvasAiGeneratorData(item.id, { enhancementEstimate: estimate });
+        })
+        .catch(() => {
+          const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
+          if (latest?.ai?.enhancementEstimateKey !== estimateKey) return;
+          updateCanvasAiGeneratorData(item.id, {
+            enhancementEstimate: {
+              estimatedSecondsMin: null,
+              estimatedSecondsMax: null,
+            },
+          });
+        });
+    });
+  }, [canvasItems, isCanvasMode]);
+
+  const runCanvasEnhancementNode = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || !isCanvasAiEnhancementType(target.ai?.type)) return;
+
+    const input = getCanvasEnhancementInput(target);
+    const mediaType = getCanvasAiMediaType(target.ai);
+    if (!input) {
+      const message = mediaType === 'video'
+        ? '请先接入一个视频素材或视频生成结果'
+        : '请先接入一个图片素材或图片生成结果';
+      updateCanvasAiGeneratorData(targetId, {
+        status: 'error',
+        error: message,
+        outputs: [],
+        generatedAt: Date.now(),
+      });
+      showToast(message);
+      return;
+    }
+
+    const scale = clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4);
+    const startedAt = Date.now();
+    const draft: CanvasAiGeneratedOutput = {
+      id: `${target.id}_realesrgan_output_${startedAt}`,
+      mediaType,
+      name: `Real-ESRGAN ${scale}× 清晰度增强`,
+      status: 'working',
+      generatedAt: startedAt,
+      width: mediaType === 'video' ? 16 : 1,
+      height: mediaType === 'video' ? 9 : 1,
+    };
+    updateCanvasAiGeneratorData(targetId, {
+      status: 'working',
+      error: undefined,
+      enhancementProgress: {
+        progressId: targetId,
+        stage: 'starting-realesrgan',
+        label: '准备清晰度增强',
+        loaded: 0,
+        total: 0,
+        progress: 0,
+      },
+      outputs: [draft],
+      generatedAt: startedAt,
+    });
+    updateCanvasSelection([targetId]);
+    showToast('开始清晰度增强；首次使用会先下载 Real-ESRGAN 引擎');
+
+    try {
+      const command = mediaType === 'video'
+        ? 'run_realesrgan_video_enhancement'
+        : 'run_realesrgan_image_enhancement';
+      const result = await invoke<RealEsrganEnhancementResult>(command, {
+        inputPath: input.source,
+        scale,
+        mode: target.ai?.enhancementMode || 'general',
+        resizeMode: target.ai?.enhancementResizeMode || 'upscale',
+        keepAudio: target.ai?.enhancementKeepAudio !== false,
+        outputFormat: target.ai?.outputFormat || (mediaType === 'video' ? 'mp4' : 'png'),
+        progressId: targetId,
+      });
+      const outputPath = (result.outputPath || '').trim();
+      if (!outputPath) throw new Error('Real-ESRGAN 没有返回输出文件路径');
+      const finishedAt = Date.now();
+      const sourceName = input.output?.name || input.item.item.name || input.item.item.content || (mediaType === 'video' ? '视频' : '图片');
+      const output: CanvasAiGeneratedOutput = {
+        ...draft,
+        mediaType,
+        url: convertFileSrc(outputPath),
+        path: outputPath,
+        name: `${sourceName} · 清晰度增强 ${result.scale || scale}×`,
+        prompt: `Real-ESRGAN ${result.mode || target.ai?.enhancementMode || 'general'} ${result.scale || scale}x`,
+        status: 'success',
+        error: undefined,
+        generatedAt: finishedAt,
+        width: target.width,
+        height: Math.max(1, Math.round(target.width / parseCanvasAspectRatioValue(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO))),
+      };
+      updateCanvasAiGeneratorData(targetId, {
+        status: 'success',
+        error: undefined,
+        enhancementProgress: undefined,
+        outputs: [output],
+        generatedAt: finishedAt,
+      });
+      const latestTarget = {
+        ...target,
+        ai: {
+          ...target.ai,
+          outputs: [output],
+          generatedAt: finishedAt,
+        },
+      } as CanvasImageItem;
+      const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, 0);
+      if (drawerItem) {
+        if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
+        else addGeneratedImagesToDrawer([drawerItem]);
+      }
+      showToast(`${mediaType === 'video' ? '视频' : '图片'}清晰度增强完成`);
+    } catch (err) {
+      const message = getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err));
+      const failedAt = Date.now();
+      updateCanvasAiGeneratorData(targetId, {
+        status: 'error',
+        error: message,
+        enhancementProgress: undefined,
+        outputs: [{ ...draft, status: 'error', error: message, generatedAt: failedAt }],
+        generatedAt: failedAt,
+      });
+      showToast(`清晰度增强失败：${message.slice(0, 80)}`);
+    }
+  };
+
   const runCanvasAiGeneratorNode = async (targetId: string) => {
     commitCanvasAiPromptDraft(targetId, undefined, true);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
@@ -11717,6 +12780,14 @@ function MainApp() {
     commitCanvasAiPromptDraft(targetId, undefined, true);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
+    if (target.ai?.type === 'frame-interpolation') {
+      await runCanvasFrameInterpolationNode(targetId);
+      return;
+    }
+    if (isCanvasAiEnhancementType(target.ai?.type)) {
+      await runCanvasEnhancementNode(targetId);
+      return;
+    }
     if (getCanvasWorkflowGroup(target) && target.ai?.type === 'image-generator') {
       await runCanvasExpandedWorkflowFromNode(targetId);
       return;
@@ -12134,9 +13205,12 @@ function MainApp() {
     return true;
   };
 
-  const getFolderImageItemsForCanvas = (folderId?: string) => (
-    items.filter(item => item.type === 'image' && (folderId ? item.folderId === folderId : !item.folderId))
-  );
+  const getFolderImageItemsForCanvas = (folderId?: string) => {
+    const folderScopeIds = getDrawerFolderScopeIds(folders, folderId);
+    return items.filter(item => (
+      item.type === 'image' && (folderId ? !!item.folderId && folderScopeIds.has(item.folderId) : !item.folderId)
+    ));
+  };
 
   const requestAddFolderImagesToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
     const count = getFolderImageItemsForCanvas(folderId).length;
@@ -13665,18 +14739,48 @@ function MainApp() {
   }, []);
 
   const handleAddFolder = () => {
-    if (!newFolderName.trim()) return;
-    const newFolder: Folder = { id: Math.random().toString(36).substring(2, 9), name: newFolderName.trim(), color: '#10b981' };
-    pushDrawerUndoSnapshot('新建文件夹');
-    setFolders([...folders, newFolder]); setNewFolderName(''); setShowFolderModal(false); showToast('文件夹创建成功');
+    const name = newFolderName.trim();
+    if (!name) return;
+    const parent = newFolderParentId
+      ? folders.find(folder => folder.id === newFolderParentId && !folder.parentId)
+      : null;
+    const parentId = parent?.id;
+    const hasDuplicate = folders.some(folder => (
+      (folder.parentId || undefined) === parentId && folder.name.toLocaleLowerCase() === name.toLocaleLowerCase()
+    ));
+    if (hasDuplicate) {
+      showToast(parent ? '该项目中已有同名子目录' : '已有同名文件夹');
+      return;
+    }
+    const newFolder: Folder = {
+      id: Math.random().toString(36).substring(2, 9),
+      name,
+      color: parent?.color || '#10b981',
+      parentId,
+    };
+    pushDrawerUndoSnapshot(parent ? '新建子目录' : '新建文件夹');
+    setFolders(prev => [...prev, newFolder]);
+    if (parentId) setCollapsedFolderIds(prev => prev.filter(id => id !== parentId));
+    closeFolderModal();
+    showToast(parent ? `已在「${parent.name}」中新建子目录` : '文件夹创建成功');
   };
 
   const handleDeleteFolder = (id: string) => {
-    pushDrawerUndoSnapshot('删除文件夹');
-    setFolders(folders.filter(f => f.id !== id));
-    setItems(items.map(i => i.folderId === id ? { ...i, folderId: undefined } : i));
-    if (activeFolderId === id) setActiveFolderId('all');
-    showToast('文件夹已删除，内容已移回主抽屉');
+    const deletionPlan = getDrawerFolderDeletionPlan(folders, id);
+    if (!deletionPlan) return;
+    const { target, childIds, removedIds, destinationId } = deletionPlan;
+    pushDrawerUndoSnapshot(target.parentId ? '删除子目录' : '删除文件夹');
+    setFolders(prev => prev.filter(folder => !removedIds.has(folder.id)));
+    setItems(prev => prev.map(item => (
+      item.folderId && removedIds.has(item.folderId) ? { ...item, folderId: destinationId } : item
+    )));
+    setCollapsedFolderIds(prev => prev.filter(folderId => !removedIds.has(folderId)));
+    if (removedIds.has(activeFolderId)) setActiveFolderId(destinationId || 'all');
+    showToast(target.parentId
+      ? '子目录已删除，内容已移回项目文件夹'
+      : childIds.length > 0
+        ? '项目文件夹及子目录已删除，内容已移回主抽屉'
+        : '文件夹已删除，内容已移回主抽屉');
   };
 
   const getDraggedDrawerItemId = (dt?: DataTransfer | null) => {
@@ -13904,17 +15008,37 @@ function MainApp() {
   const createFolderAndMoveSelected = () => {
     const name = moveFolderName.trim();
     if (!name || selectedIds.length === 0) return;
-    const newFolder: Folder = { id: Math.random().toString(36).substring(2, 9), name, color: '#10b981' };
+    const activeFolder = folders.find(folder => folder.id === activeFolderId);
+    const parentFolder = activeFolder?.parentId
+      ? folders.find(folder => folder.id === activeFolder.parentId && !folder.parentId)
+      : activeFolder;
+    const parentId = parentFolder?.id;
+    const hasDuplicate = folders.some(folder => (
+      (folder.parentId || undefined) === parentId && folder.name.toLocaleLowerCase() === name.toLocaleLowerCase()
+    ));
+    if (hasDuplicate) {
+      showToast(parentFolder ? '该项目中已有同名子目录' : '已有同名文件夹');
+      return;
+    }
+    const newFolder: Folder = {
+      id: Math.random().toString(36).substring(2, 9),
+      name,
+      color: parentFolder?.color || '#10b981',
+      parentId,
+    };
     const idSet = new Set(selectedIds);
     const count = selectedIds.length;
-    pushDrawerUndoSnapshot('新建文件夹并移动');
+    pushDrawerUndoSnapshot(parentFolder ? '新建子目录并移动' : '新建文件夹并移动');
     setFolders(prev => [...prev, newFolder]);
+    if (parentId) setCollapsedFolderIds(prev => prev.filter(id => id !== parentId));
     setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, folderId: newFolder.id } : item));
     setMoveFolderName('');
     setSelectedIds([]);
     setIsSelectMode(false);
     setShowMoveFolderModal(false);
-    showToast(`已新建并移动 ${count} 个到 ${name}`);
+    showToast(parentFolder
+      ? `已在「${parentFolder.name}」中新建子目录并移动 ${count} 个`
+      : `已新建并移动 ${count} 个到 ${name}`);
   };
 
   const clearDrawerItemDragState = () => {
@@ -14092,9 +15216,19 @@ function MainApp() {
     const nextName = renameValue.trim();
     const current = folders.find(f => f.id === id);
     if (nextName && current && current.name !== nextName) {
+      const hasDuplicate = folders.some(folder => (
+        folder.id !== id &&
+        (folder.parentId || undefined) === (current.parentId || undefined) &&
+        folder.name.toLocaleLowerCase() === nextName.toLocaleLowerCase()
+      ));
+      if (hasDuplicate) {
+        showToast(current.parentId ? '该项目中已有同名子目录' : '已有同名文件夹');
+        setEditingFolderId(null);
+        return;
+      }
       pushDrawerUndoSnapshot('重命名文件夹');
       setFolders(folders.map(f => f.id === id ? { ...f, name: nextName } : f));
-      showToast('文件夹已重命名');
+      showToast(current.parentId ? '子目录已重命名' : '文件夹已重命名');
     }
     setEditingFolderId(null);
   };
@@ -14143,12 +15277,7 @@ function MainApp() {
     setSelectedImage(source);
   };
 
-  const closeSelectedImagePreview = () => {
-    const shouldReturnToCanvas = selectedImageReturnToCanvasRef.current || isCanvasModeRef.current;
-    selectedImageReturnToCanvasRef.current = false;
-    setSelectedImage(null);
-
-    if (!shouldReturnToCanvas || !isCanvasModeRef.current) return;
+  const restoreCanvasAfterMediaPreview = () => {
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
@@ -14172,6 +15301,40 @@ function MainApp() {
     window.requestAnimationFrame(() => {
       canvasSurfaceRef.current?.focus({ preventScroll: true });
     });
+  };
+
+  const closeSelectedImagePreview = () => {
+    const shouldReturnToCanvas = selectedImageReturnToCanvasRef.current || isCanvasModeRef.current;
+    selectedImageReturnToCanvasRef.current = false;
+    setSelectedImage(null);
+
+    if (shouldReturnToCanvas && isCanvasModeRef.current) {
+      restoreCanvasAfterMediaPreview();
+    }
+  };
+
+  const openSelectedVideoPreview = (
+    video: { url?: string | null; path?: string | null },
+    options: { fromCanvas?: boolean } = {},
+  ) => {
+    const source = String(video.url || video.path || '').trim();
+    if (!source) return;
+    selectedVideoReturnToCanvasRef.current = !!options.fromCanvas;
+    setSelectedVideo({
+      url: source,
+      path: String(video.path || source),
+      fromCanvas: !!options.fromCanvas,
+    });
+  };
+
+  const closeSelectedVideoPreview = () => {
+    const shouldReturnToCanvas = selectedVideoReturnToCanvasRef.current || selectedVideo?.fromCanvas || isCanvasModeRef.current;
+    selectedVideoReturnToCanvasRef.current = false;
+    setSelectedVideo(null);
+
+    if (shouldReturnToCanvas && isCanvasModeRef.current) {
+      restoreCanvasAfterMediaPreview();
+    }
   };
 
   const isStartupOverlayActive = showLaunchIntro || isSplashVisible || showUpdateLog;
@@ -15097,6 +16260,14 @@ useEffect(() => {
     window.addEventListener('keydown', handleEsc);
     return () => { window.removeEventListener('keydown', handleEsc); };
   }, [selectedImage]);
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedVideo) closeSelectedVideoPreview();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => { window.removeEventListener('keydown', handleEsc); };
+  }, [selectedVideo]);
 
   const handleTogglePin = () => {
     if (isPinned) {
@@ -16482,6 +17653,113 @@ useEffect(() => {
     };
   }, [isLicenseGateActive]);
 
+  const newFolderParent = newFolderParentId
+    ? folders.find(folder => folder.id === newFolderParentId && !folder.parentId) || null
+    : null;
+  const activeFolderForMove = folders.find(folder => folder.id === activeFolderId);
+  const moveFolderParent = activeFolderForMove?.parentId
+    ? folders.find(folder => folder.id === activeFolderForMove.parentId && !folder.parentId) || null
+    : activeFolderForMove || null;
+  const renderDrawerFolderRailItem = (folder: Folder, folderIndex: number, isChild = false) => {
+    const folderTone = DRAWER_FOLDER_TONES[folderIndex % DRAWER_FOLDER_TONES.length];
+    const isFolderActive = activeFolderId === folder.id;
+    const isFolderDragOver = dragOverFolderId === folder.id;
+    const folderPathName = getDrawerFolderPathName(folders, folder.id) || folder.name;
+    const folderScopeIds = getDrawerFolderScopeIds(folders, folder.id);
+    const folderItemCount = items.filter(item => !!item.folderId && folderScopeIds.has(item.folderId)).length;
+    const childFolders = isChild ? [] : (folderChildrenByParent.get(folder.id) || []);
+    const isCollapsed = collapsedFolderIds.includes(folder.id);
+    return (
+      <div
+        key={folder.id}
+        className={`relative shrink-0 flex flex-col items-center w-full group/folder ${isChild ? 'translate-x-1' : ''}`}
+        data-folder-drop-id={folder.id}
+        data-folder-drop-name={folderPathName}
+        onPointerEnter={() => handleDrawerFolderPointerEnter(folder.id)}
+        onPointerLeave={() => handleDrawerFolderPointerLeave(folder.id)}
+        onPointerUp={() => handleDrawerFolderPointerUp(folder.id, folderPathName)}
+        onDragEnter={(event) => handleDrawerItemDragOverFolder(event, folder.id)}
+        onDragOver={(event) => handleDrawerItemDragOverFolder(event, folder.id)}
+        onDragLeave={(event) => handleDrawerItemDragLeaveFolder(event, folder.id)}
+        onDrop={(event) => handleDrawerItemDropToFolder(event, folder.id, folderPathName)}
+      >
+        <div
+          onClick={(event) => {
+            if (isCanvasMode) {
+              const rect = event.currentTarget.getBoundingClientRect();
+              requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
+              return;
+            }
+            setActiveFolderId(folder.id);
+          }}
+          className={`relative mb-1 flex items-center justify-center cursor-pointer transition-all shadow-sm ${isChild ? 'h-8 w-8 rounded-[12px]' : 'h-10 w-10 rounded-[16px]'} ${isFolderDragOver ? `${folderTone.drag} scale-105` : isFolderActive ? `${folderTone.active} scale-105` : `bg-white/70 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 dark:text-stone-400 ${folderTone.soft} hover:scale-105`}`}
+          title={isCanvasMode ? `${folderPathName}：点击把图片加入画布` : folderPathName}
+        >
+          <FolderOpen className={`${isChild ? 'h-4 w-4' : 'h-5 w-5'} ${isFolderActive ? 'opacity-100' : 'opacity-85'}`} />
+          <span className={`absolute -right-1.5 -top-1.5 ${folderTone.badge} min-w-[16px] rounded-full px-1 text-center text-[9px] font-bold text-white shadow-sm ring-2 ring-white/80 pointer-events-none dark:ring-stone-900/70`}>
+            {folderItemCount}
+          </span>
+          <button
+            type="button"
+            onClick={(event) => { event.stopPropagation(); handleDeleteFolder(folder.id); }}
+            className="absolute -left-1.5 -top-1.5 z-10 rounded-full bg-red-500 p-0.5 text-white opacity-0 shadow-sm transition-opacity hover:scale-110 group-hover/folder:opacity-100"
+            title={isChild ? '删除子目录（内容移回项目）' : childFolders.length > 0 ? '删除项目及子目录（不删内容）' : '删除文件夹（不删内容）'}
+          ><X className="h-2.5 w-2.5" /></button>
+          {!isChild && (
+            <button
+              type="button"
+              onClick={(event) => { event.stopPropagation(); handleOpenFolderModal(folder.id); }}
+              className="absolute -bottom-1.5 -left-1.5 z-10 rounded-full bg-emerald-500 p-0.5 text-white opacity-0 shadow-sm transition-opacity hover:scale-110 group-hover/folder:opacity-100"
+              title={`在「${folder.name}」中新建子目录`}
+            ><Plus className="h-2.5 w-2.5" /></button>
+          )}
+          {!isChild && childFolders.length > 0 && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setCollapsedFolderIds(prev => (
+                  prev.includes(folder.id) ? prev.filter(id => id !== folder.id) : [...prev, folder.id]
+                ));
+              }}
+              className="absolute -bottom-1.5 -right-1.5 z-10 rounded-full bg-white p-0.5 text-stone-500 shadow-sm ring-1 ring-stone-200 transition-transform hover:scale-110 dark:bg-stone-800 dark:text-stone-300 dark:ring-stone-700"
+              title={isCollapsed ? '展开子目录' : '收起子目录'}
+            >{isCollapsed ? <ChevronRight className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}</button>
+          )}
+        </div>
+
+        {editingFolderId === folder.id ? (
+          <input
+            autoFocus
+            value={renameValue}
+            onChange={event => setRenameValue(event.target.value)}
+            onBlur={() => handleRenameFolder(folder.id)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') handleRenameFolder(folder.id);
+              if (event.key === 'Escape') setEditingFolderId(null);
+            }}
+            onClick={event => event.stopPropagation()}
+            className={`${isChild ? 'w-12' : 'w-14'} rounded bg-stone-200 pb-0.5 text-center text-[10px] text-stone-800 outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-stone-700 dark:text-stone-200`}
+          />
+        ) : (
+          <span
+            onDoubleClick={(event) => { event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
+            onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
+            className={`${isChild ? 'flex w-14 items-center justify-start gap-0.5 px-0.5' : 'w-14 truncate px-0.5 text-center'} pb-1 text-[10px] cursor-text ${isFolderActive ? `${folderTone.label} font-bold` : isChild ? 'text-sky-600 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200' : 'text-stone-500 hover:text-blue-500 dark:text-stone-400 dark:hover:text-blue-300'}`}
+            title={`${folderPathName}；双击或右键改名`}
+          >
+            {isChild ? (
+              <>
+                <span aria-hidden="true" className="w-2.5 shrink-0 text-right leading-none">↳</span>
+                <span className="min-w-0 flex-1 truncate text-left">{folder.name}</span>
+              </>
+            ) : folder.name}
+          </span>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
         data-drawer-theme="true"
@@ -16710,10 +17988,10 @@ useEffect(() => {
           scheduleAutoClose(isLeftEdge || isBottomEdge ? 500 : 180);
         }}
       >
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-l-[30px]" onPointerDown={startResizingWidth} />}
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-b-[30px]" onPointerDown={startResizingHeight} />}
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-l-[30px]" onPointerDown={startResizingWidth} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-b-[30px]" onPointerDown={startResizingHeight} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
 
             <AnimatePresence>
               {localVisionModelDownload.visible && (
@@ -16795,88 +18073,31 @@ useEffect(() => {
                 <div
                   className="h-full w-full overflow-y-auto overflow-x-hidden flex flex-col items-center space-y-3 [&::-webkit-scrollbar]:hidden px-1 pt-3 pb-8"
                   style={{
-                    WebkitMaskImage: folders.length > 4
+                    WebkitMaskImage: visibleFolderRailEntryCount > 4
                       ? 'linear-gradient(to bottom, black 0%, black calc(100% - 34px), transparent 100%)'
                       : undefined,
-                    maskImage: folders.length > 4
+                    maskImage: visibleFolderRailEntryCount > 4
                       ? 'linear-gradient(to bottom, black 0%, black calc(100% - 34px), transparent 100%)'
                       : undefined,
                   }}
                 >
-                  {folders.map((folder, folderIndex) => {
-                    const folderTone = DRAWER_FOLDER_TONES[folderIndex % DRAWER_FOLDER_TONES.length];
-                    const isFolderActive = activeFolderId === folder.id;
-                    const isFolderDragOver = dragOverFolderId === folder.id;
+                  {rootFolders.map((folder, folderIndex) => {
+                    const childFolders = folderChildrenByParent.get(folder.id) || [];
+                    const isCollapsed = collapsedFolderIds.includes(folder.id);
                     return (
-                    <div
-                      key={folder.id}
-                      className="relative shrink-0 flex flex-col items-center w-full group/folder"
-                      data-folder-drop-id={folder.id}
-                      data-folder-drop-name={folder.name}
-                      onPointerEnter={() => handleDrawerFolderPointerEnter(folder.id)}
-                      onPointerLeave={() => handleDrawerFolderPointerLeave(folder.id)}
-                      onPointerUp={() => handleDrawerFolderPointerUp(folder.id, folder.name)}
-                      onDragEnter={(e) => handleDrawerItemDragOverFolder(e, folder.id)}
-                      onDragOver={(e) => handleDrawerItemDragOverFolder(e, folder.id)}
-                      onDragLeave={(e) => handleDrawerItemDragLeaveFolder(e, folder.id)}
-                      onDrop={(e) => handleDrawerItemDropToFolder(e, folder.id, folder.name)}
-                    >
-                      <div
-                        onClick={(e) => {
-                          if (isCanvasMode) {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            requestAddFolderImagesToCanvas(folder.id, folder.name, { x: rect.right + 10, y: rect.top });
-                            return;
-                          }
-                          setActiveFolderId(folder.id);
-                        }}
-                        className={`relative mb-1 w-10 h-10 rounded-[16px] flex items-center justify-center cursor-pointer transition-all shadow-sm ${isFolderDragOver ? `${folderTone.drag} scale-105` : isFolderActive ? `${folderTone.active} scale-105` : `bg-white/70 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 dark:text-stone-400 ${folderTone.soft} hover:scale-105`}`}
-                        title={isCanvasMode ? `${folder.name}：点击把图片加入画布` : folder.name}
-                      >
-                        <FolderOpen className={`w-5 h-5 ${isFolderActive ? 'opacity-100' : 'opacity-85'}`} />
-                        <span className={`absolute -top-1.5 -right-1.5 ${folderTone.badge} text-white text-[9px] px-1 min-w-[16px] text-center rounded-full font-bold shadow-sm pointer-events-none ring-2 ring-white/80 dark:ring-stone-900/70`}>
-                          {items.filter(i => i.folderId === folder.id).length}
-                        </span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id); }}
-                          className="absolute -left-1.5 -top-1.5 opacity-0 group-hover/folder:opacity-100 bg-red-500 text-white rounded-full p-0.5 shadow-sm transition-opacity hover:scale-110 z-10"
-                          title="删除文件夹 (不删内容)"
-                        ><X className="w-2.5 h-2.5" /></button>
+                      <div key={folder.id} className="relative flex w-full shrink-0 flex-col items-center gap-2">
+                        {renderDrawerFolderRailItem(folder, folderIndex)}
+                        {!isCollapsed && childFolders.map(childFolder => (
+                          renderDrawerFolderRailItem(childFolder, folderIndex, true)
+                        ))}
                       </div>
-
-                      {editingFolderId === folder.id ? (
-                        <input
-                          autoFocus
-                          value={renameValue}
-                          onChange={e => setRenameValue(e.target.value)}
-                          onBlur={() => handleRenameFolder(folder.id)}
-                          onKeyDown={e => {
-                          if (e.key === 'Enter') handleRenameFolder(folder.id);
-                          if (e.key === 'Escape') {
-                            setEditingFolderId(null);
-                          }
-                          }}
-                          onClick={e => e.stopPropagation()}
-                          className="w-14 text-[10px] text-center bg-stone-200 dark:bg-stone-700 text-stone-800 dark:text-stone-200 rounded outline-none focus:ring-1 focus:ring-emerald-500 pb-0.5"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={(e) => { e.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
-                          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
-                          className={`text-[10px] w-14 text-center truncate px-0.5 cursor-text pb-1 ${isFolderActive ? `${folderTone.label} font-bold` : 'text-stone-500 dark:text-stone-400 hover:text-blue-500 dark:hover:text-blue-300'}`}
-                          title="双击或右键改名"
-                        >
-                          {folder.name}
-                        </span>
-                      )}
-                    </div>
                     );
                   })}
 
                   {/* 新建收纳夹按钮保留在文件夹区域底部，文件夹列表滚动到底即可看到 */}
                   <div className="relative shrink-0 flex flex-col items-center w-full mt-1">
                     <button
-                      onClick={handleOpenFolderModal}
+                      onClick={() => handleOpenFolderModal()}
                       className={`w-10 h-10 mb-1 rounded-[16px] flex items-center justify-center border-2 border-dashed transition-all hover:scale-105 shrink-0 ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30' : 'border-blue-200 bg-blue-50/30 text-blue-400 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
                       title="新建收纳夹"
                     >
@@ -16886,7 +18107,7 @@ useEffect(() => {
                   </div>
                 </div>
 
-                {folders.length > 4 && (
+                {visibleFolderRailEntryCount > 4 && (
                   <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent via-stone-100/45 to-stone-100/90 dark:via-stone-900/35 dark:to-stone-900/80" />
                 )}
               </div>
@@ -17113,7 +18334,7 @@ useEffect(() => {
                       : activeFolderId === 'all'
                         ? <Lightbulb className="w-4 h-4 text-blue-500 dark:text-blue-300" />
                         : <FolderOpen className="w-4 h-4 text-emerald-500" />}
-                    {isCanvasMode ? '无限画布' : activeFolderId === 'all' ? '灵感抽屉' : folders.find(f => f.id === activeFolderId)?.name || '未知分类'}
+                    {isCanvasMode ? '无限画布' : activeFolderId === 'all' ? '灵感抽屉' : getDrawerFolderPathName(folders, activeFolderId) || '未知分类'}
 
                     {/* 小圆点：阻止冒泡，防止触发拖拽 */}
                     <div
@@ -17702,95 +18923,103 @@ useEffect(() => {
                           <AnimatePresence>
                             {activeSettingCategory === 'system' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-stone-100 dark:border-stone-700/50">
-                                  <div className="flex items-center justify-between pt-1">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5">开机自动启动</span>
-                                    <button disabled={isAutoStartChanging} onClick={async () => {
-                                      if (isAutoStartChanging) return;
-                                      const previous = isAutoStart;
-                                      const next = !isAutoStart;
-                                      setIsAutoStartChanging(true);
-                                      setIsAutoStart(next);
-                                      try {
-                                        await invoke('set_auto_start', { autoStart: next });
-                                        const persisted = await invoke('get_auto_start');
-                                        if (!!persisted !== next) throw new Error('autostart state verification failed');
-                                        setIsAutoStart(!!persisted);
-                                        showToast(next ? '已开启开机自动启动' : '已关闭开机自动启动');
-                                      } catch (err) {
-                                        console.error('设置开机启动失败:', err);
-                                        setIsAutoStart(previous);
-                                        showToast('开机启动设置失败');
-                                      } finally {
-                                        setIsAutoStartChanging(false);
-                                      }
-                                    }} className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] font-medium transition-colors disabled:opacity-60 disabled:cursor-wait ${isAutoStart ? 'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800/50' : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'}`}>
-                                      {isAutoStart ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />} {isAutoStartChanging ? '处理中...' : (isAutoStart ? '已开启' : '已关闭')}
-                                    </button>
-                                  </div>
-                                  <div className="flex items-center justify-between gap-3">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5">
+                                <div className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
+                                  <button
+                                    type="button"
+                                    disabled={isAutoStartChanging}
+                                    onClick={() => void toggleAutoStartSetting()}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] disabled:cursor-wait disabled:opacity-70 dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="点击切换开机自动启动"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Power className="w-3.5 h-3.5 text-purple-500" /> 开机自动启动
+                                    </span>
+                                    <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ${
+                                      isAutoStart
+                                        ? 'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:border-purple-800/50'
+                                        : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'
+                                    }`}>
+                                      {isAutoStart ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />}
+                                      {isAutoStartChanging ? '处理中' : (isAutoStart ? '已开启' : '已关闭')}
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={toggleCalendarNotificationsSetting}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="每天 10:00 和 15:00 提醒今天未完成日程"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
                                       <CalendarDays className="w-3.5 h-3.5 text-sky-500" /> 日程通知
                                     </span>
-                                    <div className="flex items-center gap-1.5">
-                                      <button
-                                        onClick={() => {
-                                          const next = !calendarNotificationsEnabled;
-                                          setCalendarNotificationsEnabled(next);
-                                          showToast(next ? '已开启日程通知' : '已关闭日程通知');
-                                        }}
-                                        className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] font-medium transition-colors ${
-                                          calendarNotificationsEnabled
-                                            ? 'bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:border-sky-800/50'
-                                            : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'
-                                        }`}
-                                        title="每天 10:00 和 15:00 提醒今天未完成日程"
-                                      >
-                                        {calendarNotificationsEnabled ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />}
-                                        {calendarNotificationsEnabled ? '已开启' : '已关闭'}
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5">触发入口</span>
-                                    <button
-                                      onClick={toggleTriggerMode}
-                                      className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] font-medium transition-colors ${triggerMode === 'float' ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800/50' : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'}`}
-                                      title="切换侧边小条 / 悬浮方块"
-                                    >
-                                      {triggerMode === 'float' ? <LayoutGrid className="w-3 h-3" /> : <Move className="w-3 h-3" />}
+                                    <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ${
+                                      calendarNotificationsEnabled
+                                        ? 'bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:border-sky-800/50'
+                                        : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'
+                                    }`}>
+                                      {calendarNotificationsEnabled ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />}
+                                      {calendarNotificationsEnabled ? '已开启' : '已关闭'}
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={toggleTriggerMode}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="点击切换侧边小条 / 悬浮方块"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      {triggerMode === 'float' ? <LayoutGrid className="w-3.5 h-3.5 text-emerald-500" /> : <Move className="w-3.5 h-3.5 text-emerald-500" />}
+                                      触发入口
+                                    </span>
+                                    <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ${triggerMode === 'float' ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800/50' : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'}`}>
                                       {triggerMode === 'float' ? '悬浮方块' : '侧边小条'}
-                                    </button>
-                                  </div>
-                                  <div className="rounded-[18px] bg-stone-50/70 dark:bg-stone-900/35 border border-stone-200/60 dark:border-stone-700/60 p-2.5">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5">
-                                        <FolderOpen className="w-3.5 h-3.5 text-amber-500" /> 文件缓存路径
-                                      </span>
-                                      <div className="flex items-center gap-1.5">
-                                        <button onClick={chooseWebImageCacheDir} className="px-2 py-1 rounded border border-stone-200 dark:border-stone-600 bg-white/80 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[10px] font-medium transition-colors">修改</button>
-                                        <button onClick={resetWebImageCacheDir} className="px-2 py-1 rounded border border-stone-200 dark:border-stone-600 bg-white/80 dark:bg-stone-700 text-stone-500 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[10px] font-medium transition-colors">默认</button>
-                                      </div>
-                                    </div>
-                                    <div className="mt-2 rounded-[12px] bg-white/75 dark:bg-stone-800/75 border border-white/70 dark:border-stone-700/70 px-2 py-1.5 text-[10px] leading-4 text-stone-500 dark:text-stone-400 break-all">
-                                      {webImageCacheDir || '使用默认缓存目录'}
-                                    </div>
-                                    <div className="mt-1 text-[10px] leading-4 text-stone-400 dark:text-stone-500">
-                                      拖入的本地文件、图片、视频和网页图片都会复制/缓存到这里；卡片打开和定位会指向缓存副本。
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5">手机配对通道</span>
-                                    <button onClick={() => { setShowQR(true); setShowSettings(false); }} className="px-2 py-1 rounded border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[10px] font-medium transition-colors">显示二维码</button>
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5">使用说明</span>
-                                    <button onClick={() => { setShowHelp(true); setShowSettings(false); }} className="flex items-center gap-1 px-2 py-1 rounded border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[10px] font-medium transition-colors"><BookOpen className="w-3 h-3" /> 查看文档</button>
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">更新日志</span>
-                                    <button onClick={() => { setShowUpdateLog(true); setShowSettings(false); }} className="flex items-center gap-1 px-2 py-1 rounded border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[10px] font-medium transition-colors"><Sparkles className="w-3 h-3" /> 查看更新日志</button>
-                                  </div>
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setShowStoragePath(true); setShowSettings(false); }}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="点击查看和修改文件缓存路径"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <FolderOpen className="w-3.5 h-3.5 text-amber-500" /> 文件缓存路径
+                                    </span>
+                                    <span className="flex min-w-0 items-center gap-1.5 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
+                                      <span className="min-w-0 max-w-[128px] truncate text-right">{webImageCacheDir || '默认路径'}</span>
+                                      <ChevronRight className="w-3 h-3 shrink-0 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setShowQR(true); setShowSettings(false); }}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="点击显示手机配对二维码"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Smartphone className="w-3.5 h-3.5 text-blue-500" /> 手机配对通道
+                                    </span>
+                                    <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 text-[10px] font-bold text-stone-600 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
+                                      显示二维码
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setShowAboutSoftware(true); setShowSettings(false); }}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="点击查看使用说明、更新日志和版本信息"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
+                                    </span>
+                                    <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
+                                      v{appVersion || '4.0.9'}
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
                                 </div>
                               </motion.div>
                             )}
@@ -17876,7 +19105,11 @@ useEffect(() => {
                       />
                       {canvasInputPickTargetId && (() => {
                         const target = canvasItemsById.get(canvasInputPickTargetId);
-                        const allowVideoReference = target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF';
+                        const allowVideoReference = (
+                          target?.ai?.type === 'frame-interpolation'
+                          || target?.ai?.type === 'video-enhancement'
+                          || (target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF')
+                        );
                         return (
                           <div
                             data-no-drag="true"
@@ -18024,6 +19257,11 @@ useEffect(() => {
                           const isMultiSelected = isSelected && canvasSelectedIds.length > 1;
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasAiGeneratorItem = isCanvasAiGeneratorType(canvasItem.ai?.type);
+                          const isCanvasFrameInterpolationItem = canvasItem.ai?.type === 'frame-interpolation';
+                          const isCanvasImageEnhancementItem = canvasItem.ai?.type === 'image-enhancement';
+                          const isCanvasVideoEnhancementItem = canvasItem.ai?.type === 'video-enhancement';
+                          const isCanvasEnhancementItem = isCanvasImageEnhancementItem || isCanvasVideoEnhancementItem;
+                          const isCanvasSingleVideoInputItem = isCanvasFrameInterpolationItem || isCanvasVideoEnhancementItem;
                           const isCanvasWorkflowItem = canvasItem.ai?.type === 'workflow';
                           const isCanvasAiNodeItem = isCanvasAiGeneratorItem || isCanvasWorkflowItem;
                           const canvasAiMediaType = getCanvasAiMediaType(canvasItem.ai);
@@ -18089,17 +19327,38 @@ useEffect(() => {
                               || inputItem.ai?.type === 'workflow'
                               || generatorOutput?.mediaType === 'image';
                           };
-                          const canvasVideoReferenceImageItems = canvasAiMediaType === 'video'
+                          const canvasVideoReferenceImageItems = canvasAiMediaType === 'video' && !isCanvasSingleVideoInputItem
                             ? canvasInputPreviewItems.filter(item => isCanvasImageReferenceItem(item) && !isCanvasVideoReferenceItem(item))
                             : [];
                           const canvasVideoReferenceVideoItems = canvasAiMediaType === 'video'
                             ? canvasInputPreviewItems.filter(isCanvasVideoReferenceItem)
                             : [];
-                          const canvasVideoReferenceImageSlotCount = canvasVideoInputMode === 'FLF' ? 2 : 9;
-                          const canvasVideoReferenceVideoSlotCount = canvasVideoInputMode === 'FLF' ? 0 : 1;
+                          const canvasVideoReferenceImageSlotCount = isCanvasSingleVideoInputItem ? 0 : canvasVideoInputMode === 'FLF' ? 2 : 9;
+                          const canvasVideoReferenceVideoSlotCount = isCanvasSingleVideoInputItem ? 1 : canvasVideoInputMode === 'FLF' ? 0 : 1;
                           const canvasVideoReferenceSlotCount = canvasVideoReferenceImageSlotCount + canvasVideoReferenceVideoSlotCount;
                           const canvasVideoReferenceOverflowCount = Math.max(0, canvasVideoReferenceImageItems.length - canvasVideoReferenceImageSlotCount)
                             + Math.max(0, canvasVideoReferenceVideoItems.length - canvasVideoReferenceVideoSlotCount);
+                          const frameInterpolationEstimate = isCanvasFrameInterpolationItem
+                            ? canvasItem.ai?.interpolationEstimate as RifeFrameInterpolationEstimate | undefined
+                            : undefined;
+                          const frameInterpolationProgress = isCanvasFrameInterpolationItem
+                            ? canvasItem.ai?.interpolationProgress as RifeEngineProgress | undefined
+                            : undefined;
+                          const frameInterpolationMetaText = formatRifeEstimateVideoMeta(frameInterpolationEstimate);
+                          const frameInterpolationEstimateText = formatRifeEstimateRange(frameInterpolationEstimate);
+                          const showFrameInterpolationProgress = shouldShowRifeEngineProgress(frameInterpolationProgress);
+                          const frameInterpolationProgressPercent = getRifeEngineProgressPercent(frameInterpolationProgress);
+                          const isFrameInterpolationFixed2xMode = isCanvasFrameInterpolationItem && isRifeFixed2xMode(canvasItem.ai?.interpolationMode);
+                          const enhancementEstimate = isCanvasEnhancementItem
+                            ? canvasItem.ai?.enhancementEstimate as RealEsrganEnhancementEstimate | undefined
+                            : undefined;
+                          const enhancementProgress = isCanvasEnhancementItem
+                            ? canvasItem.ai?.enhancementProgress as RifeEngineProgress | undefined
+                            : undefined;
+                          const enhancementEstimateText = formatRifeEstimateRange(enhancementEstimate);
+                          const enhancementMetaText = formatRifeEstimateVideoMeta(enhancementEstimate);
+                          const showEnhancementProgress = shouldShowRifeEngineProgress(enhancementProgress);
+                          const enhancementProgressPercent = getRifeEngineProgressPercent(enhancementProgress);
                           return (
                             <div
                             key={canvasItem.id}
@@ -18171,7 +19430,7 @@ useEffect(() => {
                                                   : inputItem?.item.type === 'image'
                                                   ? getCanvasItemDisplaySource(inputItem.item)
                                                   : generatorOutputSource;
-                                                const slotLabel = isVideoReferenceSlot
+                                                const slotLabel = isCanvasSingleVideoInputItem ? '视频输入' : isVideoReferenceSlot
                                                   ? '参考视频1'
                                                   : canvasVideoInputMode === 'FLF'
                                                   ? (inputIndex === 0 ? '首帧' : '尾帧')
@@ -18379,7 +19638,7 @@ useEffect(() => {
                                                     event.preventDefault();
                                                     event.stopPropagation();
                                                     if (!outputSource) return;
-                                                    if (outputMediaType === 'video') setSelectedVideo({ url: outputSource, path: output.path || outputSource });
+                                                    if (outputMediaType === 'video') openSelectedVideoPreview({ url: outputSource, path: output.path || outputSource }, { fromCanvas: true });
                                                     else openSelectedImagePreview(outputSource, { fromCanvas: true });
                                                   }}
                                                   onKeyDown={(event) => {
@@ -18387,7 +19646,7 @@ useEffect(() => {
                                                     event.preventDefault();
                                                     event.stopPropagation();
                                                     if (!outputSource) return;
-                                                    if (outputMediaType === 'video') setSelectedVideo({ url: outputSource, path: output.path || outputSource });
+                                                    if (outputMediaType === 'video') openSelectedVideoPreview({ url: outputSource, path: output.path || outputSource }, { fromCanvas: true });
                                                     else openSelectedImagePreview(outputSource, { fromCanvas: true });
                                                   }}
                                                   className={`relative overflow-hidden rounded-[14px] border text-center transition-colors ${
@@ -18528,6 +19787,98 @@ useEffect(() => {
                                             {canvasWorkflow?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0} 个生图步骤
                                           </div>
                                         </div>
+                                      ) : isCanvasFrameInterpolationItem ? (
+                                        <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div className="flex min-w-0 items-center gap-2 text-[13px] font-black text-stone-800 dark:text-white/82">
+                                              <RefreshCw className="h-4 w-4 text-cyan-500" />
+                                              <span>本地 RIFE 视频补帧</span>
+                                            </div>
+                                            <span className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-black text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-100">
+                                              v4.6 / HD / UHD
+                                            </span>
+                                          </div>
+                                          <div className="mt-2 grid gap-1.5">
+                                            <div className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
+                                              <span className="inline-flex items-center gap-1.5">
+                                                <Clock className="h-3.5 w-3.5" />
+                                                预计耗时
+                                              </span>
+                                              <span className="font-black text-stone-800 dark:text-white/78">{frameInterpolationEstimateText}</span>
+                                            </div>
+                                            <div className="line-clamp-1 text-[11px] text-stone-400 dark:text-white/38">
+                                              {frameInterpolationMetaText || '首次使用会把 RIFE 和缺失的 ffmpeg / ffprobe 下载到安装目录。'}
+                                            </div>
+                                            {showFrameInterpolationProgress && (
+                                              <div className="rounded-[12px] bg-white/70 px-2.5 py-2 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
+                                                <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-black text-stone-500 dark:text-white/50">
+                                                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                                                    <Download className="h-3.5 w-3.5 text-cyan-500" />
+                                                    <span className="truncate">{frameInterpolationProgress?.label || '下载引擎'}</span>
+                                                  </span>
+                                                  {frameInterpolationProgress?.total ? (
+                                                    <span className="shrink-0 text-cyan-700 dark:text-cyan-100">{frameInterpolationProgressPercent}%</span>
+                                                  ) : (
+                                                    <span className="shrink-0 text-cyan-700 dark:text-cyan-100">处理中</span>
+                                                  )}
+                                                </div>
+                                                <div className="h-1.5 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                  <div
+                                                    className={`h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-[width] duration-200 ${frameInterpolationProgress?.total ? '' : 'animate-pulse'}`}
+                                                    style={{ width: `${frameInterpolationProgress?.total ? Math.max(4, frameInterpolationProgressPercent) : 38}%` }}
+                                                  />
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ) : isCanvasEnhancementItem ? (
+                                        <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div className="flex min-w-0 items-center gap-2 text-[13px] font-black text-stone-800 dark:text-white/82">
+                                              {isCanvasVideoEnhancementItem
+                                                ? <Film className="h-4 w-4 text-violet-500" />
+                                                : <ImageIcon className="h-4 w-4 text-violet-500" />}
+                                              <span>{isCanvasVideoEnhancementItem ? '本地视频清晰度增强' : '本地图片清晰度增强'}</span>
+                                            </div>
+                                            <span className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-black text-violet-700 dark:bg-violet-300/12 dark:text-violet-100">
+                                              Real-ESRGAN
+                                            </span>
+                                          </div>
+                                          <div className="mt-2 grid gap-1.5">
+                                            <div className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
+                                              <span className="inline-flex items-center gap-1.5">
+                                                <Clock className="h-3.5 w-3.5" />
+                                                预计耗时
+                                              </span>
+                                              <span className="font-black text-stone-800 dark:text-white/78">{enhancementEstimateText}</span>
+                                            </div>
+                                            <div className="line-clamp-1 text-[11px] text-stone-400 dark:text-white/38">
+                                              {enhancementMetaText || '首次使用会把 Real-ESRGAN 和缺失的 ffmpeg / ffprobe 下载到安装目录。'}
+                                            </div>
+                                            {showEnhancementProgress && (
+                                              <div className="rounded-[12px] bg-white/70 px-2.5 py-2 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
+                                                <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-black text-stone-500 dark:text-white/50">
+                                                  <span className="inline-flex min-w-0 items-center gap-1.5">
+                                                    <Download className="h-3.5 w-3.5 text-violet-500" />
+                                                    <span className="truncate">{enhancementProgress?.label || '准备增强'}</span>
+                                                  </span>
+                                                  {enhancementProgress?.total ? (
+                                                    <span className="shrink-0 text-violet-700 dark:text-violet-100">{enhancementProgressPercent}%</span>
+                                                  ) : (
+                                                    <span className="shrink-0 text-violet-700 dark:text-violet-100">处理中</span>
+                                                  )}
+                                                </div>
+                                                <div className="h-1.5 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                  <div
+                                                    className={`h-full rounded-full bg-gradient-to-r from-violet-400 to-blue-500 transition-[width] duration-200 ${enhancementProgress?.total ? '' : 'animate-pulse'}`}
+                                                    style={{ width: `${enhancementProgress?.total ? Math.max(4, enhancementProgressPercent) : 38}%` }}
+                                                  />
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
                                       ) : (
                                         <textarea
                                           data-no-drag="true"
@@ -18566,6 +19917,202 @@ useEffect(() => {
                                     <div className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}>
                                       {!isCanvasWorkflowItem && (
                                         <>
+                                          {isCanvasFrameInterpolationItem ? (
+                                            <>
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={String(isFrameInterpolationFixed2xMode ? 2 : canvasItem.ai?.interpolationFactor || 2)}
+                                                options={CANVAS_RIFE_INTERPOLATION_FACTOR_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationFactor: Number(value) || 2 })}
+                                                disabled={isFrameInterpolationFixed2xMode}
+                                                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 固定为默认 2x 补帧' : `补帧倍率：${canvasItem.ai?.interpolationFactor || 2}×`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[102px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={118}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={isFrameInterpolationFixed2xMode ? 'auto-2x' : String(canvasItem.ai?.interpolationTargetFps || 60)}
+                                                options={isFrameInterpolationFixed2xMode ? CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS : CANVAS_RIFE_TARGET_FPS_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationTargetFps: Number(value) || 60 })}
+                                                disabled={isFrameInterpolationFixed2xMode}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 使用原视频帧率 × 2' : `目标帧率：${canvasItem.ai?.interpolationTargetFps || 60}fps`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[72px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={96}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={canvasItem.ai?.interpolationMode || 'normal'}
+                                                options={CANVAS_RIFE_MODE_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  interpolationMode: value,
+                                                  ...(isRifeFixed2xMode(value) ? { interpolationFactor: 2 } : {}),
+                                                })}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`模式：${CANVAS_RIFE_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.interpolationMode || 'normal'))?.label || '普通'}`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[82px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={118}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={canvasItem.ai?.interpolationQuality || 'standard'}
+                                                options={CANVAS_RIFE_QUALITY_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationQuality: value })}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`质量：${CANVAS_RIFE_QUALITY_OPTIONS.find(option => option.value === (canvasItem.ai?.interpolationQuality || 'standard'))?.label || '标准'}`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[76px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={104}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={canvasItem.ai?.interpolationKeepAudio === false ? 'no' : 'yes'}
+                                                options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationKeepAudio: value !== 'no' })}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={canvasItem.ai?.interpolationKeepAudio === false ? '不保留音频' : '保留音频'}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[88px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={112}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={String(canvasItem.ai?.outputFormat || 'mp4').toLowerCase()}
+                                                options={CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
+                                                labelClassName="text-center leading-none uppercase"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`输出格式：${String(canvasItem.ai?.outputFormat || 'mp4').toUpperCase()}`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[66px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={88}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                            </>
+                                          ) : isCanvasEnhancementItem ? (
+                                            <>
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={String(canvasItem.ai?.enhancementScale || 2)}
+                                                options={CANVAS_ESRGAN_SCALE_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementScale: Number(value) || 2 })}
+                                                icon={<Maximize2 className="h-3.5 w-3.5" />}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`增强倍率：${canvasItem.ai?.enhancementScale || 2}×`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[102px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={118}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={canvasItem.ai?.enhancementMode || 'general'}
+                                                options={CANVAS_ESRGAN_MODE_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  enhancementMode: value,
+                                                  model: value === 'anime' ? 'realesr-animevideov3' : 'realesrgan-x4plus',
+                                                })}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`模式：${CANVAS_ESRGAN_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.enhancementMode || 'general'))?.label || '通用增强'}`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={128}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={canvasItem.ai?.enhancementResizeMode || 'upscale'}
+                                                options={CANVAS_ESRGAN_RESIZE_MODE_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementResizeMode: value })}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`增强方式：${CANVAS_ESRGAN_RESIZE_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.enhancementResizeMode || 'upscale'))?.label || '放大并增强'}`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={142}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                              {isCanvasVideoEnhancementItem && (
+                                                <RoundedSelect
+                                                  data-no-drag="true"
+                                                  data-canvas-edit-control="true"
+                                                  value={canvasItem.ai?.enhancementKeepAudio === false ? 'no' : 'yes'}
+                                                  options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
+                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementKeepAudio: value !== 'no' })}
+                                                  labelClassName="text-center leading-none"
+                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                  title={canvasItem.ai?.enhancementKeepAudio === false ? '不保留音频' : '保留音频'}
+                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[88px]`}
+                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                  menuMinWidth={112}
+                                                  menuScale={canvasAiNodeScale || 1}
+                                                />
+                                              )}
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={String(canvasItem.ai?.outputFormat || (isCanvasVideoEnhancementItem ? 'mp4' : 'png')).toLowerCase()}
+                                                options={isCanvasVideoEnhancementItem ? CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS : CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
+                                                labelClassName="text-center leading-none uppercase"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title={`输出格式：${String(canvasItem.ai?.outputFormat || (isCanvasVideoEnhancementItem ? 'mp4' : 'png')).toUpperCase()}`}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[68px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={88}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
+                                            </>
+                                          ) : (
+                                            <>
                                           {canvasAiMediaType !== 'video' && (
                                           <RoundedSelect
                                             data-no-drag="true"
@@ -18718,6 +20265,8 @@ useEffect(() => {
                                             menuMinWidth={86}
                                             menuScale={canvasAiNodeScale || 1}
                                           />
+                                            </>
+                                          )}
                                         </>
                                       )}
                                       <button
@@ -18730,7 +20279,11 @@ useEffect(() => {
                                         className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
                                       >
                                         <Play className={`h-4 w-4 fill-current ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
-                                        {canvasItem.ai?.status === 'working'
+                                        {isCanvasFrameInterpolationItem
+                                          ? (canvasItem.ai?.status === 'working' ? '补帧中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次补帧' : '补帧')
+                                          : isCanvasEnhancementItem
+                                            ? (canvasItem.ai?.status === 'working' ? '增强中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强')
+                                          : canvasItem.ai?.status === 'working'
                                           ? (isCanvasWorkflowItem ? '运行中' : '生成中')
                                           : isCanvasWorkflowItem
                                             ? (hasCanvasAiGeneratedResults(canvasItem) ? '再次运行' : '运行')
@@ -18743,14 +20296,19 @@ useEffect(() => {
                                 </div>
                               ) : isTextCanvasItem ? (
                                 <div
-                                  className={`flex h-full flex-col overflow-hidden border bg-blue-50/72 text-stone-800 shadow-[0_10px_26px_rgba(15,23,42,0.10)] transition-[box-shadow,border-color] hover:shadow-[0_14px_32px_rgba(15,23,42,0.12)] dark:bg-stone-900/92 dark:text-stone-100 dark:shadow-[0_12px_30px_rgba(0,0,0,0.24)] ${
-                                    isSelected ? 'border-blue-200 dark:border-blue-400/24' : 'border-white/80 dark:border-stone-700/70'
+                                  className={`flex h-full flex-col overflow-hidden border bg-gradient-to-br from-white/88 via-white/76 to-stone-100/72 text-stone-800 backdrop-blur-2xl transition-[border-color] dark:from-[#272727]/96 dark:via-[#222222]/96 dark:to-[#1d1d1d]/96 dark:text-white ${
+                                    isSelected ? 'border-stone-300/62 ring-2 ring-stone-900/[0.05] dark:border-white/20 dark:ring-white/10' : 'border-white/80 dark:border-white/[0.08]'
                                   }`}
                                   style={{ borderRadius: canvasScaledNodeRadius }}
                                 >
-                                  <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-blue-200/70 px-2 text-[11px] font-black text-blue-700 dark:border-stone-700 dark:text-blue-300">
-                                    <Type className="h-3.5 w-3.5" />
+                                  <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stone-950/[0.045] px-3 text-[11px] font-black text-stone-500 dark:border-white/[0.055] dark:text-white/58">
+                                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[7px] bg-stone-950/[0.055] text-stone-500 dark:bg-white/[0.07] dark:text-white/62">
+                                      <Type className="h-3.5 w-3.5" />
+                                    </span>
                                     <span className="truncate">{canvasItem.item.name || '文字卡片'}</span>
+                                    <span className="ml-auto rounded-full bg-stone-950/[0.045] px-2 py-0.5 text-[9px] font-black tracking-[0.12em] text-stone-400 dark:bg-white/[0.07] dark:text-white/38">
+                                      TEXT
+                                    </span>
                                   </div>
                                   <textarea
                                     data-no-drag="true"
@@ -18761,7 +20319,7 @@ useEffect(() => {
                                     onPointerDown={(event) => event.stopPropagation()}
                                     onWheel={(event) => event.stopPropagation()}
                                     placeholder="写点什么..."
-                                    className="min-h-[120px] flex-1 resize-y overflow-y-auto bg-transparent px-3 py-2 text-[13px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
+                                    className="min-h-[120px] flex-1 resize-y overflow-y-auto border-0 bg-transparent px-3.5 py-3 text-[14px] font-semibold leading-6 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
                                   />
                                 </div>
                               ) : (
@@ -19010,7 +20568,12 @@ useEffect(() => {
                           const referenceTop = canvasItem.y + 16 * nodeScale;
                           const referenceSize = 58 * nodeScale;
                           const menuScale = Math.max(0.35, Math.min(1, nodeScale));
-                          const canUploadReferenceVideo = canvasItem.ai?.type === 'video-generator' && canvasItem.ai?.videoInputMode !== 'FLF';
+                          const canUploadReferenceVideo = (
+                            canvasItem.ai?.type === 'frame-interpolation'
+                            || canvasItem.ai?.type === 'video-enhancement'
+                            || (canvasItem.ai?.type === 'video-generator' && canvasItem.ai?.videoInputMode !== 'FLF')
+                          );
+                          const isVideoOnlyInput = canvasItem.ai?.type === 'frame-interpolation' || canvasItem.ai?.type === 'video-enhancement';
                           return (
                             <div
                               key={`canvas-input-menu-${canvasItem.id}`}
@@ -19026,18 +20589,20 @@ useEffect(() => {
                                 event.stopPropagation();
                               }}
                             >
-                              <button
-                                type="button"
-                                className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
-                                onClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  chooseLocalImagesForCanvasGenerator(canvasItem.id);
-                                }}
-                              >
-                                <Upload className="h-3.5 w-3.5 text-cyan-500 dark:text-cyan-300" />
-                                本地图片
-                              </button>
+                              {!isVideoOnlyInput && (
+                                <button
+                                  type="button"
+                                  className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    chooseLocalImagesForCanvasGenerator(canvasItem.id);
+                                  }}
+                                >
+                                  <Upload className="h-3.5 w-3.5 text-cyan-500 dark:text-cyan-300" />
+                                  本地图片
+                                </button>
+                              )}
                               {canUploadReferenceVideo && (
                                 <button
                                   type="button"
@@ -19062,8 +20627,10 @@ useEffect(() => {
                                   startPickCanvasImageForGenerator(canvasItem.id);
                                 }}
                               >
-                                <ImageIcon className="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />
-                                画布图片
+                                {isVideoOnlyInput
+                                  ? <Film className="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />
+                                  : <ImageIcon className="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />}
+                                {isVideoOnlyInput ? '画布视频' : '画布图片'}
                               </button>
                               <button
                                 type="button"
@@ -19659,10 +21226,10 @@ useEffect(() => {
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-context-menu="true"
-                      className="fixed z-[100080] min-w-[176px] rounded-[16px] border border-white/55 bg-stone-950/86 p-1.5 text-stone-100 shadow-[0_18px_46px_rgba(0,0,0,0.28)] backdrop-blur-2xl dark:border-stone-700/70"
+                      className="fixed z-[100080] max-h-[calc(100vh-24px)] min-w-[176px] overflow-y-auto rounded-[16px] border border-white/55 bg-stone-950/86 p-1.5 text-stone-100 shadow-[0_18px_46px_rgba(0,0,0,0.28)] backdrop-blur-2xl dark:border-stone-700/70"
                       style={{
                         left: Math.min(canvasContextMenu.x, window.innerWidth - 196),
-                        top: Math.min(canvasContextMenu.y, window.innerHeight - 260),
+                        top: Math.max(12, Math.min(canvasContextMenu.y, window.innerHeight - 420)),
                       }}
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
@@ -19694,6 +21261,39 @@ useEffect(() => {
                               >
                                 <Film className="h-3.5 w-3.5 text-emerald-300" />
                                 AI 视频节点
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                onClick={() => {
+                                  addCanvasFrameInterpolationNodeAtWorld({ x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <RefreshCw className="h-3.5 w-3.5 text-cyan-300" />
+                                视频补帧节点
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-violet-500/18 hover:text-violet-200"
+                                onClick={() => {
+                                  addCanvasEnhancementNodeAtWorld('image', { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <ImageIcon className="h-3.5 w-3.5 text-violet-300" />
+                                图片清晰度增强
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-violet-500/18 hover:text-violet-200"
+                                onClick={() => {
+                                  addCanvasEnhancementNodeAtWorld('video', { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <Film className="h-3.5 w-3.5 text-violet-300" />
+                                视频清晰度增强
                               </button>
                               <button
                                 type="button"
@@ -19928,6 +21528,7 @@ useEffect(() => {
                             : [];
                         const targetNodes = canvasItems
                           .filter(item => canUseCanvasItemAsAiTarget(item) && !sourceIds.includes(item.id))
+                          .filter(item => sourceIds.some(sourceId => canUseCanvasItemAsInputForTarget(canvasItemsById.get(sourceId), item)))
                           .slice(0, 6);
                         return (
                           <>
@@ -19953,6 +21554,39 @@ useEffect(() => {
                             >
                               <Film className="h-3.5 w-3.5 text-emerald-300" />
                               新建 AI 视频节点
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-cyan-500/18 hover:text-cyan-200"
+                              onClick={() => {
+                                addCanvasFrameInterpolationNodeForSources(sourceIds, { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                setCanvasContextMenu(null);
+                              }}
+                            >
+                              <RefreshCw className="h-3.5 w-3.5 text-cyan-300" />
+                              新建视频补帧节点
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-violet-500/18 hover:text-violet-200"
+                              onClick={() => {
+                                addCanvasEnhancementNodeForSources(sourceIds, 'image', { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                setCanvasContextMenu(null);
+                              }}
+                            >
+                              <ImageIcon className="h-3.5 w-3.5 text-violet-300" />
+                              新建图片增强节点
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-violet-500/18 hover:text-violet-200"
+                              onClick={() => {
+                                addCanvasEnhancementNodeForSources(sourceIds, 'video', { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                setCanvasContextMenu(null);
+                              }}
+                            >
+                              <Film className="h-3.5 w-3.5 text-violet-300" />
+                              新建视频增强节点
                             </button>
                             {targetNodes.length > 0 && (
                               <>
@@ -19982,33 +21616,43 @@ useEffect(() => {
                       })()}
                       {canvasContextMenu.type === 'target-input' && canvasContextMenu.targetId && (() => {
                         const target = canvasItemsById.get(canvasContextMenu.targetId || '');
-                        const canUploadReferenceVideo = target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF';
+                        const canUploadReferenceVideo = (
+                          target?.ai?.type === 'frame-interpolation'
+                          || target?.ai?.type === 'video-enhancement'
+                          || (target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF')
+                        );
+                        const isMediaToolInput = target?.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target?.ai?.type);
+                        const isVideoOnlyInput = target?.ai?.type === 'frame-interpolation' || target?.ai?.type === 'video-enhancement';
                         return (
                         <>
                           <div className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white/38">新增输入</div>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
-                            onClick={() => {
-                              addCanvasTextInputForGenerator(canvasContextMenu.targetId || '', { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
-                              setCanvasContextMenu(null);
-                            }}
-                          >
-                            <Type className="h-3.5 w-3.5 text-amber-300" />
-                            文字说明
-                          </button>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
-                            onClick={() => {
-                              const targetId = canvasContextMenu.targetId || '';
-                              setCanvasContextMenu(null);
-                              chooseLocalImagesForCanvasGenerator(targetId);
-                            }}
-                          >
-                            <Upload className="h-3.5 w-3.5 text-cyan-300" />
-                            上传图片
-                          </button>
+                          {!isMediaToolInput && (
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                              onClick={() => {
+                                addCanvasTextInputForGenerator(canvasContextMenu.targetId || '', { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                setCanvasContextMenu(null);
+                              }}
+                            >
+                              <Type className="h-3.5 w-3.5 text-amber-300" />
+                              文字说明
+                            </button>
+                          )}
+                          {!isVideoOnlyInput && (
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                              onClick={() => {
+                                const targetId = canvasContextMenu.targetId || '';
+                                setCanvasContextMenu(null);
+                                chooseLocalImagesForCanvasGenerator(targetId);
+                              }}
+                            >
+                              <Upload className="h-3.5 w-3.5 text-cyan-300" />
+                              上传图片
+                            </button>
+                          )}
                           {canUploadReferenceVideo && (
                             <button
                               type="button"
@@ -20228,6 +21872,33 @@ useEffect(() => {
                       >
                         <Film className="h-3.5 w-3.5 shrink-0 text-emerald-500 dark:text-emerald-300" />
                         <span className="min-w-0 flex-1 truncate text-left">视频</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addCanvasFrameInterpolationNode()}
+                        className={`${CANVAS_SIDE_TOOL_CLASS} border-cyan-200/80 hover:border-cyan-300 hover:bg-cyan-50/90 dark:hover:border-cyan-400/30`}
+                        title="新增视频补帧节点"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5 shrink-0 text-cyan-500 dark:text-cyan-300" />
+                        <span className="min-w-0 flex-1 truncate text-left">补帧</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addCanvasEnhancementNode('image')}
+                        className={`${CANVAS_SIDE_TOOL_CLASS} border-violet-200/80 hover:border-violet-300 hover:bg-violet-50/90 dark:hover:border-violet-400/30`}
+                        title="新增图片清晰度增强节点"
+                      >
+                        <ImageIcon className="h-3.5 w-3.5 shrink-0 text-violet-500 dark:text-violet-300" />
+                        <span className="min-w-0 flex-1 truncate text-left">图增强</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addCanvasEnhancementNode('video')}
+                        className={`${CANVAS_SIDE_TOOL_CLASS} border-fuchsia-200/80 hover:border-fuchsia-300 hover:bg-fuchsia-50/90 dark:hover:border-fuchsia-400/30`}
+                        title="新增视频清晰度增强节点"
+                      >
+                        <Film className="h-3.5 w-3.5 shrink-0 text-fuchsia-500 dark:text-fuchsia-300" />
+                        <span className="min-w-0 flex-1 truncate text-left">视增强</span>
                       </button>
                       <RoundedSelect
                         data-no-drag="true"
@@ -20947,7 +22618,7 @@ useEffect(() => {
                                   }}
                                   onImageClick={(url: string) => openSelectedImagePreview(url)}
                                   onVideoClick={() => {
-                                    if (item.path) setSelectedVideo({ url: convertFileSrc(item.path), path: item.path });
+                                    if (item.path) openSelectedVideoPreview({ url: convertFileSrc(item.path), path: item.path });
                                   }}
                                   isSelectMode={isSelectMode} isSelected={selectedIds.includes(item.id)}
                                   onToggleSelect={(event?: React.MouseEvent) => handleDrawerItemSelect(item.id, event)}
@@ -21293,17 +22964,17 @@ useEffect(() => {
                           onClick={() => moveSelectedItemsToFolder(undefined)}
                           className="rounded-[16px] border border-stone-200/70 dark:border-stone-700/70 bg-stone-50/80 dark:bg-stone-900/40 px-3 py-2 text-left text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
                         >主抽屉</button>
-                        {folders.map(folder => (
+                        {orderedFolders.map(folder => (
                           <button
                             key={folder.id}
-                            onClick={() => moveSelectedItemsToFolder(folder.id, folder.name)}
-                            className="rounded-[16px] border border-emerald-100/80 dark:border-emerald-800/45 bg-emerald-50/70 dark:bg-emerald-900/20 px-3 py-2 text-left text-xs font-medium text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/35 transition-colors truncate"
-                            title={folder.name}
-                          >{folder.name}</button>
+                            onClick={() => moveSelectedItemsToFolder(folder.id, getDrawerFolderPathName(folders, folder.id))}
+                            className={`rounded-[16px] border px-3 py-2 text-left text-xs font-medium transition-colors truncate ${folder.parentId ? 'ml-2 border-sky-100/80 bg-sky-50/70 text-sky-700 hover:bg-sky-100 dark:border-sky-800/45 dark:bg-sky-900/20 dark:text-sky-300 dark:hover:bg-sky-900/35' : 'border-emerald-100/80 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800/45 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/35'}`}
+                            title={getDrawerFolderPathName(folders, folder.id)}
+                          >{folder.parentId ? `↳ ${folder.name}` : folder.name}</button>
                         ))}
                       </div>
                       <div className="rounded-[18px] bg-stone-50/70 dark:bg-stone-900/35 border border-stone-200/60 dark:border-stone-700/60 p-2.5">
-                        <div className="mb-2 text-[11px] font-bold text-stone-500 dark:text-stone-400">新建分类并移动</div>
+                        <div className="mb-2 text-[11px] font-bold text-stone-500 dark:text-stone-400">{moveFolderParent ? `在「${moveFolderParent.name}」中新建子目录并移动` : '新建项目文件夹并移动'}</div>
                         <div className="flex gap-2">
                           <input
                             value={moveFolderName}
@@ -21312,14 +22983,14 @@ useEffect(() => {
                               if (e.key === 'Enter') { e.preventDefault(); createFolderAndMoveSelected(); }
                               if (e.key === 'Escape') setShowMoveFolderModal(false);
                             }}
-                            placeholder="新分类名称"
+                            placeholder={moveFolderParent ? '子目录名称' : '项目文件夹名称'}
                             className="min-w-0 flex-1 bg-white/75 dark:bg-stone-800/75 rounded-[14px] px-3 py-2 border border-white/80 dark:border-stone-700/70 outline-none text-xs text-stone-700 dark:text-stone-200 placeholder:text-stone-400 focus:ring-2 focus:ring-emerald-500/20 transition-all"
                           />
                           <button
                             onClick={createFolderAndMoveSelected}
                             disabled={!moveFolderName.trim()}
                             className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[14px] transition-colors shadow-sm disabled:shadow-none"
-                          ><FolderPlus className="w-3.5 h-3.5" /> 新建并移动</button>
+                          ><FolderPlus className="w-3.5 h-3.5" /> {moveFolderParent ? '新建子目录' : '新建并移动'}</button>
                         </div>
                       </div>
                     </motion.div>
@@ -21330,16 +23001,16 @@ useEffect(() => {
                   {showFolderModal && (
                     <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
                       <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> 新建文件夹</span>
-                        <button onClick={() => setShowFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> {newFolderParent ? `在「${newFolderParent.name}」中新建子目录` : '新建项目文件夹'}</span>
+                        <button onClick={closeFolderModal} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <input
                         autoFocus value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter') { e.preventDefault(); handleAddFolder(); }
-                          if (e.key === 'Escape') setShowFolderModal(false);
+                          if (e.key === 'Escape') closeFolderModal();
                         }}
-                        placeholder="输入文件夹名称 (如：工作、装修灵感)..."
+                        placeholder={newFolderParent ? '输入子目录名称（如：造型收集、渲染收集）' : '输入项目文件夹名称（如：设计军火库）'}
                         className="w-full bg-stone-50/50 dark:bg-stone-900/50 rounded-[20px] p-3 border border-stone-200/50 dark:border-stone-700/50 outline-none text-sm text-stone-800 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
                       />
                       <div className="flex justify-end px-1 mt-1">
@@ -21347,7 +23018,7 @@ useEffect(() => {
                           onClick={handleAddFolder}
                           disabled={!newFolderName.trim()}
                           className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none"
-                        ><Check className="w-3.5 h-3.5" /> 创建</button>
+                        ><Check className="w-3.5 h-3.5" /> {newFolderParent ? '创建子目录' : '创建项目'}</button>
                       </div>
                     </motion.div>
                   )}
@@ -21744,13 +23415,43 @@ useEffect(() => {
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 rounded-[30px] overflow-hidden z-[9998] bg-black/45 backdrop-blur-sm flex items-center justify-center p-5 pointer-events-auto"
-            onMouseDown={() => setSelectedVideo(null)}
+            onPointerDown={(event) => {
+              if (event.button === 0 && event.target === event.currentTarget) {
+                event.preventDefault();
+                event.stopPropagation();
+                closeSelectedVideoPreview();
+                return;
+              }
+              if (event.button === 2) startPreviewWindowDrag(event);
+            }}
+            onMouseDown={(event) => {
+              if (event.button === 0 && event.target === event.currentTarget) {
+                event.preventDefault();
+                event.stopPropagation();
+                closeSelectedVideoPreview();
+                return;
+              }
+              if (event.button === 2) startPreviewWindowDrag(event);
+            }}
+            onContextMenu={(event) => event.preventDefault()}
           >
-            <motion.div initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.96, opacity: 0 }} className="relative w-full max-w-3xl" onMouseDown={e => e.stopPropagation()}>
-              <button onClick={() => setSelectedVideo(null)} className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-white dark:bg-stone-800 shadow-lg flex items-center justify-center text-stone-500 hover:text-red-500">
+            <motion.div initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.96, opacity: 0 }} className="relative w-full max-w-3xl" onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
+              <button
+                onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                onClick={(event) => { event.preventDefault(); event.stopPropagation(); closeSelectedVideoPreview(); }}
+                className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-white dark:bg-stone-800 shadow-lg flex items-center justify-center text-stone-500 hover:text-red-500"
+              >
                 <X className="w-4 h-4" />
               </button>
-              <video src={selectedVideo.url || convertFileSrc(selectedVideo.path)} controls autoPlay className="w-full max-h-[calc(100vh-72px)] rounded-[28px] shadow-2xl bg-black" />
+              <video
+                src={selectedVideo.url || convertFileSrc(selectedVideo.path)}
+                controls
+                autoPlay
+                className="w-full max-h-[calc(100vh-72px)] rounded-[28px] shadow-2xl bg-black"
+                onPointerDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+              />
             </motion.div>
           </motion.div>
         )}
@@ -22064,7 +23765,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v4.0.0</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.0.9'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -22077,8 +23778,8 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>新增画布工作流：可把多个 AI 节点折叠成工作流模块，一键复用完整生成链路。</p>
-                  <p className="mt-1">新增节点预设管理：常用 Prompt 可保存、导入导出，并快速创建固定风格节点。</p>
+                  <p>设置项已统一为整行可点击，右侧增加状态胶囊和箭头提示。</p>
+                  <p className="mt-1">更新检查增加备用源容错，并优化失败时的中文提示。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -22091,6 +23792,130 @@ useEffect(() => {
               <button onClick={(event) => finishLaunchIntro(event, true)} className="mt-5 w-full py-2.5 rounded-[22px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-black shadow-lg hover:scale-[1.01] active:scale-[0.98] transition-transform">
                 同意并进入抽屉
               </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showStoragePath && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/25 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onMouseDown={() => setShowStoragePath(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5"
+              onMouseDown={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><FolderOpen className="w-4 h-4 text-amber-500" /> 文件缓存路径</span>
+                <button onClick={() => setShowStoragePath(false)} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="space-y-3 text-xs leading-5 text-stone-600 dark:text-stone-300">
+                <div className="rounded-[18px] border border-stone-200/80 bg-stone-50/80 p-3 dark:border-stone-700 dark:bg-stone-800/70">
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400 dark:text-stone-500">当前路径</p>
+                  <p className="break-all font-mono text-[11px] text-stone-700 dark:text-stone-200">{webImageCacheDir || '使用默认缓存目录'}</p>
+                </div>
+                <p className="text-[11px] leading-5 text-stone-500 dark:text-stone-400">
+                  拖入的本地文件、图片、视频和网页图片都会复制/缓存到这里；卡片打开和定位会指向缓存副本。
+                </p>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void chooseWebImageCacheDir()}
+                  className="rounded-[18px] bg-stone-900 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
+                >
+                  修改路径
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void resetWebImageCacheDir()}
+                  className="rounded-[18px] border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
+                >
+                  恢复默认
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showAboutSoftware && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/25 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onMouseDown={() => setShowAboutSoftware(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5"
+              onMouseDown={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Info className="w-4 h-4 text-violet-500" /> 关于软件</span>
+                <button onClick={() => setShowAboutSoftware(false)} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="divide-y divide-stone-200/70 overflow-hidden rounded-[20px] border border-stone-200/70 bg-stone-50/75 dark:divide-stone-700/70 dark:border-stone-700 dark:bg-stone-800/55">
+                <div className="flex items-center justify-between gap-3 px-3 py-3">
+                  <span className="flex items-center gap-2 text-xs font-medium text-stone-600 dark:text-stone-300">
+                    <BookOpen className="h-4 w-4 text-blue-500" /> 使用说明
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAboutSoftware(false); setShowHelp(true); }}
+                    className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[11px] font-medium text-stone-600 transition-colors hover:bg-stone-100 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-200 dark:hover:bg-stone-600"
+                  >
+                    查看
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 px-3 py-3">
+                  <span className="flex items-center gap-2 text-xs font-medium text-stone-600 dark:text-stone-300">
+                    <Sparkles className="h-4 w-4 text-amber-500" /> 更新日志
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAboutSoftware(false); setShowUpdateLog(true); }}
+                    className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[11px] font-medium text-stone-600 transition-colors hover:bg-stone-100 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-200 dark:hover:bg-stone-600"
+                  >
+                    查看
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 px-3 py-3">
+                  <span className="flex items-center gap-2 text-xs font-medium text-stone-600 dark:text-stone-300">
+                    <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.0.9'}</span>
+                    <button
+                      type="button"
+                      onClick={() => void checkAndInstallAppUpdate({ silent: false })}
+                      disabled={isCheckingAppUpdate}
+                      className="flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-200 dark:hover:bg-emerald-400/15"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isCheckingAppUpdate ? 'animate-spin' : ''}`} />
+                      {isCheckingAppUpdate ? '检查中' : '检查更新'}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -22171,9 +23996,9 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.0.0 工作流与节点预设</p>
-                <p>画布新增工作流模块，可把多节点生成链路保存为可复用模板，并支持运行、折叠、展开和输出管理。</p>
-                <p>节点预设升级为可管理资产，支持保存常用 Prompt、编辑内置/自定义预设，以及单个或批量导入导出。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.0.9 清晰度增强下载修复</p>
+                <p>RIFE 和 ffmpeg / ffprobe 首次下载时，会在补帧节点里显示下载与解压进度。</p>
+                <p>HD / UHD 模型遇到自定义目标帧数时会自动切换到 v4.6，避免引擎兼容性报错。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
