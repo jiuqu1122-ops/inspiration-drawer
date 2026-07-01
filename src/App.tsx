@@ -712,7 +712,6 @@ const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
 const CANVAS_INTERACTION_OVERSCAN_PX = 680;
 const CANVAS_DENSE_RENDER_THRESHOLD = 80;
 const CANVAS_DENSE_COMMIT_INTERVAL_MS = 30;
-const CANVAS_NAV_MEDIA_PREVIEW_LIMIT = 72;
 const CANVAS_GENERATED_LIST_RENDER_LIMIT = 60;
 const AI_GENERATED_FOLDER_ID = 'ai_generated_images';
 const AI_GENERATED_FOLDER_NAME = 'AI生图';
@@ -838,6 +837,8 @@ const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
 const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
 const CANVAS_AI_NODE_GRID_GAP = 8;
+const CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT = 108;
+const CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT = 142;
 const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
 const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
 const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
@@ -932,6 +933,8 @@ const getCanvasAiNodeAutoSize = (options?: {
   promptText?: string;
   promptExpanded?: boolean;
   showOutputPreview?: boolean;
+  localMediaTool?: boolean;
+  showLocalMediaProgress?: boolean;
 }) => {
   const isWorkflow = options?.type === 'workflow';
   const isVideo = options?.type === 'video-generator';
@@ -956,7 +959,13 @@ const getCanvasAiNodeAutoSize = (options?: {
   const headerSectionHeight = 58;
   const outputSectionHeight = outputLayout ? 36 + outputLayout.gridHeight : 220;
   const metaSectionHeight = isWorkflow || options?.hasPreset ? 44 : 0;
-  const promptHeight = isWorkflow ? 118 : getCanvasAiPromptAutoHeight(options?.promptText, width, !!options?.promptExpanded);
+  const promptHeight = isWorkflow
+    ? 118
+    : options?.localMediaTool
+      ? options?.showLocalMediaProgress
+        ? CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT
+        : CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT
+      : getCanvasAiPromptAutoHeight(options?.promptText, width, !!options?.promptExpanded);
   const inputHeight = 52;
   const errorHeight = options?.hasError ? 48 : 0;
   const bodyGapCount = [
@@ -2129,6 +2138,17 @@ const formatEnhancementEstimateVideoMeta = (estimate?: RealEsrganEnhancementEsti
 };
 const isCanvasAiFrameInterpolationType = (type?: string | null) => type === 'frame-interpolation';
 const isCanvasAiEnhancementType = (type?: string | null) => type === 'image-enhancement' || type === 'video-enhancement';
+const isCanvasAiLocalMediaToolType = (type?: string | null) => (
+  isCanvasAiFrameInterpolationType(type) || isCanvasAiEnhancementType(type)
+);
+const getCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null): RifeEngineProgress | undefined => {
+  if (ai?.type === 'frame-interpolation') return ai.interpolationProgress as RifeEngineProgress | undefined;
+  if (isCanvasAiEnhancementType(ai?.type)) return ai.enhancementProgress as RifeEngineProgress | undefined;
+  return undefined;
+};
+const shouldShowCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null) => (
+  shouldShowRifeEngineProgress(getCanvasAiLocalMediaProgress(ai))
+);
 const isCanvasAiGeneratorType = (type?: string | null) => (
   type === 'image-generator'
   || type === 'video-generator'
@@ -2984,7 +3004,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.1.4');
+        setAppVersion('4.1.5');
       });
   }, []);
 
@@ -7364,6 +7384,30 @@ function MainApp() {
     }));
   };
 
+  const getCanvasAiNodeDesignSizeForItem = (
+    canvasItem: CanvasImageItem,
+    promptExpanded = canvasAiPromptEditingId === canvasItem.id,
+  ) => {
+    const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
+    const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
+    const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
+      ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
+      : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
+    return getCanvasAiNodeAutoSize({
+      type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
+      aspectRatio: canvasAiOutputAspectRatio,
+      count: canvasItem.ai?.count,
+      outputCount: canvasAiOutputs.length || undefined,
+      hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
+      hasError: !!canvasItem.ai?.error,
+      promptText: canvasItem.item.content || '',
+      promptExpanded,
+      showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
+      localMediaTool: isCanvasAiLocalMediaToolType(canvasItem.ai?.type),
+      showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
+    });
+  };
+
   const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
     !!canvasItem
   );
@@ -10439,6 +10483,7 @@ function MainApp() {
       type: 'video-generator',
       aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
       count: 1,
+      localMediaTool: true,
     });
     return {
       id: `canvas_rife_${itemId}`,
@@ -10518,6 +10563,7 @@ function MainApp() {
       type: isVideo ? 'video-generator' : 'image-generator',
       aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
       count: 1,
+      localMediaTool: true,
     });
     return {
       id: `canvas_realesrgan_${mediaType}_${itemId}`,
@@ -11603,34 +11649,31 @@ function MainApp() {
             content,
             name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : getCanvasAiNodeTitle(item.ai)),
           };
-          const nextCanvasItem = {
+          const nextCanvasItem: CanvasImageItem = {
             ...item,
             ai: nextAi,
             item: nextItem,
           };
-          if (isCanvasAiGeneratorType(item.ai?.type) && (patch.aspectRatio !== undefined || patch.count !== undefined || content !== undefined)) {
-            const hasOutputPreview = (item.ai.outputs || []).length > 0;
+          const shouldResizeAiNode = isCanvasAiGeneratorType(item.ai?.type) && (
+            patch.aspectRatio !== undefined
+            || patch.count !== undefined
+            || content !== undefined
+            || (
+              isCanvasAiLocalMediaToolType(item.ai?.type)
+              && (
+                patch.outputs !== undefined
+                || patch.error !== undefined
+                || patch.interpolationProgress !== undefined
+                || patch.enhancementProgress !== undefined
+                || patch.enhancementEngine !== undefined
+                || patch.quickEnhancementScale !== undefined
+              )
+            )
+          );
+          if (shouldResizeAiNode) {
             const promptExpanded = canvasAiPromptEditingId === item.id;
-            const oldSize = getCanvasAiNodeAutoSize({
-              type: getCanvasAiNodeAutoSizeType(item.ai),
-              aspectRatio: item.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-              count: item.ai.count || CANVAS_AI_DEFAULT_COUNT,
-              hasPreset: !!item.ai.presetLabel,
-              hasError: !!item.ai.error,
-              promptText: item.item.content || '',
-              promptExpanded,
-              showOutputPreview: hasOutputPreview,
-            });
-            const nextSize = getCanvasAiNodeAutoSize({
-              type: getCanvasAiNodeAutoSizeType(nextAi),
-              aspectRatio: nextAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-              count: nextAi.count || CANVAS_AI_DEFAULT_COUNT,
-              hasPreset: !!nextAi.presetLabel,
-              hasError: !!nextAi.error,
-              promptText: nextItem.content || '',
-              promptExpanded,
-              showOutputPreview: hasOutputPreview,
-            });
+            const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded);
+            const nextSize = getCanvasAiNodeDesignSizeForItem(nextCanvasItem, promptExpanded);
             const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
             return {
               ...nextCanvasItem,
@@ -11677,28 +11720,9 @@ function MainApp() {
   const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => {
     updateCanvasItemsImmediate(prev => prev.map(item => {
       if (item.id !== canvasId || !isCanvasAiGeneratorType(item.ai?.type)) return item;
-      const hasOutputPreview = (item.ai.outputs || []).length > 0;
       const oldExpanded = previousExpanded ?? canvasAiPromptEditingId === item.id;
-      const oldSize = getCanvasAiNodeAutoSize({
-        type: getCanvasAiNodeAutoSizeType(item.ai),
-        aspectRatio: item.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        count: item.ai.count || CANVAS_AI_DEFAULT_COUNT,
-        hasPreset: !!item.ai.presetLabel,
-        hasError: !!item.ai.error,
-        promptText: item.item.content || '',
-        promptExpanded: oldExpanded,
-        showOutputPreview: hasOutputPreview,
-      });
-      const nextSize = getCanvasAiNodeAutoSize({
-        type: getCanvasAiNodeAutoSizeType(item.ai),
-        aspectRatio: item.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        count: item.ai.count || CANVAS_AI_DEFAULT_COUNT,
-        hasPreset: !!item.ai.presetLabel,
-        hasError: !!item.ai.error,
-        promptText: item.item.content || '',
-        promptExpanded: expanded,
-        showOutputPreview: hasOutputPreview,
-      });
+      const oldSize = getCanvasAiNodeDesignSizeForItem(item, oldExpanded);
+      const nextSize = getCanvasAiNodeDesignSizeForItem(item, expanded);
       const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
       return {
         ...item,
@@ -17735,22 +17759,7 @@ useEffect(() => {
         height: canvasItem.height,
       };
     }
-    const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
-    const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
-    const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
-      ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
-      : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
-    const designSize = getCanvasAiNodeAutoSize({
-      type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
-      aspectRatio: canvasAiOutputAspectRatio,
-      count: canvasItem.ai?.count,
-      outputCount: canvasAiOutputs.length || undefined,
-      hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
-      hasError: !!canvasItem.ai?.error,
-      promptText: canvasItem.item.content || '',
-      promptExpanded: canvasAiPromptEditingId === canvasItem.id,
-      showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
-    });
+    const designSize = getCanvasAiNodeDesignSizeForItem(canvasItem);
     const nodeScale = Math.min(canvasItem.width / designSize.width, canvasItem.height / designSize.height) || 1;
     return {
       x: canvasItem.x,
@@ -19331,7 +19340,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.1.4'}
+                                      v{appVersion || '4.1.5'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -19606,17 +19615,7 @@ useEffect(() => {
                             ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
                             : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
                           const canvasAiNodeDesignSize = isCanvasAiNodeItem
-                            ? getCanvasAiNodeAutoSize({
-                              type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
-                              aspectRatio: canvasAiOutputAspectRatio,
-                              count: canvasItem.ai?.count,
-                              outputCount: canvasAiOutputs.length || undefined,
-                              hasPreset: !isCanvasWorkflowItem && !!canvasItem.ai?.presetLabel,
-                              hasError: !!canvasItem.ai?.error,
-                              promptText: canvasItem.item.content || '',
-                              promptExpanded: isCanvasAiPromptExpanded,
-                              showOutputPreview: showCanvasAiOutputPreview,
-                            })
+                            ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded)
                             : null;
                           const canvasAiOutputTileLayout = isCanvasAiNodeItem && canvasAiNodeDesignSize && showCanvasAiOutputPreview
                             ? getCanvasAiOutputTileLayout({
@@ -20150,15 +20149,15 @@ useEffect(() => {
                                               {frameInterpolationMetaText || '首次使用会把 RIFE 和缺失的 ffmpeg / ffprobe 下载到安装目录。'}
                                             </div>
                                             {showFrameInterpolationProgress && (
-                                              <div className="rounded-[12px] bg-white/70 px-2.5 py-2 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
-                                                <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-black text-stone-500 dark:text-white/50">
-                                                  <span className="inline-flex min-w-0 items-center gap-1.5">
-                                                    <Download className="h-3.5 w-3.5 text-cyan-500" />
+                                              <div className="grid gap-1 rounded-[11px] bg-white/70 px-2.5 py-1.5 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
+                                                <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-black text-stone-500 dark:text-white/50">
+                                                  <span className="inline-flex min-w-0 flex-1 items-center gap-1.5">
+                                                    <Download className="h-3 w-3 shrink-0 text-cyan-500" />
                                                     <span className="truncate">{frameInterpolationProgress?.label || '下载引擎'}</span>
                                                   </span>
                                                   <span className="shrink-0 text-cyan-700 dark:text-cyan-100">{frameInterpolationProgressDetail}</span>
                                                 </div>
-                                                <div className="h-1.5 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                <div className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
                                                     className={`h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-[width] duration-200 ${frameInterpolationProgress?.total ? '' : 'animate-pulse'}`}
                                                     style={{ width: `${frameInterpolationProgress?.total ? Math.max(4, frameInterpolationProgressPercent) : 38}%` }}
@@ -20197,15 +20196,15 @@ useEffect(() => {
                                                 : enhancementMetaText || '首次使用会把 Real-ESRGAN 和缺失的 ffmpeg / ffprobe 下载到安装目录。'}
                                             </div>
                                             {showEnhancementProgress && (
-                                              <div className="rounded-[12px] bg-white/70 px-2.5 py-2 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
-                                                <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-black text-stone-500 dark:text-white/50">
-                                                  <span className="inline-flex min-w-0 items-center gap-1.5">
-                                                    <Download className="h-3.5 w-3.5 text-violet-500" />
+                                              <div className="grid gap-1 rounded-[11px] bg-white/70 px-2.5 py-1.5 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
+                                                <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-black text-stone-500 dark:text-white/50">
+                                                  <span className="inline-flex min-w-0 flex-1 items-center gap-1.5">
+                                                    <Download className="h-3 w-3 shrink-0 text-violet-500" />
                                                     <span className="truncate">{enhancementProgress?.label || '准备增强'}</span>
                                                   </span>
                                                   <span className="shrink-0 text-violet-700 dark:text-violet-100">{enhancementProgressDetail}</span>
                                                 </div>
-                                                <div className="h-1.5 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                <div className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
                                                     className={`h-full rounded-full bg-gradient-to-r from-violet-400 to-blue-500 transition-[width] duration-200 ${enhancementProgress?.total ? '' : 'animate-pulse'}`}
                                                     style={{ width: `${enhancementProgress?.total ? Math.max(4, enhancementProgressPercent) : 38}%` }}
@@ -20962,22 +20961,7 @@ useEffect(() => {
                         {canvasInputMenuForId && (() => {
                           const canvasItem = canvasItemsById.get(canvasInputMenuForId);
                           if (!canvasItem || !canUseCanvasItemAsAiTarget(canvasItem)) return null;
-                          const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
-                          const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
-                          const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
-                            ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
-                            : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
-                          const canvasAiNodeDesignSize = getCanvasAiNodeAutoSize({
-                            type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
-                            aspectRatio: canvasAiOutputAspectRatio,
-                            count: canvasItem.ai?.count,
-                            outputCount: canvasAiOutputs.length || undefined,
-                            hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
-                            hasError: !!canvasItem.ai?.error,
-                            promptText: canvasItem.item.content || '',
-                            promptExpanded: canvasAiPromptEditingId === canvasItem.id,
-                            showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
-                          });
+                          const canvasAiNodeDesignSize = getCanvasAiNodeDesignSizeForItem(canvasItem);
                           const nodeScale = Math.min(canvasItem.width / canvasAiNodeDesignSize.width, canvasItem.height / canvasAiNodeDesignSize.height) || 1;
                           const referenceLeft = canvasItem.x + 16 * nodeScale;
                           const referenceTop = canvasItem.y + 16 * nodeScale;
@@ -22106,7 +22090,8 @@ useEffect(() => {
                     <div
                       data-no-drag="true"
                       data-canvas-toolbar="true"
-                      className="absolute right-4 top-1/2 z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent"
+                      className="absolute right-4 z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent transition-[top] duration-200"
+                      style={{ top: isCanvasNavigatorVisible ? 'max(50%, 444px)' : '50%' }}
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                     >
@@ -22165,9 +22150,8 @@ useEffect(() => {
                               const width = Math.max(10, box.width * canvasNavScale);
                               const height = Math.max(10, box.height * canvasNavScale);
                               const selected = canvasSelectedIdsSet.has(item.id);
-                              const shouldRenderMediaPreview = selected || canvasNavItems.length <= CANVAS_NAV_MEDIA_PREVIEW_LIMIT;
-                              const preview = shouldRenderMediaPreview ? getCanvasItemNavPreview(item) : null;
-                              const source = preview?.mediaType === 'image' ? preview.source : '';
+                              const preview = getCanvasItemNavPreview(item);
+                              const source = preview?.source || '';
                               const label = item.ai?.type === 'workflow'
                                 ? item.ai?.presetLabel || '工作流'
                                 : isCanvasAiGeneratorType(item.ai?.type)
@@ -22191,6 +22175,15 @@ useEffect(() => {
                                   title={item.item.name || item.item.content || label}
                                 >
                                   {source ? (
+                                    preview?.mediaType === 'video' ? (
+                                      <video
+                                        src={source}
+                                        muted
+                                        playsInline
+                                        preload="metadata"
+                                        className="h-full w-full object-cover"
+                                      />
+                                    ) : (
                                     <img
                                       src={source}
                                       alt={item.item.name || '导航缩略图'}
@@ -22199,6 +22192,7 @@ useEffect(() => {
                                       className="h-full w-full object-cover"
                                       draggable={false}
                                     />
+                                    )
                                   ) : (
                                     <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
                                       item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
@@ -24182,7 +24176,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.4'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.5'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24320,7 +24314,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.4'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.5'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24413,9 +24407,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.4 素材与画布性能优化</p>
-                <p>删除画布素材时会同步移除对应抽屉卡片，但保留本地文件，避免误删源素材。</p>
-                <p>本地拖入、粘贴、网页缓存及手机上传增加内容级去重，相同素材会复用已有缓存文件。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.5 画布节点与导航优化</p>
+                <p>修正视频补帧节点的实际渲染尺寸，让它和 UI 设计尺寸保持一致。</p>
+                <p>优化补帧节点与增强节点的进度条布局，避免进度显示挤压节点内容。</p>
+                <p>恢复画布导航缩略图，并在窗口高度不足时自动下移右侧工具列，保证导航完整可见。</p>
                 <p>优化大量图片时的抽屉卡片渲染、缩略图生成和画布视口裁剪，降低滚动、拖动与导航时的卡顿。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
