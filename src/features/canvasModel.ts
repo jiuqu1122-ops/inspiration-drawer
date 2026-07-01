@@ -81,6 +81,8 @@ export type CanvasAiItemData = {
   count?: number;
   duration?: number;
   videoInputMode?: 'REF' | 'FLF';
+  videoCfrMode?: 'auto' | '24' | '30' | 'off';
+  interpolationRateMode?: 'multiplier' | 'target-fps';
   interpolationFactor?: number;
   interpolationTargetFps?: number;
   interpolationMode?: string;
@@ -89,12 +91,12 @@ export type CanvasAiItemData = {
   interpolationEstimate?: CanvasRifeInterpolationEstimate;
   interpolationEstimateKey?: string;
   interpolationProgress?: CanvasRifeEngineProgress;
+  enhancementEngine?: 'ai' | 'quick';
+  quickEnhancementScale?: number;
   enhancementScale?: number;
   enhancementMode?: string;
   enhancementResizeMode?: string;
   enhancementKeepAudio?: boolean;
-  enhancementRunMode?: 'preview' | 'full';
-  enhancementPreviewReadyKey?: string;
   enhancementEstimate?: CanvasRifeInterpolationEstimate;
   enhancementEstimateKey?: string;
   enhancementProgress?: CanvasRifeEngineProgress;

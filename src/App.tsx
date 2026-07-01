@@ -743,14 +743,19 @@ const CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS: RoundedSelectOption[] = [
   { value: 'REF', label: '参考图' },
   { value: 'FLF', label: '首尾帧' },
 ];
-const CANVAS_RIFE_INTERPOLATION_FACTOR_OPTIONS: RoundedSelectOption[] = [
-  { value: '2', label: '2× 补帧' },
-  { value: '4', label: '4× 补帧' },
+const CANVAS_RIFE_RATE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'factor-2', label: '2× 补帧' },
+  { value: 'factor-4', label: '4× 补帧' },
+  { value: 'target-30', label: '目标 30fps' },
+  { value: 'target-48', label: '目标 48fps' },
+  { value: 'target-60', label: '目标 60fps' },
+  { value: 'target-120', label: '目标 120fps' },
 ];
-const CANVAS_RIFE_TARGET_FPS_OPTIONS: RoundedSelectOption[] = [
-  { value: '30', label: '30fps' },
-  { value: '60', label: '60fps' },
-  { value: '120', label: '120fps' },
+const CANVAS_VIDEO_CFR_MODE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'auto', label: '自动标准化' },
+  { value: '24', label: '24fps CFR' },
+  { value: '30', label: '30fps CFR' },
+  { value: 'off', label: '不处理' },
 ];
 const CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS: RoundedSelectOption[] = [
   { value: 'auto-2x', label: '自动 2x' },
@@ -778,9 +783,13 @@ const CANVAS_ESRGAN_SCALE_OPTIONS: RoundedSelectOption[] = [
   { value: '2', label: '2× 增强' },
   { value: '4', label: '4× · 较慢' },
 ];
-const CANVAS_ESRGAN_RUN_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'preview', label: '预览 5 秒' },
-  { value: 'full', label: '完整视频' },
+const CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'ai', label: 'AI 清晰增强' },
+  { value: 'quick', label: '快速增强' },
+];
+const CANVAS_QUICK_ENHANCEMENT_SCALE_OPTIONS: RoundedSelectOption[] = [
+  { value: '1', label: '保持分辨率' },
+  { value: '2', label: '2× 放大' },
 ];
 const CANVAS_ESRGAN_MODE_OPTIONS: RoundedSelectOption[] = [
   { value: 'general', label: '通用增强' },
@@ -1958,6 +1967,17 @@ type RifeFrameInterpolationResult = {
   factor?: number;
   inputFrames?: number;
 };
+type VideoCfrNormalizationResult = {
+  outputPath: string;
+  converted?: boolean;
+  isVfr?: boolean;
+  sourceFps?: number | null;
+  normalizedFps?: number | null;
+  reason?: string;
+};
+type QuickVideoEnhancementResult = RealEsrganEnhancementResult & {
+  encoder?: string;
+};
 type RifeFrameInterpolationEstimate = {
   durationSec?: number | null;
   width?: number | null;
@@ -1969,6 +1989,9 @@ type RifeFrameInterpolationEstimate = {
   sampleFrames?: number | null;
   estimatedSecondsMin?: number | null;
   estimatedSecondsMax?: number | null;
+  sourceFps?: number | null;
+  cfrConverted?: boolean;
+  cfrReason?: string;
 };
 type RealEsrganEnhancementResult = {
   outputPath: string;
@@ -1986,8 +2009,6 @@ type RealEsrganEnhancementResult = {
 type RealEsrganEnhancementEstimate = RifeFrameInterpolationEstimate & {
   outputWidth?: number | null;
   outputHeight?: number | null;
-  preview?: boolean;
-  previewDurationSec?: number | null;
 };
 type RifeEngineProgress = {
   progressId?: string;
@@ -1997,6 +2018,8 @@ type RifeEngineProgress = {
   total?: number;
   progress?: number;
 };
+const rifeEstimateCache = new Map<string, Promise<RifeFrameInterpolationEstimate>>();
+const enhancementEstimateCache = new Map<string, Promise<RealEsrganEnhancementEstimate>>();
 const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
   Math.max(0, Math.min(100, Math.round(Number(progress?.progress || 0) * 100)))
 );
@@ -2012,6 +2035,26 @@ const isFrameProcessingProgress = (progress?: RifeEngineProgress | null) => (
 const isRifeFixed2xMode = (mode?: string | null) => (
   mode === 'hd' || mode === 'uhd' || mode === 'hd-slow'
 );
+const getCanvasRifeRateValue = (ai?: CanvasImageItem['ai'] | null) => (
+  ai?.interpolationRateMode === 'target-fps'
+    ? `target-${Math.round(Number(ai?.interpolationTargetFps) || 60)}`
+    : `factor-${clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4)}`
+);
+const getCanvasRifeRateRequest = (ai?: CanvasImageItem['ai'] | null) => {
+  if (isRifeFixed2xMode(ai?.interpolationMode)) {
+    return { factor: 2, targetFps: undefined as number | undefined };
+  }
+  if (ai?.interpolationRateMode === 'target-fps') {
+    return {
+      factor: 4,
+      targetFps: clamp(Math.round(Number(ai?.interpolationTargetFps) || 60), 1, 240),
+    };
+  }
+  return {
+    factor: clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4),
+    targetFps: undefined as number | undefined,
+  };
+};
 const formatRifeEstimateSeconds = (seconds?: number | null) => {
   if (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return '';
   const safeSeconds = Math.max(1, Math.round(Number(seconds)));
@@ -2039,7 +2082,13 @@ const formatRifeEstimateVideoMeta = (estimate?: RifeFrameInterpolationEstimate |
     parts.push(`${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`);
   }
   if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
-    parts.push(`${Number(estimate?.fps).toFixed(Number(estimate?.fps) >= 10 ? 0 : 1)}fps`);
+    const fps = Number(estimate?.fps);
+    const sourceFps = Number(estimate?.sourceFps);
+    if (estimate?.cfrConverted && Number.isFinite(sourceFps) && sourceFps > 0) {
+      parts.push(`${sourceFps.toFixed(sourceFps >= 10 ? 0 : 1)}fps → CFR ${fps.toFixed(fps >= 10 ? 0 : 1)}fps`);
+    } else {
+      parts.push(`${fps.toFixed(fps >= 10 ? 0 : 1)}fps`);
+    }
   }
   if (Number.isFinite(Number(estimate?.outputFps)) && Number(estimate?.outputFps) > 0) {
     parts.push(`→ ${Number(estimate?.outputFps).toFixed(0)}fps`);
@@ -2051,11 +2100,8 @@ const formatRifeEstimateVideoMeta = (estimate?: RifeFrameInterpolationEstimate |
 };
 const formatEnhancementEstimateVideoMeta = (estimate?: RealEsrganEnhancementEstimate | null) => {
   const parts: string[] = [];
-  if (estimate?.preview && Number(estimate?.previewDurationSec) > 0) {
-    parts.push(`预览 ${formatRifeEstimateSeconds(estimate.previewDurationSec)}`);
-  }
   if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
-    parts.push(`${estimate?.preview ? '原片 ' : ''}${formatRifeEstimateSeconds(estimate?.durationSec)}`);
+    parts.push(formatRifeEstimateSeconds(estimate?.durationSec));
   }
   const hasInputResolution = Number(estimate?.width) > 0 && Number(estimate?.height) > 0;
   const hasOutputResolution = Number(estimate?.outputWidth) > 0 && Number(estimate?.outputHeight) > 0;
@@ -2930,7 +2976,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.1.2');
+        setAppVersion('4.1.3');
       });
   }, []);
 
@@ -10186,6 +10232,7 @@ function MainApp() {
         count,
         duration: isVideo ? CANVAS_AI_DEFAULT_VIDEO_DURATION : undefined,
         videoInputMode: isVideo ? 'REF' : undefined,
+        videoCfrMode: isVideo ? 'auto' : undefined,
         status: 'idle',
       },
     };
@@ -10276,6 +10323,8 @@ function MainApp() {
         model: 'rife-v4.6',
         aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
         count: 1,
+        videoCfrMode: 'auto',
+        interpolationRateMode: 'multiplier',
         interpolationFactor: 2,
         interpolationTargetFps: 60,
         interpolationMode: 'normal',
@@ -10356,10 +10405,11 @@ function MainApp() {
         aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
         count: 1,
         enhancementScale: 2,
+        enhancementEngine: isVideo ? 'ai' : undefined,
+        quickEnhancementScale: isVideo ? 2 : undefined,
         enhancementMode: 'general',
         enhancementResizeMode: 'upscale',
         enhancementKeepAudio: true,
-        enhancementRunMode: isVideo ? 'preview' : 'full',
         outputFormat: isVideo ? 'mp4' : 'png',
         status: 'idle',
         outputs: [],
@@ -12270,12 +12320,27 @@ function MainApp() {
       };
 
       const placeGeneratedMedia = async (url: string, index: number) => {
-        const cached = await cacheCanvasGeneratedImageSource(
+        let cached = await cacheCanvasGeneratedImageSource(
           url,
           mediaType === 'video'
             ? `AI generated video ${Date.now()}-${index + 1}.mp4`
             : `AI generated ${Date.now()}-${index + 1}`
         );
+        if (mediaType === 'video' && cached.path) {
+          try {
+            const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
+              inputPath: cached.path,
+              mode: (target.ai?.videoCfrMode || 'auto') === 'auto' ? 'auto-ai' : target.ai?.videoCfrMode,
+              progressId: target.id,
+            });
+            const normalizedPath = (normalized.outputPath || '').trim();
+            if (normalized.converted && normalizedPath) {
+              cached = { path: normalizedPath, url: convertFileSrc(normalizedPath) };
+            }
+          } catch (error) {
+            console.warn('AI 视频帧率自动检测/标准化失败，保留原视频:', error);
+          }
+        }
         const displayUrl = cached.url || url;
         const size = mediaType === 'video'
           ? getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO)
@@ -12433,12 +12498,13 @@ function MainApp() {
 
   const getFrameInterpolationEstimateKey = (target: CanvasImageItem, source: string) => {
     const ai = target.ai;
-    const fixed2xMode = isRifeFixed2xMode(ai?.interpolationMode);
+    const rate = getCanvasRifeRateRequest(ai);
     return [
-      'sample-benchmark-v2',
+      'sample-benchmark-v3-auto-cfr',
       source,
-      fixed2xMode ? 2 : clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4),
-      fixed2xMode ? 'auto-2x' : Number(ai?.interpolationTargetFps) || 60,
+      rate.factor,
+      rate.targetFps || 'multiplier',
+      ai?.videoCfrMode || 'auto',
       ai?.interpolationMode || 'normal',
       ai?.model || 'rife-v4.6',
       ai?.interpolationQuality || 'standard',
@@ -12448,6 +12514,13 @@ function MainApp() {
 
   useEffect(() => {
     if (!isCanvasMode) return;
+    canvasItems.forEach(item => {
+      const key = item.ai?.interpolationEstimateKey;
+      const estimate = item.ai?.interpolationEstimate as RifeFrameInterpolationEstimate | undefined;
+      if (key && estimate && !rifeEstimateCache.has(key)) {
+        rifeEstimateCache.set(key, Promise.resolve(estimate));
+      }
+    });
     const requests = canvasItems
       .filter(item => item.ai?.type === 'frame-interpolation' && item.ai?.status !== 'working')
       .map(item => {
@@ -12464,16 +12537,26 @@ function MainApp() {
         interpolationEstimateKey: estimateKey,
         interpolationEstimate: undefined,
       });
-      void invoke<RifeFrameInterpolationEstimate>('get_rife_frame_interpolation_estimate', {
-        inputPath: source,
-        factor: isRifeFixed2xMode(item.ai?.interpolationMode) ? 2 : clamp(Math.round(Number(item.ai?.interpolationFactor) || 2), 2, 4),
-        model: item.ai?.model || 'rife-v4.6',
-        targetFps: isRifeFixed2xMode(item.ai?.interpolationMode) ? undefined : Number(item.ai?.interpolationTargetFps) || 60,
-        mode: item.ai?.interpolationMode || 'normal',
-        quality: item.ai?.interpolationQuality || 'standard',
-        outputFormat: item.ai?.outputFormat || 'mp4',
-        progressId: item.id,
-      })
+      let request = rifeEstimateCache.get(estimateKey);
+      if (!request) {
+        const rate = getCanvasRifeRateRequest(item.ai);
+        request = invoke<RifeFrameInterpolationEstimate>('get_rife_frame_interpolation_estimate', {
+          inputPath: source,
+          factor: rate.factor,
+          model: item.ai?.model || 'rife-v4.6',
+          targetFps: rate.targetFps,
+          cfrMode: item.ai?.videoCfrMode || 'auto',
+          mode: item.ai?.interpolationMode || 'normal',
+          quality: item.ai?.interpolationQuality || 'standard',
+          outputFormat: item.ai?.outputFormat || 'mp4',
+          progressId: item.id,
+        }).catch(error => {
+          rifeEstimateCache.delete(estimateKey);
+          throw error;
+        });
+        rifeEstimateCache.set(estimateKey, request);
+      }
+      void request
         .then((estimate) => {
           const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
           if (latest?.ai?.interpolationEstimateKey !== estimateKey) return;
@@ -12509,12 +12592,16 @@ function MainApp() {
     }
 
     const fixed2xMode = isRifeFixed2xMode(target.ai.interpolationMode);
-    const factor = fixed2xMode ? 2 : clamp(Math.round(Number(target.ai.interpolationFactor) || 2), 2, 4);
+    const rate = getCanvasRifeRateRequest(target.ai);
+    const factor = rate.factor;
+    const rateLabel = fixed2xMode || target.ai.interpolationRateMode !== 'target-fps'
+      ? `${factor}× 补帧`
+      : `目标 ${rate.targetFps || 60}fps`;
     const startedAt = Date.now();
     const draft: CanvasAiGeneratedOutput = {
       id: `${target.id}_rife_output_${startedAt}`,
       mediaType: 'video',
-      name: `RIFE ${factor}× 补帧`,
+      name: `RIFE ${rateLabel}`,
       status: 'working',
       generatedAt: startedAt,
       width: 16,
@@ -12542,7 +12629,8 @@ function MainApp() {
         inputPath: videoInput.source,
         factor,
         model: target.ai.model || 'rife-v4.6',
-        targetFps: fixed2xMode ? undefined : Number(target.ai.interpolationTargetFps) || 60,
+        targetFps: rate.targetFps,
+        cfrMode: target.ai.videoCfrMode || 'auto',
         mode: target.ai.interpolationMode || 'normal',
         quality: target.ai.interpolationQuality || 'standard',
         keepAudio: target.ai.interpolationKeepAudio !== false,
@@ -12559,8 +12647,10 @@ function MainApp() {
         mediaType: 'video',
         url: outputUrl,
         path: outputPath,
-        name: `${sourceName} · RIFE ${result.factor || factor}×`,
-        prompt: `RIFE frame interpolation ${result.factor || factor}x`,
+        name: `${sourceName} · RIFE ${target.ai.interpolationRateMode === 'target-fps' && !fixed2xMode
+          ? `${Number(result.fps || 0).toFixed(0)}→${Number(result.outputFps || rate.targetFps || 0).toFixed(0)}fps`
+          : `${result.factor || factor}×`}`,
+        prompt: `RIFE frame interpolation ${rateLabel}`,
         status: 'success',
         error: undefined,
         generatedAt: finishedAt,
@@ -12621,7 +12711,7 @@ function MainApp() {
     return null;
   };
 
-  const getEnhancementPreviewKey = (target: CanvasImageItem, source: string) => [
+  const getEnhancementQualityKey = (target: CanvasImageItem, source: string) => [
     source,
     target.ai?.type || 'image-enhancement',
     clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4),
@@ -12630,15 +12720,25 @@ function MainApp() {
     String(target.ai?.outputFormat || (getCanvasAiMediaType(target.ai) === 'video' ? 'mp4' : 'png')).toLowerCase(),
   ].join('|');
   const getEnhancementEstimateKey = (target: CanvasImageItem, source: string) => [
-    'sample-benchmark-v3-preview',
-    getEnhancementPreviewKey(target, source),
-    target.ai?.enhancementRunMode || (getCanvasAiMediaType(target.ai) === 'video' ? 'preview' : 'full'),
+    'sample-benchmark-v4',
+    getEnhancementQualityKey(target, source),
   ].join('|');
 
   useEffect(() => {
     if (!isCanvasMode) return;
+    canvasItems.forEach(item => {
+      const key = item.ai?.enhancementEstimateKey;
+      const estimate = item.ai?.enhancementEstimate as RealEsrganEnhancementEstimate | undefined;
+      if (key && estimate && !enhancementEstimateCache.has(key)) {
+        enhancementEstimateCache.set(key, Promise.resolve(estimate));
+      }
+    });
     const requests = canvasItems
-      .filter(item => isCanvasAiEnhancementType(item.ai?.type) && item.ai?.status !== 'working')
+      .filter(item => (
+        isCanvasAiEnhancementType(item.ai?.type)
+        && item.ai?.status !== 'working'
+        && !(item.ai?.type === 'video-enhancement' && item.ai?.enhancementEngine === 'quick')
+      ))
       .map(item => {
         const input = getCanvasEnhancementInput(item);
         if (!input?.source) return null;
@@ -12653,16 +12753,23 @@ function MainApp() {
         enhancementEstimateKey: estimateKey,
         enhancementEstimate: undefined,
       });
-      void invoke<RealEsrganEnhancementEstimate>('get_realesrgan_enhancement_estimate', {
-        inputPath: source,
-        mediaType: getCanvasAiMediaType(item.ai),
-        scale: clamp(Math.round(Number(item.ai?.enhancementScale) || 2), 2, 4),
-        mode: item.ai?.enhancementMode || 'general',
-        resizeMode: item.ai?.enhancementResizeMode || 'upscale',
-        outputFormat: item.ai?.outputFormat || (getCanvasAiMediaType(item.ai) === 'video' ? 'mp4' : 'png'),
-        previewSeconds: getCanvasAiMediaType(item.ai) === 'video' && (item.ai?.enhancementRunMode || 'preview') === 'preview' ? 5 : undefined,
-        progressId: item.id,
-      })
+      let request = enhancementEstimateCache.get(estimateKey);
+      if (!request) {
+        request = invoke<RealEsrganEnhancementEstimate>('get_realesrgan_enhancement_estimate', {
+          inputPath: source,
+          mediaType: getCanvasAiMediaType(item.ai),
+          scale: clamp(Math.round(Number(item.ai?.enhancementScale) || 2), 2, 4),
+          mode: item.ai?.enhancementMode || 'general',
+          resizeMode: item.ai?.enhancementResizeMode || 'upscale',
+          outputFormat: item.ai?.outputFormat || (getCanvasAiMediaType(item.ai) === 'video' ? 'mp4' : 'png'),
+          progressId: item.id,
+        }).catch(error => {
+          enhancementEstimateCache.delete(estimateKey);
+          throw error;
+        });
+        enhancementEstimateCache.set(estimateKey, request);
+      }
+      void request
         .then((estimate) => {
           const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
           if (latest?.ai?.enhancementEstimateKey !== estimateKey) return;
@@ -12701,28 +12808,15 @@ function MainApp() {
       return;
     }
 
-    const scale = clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4);
-    const previewKey = getEnhancementPreviewKey(target, input.source);
-    const sourceDurationSec = Number(target.ai?.enhancementEstimate?.durationSec);
-    const previewReady = target.ai?.enhancementPreviewReadyKey === previewKey;
-    const requestedRunMode = mediaType === 'video'
-      ? (target.ai?.enhancementRunMode || 'preview')
-      : 'full';
-    const mustPreviewFirst = mediaType === 'video'
-      && requestedRunMode === 'full'
-      && !previewReady
-      && (!Number.isFinite(sourceDurationSec) || sourceDurationSec > 30);
-    const runMode = mustPreviewFirst ? 'preview' : requestedRunMode;
-    const isPreviewRun = mediaType === 'video' && runMode === 'preview';
-    if (mustPreviewFirst) {
-      updateCanvasAiGeneratorData(targetId, { enhancementRunMode: 'preview' });
-      showToast('超过 30 秒的视频必须先生成 5 秒预览');
-    }
+    const isQuickVideoEnhancement = mediaType === 'video' && target.ai?.enhancementEngine === 'quick';
+    const scale = isQuickVideoEnhancement
+      ? clamp(Math.round(Number(target.ai?.quickEnhancementScale) || 2), 1, 2)
+      : clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4);
     const startedAt = Date.now();
     const draft: CanvasAiGeneratedOutput = {
       id: `${target.id}_realesrgan_output_${startedAt}`,
       mediaType,
-      name: `Real-ESRGAN ${scale}× ${isPreviewRun ? '5 秒预览' : '清晰度增强'}`,
+      name: isQuickVideoEnhancement ? `快速视频增强 ${scale}×` : `Real-ESRGAN ${scale}× 清晰度增强`,
       status: 'working',
       generatedAt: startedAt,
       width: mediaType === 'video' ? 16 : 1,
@@ -12733,8 +12827,8 @@ function MainApp() {
       error: undefined,
       enhancementProgress: {
         progressId: targetId,
-        stage: 'starting-realesrgan',
-        label: isPreviewRun ? '准备生成 5 秒增强预览' : '准备后台完整增强',
+        stage: isQuickVideoEnhancement ? 'starting-quick-enhance' : 'starting-realesrgan',
+        label: isQuickVideoEnhancement ? '准备快速去噪与锐化' : mediaType === 'video' ? '准备后台完整增强' : '准备增强',
         loaded: 0,
         total: 0,
         progress: 0,
@@ -12743,26 +12837,33 @@ function MainApp() {
       generatedAt: startedAt,
     });
     updateCanvasSelection([targetId]);
-    showToast(isPreviewRun
-      ? '开始生成前 5 秒增强预览'
-      : '完整视频增强已转入后台；可以继续使用画布');
+    showToast(isQuickVideoEnhancement
+      ? '快速增强已开始：去噪、锐化、提升对比与饱和度，并重新高质量编码'
+      : mediaType === 'video' ? '完整视频增强已转入后台；可以继续使用画布' : '开始增强图片');
 
     try {
-      const command = mediaType === 'video'
-        ? 'run_realesrgan_video_enhancement'
-        : 'run_realesrgan_image_enhancement';
-      const result = await invoke<RealEsrganEnhancementResult>(command, {
-        inputPath: input.source,
-        scale,
-        mode: target.ai?.enhancementMode || 'general',
-        resizeMode: target.ai?.enhancementResizeMode || 'upscale',
-        keepAudio: target.ai?.enhancementKeepAudio !== false,
-        outputFormat: target.ai?.outputFormat || (mediaType === 'video' ? 'mp4' : 'png'),
-        previewSeconds: isPreviewRun ? 5 : undefined,
-        progressId: targetId,
-      });
+      const result = isQuickVideoEnhancement
+        ? await invoke<QuickVideoEnhancementResult>('run_ffmpeg_quick_video_enhancement', {
+          inputPath: input.source,
+          scale,
+          keepAudio: target.ai?.enhancementKeepAudio !== false,
+          outputFormat: target.ai?.outputFormat || 'mp4',
+          progressId: targetId,
+        })
+        : await invoke<RealEsrganEnhancementResult>(
+          mediaType === 'video' ? 'run_realesrgan_video_enhancement' : 'run_realesrgan_image_enhancement',
+          {
+            inputPath: input.source,
+            scale,
+            mode: target.ai?.enhancementMode || 'general',
+            resizeMode: target.ai?.enhancementResizeMode || 'upscale',
+            keepAudio: target.ai?.enhancementKeepAudio !== false,
+            outputFormat: target.ai?.outputFormat || (mediaType === 'video' ? 'mp4' : 'png'),
+            progressId: targetId,
+          },
+        );
       const outputPath = (result.outputPath || '').trim();
-      if (!outputPath) throw new Error('Real-ESRGAN 没有返回输出文件路径');
+      if (!outputPath) throw new Error(isQuickVideoEnhancement ? 'FFmpeg 没有返回增强视频路径' : 'Real-ESRGAN 没有返回输出文件路径');
       const finishedAt = Date.now();
       const sourceName = input.output?.name || input.item.item.name || input.item.item.content || (mediaType === 'video' ? '视频' : '图片');
       const output: CanvasAiGeneratedOutput = {
@@ -12770,8 +12871,10 @@ function MainApp() {
         mediaType,
         url: convertFileSrc(outputPath),
         path: outputPath,
-        name: `${sourceName} · ${result.preview ? '5 秒增强预览' : '清晰度增强'} ${result.scale || scale}×`,
-        prompt: `Real-ESRGAN ${result.mode || target.ai?.enhancementMode || 'general'} ${result.scale || scale}x`,
+        name: `${sourceName} · ${isQuickVideoEnhancement ? '快速增强' : '清晰度增强'} ${result.scale || scale}×`,
+        prompt: isQuickVideoEnhancement
+          ? `FFmpeg quick enhancement ${(result as QuickVideoEnhancementResult).encoder || 'high-quality encode'}`
+          : `Real-ESRGAN ${result.mode || target.ai?.enhancementMode || 'general'} ${result.scale || scale}x`,
         status: 'success',
         error: undefined,
         generatedAt: finishedAt,
@@ -12782,8 +12885,6 @@ function MainApp() {
         status: 'success',
         error: undefined,
         enhancementProgress: undefined,
-        enhancementPreviewReadyKey: result.preview ? previewKey : target.ai?.enhancementPreviewReadyKey,
-        enhancementRunMode: result.preview ? 'full' : target.ai?.enhancementRunMode,
         outputs: [output],
         generatedAt: finishedAt,
       });
@@ -12800,8 +12901,8 @@ function MainApp() {
         if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
         else addGeneratedImagesToDrawer([drawerItem]);
       }
-      showToast(result.preview
-        ? '5 秒增强预览已生成；确认效果后可运行完整增强'
+      showToast(isQuickVideoEnhancement
+        ? `快速视频增强完成（${(result as QuickVideoEnhancementResult).encoder || '高质量编码'}）`
         : `${mediaType === 'video' ? '视频' : '图片'}清晰度增强完成`);
     } catch (err) {
       const message = getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err));
@@ -19086,7 +19187,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.1.2'}
+                                      v{appVersion || '4.1.3'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -19330,6 +19431,7 @@ useEffect(() => {
                           const isCanvasFrameInterpolationItem = canvasItem.ai?.type === 'frame-interpolation';
                           const isCanvasImageEnhancementItem = canvasItem.ai?.type === 'image-enhancement';
                           const isCanvasVideoEnhancementItem = canvasItem.ai?.type === 'video-enhancement';
+                          const isQuickVideoEnhancementItem = isCanvasVideoEnhancementItem && canvasItem.ai?.enhancementEngine === 'quick';
                           const isCanvasEnhancementItem = isCanvasImageEnhancementItem || isCanvasVideoEnhancementItem;
                           const isCanvasSingleVideoInputItem = isCanvasFrameInterpolationItem || isCanvasVideoEnhancementItem;
                           const isCanvasWorkflowItem = canvasItem.ai?.type === 'workflow';
@@ -19425,12 +19527,15 @@ useEffect(() => {
                             : frameInterpolationProgress?.total ? `${frameInterpolationProgressPercent}%` : '处理中';
                           const isFrameInterpolationFixed2xMode = isCanvasFrameInterpolationItem && isRifeFixed2xMode(canvasItem.ai?.interpolationMode);
                           const enhancementEstimate = isCanvasEnhancementItem
+                            && !isQuickVideoEnhancementItem
                             ? canvasItem.ai?.enhancementEstimate as RealEsrganEnhancementEstimate | undefined
                             : undefined;
                           const enhancementProgress = isCanvasEnhancementItem
                             ? canvasItem.ai?.enhancementProgress as RifeEngineProgress | undefined
                             : undefined;
-                          const enhancementEstimateText = !enhancementEstimate && canvasItem.ai?.enhancementEstimateKey
+                          const enhancementEstimateText = isQuickVideoEnhancementItem
+                            ? '快速本地处理'
+                            : !enhancementEstimate && canvasItem.ai?.enhancementEstimateKey
                             ? '正在实测速度…'
                             : formatRifeEstimateRange(enhancementEstimate);
                           const enhancementMetaText = formatEnhancementEstimateVideoMeta(enhancementEstimate);
@@ -19439,14 +19544,6 @@ useEffect(() => {
                           const enhancementProgressDetail = isFrameProcessingProgress(enhancementProgress) && enhancementProgress?.total
                             ? `${Math.round(Number(enhancementProgress.loaded || 0))}/${Math.round(Number(enhancementProgress.total))}帧 · ${enhancementProgressPercent}%`
                             : enhancementProgress?.total ? `${enhancementProgressPercent}%` : '处理中';
-                          const enhancementInput = isCanvasVideoEnhancementItem ? getCanvasEnhancementInput(canvasItem) : null;
-                          const enhancementRunMode = canvasItem.ai?.enhancementRunMode || (isCanvasVideoEnhancementItem ? 'preview' : 'full');
-                          const enhancementPreviewKey = enhancementInput?.source
-                            ? getEnhancementPreviewKey(canvasItem, enhancementInput.source)
-                            : '';
-                          const enhancementPreviewReady = !!enhancementPreviewKey
-                            && canvasItem.ai?.enhancementPreviewReadyKey === enhancementPreviewKey;
-                          const enhancementSourceDurationSec = Number(enhancementEstimate?.durationSec);
                           const isLocalMediaBenchmarking = !!(
                             frameInterpolationProgress?.stage?.startsWith('benchmarking-')
                             || enhancementProgress?.stage?.startsWith('benchmarking-')
@@ -19927,10 +20024,12 @@ useEffect(() => {
                                               {isCanvasVideoEnhancementItem
                                                 ? <Film className="h-4 w-4 text-violet-500" />
                                                 : <ImageIcon className="h-4 w-4 text-violet-500" />}
-                                              <span>{isCanvasVideoEnhancementItem ? '本地视频清晰度增强' : '本地图片清晰度增强'}</span>
+                                              <span>{isQuickVideoEnhancementItem
+                                                ? '本地视频快速增强'
+                                                : isCanvasVideoEnhancementItem ? '本地视频清晰度增强' : '本地图片清晰度增强'}</span>
                                             </div>
                                             <span className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-black text-violet-700 dark:bg-violet-300/12 dark:text-violet-100">
-                                              Real-ESRGAN
+                                              {isQuickVideoEnhancementItem ? 'FFmpeg + NVENC' : 'Real-ESRGAN'}
                                             </span>
                                           </div>
                                           <div className="mt-2 grid gap-1.5">
@@ -19942,7 +20041,9 @@ useEffect(() => {
                                               <span className="font-black text-stone-800 dark:text-white/78">{enhancementEstimateText}</span>
                                             </div>
                                             <div className="line-clamp-1 text-[11px] text-stone-400 dark:text-white/38">
-                                              {enhancementMetaText || '首次使用会把 Real-ESRGAN 和缺失的 ffmpeg / ffprobe 下载到安装目录。'}
+                                              {isQuickVideoEnhancementItem
+                                                ? '轻度去噪、锐化、提升对比与饱和度、减轻压缩糊感，并重新高质量编码。'
+                                                : enhancementMetaText || '首次使用会把 Real-ESRGAN 和缺失的 ffmpeg / ffprobe 下载到安装目录。'}
                                             </div>
                                             {showEnhancementProgress && (
                                               <div className="rounded-[12px] bg-white/70 px-2.5 py-2 ring-1 ring-stone-950/[0.04] dark:bg-black/14 dark:ring-white/[0.055]">
@@ -20006,36 +20107,49 @@ useEffect(() => {
                                               <RoundedSelect
                                                 data-no-drag="true"
                                                 data-canvas-edit-control="true"
-                                                value={String(isFrameInterpolationFixed2xMode ? 2 : canvasItem.ai?.interpolationFactor || 2)}
-                                                options={CANVAS_RIFE_INTERPOLATION_FACTOR_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationFactor: Number(value) || 2 })}
+                                                value={isFrameInterpolationFixed2xMode ? 'auto-2x' : getCanvasRifeRateValue(canvasItem.ai)}
+                                                options={isFrameInterpolationFixed2xMode ? CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS : CANVAS_RIFE_RATE_OPTIONS}
+                                                onChange={(value) => {
+                                                  if (value.startsWith('target-')) {
+                                                    updateCanvasAiGeneratorData(canvasItem.id, {
+                                                      interpolationRateMode: 'target-fps',
+                                                      interpolationTargetFps: Number(value.slice('target-'.length)) || 60,
+                                                    });
+                                                  } else {
+                                                    updateCanvasAiGeneratorData(canvasItem.id, {
+                                                      interpolationRateMode: 'multiplier',
+                                                      interpolationFactor: Number(value.slice('factor-'.length)) || 2,
+                                                    });
+                                                  }
+                                                }}
                                                 disabled={isFrameInterpolationFixed2xMode}
                                                 icon={<RefreshCw className="h-3.5 w-3.5" />}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 固定为默认 2x 补帧' : `补帧倍率：${canvasItem.ai?.interpolationFactor || 2}×`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[102px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
+                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 固定使用原帧率 × 2' : '倍率补帧与目标帧率二选一'}
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
                                                 menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={118}
+                                                menuMinWidth={138}
                                                 menuScale={canvasAiNodeScale || 1}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
                                                 data-canvas-edit-control="true"
-                                                value={isFrameInterpolationFixed2xMode ? 'auto-2x' : String(canvasItem.ai?.interpolationTargetFps || 60)}
-                                                options={isFrameInterpolationFixed2xMode ? CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS : CANVAS_RIFE_TARGET_FPS_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationTargetFps: Number(value) || 60 })}
-                                                disabled={isFrameInterpolationFixed2xMode}
+                                                value={canvasItem.ai?.videoCfrMode || 'auto'}
+                                                options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  videoCfrMode: value === '24' || value === '30' || value === 'off' ? value : 'auto',
+                                                })}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 使用原视频帧率 × 2' : `目标帧率：${canvasItem.ai?.interpolationTargetFps || 60}fps`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[72px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
+                                                title="补帧前检测 VFR；自动模式只在需要时标准化"
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[104px]`}
                                                 menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={96}
+                                                menuMinWidth={132}
                                                 menuScale={canvasAiNodeScale || 1}
                                               />
                                               <RoundedSelect
@@ -20108,6 +20222,48 @@ useEffect(() => {
                                             </>
                                           ) : isCanvasEnhancementItem ? (
                                             <>
+                                              {isCanvasVideoEnhancementItem && (
+                                                <RoundedSelect
+                                                  data-no-drag="true"
+                                                  data-canvas-edit-control="true"
+                                                  value={canvasItem.ai?.enhancementEngine || 'ai'}
+                                                  options={CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS}
+                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                                    enhancementEngine: value === 'quick' ? 'quick' : 'ai',
+                                                    enhancementEstimate: undefined,
+                                                    enhancementEstimateKey: undefined,
+                                                  })}
+                                                  labelClassName="text-center leading-none"
+                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                  title={isQuickVideoEnhancementItem ? 'FFmpeg 滤镜 + NVENC 优先' : 'Real-ESRGAN AI 清晰度增强'}
+                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[104px]`}
+                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                  menuMinWidth={132}
+                                                  menuScale={canvasAiNodeScale || 1}
+                                                />
+                                              )}
+                                              {isQuickVideoEnhancementItem ? (
+                                                <RoundedSelect
+                                                  data-no-drag="true"
+                                                  data-canvas-edit-control="true"
+                                                  value={String(canvasItem.ai?.quickEnhancementScale || 2)}
+                                                  options={CANVAS_QUICK_ENHANCEMENT_SCALE_OPTIONS}
+                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { quickEnhancementScale: Number(value) >= 2 ? 2 : 1 })}
+                                                  icon={<Maximize2 className="h-3.5 w-3.5" />}
+                                                  labelClassName="text-center leading-none"
+                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                  title="快速增强输出分辨率"
+                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px]`}
+                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                  menuMinWidth={132}
+                                                  menuScale={canvasAiNodeScale || 1}
+                                                />
+                                              ) : (
+                                                <>
                                               <RoundedSelect
                                                 data-no-drag="true"
                                                 data-canvas-edit-control="true"
@@ -20160,34 +20316,7 @@ useEffect(() => {
                                                 menuMinWidth={142}
                                                 menuScale={canvasAiNodeScale || 1}
                                               />
-                                              {isCanvasVideoEnhancementItem && (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={enhancementRunMode}
-                                                  options={CANVAS_ESRGAN_RUN_MODE_OPTIONS}
-                                                  onChange={(value) => {
-                                                    const nextMode = value === 'full' ? 'full' : 'preview';
-                                                    const needsPreview = nextMode === 'full'
-                                                      && !enhancementPreviewReady
-                                                      && (!Number.isFinite(enhancementSourceDurationSec) || enhancementSourceDurationSec > 30);
-                                                    if (needsPreview) {
-                                                      updateCanvasAiGeneratorData(canvasItem.id, { enhancementRunMode: 'preview' });
-                                                      showToast('超过 30 秒的视频需要先生成 5 秒预览');
-                                                      return;
-                                                    }
-                                                    updateCanvasAiGeneratorData(canvasItem.id, { enhancementRunMode: nextMode });
-                                                  }}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title={enhancementRunMode === 'preview' ? '只增强视频前 5 秒' : '后台增强完整视频'}
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={118}
-                                                  menuScale={canvasAiNodeScale || 1}
-                                                />
+                                                </>
                                               )}
                                               {isCanvasVideoEnhancementItem && (
                                                 <RoundedSelect
@@ -20361,6 +20490,24 @@ useEffect(() => {
                                                 menuMinWidth={82}
                                                 menuScale={canvasAiNodeScale || 1}
                                               />
+                                              <RoundedSelect
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                value={canvasItem.ai?.videoCfrMode || 'auto'}
+                                                options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
+                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  videoCfrMode: value === '24' || value === '30' || value === 'off' ? value : 'auto',
+                                                })}
+                                                labelClassName="text-center leading-none"
+                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                title="生成后检测帧率；自动模式只在需要时转 CFR"
+                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
+                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                menuMinWidth={132}
+                                                menuScale={canvasAiNodeScale || 1}
+                                              />
                                             </>
                                           )}
                                           <RoundedSelect
@@ -20397,8 +20544,8 @@ useEffect(() => {
                                           : isCanvasEnhancementItem
                                             ? (isCanvasVideoEnhancementItem
                                               ? (canvasItem.ai?.status === 'working'
-                                                ? (enhancementRunMode === 'preview' ? '预览中' : '后台增强中')
-                                                : enhancementRunMode === 'preview' ? '预览 5 秒' : '完整增强')
+                                                ? (isQuickVideoEnhancementItem ? '快速增强中' : '后台增强中')
+                                                : (isQuickVideoEnhancementItem ? '快速增强' : '完整增强'))
                                               : (canvasItem.ai?.status === 'working' ? '增强中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强'))
                                           : canvasItem.ai?.status === 'working'
                                           ? (isCanvasWorkflowItem ? '运行中' : '生成中')
@@ -22772,10 +22919,6 @@ useEffect(() => {
                                     }));
                                     broadcastFloatingNoteTextUpdate(id, text);
                                   }}
-                                  onLiveTextChange={(id: string, nextText: string) => {
-                                    setItems(prev => prev.map(i => i.id === id && i.type === 'text' ? { ...i, content: nextText } as BufferItem : i));
-                                    broadcastFloatingNoteTextUpdate(id, nextText);
-                                  }}
                                   showToast={showToast}
                                   onEnsureThumbnail={ensureMediaThumbnail}
                                   onCreateFloatingNote={createFloatingNote}
@@ -23882,7 +24025,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.2'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.3'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24020,7 +24163,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.2'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.3'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24113,9 +24256,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.2 视频增强流程优化</p>
-                <p>新增前 5 秒快速预览；超过 30 秒的视频必须先确认预览效果，再运行完整增强。</p>
-                <p>预估时间改为真实帧数与 6 帧实测，处理进度按已完成帧数显示，并标注 4× 增强较慢。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.3 视频处理升级</p>
+                <p>补帧与 AI 视频节点会先检测 VFR/CFR，仅在需要时自动标准化帧率；也可指定 24/30fps 或关闭处理。</p>
+                <p>补帧改为“倍率”或“目标帧率”二选一，避免 2× 与 60fps 同时选择造成输出冲突。</p>
+                <p>视频增强新增 FFmpeg 快速增强：去噪、锐化、提升对比与饱和度、减轻压缩糊感、放大并高质量编码，优先使用 NVENC。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

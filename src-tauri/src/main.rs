@@ -471,6 +471,43 @@ struct RifeFrameInterpolationResult {
     input_frames: usize,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoCfrNormalizationResult {
+    output_path: String,
+    converted: bool,
+    is_vfr: bool,
+    source_fps: Option<f64>,
+    normalized_fps: Option<f64>,
+    reason: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoFrameRateAnalysis {
+    avg_fps: Option<f64>,
+    r_fps: Option<f64>,
+    duration_sec: Option<f64>,
+    frame_count: Option<u64>,
+    packet_sample_count: usize,
+    unstable_packet_timing: bool,
+    is_vfr: bool,
+    recommended_fps: Option<f64>,
+    reason: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickVideoEnhancementResult {
+    output_path: String,
+    scale: u32,
+    output_format: String,
+    fps: Option<f64>,
+    width: Option<u32>,
+    height: Option<u32>,
+    encoder: String,
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RifeEngineProgress {
@@ -495,6 +532,9 @@ struct RifeFrameInterpolationEstimate {
     sample_frames: Option<u32>,
     estimated_seconds_min: Option<f64>,
     estimated_seconds_max: Option<f64>,
+    source_fps: Option<f64>,
+    cfr_converted: bool,
+    cfr_reason: String,
 }
 
 #[derive(serde::Serialize)]
@@ -1303,6 +1343,241 @@ fn probe_video_info(ffprobe_path: &Path, source: &Path) -> Result<VideoProbeInfo
     })
 }
 
+fn analyze_video_frame_rate(
+    ffprobe_path: &Path,
+    source: &Path,
+) -> Result<VideoFrameRateAnalysis, String> {
+    let info = probe_video_info(ffprobe_path, source)?;
+    let mut cmd = SysCommand::new(ffprobe_path);
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-read_intervals",
+        "%+#240",
+        "-show_entries",
+        "stream=avg_frame_rate,r_frame_rate,duration,nb_frames:format=duration:packet=duration_time",
+        "-of",
+        "json",
+    ])
+    .arg(source);
+    let text = run_hidden_command(&mut cmd, "FFprobe 帧率检测")?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析 FFprobe 帧率检测失败: {}", e))?;
+    let stream = value
+        .get("streams")
+        .and_then(|value| value.as_array())
+        .and_then(|items| items.first());
+    let avg_fps = stream
+        .and_then(|value| value.get("avg_frame_rate"))
+        .and_then(|value| value.as_str())
+        .and_then(parse_fps_value)
+        .or(info.fps);
+    let r_fps = stream
+        .and_then(|value| value.get("r_frame_rate"))
+        .and_then(|value| value.as_str())
+        .and_then(parse_fps_value);
+    let mut packet_durations = value
+        .get("packets")
+        .and_then(|value| value.as_array())
+        .map(|packets| {
+            packets
+                .iter()
+                .filter_map(|packet| {
+                    packet
+                        .get("duration_time")
+                        .and_then(|value| value.as_str())
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    packet_durations.sort_by(|left, right| left.total_cmp(right));
+    let packet_sample_count = packet_durations.len();
+    let unstable_packet_timing = if packet_sample_count >= 12 {
+        let median = packet_durations[packet_sample_count / 2].max(0.000_001);
+        let outliers = packet_durations
+            .iter()
+            .filter(|duration| ((**duration - median).abs() / median) > 0.05)
+            .count();
+        outliers >= 3 && outliers as f64 / packet_sample_count as f64 > 0.08
+    } else {
+        false
+    };
+    let rate_mismatch = avg_fps
+        .zip(r_fps)
+        .is_some_and(|(avg, nominal)| (avg - nominal).abs() > 0.35_f64.max(avg.abs() * 0.015));
+    let is_vfr = rate_mismatch || unstable_packet_timing;
+    let recommended_fps = if is_vfr {
+        let fps = avg_fps.unwrap_or(24.0);
+        if (23.0..=25.0).contains(&fps) {
+            Some(24.0)
+        } else if (29.0..=31.0).contains(&fps) {
+            Some(30.0)
+        } else {
+            Some(24.0)
+        }
+    } else {
+        None
+    };
+    let reason = if rate_mismatch && unstable_packet_timing {
+        "平均帧率与标称帧率不一致，且相邻帧时间间隔不稳定".to_string()
+    } else if rate_mismatch {
+        "平均帧率与标称帧率差异明显".to_string()
+    } else if unstable_packet_timing {
+        "相邻帧时间间隔不稳定，检测到 VFR".to_string()
+    } else {
+        "帧率与相邻帧时间间隔稳定，可跳过 CFR 转换".to_string()
+    };
+
+    Ok(VideoFrameRateAnalysis {
+        avg_fps,
+        r_fps,
+        duration_sec: info.duration_sec,
+        frame_count: info.frame_count,
+        packet_sample_count,
+        unstable_packet_timing,
+        is_vfr,
+        recommended_fps,
+        reason,
+    })
+}
+
+fn normalize_video_cfr_mode(mode: Option<String>) -> String {
+    match mode
+        .unwrap_or_else(|| "auto".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "24" | "24fps" => "24".to_string(),
+        "30" | "30fps" => "30".to_string(),
+        "off" | "none" | "skip" => "off".to_string(),
+        "auto-ai" | "ai" => "auto-ai".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn cfr_target_for_analysis(mode: &str, analysis: &VideoFrameRateAnalysis) -> Option<f64> {
+    match mode {
+        "24" => Some(24.0),
+        "30" => Some(30.0),
+        "off" => None,
+        "auto-ai" => {
+            if analysis.is_vfr {
+                analysis.recommended_fps.or(Some(24.0))
+            } else {
+                let fps = analysis.avg_fps.unwrap_or(24.0);
+                let is_standard = [24.0, 25.0, 30.0, 50.0, 60.0]
+                    .iter()
+                    .any(|standard| (fps - standard).abs() <= 0.08);
+                (!is_standard).then_some(24.0)
+            }
+        }
+        _ => analysis.recommended_fps,
+    }
+}
+
+fn normalize_video_cfr_impl(
+    app_handle: &tauri::AppHandle,
+    ffmpeg_path: &Path,
+    ffprobe_path: &Path,
+    source: &Path,
+    mode: &str,
+    output_path: &Path,
+    progress_id: Option<&str>,
+) -> Result<VideoCfrNormalizationResult, String> {
+    let analysis = analyze_video_frame_rate(ffprobe_path, source)?;
+    let target_fps = cfr_target_for_analysis(mode, &analysis);
+    let source_fps = analysis.avg_fps;
+    let fps_tolerance = if mode.starts_with("auto") {
+        0.05
+    } else {
+        0.005
+    };
+    let should_convert = target_fps.is_some_and(|target| {
+        analysis.is_vfr
+            || source_fps
+                .map(|fps| (fps - target).abs() > fps_tolerance)
+                .unwrap_or(true)
+    });
+    if !should_convert {
+        let reason = if mode == "off" {
+            "已选择不处理帧率".to_string()
+        } else if target_fps.is_some() {
+            "视频已经是目标恒定帧率，无需转换".to_string()
+        } else {
+            analysis.reason.clone()
+        };
+        return Ok(VideoCfrNormalizationResult {
+            output_path: display_local_path(source),
+            converted: false,
+            is_vfr: analysis.is_vfr,
+            source_fps,
+            normalized_fps: source_fps,
+            reason,
+        });
+    }
+
+    let target_fps = target_fps.unwrap_or(24.0);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建 CFR 输出目录失败: {}", e))?;
+    }
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        "normalizing-cfr-video",
+        &format!("正在标准化为 {:.0}fps CFR", target_fps),
+        0,
+        0,
+    );
+    let mut command = SysCommand::new(ffmpeg_path);
+    command
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+        .arg(source)
+        .args(["-map", "0:v:0", "-map", "0:a?"])
+        .arg("-vf")
+        .arg(format!("fps=fps={:.3}", target_fps))
+        .args([
+            "-fps_mode",
+            "cfr",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "16",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+            "-shortest",
+        ])
+        .arg(output_path);
+    run_hidden_command(&mut command, "FFmpeg 自动 CFR 标准化")?;
+    if !output_path.is_file() {
+        return Err("CFR 标准化完成，但没有生成输出视频".to_string());
+    }
+    Ok(VideoCfrNormalizationResult {
+        output_path: display_local_path(output_path),
+        converted: true,
+        is_vfr: analysis.is_vfr,
+        source_fps,
+        normalized_fps: Some(target_fps),
+        reason: if mode == "auto-ai" && !analysis.is_vfr {
+            "AI 生成视频帧率非标准，优先标准化为 24fps CFR".to_string()
+        } else {
+            analysis.reason
+        },
+    })
+}
+
 fn video_frame_count(info: &VideoProbeInfo) -> u64 {
     info.frame_count
         .or_else(|| {
@@ -1648,6 +1923,7 @@ async fn get_rife_frame_interpolation_estimate(
     factor: Option<u32>,
     model: Option<String>,
     target_fps: Option<f64>,
+    cfr_mode: Option<String>,
     mode: Option<String>,
     quality: Option<String>,
     output_format: Option<String>,
@@ -1660,7 +1936,8 @@ async fn get_rife_frame_interpolation_estimate(
     } else {
         factor.unwrap_or(2).clamp(2, 4)
     };
-    let target_fps = target_fps.unwrap_or(60.0).clamp(1.0, 240.0);
+    let requested_target_fps = target_fps.filter(|value| value.is_finite() && *value > 0.0);
+    let cfr_mode = normalize_video_cfr_mode(cfr_mode);
     let quality = quality.unwrap_or_else(|| "standard".to_string());
     let output_format = normalize_realesrgan_video_format(output_format);
     let status = ensure_rife_engine_installed(&app_handle, progress_id.as_deref())?;
@@ -1677,17 +1954,45 @@ async fn get_rife_frame_interpolation_estimate(
         ));
     }
     let info = probe_video_info(&ffprobe_path, &source)?;
-    let fps = info.fps.unwrap_or(30.0).max(1.0);
+    let analysis = analyze_video_frame_rate(&ffprobe_path, &source)?;
+    let cfr_target = cfr_target_for_analysis(&cfr_mode, &analysis);
+    let fps_tolerance = if cfr_mode.starts_with("auto") {
+        0.05
+    } else {
+        0.005
+    };
+    let cfr_converted = cfr_target.is_some_and(|target| {
+        analysis.is_vfr
+            || analysis
+                .avg_fps
+                .map(|fps| (fps - target).abs() > fps_tolerance)
+                .unwrap_or(true)
+    });
+    let source_fps = analysis.avg_fps.or(info.fps).unwrap_or(30.0).max(1.0);
+    let fps = if cfr_converted {
+        cfr_target.unwrap_or(source_fps)
+    } else {
+        source_fps
+    };
     let output_fps = if fixed_2x_mode {
         fps * 2.0
+    } else if let Some(target) = requested_target_fps {
+        target.max(fps).min(fps * 4.0).min(240.0)
     } else {
-        target_fps.min(fps * factor as f64).max(fps).min(240.0)
+        (fps * factor as f64).min(240.0)
     };
-    let total_frames = video_frame_count(&info);
+    let total_frames = if cfr_converted {
+        info.duration_sec
+            .map(|duration| (duration * fps).round().max(1.0) as u64)
+            .unwrap_or_else(|| video_frame_count(&info))
+    } else {
+        video_frame_count(&info)
+    };
+    let interpolation_capacity = (output_fps / fps).ceil().clamp(2.0, 4.0) as u64;
     let output_frame_count = ((total_frames as f64) * (output_fps / fps))
         .round()
         .max(total_frames as f64)
-        .min((total_frames.saturating_mul(factor as u64)) as f64)
+        .min((total_frames.saturating_mul(interpolation_capacity)) as f64)
         as u64;
     let duration_for_estimate = info.duration_sec.unwrap_or(15.0).max(1.0);
     let width_for_estimate = info.width.unwrap_or(1920).max(1);
@@ -1741,7 +2046,7 @@ async fn get_rife_frame_interpolation_estimate(
         let sample_target_frames = ((sample_frames as f64) * (output_fps / fps))
             .round()
             .max(sample_frames as f64)
-            .min((sample_frames.saturating_mul(factor as usize)) as f64)
+            .min((sample_frames.saturating_mul(interpolation_capacity as usize)) as f64)
             as usize;
         let mut rife_cmd = SysCommand::new(&exe_path);
         rife_cmd
@@ -1867,7 +2172,7 @@ async fn get_rife_frame_interpolation_estimate(
                 height_for_estimate,
                 fps,
                 output_fps,
-                factor,
+                interpolation_capacity as u32,
                 &mode,
                 &quality,
                 &output_format,
@@ -1900,6 +2205,9 @@ async fn get_rife_frame_interpolation_estimate(
         sample_frames,
         estimated_seconds_min: Some(estimated_seconds_min),
         estimated_seconds_max: Some(estimated_seconds_max),
+        source_fps: Some(source_fps),
+        cfr_converted,
+        cfr_reason: analysis.reason,
     })
 }
 
@@ -1910,6 +2218,7 @@ async fn run_rife_frame_interpolation(
     factor: Option<u32>,
     model: Option<String>,
     target_fps: Option<f64>,
+    cfr_mode: Option<String>,
     mode: Option<String>,
     quality: Option<String>,
     keep_audio: Option<bool>,
@@ -1923,7 +2232,8 @@ async fn run_rife_frame_interpolation(
     } else {
         factor.unwrap_or(2).clamp(2, 4)
     };
-    let target_fps = target_fps.unwrap_or(60.0).clamp(1.0, 240.0);
+    let requested_target_fps = target_fps.filter(|value| value.is_finite() && *value > 0.0);
+    let cfr_mode = normalize_video_cfr_mode(cfr_mode);
     let quality = quality.unwrap_or_else(|| "standard".to_string());
     let keep_audio = keep_audio.unwrap_or(true);
     let output_format = match output_format
@@ -1969,14 +2279,28 @@ async fn run_rife_frame_interpolation(
 
     let result = (|| -> Result<RifeFrameInterpolationResult, String> {
         let run_started_at = Instant::now();
-        let info = probe_video_info(&ffprobe_path, &source)?;
+        let normalized_input_path = work_dir.join("normalized_input.mp4");
+        let cfr_result = normalize_video_cfr_impl(
+            &app_handle,
+            &ffmpeg_path,
+            &ffprobe_path,
+            &source,
+            &cfr_mode,
+            &normalized_input_path,
+            progress_id_ref,
+        )?;
+        let processing_source = PathBuf::from(&cfr_result.output_path);
+        let info = probe_video_info(&ffprobe_path, &processing_source)?;
         let fps = info.fps.unwrap_or(30.0).max(1.0);
         let estimated_input_frames = video_frame_count(&info);
         let output_fps = if fixed_2x_mode {
             fps * 2.0
+        } else if let Some(target) = requested_target_fps {
+            target.max(fps).min(fps * 4.0).min(240.0)
         } else {
-            target_fps.min(fps * factor as f64).max(fps).min(240.0)
+            (fps * factor as f64).min(240.0)
         };
+        let interpolation_capacity = (output_fps / fps).ceil().clamp(2.0, 4.0) as usize;
         let source_stem = source
             .file_stem()
             .and_then(|value| value.to_str())
@@ -1995,7 +2319,7 @@ async fn run_rife_frame_interpolation(
             let mut audio_cmd = SysCommand::new(&ffmpeg_path);
             audio_cmd
                 .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
-                .arg(&source)
+                .arg(&processing_source)
                 .args(["-vn", "-acodec", "copy"])
                 .arg(&audio_path);
             run_hidden_command(&mut audio_cmd, "FFmpeg 音频提取").is_ok() && audio_path.is_file()
@@ -2006,7 +2330,7 @@ async fn run_rife_frame_interpolation(
         let mut decode_cmd = SysCommand::new(&ffmpeg_path);
         decode_cmd
             .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
-            .arg(&source)
+            .arg(&processing_source)
             .arg(input_frames_dir.join("frame_%08d.png"));
         let extract_started_at = Instant::now();
         run_hidden_command_with_frame_progress(
@@ -2028,7 +2352,7 @@ async fn run_rife_frame_interpolation(
         let target_frame_count = ((input_frame_count as f64) * (output_fps / fps))
             .round()
             .max(input_frame_count as f64)
-            .min((input_frame_count.saturating_mul(factor as usize)) as f64)
+            .min((input_frame_count.saturating_mul(interpolation_capacity)) as f64)
             as usize;
         let mode_model = match mode.trim() {
             "hd" | "hd-slow" => "rife-HD",
@@ -2157,6 +2481,8 @@ async fn run_rife_frame_interpolation(
                 ("fps", format!("{:.3}", fps)),
                 ("model", model_name.clone()),
                 ("factor", factor.to_string()),
+                ("cfr_mode", cfr_mode.clone()),
+                ("cfr_converted", cfr_result.converted.to_string()),
                 ("output_fps", format!("{:.3}", output_fps)),
                 ("sample_frames", "0".to_string()),
                 ("extract_seconds", format!("{:.4}", extract_seconds)),
@@ -2186,13 +2512,225 @@ async fn run_rife_frame_interpolation(
             engine_dir: status.engine_dir.clone(),
             fps,
             output_fps,
-            factor,
+            factor: interpolation_capacity as u32,
             input_frames: input_frame_count,
         })
     })();
 
     let _ = fs::remove_dir_all(&work_dir);
     result
+}
+
+#[tauri::command]
+async fn normalize_video_cfr_if_needed(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    mode: Option<String>,
+    progress_id: Option<String>,
+) -> Result<VideoCfrNormalizationResult, String> {
+    let mode = normalize_video_cfr_mode(mode);
+    let progress_id_ref = progress_id.as_deref();
+    let (ffmpeg_path, ffprobe_path) = ensure_media_tools_available(&app_handle, progress_id_ref)?;
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要检测帧率的视频: {}",
+            display_local_path(&source)
+        ));
+    }
+    let base_dir = app_install_dir()?.join("engines").join("video-cfr");
+    let outputs_dir = base_dir.join("outputs");
+    fs::create_dir_all(&outputs_dir).map_err(|e| format!("创建 CFR 输出目录失败: {}", e))?;
+    let source_stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(sanitize_file_name)
+        .unwrap_or_else(|| "video".to_string());
+    let output_path = unique_file_path(outputs_dir.join(format!("{}_cfr.mp4", source_stem)));
+    normalize_video_cfr_impl(
+        &app_handle,
+        &ffmpeg_path,
+        &ffprobe_path,
+        &source,
+        &mode,
+        &output_path,
+        progress_id_ref,
+    )
+}
+
+#[tauri::command]
+async fn run_ffmpeg_quick_video_enhancement(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    scale: Option<u32>,
+    keep_audio: Option<bool>,
+    output_format: Option<String>,
+    progress_id: Option<String>,
+) -> Result<QuickVideoEnhancementResult, String> {
+    let scale = if scale.unwrap_or(2) >= 2 { 2 } else { 1 };
+    let keep_audio = keep_audio.unwrap_or(true);
+    let output_format = normalize_realesrgan_video_format(output_format);
+    let progress_id_ref = progress_id.as_deref();
+    let (ffmpeg_path, ffprobe_path) = ensure_media_tools_available(&app_handle, progress_id_ref)?;
+    let source =
+        local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
+    if !source.is_file() {
+        return Err(format!(
+            "找不到要快速增强的视频: {}",
+            display_local_path(&source)
+        ));
+    }
+    let info = probe_video_info(&ffprobe_path, &source)?;
+    let base_dir = app_install_dir()?.join("engines").join("video-enhancement");
+    let outputs_dir = base_dir.join("outputs");
+    fs::create_dir_all(&outputs_dir).map_err(|e| format!("创建快速增强输出目录失败: {}", e))?;
+    let source_stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(sanitize_file_name)
+        .unwrap_or_else(|| "video".to_string());
+    let output_path = unique_file_path(outputs_dir.join(format!(
+        "{}_quick_enhance_{}x.{}",
+        source_stem, scale, output_format
+    )));
+    let scale_filter = if scale == 2 {
+        "scale=trunc(iw*2/2)*2:trunc(ih*2/2)*2:flags=lanczos"
+    } else {
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos"
+    };
+    let filters = format!(
+        "hqdn3d=1.25:1.25:4.5:4.5,unsharp=5:5:0.55:5:5:0.0,eq=contrast=1.05:saturation=1.08,{}",
+        scale_filter
+    );
+
+    emit_rife_engine_progress(
+        &app_handle,
+        progress_id_ref,
+        "quick-enhancing-video",
+        "快速去噪、锐化并高质量编码",
+        0,
+        0,
+    );
+
+    let build_command = |encoder: &str| {
+        let mut command = SysCommand::new(&ffmpeg_path);
+        command
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&source)
+            .args(["-map", "0:v:0"]);
+        if keep_audio {
+            command.args(["-map", "0:a?"]);
+        }
+        command.arg("-vf").arg(&filters);
+        if output_format == "webm" {
+            command.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                "25",
+                "-cpu-used",
+                "3",
+                "-row-mt",
+                "1",
+                "-pix_fmt",
+                "yuv420p",
+            ]);
+            if keep_audio {
+                command.args(["-c:a", "libopus", "-b:a", "160k"]);
+            }
+        } else if encoder == "h264_nvenc" {
+            command.args([
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p5",
+                "-tune",
+                "hq",
+                "-rc",
+                "vbr",
+                "-cq",
+                "18",
+                "-b:v",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+            ]);
+            if keep_audio {
+                command.args(["-c:a", "aac", "-b:a", "192k"]);
+            }
+            command.args(["-movflags", "+faststart"]);
+        } else {
+            command.args([
+                "-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p",
+            ]);
+            if keep_audio {
+                command.args(["-c:a", "aac", "-b:a", "192k"]);
+            }
+            command.args(["-movflags", "+faststart"]);
+        }
+        if keep_audio {
+            command.arg("-shortest");
+        }
+        command.arg(&output_path);
+        command
+    };
+
+    let mut encoder = if output_format == "webm" {
+        "libvpx-vp9"
+    } else {
+        let mut encoder_check = SysCommand::new(&ffmpeg_path);
+        encoder_check.args(["-hide_banner", "-encoders"]);
+        if run_hidden_command(&mut encoder_check, "检测 NVENC")
+            .map(|text| text.contains("h264_nvenc"))
+            .unwrap_or(false)
+        {
+            "h264_nvenc"
+        } else {
+            "libx264"
+        }
+    };
+    let mut command = build_command(encoder);
+    if let Err(nvenc_error) = run_hidden_command(&mut command, "FFmpeg 快速视频增强") {
+        if encoder != "h264_nvenc" {
+            return Err(nvenc_error);
+        }
+        let _ = fs::remove_file(&output_path);
+        encoder = "libx264";
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "quick-enhancing-video-cpu",
+            "NVENC 不可用，切换 CPU 高质量编码",
+            0,
+            0,
+        );
+        let mut fallback = build_command(encoder);
+        run_hidden_command(&mut fallback, "FFmpeg 快速视频增强 CPU 兜底")?;
+    }
+    if !output_path.is_file() {
+        return Err("快速增强完成，但没有生成输出视频".to_string());
+    }
+    emit_rife_engine_progress(
+        &app_handle,
+        progress_id_ref,
+        "quick-enhance-ready",
+        "快速视频增强完成",
+        1,
+        1,
+    );
+
+    Ok(QuickVideoEnhancementResult {
+        output_path: display_local_path(&output_path),
+        scale,
+        output_format,
+        fps: info.fps,
+        width: info.width.map(|width| width.saturating_mul(scale)),
+        height: info.height.map(|height| height.saturating_mul(scale)),
+        encoder: encoder.to_string(),
+    })
 }
 
 #[tauri::command]
@@ -10798,11 +11336,13 @@ fn main() {
             install_rife_engine,
             get_rife_frame_interpolation_estimate,
             run_rife_frame_interpolation,
+            normalize_video_cfr_if_needed,
             get_realesrgan_engine_status,
             install_realesrgan_engine,
             get_realesrgan_enhancement_estimate,
             run_realesrgan_image_enhancement,
             run_realesrgan_video_enhancement,
+            run_ffmpeg_quick_video_enhancement,
             get_network_proxy,
             set_network_proxy,
             get_siliconflow_vision_models,

@@ -80,7 +80,7 @@ export default function BufferItemCard({
   onRemove, onRemoveFromFolder, onTogglePin,
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
-  showAlchemy = false, onAlchemy, onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote, onLiveTextChange,
+  showAlchemy = false, onAlchemy, onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote,
   onTextEditStart, onTextEditEnd, preferFullImageSource = false
 }: any) {
   const [copied, setCopied] = useState(false);
@@ -523,7 +523,6 @@ export default function BufferItemCard({
     if (!nextText) {
       showToast?.('文本不能为空');
       setEditContentText(originalText);
-      if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, originalText);
       setIsEditingText(false);
       return;
     }
@@ -540,8 +539,6 @@ export default function BufferItemCard({
     if (shouldCommit && typeof onUpdateText === 'function') {
       onUpdateText(item.id, nextText);
       showToast?.('文本已更新');
-    } else if (shouldCommit && typeof onLiveTextChange === 'function') {
-      onLiveTextChange(item.id, nextText);
     }
     if (typeof onTextEditEnd === 'function') onTextEditEnd(item.id);
   };
@@ -551,7 +548,6 @@ export default function BufferItemCard({
     skipTextEditSaveRef.current = true;
     editContentDirtyRef.current = false;
     setEditContentText(originalText);
-    if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, originalText);
     setIsEditingText(false);
     if (typeof onTextEditEnd === 'function') onTextEditEnd(item.id);
   };
@@ -712,7 +708,6 @@ return (
                     const nextValue = e.target.value;
                     editContentDirtyRef.current = nextValue !== editStartContentRef.current;
                     setEditContentText(nextValue);
-                    if (typeof onLiveTextChange === 'function') onLiveTextChange(item.id, nextValue);
                   }}
                   onBlur={saveTextContent}
                   onKeyDown={(e) => {
