@@ -627,6 +627,13 @@ type CanvasFolderImagePickerState = CanvasFolderImportPrompt & {
   y: number;
 };
 
+type CanvasNavPreview = { source: string; mediaType: 'image' | 'video' };
+type CanvasNavThumbnailCacheEntry = {
+  signature: string;
+  thumbnail: string;
+  status: 'loading' | 'ready' | 'error' | 'empty';
+};
+
 const getCanvasAiErrorSummary = (error?: string | null) => {
   const message = String(error || '').replace(/\s+/g, ' ').trim();
   if (!message) return '生成失败，请重试';
@@ -677,6 +684,10 @@ const DRAWER_RENDER_BATCH_SIZE = 32;
 const DRAWER_RENDER_LOAD_AHEAD_PX = 640;
 const CANVAS_NAV_WIDTH = 188;
 const CANVAS_NAV_HEIGHT = 116;
+const CANVAS_NAV_THUMB_MAX_WIDTH = 96;
+const CANVAS_NAV_THUMB_MAX_HEIGHT = 72;
+const CANVAS_NAV_THUMB_QUALITY = 0.42;
+const CANVAS_NAV_PANEL_TOP_MARGIN = 12;
 const CANVAS_AI_PROVIDER_STORAGE_KEY = 'drawer_canvas_ai_provider';
 const CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY = 'drawer_canvas_ai_provider_default_version';
 const CANVAS_AI_PROVIDER_DEFAULT_VERSION = 'xais-chat-default';
@@ -2530,16 +2541,21 @@ function MainApp() {
   const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
   const canvasSizerRef = useRef<HTMLDivElement | null>(null);
   const canvasContentRef = useRef<HTMLDivElement | null>(null);
+  const canvasToolbarRef = useRef<HTMLDivElement | null>(null);
+  const canvasNavigatorPanelRef = useRef<HTMLDivElement | null>(null);
   const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
   const canvasViewportFrameRef = useRef<number | null>(null);
   const canvasItemsCommitFrameRef = useRef<number | null>(null);
   const canvasItemsLastCommitAtRef = useRef(0);
   const pendingCanvasItemsCommitRef = useRef<CanvasImageItem[] | null>(null);
+  const canvasNavThumbnailCacheRef = useRef<Map<string, CanvasNavThumbnailCacheEntry>>(new Map());
+  const [canvasNavThumbnailRevision, setCanvasNavThumbnailRevision] = useState(0);
   const canvasAiRunTokensRef = useRef<Record<string, string>>({});
   const canvasAiModelRefreshSignatureRef = useRef('');
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
   const canvasRunButtonPointerRef = useRef<{ targetId: string; at: number } | null>(null);
   const canvasInteractionTimerRef = useRef<number | null>(null);
+  const [canvasToolbarTop, setCanvasToolbarTop] = useState('max(50%, 444px)');
   const isCanvasInteractingRef = useRef(false);
   const isCanvasPointerInsideRef = useRef(false);
   const lastCanvasDragClientRef = useRef<{ x: number; y: number } | null>(null);
@@ -6944,6 +6960,176 @@ function MainApp() {
     image.src = rawSource;
   });
 
+  const getCanvasNavMediaElementSource = (source: string) => {
+    const rawSource = (source || '').trim();
+    if (!rawSource) return '';
+    if (/^[a-zA-Z]:[\\/]/.test(rawSource) || rawSource.startsWith('\\\\')) {
+      return convertFileSrc(rawSource);
+    }
+    if (/^[a-z][a-z\d+\-.]*:/i.test(rawSource)) {
+      return rawSource;
+    }
+    return convertFileSrc(rawSource);
+  };
+
+  const createCanvasNavImageThumbnailInWebview = (source: string) => new Promise<string>((resolve) => {
+    const rawSource = (source || '').trim();
+    if (!rawSource) {
+      resolve('');
+      return;
+    }
+    if (/^data:image\/svg/i.test(rawSource)) {
+      resolve(rawSource);
+      return;
+    }
+
+    const image = new window.Image();
+    const canvas = document.createElement('canvas');
+    let settled = false;
+    let timer: number | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute('src');
+      canvas.width = 0;
+      canvas.height = 0;
+    };
+    const finish = (value = '') => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+
+    image.onload = () => {
+      try {
+        const naturalWidth = image.naturalWidth || image.width;
+        const naturalHeight = image.naturalHeight || image.height;
+        if (!naturalWidth || !naturalHeight) {
+          finish('');
+          return;
+        }
+        const ratio = Math.min(
+          CANVAS_NAV_THUMB_MAX_WIDTH / naturalWidth,
+          CANVAS_NAV_THUMB_MAX_HEIGHT / naturalHeight,
+          1,
+        );
+        const width = Math.max(1, Math.round(naturalWidth * ratio));
+        const height = Math.max(1, Math.round(naturalHeight * ratio));
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          finish('');
+          return;
+        }
+        ctx.drawImage(image, 0, 0, width, height);
+        finish(canvas.toDataURL('image/webp', CANVAS_NAV_THUMB_QUALITY));
+      } catch (err) {
+        console.warn('画布导航缩略图生成失败:', err);
+        finish('');
+      }
+    };
+    image.onerror = () => finish('');
+    image.decoding = 'async';
+    const elementSource = getCanvasNavMediaElementSource(rawSource);
+    if (!/^data:/i.test(elementSource)) {
+      image.crossOrigin = 'anonymous';
+    }
+    timer = window.setTimeout(() => finish(''), 5000);
+    image.src = elementSource;
+  });
+
+  const createCanvasNavVideoThumbnailInWebview = (source: string) => new Promise<string>((resolve) => {
+    const elementSource = getCanvasNavMediaElementSource(source);
+    if (!elementSource) {
+      resolve('');
+      return;
+    }
+
+    const video = document.createElement('video');
+    const canvas = document.createElement('canvas');
+    let settled = false;
+    let timer: number | null = null;
+
+    const cleanup = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      canvas.width = 0;
+      canvas.height = 0;
+    };
+    const finish = (value = '') => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const capture = () => {
+      try {
+        const naturalWidth = video.videoWidth || 0;
+        const naturalHeight = video.videoHeight || 0;
+        if (!naturalWidth || !naturalHeight) {
+          finish('');
+          return;
+        }
+        const ratio = Math.min(
+          CANVAS_NAV_THUMB_MAX_WIDTH / naturalWidth,
+          CANVAS_NAV_THUMB_MAX_HEIGHT / naturalHeight,
+          1,
+        );
+        const width = Math.max(1, Math.round(naturalWidth * ratio));
+        const height = Math.max(1, Math.round(naturalHeight * ratio));
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          finish('');
+          return;
+        }
+        ctx.drawImage(video, 0, 0, width, height);
+        finish(canvas.toDataURL('image/webp', CANVAS_NAV_THUMB_QUALITY));
+      } catch (err) {
+        console.warn('画布导航视频缩略图生成失败:', err);
+        finish('');
+      }
+    };
+
+    video.muted = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    if (!/^data:/i.test(elementSource)) {
+      video.crossOrigin = 'anonymous';
+    }
+    video.addEventListener('error', () => finish(''), { once: true });
+    video.addEventListener('loadedmetadata', () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const targetTime = duration > 0.1 ? Math.min(0.8, Math.max(0, duration * 0.12)) : 0;
+      if (targetTime > 0.03) {
+        try {
+          video.currentTime = targetTime;
+        } catch {
+          capture();
+        }
+        return;
+      }
+      capture();
+    }, { once: true });
+    video.addEventListener('seeked', capture, { once: true });
+    timer = window.setTimeout(() => finish(''), 6000);
+    video.src = elementSource;
+    video.load();
+  });
+
   const imageThumbnailInFlightRef = useRef<Set<string>>(new Set());
   const imageThumbnailQueueRef = useRef<BufferItem[]>([]);
   const imageThumbnailActiveCountRef = useRef(0);
@@ -7530,7 +7716,7 @@ function MainApp() {
     item.thumbnail || getCanvasItemDisplaySource(item)
   );
 
-  const getCanvasBufferItemNavPreview = (item?: BufferItem | null): { source: string; mediaType: 'image' | 'video' } | null => {
+  const getCanvasBufferItemNavPreview = (item?: BufferItem | null): CanvasNavPreview | null => {
     if (!item) return null;
     if (item.type === 'image') {
       const source = getCanvasItemNavSource(item);
@@ -7547,7 +7733,7 @@ function MainApp() {
   const getCanvasOutputNavPreview = (
     canvasItem: CanvasImageItem,
     output?: CanvasAiGeneratedOutput | null
-  ): { source: string; mediaType: 'image' | 'video' } | null => {
+  ): CanvasNavPreview | null => {
     const source = getCanvasAiOutputDisplaySource(output);
     if (!source || output?.status === 'error') return null;
     return {
@@ -12886,6 +13072,27 @@ function MainApp() {
     getEnhancementQualityKey(target, source),
   ].join('|');
 
+  const cancelCanvasEnhancementEstimate = async (canvasId: string) => {
+    const latest = canvasItemsRef.current.find(item => item.id === canvasId);
+    const estimateKey = latest?.ai?.enhancementEstimateKey;
+    if (!estimateKey) return;
+    const sharedByOtherActiveNodes = canvasItemsRef.current.some(item => (
+      item.id !== canvasId
+      && item.ai?.type === 'video-enhancement'
+      && item.ai?.enhancementEngine !== 'quick'
+      && item.ai?.enhancementEstimateKey === estimateKey
+    ));
+    if (sharedByOtherActiveNodes) return;
+    try {
+      await invoke('cancel_realesrgan_enhancement_estimate', {
+        progressId: canvasId,
+      });
+    } catch {
+      // Best effort: if the estimate is already gone, just continue.
+    }
+    enhancementEstimateCache.delete(estimateKey);
+  };
+
   useEffect(() => {
     if (!isCanvasMode) return;
     canvasItems.forEach(item => {
@@ -12937,9 +13144,12 @@ function MainApp() {
           if (latest?.ai?.enhancementEstimateKey !== estimateKey) return;
           updateCanvasAiGeneratorData(item.id, { enhancementEstimate: estimate });
         })
-        .catch(() => {
+        .catch((error) => {
           const latest = canvasItemsRef.current.find(candidate => candidate.id === item.id);
+          const message = getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error));
+          if (message.includes('已取消')) return;
           if (latest?.ai?.enhancementEstimateKey !== estimateKey) return;
+          if (latest?.ai?.enhancementEngine === 'quick') return;
           updateCanvasAiGeneratorData(item.id, {
             enhancementEstimate: {
               estimatedSecondsMin: null,
@@ -17854,7 +18064,7 @@ useEffect(() => {
     canvasItems,
     canvasRenderViewport,
   ]);
-  const getCanvasItemNavPreview = (canvasItem: CanvasImageItem): { source: string; mediaType: 'image' | 'video' } | null => {
+  const getCanvasItemNavPreview = (canvasItem: CanvasImageItem): CanvasNavPreview | null => {
     const directPreview = getCanvasBufferItemNavPreview(canvasItem.item);
     if (directPreview) return directPreview;
 
@@ -17876,6 +18086,149 @@ useEffect(() => {
 
     return null;
   };
+  const getCanvasNavSignaturePart = (value?: string | number | null) => {
+    const rawValue = String(value || '');
+    if (rawValue.length <= 260) return rawValue;
+    return `${rawValue.length}:${rawValue.slice(0, 120)}:${rawValue.slice(-120)}`;
+  };
+  const getCanvasNavThumbnailSignature = (
+    canvasItem: CanvasImageItem,
+    preview?: CanvasNavPreview | null,
+  ) => [
+    canvasItem.id,
+    canvasItem.item.id,
+    canvasItem.item.type,
+    canvasItem.item.name || '',
+    canvasItem.item.content || '',
+    canvasItem.item.path || '',
+    canvasItem.item.url || '',
+    canvasItem.item.sourceUrl || '',
+    canvasItem.item.originalUrl || '',
+    preview?.mediaType || 'none',
+    getCanvasNavSignaturePart(preview?.source),
+    getCanvasNavSignaturePart(canvasItem.item.thumbnail),
+    canvasItem.item.createdAt || '',
+    canvasItem.item.isDirectory ? '1' : '0',
+    canvasItem.item.isUrl ? '1' : '0',
+    (canvasItem.inputs || []).join(','),
+    canvasItem.ai?.type || '',
+    canvasItem.ai?.status || '',
+    canvasItem.ai?.generatedAt || '',
+    canvasItem.ai?.presetLabel || '',
+    canvasItem.ai?.presetId || '',
+    canvasItem.ai?.error || '',
+    (canvasItem.ai?.outputs || []).map(output => [
+      output.id,
+      output.status,
+      output.mediaType,
+      getCanvasNavSignaturePart(output.url),
+      getCanvasNavSignaturePart(output.path),
+      output.generatedAt || '',
+      output.width || '',
+      output.height || '',
+    ].join(':')).join('|'),
+  ].join('::');
+  const getCachedCanvasNavThumbnailSource = (
+    canvasItem: CanvasImageItem,
+    preview?: CanvasNavPreview | null,
+  ) => {
+    const signature = getCanvasNavThumbnailSignature(canvasItem, preview);
+    const cached = canvasNavThumbnailCacheRef.current.get(canvasItem.id);
+    if (!cached || cached.signature !== signature || cached.status !== 'ready') return '';
+    return cached.thumbnail;
+  };
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const activeIds = new Set(canvasNavItems.map(({ item }) => item.id));
+    for (const cacheId of canvasNavThumbnailCacheRef.current.keys()) {
+      if (!activeIds.has(cacheId)) {
+        canvasNavThumbnailCacheRef.current.delete(cacheId);
+      }
+    }
+    if (!isCanvasNavigatorVisible) return;
+
+    canvasNavItems.forEach(({ item }) => {
+      const preview = getCanvasItemNavPreview(item);
+      const signature = getCanvasNavThumbnailSignature(item, preview);
+      const current = canvasNavThumbnailCacheRef.current.get(item.id);
+      if (current?.signature === signature) return;
+      if (!preview?.source) {
+        canvasNavThumbnailCacheRef.current.set(item.id, {
+          signature,
+          thumbnail: '',
+          status: 'empty',
+        });
+        setCanvasNavThumbnailRevision(value => value + 1);
+        return;
+      }
+
+      canvasNavThumbnailCacheRef.current.set(item.id, {
+        signature,
+        thumbnail: '',
+        status: 'loading',
+      });
+      setCanvasNavThumbnailRevision(value => value + 1);
+      const loader = preview.mediaType === 'video'
+        ? createCanvasNavVideoThumbnailInWebview
+        : createCanvasNavImageThumbnailInWebview;
+      void loader(preview.source)
+        .then((thumbnail) => {
+          const latest = canvasNavThumbnailCacheRef.current.get(item.id);
+          if (!latest || latest.signature !== signature) return;
+          canvasNavThumbnailCacheRef.current.set(item.id, {
+            signature,
+            thumbnail,
+            status: thumbnail ? 'ready' : 'error',
+          });
+          setCanvasNavThumbnailRevision(value => value + 1);
+        })
+        .catch((err) => {
+          console.warn('画布导航缩略图缓存失败:', err);
+          const latest = canvasNavThumbnailCacheRef.current.get(item.id);
+          if (!latest || latest.signature !== signature) return;
+          canvasNavThumbnailCacheRef.current.set(item.id, {
+            signature,
+            thumbnail: '',
+            status: 'error',
+          });
+          setCanvasNavThumbnailRevision(value => value + 1);
+      });
+    });
+  }, [isCanvasMode, isCanvasNavigatorVisible, canvasNavItems, canvasItemsById]);
+  useLayoutEffect(() => {
+    if (!isCanvasMode) {
+      setCanvasToolbarTop('50%');
+      return;
+    }
+    if (!isCanvasNavigatorVisible) {
+      setCanvasToolbarTop('50%');
+      return;
+    }
+
+    const updateCanvasToolbarTop = () => {
+      const toolbarHeight = canvasToolbarRef.current?.getBoundingClientRect().height || 40;
+      const panelHeight = canvasNavigatorPanelRef.current?.getBoundingClientRect().height || 0;
+      const minTop = CANVAS_NAV_PANEL_TOP_MARGIN + panelHeight + (toolbarHeight / 2) + 8;
+      const nextTop = Math.max(window.innerHeight * 0.5, minTop);
+      setCanvasToolbarTop(`${Math.round(nextTop)}px`);
+    };
+
+    updateCanvasToolbarTop();
+
+    const handleResize = () => updateCanvasToolbarTop();
+    window.addEventListener('resize', handleResize);
+    const observer = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(handleResize)
+      : null;
+    if (observer) {
+      if (canvasToolbarRef.current) observer.observe(canvasToolbarRef.current);
+      if (canvasNavigatorPanelRef.current) observer.observe(canvasNavigatorPanelRef.current);
+    }
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      observer?.disconnect();
+    };
+  }, [canvasNavThumbnailRevision, isCanvasMode, isCanvasNavigatorVisible, canvasNavItems.length]);
   const canvasConnections = useMemo(() => canvasItems.flatMap(target => (
     (target.inputs || [])
       .map(sourceId => {
@@ -20378,11 +20731,17 @@ useEffect(() => {
                                                   data-canvas-edit-control="true"
                                                   value={canvasItem.ai?.enhancementEngine || 'ai'}
                                                   options={CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS}
-                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                    enhancementEngine: value === 'quick' ? 'quick' : 'ai',
-                                                    enhancementEstimate: undefined,
-                                                    enhancementEstimateKey: undefined,
-                                                  })}
+                                                  onChange={(value) => {
+                                                    if (value === 'quick') {
+                                                      void cancelCanvasEnhancementEstimate(canvasItem.id);
+                                                    }
+                                                    updateCanvasAiGeneratorData(canvasItem.id, {
+                                                      enhancementEngine: value === 'quick' ? 'quick' : 'ai',
+                                                      enhancementEstimate: undefined,
+                                                      enhancementEstimateKey: undefined,
+                                                      enhancementProgress: undefined,
+                                                    });
+                                                  }}
                                                   labelClassName="text-center leading-none"
                                                   chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
                                                   title={isQuickVideoEnhancementItem ? 'FFmpeg 滤镜 + NVENC 优先' : 'Real-ESRGAN AI 清晰度增强'}
@@ -22088,10 +22447,11 @@ useEffect(() => {
                   )}
                   {isCanvasMode && (
                     <div
+                      ref={canvasToolbarRef}
                       data-no-drag="true"
                       data-canvas-toolbar="true"
                       className="absolute right-4 z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent transition-[top] duration-200"
-                      style={{ top: isCanvasNavigatorVisible ? 'max(50%, 444px)' : '50%' }}
+                      style={{ top: canvasToolbarTop }}
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                     >
@@ -22109,6 +22469,7 @@ useEffect(() => {
                       {isCanvasNavigatorVisible && (
                         <div
                           data-no-drag="true"
+                          ref={canvasNavigatorPanelRef}
                           className="absolute bottom-full right-0 z-[100070] mb-2 w-[220px] rounded-[20px] border border-white/60 bg-white/78 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-600/80 dark:bg-stone-900/88 dark:text-stone-200"
                           onPointerDown={(event) => {
                             event.stopPropagation();
@@ -22151,7 +22512,7 @@ useEffect(() => {
                               const height = Math.max(10, box.height * canvasNavScale);
                               const selected = canvasSelectedIdsSet.has(item.id);
                               const preview = getCanvasItemNavPreview(item);
-                              const source = preview?.source || '';
+                              const source = getCachedCanvasNavThumbnailSource(item, preview);
                               const label = item.ai?.type === 'workflow'
                                 ? item.ai?.presetLabel || '工作流'
                                 : isCanvasAiGeneratorType(item.ai?.type)
@@ -22175,15 +22536,6 @@ useEffect(() => {
                                   title={item.item.name || item.item.content || label}
                                 >
                                   {source ? (
-                                    preview?.mediaType === 'video' ? (
-                                      <video
-                                        src={source}
-                                        muted
-                                        playsInline
-                                        preload="metadata"
-                                        className="h-full w-full object-cover"
-                                      />
-                                    ) : (
                                     <img
                                       src={source}
                                       alt={item.item.name || '导航缩略图'}
@@ -22192,7 +22544,6 @@ useEffect(() => {
                                       className="h-full w-full object-cover"
                                       draggable={false}
                                     />
-                                    )
                                   ) : (
                                     <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
                                       item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'

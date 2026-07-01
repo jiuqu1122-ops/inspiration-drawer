@@ -93,6 +93,23 @@ struct R2Share {
 static CLOUDFLARED_SHARES: OnceLock<Mutex<HashMap<String, CloudflaredShare>>> = OnceLock::new();
 static R2_SHARES: OnceLock<Mutex<HashMap<String, R2Share>>> = OnceLock::new();
 static LOCAL_MEDIA_CACHE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static REAL_ESRGAN_ESTIMATE_TASKS: OnceLock<Mutex<HashMap<String, RealEsrganEstimateTaskHandle>>> =
+    OnceLock::new();
+
+const REAL_ESRGAN_ESTIMATE_SAMPLE_FRAMES: usize = 3;
+
+#[derive(Default)]
+struct RealEsrganEstimateTaskState {
+    cancel_requested: bool,
+    child: Option<Child>,
+}
+
+type RealEsrganEstimateTaskHandle = Arc<Mutex<RealEsrganEstimateTaskState>>;
+
+struct RealEsrganEstimateTaskGuard {
+    progress_id: String,
+    state: RealEsrganEstimateTaskHandle,
+}
 
 fn cloudflared_shares() -> &'static Mutex<HashMap<String, CloudflaredShare>> {
     CLOUDFLARED_SHARES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -104,6 +121,128 @@ fn r2_shares() -> &'static Mutex<HashMap<String, R2Share>> {
 
 fn local_media_cache_write_lock() -> &'static Mutex<()> {
     LOCAL_MEDIA_CACHE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn realesrgan_estimate_tasks() -> &'static Mutex<HashMap<String, RealEsrganEstimateTaskHandle>> {
+    REAL_ESRGAN_ESTIMATE_TASKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn command_output_to_string(
+    label: &str,
+    output: std::process::Output,
+) -> Result<String, String> {
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    Err(if detail.is_empty() {
+        format!("{} 执行失败", label)
+    } else {
+        format!("{} 执行失败: {}", label, detail)
+    })
+}
+
+fn acquire_realesrgan_estimate_task(
+    progress_id: &str,
+) -> Result<RealEsrganEstimateTaskGuard, String> {
+    let progress_id = progress_id.trim();
+    if progress_id.is_empty() {
+        return Err("Real-ESRGAN 预估任务 ID 不能为空".to_string());
+    }
+
+    let state: RealEsrganEstimateTaskHandle =
+        Arc::new(Mutex::new(RealEsrganEstimateTaskState::default()));
+    let previous = {
+        let mut tasks = realesrgan_estimate_tasks()
+            .lock()
+            .map_err(|_| "Real-ESRGAN 预估任务锁定失败".to_string())?;
+        tasks.insert(progress_id.to_string(), Arc::clone(&state))
+    };
+    if let Some(previous) = previous {
+        if let Ok(mut previous_state) = previous.lock() {
+            previous_state.cancel_requested = true;
+            if let Some(mut child) = previous_state.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    Ok(RealEsrganEstimateTaskGuard {
+        progress_id: progress_id.to_string(),
+        state,
+    })
+}
+
+fn cancel_realesrgan_estimate_task(progress_id: &str) -> Result<(), String> {
+    let progress_id = progress_id.trim();
+    if progress_id.is_empty() {
+        return Ok(());
+    }
+
+    let task = {
+        let tasks = realesrgan_estimate_tasks()
+            .lock()
+            .map_err(|_| "Real-ESRGAN 预估任务锁定失败".to_string())?;
+        tasks.get(progress_id).cloned()
+    };
+    if let Some(task) = task {
+        let child_to_kill = {
+            let mut state = task
+                .lock()
+                .map_err(|_| "Real-ESRGAN 预估任务锁定失败".to_string())?;
+            state.cancel_requested = true;
+            state.child.take()
+        };
+        if let Some(mut child) = child_to_kill {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Ok(mut tasks) = realesrgan_estimate_tasks().lock() {
+            if tasks
+                .get(progress_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &task))
+            {
+                tasks.remove(progress_id);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn check_realesrgan_estimate_cancelled(
+    task_state: Option<&RealEsrganEstimateTaskHandle>,
+) -> Result<(), String> {
+    if let Some(task_state) = task_state {
+        let cancelled = task_state
+            .lock()
+            .map_err(|_| "Real-ESRGAN 预估任务锁定失败".to_string())?
+            .cancel_requested;
+        if cancelled {
+            return Err("Real-ESRGAN 预估已取消".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn is_realesrgan_estimate_cancel_error(error: &str) -> bool {
+    error.contains("已取消")
+}
+
+impl Drop for RealEsrganEstimateTaskGuard {
+    fn drop(&mut self) {
+        if let Ok(mut tasks) = realesrgan_estimate_tasks().lock() {
+            if tasks
+                .get(&self.progress_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.state))
+            {
+                tasks.remove(&self.progress_id);
+            }
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1243,22 +1382,102 @@ async fn install_realesrgan_engine(
     ensure_realesrgan_engine_installed(&app_handle, None)
 }
 
+#[tauri::command]
+fn cancel_realesrgan_enhancement_estimate(progress_id: String) -> Result<(), String> {
+    cancel_realesrgan_estimate_task(&progress_id)
+}
+
 fn run_hidden_command(command: &mut SysCommand, label: &str) -> Result<String, String> {
     hide_console_window(command);
     let output = command
         .output()
         .map_err(|e| format!("{} 调用失败: {}", label, e))?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    command_output_to_string(label, output)
+}
+
+fn run_hidden_command_cancellable(
+    command: &mut SysCommand,
+    label: &str,
+    task_state: Option<&RealEsrganEstimateTaskHandle>,
+) -> Result<String, String> {
+    if task_state.is_none() {
+        return run_hidden_command(command, label);
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if stderr.is_empty() { stdout } else { stderr };
-    Err(if detail.is_empty() {
-        format!("{} 执行失败", label)
-    } else {
-        format!("{} 执行失败: {}", label, detail)
-    })
+
+    let task_state = task_state.expect("task_state checked above");
+    hide_console_window(command);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let child = command
+        .spawn()
+        .map_err(|e| format!("{} 调用失败: {}", label, e))?;
+    {
+        let mut state = task_state
+            .lock()
+            .map_err(|_| format!("{} 任务状态锁定失败", label))?;
+        if state.cancel_requested {
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{} 已取消", label));
+        }
+        state.child = Some(child);
+    }
+
+    loop {
+        let cancelled = {
+            task_state
+                .lock()
+                .map_err(|_| format!("{} 任务状态锁定失败", label))?
+                .cancel_requested
+        };
+        if cancelled {
+            let child_to_kill = {
+                let mut state = task_state
+                    .lock()
+                    .map_err(|_| format!("{} 任务状态锁定失败", label))?;
+                state.child.take()
+            };
+            if let Some(mut child) = child_to_kill {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            return Err(format!("{} 已取消", label));
+        }
+
+        let finished_child = {
+            let mut state = task_state
+                .lock()
+                .map_err(|_| format!("{} 任务状态锁定失败", label))?;
+            if let Some(child) = state.child.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(_)) => state.child.take(),
+                    Ok(None) => None,
+                    Err(e) => {
+                        let child_to_kill = state.child.take();
+                        if let Some(mut child) = child_to_kill {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                        return Err(format!("{} 执行失败: {}", label, e));
+                    }
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(child) = finished_child {
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("{} 调用失败: {}", label, e))?;
+            return command_output_to_string(label, output);
+        }
+
+        thread::sleep(Duration::from_millis(80));
+    }
 }
 
 fn parse_fps_value(value: &str) -> Option<f64> {
@@ -1738,6 +1957,7 @@ fn extract_video_benchmark_frames(
     output_dir: &Path,
     info: &VideoProbeInfo,
     requested_samples: usize,
+    task_state: Option<&RealEsrganEstimateTaskHandle>,
 ) -> Result<(usize, f64), String> {
     fs::create_dir_all(output_dir).map_err(|e| format!("创建测速帧目录失败: {}", e))?;
     let fps = info.fps.unwrap_or(30.0).max(1.0);
@@ -1756,7 +1976,7 @@ fn extract_video_benchmark_frames(
         .args(["-an", "-frames:v"])
         .arg(requested_samples.to_string())
         .arg(output_dir.join("frame_%08d.png"));
-    run_hidden_command(&mut command, "FFmpeg 抽取测速帧")?;
+    run_hidden_command_cancellable(&mut command, "FFmpeg 抽取测速帧", task_state)?;
     let sample_frames = count_frame_images(output_dir)?;
     if sample_frames < 2 {
         return Err("视频可用于测速的帧数不足".to_string());
@@ -1903,6 +2123,7 @@ fn run_realesrgan_on_path(
     mode: &str,
     _scale: u32,
     output_format: &str,
+    task_state: Option<&RealEsrganEstimateTaskHandle>,
 ) -> Result<(), String> {
     let model_name = realesrgan_model_name(mode);
     let mut cmd = SysCommand::new(exe_path);
@@ -1917,7 +2138,7 @@ fn run_realesrgan_on_path(
         .arg(REALESRGAN_NATIVE_SCALE.to_string())
         .arg("-f")
         .arg(output_format);
-    run_hidden_command(&mut cmd, "Real-ESRGAN 清晰度增强")?;
+    run_hidden_command_cancellable(&mut cmd, "Real-ESRGAN 清晰度增强", task_state)?;
     Ok(())
 }
 
@@ -2046,8 +2267,14 @@ async fn get_rife_frame_interpolation_estimate(
     );
 
     let benchmark = (|| -> Result<(usize, f64, f64, f64, f64), String> {
-        let (sample_frames, extract_seconds) =
-            extract_video_benchmark_frames(&ffmpeg_path, &source, &input_frames_dir, &info, 6)?;
+        let (sample_frames, extract_seconds) = extract_video_benchmark_frames(
+            &ffmpeg_path,
+            &source,
+            &input_frames_dir,
+            &info,
+            6,
+            None,
+        )?;
         let sample_target_frames = ((sample_frames as f64) * (output_fps / fps))
             .round()
             .max(sample_frames as f64)
@@ -2791,12 +3018,22 @@ async fn get_realesrgan_enhancement_estimate(
         });
     }
 
+    let estimate_task = progress_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(acquire_realesrgan_estimate_task)
+        .transpose()?;
+    let estimate_task_state = estimate_task.as_ref().map(|task| &task.state);
+
     let status = ensure_realesrgan_engine_installed(&app_handle, progress_id.as_deref())?;
     let (ffmpeg_path, ffprobe_path) =
         ensure_media_tools_available(&app_handle, progress_id.as_deref())?;
+    check_realesrgan_estimate_cancelled(estimate_task_state)?;
     let engine_dir = PathBuf::from(&status.engine_dir);
     let exe_path = PathBuf::from(&status.exe_path);
     let info = probe_video_info(&ffprobe_path, &source)?;
+    check_realesrgan_estimate_cancelled(estimate_task_state)?;
     let duration_sec = info.duration_sec;
     let width = info.width;
     let height = info.height;
@@ -2844,14 +3081,24 @@ async fn get_realesrgan_enhancement_estimate(
         &app_handle,
         progress_id.as_deref(),
         "benchmarking-realesrgan-speed",
-        "正在用 6 帧实测增强速度",
+        &format!(
+            "正在用 {} 帧实测增强速度",
+            REAL_ESRGAN_ESTIMATE_SAMPLE_FRAMES
+        ),
         0,
         0,
     );
 
     let benchmark = (|| -> Result<(usize, f64, f64, f64, f64), String> {
         let (sample_frames, extract_seconds) =
-            extract_video_benchmark_frames(&ffmpeg_path, &source, &input_frames_dir, &info, 6)?;
+            extract_video_benchmark_frames(
+                &ffmpeg_path,
+                &source,
+                &input_frames_dir,
+                &info,
+                REAL_ESRGAN_ESTIMATE_SAMPLE_FRAMES,
+                estimate_task_state,
+            )?;
         let ai_started_at = Instant::now();
         // One process handles the complete sample directory. Never spawn one
         // Real-ESRGAN process per frame; process startup would dominate timing.
@@ -2863,6 +3110,7 @@ async fn get_realesrgan_enhancement_estimate(
             &mode,
             scale,
             "png",
+            estimate_task_state,
         )?;
         let ai_seconds = ai_started_at.elapsed().as_secs_f64();
         let enhanced_sample_frames = count_frame_images(&enhanced_frames_dir)?;
@@ -2908,7 +3156,11 @@ async fn get_realesrgan_enhancement_estimate(
         }
         encode_cmd.arg(&sample_video);
         let encode_started_at = Instant::now();
-        run_hidden_command(&mut encode_cmd, "FFmpeg 增强样本编码")?;
+        run_hidden_command_cancellable(
+            &mut encode_cmd,
+            "FFmpeg 增强样本编码",
+            estimate_task_state,
+        )?;
         let encode_seconds = encode_started_at.elapsed().as_secs_f64();
         let ai_per_frame = ai_seconds / sample_frames.max(1) as f64;
         let extract_per_frame = extract_seconds / sample_frames.max(1) as f64;
@@ -2924,6 +3176,16 @@ async fn get_realesrgan_enhancement_estimate(
         ))
     })();
     let _ = fs::remove_dir_all(&work_dir);
+    let benchmark_cancelled = benchmark
+        .as_ref()
+        .err()
+        .is_some_and(|error| is_realesrgan_estimate_cancel_error(error));
+    if benchmark_cancelled {
+        if let Err(error) = benchmark {
+            return Err(error);
+        }
+        unreachable!();
+    }
     emit_rife_engine_progress(
         &app_handle,
         progress_id.as_deref(),
@@ -2974,6 +3236,20 @@ async fn get_realesrgan_enhancement_estimate(
             );
             let (min, max) = measured_estimate_range(estimated_total);
             (Some(sample_frames as u32), min, max)
+        }
+        Err(error) if is_realesrgan_estimate_cancel_error(&error) => {
+            append_media_engine_debug_log(
+                &realesrgan_engine_base_dir()?,
+                "realesrgan-estimate-cancelled",
+                &[
+                    ("video_frames", total_frames.to_string()),
+                    ("source_video_frames", source_frame_count.to_string()),
+                    ("model", realesrgan_model_name(&mode).to_string()),
+                    ("scale", scale.to_string()),
+                    ("tile_size", "auto".to_string()),
+                ],
+            );
+            return Err(error);
         }
         Err(error) => {
             let (min, max) = estimate_realesrgan_seconds(
@@ -3104,6 +3380,7 @@ async fn run_realesrgan_image_enhancement(
             &mode,
             scale,
             &output_format,
+            None,
         )?;
 
         if needs_post_resize {
@@ -11479,6 +11756,7 @@ fn main() {
             normalize_video_cfr_if_needed,
             get_realesrgan_engine_status,
             install_realesrgan_engine,
+            cancel_realesrgan_enhancement_estimate,
             get_realesrgan_enhancement_estimate,
             run_realesrgan_image_enhancement,
             run_realesrgan_video_enhancement,
