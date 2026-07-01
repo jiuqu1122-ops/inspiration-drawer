@@ -47,7 +47,12 @@ export type CanvasRifeInterpolationEstimate = {
   width?: number | null;
   height?: number | null;
   fps?: number | null;
+  frameCount?: number | null;
   outputFps?: number | null;
+  outputFrameCount?: number | null;
+  outputWidth?: number | null;
+  outputHeight?: number | null;
+  sampleFrames?: number | null;
   estimatedSecondsMin?: number | null;
   estimatedSecondsMax?: number | null;
 };
@@ -88,6 +93,8 @@ export type CanvasAiItemData = {
   enhancementMode?: string;
   enhancementResizeMode?: string;
   enhancementKeepAudio?: boolean;
+  enhancementRunMode?: 'preview' | 'full';
+  enhancementPreviewReadyKey?: string;
   enhancementEstimate?: CanvasRifeInterpolationEstimate;
   enhancementEstimateKey?: string;
   enhancementProgress?: CanvasRifeEngineProgress;

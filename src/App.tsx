@@ -776,7 +776,11 @@ const CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = [
 ];
 const CANVAS_ESRGAN_SCALE_OPTIONS: RoundedSelectOption[] = [
   { value: '2', label: '2× 增强' },
-  { value: '4', label: '4× 增强' },
+  { value: '4', label: '4× · 较慢' },
+];
+const CANVAS_ESRGAN_RUN_MODE_OPTIONS: RoundedSelectOption[] = [
+  { value: 'preview', label: '预览 5 秒' },
+  { value: 'full', label: '完整视频' },
 ];
 const CANVAS_ESRGAN_MODE_OPTIONS: RoundedSelectOption[] = [
   { value: 'general', label: '通用增强' },
@@ -1959,7 +1963,10 @@ type RifeFrameInterpolationEstimate = {
   width?: number | null;
   height?: number | null;
   fps?: number | null;
+  frameCount?: number | null;
   outputFps?: number | null;
+  outputFrameCount?: number | null;
+  sampleFrames?: number | null;
   estimatedSecondsMin?: number | null;
   estimatedSecondsMax?: number | null;
 };
@@ -1973,10 +1980,14 @@ type RealEsrganEnhancementResult = {
   fps?: number | null;
   width?: number | null;
   height?: number | null;
+  preview?: boolean;
+  processedDurationSec?: number | null;
 };
 type RealEsrganEnhancementEstimate = RifeFrameInterpolationEstimate & {
   outputWidth?: number | null;
   outputHeight?: number | null;
+  preview?: boolean;
+  previewDurationSec?: number | null;
 };
 type RifeEngineProgress = {
   progressId?: string;
@@ -1991,8 +2002,13 @@ const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
 );
 const shouldShowRifeEngineProgress = (progress?: RifeEngineProgress | null) => {
   if (!progress?.stage) return false;
-  return progress.stage.startsWith('downloading-') && getRifeEngineProgressPercent(progress) < 100;
+  if (progress.stage.endsWith('-ready')) return false;
+  if (progress.stage.startsWith('downloading-')) return getRifeEngineProgressPercent(progress) < 100;
+  return true;
 };
+const isFrameProcessingProgress = (progress?: RifeEngineProgress | null) => (
+  !!progress?.stage && /(?:extracting|interpolating|enhancing)-.*frames/.test(progress.stage)
+);
 const isRifeFixed2xMode = (mode?: string | null) => (
   mode === 'hd' || mode === 'uhd' || mode === 'hd-slow'
 );
@@ -2027,6 +2043,34 @@ const formatRifeEstimateVideoMeta = (estimate?: RifeFrameInterpolationEstimate |
   }
   if (Number.isFinite(Number(estimate?.outputFps)) && Number(estimate?.outputFps) > 0) {
     parts.push(`→ ${Number(estimate?.outputFps).toFixed(0)}fps`);
+  }
+  if (Number.isFinite(Number(estimate?.frameCount)) && Number(estimate?.frameCount) > 0) {
+    parts.push(`${Math.round(Number(estimate?.frameCount))}帧`);
+  }
+  return parts.join(' · ');
+};
+const formatEnhancementEstimateVideoMeta = (estimate?: RealEsrganEnhancementEstimate | null) => {
+  const parts: string[] = [];
+  if (estimate?.preview && Number(estimate?.previewDurationSec) > 0) {
+    parts.push(`预览 ${formatRifeEstimateSeconds(estimate.previewDurationSec)}`);
+  }
+  if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
+    parts.push(`${estimate?.preview ? '原片 ' : ''}${formatRifeEstimateSeconds(estimate?.durationSec)}`);
+  }
+  const hasInputResolution = Number(estimate?.width) > 0 && Number(estimate?.height) > 0;
+  const hasOutputResolution = Number(estimate?.outputWidth) > 0 && Number(estimate?.outputHeight) > 0;
+  if (hasInputResolution) {
+    const inputResolution = `${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`;
+    const outputResolution = hasOutputResolution
+      ? `${Math.round(Number(estimate?.outputWidth))}×${Math.round(Number(estimate?.outputHeight))}`
+      : '';
+    parts.push(outputResolution ? `${inputResolution} → ${outputResolution}` : inputResolution);
+  }
+  if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
+    parts.push(`${Number(estimate?.fps).toFixed(Number(estimate?.fps) >= 10 ? 0 : 1)}fps`);
+  }
+  if (Number.isFinite(Number(estimate?.frameCount)) && Number(estimate?.frameCount) > 0) {
+    parts.push(`${Math.round(Number(estimate?.frameCount))}帧`);
   }
   return parts.join(' · ');
 };
@@ -2886,7 +2930,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.1.1');
+        setAppVersion('4.1.2');
       });
   }, []);
 
@@ -10315,6 +10359,7 @@ function MainApp() {
         enhancementMode: 'general',
         enhancementResizeMode: 'upscale',
         enhancementKeepAudio: true,
+        enhancementRunMode: isVideo ? 'preview' : 'full',
         outputFormat: isVideo ? 'mp4' : 'png',
         status: 'idle',
         outputs: [],
@@ -12390,10 +12435,12 @@ function MainApp() {
     const ai = target.ai;
     const fixed2xMode = isRifeFixed2xMode(ai?.interpolationMode);
     return [
+      'sample-benchmark-v2',
       source,
       fixed2xMode ? 2 : clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4),
       fixed2xMode ? 'auto-2x' : Number(ai?.interpolationTargetFps) || 60,
       ai?.interpolationMode || 'normal',
+      ai?.model || 'rife-v4.6',
       ai?.interpolationQuality || 'standard',
       String(ai?.outputFormat || 'mp4').toLowerCase(),
     ].join('|');
@@ -12420,6 +12467,7 @@ function MainApp() {
       void invoke<RifeFrameInterpolationEstimate>('get_rife_frame_interpolation_estimate', {
         inputPath: source,
         factor: isRifeFixed2xMode(item.ai?.interpolationMode) ? 2 : clamp(Math.round(Number(item.ai?.interpolationFactor) || 2), 2, 4),
+        model: item.ai?.model || 'rife-v4.6',
         targetFps: isRifeFixed2xMode(item.ai?.interpolationMode) ? undefined : Number(item.ai?.interpolationTargetFps) || 60,
         mode: item.ai?.interpolationMode || 'normal',
         quality: item.ai?.interpolationQuality || 'standard',
@@ -12573,13 +12621,18 @@ function MainApp() {
     return null;
   };
 
-  const getEnhancementEstimateKey = (target: CanvasImageItem, source: string) => [
+  const getEnhancementPreviewKey = (target: CanvasImageItem, source: string) => [
     source,
     target.ai?.type || 'image-enhancement',
     clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4),
     target.ai?.enhancementMode || 'general',
     target.ai?.enhancementResizeMode || 'upscale',
     String(target.ai?.outputFormat || (getCanvasAiMediaType(target.ai) === 'video' ? 'mp4' : 'png')).toLowerCase(),
+  ].join('|');
+  const getEnhancementEstimateKey = (target: CanvasImageItem, source: string) => [
+    'sample-benchmark-v3-preview',
+    getEnhancementPreviewKey(target, source),
+    target.ai?.enhancementRunMode || (getCanvasAiMediaType(target.ai) === 'video' ? 'preview' : 'full'),
   ].join('|');
 
   useEffect(() => {
@@ -12604,7 +12657,10 @@ function MainApp() {
         inputPath: source,
         mediaType: getCanvasAiMediaType(item.ai),
         scale: clamp(Math.round(Number(item.ai?.enhancementScale) || 2), 2, 4),
+        mode: item.ai?.enhancementMode || 'general',
         resizeMode: item.ai?.enhancementResizeMode || 'upscale',
+        outputFormat: item.ai?.outputFormat || (getCanvasAiMediaType(item.ai) === 'video' ? 'mp4' : 'png'),
+        previewSeconds: getCanvasAiMediaType(item.ai) === 'video' && (item.ai?.enhancementRunMode || 'preview') === 'preview' ? 5 : undefined,
         progressId: item.id,
       })
         .then((estimate) => {
@@ -12646,11 +12702,27 @@ function MainApp() {
     }
 
     const scale = clamp(Math.round(Number(target.ai?.enhancementScale) || 2), 2, 4);
+    const previewKey = getEnhancementPreviewKey(target, input.source);
+    const sourceDurationSec = Number(target.ai?.enhancementEstimate?.durationSec);
+    const previewReady = target.ai?.enhancementPreviewReadyKey === previewKey;
+    const requestedRunMode = mediaType === 'video'
+      ? (target.ai?.enhancementRunMode || 'preview')
+      : 'full';
+    const mustPreviewFirst = mediaType === 'video'
+      && requestedRunMode === 'full'
+      && !previewReady
+      && (!Number.isFinite(sourceDurationSec) || sourceDurationSec > 30);
+    const runMode = mustPreviewFirst ? 'preview' : requestedRunMode;
+    const isPreviewRun = mediaType === 'video' && runMode === 'preview';
+    if (mustPreviewFirst) {
+      updateCanvasAiGeneratorData(targetId, { enhancementRunMode: 'preview' });
+      showToast('超过 30 秒的视频必须先生成 5 秒预览');
+    }
     const startedAt = Date.now();
     const draft: CanvasAiGeneratedOutput = {
       id: `${target.id}_realesrgan_output_${startedAt}`,
       mediaType,
-      name: `Real-ESRGAN ${scale}× 清晰度增强`,
+      name: `Real-ESRGAN ${scale}× ${isPreviewRun ? '5 秒预览' : '清晰度增强'}`,
       status: 'working',
       generatedAt: startedAt,
       width: mediaType === 'video' ? 16 : 1,
@@ -12662,7 +12734,7 @@ function MainApp() {
       enhancementProgress: {
         progressId: targetId,
         stage: 'starting-realesrgan',
-        label: '准备清晰度增强',
+        label: isPreviewRun ? '准备生成 5 秒增强预览' : '准备后台完整增强',
         loaded: 0,
         total: 0,
         progress: 0,
@@ -12671,7 +12743,9 @@ function MainApp() {
       generatedAt: startedAt,
     });
     updateCanvasSelection([targetId]);
-    showToast('开始清晰度增强；首次使用会先下载 Real-ESRGAN 引擎');
+    showToast(isPreviewRun
+      ? '开始生成前 5 秒增强预览'
+      : '完整视频增强已转入后台；可以继续使用画布');
 
     try {
       const command = mediaType === 'video'
@@ -12684,6 +12758,7 @@ function MainApp() {
         resizeMode: target.ai?.enhancementResizeMode || 'upscale',
         keepAudio: target.ai?.enhancementKeepAudio !== false,
         outputFormat: target.ai?.outputFormat || (mediaType === 'video' ? 'mp4' : 'png'),
+        previewSeconds: isPreviewRun ? 5 : undefined,
         progressId: targetId,
       });
       const outputPath = (result.outputPath || '').trim();
@@ -12695,7 +12770,7 @@ function MainApp() {
         mediaType,
         url: convertFileSrc(outputPath),
         path: outputPath,
-        name: `${sourceName} · 清晰度增强 ${result.scale || scale}×`,
+        name: `${sourceName} · ${result.preview ? '5 秒增强预览' : '清晰度增强'} ${result.scale || scale}×`,
         prompt: `Real-ESRGAN ${result.mode || target.ai?.enhancementMode || 'general'} ${result.scale || scale}x`,
         status: 'success',
         error: undefined,
@@ -12707,6 +12782,8 @@ function MainApp() {
         status: 'success',
         error: undefined,
         enhancementProgress: undefined,
+        enhancementPreviewReadyKey: result.preview ? previewKey : target.ai?.enhancementPreviewReadyKey,
+        enhancementRunMode: result.preview ? 'full' : target.ai?.enhancementRunMode,
         outputs: [output],
         generatedAt: finishedAt,
       });
@@ -12723,7 +12800,9 @@ function MainApp() {
         if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
         else addGeneratedImagesToDrawer([drawerItem]);
       }
-      showToast(`${mediaType === 'video' ? '视频' : '图片'}清晰度增强完成`);
+      showToast(result.preview
+        ? '5 秒增强预览已生成；确认效果后可运行完整增强'
+        : `${mediaType === 'video' ? '视频' : '图片'}清晰度增强完成`);
     } catch (err) {
       const message = getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err));
       const failedAt = Date.now();
@@ -19007,7 +19086,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.1.1'}
+                                      v{appVersion || '4.1.2'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -19336,9 +19415,14 @@ useEffect(() => {
                             ? canvasItem.ai?.interpolationProgress as RifeEngineProgress | undefined
                             : undefined;
                           const frameInterpolationMetaText = formatRifeEstimateVideoMeta(frameInterpolationEstimate);
-                          const frameInterpolationEstimateText = formatRifeEstimateRange(frameInterpolationEstimate);
+                          const frameInterpolationEstimateText = !frameInterpolationEstimate && canvasItem.ai?.interpolationEstimateKey
+                            ? '正在实测速度…'
+                            : formatRifeEstimateRange(frameInterpolationEstimate);
                           const showFrameInterpolationProgress = shouldShowRifeEngineProgress(frameInterpolationProgress);
                           const frameInterpolationProgressPercent = getRifeEngineProgressPercent(frameInterpolationProgress);
+                          const frameInterpolationProgressDetail = isFrameProcessingProgress(frameInterpolationProgress) && frameInterpolationProgress?.total
+                            ? `${Math.round(Number(frameInterpolationProgress.loaded || 0))}/${Math.round(Number(frameInterpolationProgress.total))}帧 · ${frameInterpolationProgressPercent}%`
+                            : frameInterpolationProgress?.total ? `${frameInterpolationProgressPercent}%` : '处理中';
                           const isFrameInterpolationFixed2xMode = isCanvasFrameInterpolationItem && isRifeFixed2xMode(canvasItem.ai?.interpolationMode);
                           const enhancementEstimate = isCanvasEnhancementItem
                             ? canvasItem.ai?.enhancementEstimate as RealEsrganEnhancementEstimate | undefined
@@ -19346,10 +19430,27 @@ useEffect(() => {
                           const enhancementProgress = isCanvasEnhancementItem
                             ? canvasItem.ai?.enhancementProgress as RifeEngineProgress | undefined
                             : undefined;
-                          const enhancementEstimateText = formatRifeEstimateRange(enhancementEstimate);
-                          const enhancementMetaText = formatRifeEstimateVideoMeta(enhancementEstimate);
+                          const enhancementEstimateText = !enhancementEstimate && canvasItem.ai?.enhancementEstimateKey
+                            ? '正在实测速度…'
+                            : formatRifeEstimateRange(enhancementEstimate);
+                          const enhancementMetaText = formatEnhancementEstimateVideoMeta(enhancementEstimate);
                           const showEnhancementProgress = shouldShowRifeEngineProgress(enhancementProgress);
                           const enhancementProgressPercent = getRifeEngineProgressPercent(enhancementProgress);
+                          const enhancementProgressDetail = isFrameProcessingProgress(enhancementProgress) && enhancementProgress?.total
+                            ? `${Math.round(Number(enhancementProgress.loaded || 0))}/${Math.round(Number(enhancementProgress.total))}帧 · ${enhancementProgressPercent}%`
+                            : enhancementProgress?.total ? `${enhancementProgressPercent}%` : '处理中';
+                          const enhancementInput = isCanvasVideoEnhancementItem ? getCanvasEnhancementInput(canvasItem) : null;
+                          const enhancementRunMode = canvasItem.ai?.enhancementRunMode || (isCanvasVideoEnhancementItem ? 'preview' : 'full');
+                          const enhancementPreviewKey = enhancementInput?.source
+                            ? getEnhancementPreviewKey(canvasItem, enhancementInput.source)
+                            : '';
+                          const enhancementPreviewReady = !!enhancementPreviewKey
+                            && canvasItem.ai?.enhancementPreviewReadyKey === enhancementPreviewKey;
+                          const enhancementSourceDurationSec = Number(enhancementEstimate?.durationSec);
+                          const isLocalMediaBenchmarking = !!(
+                            frameInterpolationProgress?.stage?.startsWith('benchmarking-')
+                            || enhancementProgress?.stage?.startsWith('benchmarking-')
+                          );
                           return (
                             <div
                             key={canvasItem.id}
@@ -19807,11 +19908,7 @@ useEffect(() => {
                                                     <Download className="h-3.5 w-3.5 text-cyan-500" />
                                                     <span className="truncate">{frameInterpolationProgress?.label || '下载引擎'}</span>
                                                   </span>
-                                                  {frameInterpolationProgress?.total ? (
-                                                    <span className="shrink-0 text-cyan-700 dark:text-cyan-100">{frameInterpolationProgressPercent}%</span>
-                                                  ) : (
-                                                    <span className="shrink-0 text-cyan-700 dark:text-cyan-100">处理中</span>
-                                                  )}
+                                                  <span className="shrink-0 text-cyan-700 dark:text-cyan-100">{frameInterpolationProgressDetail}</span>
                                                 </div>
                                                 <div className="h-1.5 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
@@ -19854,11 +19951,7 @@ useEffect(() => {
                                                     <Download className="h-3.5 w-3.5 text-violet-500" />
                                                     <span className="truncate">{enhancementProgress?.label || '准备增强'}</span>
                                                   </span>
-                                                  {enhancementProgress?.total ? (
-                                                    <span className="shrink-0 text-violet-700 dark:text-violet-100">{enhancementProgressPercent}%</span>
-                                                  ) : (
-                                                    <span className="shrink-0 text-violet-700 dark:text-violet-100">处理中</span>
-                                                  )}
+                                                  <span className="shrink-0 text-violet-700 dark:text-violet-100">{enhancementProgressDetail}</span>
                                                 </div>
                                                 <div className="h-1.5 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
@@ -20071,6 +20164,35 @@ useEffect(() => {
                                                 <RoundedSelect
                                                   data-no-drag="true"
                                                   data-canvas-edit-control="true"
+                                                  value={enhancementRunMode}
+                                                  options={CANVAS_ESRGAN_RUN_MODE_OPTIONS}
+                                                  onChange={(value) => {
+                                                    const nextMode = value === 'full' ? 'full' : 'preview';
+                                                    const needsPreview = nextMode === 'full'
+                                                      && !enhancementPreviewReady
+                                                      && (!Number.isFinite(enhancementSourceDurationSec) || enhancementSourceDurationSec > 30);
+                                                    if (needsPreview) {
+                                                      updateCanvasAiGeneratorData(canvasItem.id, { enhancementRunMode: 'preview' });
+                                                      showToast('超过 30 秒的视频需要先生成 5 秒预览');
+                                                      return;
+                                                    }
+                                                    updateCanvasAiGeneratorData(canvasItem.id, { enhancementRunMode: nextMode });
+                                                  }}
+                                                  labelClassName="text-center leading-none"
+                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                                  title={enhancementRunMode === 'preview' ? '只增强视频前 5 秒' : '后台增强完整视频'}
+                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
+                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
+                                                  menuMinWidth={118}
+                                                  menuScale={canvasAiNodeScale || 1}
+                                                />
+                                              )}
+                                              {isCanvasVideoEnhancementItem && (
+                                                <RoundedSelect
+                                                  data-no-drag="true"
+                                                  data-canvas-edit-control="true"
                                                   value={canvasItem.ai?.enhancementKeepAudio === false ? 'no' : 'yes'}
                                                   options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
                                                   onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementKeepAudio: value !== 'no' })}
@@ -20264,7 +20386,7 @@ useEffect(() => {
                                         data-no-drag="true"
                                         data-canvas-run-control="true"
                                         type="button"
-                                        disabled={canvasItem.ai?.status === 'working'}
+                                        disabled={canvasItem.ai?.status === 'working' || isLocalMediaBenchmarking}
                                         onPointerDown={(event) => handleCanvasAiRunPointerDown(event, canvasItem.id)}
                                         onClick={(event) => handleCanvasAiRunClick(event, canvasItem.id)}
                                         className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
@@ -20273,7 +20395,11 @@ useEffect(() => {
                                         {isCanvasFrameInterpolationItem
                                           ? (canvasItem.ai?.status === 'working' ? '补帧中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次补帧' : '补帧')
                                           : isCanvasEnhancementItem
-                                            ? (canvasItem.ai?.status === 'working' ? '增强中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强')
+                                            ? (isCanvasVideoEnhancementItem
+                                              ? (canvasItem.ai?.status === 'working'
+                                                ? (enhancementRunMode === 'preview' ? '预览中' : '后台增强中')
+                                                : enhancementRunMode === 'preview' ? '预览 5 秒' : '完整增强')
+                                              : (canvasItem.ai?.status === 'working' ? '增强中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强'))
                                           : canvasItem.ai?.status === 'working'
                                           ? (isCanvasWorkflowItem ? '运行中' : '生成中')
                                           : isCanvasWorkflowItem
@@ -23756,7 +23882,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.1'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.2'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -23894,7 +24020,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.1'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.2'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -23987,9 +24113,9 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.1 2× 清晰度增强修复</p>
-                <p>修复图片与视频选择 2× 清晰度增强时出现分块错位的问题。</p>
-                <p>2× 现在先按模型原生 4× 增强，再以 Lanczos 高质量缩放到目标尺寸；4× 行为保持不变。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.2 视频增强流程优化</p>
+                <p>新增前 5 秒快速预览；超过 30 秒的视频必须先确认预览效果，再运行完整增强。</p>
+                <p>预估时间改为真实帧数与 6 帧实测，处理进度按已完成帧数显示，并标注 4× 增强较慢。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

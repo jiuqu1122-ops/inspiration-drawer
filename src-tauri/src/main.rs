@@ -489,7 +489,10 @@ struct RifeFrameInterpolationEstimate {
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<f64>,
+    frame_count: Option<u64>,
     output_fps: Option<f64>,
+    output_frame_count: Option<u64>,
+    sample_frames: Option<u32>,
     estimated_seconds_min: Option<f64>,
     estimated_seconds_max: Option<f64>,
 }
@@ -519,6 +522,8 @@ struct RealEsrganEnhancementResult {
     fps: Option<f64>,
     width: Option<u32>,
     height: Option<u32>,
+    preview: bool,
+    processed_duration_sec: Option<f64>,
 }
 
 #[derive(serde::Serialize)]
@@ -528,8 +533,12 @@ struct RealEsrganEnhancementEstimate {
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<f64>,
+    frame_count: Option<u64>,
     output_width: Option<u32>,
     output_height: Option<u32>,
+    preview: bool,
+    preview_duration_sec: Option<f64>,
+    sample_frames: Option<u32>,
     estimated_seconds_min: Option<f64>,
     estimated_seconds_max: Option<f64>,
 }
@@ -539,6 +548,7 @@ struct VideoProbeInfo {
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<f64>,
+    frame_count: Option<u64>,
 }
 
 fn app_install_dir() -> Result<PathBuf, String> {
@@ -1223,24 +1233,6 @@ fn parse_fps_value(value: &str) -> Option<f64> {
     (parsed > 0.0).then_some(parsed)
 }
 
-fn probe_video_fps(ffprobe_path: &Path, source: &Path) -> Option<f64> {
-    let mut cmd = SysCommand::new(ffprobe_path);
-    cmd.args([
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "stream=avg_frame_rate",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-    ])
-    .arg(source);
-    run_hidden_command(&mut cmd, "FFprobe")
-        .ok()
-        .and_then(|text| parse_fps_value(text.lines().next().unwrap_or("")))
-}
-
 fn probe_video_info(ffprobe_path: &Path, source: &Path) -> Result<VideoProbeInfo, String> {
     let mut cmd = SysCommand::new(ffprobe_path);
     cmd.args([
@@ -1249,7 +1241,7 @@ fn probe_video_info(ffprobe_path: &Path, source: &Path) -> Result<VideoProbeInfo
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,avg_frame_rate,duration:format=duration",
+        "stream=width,height,avg_frame_rate,duration,nb_frames:format=duration",
         "-of",
         "json",
     ])
@@ -1285,13 +1277,42 @@ fn probe_video_info(ffprobe_path: &Path, source: &Path) -> Result<VideoProbeInfo
     let duration_sec = stream_duration
         .or(format_duration)
         .filter(|value| value.is_finite() && *value > 0.0);
+    let frame_count = stream
+        .and_then(|value| value.get("nb_frames"))
+        .and_then(|value| {
+            value.as_u64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<u64>().ok())
+            })
+        })
+        .filter(|value| *value > 0)
+        .or_else(|| {
+            duration_sec.zip(fps).and_then(|(duration, frame_rate)| {
+                let estimated = (duration * frame_rate).round();
+                (estimated.is_finite() && estimated > 0.0).then_some(estimated as u64)
+            })
+        });
 
     Ok(VideoProbeInfo {
         duration_sec,
         width,
         height,
         fps,
+        frame_count,
     })
+}
+
+fn video_frame_count(info: &VideoProbeInfo) -> u64 {
+    info.frame_count
+        .or_else(|| {
+            info.duration_sec.zip(info.fps).and_then(|(duration, fps)| {
+                let estimated = (duration * fps).round();
+                (estimated.is_finite() && estimated > 0.0).then_some(estimated as u64)
+            })
+        })
+        .unwrap_or(1)
+        .max(1)
 }
 
 fn estimate_rife_seconds(
@@ -1362,6 +1383,135 @@ fn count_frame_images(dir: &Path) -> Result<usize, String> {
                     .unwrap_or(false)
         })
         .count())
+}
+
+fn run_hidden_command_with_frame_progress(
+    command: &mut SysCommand,
+    command_label: &str,
+    app_handle: &tauri::AppHandle,
+    progress_id: Option<&str>,
+    stage: &str,
+    progress_label: &str,
+    output_dir: &Path,
+    total_frames: u64,
+) -> Result<String, String> {
+    if progress_id.is_none() || total_frames == 0 {
+        return run_hidden_command(command, command_label);
+    }
+
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        stage,
+        progress_label,
+        0,
+        total_frames,
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let monitor_stop = Arc::clone(&stop);
+    let monitor_app = app_handle.clone();
+    let monitor_progress_id = progress_id.map(str::to_string);
+    let monitor_stage = stage.to_string();
+    let monitor_label = progress_label.to_string();
+    let monitor_dir = output_dir.to_path_buf();
+    let monitor = thread::spawn(move || {
+        let mut last_completed = u64::MAX;
+        while !monitor_stop.load(Ordering::Relaxed) {
+            let completed = count_frame_images(&monitor_dir)
+                .unwrap_or(0)
+                .min(total_frames as usize) as u64;
+            if completed != last_completed {
+                last_completed = completed;
+                emit_rife_engine_progress(
+                    &monitor_app,
+                    monitor_progress_id.as_deref(),
+                    &monitor_stage,
+                    &monitor_label,
+                    completed,
+                    total_frames,
+                );
+            }
+            thread::sleep(Duration::from_millis(240));
+        }
+    });
+
+    let result = run_hidden_command(command, command_label);
+    stop.store(true, Ordering::Relaxed);
+    let _ = monitor.join();
+    let completed = count_frame_images(output_dir)
+        .unwrap_or(0)
+        .min(total_frames as usize) as u64;
+    emit_rife_engine_progress(
+        app_handle,
+        progress_id,
+        stage,
+        progress_label,
+        completed,
+        total_frames,
+    );
+    result
+}
+
+fn extract_video_benchmark_frames(
+    ffmpeg_path: &Path,
+    source: &Path,
+    output_dir: &Path,
+    info: &VideoProbeInfo,
+    requested_samples: usize,
+) -> Result<(usize, f64), String> {
+    fs::create_dir_all(output_dir).map_err(|e| format!("创建测速帧目录失败: {}", e))?;
+    let fps = info.fps.unwrap_or(30.0).max(1.0);
+    let sample_span = requested_samples as f64 / fps;
+    let start_at = info
+        .duration_sec
+        .map(|duration| (duration * 0.45).min((duration - sample_span - 0.1).max(0.0)))
+        .unwrap_or(0.0);
+    let started_at = Instant::now();
+    let mut command = SysCommand::new(ffmpeg_path);
+    command
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-ss"])
+        .arg(format!("{:.3}", start_at))
+        .arg("-i")
+        .arg(source)
+        .args(["-an", "-frames:v"])
+        .arg(requested_samples.to_string())
+        .arg(output_dir.join("frame_%08d.png"));
+    run_hidden_command(&mut command, "FFmpeg 抽取测速帧")?;
+    let sample_frames = count_frame_images(output_dir)?;
+    if sample_frames < 2 {
+        return Err("视频可用于测速的帧数不足".to_string());
+    }
+    Ok((sample_frames, started_at.elapsed().as_secs_f64()))
+}
+
+fn measured_estimate_range(seconds: f64) -> (f64, f64) {
+    let safe = seconds.max(1.0);
+    ((safe * 0.86).max(1.0), (safe * 1.18).max(safe + 1.0))
+}
+
+fn append_media_engine_debug_log(base_dir: &Path, component: &str, fields: &[(&str, String)]) {
+    let log_dir = base_dir.join("logs");
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    let log_path = log_dir.join("performance-debug.log");
+    let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    else {
+        return;
+    };
+    let mut parts = vec![
+        format!("timestamp_ms={}", now_millis_u64()),
+        format!("component={}", component),
+    ];
+    parts.extend(
+        fields
+            .iter()
+            .map(|(key, value)| format!("{}={}", key, value)),
+    );
+    let _ = writeln!(file, "{}", parts.join("\t"));
 }
 
 fn normalize_realesrgan_scale(scale: Option<u32>) -> u32 {
@@ -1496,6 +1646,7 @@ async fn get_rife_frame_interpolation_estimate(
     app_handle: tauri::AppHandle,
     input_path: String,
     factor: Option<u32>,
+    model: Option<String>,
     target_fps: Option<f64>,
     mode: Option<String>,
     quality: Option<String>,
@@ -1511,9 +1662,12 @@ async fn get_rife_frame_interpolation_estimate(
     };
     let target_fps = target_fps.unwrap_or(60.0).clamp(1.0, 240.0);
     let quality = quality.unwrap_or_else(|| "standard".to_string());
-    let output_format = output_format.unwrap_or_else(|| "mp4".to_string());
-    let (_ffmpeg_path, ffprobe_path) =
+    let output_format = normalize_realesrgan_video_format(output_format);
+    let status = ensure_rife_engine_installed(&app_handle, progress_id.as_deref())?;
+    let (ffmpeg_path, ffprobe_path) =
         ensure_media_tools_available(&app_handle, progress_id.as_deref())?;
+    let engine_dir = PathBuf::from(&status.engine_dir);
+    let exe_path = PathBuf::from(&status.exe_path);
     let source =
         local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
     if !source.is_file() {
@@ -1529,27 +1683,221 @@ async fn get_rife_frame_interpolation_estimate(
     } else {
         target_fps.min(fps * factor as f64).max(fps).min(240.0)
     };
+    let total_frames = video_frame_count(&info);
+    let output_frame_count = ((total_frames as f64) * (output_fps / fps))
+        .round()
+        .max(total_frames as f64)
+        .min((total_frames.saturating_mul(factor as u64)) as f64)
+        as u64;
     let duration_for_estimate = info.duration_sec.unwrap_or(15.0).max(1.0);
     let width_for_estimate = info.width.unwrap_or(1920).max(1);
     let height_for_estimate = info.height.unwrap_or(1080).max(1);
-    let (estimated_seconds_min, estimated_seconds_max) = estimate_rife_seconds(
-        duration_for_estimate,
-        width_for_estimate,
-        height_for_estimate,
-        fps,
-        output_fps,
-        factor,
-        &mode,
-        &quality,
-        &output_format,
+    let mode_model = match mode.trim() {
+        "hd" | "hd-slow" => "rife-HD",
+        "uhd" => "rife-UHD",
+        _ => "rife-v4.6",
+    };
+    let requested_model = model
+        .unwrap_or_else(|| mode_model.to_string())
+        .trim()
+        .to_string();
+    let model_name = if fixed_2x_mode {
+        mode_model.to_string()
+    } else if requested_model.contains('/') || requested_model.contains('\\') {
+        "rife-v4.6".to_string()
+    } else {
+        requested_model
+    };
+    let model_path = {
+        let candidate = engine_dir.join(&model_name);
+        if candidate.is_dir() {
+            candidate
+        } else {
+            engine_dir.join("rife-v4.6")
+        }
+    };
+
+    let estimate_root = rife_engine_base_dir()?.join("_estimate");
+    fs::create_dir_all(&estimate_root).map_err(|e| format!("创建 RIFE 测速目录失败: {}", e))?;
+    let work_dir = estimate_root.join(format!("{}_{}", now_millis_u64(), std::process::id()));
+    let input_frames_dir = work_dir.join("input_frames");
+    let output_frames_dir = work_dir.join("output_frames");
+    fs::create_dir_all(&input_frames_dir)
+        .map_err(|e| format!("创建 RIFE 测速输入目录失败: {}", e))?;
+    fs::create_dir_all(&output_frames_dir)
+        .map_err(|e| format!("创建 RIFE 测速输出目录失败: {}", e))?;
+    emit_rife_engine_progress(
+        &app_handle,
+        progress_id.as_deref(),
+        "benchmarking-rife-speed",
+        "正在用 6 帧实测补帧速度",
+        0,
+        0,
     );
+
+    let benchmark = (|| -> Result<(usize, f64, f64, f64, f64), String> {
+        let (sample_frames, extract_seconds) =
+            extract_video_benchmark_frames(&ffmpeg_path, &source, &input_frames_dir, &info, 6)?;
+        let sample_target_frames = ((sample_frames as f64) * (output_fps / fps))
+            .round()
+            .max(sample_frames as f64)
+            .min((sample_frames.saturating_mul(factor as usize)) as f64)
+            as usize;
+        let mut rife_cmd = SysCommand::new(&exe_path);
+        rife_cmd
+            .current_dir(&engine_dir)
+            .arg("-i")
+            .arg(&input_frames_dir)
+            .arg("-o")
+            .arg(&output_frames_dir)
+            .arg("-m")
+            .arg(&model_path);
+        if model_name == "rife-v4.6" {
+            rife_cmd.arg("-n").arg(sample_target_frames.to_string());
+        }
+        match quality.trim() {
+            "fast" => {
+                rife_cmd.arg("-j").arg("2:2:2");
+            }
+            "high" => {
+                rife_cmd.arg("-x");
+            }
+            _ => {}
+        }
+        let ai_started_at = Instant::now();
+        run_hidden_command(&mut rife_cmd, "RIFE 样本测速")?;
+        let ai_seconds = ai_started_at.elapsed().as_secs_f64();
+        let sample_output_frames = count_frame_images(&output_frames_dir)?;
+        if sample_output_frames == 0 {
+            return Err("RIFE 样本测速没有生成输出帧".to_string());
+        }
+
+        let sample_video = work_dir.join(format!("sample.{}", output_format));
+        let mut encode_cmd = SysCommand::new(&ffmpeg_path);
+        encode_cmd
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-framerate"])
+            .arg(format!("{:.3}", output_fps))
+            .arg("-i")
+            .arg(output_frames_dir.join("%08d.png"));
+        if output_format == "webm" {
+            let webm_crf = match quality.trim() {
+                "fast" => "36",
+                "high" => "24",
+                _ => "30",
+            };
+            encode_cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                webm_crf,
+                "-pix_fmt",
+                "yuv420p",
+            ]);
+        } else {
+            let crf = match quality.trim() {
+                "fast" => "23",
+                "high" => "15",
+                _ => "18",
+            };
+            encode_cmd.args(["-c:v", "libx264", "-crf", crf, "-pix_fmt", "yuv420p"]);
+        }
+        encode_cmd.arg(&sample_video);
+        let encode_started_at = Instant::now();
+        run_hidden_command(&mut encode_cmd, "FFmpeg RIFE 样本编码")?;
+        let encode_seconds = encode_started_at.elapsed().as_secs_f64();
+        let ai_per_frame = ai_seconds / sample_frames.max(1) as f64;
+        let extract_per_frame = extract_seconds / sample_frames.max(1) as f64;
+        let encode_per_frame = encode_seconds / sample_output_frames.max(1) as f64;
+        let estimated_total = ai_per_frame * total_frames as f64
+            + extract_per_frame * total_frames as f64
+            + encode_per_frame * output_frame_count as f64;
+        Ok((
+            sample_frames,
+            extract_seconds,
+            ai_seconds,
+            encode_seconds,
+            estimated_total,
+        ))
+    })();
+    let _ = fs::remove_dir_all(&work_dir);
+    emit_rife_engine_progress(
+        &app_handle,
+        progress_id.as_deref(),
+        "rife-benchmark-ready",
+        "补帧速度实测完成",
+        1,
+        1,
+    );
+
+    let (sample_frames, estimated_seconds_min, estimated_seconds_max) = match benchmark {
+        Ok((sample_frames, extract_seconds, ai_seconds, encode_seconds, estimated_total)) => {
+            append_media_engine_debug_log(
+                &rife_engine_base_dir()?,
+                "rife-estimate",
+                &[
+                    ("video_frames", total_frames.to_string()),
+                    (
+                        "resolution",
+                        format!("{}x{}", width_for_estimate, height_for_estimate),
+                    ),
+                    ("fps", format!("{:.3}", fps)),
+                    ("model", model_name.clone()),
+                    ("factor", factor.to_string()),
+                    ("output_fps", format!("{:.3}", output_fps)),
+                    ("sample_frames", sample_frames.to_string()),
+                    ("sample_extract_seconds", format!("{:.4}", extract_seconds)),
+                    ("sample_ai_seconds", format!("{:.4}", ai_seconds)),
+                    ("sample_encode_seconds", format!("{:.4}", encode_seconds)),
+                    (
+                        "avg_ai_frame_seconds",
+                        format!("{:.6}", ai_seconds / sample_frames.max(1) as f64),
+                    ),
+                    ("estimated_total_seconds", format!("{:.3}", estimated_total)),
+                ],
+            );
+            let (min, max) = measured_estimate_range(estimated_total);
+            (Some(sample_frames as u32), min, max)
+        }
+        Err(error) => {
+            let (min, max) = estimate_rife_seconds(
+                duration_for_estimate,
+                width_for_estimate,
+                height_for_estimate,
+                fps,
+                output_fps,
+                factor,
+                &mode,
+                &quality,
+                &output_format,
+            );
+            append_media_engine_debug_log(
+                &rife_engine_base_dir()?,
+                "rife-estimate-fallback",
+                &[
+                    ("video_frames", total_frames.to_string()),
+                    ("model", model_name.clone()),
+                    ("error", error.replace(['\r', '\n', '\t'], " ")),
+                    (
+                        "estimated_total_seconds",
+                        format!("{:.3}", (min + max) / 2.0),
+                    ),
+                ],
+            );
+            (None, min, max)
+        }
+    };
 
     Ok(RifeFrameInterpolationEstimate {
         duration_sec: info.duration_sec,
         width: info.width,
         height: info.height,
         fps: Some(fps),
+        frame_count: Some(total_frames),
         output_fps: Some(output_fps),
+        output_frame_count: Some(output_frame_count),
+        sample_frames,
         estimated_seconds_min: Some(estimated_seconds_min),
         estimated_seconds_max: Some(estimated_seconds_max),
     })
@@ -1620,7 +1968,10 @@ async fn run_rife_frame_interpolation(
     fs::create_dir_all(&output_frames_dir).map_err(|e| format!("创建输出帧目录失败: {}", e))?;
 
     let result = (|| -> Result<RifeFrameInterpolationResult, String> {
-        let fps = probe_video_fps(&ffprobe_path, &source).unwrap_or(30.0);
+        let run_started_at = Instant::now();
+        let info = probe_video_info(&ffprobe_path, &source)?;
+        let fps = info.fps.unwrap_or(30.0).max(1.0);
+        let estimated_input_frames = video_frame_count(&info);
         let output_fps = if fixed_2x_mode {
             fps * 2.0
         } else {
@@ -1657,7 +2008,18 @@ async fn run_rife_frame_interpolation(
             .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
             .arg(&source)
             .arg(input_frames_dir.join("frame_%08d.png"));
-        run_hidden_command(&mut decode_cmd, "FFmpeg 视频解帧")?;
+        let extract_started_at = Instant::now();
+        run_hidden_command_with_frame_progress(
+            &mut decode_cmd,
+            "FFmpeg 视频解帧",
+            &app_handle,
+            progress_id_ref,
+            "extracting-rife-frames",
+            "正在抽取视频帧",
+            &input_frames_dir,
+            estimated_input_frames,
+        )?;
+        let extract_seconds = extract_started_at.elapsed().as_secs_f64();
 
         let input_frame_count = count_frame_images(&input_frames_dir)?;
         if input_frame_count == 0 {
@@ -1714,7 +2076,18 @@ async fn run_rife_frame_interpolation(
             }
             _ => {}
         }
-        run_hidden_command(&mut rife_cmd, "RIFE 补帧")?;
+        let ai_started_at = Instant::now();
+        run_hidden_command_with_frame_progress(
+            &mut rife_cmd,
+            "RIFE 补帧",
+            &app_handle,
+            progress_id_ref,
+            "interpolating-rife-frames",
+            "RIFE 正在补帧",
+            &output_frames_dir,
+            target_frame_count as u64,
+        )?;
+        let ai_seconds = ai_started_at.elapsed().as_secs_f64();
 
         let mut encode_cmd = SysCommand::new(&ffmpeg_path);
         encode_cmd
@@ -1756,11 +2129,57 @@ async fn run_rife_frame_interpolation(
             }
         }
         encode_cmd.arg(&output_path);
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "encoding-rife-video",
+            "正在合成补帧视频",
+            0,
+            0,
+        );
+        let encode_started_at = Instant::now();
         run_hidden_command(&mut encode_cmd, "FFmpeg 视频合成")?;
+        let encode_seconds = encode_started_at.elapsed().as_secs_f64();
 
         if !output_path.is_file() {
             return Err("RIFE 补帧完成，但没有生成输出视频".to_string());
         }
+
+        append_media_engine_debug_log(
+            &base_dir,
+            "rife-run",
+            &[
+                ("video_frames", input_frame_count.to_string()),
+                (
+                    "resolution",
+                    format!("{}x{}", info.width.unwrap_or(0), info.height.unwrap_or(0)),
+                ),
+                ("fps", format!("{:.3}", fps)),
+                ("model", model_name.clone()),
+                ("factor", factor.to_string()),
+                ("output_fps", format!("{:.3}", output_fps)),
+                ("sample_frames", "0".to_string()),
+                ("extract_seconds", format!("{:.4}", extract_seconds)),
+                ("ai_seconds", format!("{:.4}", ai_seconds)),
+                ("encode_seconds", format!("{:.4}", encode_seconds)),
+                (
+                    "avg_ai_frame_seconds",
+                    format!("{:.6}", ai_seconds / input_frame_count.max(1) as f64),
+                ),
+                (
+                    "total_seconds",
+                    format!("{:.4}", run_started_at.elapsed().as_secs_f64()),
+                ),
+            ],
+        );
+        emit_rife_engine_progress(
+            &app_handle,
+            progress_id_ref,
+            "rife-video-ready",
+            "视频补帧完成",
+            target_frame_count as u64,
+            target_frame_count as u64,
+        );
 
         Ok(RifeFrameInterpolationResult {
             output_path: display_local_path(&output_path),
@@ -1778,12 +2197,15 @@ async fn run_rife_frame_interpolation(
 
 #[tauri::command]
 async fn get_realesrgan_enhancement_estimate(
-    _app_handle: tauri::AppHandle,
+    app_handle: tauri::AppHandle,
     input_path: String,
     media_type: Option<String>,
     scale: Option<u32>,
+    mode: Option<String>,
     resize_mode: Option<String>,
-    _progress_id: Option<String>,
+    output_format: Option<String>,
+    preview_seconds: Option<f64>,
+    progress_id: Option<String>,
 ) -> Result<RealEsrganEnhancementEstimate, String> {
     let media_type = media_type
         .unwrap_or_else(|| "image".to_string())
@@ -1791,7 +2213,13 @@ async fn get_realesrgan_enhancement_estimate(
         .to_ascii_lowercase();
     let is_video = media_type == "video";
     let scale = normalize_realesrgan_scale(scale);
+    let mode = normalize_realesrgan_mode(mode);
     let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
+    let output_format = if is_video {
+        normalize_realesrgan_video_format(output_format)
+    } else {
+        normalize_realesrgan_image_format(output_format)
+    };
     let source =
         local_path_from_url_like(&input_path).unwrap_or_else(|| PathBuf::from(&input_path));
     if !source.is_file() {
@@ -1801,33 +2229,54 @@ async fn get_realesrgan_enhancement_estimate(
         ));
     }
 
-    let (duration_sec, width, height, fps) = if is_video {
-        if let Some((_ffmpeg_path, ffprobe_path)) = resolve_system_media_tools().or_else(|| {
-            bundled_media_tool_path("ffmpeg")
-                .ok()
-                .zip(bundled_media_tool_path("ffprobe").ok())
-                .filter(|(ffmpeg_path, ffprobe_path)| {
-                    ffmpeg_path.is_file() && ffprobe_path.is_file()
-                })
-        }) {
-            match probe_video_info(&ffprobe_path, &source) {
-                Ok(info) => (
-                    info.duration_sec,
-                    info.width,
-                    info.height,
-                    info.fps.or(Some(30.0)),
-                ),
-                Err(_) => (Some(15.0), None, None, Some(30.0)),
-            }
-        } else {
-            (Some(15.0), None, None, Some(30.0))
-        }
-    } else {
-        (Some(1.0), None, None, None)
-    };
+    if !is_video {
+        let (estimated_seconds_min, estimated_seconds_max) =
+            estimate_realesrgan_seconds(1.0, 1024, 1024, scale, &resize_mode, "image");
+        return Ok(RealEsrganEnhancementEstimate {
+            duration_sec: Some(1.0),
+            width: None,
+            height: None,
+            fps: None,
+            frame_count: None,
+            output_width: None,
+            output_height: None,
+            preview: false,
+            preview_duration_sec: None,
+            sample_frames: None,
+            estimated_seconds_min: Some(estimated_seconds_min),
+            estimated_seconds_max: Some(estimated_seconds_max),
+        });
+    }
 
-    let width_for_estimate = width.unwrap_or(if is_video { 1920 } else { 1024 }).max(1);
-    let height_for_estimate = height.unwrap_or(if is_video { 1080 } else { 1024 }).max(1);
+    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id.as_deref())?;
+    let (ffmpeg_path, ffprobe_path) =
+        ensure_media_tools_available(&app_handle, progress_id.as_deref())?;
+    let engine_dir = PathBuf::from(&status.engine_dir);
+    let exe_path = PathBuf::from(&status.exe_path);
+    let info = probe_video_info(&ffprobe_path, &source)?;
+    let duration_sec = info.duration_sec;
+    let width = info.width;
+    let height = info.height;
+    let fps = info.fps.or(Some(30.0));
+    let source_frame_count = video_frame_count(&info);
+    let preview_duration_sec = preview_seconds
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.clamp(3.0, 5.0))
+        .map(|value| {
+            info.duration_sec
+                .map(|duration| value.min(duration))
+                .unwrap_or(value)
+        });
+    let total_frames = preview_duration_sec
+        .map(|duration| {
+            ((duration * fps.unwrap_or(30.0)).ceil() as u64)
+                .max(1)
+                .min(source_frame_count)
+        })
+        .unwrap_or(source_frame_count);
+
+    let width_for_estimate = width.unwrap_or(1920).max(1);
+    let height_for_estimate = height.unwrap_or(1080).max(1);
     let output_width = if resize_mode == "keep" {
         width
     } else {
@@ -1838,22 +2287,197 @@ async fn get_realesrgan_enhancement_estimate(
     } else {
         height.map(|value| value.saturating_mul(scale))
     };
-    let (estimated_seconds_min, estimated_seconds_max) = estimate_realesrgan_seconds(
-        duration_sec.unwrap_or(if is_video { 15.0 } else { 1.0 }),
-        width_for_estimate,
-        height_for_estimate,
-        scale,
-        &resize_mode,
-        if is_video { "video" } else { "image" },
+    let estimate_root = realesrgan_engine_base_dir()?.join("_estimate");
+    fs::create_dir_all(&estimate_root)
+        .map_err(|e| format!("创建 Real-ESRGAN 测速目录失败: {}", e))?;
+    let work_dir = estimate_root.join(format!("{}_{}", now_millis_u64(), std::process::id()));
+    let input_frames_dir = work_dir.join("input_frames");
+    let enhanced_frames_dir = work_dir.join("enhanced_frames");
+    fs::create_dir_all(&input_frames_dir)
+        .map_err(|e| format!("创建增强测速输入目录失败: {}", e))?;
+    fs::create_dir_all(&enhanced_frames_dir)
+        .map_err(|e| format!("创建增强测速输出目录失败: {}", e))?;
+    emit_rife_engine_progress(
+        &app_handle,
+        progress_id.as_deref(),
+        "benchmarking-realesrgan-speed",
+        "正在用 6 帧实测增强速度",
+        0,
+        0,
     );
+
+    let benchmark = (|| -> Result<(usize, f64, f64, f64, f64), String> {
+        let (sample_frames, extract_seconds) =
+            extract_video_benchmark_frames(&ffmpeg_path, &source, &input_frames_dir, &info, 6)?;
+        let ai_started_at = Instant::now();
+        // One process handles the complete sample directory. Never spawn one
+        // Real-ESRGAN process per frame; process startup would dominate timing.
+        run_realesrgan_on_path(
+            &exe_path,
+            &engine_dir,
+            &input_frames_dir,
+            &enhanced_frames_dir,
+            &mode,
+            scale,
+            "png",
+        )?;
+        let ai_seconds = ai_started_at.elapsed().as_secs_f64();
+        let enhanced_sample_frames = count_frame_images(&enhanced_frames_dir)?;
+        if enhanced_sample_frames == 0 {
+            return Err("Real-ESRGAN 样本测速没有生成输出帧".to_string());
+        }
+
+        let sample_video = work_dir.join(format!("sample.{}", output_format));
+        let mut encode_cmd = SysCommand::new(&ffmpeg_path);
+        encode_cmd
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-framerate"])
+            .arg(format!("{:.3}", fps.unwrap_or(30.0)))
+            .arg("-i")
+            .arg(enhanced_frames_dir.join("frame_%08d.png"));
+        if resize_mode == "keep" {
+            encode_cmd.args([
+                "-vf",
+                &format!(
+                    "scale={}:{}:flags=lanczos",
+                    width_for_estimate, height_for_estimate
+                ),
+            ]);
+        } else if scale < REALESRGAN_NATIVE_SCALE {
+            let divisor = REALESRGAN_NATIVE_SCALE / scale;
+            encode_cmd.args([
+                "-vf",
+                &format!("scale=iw/{}:ih/{}:flags=lanczos", divisor, divisor),
+            ]);
+        }
+        if output_format == "webm" {
+            encode_cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                "28",
+                "-pix_fmt",
+                "yuv420p",
+            ]);
+        } else {
+            encode_cmd.args(["-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p"]);
+        }
+        encode_cmd.arg(&sample_video);
+        let encode_started_at = Instant::now();
+        run_hidden_command(&mut encode_cmd, "FFmpeg 增强样本编码")?;
+        let encode_seconds = encode_started_at.elapsed().as_secs_f64();
+        let ai_per_frame = ai_seconds / sample_frames.max(1) as f64;
+        let extract_per_frame = extract_seconds / sample_frames.max(1) as f64;
+        let encode_per_frame = encode_seconds / enhanced_sample_frames.max(1) as f64;
+        let estimated_total =
+            (ai_per_frame + extract_per_frame + encode_per_frame) * total_frames as f64;
+        Ok((
+            sample_frames,
+            extract_seconds,
+            ai_seconds,
+            encode_seconds,
+            estimated_total,
+        ))
+    })();
+    let _ = fs::remove_dir_all(&work_dir);
+    emit_rife_engine_progress(
+        &app_handle,
+        progress_id.as_deref(),
+        "realesrgan-benchmark-ready",
+        "增强速度实测完成",
+        1,
+        1,
+    );
+
+    let (sample_frames, estimated_seconds_min, estimated_seconds_max) = match benchmark {
+        Ok((sample_frames, extract_seconds, ai_seconds, encode_seconds, estimated_total)) => {
+            append_media_engine_debug_log(
+                &realesrgan_engine_base_dir()?,
+                "realesrgan-estimate",
+                &[
+                    ("video_frames", total_frames.to_string()),
+                    ("source_video_frames", source_frame_count.to_string()),
+                    (
+                        "resolution",
+                        format!("{}x{}", width_for_estimate, height_for_estimate),
+                    ),
+                    ("fps", format!("{:.3}", fps.unwrap_or(30.0))),
+                    ("model", realesrgan_model_name(&mode).to_string()),
+                    ("process_mode", "single-directory-batch".to_string()),
+                    ("engine_processes", "1".to_string()),
+                    ("scale", scale.to_string()),
+                    ("tile_size", "auto".to_string()),
+                    ("native_4x_then_downsample", (scale == 2).to_string()),
+                    (
+                        "run_scope",
+                        if preview_duration_sec.is_some() {
+                            "preview"
+                        } else {
+                            "full"
+                        }
+                        .to_string(),
+                    ),
+                    ("sample_frames", sample_frames.to_string()),
+                    ("sample_extract_seconds", format!("{:.4}", extract_seconds)),
+                    ("sample_ai_seconds", format!("{:.4}", ai_seconds)),
+                    ("sample_encode_seconds", format!("{:.4}", encode_seconds)),
+                    (
+                        "avg_ai_frame_seconds",
+                        format!("{:.6}", ai_seconds / sample_frames.max(1) as f64),
+                    ),
+                    ("estimated_total_seconds", format!("{:.3}", estimated_total)),
+                ],
+            );
+            let (min, max) = measured_estimate_range(estimated_total);
+            (Some(sample_frames as u32), min, max)
+        }
+        Err(error) => {
+            let (min, max) = estimate_realesrgan_seconds(
+                duration_sec.unwrap_or(15.0),
+                width_for_estimate,
+                height_for_estimate,
+                scale,
+                &resize_mode,
+                "video",
+            );
+            append_media_engine_debug_log(
+                &realesrgan_engine_base_dir()?,
+                "realesrgan-estimate-fallback",
+                &[
+                    ("video_frames", total_frames.to_string()),
+                    ("source_video_frames", source_frame_count.to_string()),
+                    ("model", realesrgan_model_name(&mode).to_string()),
+                    ("scale", scale.to_string()),
+                    ("tile_size", "auto".to_string()),
+                    (
+                        "error",
+                        error
+                            .replace('\r', " ")
+                            .replace('\n', " ")
+                            .replace('\t', " "),
+                    ),
+                    (
+                        "estimated_total_seconds",
+                        format!("{:.3}", (min + max) / 2.0),
+                    ),
+                ],
+            );
+            (None, min, max)
+        }
+    };
 
     Ok(RealEsrganEnhancementEstimate {
         duration_sec,
         width,
         height,
         fps,
+        frame_count: Some(total_frames),
         output_width,
         output_height,
+        preview: preview_duration_sec.is_some(),
+        preview_duration_sec,
+        sample_frames,
         estimated_seconds_min: Some(estimated_seconds_min),
         estimated_seconds_max: Some(estimated_seconds_max),
     })
@@ -1988,6 +2612,8 @@ async fn run_realesrgan_image_enhancement(
             fps: None,
             width: None,
             height: None,
+            preview: false,
+            processed_duration_sec: None,
         })
     })();
 
@@ -2004,6 +2630,7 @@ async fn run_realesrgan_video_enhancement(
     resize_mode: Option<String>,
     keep_audio: Option<bool>,
     output_format: Option<String>,
+    preview_seconds: Option<f64>,
     progress_id: Option<String>,
 ) -> Result<RealEsrganEnhancementResult, String> {
     let scale = normalize_realesrgan_scale(scale);
@@ -2011,6 +2638,9 @@ async fn run_realesrgan_video_enhancement(
     let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
     let keep_audio = keep_audio.unwrap_or(true);
     let output_format = normalize_realesrgan_video_format(output_format);
+    let requested_preview_seconds = preview_seconds
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.clamp(3.0, 5.0));
     let progress_id_ref = progress_id.as_deref();
     let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
     let (ffmpeg_path, ffprobe_path) = ensure_media_tools_available(&app_handle, progress_id_ref)?;
@@ -2044,16 +2674,36 @@ async fn run_realesrgan_video_enhancement(
     fs::create_dir_all(&enhanced_frames_dir).map_err(|e| format!("创建增强帧目录失败: {}", e))?;
 
     let result = (|| -> Result<RealEsrganEnhancementResult, String> {
+        let run_started_at = Instant::now();
         let info = probe_video_info(&ffprobe_path, &source)?;
         let fps = info.fps.unwrap_or(30.0).max(1.0);
+        let preview_duration_sec = requested_preview_seconds.map(|value| {
+            info.duration_sec
+                .map(|duration| value.min(duration))
+                .unwrap_or(value)
+        });
+        let source_frame_count = video_frame_count(&info);
+        let estimated_input_frames = preview_duration_sec
+            .map(|duration| {
+                ((duration * fps).ceil() as u64)
+                    .max(1)
+                    .min(source_frame_count)
+            })
+            .unwrap_or(source_frame_count);
         let source_stem = source
             .file_stem()
             .and_then(|value| value.to_str())
             .map(sanitize_file_name)
             .unwrap_or_else(|| "video".to_string());
         let output_path = unique_file_path(outputs_dir.join(format!(
-            "{}_realesrgan_{}x_{}.{}",
-            source_stem, scale, resize_mode, output_format
+            "{}_realesrgan_{}x_{}{}.{}",
+            source_stem,
+            scale,
+            resize_mode,
+            preview_duration_sec
+                .map(|duration| format!("_preview_{:.0}s", duration))
+                .unwrap_or_default(),
+            output_format
         )));
 
         emit_rife_engine_progress(
@@ -2067,9 +2717,23 @@ async fn run_realesrgan_video_enhancement(
         let mut decode_cmd = SysCommand::new(&ffmpeg_path);
         decode_cmd
             .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
-            .arg(&source)
-            .arg(input_frames_dir.join("frame_%08d.png"));
-        run_hidden_command(&mut decode_cmd, "FFmpeg 视频解帧")?;
+            .arg(&source);
+        if let Some(duration) = preview_duration_sec {
+            decode_cmd.args(["-t", &format!("{:.3}", duration)]);
+        }
+        decode_cmd.arg(input_frames_dir.join("frame_%08d.png"));
+        let extract_started_at = Instant::now();
+        run_hidden_command_with_frame_progress(
+            &mut decode_cmd,
+            "FFmpeg 视频解帧",
+            &app_handle,
+            progress_id_ref,
+            "extracting-realesrgan-frames",
+            "正在抽取视频帧",
+            &input_frames_dir,
+            estimated_input_frames,
+        )?;
+        let extract_seconds = extract_started_at.elapsed().as_secs_f64();
         let input_frame_count = count_frame_images(&input_frames_dir)?;
         if input_frame_count == 0 {
             return Err("视频解帧失败，没有得到可用帧".to_string());
@@ -2083,15 +2747,33 @@ async fn run_realesrgan_video_enhancement(
             0,
             0,
         );
-        run_realesrgan_on_path(
-            &exe_path,
-            &engine_dir,
-            &input_frames_dir,
+        let ai_started_at = Instant::now();
+        // Run the entire input_frames directory in one Real-ESRGAN process.
+        // The progress monitor only counts completed files; it starts no exe.
+        let mut enhance_cmd = SysCommand::new(&exe_path);
+        enhance_cmd
+            .current_dir(&engine_dir)
+            .arg("-i")
+            .arg(&input_frames_dir)
+            .arg("-o")
+            .arg(&enhanced_frames_dir)
+            .arg("-n")
+            .arg(realesrgan_model_name(&mode))
+            .arg("-s")
+            .arg(REALESRGAN_NATIVE_SCALE.to_string())
+            .arg("-f")
+            .arg("png");
+        run_hidden_command_with_frame_progress(
+            &mut enhance_cmd,
+            "Real-ESRGAN 清晰度增强",
+            &app_handle,
+            progress_id_ref,
+            "enhancing-realesrgan-frames",
+            "Real-ESRGAN 正在增强",
             &enhanced_frames_dir,
-            &mode,
-            scale,
-            "png",
+            input_frame_count as u64,
         )?;
+        let ai_seconds = ai_started_at.elapsed().as_secs_f64();
         let enhanced_frame_count = count_frame_images(&enhanced_frames_dir)?;
         if enhanced_frame_count == 0 {
             return Err("视频增强完成，但没有生成增强帧".to_string());
@@ -2163,11 +2845,52 @@ async fn run_realesrgan_video_enhancement(
             }
         }
         encode_cmd.arg(&output_path);
+        let encode_started_at = Instant::now();
         run_hidden_command(&mut encode_cmd, "FFmpeg 增强视频合成")?;
+        let encode_seconds = encode_started_at.elapsed().as_secs_f64();
 
         if !output_path.is_file() {
             return Err("视频增强完成，但没有生成输出视频".to_string());
         }
+        append_media_engine_debug_log(
+            &base_dir,
+            "realesrgan-run",
+            &[
+                ("video_frames", input_frame_count.to_string()),
+                ("source_video_frames", source_frame_count.to_string()),
+                (
+                    "resolution",
+                    format!("{}x{}", info.width.unwrap_or(0), info.height.unwrap_or(0)),
+                ),
+                ("fps", format!("{:.3}", fps)),
+                ("model", realesrgan_model_name(&mode).to_string()),
+                ("process_mode", "single-directory-batch".to_string()),
+                ("engine_processes", "1".to_string()),
+                ("scale", scale.to_string()),
+                ("tile_size", "auto".to_string()),
+                ("native_4x_then_downsample", (scale == 2).to_string()),
+                (
+                    "run_scope",
+                    if preview_duration_sec.is_some() {
+                        "preview"
+                    } else {
+                        "full"
+                    }
+                    .to_string(),
+                ),
+                ("extract_seconds", format!("{:.4}", extract_seconds)),
+                ("ai_seconds", format!("{:.4}", ai_seconds)),
+                ("encode_seconds", format!("{:.4}", encode_seconds)),
+                (
+                    "avg_ai_frame_seconds",
+                    format!("{:.6}", ai_seconds / input_frame_count.max(1) as f64),
+                ),
+                (
+                    "total_seconds",
+                    format!("{:.4}", run_started_at.elapsed().as_secs_f64()),
+                ),
+            ],
+        );
         emit_rife_engine_progress(
             &app_handle,
             progress_id_ref,
@@ -2186,6 +2909,8 @@ async fn run_realesrgan_video_enhancement(
             fps: Some(fps),
             width: info.width,
             height: info.height,
+            preview: preview_duration_sec.is_some(),
+            processed_duration_sec: preview_duration_sec.or(info.duration_sec),
         })
     })();
 
