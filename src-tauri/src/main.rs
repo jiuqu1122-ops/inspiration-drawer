@@ -440,6 +440,7 @@ const FFMPEG_TOOLS_SHA256: &str =
     "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
 const FFMPEG_TOOLS_ZIP_SIZE: u64 = 109_205_730;
 const REALESRGAN_ENGINE_VERSION: &str = "20220424";
+const REALESRGAN_NATIVE_SCALE: u32 = 4;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
 const REALESRGAN_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
@@ -780,10 +781,12 @@ fn download_rife_engine_archive(
         0,
     );
     let client = build_engine_download_http_client(app_handle, 1800)?;
-    let mut response = client
-        .get(RIFE_ENGINE_ASSET_URL)
-        .send()
-        .map_err(|e| format!("下载 RIFE 引擎失败: {}。请检查网络/代理后重试，或稍后再试。", e))?;
+    let mut response = client.get(RIFE_ENGINE_ASSET_URL).send().map_err(|e| {
+        format!(
+            "下载 RIFE 引擎失败: {}。请检查网络/代理后重试，或稍后再试。",
+            e
+        )
+    })?;
     if !response.status().is_success() {
         return Err(format!(
             "下载 RIFE 引擎失败，HTTP 状态码: {}",
@@ -833,7 +836,12 @@ fn download_realesrgan_engine_archive(
     let mut response = client
         .get(REALESRGAN_ENGINE_ASSET_URL)
         .send()
-        .map_err(|e| format!("下载 Real-ESRGAN 引擎失败: {}。请检查网络/代理后重试，或稍后再试。", e))?;
+        .map_err(|e| {
+            format!(
+                "下载 Real-ESRGAN 引擎失败: {}。请检查网络/代理后重试，或稍后再试。",
+                e
+            )
+        })?;
     if !response.status().is_success() {
         return Err(format!(
             "下载 Real-ESRGAN 引擎失败，HTTP 状态码: {}",
@@ -913,10 +921,12 @@ fn download_ffmpeg_tools_archive(
         0,
     );
     let client = build_engine_download_http_client(app_handle, 1800)?;
-    let mut response = client
-        .get(FFMPEG_TOOLS_ASSET_URL)
-        .send()
-        .map_err(|e| format!("下载 FFmpeg / FFprobe 工具失败: {}。请检查网络/代理后重试，或稍后再试。", e))?;
+    let mut response = client.get(FFMPEG_TOOLS_ASSET_URL).send().map_err(|e| {
+        format!(
+            "下载 FFmpeg / FFprobe 工具失败: {}。请检查网络/代理后重试，或稍后再试。",
+            e
+        )
+    })?;
     if !response.status().is_success() {
         return Err(format!(
             "下载 FFmpeg / FFprobe 工具失败，HTTP 状态码: {}",
@@ -1411,7 +1421,7 @@ fn normalize_realesrgan_video_format(output_format: Option<String>) -> String {
     }
 }
 
-fn realesrgan_model_name(mode: &str, _scale: u32) -> &'static str {
+fn realesrgan_model_name(mode: &str) -> &'static str {
     match mode {
         "anime" => "realesr-animevideov3",
         _ => "realesrgan-x4plus",
@@ -1433,7 +1443,14 @@ fn estimate_realesrgan_seconds(
     } else {
         0.10
     };
-    let scale_cost = if scale >= 4 { 2.35 } else { 1.0 };
+    // The ncnn executable produces broken tile placement with `-s 2` on some
+    // inputs. Both requested sizes therefore run the models at their native
+    // 4x scale; 2x output is downsampled with Lanczos afterwards.
+    let scale_cost = if scale >= REALESRGAN_NATIVE_SCALE {
+        2.35
+    } else {
+        2.45
+    };
     let resize_cost = if resize_mode == "keep" { 1.12 } else { 1.0 };
     let base = if media_type == "video" { 90.0 } else { 18.0 };
     let seconds = base * duration_scale * pixel_scale * scale_cost * resize_cost;
@@ -1454,10 +1471,10 @@ fn run_realesrgan_on_path(
     input: &Path,
     output: &Path,
     mode: &str,
-    scale: u32,
+    _scale: u32,
     output_format: &str,
 ) -> Result<(), String> {
-    let model_name = realesrgan_model_name(mode, scale);
+    let model_name = realesrgan_model_name(mode);
     let mut cmd = SysCommand::new(exe_path);
     cmd.current_dir(engine_dir)
         .arg("-i")
@@ -1467,7 +1484,7 @@ fn run_realesrgan_on_path(
         .arg("-n")
         .arg(model_name)
         .arg("-s")
-        .arg(scale.to_string())
+        .arg(REALESRGAN_NATIVE_SCALE.to_string())
         .arg("-f")
         .arg(output_format);
     run_hidden_command(&mut cmd, "Real-ESRGAN 清晰度增强")?;
@@ -1789,7 +1806,9 @@ async fn get_realesrgan_enhancement_estimate(
             bundled_media_tool_path("ffmpeg")
                 .ok()
                 .zip(bundled_media_tool_path("ffprobe").ok())
-                .filter(|(ffmpeg_path, ffprobe_path)| ffmpeg_path.is_file() && ffprobe_path.is_file())
+                .filter(|(ffmpeg_path, ffprobe_path)| {
+                    ffmpeg_path.is_file() && ffprobe_path.is_file()
+                })
         }) {
             match probe_video_info(&ffprobe_path, &source) {
                 Ok(info) => (
@@ -1892,8 +1911,12 @@ async fn run_realesrgan_image_enhancement(
             "{}_realesrgan_{}x_{}.{}",
             source_stem, scale, resize_mode, output_format
         )));
-        let enhanced_path = if resize_mode == "keep" {
-            work_dir.join(format!("enhanced.{}", output_format))
+        let needs_post_resize = resize_mode == "keep" || scale < REALESRGAN_NATIVE_SCALE;
+        let enhanced_path = if needs_post_resize {
+            work_dir.join(format!(
+                "enhanced_{}x.{}",
+                REALESRGAN_NATIVE_SCALE, output_format
+            ))
         } else {
             output_path.clone()
         };
@@ -1916,16 +1939,24 @@ async fn run_realesrgan_image_enhancement(
             &output_format,
         )?;
 
-        if resize_mode == "keep" {
+        if needs_post_resize {
             let (ffmpeg_path, _ffprobe_path) =
                 ensure_media_tools_available(&app_handle, progress_id_ref)?;
+            let downsample_divisor = if resize_mode == "keep" {
+                REALESRGAN_NATIVE_SCALE
+            } else {
+                REALESRGAN_NATIVE_SCALE / scale
+            };
             let mut resize_cmd = SysCommand::new(&ffmpeg_path);
             resize_cmd
                 .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
                 .arg(&enhanced_path)
                 .args([
                     "-vf",
-                    &format!("scale=iw/{}:ih/{}", scale, scale),
+                    &format!(
+                        "scale=iw/{}:ih/{}:flags=lanczos",
+                        downsample_divisor, downsample_divisor
+                    ),
                     "-frames:v",
                     "1",
                 ]);
@@ -2085,10 +2116,28 @@ async fn run_realesrgan_video_enhancement(
         }
         if resize_mode == "keep" {
             if let (Some(width), Some(height)) = (info.width, info.height) {
-                encode_cmd.args(["-vf", &format!("scale={}:{}", width.max(1), height.max(1))]);
+                encode_cmd.args([
+                    "-vf",
+                    &format!("scale={}:{}:flags=lanczos", width.max(1), height.max(1)),
+                ]);
             } else {
-                encode_cmd.args(["-vf", &format!("scale=iw/{}:ih/{}", scale, scale)]);
+                encode_cmd.args([
+                    "-vf",
+                    &format!(
+                        "scale=iw/{}:ih/{}:flags=lanczos",
+                        REALESRGAN_NATIVE_SCALE, REALESRGAN_NATIVE_SCALE
+                    ),
+                ]);
             }
+        } else if scale < REALESRGAN_NATIVE_SCALE {
+            let downsample_divisor = REALESRGAN_NATIVE_SCALE / scale;
+            encode_cmd.args([
+                "-vf",
+                &format!(
+                    "scale=iw/{}:ih/{}:flags=lanczos",
+                    downsample_divisor, downsample_divisor
+                ),
+            ]);
         }
         if keep_audio {
             encode_cmd.args(["-map", "0:v:0", "-map", "1:a?"]);
