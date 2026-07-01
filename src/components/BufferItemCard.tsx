@@ -20,6 +20,22 @@ type LazyCardImageProps = {
   onVisible?: () => void;
 };
 
+type LazyCardVisibilityHandler = (visible: boolean) => void;
+const lazyCardVisibilityHandlers = new Map<Element, LazyCardVisibilityHandler>();
+let sharedLazyCardObserver: IntersectionObserver | null = null;
+
+const getSharedLazyCardObserver = () => {
+  if (typeof window === 'undefined' || !('IntersectionObserver' in window)) return null;
+  if (!sharedLazyCardObserver) {
+    sharedLazyCardObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        lazyCardVisibilityHandlers.get(entry.target)?.(entry.isIntersecting || entry.intersectionRatio > 0);
+      });
+    }, { rootMargin: '520px 0px' });
+  }
+  return sharedLazyCardObserver;
+};
+
 function LazyCardImage({ src, alt = '', className, style, title, onClick, onVisible }: LazyCardImageProps) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const onVisibleRef = useRef(onVisible);
@@ -32,30 +48,29 @@ function LazyCardImage({ src, alt = '', className, style, title, onClick, onVisi
   useEffect(() => {
     setVisibleSrc('');
     if (!src) return;
-    let notified = false;
-    const reveal = () => {
-      setVisibleSrc(src);
-      if (!notified) {
-        notified = true;
-        onVisibleRef.current?.();
-      }
+    let wasVisible = false;
+    const setVisible = (visible: boolean) => {
+      setVisibleSrc(current => {
+        const next = visible ? src : '';
+        return current === next ? current : next;
+      });
+      if (visible && !wasVisible) onVisibleRef.current?.();
+      wasVisible = visible;
     };
 
     const node = imgRef.current;
-    if (!node || !('IntersectionObserver' in window)) {
-      reveal();
+    const observer = getSharedLazyCardObserver();
+    if (!node || !observer) {
+      setVisible(true);
       return;
     }
 
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some(entry => entry.isIntersecting || entry.intersectionRatio > 0)) {
-        reveal();
-        observer.disconnect();
-      }
-    }, { rootMargin: '640px 0px' });
-
+    lazyCardVisibilityHandlers.set(node, setVisible);
     observer.observe(node);
-    return () => observer.disconnect();
+    return () => {
+      observer.unobserve(node);
+      lazyCardVisibilityHandlers.delete(node);
+    };
   }, [src]);
 
   return (
@@ -74,14 +89,15 @@ function LazyCardImage({ src, alt = '', className, style, title, onClick, onVisi
   );
 }
 
-export default function BufferItemCard({
+function BufferItemCard({
   item, cardWidth, mediaHeight, isResizing,
   onResizeStart, onResizeEnd, onResize,
   onRemove, onRemoveFromFolder, onTogglePin,
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
   showAlchemy = false, onAlchemy, onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote,
-  onTextEditStart, onTextEditEnd, preferFullImageSource = false
+  onTextEditStart, onTextEditEnd, preferFullImageSource = false,
+  optimizeLargeList = false
 }: any) {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -572,13 +588,18 @@ export default function BufferItemCard({
 
 return (
     <motion.div
-      layout transition={{ layout: { type: 'tween', duration: isResizing ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] } }}
-      initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }}
+      layout={!optimizeLargeList}
+      transition={optimizeLargeList ? { duration: 0.12 } : { layout: { type: 'tween', duration: isResizing ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] } }}
+      initial={optimizeLargeList ? false : { opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={optimizeLargeList ? undefined : { opacity: 0, scale: 0.98 }}
       onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}
       onPointerEnter={() => setIsHovered(true)} onPointerLeave={() => setIsHovered(false)}
       draggable={false}
       onDragStart={(e: any) => e.preventDefault()}
-      className={`group relative bg-white/90 dark:bg-stone-800/90 rounded-[22px] shadow-[0_8px_24px_rgba(0,0,0,0.06)] dark:shadow-black/20 backdrop-blur-xl transition-colors will-change-transform flex flex-col overflow-hidden ${isSelectMode && isSelected ? 'ring-2 ring-emerald-500 border-transparent' : 'border border-white/70 dark:border-stone-700/60 hover:shadow-[0_12px_34px_rgba(0,0,0,0.10)] hover:z-50'}`}
+      className={`group relative rounded-[22px] shadow-[0_8px_24px_rgba(0,0,0,0.06)] dark:shadow-black/20 transition-colors flex flex-col overflow-hidden ${optimizeLargeList ? 'bg-white dark:bg-stone-800' : 'bg-white/90 dark:bg-stone-800/90 backdrop-blur-xl will-change-transform'} ${isSelectMode && isSelected ? 'ring-2 ring-emerald-500 border-transparent' : 'border border-white/70 dark:border-stone-700/60 hover:shadow-[0_12px_34px_rgba(0,0,0,0.10)] hover:z-50'}`}
+      style={optimizeLargeList ? {
+        contentVisibility: 'auto',
+        containIntrinsicSize: `${Math.max(120, Number(mediaHeight) || 0) + 96}px`,
+      } : undefined}
     >
       {!isSelectMode && (
         <div className="absolute bottom-0 right-0 w-7 h-7 cursor-nwse-resize z-[40] flex items-end justify-end p-2 opacity-0 group-hover:opacity-100 transition-opacity rounded-br-[22px]" onMouseDown={startResizingCard} title="拖动调整所有卡片尺寸">
@@ -899,3 +920,19 @@ return (
     </motion.div>
   );
 }
+
+const areBufferItemCardPropsEqual = (previous: any, next: any) => (
+  previous.item === next.item
+  && previous.cardWidth === next.cardWidth
+  && previous.mediaHeight === next.mediaHeight
+  && previous.isResizing === next.isResizing
+  && previous.isSelectMode === next.isSelectMode
+  && previous.isSelected === next.isSelected
+  && previous.showAlchemy === next.showAlchemy
+  && previous.preferFullImageSource === next.preferFullImageSource
+  && previous.optimizeLargeList === next.optimizeLargeList
+  && previous.selectionScopeKey === next.selectionScopeKey
+  && previous.actionContext === next.actionContext
+);
+
+export default React.memo(BufferItemCard, areBufferItemCardPropsEqual);

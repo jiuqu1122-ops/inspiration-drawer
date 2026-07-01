@@ -92,6 +92,7 @@ struct R2Share {
 
 static CLOUDFLARED_SHARES: OnceLock<Mutex<HashMap<String, CloudflaredShare>>> = OnceLock::new();
 static R2_SHARES: OnceLock<Mutex<HashMap<String, R2Share>>> = OnceLock::new();
+static LOCAL_MEDIA_CACHE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn cloudflared_shares() -> &'static Mutex<HashMap<String, CloudflaredShare>> {
     CLOUDFLARED_SHARES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -99,6 +100,10 @@ fn cloudflared_shares() -> &'static Mutex<HashMap<String, CloudflaredShare>> {
 
 fn r2_shares() -> &'static Mutex<HashMap<String, R2Share>> {
     R2_SHARES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn local_media_cache_write_lock() -> &'static Mutex<()> {
+    LOCAL_MEDIA_CACHE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(serde::Serialize)]
@@ -4085,6 +4090,99 @@ fn copy_local_file(src: String, dest: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn local_file_extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn find_identical_file_in_dir(
+    source: &Path,
+    target_dir: &Path,
+    excluded_path: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let source_metadata = fs::metadata(source).map_err(|e| e.to_string())?;
+    let source_len = source_metadata.len();
+    let source_ext = local_file_extension(source);
+    let source_canon = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
+    let excluded_canon =
+        excluded_path.map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    let mut source_hash: Option<String> = None;
+
+    let entries = fs::read_dir(target_dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if !candidate.is_file() || local_file_extension(&candidate) != source_ext {
+            continue;
+        }
+        let candidate_canon = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        if candidate_canon == source_canon
+            || excluded_canon
+                .as_ref()
+                .is_some_and(|excluded| excluded == &candidate_canon)
+        {
+            continue;
+        }
+        let Ok(candidate_metadata) = fs::metadata(&candidate_canon) else {
+            continue;
+        };
+        if candidate_metadata.len() != source_len {
+            continue;
+        }
+        if source_hash.is_none() {
+            source_hash = Some(sha256_file_upper(&source_canon)?);
+        }
+        let source_hash = source_hash.as_deref().unwrap_or_default();
+        if sha256_file_upper(&candidate_canon)
+            .map(|candidate_hash| candidate_hash == source_hash)
+            .unwrap_or(false)
+        {
+            return Ok(Some(candidate_canon));
+        }
+    }
+
+    Ok(None)
+}
+
+fn find_identical_bytes_in_dir(
+    bytes: &[u8],
+    extension: &str,
+    target_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let normalized_ext = extension
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    let source_hash = hex::encode(Sha256::digest(bytes)).to_ascii_uppercase();
+    let entries = fs::read_dir(target_dir).map_err(|e| e.to_string())?;
+
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if !candidate.is_file() || local_file_extension(&candidate) != normalized_ext {
+            continue;
+        }
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if metadata.len() != bytes.len() as u64 {
+            continue;
+        }
+        if sha256_file_upper(&candidate)
+            .map(|candidate_hash| candidate_hash == source_hash)
+            .unwrap_or(false)
+        {
+            return Ok(Some(candidate.canonicalize().unwrap_or(candidate)));
+        }
+    }
+
+    Ok(None)
+}
+
 #[tauri::command]
 async fn cache_local_file_to_dir(
     app_handle: tauri::AppHandle,
@@ -4123,6 +4221,13 @@ fn cache_local_file_to_dir_impl(
 
     if source_canon.starts_with(&target_dir) {
         return Ok(display_local_path(&source_canon));
+    }
+
+    let _cache_guard = local_media_cache_write_lock()
+        .lock()
+        .map_err(|_| "local media cache lock poisoned".to_string())?;
+    if let Some(existing) = find_identical_file_in_dir(&source_canon, &target_dir, None)? {
+        return Ok(display_local_path(&existing));
     }
 
     let file_name = source_canon
@@ -4276,10 +4381,17 @@ fn save_dropped_file(
     fs::create_dir_all(&uploads_dir).map_err(|e| e.to_string())?;
 
     let safe_name = sanitize_file_name(&file_name);
+    let extension = local_file_extension(Path::new(&safe_name));
+    let _cache_guard = local_media_cache_write_lock()
+        .lock()
+        .map_err(|_| "local media cache lock poisoned".to_string())?;
+    if let Some(existing) = find_identical_bytes_in_dir(&bytes, &extension, &uploads_dir)? {
+        return Ok(display_local_path(&existing));
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
-        .as_millis();
+        .as_nanos();
     let out_path = uploads_dir.join(format!("{}_{}", stamp, safe_name));
 
     fs::write(&out_path, bytes).map_err(|e| e.to_string())?;
@@ -6298,15 +6410,21 @@ fn cache_web_image_impl(
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
-        .as_millis();
+        .as_nanos();
     let mut out_path = dir.join(format!("{}_{}", stamp, safe_name));
 
     if input.starts_with("data:") {
         let (mime, bytes) = decode_data_url(input)?;
         let mime_ext = image_ext_from_mime(&mime);
         out_path = replace_media_extension(&out_path, mime_ext);
+        let _cache_guard = local_media_cache_write_lock()
+            .lock()
+            .map_err(|_| "local media cache lock poisoned".to_string())?;
+        if let Some(existing) = find_identical_bytes_in_dir(&bytes, mime_ext, &dir)? {
+            return Ok(display_local_path(&existing));
+        }
         fs::write(&out_path, bytes).map_err(|e| e.to_string())?;
-        return Ok(out_path.to_string_lossy().to_string());
+        return Ok(display_local_path(&out_path));
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
@@ -6330,7 +6448,14 @@ fn cache_web_image_impl(
                 out_path = next_path;
             }
         }
-        return Ok(out_path.to_string_lossy().to_string());
+        let _cache_guard = local_media_cache_write_lock()
+            .lock()
+            .map_err(|_| "local media cache lock poisoned".to_string())?;
+        if let Some(existing) = find_identical_file_in_dir(&out_path, &dir, Some(&out_path))? {
+            let _ = fs::remove_file(&out_path);
+            return Ok(display_local_path(&existing));
+        }
+        return Ok(display_local_path(&out_path));
     }
 
     Err(format!("unsupported web image source: {}", input))
@@ -6388,6 +6513,14 @@ fn relocate_web_cache_file(
     let under_temp = source_canon.starts_with(&temp_dir);
     if !under_default_cache && !under_app_data && !under_temp {
         return Ok(source_canon.to_string_lossy().to_string());
+    }
+
+    let _cache_guard = local_media_cache_write_lock()
+        .lock()
+        .map_err(|_| "local media cache lock poisoned".to_string())?;
+    if let Some(existing) = find_identical_file_in_dir(&source_canon, &target_dir, None)? {
+        let _ = fs::remove_file(&source_canon);
+        return Ok(display_local_path(&existing));
     }
 
     let file_name = source_canon
@@ -8421,10 +8554,17 @@ fn save_mobile_bytes(
     let out_dir = get_user_data_dir(app_handle).join("mobile_uploads");
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let safe_name = sanitize_file_name(name);
+    let extension = local_file_extension(Path::new(&safe_name));
+    let _cache_guard = local_media_cache_write_lock()
+        .lock()
+        .map_err(|_| "local media cache lock poisoned".to_string())?;
+    if let Some(existing) = find_identical_bytes_in_dir(bytes, &extension, &out_dir)? {
+        return Ok(display_local_path(&existing));
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
-        .as_millis();
+        .as_nanos();
     let out_path = out_dir.join(format!("{}_{}", stamp, safe_name));
     fs::write(&out_path, bytes).map_err(|e| e.to_string())?;
     Ok(out_path.to_string_lossy().to_string())

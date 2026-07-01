@@ -662,6 +662,9 @@ const IMAGE_THUMBNAIL_MAX_WIDTH = 360;
 const IMAGE_THUMBNAIL_MAX_HEIGHT = 240;
 const IMAGE_THUMBNAIL_LEGACY_MAX_WIDTH = 360;
 const IMAGE_THUMBNAIL_LEGACY_MAX_HEIGHT = 240;
+const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
+const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
+const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
 const VIDEO_THUMBNAIL_MAX_WIDTH = 360;
 const VIDEO_THUMBNAIL_MAX_HEIGHT = 220;
 const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
@@ -705,8 +708,12 @@ const CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY = 'drawer_cloudflared_disclaim
 const CANVAS_CONNECTION_HANDLE_OUTSET = 10;
 const CANVAS_SELECTION_RADIUS = 18;
 const CANVAS_NODE_RADIUS = 20;
-const CANVAS_VIEWPORT_OVERSCAN_PX = 900;
-const CANVAS_INTERACTION_OVERSCAN_PX = 1300;
+const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
+const CANVAS_INTERACTION_OVERSCAN_PX = 680;
+const CANVAS_DENSE_RENDER_THRESHOLD = 80;
+const CANVAS_DENSE_COMMIT_INTERVAL_MS = 30;
+const CANVAS_NAV_MEDIA_PREVIEW_LIMIT = 72;
+const CANVAS_GENERATED_LIST_RENDER_LIMIT = 60;
 const AI_GENERATED_FOLDER_ID = 'ai_generated_images';
 const AI_GENERATED_FOLDER_NAME = 'AI生图';
 const AI_GENERATED_FOLDER_COLOR = '#06b6d4';
@@ -2506,6 +2513,7 @@ function MainApp() {
   const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
   const canvasViewportFrameRef = useRef<number | null>(null);
   const canvasItemsCommitFrameRef = useRef<number | null>(null);
+  const canvasItemsLastCommitAtRef = useRef(0);
   const pendingCanvasItemsCommitRef = useRef<CanvasImageItem[] | null>(null);
   const canvasAiRunTokensRef = useRef<Record<string, string>>({});
   const canvasAiModelRefreshSignatureRef = useRef('');
@@ -2976,7 +2984,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.1.3');
+        setAppVersion('4.1.4');
       });
   }, []);
 
@@ -4896,11 +4904,19 @@ function MainApp() {
   const finishedAlchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => getAlchemyState(item) === 'alchemy').length, [items]);
 
   const quickAccessItems = useMemo(() => items.filter(item => item.isQuickAccess), [items]);
+  const drawerCardActionContext = useMemo(() => ({}), [
+    hasAiAnalysis,
+    aiApiProvider,
+    aiApiEndpoint,
+    aiApiKey,
+    aiApiModel,
+  ]);
   const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
   const renderedDisplayItems = useMemo(
     () => displayItems.slice(0, drawerRenderLimit),
     [displayItems, drawerRenderLimit],
   );
+  const optimizeLargeDrawerList = renderedDisplayItems.length > 80;
   const hasMoreDisplayItems = drawerRenderLimit < displayItems.length;
   const loadMoreDisplayItems = () => {
     setDrawerRenderLimit(limit => Math.min(displayItems.length, limit + DRAWER_RENDER_BATCH_SIZE));
@@ -6530,8 +6546,8 @@ function MainApp() {
     return true;
   };
 
-  const getDrawerImageLocalDeletePaths = (item: BufferItem) => {
-    if (item.type !== 'image') return [];
+  const getBufferItemLocalPaths = (item: BufferItem) => {
+    if (item.type === 'text') return [];
     const rawItem = item as BufferItem & {
       sourcePath?: string;
       originalPath?: string;
@@ -6557,6 +6573,10 @@ function MainApp() {
       return paths;
     }, []);
   };
+
+  const getDrawerImageLocalDeletePaths = (item: BufferItem) => (
+    item.type === 'image' ? getBufferItemLocalPaths(item) : []
+  );
 
   const deleteDrawerLocalFiles = async (paths: string[]) => {
     let deleted = 0;
@@ -6905,6 +6925,11 @@ function MainApp() {
   });
 
   const imageThumbnailInFlightRef = useRef<Set<string>>(new Set());
+  const imageThumbnailQueueRef = useRef<BufferItem[]>([]);
+  const imageThumbnailActiveCountRef = useRef(0);
+  const imageThumbnailPendingUpdatesRef = useRef(new Map<string, { thumbnail: string; existingThumbnail?: string }>());
+  const imageThumbnailUpdateTimerRef = useRef<number | null>(null);
+  const imageThumbnailDisposedRef = useRef(false);
 
   const readDataImageSize = (source?: string) => new Promise<{ width: number; height: number } | null>((resolve) => {
     const rawSource = (source || '').trim();
@@ -6951,56 +6976,117 @@ function MainApp() {
     );
   };
 
+  const flushImageThumbnailUpdates = () => {
+    imageThumbnailUpdateTimerRef.current = null;
+    if (imageThumbnailDisposedRef.current || imageThumbnailPendingUpdatesRef.current.size === 0) return;
+    const updates = new Map(imageThumbnailPendingUpdatesRef.current);
+    imageThumbnailPendingUpdatesRef.current.clear();
+    setItems(prev => {
+      let changed = false;
+      const next = prev.map(current => {
+        const update = updates.get(current.id);
+        if (!update || current.type !== 'image' || current.thumbnail !== update.existingThumbnail) return current;
+        changed = true;
+        return { ...current, thumbnail: update.thumbnail };
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  const scheduleImageThumbnailUpdate = (itemId: string, thumbnail: string, existingThumbnail?: string) => {
+    if (imageThumbnailDisposedRef.current) return;
+    imageThumbnailPendingUpdatesRef.current.set(itemId, { thumbnail, existingThumbnail });
+    if (imageThumbnailUpdateTimerRef.current !== null) return;
+    imageThumbnailUpdateTimerRef.current = window.setTimeout(
+      flushImageThumbnailUpdates,
+      IMAGE_THUMBNAIL_UPDATE_BATCH_MS,
+    );
+  };
+
+  const runNextImageThumbnailJobs = () => {
+    while (
+      !imageThumbnailDisposedRef.current
+      && imageThumbnailActiveCountRef.current < IMAGE_THUMBNAIL_MAX_CONCURRENCY
+      && imageThumbnailQueueRef.current.length > 0
+    ) {
+      const item = imageThumbnailQueueRef.current.shift();
+      if (!item) break;
+      const source = item.url || (item.path ? convertFileSrc(item.path) : '');
+      const existingThumbnail = item.thumbnail;
+      if (!source) {
+        imageThumbnailInFlightRef.current.delete(item.id);
+        continue;
+      }
+
+      imageThumbnailActiveCountRef.current += 1;
+      const shouldRefresh = existingThumbnail
+        ? isLegacyImageThumbnail(existingThumbnail)
+        : Promise.resolve(true);
+
+      void shouldRefresh
+        .then((refresh) => {
+          if (!refresh) return '';
+          return createImageThumbnailInWebview(source);
+        })
+        .then(async (thumbnail) => {
+          if (!thumbnail) return;
+          if (existingThumbnail) {
+            const [existingSize, nextSize] = await Promise.all([
+              readDataImageSize(existingThumbnail),
+              readDataImageSize(thumbnail),
+            ]);
+            if (
+              existingSize
+              && nextSize
+              && nextSize.width <= existingSize.width + 8
+              && nextSize.height <= existingSize.height + 8
+            ) {
+              return;
+            }
+          }
+          scheduleImageThumbnailUpdate(item.id, thumbnail, existingThumbnail);
+        })
+        .catch((err) => console.warn('图片缩略图补全失败:', err))
+        .finally(() => {
+          imageThumbnailActiveCountRef.current = Math.max(0, imageThumbnailActiveCountRef.current - 1);
+          imageThumbnailInFlightRef.current.delete(item.id);
+          runNextImageThumbnailJobs();
+        });
+    }
+  };
+
   const ensureImageThumbnail = (item: BufferItem) => {
     if (
-      item.type !== 'image' ||
-      item.isDirectory ||
-      imageThumbnailInFlightRef.current.has(item.id)
+      item.type !== 'image'
+      || item.isDirectory
+      || imageThumbnailInFlightRef.current.has(item.id)
     ) {
       return;
     }
-
     const source = item.url || (item.path ? convertFileSrc(item.path) : '');
     if (!source) return;
 
     imageThumbnailInFlightRef.current.add(item.id);
-    const existingThumbnail = item.thumbnail;
-    const shouldRefresh = existingThumbnail
-      ? isLegacyImageThumbnail(existingThumbnail)
-      : Promise.resolve(true);
-
-    shouldRefresh
-      .then((refresh) => {
-        if (!refresh) return '';
-        return createImageThumbnailInWebview(source);
-      })
-      .then(async (thumbnail) => {
-        if (!thumbnail) return;
-        if (existingThumbnail) {
-          const [existingSize, nextSize] = await Promise.all([
-            readDataImageSize(existingThumbnail),
-            readDataImageSize(thumbnail),
-          ]);
-          if (
-            existingSize &&
-            nextSize &&
-            nextSize.width <= existingSize.width + 8 &&
-            nextSize.height <= existingSize.height + 8
-          ) {
-            return;
-          }
-        }
-        setItems(prev => prev.map(current => (
-          current.id === item.id && current.type === 'image' && current.thumbnail === existingThumbnail
-            ? { ...current, thumbnail }
-            : current
-        )));
-      })
-      .catch((err) => console.warn('图片缩略图补全失败:', err))
-      .finally(() => {
-        imageThumbnailInFlightRef.current.delete(item.id);
-      });
+    while (imageThumbnailQueueRef.current.length >= IMAGE_THUMBNAIL_QUEUE_LIMIT) {
+      const dropped = imageThumbnailQueueRef.current.shift();
+      if (dropped) imageThumbnailInFlightRef.current.delete(dropped.id);
+    }
+    imageThumbnailQueueRef.current.push(item);
+    runNextImageThumbnailJobs();
   };
+
+  useEffect(() => {
+    imageThumbnailDisposedRef.current = false;
+    return () => {
+      imageThumbnailDisposedRef.current = true;
+      imageThumbnailQueueRef.current = [];
+      imageThumbnailPendingUpdatesRef.current.clear();
+      if (imageThumbnailUpdateTimerRef.current !== null) {
+        window.clearTimeout(imageThumbnailUpdateTimerRef.current);
+        imageThumbnailUpdateTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const videoThumbnailInFlightRef = useRef<Set<string>>(new Set());
 
@@ -7525,12 +7611,22 @@ function MainApp() {
     canvasItemsRef.current = next;
     pendingCanvasItemsCommitRef.current = next;
     if (canvasItemsCommitFrameRef.current === null) {
-      canvasItemsCommitFrameRef.current = window.requestAnimationFrame(() => {
+      const commitPendingItems = (timestamp: number) => {
+        const isDenseCanvas = canvasItemsRef.current.length >= CANVAS_DENSE_RENDER_THRESHOLD;
+        const elapsed = timestamp - canvasItemsLastCommitAtRef.current;
+        if (isDenseCanvas && elapsed < CANVAS_DENSE_COMMIT_INTERVAL_MS) {
+          canvasItemsCommitFrameRef.current = window.requestAnimationFrame(commitPendingItems);
+          return;
+        }
         canvasItemsCommitFrameRef.current = null;
         const pending = pendingCanvasItemsCommitRef.current;
         pendingCanvasItemsCommitRef.current = null;
-        if (pending) setCanvasItems(pending);
-      });
+        if (pending) {
+          canvasItemsLastCommitAtRef.current = timestamp;
+          setCanvasItems(pending);
+        }
+      };
+      canvasItemsCommitFrameRef.current = window.requestAnimationFrame(commitPendingItems);
     }
     return next;
   };
@@ -7581,7 +7677,10 @@ function MainApp() {
     }
     const pending = pendingCanvasItemsCommitRef.current;
     pendingCanvasItemsCommitRef.current = null;
-    if (pending) setCanvasItems(pending);
+    if (pending) {
+      canvasItemsLastCommitAtRef.current = performance.now();
+      setCanvasItems(pending);
+    }
   };
 
   function applyCanvasScaleStyles(
@@ -7816,18 +7915,57 @@ function MainApp() {
     return addedCount > 0;
   };
 
+  const getCanvasCascadeBufferItems = (canvasItem: CanvasImageItem): BufferItem[] => {
+    const outputItems = (canvasItem.ai?.outputs || []).map((output, index) => ({
+      id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
+      type: (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) as BufferItem['type'],
+      content: output.name || canvasItem.item.name || '',
+      name: output.name || canvasItem.item.name,
+      path: output.path,
+      url: output.url,
+      createdAt: output.generatedAt || canvasItem.item.createdAt || Date.now(),
+      isQuickAccess: false,
+    } as BufferItem));
+    return [canvasItem.item, ...outputItems];
+  };
+
+  const getCanvasDeletePathKey = (path: string) => normalizeLocalDragPath(path)
+    .replace(/\//g, '\\')
+    .toLocaleLowerCase();
+
   const removeCanvasItemsByIds = (ids: string[], label = '删除画布元素') => {
     if (!isCanvasModeRef.current) return 0;
     const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
     if (uniqueIds.length === 0) return 0;
     const idSet = new Set(uniqueIds);
-    pushCanvasUndoSnapshot(label);
+    const targetCanvasItems = canvasItemsRef.current.filter(item => idSet.has(item.id));
+    const targetBufferItems = targetCanvasItems.flatMap(getCanvasCascadeBufferItems);
+    const targetBufferIds = new Set(targetBufferItems.map(item => item.id).filter(Boolean));
+    const targetLocalPaths = Array.from(new Set(targetBufferItems.flatMap(getBufferItemLocalPaths)));
+    const targetLocalPathKeys = new Set(targetLocalPaths.map(getCanvasDeletePathKey).filter(Boolean));
+    const matchedDrawerItems = itemsRef.current.filter(item => (
+      targetBufferIds.has(item.id)
+      || getBufferItemLocalPaths(item).some(path => targetLocalPathKeys.has(getCanvasDeletePathKey(path)))
+    ));
+    const matchedDrawerIds = new Set(matchedDrawerItems.map(item => item.id));
+    const hasCascadeSideEffects = matchedDrawerIds.size > 0;
+
+    if (hasCascadeSideEffects) clearCanvasUndoStack();
+    else pushCanvasUndoSnapshot(label);
     updateCanvasItemsImmediate(prev => prev
       .filter(item => !idSet.has(item.id))
       .map(item => item.inputs?.some(inputId => idSet.has(inputId))
         ? { ...item, inputs: item.inputs.filter(inputId => !idSet.has(inputId)) }
         : item));
     updateCanvasSelection(canvasSelectedIdsRef.current.filter(selectedId => !idSet.has(selectedId)));
+
+    if (matchedDrawerIds.size > 0) {
+      itemsRef.current = itemsRef.current.filter(item => !matchedDrawerIds.has(item.id));
+      setItems(prev => prev.filter(item => !matchedDrawerIds.has(item.id)));
+    }
+    if (matchedDrawerIds.size > 0) {
+      showToast(`已同步删除抽屉 ${matchedDrawerIds.size} 个卡片，本地文件已保留`);
+    }
     return uniqueIds.length;
   };
 
@@ -17555,32 +17693,38 @@ useEffect(() => {
   const calendarPageStyle = isCalendarCompactScale
     ? ({ width: CALENDAR_COMPACT_CANVAS_WIDTH, zoom: calendarPageScale } as React.CSSProperties & { zoom: number })
     : undefined;
-  const canvasItemsForNav = canvasItems;
-  const canvasGeneratedItemsForList: CanvasGeneratedListEntry[] = [
-    ...canvasItems
-      .filter(item => isCanvasAiGeneratedType(item.ai?.type))
-      .map(item => ({ id: item.id, canvasItem: item, item: item.item, ai: item.ai })),
-    ...canvasItems.flatMap((canvasItem): CanvasGeneratedListEntry[] => {
-      if (!isCanvasAiGeneratorType(canvasItem.ai?.type) && canvasItem.ai?.type !== 'workflow') return [];
-      return (canvasItem.ai.outputs || []).reduce<CanvasGeneratedListEntry[]>((entries, output, outputIndex) => {
-        const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
-        if (!outputItem) return entries;
-        entries.push({
-          id: `${canvasItem.id}:${output.id || outputIndex}`,
-          canvasItem,
-          item: outputItem,
-          ai: {
-            type: outputItem.type === 'video' ? 'generated-video' : 'generated-image',
-            prompt: output.prompt || canvasItem.ai?.prompt,
-            status: output.status,
-            error: output.error,
-            generatedAt: output.generatedAt || canvasItem.ai?.generatedAt,
-          },
-        });
-        return entries;
-      }, []);
-    }),
-  ].sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0));
+  const deferredCanvasItems = React.useDeferredValue(canvasItems);
+  const canvasItemsForNav = deferredCanvasItems;
+  const canvasGeneratedItemsForList = useMemo<CanvasGeneratedListEntry[]>(() => ([
+      ...deferredCanvasItems
+        .filter(item => isCanvasAiGeneratedType(item.ai?.type))
+        .map(item => ({ id: item.id, canvasItem: item, item: item.item, ai: item.ai })),
+      ...deferredCanvasItems.flatMap((canvasItem): CanvasGeneratedListEntry[] => {
+        if (!isCanvasAiGeneratorType(canvasItem.ai?.type) && canvasItem.ai?.type !== 'workflow') return [];
+        return (canvasItem.ai.outputs || []).reduce<CanvasGeneratedListEntry[]>((entries, output, outputIndex) => {
+          const outputItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
+          if (!outputItem) return entries;
+          entries.push({
+            id: `${canvasItem.id}:${output.id || outputIndex}`,
+            canvasItem,
+            item: outputItem,
+            ai: {
+              type: outputItem.type === 'video' ? 'generated-video' : 'generated-image',
+              prompt: output.prompt || canvasItem.ai?.prompt,
+              status: output.status,
+              error: output.error,
+              generatedAt: output.generatedAt || canvasItem.ai?.generatedAt,
+            },
+          });
+          return entries;
+        }, []);
+      }),
+    ].sort((a, b) => (b.ai?.generatedAt || b.item.createdAt || 0) - (a.ai?.generatedAt || a.item.createdAt || 0))
+  ), [deferredCanvasItems]);
+  const canvasGeneratedItemsForRender = useMemo(
+    () => canvasGeneratedItemsForList.slice(0, CANVAS_GENERATED_LIST_RENDER_LIMIT),
+    [canvasGeneratedItemsForList],
+  );
   const getCanvasItemRenderedBox = (canvasItem: CanvasImageItem): CanvasItemBox => {
     const isCanvasAiNodeItem = isCanvasAiGeneratorType(canvasItem.ai?.type) || canvasItem.ai?.type === 'workflow';
     if (!isCanvasAiNodeItem) {
@@ -17615,16 +17759,16 @@ useEffect(() => {
       height: designSize.height * nodeScale,
     };
   };
-  const canvasNavItems = canvasItemsForNav.map(item => ({
+  const canvasNavItems = useMemo(() => canvasItemsForNav.map(item => ({
     item,
     box: getCanvasItemRenderedBox(item),
-  }));
-  const canvasNavBounds = canvasNavItems.length > 0 ? {
+  })), [canvasItemsForNav, canvasAiPromptEditingId]);
+  const canvasNavBounds = useMemo(() => canvasNavItems.length > 0 ? {
     left: Math.min(...canvasNavItems.map(entry => entry.box.x)),
     top: Math.min(...canvasNavItems.map(entry => entry.box.y)),
     right: Math.max(...canvasNavItems.map(entry => entry.box.x + entry.box.width)),
     bottom: Math.max(...canvasNavItems.map(entry => entry.box.y + entry.box.height)),
-  } : null;
+  } : null, [canvasNavItems]);
   const canvasNavScale = canvasNavBounds
     ? Math.min(
       (CANVAS_NAV_WIDTH - 18) / Math.max(1, canvasNavBounds.right - canvasNavBounds.left),
@@ -19187,7 +19331,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.1.3'}
+                                      v{appVersion || '4.1.4'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -19443,7 +19587,14 @@ useEffect(() => {
                           const canvasAiRealOutputs = isCanvasAiNodeItem ? canvasItem.ai?.outputs || [] : [];
                           const showCanvasAiOutputPreview = isCanvasWorkflowItem || canvasAiRealOutputs.length > 0;
                           const isCanvasAiPromptExpanded = canvasAiPromptEditingId === canvasItem.id;
-                          const canvasImageSource = getCanvasItemDisplaySource(canvasItem.item);
+                          const canvasFullImageSource = getCanvasItemDisplaySource(canvasItem.item);
+                          const canUseCanvasThumbnail = canvasItem.item.type === 'image'
+                            && !!canvasItem.item.thumbnail
+                            && !isSelected
+                            && Math.max(canvasItem.width, canvasItem.height) * canvasRenderScale <= 480;
+                          const canvasImageSource = canUseCanvasThumbnail
+                            ? canvasItem.item.thumbnail || canvasFullImageSource
+                            : canvasFullImageSource;
                           const isGeneratedMediaItem = isCanvasAiGeneratedType(canvasItem.ai?.type);
                           const isGeneratedVideoItem = canvasItem.ai?.type === 'generated-video';
                           const isGeneratedMediaPending = isGeneratedMediaItem && (canvasItem.ai?.status === 'working' || !canvasImageSource);
@@ -19617,7 +19768,7 @@ useEffect(() => {
                                                 const inputPreviewSource = inputItem?.item.type === 'video'
                                                   ? inputItem.item.thumbnail || ''
                                                   : inputItem?.item.type === 'image'
-                                                  ? getCanvasItemDisplaySource(inputItem.item)
+                                                  ? getCanvasItemNavSource(inputItem.item)
                                                   : generatorOutputSource;
                                                 const slotLabel = isCanvasSingleVideoInputItem ? '视频输入' : isVideoReferenceSlot
                                                   ? '参考视频1'
@@ -19684,7 +19835,7 @@ useEffect(() => {
                                                   ? ''
                                                   : getCanvasAiOutputDisplaySource(generatorOutput);
                                                 const inputPreviewSource = inputItem.item.type === 'image'
-                                                  ? getCanvasItemDisplaySource(inputItem.item)
+                                                  ? getCanvasItemNavSource(inputItem.item)
                                                   : generatorOutputSource;
                                                 return (
                                                   <span
@@ -22014,8 +22165,9 @@ useEffect(() => {
                               const width = Math.max(10, box.width * canvasNavScale);
                               const height = Math.max(10, box.height * canvasNavScale);
                               const selected = canvasSelectedIdsSet.has(item.id);
-                              const preview = getCanvasItemNavPreview(item);
-                              const source = preview?.source || '';
+                              const shouldRenderMediaPreview = selected || canvasNavItems.length <= CANVAS_NAV_MEDIA_PREVIEW_LIMIT;
+                              const preview = shouldRenderMediaPreview ? getCanvasItemNavPreview(item) : null;
+                              const source = preview?.mediaType === 'image' ? preview.source : '';
                               const label = item.ai?.type === 'workflow'
                                 ? item.ai?.presetLabel || '工作流'
                                 : isCanvasAiGeneratorType(item.ai?.type)
@@ -22038,16 +22190,7 @@ useEffect(() => {
                                   }}
                                   title={item.item.name || item.item.content || label}
                                 >
-                                  {source && preview?.mediaType === 'video' ? (
-                                    <video
-                                      src={source}
-                                      muted
-                                      playsInline
-                                      preload="metadata"
-                                      className="h-full w-full object-cover"
-                                      draggable={false}
-                                    />
-                                  ) : source ? (
+                                  {source ? (
                                     <img
                                       src={source}
                                       alt={item.item.name || '导航缩略图'}
@@ -22057,8 +22200,14 @@ useEffect(() => {
                                       draggable={false}
                                     />
                                   ) : (
-                                    <div className="flex h-full w-full items-center justify-center bg-white/70 px-1 text-[7px] font-black leading-none text-stone-500 dark:bg-stone-800 dark:text-stone-300">
-                                      <span className="truncate">{label}</span>
+                                    <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
+                                      item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
+                                        ? 'bg-violet-100 text-violet-600 dark:bg-violet-950/70 dark:text-violet-300'
+                                        : item.item.type === 'image'
+                                          ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/70 dark:text-cyan-300'
+                                          : 'bg-white/70 text-stone-500 dark:bg-stone-800 dark:text-stone-300'
+                                    }`}>
+                                      <span className="truncate">{item.item.type === 'video' ? '视频' : label}</span>
                                     </div>
                                   )}
                                 </button>
@@ -22294,6 +22443,11 @@ useEffect(() => {
                           </button>
                         </div>
                       </div>
+                      {canvasGeneratedItemsForList.length > CANVAS_GENERATED_LIST_RENDER_LIMIT && (
+                        <div className="mt-1.5 px-1 text-[9px] font-bold text-stone-400 dark:text-stone-500">
+                          为保持流畅，仅显示最近 {CANVAS_GENERATED_LIST_RENDER_LIMIT} 条
+                        </div>
+                      )}
                       <div className="mt-2 min-h-0 overflow-y-auto pr-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                         {canvasGeneratedItemsForList.length === 0 ? (
                           <div className="flex h-24 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-stone-200/80 bg-white/52 text-center text-[10px] font-bold text-stone-400 dark:border-stone-700/70 dark:bg-stone-950/36 dark:text-stone-500">
@@ -22302,7 +22456,7 @@ useEffect(() => {
                           </div>
                         ) : (
                           <div className="grid gap-1.5">
-                            {canvasGeneratedItemsForList.map(generatedItem => {
+                            {canvasGeneratedItemsForRender.map(generatedItem => {
                               const source = getCanvasItemNavSource(generatedItem.item);
                               const isPending = generatedItem.ai?.status === 'working' || !source;
                               const isError = generatedItem.ai?.status === 'error';
@@ -22815,7 +22969,7 @@ useEffect(() => {
                         ? { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${ALCHEMY_CARD_WIDTH}px), 1fr))` }
                         : { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))` }}
                     >
-                      <AnimatePresence mode={activeTab === 'alchemy' ? 'sync' : 'popLayout'}>
+                      <AnimatePresence mode={activeTab === 'alchemy' || optimizeLargeDrawerList ? 'sync' : 'popLayout'}>
                         {renderedDisplayItems.map(item => (
                           <div
                             key={item.id}
@@ -22925,6 +23079,9 @@ useEffect(() => {
                                   showAlchemy={isAlchemyCandidate(item as AlchemyBufferItem)}
                                   onAlchemy={() => runAiAlchemyFromCard(item as AlchemyBufferItem)}
                                   onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
+                                  optimizeLargeList={optimizeLargeDrawerList}
+                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}`}
+                                  actionContext={drawerCardActionContext}
                                   preferFullImageSource={
                                     item.folderId === AI_GENERATED_FOLDER_ID ||
                                     String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
@@ -24025,7 +24182,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.3'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.4'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24163,7 +24320,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.3'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.4'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24256,10 +24413,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.3 视频处理升级</p>
-                <p>补帧与 AI 视频节点会先检测 VFR/CFR，仅在需要时自动标准化帧率；也可指定 24/30fps 或关闭处理。</p>
-                <p>补帧改为“倍率”或“目标帧率”二选一，避免 2× 与 60fps 同时选择造成输出冲突。</p>
-                <p>视频增强新增 FFmpeg 快速增强：去噪、锐化、提升对比与饱和度、减轻压缩糊感、放大并高质量编码，优先使用 NVENC。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.4 素材与画布性能优化</p>
+                <p>删除画布素材时会同步移除对应抽屉卡片，但保留本地文件，避免误删源素材。</p>
+                <p>本地拖入、粘贴、网页缓存及手机上传增加内容级去重，相同素材会复用已有缓存文件。</p>
+                <p>优化大量图片时的抽屉卡片渲染、缩略图生成和画布视口裁剪，降低滚动、拖动与导航时的卡顿。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
