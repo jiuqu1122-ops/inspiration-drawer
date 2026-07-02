@@ -1,9 +1,11 @@
 use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -13,6 +15,11 @@ use tauri::{Emitter, State};
 
 const AGENT_SETTINGS_FILE: &str = "agent_config.json";
 const CODEX_RPC_TIMEOUT_SECS: u64 = 45;
+const MANAGED_CODEX_VERSION: &str = "0.142.5";
+const MANAGED_CODEX_WINDOWS_X64_URL: &str = "https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-x86_64-pc-windows-msvc.exe.zip";
+const MANAGED_CODEX_WINDOWS_X64_SHA256: &str =
+    "9d344a41dc15408bb2cc3ed3782cde33e7b4fd4a7016b5838dfeffaf1f6e6c0d";
+const MANAGED_CODEX_WINDOWS_X64_ZIP_SIZE: u64 = 109_265_503;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -631,9 +638,227 @@ pub struct CodexStatus {
     installed: bool,
     running: bool,
     authenticated: bool,
+    managed: bool,
+    install_available: bool,
+    managed_version: String,
     executable: String,
     version: String,
     auth_detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexInstallProgress {
+    stage: String,
+    message: String,
+    loaded: u64,
+    total: u64,
+    progress: f64,
+}
+
+fn managed_codex_dir(app_handle: &tauri::AppHandle) -> PathBuf {
+    crate::get_user_data_dir(app_handle)
+        .join("agent")
+        .join("codex")
+        .join(MANAGED_CODEX_VERSION)
+}
+
+fn managed_codex_executable(app_handle: &tauri::AppHandle) -> PathBuf {
+    managed_codex_dir(app_handle).join("codex.exe")
+}
+
+fn is_default_codex_executable(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "codex" | "managed"
+    )
+}
+
+fn resolve_codex_executable(app_handle: &tauri::AppHandle, configured: &str) -> String {
+    if !is_default_codex_executable(configured) {
+        return configured.trim().to_string();
+    }
+    let managed = managed_codex_executable(app_handle);
+    if managed.is_file() && codex_version(&managed.to_string_lossy()).is_ok() {
+        return managed.to_string_lossy().to_string();
+    }
+    if codex_version("codex").is_ok() {
+        return "codex".to_string();
+    }
+    managed.to_string_lossy().to_string()
+}
+
+fn is_managed_codex_path(app_handle: &tauri::AppHandle, executable: &str) -> bool {
+    let managed = managed_codex_executable(app_handle);
+    fs::canonicalize(executable)
+        .ok()
+        .zip(fs::canonicalize(managed).ok())
+        .is_some_and(|(left, right)| left == right)
+}
+
+fn emit_codex_install_progress(
+    app_handle: &tauri::AppHandle,
+    stage: &str,
+    message: &str,
+    loaded: u64,
+    total: u64,
+) {
+    let progress = if total > 0 {
+        (loaded as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let _ = app_handle.emit(
+        "agent-codex-install-progress",
+        CodexInstallProgress {
+            stage: stage.to_string(),
+            message: message.to_string(),
+            loaded,
+            total,
+            progress,
+        },
+    );
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn install_managed_codex(app_handle: &tauri::AppHandle) -> Result<String, String> {
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+        let _ = app_handle;
+        return Err("当前版本只支持在 Windows x64 自动安装 Codex".to_string());
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let install_dir = managed_codex_dir(app_handle);
+        fs::create_dir_all(&install_dir).map_err(|error| error.to_string())?;
+        let executable = managed_codex_executable(app_handle);
+        if executable.is_file() && codex_version(&executable.to_string_lossy()).is_ok() {
+            emit_codex_install_progress(app_handle, "ready", "Codex 已就绪", 1, 1);
+            return Ok(executable.to_string_lossy().to_string());
+        }
+
+        let archive_path = install_dir.join("codex-download.zip");
+        let archive_tmp_path = install_dir.join("codex-download.zip.tmp");
+        let _ = fs::remove_file(&archive_tmp_path);
+
+        emit_codex_install_progress(
+            app_handle,
+            "downloading",
+            "正在下载官方 Codex 运行时",
+            0,
+            MANAGED_CODEX_WINDOWS_X64_ZIP_SIZE,
+        );
+        let client = crate::build_http_client(Some(app_handle), None, 1800)?;
+        let mut response = client
+            .get(MANAGED_CODEX_WINDOWS_X64_URL)
+            .send()
+            .map_err(|error| format!("下载 Codex 失败：{}", error))?;
+        if !response.status().is_success() {
+            return Err(format!("下载 Codex 失败，HTTP {}", response.status()));
+        }
+        let total = response
+            .content_length()
+            .unwrap_or(MANAGED_CODEX_WINDOWS_X64_ZIP_SIZE)
+            .max(1);
+        let mut output = File::create(&archive_tmp_path).map_err(|error| error.to_string())?;
+        let mut loaded = 0_u64;
+        let mut buffer = vec![0_u8; 256 * 1024];
+        loop {
+            let read = response
+                .read(&mut buffer)
+                .map_err(|error| format!("读取 Codex 下载数据失败：{}", error))?;
+            if read == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|error| format!("写入 Codex 下载文件失败：{}", error))?;
+            loaded += read as u64;
+            emit_codex_install_progress(
+                app_handle,
+                "downloading",
+                "正在下载官方 Codex 运行时",
+                loaded,
+                total,
+            );
+        }
+        output.flush().map_err(|error| error.to_string())?;
+        drop(output);
+        fs::rename(&archive_tmp_path, &archive_path).map_err(|error| error.to_string())?;
+
+        emit_codex_install_progress(app_handle, "verifying", "正在校验 Codex", loaded, total);
+        let digest = sha256_file(&archive_path)?;
+        if !digest.eq_ignore_ascii_case(MANAGED_CODEX_WINDOWS_X64_SHA256) {
+            let _ = fs::remove_file(&archive_path);
+            return Err(format!(
+                "Codex 下载校验失败：期望 {}，实际 {}",
+                MANAGED_CODEX_WINDOWS_X64_SHA256, digest
+            ));
+        }
+
+        emit_codex_install_progress(app_handle, "extracting", "正在解压 Codex", loaded, total);
+        let archive_file = File::open(&archive_path).map_err(|error| error.to_string())?;
+        let mut archive = zip::ZipArchive::new(archive_file)
+            .map_err(|error| format!("打开 Codex 压缩包失败：{}", error))?;
+        let mut extracted_main = false;
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .map_err(|error| format!("读取 Codex 压缩包失败：{}", error))?;
+            let file_name = entry
+                .enclosed_name()
+                .and_then(|path| {
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let target_name = match file_name.as_str() {
+                "codex-x86_64-pc-windows-msvc.exe" | "codex.exe" => "codex.exe",
+                "codex-command-runner.exe" => "codex-command-runner.exe",
+                "codex-windows-sandbox-setup.exe" => "codex-windows-sandbox-setup.exe",
+                _ => continue,
+            };
+            let target = install_dir.join(target_name);
+            let target_tmp = install_dir.join(format!("{}.tmp", target_name));
+            let _ = fs::remove_file(&target_tmp);
+            let mut target_file = File::create(&target_tmp).map_err(|error| error.to_string())?;
+            std::io::copy(&mut entry, &mut target_file)
+                .map_err(|error| format!("解压 Codex 失败：{}", error))?;
+            target_file.flush().map_err(|error| error.to_string())?;
+            drop(target_file);
+            if target.exists() {
+                let _ = fs::remove_file(&target);
+            }
+            fs::rename(&target_tmp, &target).map_err(|error| error.to_string())?;
+            if target_name == "codex.exe" {
+                extracted_main = true;
+            }
+        }
+        if !extracted_main {
+            return Err("Codex 压缩包里没有找到可执行文件".to_string());
+        }
+        let _ = fs::remove_file(&archive_path);
+
+        codex_version(&executable.to_string_lossy())?;
+        emit_codex_install_progress(app_handle, "ready", "Codex 安装完成", total, total);
+        Ok(executable.to_string_lossy().to_string())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -663,6 +888,48 @@ fn codex_version(executable: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn inspect_codex_status(executable: String, running: bool, managed: bool) -> CodexStatus {
+    let version = match codex_version(&executable) {
+        Ok(version) => version,
+        Err(_) => {
+            return CodexStatus {
+                installed: false,
+                running: false,
+                authenticated: false,
+                managed: false,
+                install_available: cfg!(all(target_os = "windows", target_arch = "x86_64")),
+                managed_version: MANAGED_CODEX_VERSION.to_string(),
+                executable,
+                version: String::new(),
+                auth_detail: "尚未安装 Codex 运行时".to_string(),
+            }
+        }
+    };
+    let output = command_output(&executable, &["login", "status"]);
+    let (authenticated, detail) = match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            (
+                output.status.success(),
+                if stdout.is_empty() { stderr } else { stdout },
+            )
+        }
+        Err(error) => (false, error),
+    };
+    CodexStatus {
+        installed: true,
+        running,
+        authenticated,
+        managed,
+        install_available: cfg!(all(target_os = "windows", target_arch = "x86_64")),
+        managed_version: MANAGED_CODEX_VERSION.to_string(),
+        executable,
+        version,
+        auth_detail: detail,
+    }
+}
+
 #[tauri::command]
 pub async fn agent_codex_status(
     app_handle: tauri::AppHandle,
@@ -676,35 +943,40 @@ pub async fn agent_codex_status(
         .and_then(|runtime| runtime.as_ref().map(CodexRuntime::is_running))
         .unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        let executable = settings.codex_executable;
-        let version = match codex_version(&executable) {
-            Ok(version) => version,
-            Err(_) => {
-                return Ok(CodexStatus {
-                    installed: false,
-                    running: false,
-                    authenticated: false,
-                    executable,
-                    version: String::new(),
-                    auth_detail: "未找到 Codex CLI".to_string(),
-                })
-            }
-        };
-        let output = command_output(&executable, &["login", "status"])?;
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stdout.is_empty() { stderr } else { stdout };
-        Ok(CodexStatus {
-            installed: true,
-            running,
-            authenticated: output.status.success(),
-            executable,
-            version,
-            auth_detail: detail,
-        })
+        let executable = resolve_codex_executable(&app_handle, &settings.codex_executable);
+        let managed = is_managed_codex_path(&app_handle, &executable);
+        Ok(inspect_codex_status(executable, running, managed))
     })
     .await
     .map_err(|error| format!("检查 Codex 状态失败：{}", error))?
+}
+
+#[tauri::command]
+pub async fn agent_install_codex(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AgentRuntimeState>,
+) -> Result<CodexStatus, String> {
+    let running = state
+        .codex
+        .lock()
+        .ok()
+        .and_then(|runtime| runtime.as_ref().map(CodexRuntime::is_running))
+        .unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        let executable = install_managed_codex(&app_handle)?;
+        Ok(inspect_codex_status(executable, running, true))
+    })
+    .await
+    .map_err(|error| format!("安装 Codex 后台任务失败：{}", error))?
+}
+
+#[tauri::command]
+pub fn agent_open_auth_url(url: String) -> Result<(), String> {
+    let normalized = url.trim();
+    if !normalized.starts_with("https://") {
+        return Err("拒绝打开非 HTTPS 登录地址".to_string());
+    }
+    open::that(normalized).map_err(|error| format!("打开登录页面失败：{}", error))
 }
 
 fn response_id_key(value: &Value) -> Option<String> {
@@ -805,6 +1077,8 @@ pub async fn agent_codex_start(
     state: State<'_, AgentRuntimeState>,
 ) -> Result<CodexStatus, String> {
     let settings = read_settings(&app_handle);
+    let executable = resolve_codex_executable(&app_handle, &settings.codex_executable);
+    let managed = is_managed_codex_path(&app_handle, &executable);
     let existing = state
         .codex
         .lock()
@@ -812,7 +1086,7 @@ pub async fn agent_codex_start(
         .clone();
     let runtime = if let Some(runtime) = existing
         .as_ref()
-        .filter(|runtime| runtime.is_running() && runtime.executable == settings.codex_executable)
+        .filter(|runtime| runtime.is_running() && runtime.executable == executable)
         .cloned()
     {
         runtime
@@ -820,7 +1094,13 @@ pub async fn agent_codex_start(
         if let Some(runtime) = existing {
             runtime.stop();
         }
-        let runtime = spawn_codex_runtime(&app_handle, &settings.codex_executable)?;
+        let runtime = spawn_codex_runtime(&app_handle, &executable).map_err(|error| {
+            if is_default_codex_executable(&settings.codex_executable) {
+                format!("{}。请先安装 Codex 运行时", error)
+            } else {
+                error
+            }
+        })?;
         *state
             .codex
             .lock()
@@ -833,7 +1113,7 @@ pub async fn agent_codex_start(
                     "clientInfo": {
                         "name": "inspiration_drawer",
                         "title": "Inspiration Drawer",
-                        "version": "4.2.0"
+                        "version": "4.2.1"
                     }
                 }),
                 Duration::from_secs(20),
@@ -878,6 +1158,9 @@ pub async fn agent_codex_start(
         installed: true,
         running: runtime.is_running(),
         authenticated,
+        managed,
+        install_available: cfg!(all(target_os = "windows", target_arch = "x86_64")),
+        managed_version: MANAGED_CODEX_VERSION.to_string(),
         executable: runtime.executable,
         version: runtime.version,
         auth_detail,

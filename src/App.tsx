@@ -3026,7 +3026,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.2.0');
+        setAppVersion('4.2.1');
       });
   }, []);
 
@@ -19624,12 +19624,15 @@ useEffect(() => {
                           settings={canvasAgent.settings}
                           loading={canvasAgent.settingsLoading}
                           codexStatus={canvasAgent.codexStatus}
+                          codexInstallProgress={canvasAgent.codexInstallProgress}
                           codexLoginInfo={canvasAgent.codexLoginInfo}
                           onToggle={() => setActiveSettingCategory(prev => prev === 'agent' ? '' : 'agent')}
                           onSave={canvasAgent.saveSettings}
                           onListModels={canvasAgent.listOpenAiModels}
                           onRefreshCodexStatus={canvasAgent.refreshCodexStatus}
+                          onInstallCodex={canvasAgent.installCodex}
                           onStartCodexLogin={canvasAgent.startCodexLogin}
+                          onOpenCodexLoginUrl={canvasAgent.openCodexLoginUrl}
                           onLogoutCodex={canvasAgent.logoutCodex}
                         />
 
@@ -19835,7 +19838,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.2.0'}
+                                      v{appVersion || '4.2.1'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -24481,7 +24484,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.0'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.1'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24619,7 +24622,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.0'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.1'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24712,7 +24715,8 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.0 画布 Agent</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.1 画布 Agent 登录修复</p>
+                <p>修复普通用户电脑没有预装 Codex 时，ChatGPT 登录按钮无法启动的问题；现在会自动安装并校验官方 Codex 运行时。</p>
                 <p>新增独立 AGENT 设置，支持 OpenAI-compatible API 与 Codex App Server 两种引擎。</p>
                 <p>新增可收缩、可拖动宽度的画布右侧聊天栏，不再遮挡画布节点。</p>
                 <p>Agent 可以创建和连接节点、应用预设工作流、整理画布，并在运行付费任务前请求确认。</p>

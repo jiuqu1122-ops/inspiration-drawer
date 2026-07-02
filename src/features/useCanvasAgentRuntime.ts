@@ -14,6 +14,7 @@ import {
   type AgentProvider,
   type AgentSettings,
   type AgentToolCall,
+  type CodexInstallProgress,
   type CodexLoginInfo,
   type CodexRuntimeStatus,
 } from './agentModel';
@@ -145,6 +146,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const [activeConversationId, setActiveConversationId] = useState(initialActiveId);
   const [busy, setBusy] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexRuntimeStatus | null>(null);
+  const [codexInstallProgress, setCodexInstallProgress] = useState<CodexInstallProgress | null>(null);
   const [codexLoginInfo, setCodexLoginInfo] = useState<CodexLoginInfo | null>(null);
   const [codexApprovals, setCodexApprovals] = useState<AgentCodexApproval[]>([]);
 
@@ -317,6 +319,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           setCodexStatus(current => current ? { ...current, running: false } : current);
         }
       }),
+      listen<CodexInstallProgress>('agent-codex-install-progress', event => {
+        setCodexInstallProgress(event.payload);
+      }),
     ];
     return () => {
       unlisteners.forEach(promise => void promise.then(unlisten => unlisten()).catch(() => {}));
@@ -483,11 +488,40 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   }, [patchMessage, processToolCalls]);
   runOpenAiLoopRef.current = runOpenAiLoop;
 
+  const installCodex = useCallback(async () => {
+    setCodexInstallProgress({
+      stage: 'downloading',
+      message: '正在准备下载官方 Codex 运行时',
+      loaded: 0,
+      total: 0,
+      progress: 0,
+    });
+    try {
+      const status = await invoke<CodexRuntimeStatus>('agent_install_codex');
+      setCodexStatus(status);
+      return status;
+    } catch (error) {
+      setCodexInstallProgress(current => ({
+        stage: 'error',
+        message: String(error),
+        loaded: current?.loaded || 0,
+        total: current?.total || 0,
+        progress: current?.progress || 0,
+      }));
+      throw error;
+    }
+  }, []);
+
   const ensureCodexStarted = useCallback(async () => {
+    const currentStatus = await invoke<CodexRuntimeStatus>('agent_codex_status');
+    setCodexStatus(currentStatus);
+    if (!currentStatus.installed && currentStatus.installAvailable) {
+      await installCodex();
+    }
     const status = await invoke<CodexRuntimeStatus>('agent_codex_start');
     setCodexStatus(status);
     return status;
-  }, []);
+  }, [installCodex]);
 
   const startOrResumeCodexThread = useCallback(async (
     conversation: AgentConversation,
@@ -797,6 +831,15 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     return status;
   }, []);
 
+  const openCodexLoginUrl = useCallback(async (url: string) => {
+    if (!url.trim()) return;
+    try {
+      await invoke('agent_open_auth_url', { url });
+    } catch (_) {
+      await openUrl(url);
+    }
+  }, []);
+
   const startCodexLogin = useCallback(async (mode: 'chatgpt' | 'chatgptDeviceCode') => {
     await ensureCodexStarted();
     const result = await invoke<Record<string, unknown>>('agent_codex_request', {
@@ -811,9 +854,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     };
     setCodexLoginInfo(info);
     const url = info.authUrl || info.verificationUrl;
-    if (url) await openUrl(url);
+    if (url) await openCodexLoginUrl(url);
     return info;
-  }, [ensureCodexStarted]);
+  }, [ensureCodexStarted, openCodexLoginUrl]);
 
   const logoutCodex = useCallback(async () => {
     await ensureCodexStarted();
@@ -839,9 +882,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     refreshSettings,
     listOpenAiModels,
     codexStatus,
+    codexInstallProgress,
     codexLoginInfo,
+    installCodex,
     refreshCodexStatus,
     startCodexLogin,
+    openCodexLoginUrl,
     logoutCodex,
     codexApprovals,
     resolveCodexApproval,

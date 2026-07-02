@@ -90,9 +90,20 @@ export type CodexRuntimeStatus = {
   installed: boolean;
   running: boolean;
   authenticated: boolean;
+  managed: boolean;
+  installAvailable: boolean;
+  managedVersion: string;
   executable: string;
   version: string;
   authDetail: string;
+};
+
+export type CodexInstallProgress = {
+  stage: 'idle' | 'downloading' | 'verifying' | 'extracting' | 'ready' | 'error';
+  message: string;
+  loaded: number;
+  total: number;
+  progress: number;
 };
 
 export type CodexLoginInfo = {

@@ -6,12 +6,12 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-## 画布 Agent（v4.2.0）
+## 画布 Agent（v4.2.1）
 
 设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
 
 - OpenAI-compatible API：配置 Base URL、API Key、模型和可选 Header，使用 Chat Completions 流式响应及函数工具控制画布。
-- Codex App Server：本机需要可用的 `codex` CLI。应用通过 stdio JSON-RPC 连接 App Server，支持 ChatGPT/设备码登录、线程恢复、流式消息和审批事件。
+- Codex App Server：应用会在首次登录时下载并校验 OpenAI 官方 Codex 运行时，也可以使用用户指定的 `codex` CLI。应用通过 stdio JSON-RPC 连接 App Server，支持 ChatGPT/设备码登录、线程恢复、流式消息和审批事件。
 
 Agent 侧边栏在画布右侧占用独立布局空间，可以收起或拖动左侧边缘调整宽度。节点创建、Prompt 修改、连线、工作流应用和布局整理都通过受控画布工具执行；运行工作流始终需要用户确认。
 

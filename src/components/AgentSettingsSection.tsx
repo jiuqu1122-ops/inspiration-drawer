@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import type {
   AgentSettings,
+  CodexInstallProgress,
   CodexLoginInfo,
   CodexRuntimeStatus,
 } from '../features/agentModel';
@@ -24,12 +25,15 @@ type AgentSettingsSectionProps = {
   settings: AgentSettings;
   loading: boolean;
   codexStatus: CodexRuntimeStatus | null;
+  codexInstallProgress: CodexInstallProgress | null;
   codexLoginInfo: CodexLoginInfo | null;
   onToggle: () => void;
   onSave: (settings: AgentSettings & { apiKey?: string; clearApiKey?: boolean }) => Promise<AgentSettings>;
   onListModels: () => Promise<string[]>;
   onRefreshCodexStatus: () => Promise<CodexRuntimeStatus>;
+  onInstallCodex: () => Promise<CodexRuntimeStatus>;
   onStartCodexLogin: (mode: 'chatgpt' | 'chatgptDeviceCode') => Promise<CodexLoginInfo>;
+  onOpenCodexLoginUrl: (url: string) => Promise<void>;
   onLogoutCodex: () => Promise<void>;
 };
 
@@ -38,12 +42,15 @@ export function AgentSettingsSection({
   settings,
   loading,
   codexStatus,
+  codexInstallProgress,
   codexLoginInfo,
   onToggle,
   onSave,
   onListModels,
   onRefreshCodexStatus,
+  onInstallCodex,
   onStartCodexLogin,
+  onOpenCodexLoginUrl,
   onLogoutCodex,
 }: AgentSettingsSectionProps) {
   const [draft, setDraft] = useState(settings);
@@ -69,8 +76,8 @@ export function AgentSettingsSection({
     return '未登录';
   }, [codexStatus]);
 
-  const saveDraft = async (clearApiKey = false, propagateError = false) => {
-    setWorking('save');
+  const saveDraft = async (clearApiKey = false, propagateError = false, showWorking = true) => {
+    if (showWorking) setWorking('save');
     setMessage('');
     try {
       let apiHeaders: Record<string, string> = {};
@@ -94,7 +101,7 @@ export function AgentSettingsSection({
       setMessage(String(error));
       if (propagateError) throw error;
     } finally {
-      setWorking('');
+      if (showWorking) setWorking('');
     }
   };
 
@@ -102,7 +109,7 @@ export function AgentSettingsSection({
     setWorking('models');
     setMessage('');
     try {
-      await saveDraft(false, true);
+      await saveDraft(false, true, false);
       const values = await onListModels();
       setModels(values);
       setMessage(`已读取 ${values.length} 个模型`);
@@ -117,9 +124,15 @@ export function AgentSettingsSection({
     setWorking(key);
     setMessage('');
     try {
-      await saveDraft(false, true);
+      await saveDraft(false, true, false);
       await action();
-      setMessage(key === 'logout' ? '已退出 Codex' : '已打开 Codex 登录页面');
+      setMessage(key === 'logout'
+        ? '已退出 Codex'
+        : key === 'install'
+          ? 'Codex 运行时已安装'
+          : key === 'refresh'
+            ? 'Codex 状态已刷新'
+            : '已打开 Codex 登录页面');
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -249,7 +262,7 @@ export function AgentSettingsSection({
                     <input
                       value={draft.codexExecutable}
                       onChange={event => setDraft(current => ({ ...current, codexExecutable: event.target.value }))}
-                      placeholder="codex"
+                      placeholder="codex（自动使用内置运行时）"
                       className="rounded-[13px] border border-violet-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-violet-400/20 dark:bg-stone-900/45 dark:text-stone-200"
                     />
                   </label>
@@ -297,22 +310,57 @@ export function AgentSettingsSection({
                   )}
                   <div className="text-[9px] leading-4 text-stone-500 dark:text-stone-400">
                     {codexStatus?.installed
-                      ? `${codexStatus.version || 'Codex CLI'} · ${codexStatus.authDetail || statusLabel}`
-                      : '需要安装 Codex CLI，或填写它的完整路径。'}
+                      ? `${codexStatus.version || 'Codex CLI'} · ${codexStatus.managed ? '应用管理' : '系统安装'} · ${codexStatus.authDetail || statusLabel}`
+                      : `尚未安装 Codex 运行时。点击登录时会自动下载官方 v${codexStatus?.managedVersion || '0.142.5'}。`}
                   </div>
+                  {codexInstallProgress && ['downloading', 'verifying', 'extracting'].includes(codexInstallProgress.stage) && (
+                    <div className="rounded-[12px] border border-violet-200/70 bg-white/72 px-2 py-1.5 dark:border-violet-400/20 dark:bg-stone-900/40">
+                      <div className="flex items-center justify-between gap-2 text-[9px] font-bold text-violet-700 dark:text-violet-100">
+                        <span>{codexInstallProgress.message}</span>
+                        <span>{Math.round(codexInstallProgress.progress || 0)}%</span>
+                      </div>
+                      <div className="mt-1 h-1 overflow-hidden rounded-full bg-violet-100 dark:bg-violet-950/60">
+                        <div className="h-full rounded-full bg-violet-500 transition-[width]" style={{ width: `${Math.max(2, codexInstallProgress.progress || 0)}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {codexInstallProgress?.stage === 'error' && (
+                    <div className="rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] leading-4 text-red-600 dark:bg-red-400/10 dark:text-red-200">
+                      {codexInstallProgress.message}
+                    </div>
+                  )}
                   {codexLoginInfo?.userCode && (
                     <div className="rounded-[12px] bg-white/75 px-2 py-1.5 text-[10px] font-bold text-violet-700 dark:bg-stone-900/45 dark:text-violet-200">
                       设备码：<span className="font-mono text-xs">{codexLoginInfo.userCode}</span>
                     </div>
                   )}
+                  {(codexLoginInfo?.authUrl || codexLoginInfo?.verificationUrl) && (
+                    <button
+                      type="button"
+                      onClick={() => void onOpenCodexLoginUrl(codexLoginInfo.authUrl || codexLoginInfo.verificationUrl || '')}
+                      className="flex items-center justify-center gap-1 rounded-[12px] border border-violet-200 bg-white/78 px-2.5 py-1.5 text-[10px] font-bold text-violet-700 dark:border-violet-400/20 dark:bg-stone-900/40 dark:text-violet-100"
+                    >
+                      <ExternalLink className="h-3 w-3" /> 重新打开登录页面
+                    </button>
+                  )}
                   <div className="flex flex-wrap gap-1.5">
+                    {!codexStatus?.installed && codexStatus?.installAvailable && (
+                      <button
+                        type="button"
+                        onClick={() => void runCodexAction('install', onInstallCodex)}
+                        disabled={!!working}
+                        className="flex items-center gap-1 rounded-[12px] bg-blue-500 px-2.5 py-1.5 text-[10px] font-bold text-white disabled:opacity-50"
+                      >
+                        <Server className="h-3 w-3" /> 安装 Codex
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void runCodexAction('login', () => onStartCodexLogin('chatgpt'))}
                       disabled={!!working}
                       className="flex items-center gap-1 rounded-[12px] bg-violet-500 px-2.5 py-1.5 text-[10px] font-bold text-white disabled:opacity-50"
                     >
-                      <LogIn className="h-3 w-3" /> ChatGPT 登录
+                      {working === 'login' ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <LogIn className="h-3 w-3" />} ChatGPT 登录
                     </button>
                     <button
                       type="button"
