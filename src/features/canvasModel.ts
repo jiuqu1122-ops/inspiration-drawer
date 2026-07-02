@@ -8,6 +8,7 @@ export type CanvasImageItem = {
   width: number;
   height: number;
   inputs?: string[];
+  textMode?: 'agent' | 'plain';
   ai?: CanvasAiItemData;
   workflowGroup?: unknown;
 };

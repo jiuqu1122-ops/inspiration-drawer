@@ -45,6 +45,18 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'canvas_create_media_tool',
+      description: '创建本地媒体处理节点：补帧(frame-interpolation)、图片清晰度增强(image-enhancement)、视频清晰度增强(video-enhancement)。用于用户说“补帧/插帧/图增强/图片增强/视增强/视频增强/清晰度增强”等操作。',
+      parameters: objectSchema({
+        toolType: { type: 'string', enum: ['frame-interpolation', 'image-enhancement', 'video-enhancement'] },
+        inputIds: { type: 'array', items: { type: 'string' } },
+        autoRun: { type: 'boolean' },
+      }, ['toolType']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'canvas_create_preset',
       description: '创建或更新可复用的画布节点预设（Prompt 预设）。当用户要做“节点预设/保存预设/修改预设”时使用，不要改用文字节点保存预设文案。',
       parameters: objectSchema({
@@ -65,8 +77,30 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_add_text',
-      description: '在画布添加一个文字说明节点。',
+      description: '在画布添加一个文字说明节点。用于保存参考图分析、产品卖点、视频脚本、分镜脚本、提示词拆解、执行说明等文本结果。',
       parameters: objectSchema({ content: { type: 'string' } }, ['content']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'canvas_create_text_agent',
+      description: '创建一个可运行的 Agent 文字节点。用于让节点根据需求和连接的参考图/视频生成脚本、分析、文案等文本结果；可自动连接当前选中素材并可自动运行。',
+      parameters: objectSchema({
+        prompt: { type: 'string' },
+        inputIds: { type: 'array', items: { type: 'string' } },
+        autoRun: { type: 'boolean' },
+      }, ['prompt']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'canvas_run_text_agent',
+      description: '运行指定或当前选中的 Agent 文字节点，生成/刷新中间的文本结果。',
+      parameters: objectSchema({
+        nodeId: { type: 'string' },
+      }),
     },
   },
   {
@@ -78,6 +112,32 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
         workflowId: { type: 'string' },
         workflowName: { type: 'string' },
       }),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'canvas_create_workflow',
+      description: '创建并插入一个新的可复用工作流模块。仅当用户明确要求“封装/复用/多阶段工作流/自动化流程”时使用；如果只是基于参考图生成脚本/分镜/分析文本，优先使用单个 canvas_create_text_agent，不要拆成多个文字节点。',
+      parameters: objectSchema({
+        label: { type: 'string' },
+        hint: { type: 'string' },
+        inputIds: { type: 'array', items: { type: 'string' } },
+        autoRun: { type: 'boolean' },
+        steps: {
+          type: 'array',
+          items: objectSchema({
+            id: { type: 'string' },
+            kind: { type: 'string', enum: ['text', 'image-generator'] },
+            label: { type: 'string' },
+            prompt: { type: 'string' },
+            inputStepIds: { type: 'array', items: { type: 'string' } },
+            aspectRatio: { type: 'string' },
+            outputFormat: { type: 'string' },
+            count: { type: 'number' },
+          }, ['kind', 'label', 'prompt']),
+        },
+      }, ['label', 'steps']),
     },
   },
   {
@@ -159,6 +219,19 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['canvas_create_media_tool'] },
+              arguments: objectSchema({
+                toolType: { type: 'string', enum: ['frame-interpolation', 'image-enhancement', 'video-enhancement'] },
+                inputIds: { type: 'array', items: { type: 'string' } },
+                autoRun: { type: 'boolean' },
+              }, ['toolType', 'inputIds', 'autoRun']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_create_preset'] },
               arguments: objectSchema({
                 presetId: { type: ['string', 'null'] },
@@ -199,11 +272,62 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['canvas_create_text_agent'] },
+              arguments: objectSchema({
+                prompt: { type: 'string' },
+                inputIds: { type: 'array', items: { type: 'string' } },
+                autoRun: { type: 'boolean' },
+              }, ['prompt', 'inputIds', 'autoRun']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_run_text_agent'] },
+              arguments: objectSchema({
+                nodeId: { type: ['string', 'null'] },
+              }, ['nodeId']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_apply_workflow'] },
               arguments: objectSchema({
                 workflowId: { type: ['string', 'null'] },
                 workflowName: { type: ['string', 'null'] },
               }, ['workflowId', 'workflowName']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_create_workflow'] },
+              arguments: objectSchema({
+                label: { type: 'string' },
+                hint: { type: ['string', 'null'] },
+                inputIds: { type: 'array', items: { type: 'string' } },
+                autoRun: { type: 'boolean' },
+                steps: {
+                  type: 'array',
+                  items: objectSchema({
+                    id: { type: ['string', 'null'] },
+                    kind: { type: 'string', enum: ['text', 'image-generator'] },
+                    label: { type: 'string' },
+                    prompt: { type: 'string' },
+                    inputStepIds: { type: 'array', items: { type: 'string' } },
+                    aspectRatio: { type: ['string', 'null'] },
+                    outputFormat: { type: ['string', 'null'] },
+                    count: { type: ['number', 'null'] },
+                  }, ['id', 'kind', 'label', 'prompt', 'inputStepIds', 'aspectRatio', 'outputFormat', 'count']),
+                },
+              }, ['label', 'hint', 'inputIds', 'autoRun', 'steps']),
             },
             required: ['tool', 'arguments'],
             additionalProperties: false,
@@ -266,14 +390,26 @@ const READ_ONLY_TOOLS = new Set(['canvas_get_context']);
 
 export const isCanvasAgentToolReadOnly = (name: string) => READ_ONLY_TOOLS.has(name);
 
-export const isCanvasAgentToolSensitive = (name: string) => name === 'canvas_run_workflow';
+export const isCanvasAgentToolSensitive = (name: string, args: Record<string, unknown> = {}) => (
+  name === 'canvas_run_workflow'
+  || name === 'canvas_run_text_agent'
+  || (
+    name === 'canvas_create_generator'
+    && args.mediaType === 'video'
+    && args.autoRun === true
+  )
+);
 
 export const getCanvasAgentToolLabel = (name: string) => ({
   canvas_get_context: '读取画布',
   canvas_create_generator: '创建生成节点',
+  canvas_create_media_tool: '创建媒体处理节点',
   canvas_create_preset: '创建节点预设',
   canvas_add_text: '添加文字节点',
+  canvas_create_text_agent: '创建 Agent 文字节点',
+  canvas_run_text_agent: '运行 Agent 文字节点',
   canvas_apply_workflow: '应用工作流',
+  canvas_create_workflow: '创建工作流',
   canvas_update_prompt: '修改 Prompt',
   canvas_connect_nodes: '连接节点',
   canvas_organize: '整理画布',
@@ -299,25 +435,34 @@ export const parseCodexCanvasEnvelope = (raw: string) => {
   const clean = raw.trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '');
-  try {
-    const parsed = JSON.parse(clean);
-    if (!parsed || typeof parsed !== 'object') return null;
-    const record = parsed as Record<string, unknown>;
-    return {
-      reply: typeof record.reply === 'string' ? record.reply : raw,
-      actions: Array.isArray(record.actions)
-        ? record.actions.map(action => {
-          const item = action && typeof action === 'object' ? action as Record<string, unknown> : {};
-          return {
-            tool: typeof item.tool === 'string' ? item.tool : '',
-            arguments: parseAgentArguments(item.arguments),
-          };
-        }).filter(action => action.tool)
-        : [],
-    };
-  } catch (_) {
-    return null;
+  const candidates = [clean];
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(clean.slice(firstBrace, lastBrace + 1));
   }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (!parsed || typeof parsed !== 'object') continue;
+      const record = parsed as Record<string, unknown>;
+      return {
+        reply: typeof record.reply === 'string' ? record.reply : raw,
+        actions: Array.isArray(record.actions)
+          ? record.actions.map(action => {
+            const item = action && typeof action === 'object' ? action as Record<string, unknown> : {};
+            return {
+              tool: typeof item.tool === 'string' ? item.tool : '',
+              arguments: parseAgentArguments(item.arguments),
+            };
+          }).filter(action => action.tool)
+          : [],
+      };
+    } catch (_) {
+      // Try the next candidate.
+    }
+  }
+  return null;
 };
 
 export const buildCanvasAgentSystemPrompt = (
@@ -328,9 +473,16 @@ export const buildCanvasAgentSystemPrompt = (
 Agent 执行补充：
 - selectedItems 是用户当前明确选择的素材；回复时要说明你基于哪张/哪些选中素材处理。
 - 用户说“节点预设、Prompt 预设、保存成预设、创建预设、修改预设”时，必须使用 canvas_create_preset；不要把预设内容写进 canvas_add_text。
+- 用户说“识别/分析参考图、根据图片输出信息、写视频脚本、写分镜脚本、提炼卖点/风格/材质/镜头语言”时，先基于 visualReferences 中的参考图进行分析，然后必须使用 canvas_add_text 把结果落成文字节点；不要只在聊天里口头回复。
+- 如果 selectedItems 为空但 visualReferences 有图片，说明画布上已有可用参考图；用户说“参考图/这张图/这些图”时默认使用这些视觉参考。
+- 用户明确要求“封装/复用/多阶段工作流/自动化流程/套流程”时，才使用 canvas_create_workflow；如果目标只是基于参考图生成脚本、分镜脚本、文案或分析文本，使用单个 canvas_create_text_agent，不要拆成多个文字节点。
 - 用户说“生成、制作、渲染、效果图、出图、做一张图/视频”时，使用 canvas_create_generator，并把 autoRun 设为 true，让应用创建节点后立即开始生成。
-- 用户只说“创建生成节点、搭工作流、放一个预设节点”但没有要求立刻出结果时，使用 canvas_create_generator 并把 autoRun 设为 false。
-- 只有用户明确要求便签、文字说明或文本节点时，才使用 canvas_add_text。
+- 用户只说“创建生成节点、放一个预设节点”但没有要求立刻出结果时，使用 canvas_create_generator 并把 autoRun 设为 false。
+- 如果用户要求最终产出视频/动画，默认链路是：先创建一个 canvas_create_text_agent 连接参考图生成脚本/分镜，再创建 mediaType=video 的 canvas_create_generator，并把 inputIds 显式连接到这个脚本/分镜节点；不要只创建图片节点或文字节点就结束。
+- 只有用户明确要求多个可编辑阶段产物时，才创建多个依赖节点；创建多个依赖节点时，后续节点的 inputIds 必须显式填写上一步返回的 nodeId，确保画布上有可见连线。
+- 只有用户明确要求便签、文字说明或静态文本节点时，才使用 canvas_add_text。
+- 用户要求“做一个生成脚本的节点 / 生成文案的节点 / 生成分析文本的节点 / 可运行的文字节点 / 基于参考图写脚本或分镜”时，使用一个 canvas_create_text_agent，并把参考图/视频节点作为 inputIds 接入；如果用户要求立刻生成结果，把 autoRun 设为 true。
+- 用户说“补帧/插帧/RIFE”时，使用 canvas_create_media_tool 且 toolType=frame-interpolation；说“图增强/图片增强/图片清晰度增强/放大修复”时，toolType=image-enhancement；说“视增强/视频增强/视频清晰度增强”时，toolType=video-enhancement。
 
 当前画布上下文如下。节点 ID 必须原样使用，不要虚构不存在的 ID。创建复杂任务时优先使用已有 workflowId。
 ${JSON.stringify(context)}

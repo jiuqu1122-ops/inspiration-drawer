@@ -168,7 +168,7 @@ const visualReferenceNotice = (references: AgentCanvasVisualReference[]) => {
   const usable = references.filter(reference => reference.mediaType === 'image');
   if (usable.length === 0) return '';
   return [
-    '当前选中节点的图片已作为视觉参考随本轮消息附加：',
+    '当前可用参考图已随本轮消息附加：',
     ...usable.slice(0, 6).map((reference, index) => (
       `${index + 1}. ${reference.name}（nodeId: ${reference.nodeId}${reference.outputId ? `, outputId: ${reference.outputId}` : ''}）`
     )),
@@ -660,9 +660,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   ) => {
     const settingsNow = settingsRef.current;
     for (const call of run.calls) {
+      const isExpensiveVideoGeneration = call.name === 'canvas_create_generator'
+        && call.arguments.mediaType === 'video'
+        && call.arguments.autoRun === true;
       const requiresApproval = !isCanvasAgentToolReadOnly(call.name)
-        && settingsNow.approvalMode === 'ask'
-        && isCanvasAgentToolSensitive(call.name);
+        && isCanvasAgentToolSensitive(call.name, call.arguments)
+        && (settingsNow.approvalMode === 'ask' || isExpensiveVideoGeneration);
       if (requiresApproval) {
         call.status = 'awaiting-approval';
       } else {
@@ -719,6 +722,29 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       }));
     }
     if (!result.toolCalls?.length) {
+      const fallbackEnvelope = parseCodexCanvasEnvelope(result.content || '');
+      if (fallbackEnvelope) {
+        patchMessage(conversationId, assistantMessageId, message => ({
+          ...message,
+          content: fallbackEnvelope.reply || message.content || result.content,
+          status: 'streaming',
+        }));
+        if (fallbackEnvelope.actions.length > 0) {
+          await processToolCalls({
+            conversationId,
+            assistantMessageId,
+            provider: 'codex',
+            calls: fallbackEnvelope.actions.map(action => ({
+              id: createAgentId('agent-tool'),
+              name: action.tool,
+              arguments: action.arguments,
+              status: 'pending' as const,
+            })),
+            depth,
+          });
+          return;
+        }
+      }
       patchMessage(conversationId, assistantMessageId, message => ({
         ...message,
         content: message.content.trim() || '已完成。',
@@ -1131,10 +1157,13 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       if (provider === 'codex') {
         await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences);
       } else {
-        const systemPrompt = buildCanvasAgentSystemPrompt(
-          settingsRef.current.systemPrompt,
-          sanitizeCanvasContextForPrompt(contextWithVisualReferences),
-        );
+        const systemPrompt = [
+          buildCanvasAgentSystemPrompt(
+            settingsRef.current.systemPrompt,
+            sanitizeCanvasContextForPrompt(contextWithVisualReferences),
+          ),
+          'OpenAI-compatible 兼容提示：优先使用 tools/function calling。若当前 API 或模型不返回 tool_calls，请只输出一个 JSON 对象：{"reply":"给用户看的简短说明","actions":[{"tool":"canvas_add_text","arguments":{"content":"..."}}]}，actions 里的 tool 与 arguments 必须对应可用画布工具。',
+        ].join('\n\n');
         const providerMessages: Array<Record<string, unknown>> = [
           { role: 'system', content: systemPrompt },
           ...makeProviderHistory(conversation),

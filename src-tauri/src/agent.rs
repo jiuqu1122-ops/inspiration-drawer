@@ -84,7 +84,7 @@ impl From<&AgentSettingsStored> for AgentSettingsPublic {
         Self {
             provider: value.provider.clone(),
             api_base_url: value.api_base_url.clone(),
-            api_model: value.api_model.clone(),
+            api_model: normalize_api_model(&value.api_model),
             api_headers: value.api_headers.clone(),
             has_api_key: !value.api_key.trim().is_empty(),
             codex_executable: value.codex_executable.clone(),
@@ -272,6 +272,25 @@ fn normalize_codex_model(value: &str) -> String {
     }
 }
 
+fn normalize_api_model(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let normalized = trimmed
+        .to_ascii_lowercase()
+        .replace(char::is_whitespace, "");
+    match normalized.as_str() {
+        "5.5" | "gpt5.5" => "gpt-5.5".to_string(),
+        "5.4" | "gpt5.4" => "gpt-5.4".to_string(),
+        "5.4-mini" | "gpt5.4-mini" => "gpt-5.4-mini".to_string(),
+        "4.1" | "gpt4.1" => "gpt-4.1".to_string(),
+        "4.1-mini" | "gpt4.1-mini" => "gpt-4.1-mini".to_string(),
+        "4.1-nano" | "gpt4.1-nano" => "gpt-4.1-nano".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
 fn normalize_codex_reasoning_effort(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "minimal" => "minimal".to_string(),
@@ -296,7 +315,7 @@ pub fn agent_save_settings(
     let mut current = read_settings(&app_handle);
     current.provider = normalize_provider(&input.provider);
     current.api_base_url = input.api_base_url.trim().trim_end_matches('/').to_string();
-    current.api_model = input.api_model.trim().to_string();
+    current.api_model = normalize_api_model(&input.api_model);
     current.api_headers = input
         .api_headers
         .into_iter()
@@ -469,6 +488,89 @@ fn parse_openai_response_value(
     }
 }
 
+fn preview_response_text(text: &str) -> String {
+    let clean = text
+        .chars()
+        .map(|ch| {
+            if ch.is_control() && ch != '\n' && ch != '\r' && ch != '\t' {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let mut preview = clean.chars().take(800).collect::<String>();
+    if clean.chars().count() > 800 {
+        preview.push('…');
+    }
+    preview
+}
+
+fn parse_openai_sse_data(
+    data: &str,
+    content: &mut String,
+    tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
+    finish_reason: &mut Option<String>,
+    app_handle: &tauri::AppHandle,
+    request_id: &str,
+) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(data)
+        .map_err(|error| format!("解析 Agent 流失败：{}；响应片段：{}", error, preview_response_text(data)))?;
+    parse_openai_response_value(
+        &parsed,
+        content,
+        tool_calls,
+        finish_reason,
+        app_handle,
+        request_id,
+    );
+    Ok(())
+}
+
+fn parse_openai_buffered_text(
+    text: &str,
+    content: &mut String,
+    tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
+    finish_reason: &mut Option<String>,
+    app_handle: &tauri::AppHandle,
+    request_id: &str,
+) -> Result<(), String> {
+    if text.lines().any(|line| line.trim_start().starts_with("data:")) {
+        for line in text.lines() {
+            let Some(data) = line.trim().strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            parse_openai_sse_data(
+                data,
+                content,
+                tool_calls,
+                finish_reason,
+                app_handle,
+                request_id,
+            )?;
+        }
+        return Ok(());
+    }
+
+    let parsed: Value = serde_json::from_str(text)
+        .map_err(|error| format!("解析 Agent API 响应失败：{}；响应片段：{}", error, preview_response_text(text)))?;
+    parse_openai_response_value(
+        &parsed,
+        content,
+        tool_calls,
+        finish_reason,
+        app_handle,
+        request_id,
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn agent_openai_chat(
     app_handle: tauri::AppHandle,
@@ -481,7 +583,8 @@ pub async fn agent_openai_chat(
         if settings.api_key.trim().is_empty() {
             return Err("请先在 Agent 设置中填写 API Key".to_string());
         }
-        if settings.api_model.trim().is_empty() {
+        let api_model = normalize_api_model(&settings.api_model);
+        if api_model.trim().is_empty() {
             return Err("请先在 Agent 设置中填写模型".to_string());
         }
         if let Ok(mut values) = cancellations.lock() {
@@ -489,9 +592,11 @@ pub async fn agent_openai_chat(
         }
 
         let mut body = json!({
-            "model": settings.api_model,
+            "model": api_model,
             "messages": request.messages,
-            "stream": true,
+            // 画布 Agent 依赖 tool_calls。许多 OpenAI-compatible 中转在流式模式下
+            // 不完整支持工具调用增量，非流式返回的兼容性更高。
+            "stream": false,
         });
         if !request.tools.is_empty() {
             body["tools"] = Value::Array(request.tools);
@@ -545,29 +650,27 @@ pub async fn agent_openai_chat(
                 if data.is_empty() {
                     continue;
                 }
-                let parsed: Value = serde_json::from_str(data)
-                    .map_err(|error| format!("解析 Agent 流失败：{}", error))?;
-                parse_openai_response_value(
-                    &parsed,
+                parse_openai_sse_data(
+                    data,
                     &mut content,
                     &mut tool_calls,
                     &mut finish_reason,
                     &app_handle,
                     &request.request_id,
-                );
+                )?;
             }
         } else {
-            let parsed: Value = response
-                .json()
-                .map_err(|error| format!("解析 Agent API 响应失败：{}", error))?;
-            parse_openai_response_value(
-                &parsed,
+            let text = response
+                .text()
+                .map_err(|error| format!("读取 Agent API 响应失败：{}", error))?;
+            parse_openai_buffered_text(
+                &text,
                 &mut content,
                 &mut tool_calls,
                 &mut finish_reason,
                 &app_handle,
                 &request.request_id,
-            );
+            )?;
         }
 
         if let Ok(mut values) = cancellations.lock() {
@@ -1151,7 +1254,7 @@ pub async fn agent_codex_start(
                     "clientInfo": {
                         "name": "inspiration_drawer",
                         "title": "Inspiration Drawer",
-                        "version": "4.2.9"
+                        "version": "4.3.0"
                     }
                 }),
                 Duration::from_secs(20),
@@ -1290,6 +1393,13 @@ mod tests {
         assert_eq!(normalize_provider("unknown"), "openai-compatible");
         assert_eq!(normalize_sandbox("unknown"), "read-only");
         assert_eq!(normalize_approval_policy("unknown"), "on-request");
+    }
+
+    #[test]
+    fn api_model_aliases_are_normalized() {
+        assert_eq!(normalize_api_model("gpt5.5"), "gpt-5.5");
+        assert_eq!(normalize_api_model("5.4-mini"), "gpt-5.4-mini");
+        assert_eq!(normalize_api_model("custom-model"), "custom-model");
     }
 
     #[test]

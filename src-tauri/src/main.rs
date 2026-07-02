@@ -52,6 +52,7 @@ fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
 static STARTUP_CLOSE_LOCK_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_RESIZE_ANIMATION_TOKEN: AtomicU64 = AtomicU64::new(0);
 static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
+static CANVAS_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct CloudflaredShare {
     child: Child,
@@ -287,6 +288,29 @@ fn is_anti_touch_locked() -> bool {
 #[tauri::command]
 fn set_anti_touch_lock(locked: bool) {
     ANTI_TOUCH_LOCKED.store(if locked { 1 } else { 0 }, Ordering::Relaxed);
+}
+
+fn is_canvas_workbench_active() -> bool {
+    CANVAS_WORKBENCH_ACTIVE.load(Ordering::Relaxed)
+}
+
+fn apply_main_canvas_workbench_mode(main: &WebviewWindow) {
+    let active = is_canvas_workbench_active();
+    if !active {
+        let _ = main.unmaximize();
+    }
+    let _ = main.set_resizable(active);
+    let _ = main.set_skip_taskbar(!active);
+    let _ = main.set_always_on_top(!active);
+}
+
+#[tauri::command]
+fn set_canvas_workbench_active(app_handle: tauri::AppHandle, active: bool) -> Result<(), String> {
+    CANVAS_WORKBENCH_ACTIVE.store(active, Ordering::Relaxed);
+    if let Some(main) = app_handle.get_webview_window("main") {
+        apply_main_canvas_workbench_mode(&main);
+    }
+    Ok(())
 }
 
 fn normalize_proxy_endpoint(value: &str) -> Option<String> {
@@ -8092,6 +8116,10 @@ fn sys_update_bounds(
 
 #[tauri::command]
 fn set_topmost(window: WebviewWindow, topmost: bool) -> Result<(), String> {
+    if window.label() == "main" && is_canvas_workbench_active() {
+        apply_main_canvas_workbench_mode(&window);
+        return Ok(());
+    }
     window.set_always_on_top(topmost).map_err(|e| e.to_string())
 }
 
@@ -8127,7 +8155,11 @@ fn snap_to_right(window: WebviewWindow, width: f64, height: f64) {
 fn toggle_pin(window: WebviewWindow, pinned: bool) {
     // pinned 只表示锁定展开/不自动缩回，不要在这里控制窗口位置。
     // 取消钉住后的复位/缩回由前端 close_drawer + trigger mode 处理。
-    let _ = window.set_always_on_top(true);
+    if window.label() == "main" {
+        apply_main_canvas_workbench_mode(&window);
+    } else {
+        let _ = window.set_always_on_top(true);
+    }
     let _ = pinned;
 }
 
@@ -9989,7 +10021,7 @@ async fn complete_snip_selection(
     let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.set_ignore_cursor_events(false);
-        let _ = main.set_always_on_top(true);
+        apply_main_canvas_workbench_mode(&main);
     }
 
     let app_for_capture = app_handle.clone();
@@ -10645,7 +10677,7 @@ fn hide_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
     if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.set_ignore_cursor_events(false);
-        let _ = main.set_always_on_top(true);
+        apply_main_canvas_workbench_mode(&main);
     }
     Ok(())
 }
@@ -10669,7 +10701,7 @@ fn recover_after_snip(
 
     if restore_drawer {
         if let Some(main) = app_handle.get_webview_window("main") {
-            let _ = main.set_always_on_top(true);
+            apply_main_canvas_workbench_mode(&main);
             let _ = main.show();
             let _ = main.emit("drawer-opened", ());
         }
@@ -10678,7 +10710,7 @@ fn recover_after_snip(
     }
 
     if let Some(main) = app_handle.get_webview_window("main") {
-        let _ = main.set_always_on_top(true);
+        apply_main_canvas_workbench_mode(&main);
         let _ = main.emit("snip-recovered", ());
     }
     Ok(())
@@ -10843,7 +10875,7 @@ fn open_drawer(
         .map_err(|e| e.to_string())?;
     main.set_position(LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
-    main.set_always_on_top(true).ok();
+    apply_main_canvas_workbench_mode(&main);
     main.show().map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
 
@@ -10871,7 +10903,7 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
     // 在欢迎页显示期间，前端会设置一个短暂的后端关闭锁。
     // 任何旧的 edge 预热、mouseleave 或定时器触发 close_drawer，都不能真的 hide 主窗口。
     if is_startup_close_locked() {
-        main.set_always_on_top(true).ok();
+        apply_main_canvas_workbench_mode(&main);
         main.show().map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         return Ok(());
@@ -11795,6 +11827,7 @@ fn main() {
             analyze_cmf_card,
             sys_update_bounds,
             set_topmost,
+            set_canvas_workbench_active,
             sys_drag_window,
             snap_to_right,
             toggle_pin,
@@ -11864,7 +11897,7 @@ fn main() {
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
-                let _ = main.set_always_on_top(true);
+                apply_main_canvas_workbench_mode(&main);
                 let _ = main.set_min_size(Some(tauri::LogicalSize::new(
                     DRAWER_MIN_WIDTH,
                     DRAWER_MIN_HEIGHT,

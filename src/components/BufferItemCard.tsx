@@ -5,7 +5,7 @@ import {
   Tag, Star, FolderMinus, FolderOpen, Download, Copy,
   Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, Sparkles, StickyNote, Search
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -110,6 +110,7 @@ function BufferItemCard({
   const [editContentText, setEditContentText] = useState(item.content || '');
   const [isHovered, setIsHovered] = useState(false);
   const openUrlTimerRef = useRef<any | null>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
   const editStartContentRef = useRef(item.content || '');
   const editContentDirtyRef = useRef(false);
   const skipTextEditSaveRef = useRef(false);
@@ -492,6 +493,13 @@ function BufferItemCard({
   };
 
   const isSmallCard = cardWidth < 200;
+  const visualScale = Math.max(0.56, Math.min(1.16, (Number(cardWidth) || 320) / 320));
+  const scaleSize = (value: number, min = 1) => Math.max(min, Math.round(value * visualScale));
+  const cardRadius = scaleSize(22, 10);
+  const panelRadius = scaleSize(16, 8);
+  const chipRadius = scaleSize(14, 7);
+  const paletteDotSize = scaleSize(18, 10);
+  const paletteGap = scaleSize(6, 4);
   const btnClass = `${isSmallCard ? 'p-1 rounded-[10px]' : 'p-1.5 rounded-[12px]'} bg-white/80 dark:bg-stone-700/80 backdrop-blur-xl text-stone-500 dark:text-stone-300 hover:text-amber-500 hover:bg-white dark:hover:bg-stone-700 shadow-[0_2px_10px_rgba(0,0,0,0.08)] transition-all pointer-events-auto`;
   const iconClass = isSmallCard ? 'w-3 h-3' : 'w-3.5 h-3.5';
   const alchemyState = item.alchemy?.state || 'raw';
@@ -507,7 +515,29 @@ function BufferItemCard({
   const hasAiAlchemyDone = isAlchemyDone && !isPaletteOnlyAlchemy;
   const imageCardSource = preferFullImageSource ? (item.url || item.thumbnail || '') : (item.thumbnail || item.url || '');
   const imagePreviewSource = item.url || item.thumbnail || '';
+  const imageDisplayName = item.name || item.content || 'image';
   const videoThumbnail = item.thumbnail || item.cover || (typeof item.url === 'string' && item.url.startsWith('data:image/') ? item.url : '');
+  const rawVideoPreviewSource = item.url || (item.path ? convertFileSrc(item.path) : '');
+  const videoPreviewSource = typeof rawVideoPreviewSource === 'string' && rawVideoPreviewSource.startsWith('data:image/') ? '' : rawVideoPreviewSource;
+  const videoDisplayName = item.name || item.content || 'video';
+  const isInlineMediaCard = item.type === 'image' || item.type === 'video';
+  const canPreviewVideoInline = item.type === 'video' && !!videoPreviewSource && isHovered && !isSelectMode;
+  const cardStyle: React.CSSProperties = optimizeLargeList ? {
+    contentVisibility: 'auto',
+    containIntrinsicSize: `${Math.max(120, Number(mediaHeight) || 0) + 96}px`,
+    borderRadius: cardRadius,
+  } : { borderRadius: cardRadius };
+  const roundedTopStyle = { borderTopLeftRadius: cardRadius, borderTopRightRadius: cardRadius };
+  const roundedBottomStyle = { borderBottomLeftRadius: cardRadius, borderBottomRightRadius: cardRadius };
+  const showCollapsibleDetails = !isInlineMediaCard || isHovered || isEditingRemark;
+
+  useEffect(() => {
+    const video = videoPreviewRef.current;
+    if (!canPreviewVideoInline || !video) return;
+    video.muted = true;
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+  }, [canPreviewVideoInline, videoPreviewSource, item?.id]);
 
   const handleAlchemyClick = (e: React.MouseEvent | any) => {
     e.preventDefault();
@@ -596,18 +626,15 @@ return (
       draggable={false}
       onDragStart={(e: any) => e.preventDefault()}
       className={`group relative rounded-[22px] shadow-[0_8px_24px_rgba(0,0,0,0.06)] dark:shadow-black/20 transition-colors flex flex-col overflow-hidden ${optimizeLargeList ? 'bg-white dark:bg-stone-800' : 'bg-white/90 dark:bg-stone-800/90 backdrop-blur-xl will-change-transform'} ${isSelectMode && isSelected ? 'ring-2 ring-emerald-500 border-transparent' : 'border border-white/70 dark:border-stone-700/60 hover:shadow-[0_12px_34px_rgba(0,0,0,0.10)] hover:z-50'}`}
-      style={optimizeLargeList ? {
-        contentVisibility: 'auto',
-        containIntrinsicSize: `${Math.max(120, Number(mediaHeight) || 0) + 96}px`,
-      } : undefined}
+      style={cardStyle}
     >
       {!isSelectMode && (
-        <div className="absolute bottom-0 right-0 w-7 h-7 cursor-nwse-resize z-[40] flex items-end justify-end p-2 opacity-0 group-hover:opacity-100 transition-opacity rounded-br-[22px]" onMouseDown={startResizingCard} title="拖动调整所有卡片尺寸">
+        <div className="absolute bottom-0 right-0 w-7 h-7 cursor-nwse-resize z-[40] flex items-end justify-end p-2 opacity-0 group-hover:opacity-100 transition-opacity rounded-br-[22px]" style={{ borderBottomRightRadius: cardRadius }} onMouseDown={startResizingCard} title="拖动调整所有卡片尺寸">
           <svg viewBox="0 0 6 6" className="w-2.5 h-2.5 text-stone-400/80 dark:text-stone-500/80"><path d="M6 0 L6 6 L0 6 Z" fill="currentColor"/></svg>
         </div>
       )}
 
-      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/5 dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5 rounded-[22px]" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[6px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-stone-300 dark:border-stone-500 bg-white/80 dark:bg-stone-800/80'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
+      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/5 dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5 rounded-[22px]" style={{ borderRadius: cardRadius }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[6px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-stone-300 dark:border-stone-500 bg-white/80 dark:bg-stone-800/80'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
 
       {!isSelectMode && (
         <div data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-[80] flex flex-wrap justify-end gap-1.5 min-w-[160px] pointer-events-auto">
@@ -671,49 +698,91 @@ return (
       )}
 
       {item.type === 'image' && (
-        <LazyCardImage
-          src={imageCardSource}
-          alt={item.name || item.content || 'image'}
-          className="w-full object-cover cursor-pointer rounded-t-[22px] bg-stone-100 dark:bg-stone-900"
-          style={{ height: mediaHeight }}
-          title="点击预览"
-          onVisible={() => {
-            if (!item.thumbnail) onEnsureThumbnail?.(item);
-          }}
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource); }}
-        />
+        <div className="relative w-full">
+          <LazyCardImage
+            src={imageCardSource}
+            alt={imageDisplayName}
+            className="w-full object-cover cursor-pointer rounded-t-[22px] bg-stone-100 dark:bg-stone-900"
+            style={{ height: mediaHeight, ...roundedTopStyle }}
+            title="点击预览"
+            onVisible={() => {
+              if (!item.thumbnail) onEnsureThumbnail?.(item);
+            }}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource); }}
+          />
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] rounded-t-[22px] bg-gradient-to-b from-black/55 via-black/24 to-transparent px-3.5 pb-7 pt-3" style={roundedTopStyle}>
+            <div className="min-w-0 pr-12">
+              <div
+                className="truncate text-[12px] font-semibold leading-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.75)]"
+                title={imageDisplayName}
+              >
+                {imageDisplayName}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {item.type === 'video' && (
         <div
           className="relative w-full group/video cursor-pointer bg-stone-900 rounded-t-[22px] overflow-hidden"
-          style={{ height: mediaHeight }}
+          style={{ height: mediaHeight, ...roundedTopStyle }}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onVideoClick?.(item); }}
-          title="点击在抽屉内播放"
+          title="悬停预览，点击在抽屉内播放"
         >
-          {videoThumbnail ? (
+          {canPreviewVideoInline ? (
+            <video
+              ref={videoPreviewRef}
+              src={videoPreviewSource}
+              className="h-full w-full object-cover"
+              muted
+              loop
+              playsInline
+              autoPlay
+              preload="metadata"
+              controls={false}
+              draggable={false}
+            />
+          ) : videoThumbnail ? (
             <LazyCardImage
               src={videoThumbnail}
-              alt={item.name || item.content || 'video'}
+              alt={videoDisplayName}
               className="w-full h-full object-cover opacity-80 group-hover/video:opacity-100 transition-opacity"
             />
           ) : <div className="w-full h-full bg-gradient-to-br from-stone-800 to-stone-900 flex items-center justify-center"><Film className="w-12 h-12 text-stone-700/60" /></div>}
-          <div className="absolute inset-0 flex items-center justify-center bg-black/10 group-hover/video:bg-black/30 transition-colors"><div className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-[18px] flex items-center justify-center text-white shadow-lg transition-transform group-hover/video:scale-110 border border-white/20"><Play className="w-5 h-5 ml-1 fill-white opacity-90" /></div></div>
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] rounded-t-[22px] bg-gradient-to-b from-black/55 via-black/24 to-transparent px-3.5 pb-7 pt-3" style={roundedTopStyle}>
+            <div className="min-w-0 pr-12">
+              <div
+                className="truncate text-[12px] font-semibold leading-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.75)]"
+                title={videoDisplayName}
+              >
+                {videoDisplayName}
+              </div>
+            </div>
+          </div>
+          {!canPreviewVideoInline && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/10 transition-colors group-hover/video:bg-black/20">
+              <div className="flex h-10 w-10 items-center justify-center rounded-[16px] border border-white/20 bg-white/20 text-white shadow-lg backdrop-blur-md transition-transform group-hover/video:scale-105">
+                <Play className="ml-0.5 h-4 w-4 fill-white opacity-90" />
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="p-3.5 flex flex-col justify-start">
-        {(item.type === 'file' || item.type === 'video') ? (
-          <div className="flex items-center gap-2 cursor-pointer hover:opacity-70 transition-opacity mt-auto mb-auto" onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && handleOpenFile(e); }} title="使用系统默认软件打开">
-            {item.type === 'video' ? <Film className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" /> : <FileIcon className="w-4 h-4 text-stone-400 dark:text-stone-500 shrink-0" />}
-            <span className="text-xs font-medium text-stone-600 dark:text-stone-300 truncate">{item.name}</span>
-          </div>
-        ) : (
-          <div
-            className={`relative flex flex-col ${isExpanded ? 'max-h-[500px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full' : 'max-h-[150px] overflow-hidden'}`}
-            onDoubleClick={startTextEditFromCard}
-            title={item.type === 'text' && !isEditingText ? '双击编辑文本' : undefined}
-          >
+      {!isInlineMediaCard && (
+        <div className="p-3.5 flex flex-col justify-start">
+          {(item.type === 'file' || item.type === 'video') ? (
+            <div className="flex items-center gap-2 cursor-pointer hover:opacity-70 transition-opacity mt-auto mb-auto" onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && handleOpenFile(e); }} title="使用系统默认软件打开">
+              {item.type === 'video' ? <Film className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" /> : <FileIcon className="w-4 h-4 text-stone-400 dark:text-stone-500 shrink-0" />}
+              <span className="text-xs font-medium text-stone-600 dark:text-stone-300 truncate">{item.name}</span>
+            </div>
+          ) : (
+            <div
+              className={`relative flex flex-col ${isExpanded ? 'max-h-[500px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full' : 'max-h-[150px] overflow-hidden'}`}
+              onDoubleClick={startTextEditFromCard}
+              title={item.type === 'text' && !isEditingText ? '双击编辑文本' : undefined}
+            >
             {isEditingText ? (
               <div
                 data-no-drag="true"
@@ -760,58 +829,59 @@ return (
               <p className={`text-xs text-stone-600 dark:text-stone-300 leading-relaxed ${isExpanded ? 'whitespace-pre-wrap' : 'line-clamp-5'}`}>{item.content}</p>
             )}
             {!isEditingText && !isUrlText && isLongText && <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsExpanded(!isExpanded); }} className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1.5 font-medium hover:underline z-10 relative self-start shrink-0 bg-white/90 dark:bg-stone-800/90 w-full text-left pt-1 rounded-[10px]">{isExpanded ? '收起全文' : '展开阅读全文...'}</button>}
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <AnimatePresence initial={false}>
-        {hasCompactPalette && (
+        {hasCompactPalette && isHovered && (
           <motion.div
             key="compact-palette"
             data-no-drag="true"
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
-            className="px-3.5 pb-3 -mt-1"
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={{ type: 'tween', duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden px-3.5 pb-3 pt-2"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: 'tween', duration: 0.14, ease: 'easeOut' }}
           >
-            <div className="rounded-[16px] border border-stone-200/70 dark:border-stone-700/60 bg-stone-50/75 dark:bg-stone-900/28 px-2.5 py-2 shadow-sm">
+            <div className="rounded-[16px] border border-stone-200/70 dark:border-stone-700/60 bg-stone-50/75 dark:bg-stone-900/28 px-2.5 py-2 shadow-sm" style={{ borderRadius: panelRadius }}>
               {isAlchemyLoading ? (
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5" style={{ gap: paletteGap }}>
                   {[0, 1, 2, 3].map((idx) => (
-                    <span key={idx} className="h-[18px] w-[18px] rounded-full bg-stone-200/80 dark:bg-stone-700/80 animate-pulse" />
+                    <span key={idx} className="rounded-full bg-stone-200/80 dark:bg-stone-700/80 animate-pulse" style={{ height: paletteDotSize, width: paletteDotSize }} />
                   ))}
                 </div>
               ) : (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                  transition={{ duration: 0.12, ease: 'easeOut' }}
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5" style={{ gap: paletteGap }}>
                     {alchemyColors.map((color: string, idx: number) => (
                       <motion.span
                         key={`${color}-${idx}`}
-                        className="h-[18px] w-[18px] rounded-full border border-black/10 dark:border-white/10 shadow-inner"
-                        style={{ backgroundColor: color }}
+                        className="rounded-full border border-black/10 dark:border-white/10 shadow-inner"
+                        style={{ backgroundColor: color, height: paletteDotSize, width: paletteDotSize }}
                         title={color}
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ type: 'tween', duration: 0.22, delay: idx * 0.03, ease: [0.16, 1, 0.3, 1] }}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ type: 'tween', duration: 0.12, delay: idx * 0.015, ease: 'easeOut' }}
                       />
                     ))}
                   </div>
                   {alchemyKeywords.length > 0 && (
                     <motion.div
                       className="mt-2 flex flex-wrap gap-1 overflow-hidden"
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ type: 'tween', duration: 0.22, delay: 0.05, ease: [0.16, 1, 0.3, 1] }}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ type: 'tween', duration: 0.12, ease: 'easeOut' }}
                     >
                       {alchemyKeywords.map((tag: string) => (
-                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300">{tag}</span>
+                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300" style={{ borderRadius: chipRadius }}>{tag}</span>
                       ))}
                     </motion.div>
                   )}
@@ -826,8 +896,8 @@ return (
         {isEditingRemark && (
           <motion.div
             key={`remark-editor-${editingRemarkIndex ?? 'new'}`}
-            initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0" onClick={e => { e.preventDefault(); e.stopPropagation(); }}
+            initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.14, ease: 'easeOut' }}
+            className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0" style={roundedBottomStyle} onClick={e => { e.preventDefault(); e.stopPropagation(); }}
           >
             <div className="px-3 pb-3 pt-1">
               <textarea
@@ -847,16 +917,18 @@ return (
                 placeholder="新增标签备注..."
                 rows={3}
                 className="min-h-[72px] max-h-40 w-full resize-y whitespace-pre-wrap break-words text-xs leading-5 bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-[14px] p-2 outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 text-amber-900 dark:text-amber-100 placeholder:text-amber-400/70 dark:placeholder:text-amber-500/50 transition-all shadow-inner"
+                style={{ borderRadius: chipRadius }}
               />
             </div>
           </motion.div>
         )}
 
-        {remarkEntries.length > 0 && (
+        {remarkEntries.length > 0 && showCollapsibleDetails && (
           <motion.div
             key="remark-display"
-            initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: 'tween', duration: 0.14, ease: 'easeOut' }}
             className="overflow-hidden rounded-b-[22px] will-change-transform mt-auto shrink-0"
+            style={roundedBottomStyle}
           >
             <div className="px-3 pb-3 pt-1">
               <div className="relative">
@@ -891,6 +963,7 @@ return (
                           ? 'border-amber-300 bg-amber-100 dark:border-amber-600/70 dark:bg-amber-900/45'
                           : 'border-amber-100 bg-amber-50 hover:bg-amber-100 dark:border-amber-800/50 dark:bg-amber-900/30 dark:hover:bg-amber-900/50'
                       }`}
+                      style={{ borderRadius: chipRadius }}
                       onClick={(e) => {
                         if (isUrlRemark) handleOpenRemarkUrl(remark, e);
                         else beginEditRemark(index, e);
