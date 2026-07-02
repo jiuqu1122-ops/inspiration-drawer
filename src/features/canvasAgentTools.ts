@@ -45,6 +45,25 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'canvas_create_preset',
+      description: '创建或更新可复用的画布节点预设（Prompt 预设）。当用户要做“节点预设/保存预设/修改预设”时使用，不要改用文字节点保存预设文案。',
+      parameters: objectSchema({
+        presetId: { type: 'string' },
+        label: { type: 'string' },
+        hint: { type: 'string' },
+        prompt: { type: 'string' },
+        aspectRatio: { type: 'string' },
+        outputFormat: { type: 'string' },
+        count: { type: 'number' },
+        createNode: { type: 'boolean' },
+        mediaType: { type: 'string', enum: ['image', 'video'] },
+        inputIds: { type: 'array', items: { type: 'string' } },
+      }, ['label', 'prompt']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'canvas_add_text',
       description: '在画布添加一个文字说明节点。',
       parameters: objectSchema({ content: { type: 'string' } }, ['content']),
@@ -140,6 +159,37 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['canvas_create_preset'] },
+              arguments: objectSchema({
+                presetId: { type: ['string', 'null'] },
+                label: { type: 'string' },
+                hint: { type: ['string', 'null'] },
+                prompt: { type: 'string' },
+                aspectRatio: { type: ['string', 'null'] },
+                outputFormat: { type: ['string', 'null'] },
+                count: { type: ['number', 'null'] },
+                createNode: { type: 'boolean' },
+                mediaType: { type: ['string', 'null'] },
+                inputIds: { type: 'array', items: { type: 'string' } },
+              }, [
+                'presetId',
+                'label',
+                'hint',
+                'prompt',
+                'aspectRatio',
+                'outputFormat',
+                'count',
+                'createNode',
+                'mediaType',
+                'inputIds',
+              ]),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_add_text'] },
               arguments: objectSchema({ content: { type: 'string' } }, ['content']),
             },
@@ -221,6 +271,7 @@ export const isCanvasAgentToolSensitive = (name: string) => name === 'canvas_run
 export const getCanvasAgentToolLabel = (name: string) => ({
   canvas_get_context: '读取画布',
   canvas_create_generator: '创建生成节点',
+  canvas_create_preset: '创建节点预设',
   canvas_add_text: '添加文字节点',
   canvas_apply_workflow: '应用工作流',
   canvas_update_prompt: '修改 Prompt',
@@ -276,8 +327,10 @@ export const buildCanvasAgentSystemPrompt = (
 
 Agent 执行补充：
 - selectedItems 是用户当前明确选择的素材；回复时要说明你基于哪张/哪些选中素材处理。
+- 用户说“节点预设、Prompt 预设、保存成预设、创建预设、修改预设”时，必须使用 canvas_create_preset；不要把预设内容写进 canvas_add_text。
 - 用户说“生成、制作、渲染、效果图、出图、做一张图/视频”时，使用 canvas_create_generator，并把 autoRun 设为 true，让应用创建节点后立即开始生成。
-- 用户只说“创建节点、搭工作流、预设节点”但没有要求立刻出结果时，autoRun 设为 false。
+- 用户只说“创建生成节点、搭工作流、放一个预设节点”但没有要求立刻出结果时，使用 canvas_create_generator 并把 autoRun 设为 false。
+- 只有用户明确要求便签、文字说明或文本节点时，才使用 canvas_add_text。
 
 当前画布上下文如下。节点 ID 必须原样使用，不要虚构不存在的 ID。创建复杂任务时优先使用已有 workflowId。
 ${JSON.stringify(context)}

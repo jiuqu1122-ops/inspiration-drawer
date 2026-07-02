@@ -3027,7 +3027,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.2.6');
+        setAppVersion('4.2.7');
       });
   }, []);
 
@@ -18132,6 +18132,80 @@ useEffect(() => {
         };
       }
 
+      if (name === 'canvas_create_preset') {
+        const requestedPresetId = typeof args.presetId === 'string' ? args.presetId.trim() : '';
+        const presetById = requestedPresetId
+          ? canvasAiPromptPresets.find(item => item.id === requestedPresetId)
+          : null;
+        const rawLabel = typeof args.label === 'string' ? args.label.trim() : '';
+        const label = (rawLabel || presetById?.label || '').slice(0, 24);
+        const normalizedLabel = label.toLowerCase();
+        const presetByLabel = normalizedLabel
+          ? canvasAiPromptPresets.find(item => item.label.trim().toLowerCase() === normalizedLabel)
+          : null;
+        const existingPreset = presetById || presetByLabel || null;
+        const prompt = typeof args.prompt === 'string' && args.prompt.trim()
+          ? args.prompt.trim()
+          : existingPreset?.prompt || '';
+        if (!label || !prompt) throw new Error('节点预设需要名称和 Prompt');
+
+        const requestedAspectRatio = typeof args.aspectRatio === 'string' ? args.aspectRatio.trim() : '';
+        const requestedOutputFormat = typeof args.outputFormat === 'string' ? args.outputFormat.trim().toLowerCase() : '';
+        const rawCount = typeof args.count === 'number' || typeof args.count === 'string'
+          ? Number(args.count)
+          : Number.NaN;
+        const preset: CanvasAiPromptPreset = {
+          id: existingPreset?.id || `custom-agent-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+          label,
+          hint: typeof args.hint === 'string' && args.hint.trim()
+            ? args.hint.trim().slice(0, 48)
+            : existingPreset?.hint || 'Agent 创建的节点预设',
+          prompt,
+          aspectRatio: requestedAspectRatio
+            ? normalizeCanvasAiAspectRatioForModel(null, requestedAspectRatio)
+            : existingPreset?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+          outputFormat: CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
+            ? requestedOutputFormat
+            : existingPreset?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+          count: Number.isFinite(rawCount)
+            ? clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT)
+            : existingPreset?.count,
+        };
+
+        setCustomCanvasAiPromptPresets(prev => (
+          prev.some(item => item.id === preset.id)
+            ? prev.map(item => item.id === preset.id ? preset : item)
+            : [...prev, preset]
+        ));
+        updateCanvasNodesForPreset(preset);
+
+        let nodeId = '';
+        if (args.createNode === true) {
+          const mediaType = args.mediaType === 'video' ? 'video' : 'image';
+          const requestedInputs = Array.isArray(args.inputIds)
+            ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
+            : [];
+          const inputIds = requestedInputs.length > 0 ? requestedInputs : getSelectedCanvasAiInputIds();
+          const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+          const pos = inputBounds
+            ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+            : getCanvasDropPosition(0);
+          const node = buildCanvasAiGeneratorNode(pos, preset, inputIds, mediaType);
+          if (appendCanvasItems([node], 'Agent 创建节点预设') <= 0) throw new Error('创建预设节点失败');
+          updateCanvasSelection([node.id]);
+          nodeId = node.id;
+        }
+
+        showToast(`${existingPreset ? '已更新' : '已新增'}节点预设「${label}」`);
+        return {
+          presetId: preset.id,
+          label: preset.label,
+          updated: Boolean(existingPreset),
+          createNode: args.createNode === true,
+          nodeId: nodeId || undefined,
+        };
+      }
+
       if (name === 'canvas_add_text') {
         const content = typeof args.content === 'string' ? args.content.trim() : '';
         if (!content) throw new Error('文字内容不能为空');
@@ -19986,7 +20060,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.2.6'}
+                                      v{appVersion || '4.2.7'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -23054,6 +23128,7 @@ useEffect(() => {
                       onCancel={() => void canvasAgent.cancelCurrent()}
                       onRetry={() => void canvasAgent.retryLast()}
                       onRefreshCodexRateLimits={canvasAgent.refreshCodexRateLimits}
+                      onSaveSettings={canvasAgent.saveSettings}
                       onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
                       onResolveCodexApproval={(approval, approved) => void canvasAgent.resolveCodexApproval(approval, approved)}
                       onNewConversation={canvasAgent.newConversation}
@@ -24638,7 +24713,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.6'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.7'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24776,7 +24851,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.6'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.7'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24869,11 +24944,11 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.6 画布 Agent 自动引用选中图片</p>
-                <p>修复 Codex 回合完成却没有返回文字和画布动作的问题，并显示真实失败原因。</p>
-                <p>侧边栏升级为原生 Codex 风格，自动跟随画布的深浅配色，保留历史、审批、重试和可调宽度。</p>
-                <p>新增 ChatGPT Codex 剩余用量，展示 5 小时和每周额度、剩余百分比及重置时间。</p>
-                <p>画布动作改用严格结构化输出，并在异常空回合时自动恢复生成。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.7 画布 Agent 预设与权限修复</p>
+                <p>Agent 现在可以创建/更新真实节点预设，不再把预设 Prompt 误放成画布文字节点。</p>
+                <p>在 Agent 输入区可以直接切换 Codex 访问权限，弹窗点击空白处会自动收回。</p>
+                <p>选中含图片输出的节点时，Agent 会自动引用节点图片；对话文字和工具结果支持复制。</p>
+                <p>保留原生 Codex 风格侧边栏、历史、用量、审批、重试和可调宽度。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

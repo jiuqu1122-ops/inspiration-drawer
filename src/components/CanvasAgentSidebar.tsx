@@ -54,6 +54,7 @@ type CanvasAgentSidebarProps = {
   onCancel: () => void;
   onRetry: () => void;
   onRefreshCodexRateLimits: () => Promise<unknown>;
+  onSaveSettings: (settings: AgentSettings) => Promise<AgentSettings>;
   onResolveToolCall: (id: string, approved: boolean) => void;
   onResolveCodexApproval: (approval: AgentCodexApproval, approved: boolean) => void;
   onNewConversation: () => void;
@@ -93,6 +94,28 @@ const planLabel = (planType: string) => ({
   edu: 'Edu',
 }[planType] || planType || 'ChatGPT');
 
+const CODEX_SANDBOX_OPTIONS: Array<{
+  value: AgentSettings['codexSandbox'];
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'read-only',
+    label: '只读模式',
+    description: 'Codex 只能读取上下文，适合纯画布规划。',
+  },
+  {
+    value: 'workspace-write',
+    label: '工作区访问',
+    description: '允许在当前工作区写入，适合需要落地文件的任务。',
+  },
+  {
+    value: 'danger-full-access',
+    label: '完全访问',
+    description: '允许访问本机文件；只在你明确需要时开启。',
+  },
+];
+
 export function CanvasAgentSidebar({
   width,
   messages,
@@ -115,6 +138,7 @@ export function CanvasAgentSidebar({
   onCancel,
   onRetry,
   onRefreshCodexRateLimits,
+  onSaveSettings,
   onResolveToolCall,
   onResolveCodexApproval,
   onNewConversation,
@@ -124,6 +148,8 @@ export function CanvasAgentSidebar({
 }: CanvasAgentSidebarProps) {
   const [showHistory, setShowHistory] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
+  const [showAccessMenu, setShowAccessMenu] = useState(false);
+  const [savingAccess, setSavingAccess] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -143,7 +169,7 @@ export function CanvasAgentSidebar({
   }, [codexStatus?.authenticated, onRefreshCodexRateLimits, settings.provider]);
 
   useEffect(() => {
-    if (!showHistory && !showUsage) return;
+    if (!showHistory && !showUsage && !showAccessMenu) return;
     const closePopovers = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (!target) return;
@@ -153,10 +179,13 @@ export function CanvasAgentSidebar({
       if (showUsage && !target.closest('[data-codex-usage-popover="true"], [data-codex-usage-toggle="true"]')) {
         setShowUsage(false);
       }
+      if (showAccessMenu && !target.closest('[data-agent-access-menu="true"], [data-agent-access-toggle="true"]')) {
+        setShowAccessMenu(false);
+      }
     };
     document.addEventListener('pointerdown', closePopovers, true);
     return () => document.removeEventListener('pointerdown', closePopovers, true);
-  }, [showHistory, showUsage]);
+  }, [showAccessMenu, showHistory, showUsage]);
 
   const providerReady = settings.provider === 'codex'
     ? !!codexStatus?.authenticated
@@ -226,6 +255,20 @@ export function CanvasAgentSidebar({
     }, 1200);
   };
 
+  const updateCodexSandbox = async (codexSandbox: AgentSettings['codexSandbox']) => {
+    if (settings.provider !== 'codex' || codexSandbox === settings.codexSandbox || savingAccess) {
+      setShowAccessMenu(false);
+      return;
+    }
+    setSavingAccess(true);
+    try {
+      await onSaveSettings({ ...settings, codexSandbox });
+      setShowAccessMenu(false);
+    } finally {
+      setSavingAccess(false);
+    }
+  };
+
   return (
     <aside
       data-no-drag="true"
@@ -265,7 +308,7 @@ export function CanvasAgentSidebar({
         </div>
 
         <div className="flex items-center gap-0.5">
-          <button type="button" data-agent-history-toggle="true" onClick={() => { setShowHistory(value => !value); setShowUsage(false); }} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-stone-400 hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200'}`} title="会话历史">
+          <button type="button" data-agent-history-toggle="true" onClick={() => { setShowHistory(value => !value); setShowUsage(false); setShowAccessMenu(false); }} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-stone-400 hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200'}`} title="会话历史">
             <History className="h-3.5 w-3.5" />
           </button>
           <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-blue-600 dark:hover:bg-white/8 dark:hover:text-blue-300" title="新对话">
@@ -445,7 +488,7 @@ export function CanvasAgentSidebar({
           </div>
         )}
 
-        <div className="rounded-[24px] border border-blue-100/90 bg-white/82 p-2 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
+        <div className="relative rounded-[24px] border border-blue-100/90 bg-white/82 p-2 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
           {visibleSelectedItems.length > 0 && (
             <div className="mb-1.5 flex max-h-[58px] flex-wrap gap-1.5 overflow-y-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {visibleSelectedItems.map((item, index) => (
@@ -474,18 +517,60 @@ export function CanvasAgentSidebar({
               )}
             </div>
           )}
+          {showAccessMenu && settings.provider === 'codex' && (
+            <div data-agent-access-menu="true" className="absolute bottom-12 left-2 z-40 w-[236px] overflow-hidden rounded-[16px] border border-amber-100/90 bg-white/96 p-1.5 shadow-[0_18px_50px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
+              {CODEX_SANDBOX_OPTIONS.map(option => {
+                const active = option.value === settings.codexSandbox;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => void updateCodexSandbox(option.value)}
+                    disabled={savingAccess}
+                    className={`flex w-full items-start gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors disabled:cursor-wait disabled:opacity-70 ${active ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-600 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-white/6'}`}
+                  >
+                    <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${active ? 'border-amber-400 bg-amber-400 text-white' : 'border-stone-200 text-transparent dark:border-white/15'}`}>
+                      <Check className="h-2.5 w-2.5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[10px] font-black">{option.label}</span>
+                      <span className="mt-0.5 block text-[8px] leading-3.5 opacity-70">{option.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <textarea ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
           <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
             <div className="flex min-w-0 items-center gap-1">
               <button type="button" onClick={() => inputRef.current?.focus()} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="当前选中的画布节点会自动作为上下文"><Plus className="h-4 w-4" /></button>
-              <div className="flex h-8 max-w-[112px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium text-stone-500 dark:text-stone-400" title="可在 AGENT 设置中修改访问权限">
-                <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-amber-500" /><span className="truncate">{settings.provider === 'codex' ? accessLabel : 'API 模式'}</span><ChevronDown className="h-3 w-3 shrink-0 opacity-45" />
-              </div>
+              <button
+                type="button"
+                data-agent-access-toggle="true"
+                onClick={() => {
+                  if (settings.provider !== 'codex') {
+                    inputRef.current?.focus();
+                    return;
+                  }
+                  setShowAccessMenu(value => !value);
+                  setShowHistory(false);
+                  setShowUsage(false);
+                }}
+                disabled={savingAccess}
+                className={`flex h-8 max-w-[124px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors disabled:cursor-wait disabled:opacity-70 ${showAccessMenu ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-500 hover:bg-amber-50 hover:text-amber-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-amber-100'}`}
+                title={settings.provider === 'codex' ? '修改 Codex 访问权限' : 'API 模式不使用 Codex 权限'}
+              >
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <span className="truncate">{settings.provider === 'codex' ? accessLabel : 'API 模式'}</span>
+                {savingAccess ? <LoaderCircle className="h-3 w-3 shrink-0 animate-spin opacity-70" /> : <ChevronDown className={`h-3 w-3 shrink-0 opacity-45 transition-transform ${showAccessMenu ? 'rotate-180' : ''}`} />}
+              </button>
             </div>
 
             <div className="flex shrink-0 items-center gap-1">
               {settings.provider === 'codex' && (
-                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); }} className={`flex h-8 items-center gap-1.5 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
+                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); }} className={`flex h-8 items-center gap-1.5 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
                   <span className="relative flex h-4 w-4 items-center justify-center rounded-full" style={{ background: `conic-gradient(rgb(59 130 246) ${Math.max(0, primaryRemaining || 0)}%, rgba(148,163,184,.22) 0)` }}><span className="h-2.5 w-2.5 rounded-full bg-white dark:bg-stone-900" /></span>
                   <span>{primaryRemaining == null ? '用量' : `${primaryRemaining}%`}</span>
                 </button>

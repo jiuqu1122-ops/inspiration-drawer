@@ -6,7 +6,9 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-## 画布 Agent（v4.2.6）
+## 画布 Agent（v4.2.7）
+
+v4.2.7 增加 Agent 专用节点预设工具，用户要求创建/修改节点预设时会保存为真实 Prompt 预设，而不是生成画布文字节点；同时 Agent 输入区可直接切换 Codex 访问权限。
 
 设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
 
