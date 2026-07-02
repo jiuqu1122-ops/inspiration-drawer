@@ -6,7 +6,7 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-## 画布 Agent（v4.2.4）
+## 画布 Agent（v4.2.5）
 
 设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
 
