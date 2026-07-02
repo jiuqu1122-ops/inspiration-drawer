@@ -146,7 +146,7 @@ export function CanvasAgentSidebar({
       ? '工作区访问'
       : '只读模式';
   const modelLabel = settings.provider === 'codex'
-    ? settings.codexModel || '默认模型'
+    ? settings.codexModel || 'Codex 默认'
     : settings.apiModel || 'API 模型';
   const activeConversation = useMemo(
     () => conversations.find(item => item.id === activeConversationId),

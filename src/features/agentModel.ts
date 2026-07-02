@@ -30,6 +30,27 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   retainHistory: true,
 };
 
+export const normalizeCodexModelOverride = (value?: string | null) => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  const normalized = trimmed.toLowerCase().replace(/\s+/g, '');
+  if ([
+    'auto',
+    'default',
+    'recommended',
+    'codex',
+    '5.5',
+    'gpt5.5',
+    'gpt-5.5',
+  ].includes(normalized)) {
+    return '';
+  }
+  if (normalized === '5.4' || normalized === 'gpt5.4') return 'gpt-5.4';
+  if (normalized === '5.4-mini' || normalized === 'gpt5.4-mini') return 'gpt-5.4-mini';
+  if (normalized === 'spark' || normalized === 'codex-spark') return 'gpt-5.3-codex-spark';
+  return trimmed;
+};
+
 export type AgentToolCallStatus =
   | 'pending'
   | 'awaiting-approval'

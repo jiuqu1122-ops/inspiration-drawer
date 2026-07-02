@@ -6,6 +6,7 @@ import {
   DEFAULT_AGENT_SETTINGS,
   createAgentConversation,
   createAgentId,
+  normalizeCodexModelOverride,
   type AgentCanvasContext,
   type AgentCanvasToolExecutor,
   type AgentChatMessage,
@@ -84,6 +85,7 @@ const normalizeAgentSettings = (value: unknown): AgentSettings => {
     ...record,
     provider: record.provider === 'codex' ? 'codex' : 'openai-compatible',
     apiHeaders: record.apiHeaders && typeof record.apiHeaders === 'object' ? record.apiHeaders : {},
+    codexModel: normalizeCodexModelOverride(record.codexModel),
     codexSandbox: ['workspace-write', 'danger-full-access'].includes(String(record.codexSandbox))
       ? record.codexSandbox as AgentSettings['codexSandbox']
       : 'read-only',
@@ -189,6 +191,13 @@ const getCodexTurnError = (turn: Record<string, unknown>) => {
   const message = typeof error.message === 'string' ? error.message.trim() : '';
   const details = typeof error.additionalDetails === 'string' ? error.additionalDetails.trim() : '';
   return [message, details].filter(Boolean).join('：') || 'Codex 回合执行失败';
+};
+
+const isCodexLiteUnsupportedModelError = (error: unknown) => {
+  const text = String(error || '');
+  return /(unsupported_value|invalid_request_error)/i.test(text)
+    && /model/i.test(text)
+    && /(X-OpenAI-Internal-Codex-Responses-Lite|not supported)/i.test(text);
 };
 
 export function useCanvasAgentRuntime(options: RuntimeOptions) {
@@ -657,9 +666,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const startOrResumeCodexThread = useCallback(async (
     conversation: AgentConversation,
     systemPrompt: string,
+    options: { forceNew?: boolean; forceDefaultModel?: boolean } = {},
   ) => {
     await ensureCodexStarted();
-    if (conversation.codexThreadId && !loadedCodexThreadsRef.current.has(conversation.codexThreadId)) {
+    if (!options.forceNew && conversation.codexThreadId && !loadedCodexThreadsRef.current.has(conversation.codexThreadId)) {
       try {
         await invoke('agent_codex_request', {
           method: 'thread/resume',
@@ -670,15 +680,16 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       } catch (_) {
         // Persisted thread can be missing after a Codex reset; start a replacement below.
       }
-    } else if (conversation.codexThreadId) {
+    } else if (!options.forceNew && conversation.codexThreadId) {
       return conversation.codexThreadId;
     }
 
     const current = settingsRef.current;
+    const codexModel = options.forceDefaultModel ? '' : normalizeCodexModelOverride(current.codexModel);
     const result = await invoke<Record<string, unknown>>('agent_codex_request', {
       method: 'thread/start',
       params: {
-        ...(current.codexModel ? { model: current.codexModel } : {}),
+        ...(codexModel ? { model: codexModel } : {}),
         sandbox: current.codexSandbox,
         approvalPolicy: current.codexApprovalPolicy,
         baseInstructions: systemPrompt,
@@ -720,9 +731,33 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     assistantMessageId: string,
     userText: string,
     context: AgentCanvasContext,
+    forceDefaultCodexModel = false,
   ) => {
     const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, context);
-    const threadId = await startOrResumeCodexThread(conversation, systemPrompt);
+    let threadId = '';
+    try {
+      threadId = await startOrResumeCodexThread(conversation, systemPrompt, {
+        forceNew: forceDefaultCodexModel,
+        forceDefaultModel: forceDefaultCodexModel,
+      });
+    } catch (error) {
+      if (!forceDefaultCodexModel && isCodexLiteUnsupportedModelError(error)) {
+        patchMessage(conversation.id, assistantMessageId, message => ({
+          ...message,
+          content: 'Codex 当前模型不兼容，正在切换为默认模型重试…',
+          status: 'streaming',
+          error: undefined,
+        }));
+        return runCodexTurn(
+          { ...conversation, codexThreadId: undefined },
+          assistantMessageId,
+          userText,
+          context,
+          true,
+        );
+      }
+      throw error;
+    }
     activeRequestRef.current = {
       provider: 'codex',
       threadId,
@@ -820,9 +855,26 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         window.clearTimeout(pending.timeoutId);
         pendingCodexTurnsRef.current.delete(threadId);
       }
+      if (!forceDefaultCodexModel && isCodexLiteUnsupportedModelError(error)) {
+        loadedCodexThreadsRef.current.delete(threadId);
+        patchConversation(conversation.id, value => ({ ...value, codexThreadId: undefined }));
+        patchMessage(conversation.id, assistantMessageId, message => ({
+          ...message,
+          content: 'Codex 当前模型不兼容，正在切换为默认模型重试…',
+          status: 'streaming',
+          error: undefined,
+        }));
+        return runCodexTurn(
+          { ...conversation, codexThreadId: undefined },
+          assistantMessageId,
+          userText,
+          context,
+          true,
+        );
+      }
       throw error;
     }
-  }, [patchMessage, processToolCalls, startOrResumeCodexThread, waitForCodexTurn]);
+  }, [patchConversation, patchMessage, processToolCalls, startOrResumeCodexThread, waitForCodexTurn]);
 
   const sendMessage = useCallback(async (content: string) => {
     const text = content.trim();

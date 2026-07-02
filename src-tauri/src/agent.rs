@@ -84,7 +84,7 @@ impl From<&AgentSettingsStored> for AgentSettingsPublic {
             api_headers: value.api_headers.clone(),
             has_api_key: !value.api_key.trim().is_empty(),
             codex_executable: value.codex_executable.clone(),
-            codex_model: value.codex_model.clone(),
+            codex_model: normalize_codex_model(&value.codex_model),
             codex_sandbox: value.codex_sandbox.clone(),
             codex_approval_policy: value.codex_approval_policy.clone(),
             system_prompt: value.system_prompt.clone(),
@@ -247,6 +247,25 @@ fn normalize_approval_policy(value: &str) -> String {
     }
 }
 
+fn normalize_codex_model(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let normalized = trimmed
+        .to_ascii_lowercase()
+        .replace(char::is_whitespace, "");
+    match normalized.as_str() {
+        "auto" | "default" | "recommended" | "codex" | "5.5" | "gpt5.5" | "gpt-5.5" => {
+            String::new()
+        }
+        "5.4" | "gpt5.4" => "gpt-5.4".to_string(),
+        "5.4-mini" | "gpt5.4-mini" => "gpt-5.4-mini".to_string(),
+        "spark" | "codex-spark" => "gpt-5.3-codex-spark".to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
 #[tauri::command]
 pub fn agent_load_settings(app_handle: tauri::AppHandle) -> AgentSettingsPublic {
     AgentSettingsPublic::from(&read_settings(&app_handle))
@@ -282,7 +301,7 @@ pub fn agent_save_settings(
     } else {
         input.codex_executable.trim().to_string()
     };
-    current.codex_model = input.codex_model.trim().to_string();
+    current.codex_model = normalize_codex_model(&input.codex_model);
     current.codex_sandbox = normalize_sandbox(&input.codex_sandbox);
     current.codex_approval_policy = normalize_approval_policy(&input.codex_approval_policy);
     current.system_prompt = input.system_prompt.trim().to_string();
@@ -1113,7 +1132,7 @@ pub async fn agent_codex_start(
                     "clientInfo": {
                         "name": "inspiration_drawer",
                         "title": "Inspiration Drawer",
-                        "version": "4.2.2"
+                        "version": "4.2.3"
                     }
                 }),
                 Duration::from_secs(20),
@@ -1252,5 +1271,15 @@ mod tests {
         assert_eq!(normalize_provider("unknown"), "openai-compatible");
         assert_eq!(normalize_sandbox("unknown"), "read-only");
         assert_eq!(normalize_approval_policy("unknown"), "on-request");
+    }
+
+    #[test]
+    fn codex_model_overrides_default_for_lite_incompatible_values() {
+        assert_eq!(normalize_codex_model(""), "");
+        assert_eq!(normalize_codex_model("default"), "");
+        assert_eq!(normalize_codex_model("5.5"), "");
+        assert_eq!(normalize_codex_model("gpt-5.5"), "");
+        assert_eq!(normalize_codex_model("5.4"), "gpt-5.4");
+        assert_eq!(normalize_codex_model("codex-spark"), "gpt-5.3-codex-spark");
     }
 }
