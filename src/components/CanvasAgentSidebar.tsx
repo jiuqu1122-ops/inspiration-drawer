@@ -1,23 +1,30 @@
 import {
+  ArrowUp,
   Bot,
   Check,
+  ChevronDown,
   ChevronLeft,
   Clock3,
+  Gauge,
   History,
   LoaderCircle,
   MessageSquarePlus,
+  Monitor,
+  Plus,
+  RefreshCw,
   RotateCcw,
-  Send,
+  ShieldCheck,
   Square,
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentChatMessage,
   AgentCodexApproval,
   AgentConversation,
   AgentSettings,
+  CodexRateLimits,
   CodexRuntimeStatus,
 } from '../features/agentModel';
 import { getCanvasAgentToolLabel } from '../features/canvasAgentTools';
@@ -29,6 +36,9 @@ type CanvasAgentSidebarProps = {
   busy: boolean;
   settings: AgentSettings;
   codexStatus: CodexRuntimeStatus | null;
+  codexRateLimits: CodexRateLimits | null;
+  codexRateLimitsLoading: boolean;
+  codexRateLimitsError: string;
   conversations: AgentConversation[];
   activeConversationId: string;
   codexApprovals: AgentCodexApproval[];
@@ -38,6 +48,7 @@ type CanvasAgentSidebarProps = {
   onSendMessage: (content: string) => void;
   onCancel: () => void;
   onRetry: () => void;
+  onRefreshCodexRateLimits: () => Promise<unknown>;
   onResolveToolCall: (id: string, approved: boolean) => void;
   onResolveCodexApproval: (approval: AgentCodexApproval, approved: boolean) => void;
   onNewConversation: () => void;
@@ -46,6 +57,37 @@ type CanvasAgentSidebarProps = {
   onClearConversation: () => void;
 };
 
+const formatWindowLabel = (minutes: number | null) => {
+  if (!minutes) return '额度窗口';
+  if (minutes === 300) return '5 小时额度';
+  if (minutes === 10080) return '每周额度';
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天额度`;
+  if (minutes % 60 === 0) return `${minutes / 60} 小时额度`;
+  return `${minutes} 分钟额度`;
+};
+
+const formatResetTime = (seconds: number | null) => {
+  if (!seconds) return '重置时间未知';
+  return `重置于 ${new Date(seconds * 1000).toLocaleString([], {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`;
+};
+
+const planLabel = (planType: string) => ({
+  free: 'Free',
+  go: 'Go',
+  plus: 'Plus',
+  pro: 'Pro',
+  prolite: 'Pro Lite',
+  team: 'Team',
+  business: 'Business',
+  enterprise: 'Enterprise',
+  edu: 'Edu',
+}[planType] || planType || 'ChatGPT');
+
 export function CanvasAgentSidebar({
   width,
   messages,
@@ -53,6 +95,9 @@ export function CanvasAgentSidebar({
   busy,
   settings,
   codexStatus,
+  codexRateLimits,
+  codexRateLimitsLoading,
+  codexRateLimitsError,
   conversations,
   activeConversationId,
   codexApprovals,
@@ -62,6 +107,7 @@ export function CanvasAgentSidebar({
   onSendMessage,
   onCancel,
   onRetry,
+  onRefreshCodexRateLimits,
   onResolveToolCall,
   onResolveCodexApproval,
   onNewConversation,
@@ -70,6 +116,7 @@ export function CanvasAgentSidebar({
   onClearConversation,
 }: CanvasAgentSidebarProps) {
   const [showHistory, setShowHistory] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -81,6 +128,31 @@ export function CanvasAgentSidebar({
     window.setTimeout(() => inputRef.current?.focus(), 120);
   }, []);
 
+  useEffect(() => {
+    if (settings.provider === 'codex' && codexStatus?.authenticated) {
+      void onRefreshCodexRateLimits().catch(() => {});
+    }
+  }, [codexStatus?.authenticated, onRefreshCodexRateLimits, settings.provider]);
+
+  const providerReady = settings.provider === 'codex'
+    ? !!codexStatus?.authenticated
+    : settings.hasApiKey;
+  const primaryRemaining = codexRateLimits?.primary
+    ? Math.max(0, 100 - codexRateLimits.primary.usedPercent)
+    : codexRateLimits?.remainingPercent;
+  const accessLabel = settings.codexSandbox === 'danger-full-access'
+    ? '完全访问'
+    : settings.codexSandbox === 'workspace-write'
+      ? '工作区访问'
+      : '只读模式';
+  const modelLabel = settings.provider === 'codex'
+    ? settings.codexModel || '默认模型'
+    : settings.apiModel || 'API 模型';
+  const activeConversation = useMemo(
+    () => conversations.find(item => item.id === activeConversationId),
+    [activeConversationId, conversations],
+  );
+
   const startResize = (event: React.PointerEvent) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -88,7 +160,7 @@ export function CanvasAgentSidebar({
     const startX = event.clientX;
     const startWidth = width;
     const move = (moveEvent: PointerEvent) => {
-      onWidthChange(Math.min(520, Math.max(300, startWidth + startX - moveEvent.clientX)));
+      onWidthChange(Math.min(620, Math.max(340, startWidth + startX - moveEvent.clientX)));
     };
     const stop = () => {
       document.removeEventListener('pointermove', move, true);
@@ -103,102 +175,75 @@ export function CanvasAgentSidebar({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (inputValue.trim() && !busy) onSendMessage(inputValue.trim());
+    if (inputValue.trim() && !busy && providerReady) onSendMessage(inputValue.trim());
   };
-
-  const providerReady = settings.provider === 'codex'
-    ? !!codexStatus?.authenticated
-    : settings.hasApiKey;
 
   return (
     <aside
       data-no-drag="true"
       data-canvas-agent-sidebar="true"
-      className="relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-l border-stone-200/70 bg-white/92 text-stone-800 shadow-[-12px_0_34px_rgba(15,23,42,0.08)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-950/92 dark:text-stone-100"
-      style={{ width }}
+      className="relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-l border-blue-100/80 bg-blue-50/30 text-stone-800 shadow-[-18px_0_42px_rgba(52,86,124,0.08)] dark:border-blue-400/18 dark:bg-stone-950/40 dark:text-stone-100"
+      style={{
+        width,
+        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(96,122,158,0.10) 1px, transparent 0)',
+        backgroundSize: '26px 26px',
+      }}
       onPointerDown={event => event.stopPropagation()}
       onMouseDown={event => event.stopPropagation()}
       onWheel={event => event.stopPropagation()}
     >
+      <div className="pointer-events-none absolute inset-0 bg-white/58 backdrop-blur-2xl dark:bg-stone-950/74" />
       <div
-        className="absolute inset-y-0 left-0 z-20 w-1.5 cursor-col-resize transition-colors hover:bg-blue-400/35"
+        className="absolute inset-y-0 left-0 z-30 w-1.5 cursor-col-resize transition-colors hover:bg-blue-400/35"
         onPointerDown={startResize}
         title="拖动调整侧边栏宽度"
       />
-      <header className="relative flex items-center justify-between gap-2 border-b border-stone-200/70 px-3 py-2.5 dark:border-stone-700/70">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-blue-500 text-white shadow-sm">
+
+      <header className="relative z-10 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-blue-100/70 px-3.5 dark:border-white/8">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[11px] border border-blue-200/70 bg-blue-500 text-white shadow-[0_5px_14px_rgba(59,130,246,0.22)] dark:border-blue-300/15 dark:bg-blue-500/90">
             <Bot className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <div className="truncate text-xs font-black">画布 Agent</div>
-            <div className="mt-0.5 flex items-center gap-1 text-[9px] font-bold text-stone-400 dark:text-stone-500">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-[13px] font-semibold tracking-[-0.01em]">{activeConversation?.title || '画布 Agent'}</span>
+              {busy && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
+            </div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[9px] font-medium text-stone-400 dark:text-stone-500">
               <span className={`h-1.5 w-1.5 rounded-full ${providerReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-              {settings.provider === 'codex' ? 'Codex' : settings.apiModel || 'OpenAI-compatible'}
-              {!providerReady && ' · 待配置'}
+              {settings.provider === 'codex' ? 'Codex · 本地 App Server' : 'OpenAI-compatible'}
             </div>
           </div>
         </div>
+
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => setShowHistory(value => !value)}
-            className={`flex h-7 w-7 items-center justify-center rounded-[9px] transition-colors ${showHistory ? 'bg-blue-50 text-blue-600 dark:bg-blue-400/12 dark:text-blue-200' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-200'}`}
-            title="会话历史"
-          >
+          <button type="button" onClick={() => setShowHistory(value => !value)} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-stone-400 hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200'}`} title="会话历史">
             <History className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            onClick={onNewConversation}
-            className="flex h-7 w-7 items-center justify-center rounded-[9px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-blue-600 dark:hover:bg-stone-800 dark:hover:text-blue-200"
-            title="新对话"
-          >
+          <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-blue-600 dark:hover:bg-white/8 dark:hover:text-blue-300" title="新对话">
             <MessageSquarePlus className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            onClick={onClearConversation}
-            className="flex h-7 w-7 items-center justify-center rounded-[9px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:hover:bg-stone-800"
-            title="清空当前对话"
-          >
+          <button type="button" onClick={onClearConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-red-500 dark:hover:bg-white/8" title="清空当前对话">
             <Trash2 className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-[9px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-200"
-            title="收起 Agent"
-          >
+          <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200" title="收起 Agent">
             <ChevronLeft className="h-4 w-4 rotate-180" />
           </button>
         </div>
 
         {showHistory && (
-          <div className="absolute left-2 right-2 top-[52px] z-30 max-h-[280px] overflow-y-auto rounded-[16px] border border-stone-200 bg-white p-1.5 shadow-xl dark:border-stone-700 dark:bg-stone-900">
+          <div className="absolute left-3 right-3 top-[50px] z-40 max-h-[300px] overflow-y-auto rounded-[16px] border border-blue-100/90 bg-white/96 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
             {conversations.map(conversation => (
-              <div
-                key={conversation.id}
-                className={`group/history flex items-center gap-1 rounded-[11px] ${conversation.id === activeConversationId ? 'bg-blue-50 dark:bg-blue-400/10' : 'hover:bg-stone-50 dark:hover:bg-stone-800'}`}
-              >
-                <button
-                  type="button"
-                  onClick={() => { onSelectConversation(conversation.id); setShowHistory(false); }}
-                  className="min-w-0 flex-1 px-2 py-2 text-left"
-                >
-                  <div className="truncate text-[10px] font-bold text-stone-700 dark:text-stone-200">{conversation.title}</div>
-                  <div className="mt-0.5 flex items-center gap-1 text-[8px] text-stone-400">
+              <div key={conversation.id} className={`group/history flex items-center gap-1 rounded-[11px] ${conversation.id === activeConversationId ? 'bg-blue-50 dark:bg-blue-400/10' : 'hover:bg-stone-50 dark:hover:bg-white/6'}`}>
+                <button type="button" onClick={() => { onSelectConversation(conversation.id); setShowHistory(false); }} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                  <div className="truncate text-[10px] font-semibold text-stone-700 dark:text-stone-200">{conversation.title}</div>
+                  <div className="mt-1 flex items-center gap-1 text-[8px] text-stone-400">
                     <Clock3 className="h-2.5 w-2.5" />
                     {new Date(conversation.updatedAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     <span>· {conversation.provider === 'codex' ? 'Codex' : 'API'}</span>
                   </div>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => onDeleteConversation(conversation.id)}
-                  className="mr-1 flex h-6 w-6 items-center justify-center rounded-[8px] text-stone-300 opacity-0 hover:bg-red-50 hover:text-red-500 group-hover/history:opacity-100 dark:hover:bg-red-400/10"
-                  title="删除会话"
-                >
+                <button type="button" onClick={() => onDeleteConversation(conversation.id)} className="mr-1 flex h-6 w-6 items-center justify-center rounded-[8px] text-stone-300 opacity-0 hover:bg-red-50 hover:text-red-500 group-hover/history:opacity-100 dark:hover:bg-red-400/10" title="删除会话">
                   <X className="h-3 w-3" />
                 </button>
               </div>
@@ -207,176 +252,155 @@ export function CanvasAgentSidebar({
         )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 [scrollbar-width:thin]">
+      <main className="relative z-10 min-h-0 flex-1 overflow-y-auto px-4 py-5 [scrollbar-width:thin]">
         {messages.length === 0 && codexApprovals.length === 0 ? (
-          <div className="flex min-h-full flex-col items-center justify-center px-4 py-10 text-center text-stone-400 dark:text-stone-500">
-            <Bot className="mb-3 h-10 w-10 opacity-35" />
-            <p className="text-xs font-black text-stone-500 dark:text-stone-400">直接告诉我你想做什么</p>
-            <div className="mt-3 grid w-full gap-1.5 text-left text-[10px] leading-4">
+          <div className="flex min-h-full flex-col items-center justify-center px-3 py-10 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-[18px] border border-blue-100 bg-white/75 text-blue-500 shadow-sm dark:border-white/8 dark:bg-white/5 dark:text-blue-300">
+              <Bot className="h-5 w-5" />
+            </div>
+            <p className="mt-4 text-[14px] font-semibold tracking-[-0.02em] text-stone-700 dark:text-stone-200">在画布里开始创作</p>
+            <p className="mt-1 max-w-[260px] text-[10px] leading-5 text-stone-400 dark:text-stone-500">告诉 Codex 你的目标，它会组合已有节点、预设和工作流。</p>
+            <div className="mt-5 grid w-full gap-2 text-left text-[10px] leading-4">
               {[
                 '把选中的产品图做成一套详情页',
-                '用已有工作流生成多角度设计图',
-                '整理画布并把上游图片接到生图节点',
+                '给选中的图片创建一张炫酷渲染图',
+                '整理画布并连接现有工作流',
               ].map(example => (
-                <button
-                  type="button"
-                  key={example}
-                  onClick={() => onInputChange(example)}
-                  className="rounded-[13px] border border-stone-200/80 bg-white/70 px-3 py-2 font-bold text-stone-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-400 dark:hover:border-blue-400/25 dark:hover:bg-blue-400/10 dark:hover:text-blue-200"
-                >
+                <button type="button" key={example} onClick={() => { onInputChange(example); inputRef.current?.focus(); }} className="rounded-[14px] border border-blue-100/85 bg-white/58 px-3 py-2.5 font-medium text-stone-500 transition-all hover:border-blue-200 hover:bg-white hover:text-blue-700 hover:shadow-sm dark:border-white/8 dark:bg-white/4 dark:text-stone-400 dark:hover:border-blue-300/15 dark:hover:bg-white/7 dark:hover:text-blue-200">
                   {example}
                 </button>
               ))}
             </div>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-5">
             {messages.map(message => {
               const isUser = message.role === 'user';
               return (
-                <div key={message.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[92%] ${isUser ? 'rounded-[17px_17px_5px_17px] bg-blue-500 px-3 py-2 text-white' : 'w-full'}`}>
+                <section key={message.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                  <div className={isUser ? 'max-w-[90%] rounded-[22px] bg-blue-500 px-3.5 py-2.5 text-white shadow-sm' : 'w-full'}>
                     {!isUser && (
-                      <div className="mb-1 flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wide text-stone-400 dark:text-stone-500">
-                        <Bot className="h-3 w-3 text-blue-500" /> Agent
+                      <div className="mb-2 flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-stone-400 dark:text-stone-500">
+                        <Bot className="h-3 w-3 text-blue-500 dark:text-blue-300" /> Codex
                         {message.status === 'streaming' && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
                       </div>
                     )}
-                    <p className={`whitespace-pre-wrap text-xs leading-[1.65] ${!isUser ? 'text-stone-700 dark:text-stone-200' : ''}`}>
+                    <p className={`whitespace-pre-wrap text-[12px] leading-[1.72] ${isUser ? 'text-white' : 'text-stone-700 dark:text-stone-200'}`}>
                       {message.content || (message.status === 'streaming' ? '正在思考…' : '')}
                     </p>
+
                     {message.toolCalls && message.toolCalls.length > 0 && (
-                      <div className="mt-2 space-y-1.5">
+                      <div className="mt-3 space-y-2">
                         {message.toolCalls.map(call => (
-                          <div key={call.id} className="rounded-[13px] border border-stone-200 bg-stone-50/85 p-2 dark:border-stone-700 dark:bg-stone-900/55">
+                          <div key={call.id} className="rounded-[14px] border border-blue-100/80 bg-white/62 p-2.5 shadow-sm dark:border-white/8 dark:bg-white/4">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-[10px] font-black text-stone-700 dark:text-stone-200">
-                                {getCanvasAgentToolLabel(call.name)}
-                              </span>
-                              <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-bold ${
-                                call.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200'
-                                  : call.status === 'error' || call.status === 'declined' ? 'bg-red-100 text-red-600 dark:bg-red-400/15 dark:text-red-200'
-                                    : 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'
-                              }`}>
+                              <span className="truncate text-[10px] font-semibold text-stone-700 dark:text-stone-200">{getCanvasAgentToolLabel(call.name)}</span>
+                              <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-medium ${call.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : call.status === 'error' || call.status === 'declined' ? 'bg-red-100 text-red-600 dark:bg-red-400/15 dark:text-red-200' : 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'}`}>
                                 {call.status === 'completed' ? '已完成' : call.status === 'error' ? '失败' : call.status === 'declined' ? '已拒绝' : call.status === 'running' ? '执行中' : '等待确认'}
                               </span>
                             </div>
-                            <div className="mt-1 max-h-16 overflow-hidden break-all font-mono text-[8px] leading-3 text-stone-400 dark:text-stone-500">
-                              {JSON.stringify(call.arguments)}
-                            </div>
-                            {call.error && <div className="mt-1 text-[9px] text-red-500">{call.error}</div>}
+                            <div className="mt-1.5 max-h-20 overflow-hidden break-all font-mono text-[8px] leading-3.5 text-stone-400 dark:text-stone-500">{JSON.stringify(call.arguments)}</div>
+                            {call.error && <div className="mt-1.5 text-[9px] text-red-500">{call.error}</div>}
                             {call.status === 'awaiting-approval' && (
-                              <div className="mt-2 flex gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => onResolveToolCall(call.id, true)}
-                                  className="flex items-center gap-1 rounded-[10px] bg-blue-500 px-2.5 py-1 text-[9px] font-bold text-white"
-                                >
-                                  <Check className="h-3 w-3" /> 执行
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onResolveToolCall(call.id, false)}
-                                  className="rounded-[10px] bg-stone-200 px-2.5 py-1 text-[9px] font-bold text-stone-600 dark:bg-stone-700 dark:text-stone-300"
-                                >
-                                  拒绝
-                                </button>
+                              <div className="mt-2.5 flex gap-1.5">
+                                <button type="button" onClick={() => onResolveToolCall(call.id, true)} className="flex items-center gap-1 rounded-[10px] bg-blue-500 px-2.5 py-1 text-[9px] font-medium text-white"><Check className="h-3 w-3" /> 执行</button>
+                                <button type="button" onClick={() => onResolveToolCall(call.id, false)} className="rounded-[10px] bg-stone-200/80 px-2.5 py-1 text-[9px] font-medium text-stone-600 dark:bg-white/8 dark:text-stone-300">拒绝</button>
                               </div>
                             )}
                           </div>
                         ))}
                       </div>
                     )}
-                    {message.error && (
-                      <div className="mt-2 rounded-[11px] bg-red-50 px-2 py-1.5 text-[9px] leading-4 text-red-600 dark:bg-red-400/10 dark:text-red-200">
-                        {message.error}
-                      </div>
-                    )}
-                    <div className={`mt-1 text-[8px] ${isUser ? 'text-right text-white/60' : 'text-stone-300 dark:text-stone-600'}`}>
-                      {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </div>
+
+                    {message.error && <div className="mt-2.5 rounded-[12px] border border-red-100 bg-red-50/80 px-2.5 py-2 text-[9px] leading-4 text-red-600 dark:border-red-400/15 dark:bg-red-400/8 dark:text-red-200">{message.error}</div>}
+                    <div className={`mt-1.5 text-[8px] ${isUser ? 'text-right text-white/55' : 'text-stone-300 dark:text-stone-600'}`}>{new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                   </div>
-                </div>
+                </section>
               );
             })}
 
             {codexApprovals.map(approval => (
-              <div key={String(approval.id)} className="rounded-[15px] border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-400/20 dark:bg-amber-400/10">
-                <div className="text-[10px] font-black text-amber-800 dark:text-amber-100">{approval.title}</div>
-                <div className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-all font-mono text-[9px] leading-4 text-amber-700/80 dark:text-amber-100/70">{approval.detail}</div>
-                <div className="mt-2 flex gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => onResolveCodexApproval(approval, true)}
-                    className="rounded-[10px] bg-amber-500 px-2.5 py-1 text-[9px] font-bold text-white"
-                  >
-                    允许
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onResolveCodexApproval(approval, false)}
-                    className="rounded-[10px] bg-white/80 px-2.5 py-1 text-[9px] font-bold text-amber-700 dark:bg-stone-900/45 dark:text-amber-100"
-                  >
-                    拒绝
-                  </button>
+              <div key={String(approval.id)} className="rounded-[16px] border border-amber-200/90 bg-amber-50/85 p-3 shadow-sm dark:border-amber-400/20 dark:bg-amber-400/9">
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold text-amber-800 dark:text-amber-100"><ShieldCheck className="h-3.5 w-3.5" />{approval.title}</div>
+                <div className="mt-1.5 max-h-24 overflow-y-auto whitespace-pre-wrap break-all font-mono text-[9px] leading-4 text-amber-700/80 dark:text-amber-100/70">{approval.detail}</div>
+                <div className="mt-2.5 flex gap-1.5">
+                  <button type="button" onClick={() => onResolveCodexApproval(approval, true)} className="rounded-[10px] bg-amber-500 px-2.5 py-1 text-[9px] font-medium text-white">允许</button>
+                  <button type="button" onClick={() => onResolveCodexApproval(approval, false)} className="rounded-[10px] bg-white/80 px-2.5 py-1 text-[9px] font-medium text-amber-700 dark:bg-white/8 dark:text-amber-100">拒绝</button>
                 </div>
               </div>
             ))}
             <div ref={messagesEndRef} />
           </div>
         )}
-      </div>
+      </main>
 
-      <footer className="border-t border-stone-200/70 p-3 dark:border-stone-700/70">
+      <footer className="relative z-20 shrink-0 px-3 pb-2.5 pt-1">
         {!providerReady && (
-          <div className="mb-2 rounded-[11px] bg-amber-50 px-2 py-1.5 text-[9px] leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100">
-            请先在设置 → AGENT 设置中完成{settings.provider === 'codex' ? ' Codex 登录' : ' API 配置'}。
-          </div>
+          <div className="mb-2 rounded-[12px] border border-amber-200/80 bg-amber-50/90 px-2.5 py-2 text-[9px] leading-4 text-amber-700 dark:border-amber-400/15 dark:bg-amber-400/8 dark:text-amber-100">请先在设置 → AGENT 中完成{settings.provider === 'codex' ? ' ChatGPT 登录' : ' API 配置'}。</div>
         )}
-        <div className="rounded-[17px] border border-stone-200 bg-stone-50/85 p-1.5 focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-100 dark:border-stone-700 dark:bg-stone-900/62 dark:focus-within:border-blue-400/35 dark:focus-within:ring-blue-400/10">
-          <textarea
-            ref={inputRef}
-            value={inputValue}
-            onChange={event => onInputChange(event.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="告诉 Agent 如何处理画布…"
-            rows={3}
-            className="max-h-32 min-h-[58px] w-full resize-none bg-transparent px-2 py-1.5 text-xs leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600"
-          />
-          <div className="flex items-center justify-between gap-2 px-1 pb-0.5">
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={onRetry}
-                disabled={busy || !messages.some(message => message.role === 'user')}
-                className="flex h-7 items-center gap-1 rounded-[10px] px-2 text-[9px] font-bold text-stone-400 transition-colors hover:bg-stone-200 hover:text-stone-600 disabled:opacity-35 dark:hover:bg-stone-800 dark:hover:text-stone-200"
-                title="重试上一条指令"
-              >
-                <RotateCcw className="h-3 w-3" /> 重试
-              </button>
+
+        {showUsage && settings.provider === 'codex' && (
+          <div data-codex-usage-popover="true" className="absolute bottom-[132px] left-3 right-3 z-30 rounded-[16px] border border-blue-100/90 bg-white/96 p-3 shadow-[0_18px_50px_rgba(30,64,104,0.20)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[10px] font-semibold text-stone-700 dark:text-stone-200">Codex 剩余用量</div>
+                <div className="mt-0.5 text-[8px] text-stone-400">{planLabel(codexRateLimits?.planType || '')} 账户</div>
+              </div>
+              <button type="button" onClick={() => void onRefreshCodexRateLimits().catch(() => {})} disabled={codexRateLimitsLoading} className="flex h-7 w-7 items-center justify-center rounded-[9px] text-stone-400 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-45 dark:hover:bg-white/7 dark:hover:text-blue-300" title="刷新用量"><RefreshCw className={`h-3.5 w-3.5 ${codexRateLimitsLoading ? 'animate-spin' : ''}`} /></button>
             </div>
-            {busy ? (
-              <button
-                type="button"
-                onClick={onCancel}
-                className="flex h-8 items-center gap-1.5 rounded-[12px] bg-stone-800 px-3 text-[10px] font-bold text-white dark:bg-stone-100 dark:text-stone-900"
-              >
-                <Square className="h-3 w-3 fill-current" /> 停止
-              </button>
+            {codexRateLimits ? (
+              <div className="mt-3 space-y-3">
+                {[codexRateLimits.primary, codexRateLimits.secondary].filter(Boolean).map((window, index) => {
+                  const remaining = Math.max(0, 100 - (window?.usedPercent || 0));
+                  return (
+                    <div key={`${window?.windowDurationMins}-${index}`}>
+                      <div className="flex items-center justify-between text-[9px]">
+                        <span className="font-medium text-stone-500 dark:text-stone-400">{formatWindowLabel(window?.windowDurationMins || null)}</span>
+                        <span className="font-semibold text-stone-700 dark:text-stone-200">剩余 {remaining}%</span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-stone-100 dark:bg-white/8"><div className={`h-full rounded-full ${remaining <= 15 ? 'bg-red-400' : remaining <= 35 ? 'bg-amber-400' : 'bg-blue-500'}`} style={{ width: `${remaining}%` }} /></div>
+                      <div className="mt-1 text-[8px] text-stone-400 dark:text-stone-500">{formatResetTime(window?.resetsAt || null)}</div>
+                    </div>
+                  );
+                })}
+                {codexRateLimits.creditsBalance && <div className="border-t border-stone-100 pt-2 text-[9px] text-stone-500 dark:border-white/8 dark:text-stone-400">Credits：{codexRateLimits.creditsBalance}</div>}
+              </div>
             ) : (
-              <button
-                type="button"
-                onClick={() => inputValue.trim() && onSendMessage(inputValue.trim())}
-                disabled={!inputValue.trim() || !providerReady}
-                className="flex h-8 items-center gap-1.5 rounded-[12px] bg-blue-500 px-3 text-[10px] font-bold text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Send className="h-3.5 w-3.5" /> 发送
-              </button>
+              <div className="mt-3 rounded-[11px] bg-stone-50 px-2.5 py-2 text-[9px] text-stone-400 dark:bg-white/5 dark:text-stone-500">{codexRateLimitsLoading ? '正在读取用量…' : codexRateLimitsError || '暂无用量信息'}</div>
             )}
           </div>
+        )}
+
+        <div className="rounded-[24px] border border-blue-100/90 bg-white/82 p-2 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
+          <textarea ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
+          <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
+            <div className="flex min-w-0 items-center gap-1">
+              <button type="button" onClick={() => inputRef.current?.focus()} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="当前选中的画布节点会自动作为上下文"><Plus className="h-4 w-4" /></button>
+              <div className="flex h-8 max-w-[112px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium text-stone-500 dark:text-stone-400" title="可在 AGENT 设置中修改访问权限">
+                <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-amber-500" /><span className="truncate">{settings.provider === 'codex' ? accessLabel : 'API 模式'}</span><ChevronDown className="h-3 w-3 shrink-0 opacity-45" />
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1">
+              {settings.provider === 'codex' && (
+                <button type="button" onClick={() => setShowUsage(value => !value)} className={`flex h-8 items-center gap-1.5 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
+                  <span className="relative flex h-4 w-4 items-center justify-center rounded-full" style={{ background: `conic-gradient(rgb(59 130 246) ${Math.max(0, primaryRemaining || 0)}%, rgba(148,163,184,.22) 0)` }}><span className="h-2.5 w-2.5 rounded-full bg-white dark:bg-stone-900" /></span>
+                  <span>{primaryRemaining == null ? '用量' : `${primaryRemaining}%`}</span>
+                </button>
+              )}
+              <div className="flex h-8 max-w-[92px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium text-stone-500 dark:text-stone-400" title={modelLabel}><Gauge className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{modelLabel}</span><ChevronDown className="h-3 w-3 shrink-0 opacity-45" /></div>
+              {busy ? (
+                <button type="button" onClick={onCancel} className="flex h-9 w-9 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-transform hover:scale-105 dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
+              ) : (
+                <button type="button" onClick={() => inputValue.trim() && onSendMessage(inputValue.trim())} disabled={!inputValue.trim() || !providerReady} className="flex h-9 w-9 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-all hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 dark:bg-stone-100 dark:text-stone-900" title="发送"><ArrowUp className="h-4 w-4" /></button>
+              )}
+            </div>
+          </div>
         </div>
-        <div className="mt-1.5 text-center text-[8px] text-stone-300 dark:text-stone-600">
-          画布修改会按 Agent 设置请求确认
+
+        <div className="mt-2 flex items-center justify-between px-1 text-[8px] text-stone-400 dark:text-stone-600">
+          <span className="flex items-center gap-1"><Monitor className="h-3 w-3" /> 本地模式 · 画布上下文</span>
+          <button type="button" onClick={onRetry} disabled={busy || !messages.some(message => message.role === 'user')} className="flex items-center gap-1 rounded-[8px] px-1.5 py-1 transition-colors hover:bg-white/70 hover:text-stone-600 disabled:opacity-30 dark:hover:bg-white/6 dark:hover:text-stone-300"><RotateCcw className="h-3 w-3" /> 重试</button>
         </div>
       </footer>
     </aside>

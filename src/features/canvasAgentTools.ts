@@ -111,16 +111,98 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
     actions: {
       type: 'array',
       items: {
-        type: 'object',
-        properties: {
-          tool: {
-            type: 'string',
-            enum: CANVAS_AGENT_TOOL_DEFINITIONS.map(tool => tool.function.name),
+        anyOf: [
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_get_context'] },
+              arguments: objectSchema({}),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
           },
-          arguments: { type: 'object', additionalProperties: true },
-        },
-        required: ['tool', 'arguments'],
-        additionalProperties: false,
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_create_generator'] },
+              arguments: objectSchema({
+                mediaType: { type: 'string', enum: ['image', 'video'] },
+                prompt: { type: ['string', 'null'] },
+                presetId: { type: ['string', 'null'] },
+                inputIds: { type: 'array', items: { type: 'string' } },
+              }, ['mediaType', 'prompt', 'presetId', 'inputIds']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_add_text'] },
+              arguments: objectSchema({ content: { type: 'string' } }, ['content']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_apply_workflow'] },
+              arguments: objectSchema({
+                workflowId: { type: ['string', 'null'] },
+                workflowName: { type: ['string', 'null'] },
+              }, ['workflowId', 'workflowName']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_update_prompt'] },
+              arguments: objectSchema({
+                nodeId: { type: 'string' },
+                prompt: { type: 'string' },
+              }, ['nodeId', 'prompt']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_connect_nodes'] },
+              arguments: objectSchema({
+                sourceId: { type: 'string' },
+                targetId: { type: 'string' },
+              }, ['sourceId', 'targetId']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_organize'] },
+              arguments: objectSchema({
+                nodeIds: { type: 'array', items: { type: 'string' } },
+              }, ['nodeIds']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_run_workflow'] },
+              arguments: objectSchema({
+                nodeIds: { type: 'array', items: { type: 'string' } },
+              }, ['nodeIds']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+        ],
       },
     },
   },

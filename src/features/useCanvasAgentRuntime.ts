@@ -16,6 +16,8 @@ import {
   type AgentToolCall,
   type CodexInstallProgress,
   type CodexLoginInfo,
+  type CodexRateLimits,
+  type CodexRateLimitWindow,
   type CodexRuntimeStatus,
 } from './agentModel';
 import {
@@ -123,6 +125,72 @@ const extractCodexTurnText = (turn: Record<string, unknown>) => {
     .join('\n');
 };
 
+const asRecord = (value: unknown): Record<string, unknown> => (
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+);
+
+const normalizeCodexRateLimitWindow = (
+  value: unknown,
+  fallback: CodexRateLimitWindow | null = null,
+): CodexRateLimitWindow | null => {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return fallback;
+  const usedPercent = typeof record.usedPercent === 'number' ? record.usedPercent : Number.NaN;
+  if (!Number.isFinite(usedPercent)) return fallback;
+  const windowDurationMins = typeof record.windowDurationMins === 'number'
+    ? record.windowDurationMins
+    : Number.NaN;
+  const resetsAt = typeof record.resetsAt === 'number' ? record.resetsAt : Number.NaN;
+  return {
+    usedPercent: Math.min(100, Math.max(0, Math.round(usedPercent))),
+    windowDurationMins: Number.isFinite(windowDurationMins) ? windowDurationMins : null,
+    resetsAt: Number.isFinite(resetsAt) ? resetsAt : null,
+  };
+};
+
+const normalizeCodexRateLimits = (
+  value: unknown,
+  fallback: CodexRateLimits | null = null,
+): CodexRateLimits | null => {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return fallback;
+  const credits = asRecord(record.credits);
+  const individualLimit = asRecord(record.individualLimit);
+  const primary = normalizeCodexRateLimitWindow(record.primary, fallback?.primary || null);
+  const secondary = normalizeCodexRateLimitWindow(record.secondary, fallback?.secondary || null);
+  const individualRemaining = typeof individualLimit.remainingPercent === 'number'
+    ? individualLimit.remainingPercent
+    : Number.NaN;
+  const remainingPercent = primary
+    ? Math.max(0, 100 - primary.usedPercent)
+    : Number.isFinite(individualRemaining)
+      ? Math.min(100, Math.max(0, Math.round(individualRemaining)))
+      : fallback?.remainingPercent ?? null;
+  return {
+    limitId: typeof record.limitId === 'string' ? record.limitId : fallback?.limitId || '',
+    limitName: typeof record.limitName === 'string' ? record.limitName : fallback?.limitName || '',
+    planType: typeof record.planType === 'string' ? record.planType : fallback?.planType || '',
+    primary,
+    secondary,
+    remainingPercent,
+    creditsBalance: typeof credits.balance === 'string' ? credits.balance : fallback?.creditsBalance || '',
+    creditsUnlimited: typeof credits.unlimited === 'boolean' ? credits.unlimited : fallback?.creditsUnlimited || false,
+    rateLimitReachedType: typeof record.rateLimitReachedType === 'string'
+      ? record.rateLimitReachedType
+      : fallback?.rateLimitReachedType || '',
+    updatedAt: Date.now(),
+  };
+};
+
+const getCodexTurnError = (turn: Record<string, unknown>) => {
+  const error = asRecord(turn.error);
+  const message = typeof error.message === 'string' ? error.message.trim() : '';
+  const details = typeof error.additionalDetails === 'string' ? error.additionalDetails.trim() : '';
+  return [message, details].filter(Boolean).join('：') || 'Codex 回合执行失败';
+};
+
 export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -149,6 +217,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const [codexInstallProgress, setCodexInstallProgress] = useState<CodexInstallProgress | null>(null);
   const [codexLoginInfo, setCodexLoginInfo] = useState<CodexLoginInfo | null>(null);
   const [codexApprovals, setCodexApprovals] = useState<AgentCodexApproval[]>([]);
+  const [codexRateLimits, setCodexRateLimits] = useState<CodexRateLimits | null>(null);
+  const [codexRateLimitsLoading, setCodexRateLimitsLoading] = useState(false);
+  const [codexRateLimitsError, setCodexRateLimitsError] = useState('');
 
   const conversationsRef = useRef(conversations);
   const activeConversationIdRef = useRef(activeConversationId);
@@ -224,9 +295,24 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   }, [refreshSettings]);
 
   useEffect(() => {
+    if (settingsLoading || settings.provider !== 'codex') return;
+    void invoke<CodexRuntimeStatus>('agent_codex_status').then(setCodexStatus).catch(() => {});
+  }, [settings.provider, settingsLoading]);
+
+  useEffect(() => {
     if (settings.retainHistory) writeAgentConversations(conversations);
     else clearStoredAgentConversations();
   }, [conversations, settings.retainHistory]);
+
+  const readCodexRateLimits = useCallback(async () => {
+    const result = await invoke<Record<string, unknown>>('agent_codex_request', {
+      method: 'account/rateLimits/read',
+      params: null,
+    });
+    const next = normalizeCodexRateLimits(result.rateLimits);
+    setCodexRateLimits(current => next || current);
+    return next;
+  }, []);
 
   useEffect(() => {
     const unlisteners = [
@@ -263,6 +349,16 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           return;
         }
 
+        if (method === 'item/completed') {
+          const threadId = String(params.threadId || '');
+          const pending = pendingCodexTurnsRef.current.get(threadId);
+          const item = asRecord(params.item);
+          if (!pending || item.type !== 'agentMessage') return;
+          const text = typeof item.text === 'string' ? item.text : '';
+          if (text) pending.raw = text;
+          return;
+        }
+
         if (method === 'turn/started') {
           const threadId = String(params.threadId || '');
           const pending = pendingCodexTurnsRef.current.get(threadId);
@@ -287,13 +383,30 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           const turn = params.turn && typeof params.turn === 'object'
             ? params.turn as Record<string, unknown>
             : {};
-          pending.resolve({ turn, raw: pending.raw || extractCodexTurnText(turn) });
+          const status = String(turn.status || 'completed');
+          if (status === 'failed') {
+            pending.reject(new Error(getCodexTurnError(turn)));
+          } else {
+            pending.resolve({
+              turn,
+              raw: pending.raw || extractCodexTurnText(turn),
+              interrupted: status === 'interrupted',
+            });
+          }
+          void readCodexRateLimits().catch(() => {});
+          return;
+        }
+
+        if (method === 'account/rateLimits/updated') {
+          setCodexRateLimits(current => normalizeCodexRateLimits(params.rateLimits, current));
+          setCodexRateLimitsError('');
           return;
         }
 
         if (method === 'account/login/completed' || method === 'account/updated') {
           setCodexLoginInfo(null);
           void invoke<CodexRuntimeStatus>('agent_codex_status').then(setCodexStatus).catch(() => {});
+          void readCodexRateLimits().catch(() => {});
           return;
         }
 
@@ -326,7 +439,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     return () => {
       unlisteners.forEach(promise => void promise.then(unlisten => unlisten()).catch(() => {}));
     };
-  }, [patchMessage]);
+  }, [patchMessage, readCodexRateLimits]);
 
   const activeConversation = useMemo(() => (
     conversations.find(conversation => conversation.id === activeConversationId)
@@ -523,6 +636,24 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     return status;
   }, [installCodex]);
 
+  const refreshCodexRateLimits = useCallback(async () => {
+    setCodexRateLimitsLoading(true);
+    setCodexRateLimitsError('');
+    try {
+      const status = await ensureCodexStarted();
+      if (!status.authenticated) throw new Error('请先登录 ChatGPT 账户');
+      const next = await readCodexRateLimits();
+      if (!next) throw new Error('Codex 没有返回用量信息');
+      return next;
+    } catch (error) {
+      const message = String(error);
+      setCodexRateLimitsError(message);
+      throw error;
+    } finally {
+      setCodexRateLimitsLoading(false);
+    }
+  }, [ensureCodexStarted, readCodexRateLimits]);
+
   const startOrResumeCodexThread = useCallback(async (
     conversation: AgentConversation,
     systemPrompt: string,
@@ -592,36 +723,73 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   ) => {
     const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, context);
     const threadId = await startOrResumeCodexThread(conversation, systemPrompt);
-    const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId);
     activeRequestRef.current = {
       provider: 'codex',
       threadId,
       assistantMessageId,
     };
     try {
-      const response = await invoke<Record<string, unknown>>('agent_codex_request', {
-        method: 'turn/start',
-        params: {
-          threadId,
-          input: [{
-            type: 'text',
-            text: `${userText}\n\n应用提供的当前画布上下文：${JSON.stringify(context)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`,
-          }],
-          outputSchema: CANVAS_AGENT_ACTION_SCHEMA,
-          approvalPolicy: settingsRef.current.codexApprovalPolicy,
-        },
-      });
-      const turn = response.turn && typeof response.turn === 'object'
-        ? response.turn as Record<string, unknown>
-        : {};
-      const turnId = String(turn.id || '');
-      const pending = pendingCodexTurnsRef.current.get(threadId);
-      if (pending && turnId) pending.turnId = turnId;
-      if (activeRequestRef.current) activeRequestRef.current.turnId = turnId;
-      const completed = await completion;
-      const raw = String(completed.raw || '');
+      const startTurn = async (text: string, withOutputSchema: boolean) => {
+        const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId);
+        const response = await invoke<Record<string, unknown>>('agent_codex_request', {
+          method: 'turn/start',
+          params: {
+            threadId,
+            input: [{ type: 'text', text }],
+            ...(withOutputSchema ? { outputSchema: CANVAS_AGENT_ACTION_SCHEMA } : {}),
+            approvalPolicy: settingsRef.current.codexApprovalPolicy,
+          },
+        });
+        const turn = asRecord(response.turn);
+        const turnId = String(turn.id || '');
+        const pending = pendingCodexTurnsRef.current.get(threadId);
+        if (pending && turnId) pending.turnId = turnId;
+        if (activeRequestRef.current) activeRequestRef.current.turnId = turnId;
+        return completion;
+      };
+
+      let completed = await startTurn(
+        `${userText}\n\n应用提供的当前画布上下文：${JSON.stringify(context)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`,
+        true,
+      );
+      if (completed.interrupted === true) {
+        patchMessage(conversation.id, assistantMessageId, message => ({
+          ...message,
+          content: message.content.trim() || '已停止。',
+          status: 'cancelled',
+        }));
+        setBusy(false);
+        activeRequestRef.current = null;
+        return;
+      }
+
+      let raw = String(completed.raw || '').trim();
+      if (!raw) {
+        patchMessage(conversation.id, assistantMessageId, message => ({
+          ...message,
+          content: 'Codex 正在重新整理画布操作…',
+          status: 'streaming',
+        }));
+        completed = await startTurn(
+          '上一轮没有生成可见结果。请重新完成用户刚才的画布请求，只输出一个 JSON 对象，包含字符串 reply 和数组 actions；每个 action 包含 tool 与 arguments。不要运行 shell，不要修改本地文件。',
+          false,
+        );
+        if (completed.interrupted === true) {
+          patchMessage(conversation.id, assistantMessageId, message => ({
+            ...message,
+            content: message.content.trim() || '已停止。',
+            status: 'cancelled',
+          }));
+          setBusy(false);
+          activeRequestRef.current = null;
+          return;
+        }
+        raw = String(completed.raw || '').trim();
+      }
+      if (!raw) throw new Error('Codex 连续两次完成回合，但没有返回可用内容');
+
       const envelope = parseCodexCanvasEnvelope(raw);
-      const reply = envelope?.reply || raw || 'Codex 已完成，但没有返回文字内容。';
+      const reply = envelope?.reply || raw;
       const calls: AgentToolCall[] = (envelope?.actions || []).map(action => ({
         id: createAgentId('codex-canvas-tool'),
         name: action.tool,
@@ -862,6 +1030,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     await ensureCodexStarted();
     await invoke('agent_codex_request', { method: 'account/logout', params: {} });
     setCodexLoginInfo(null);
+    setCodexRateLimits(null);
+    setCodexRateLimitsError('');
     await refreshCodexStatus();
   }, [ensureCodexStarted, refreshCodexStatus]);
 
@@ -882,10 +1052,14 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     refreshSettings,
     listOpenAiModels,
     codexStatus,
+    codexRateLimits,
+    codexRateLimitsLoading,
+    codexRateLimitsError,
     codexInstallProgress,
     codexLoginInfo,
     installCodex,
     refreshCodexStatus,
+    refreshCodexRateLimits,
     startCodexLogin,
     openCodexLoginUrl,
     logoutCodex,

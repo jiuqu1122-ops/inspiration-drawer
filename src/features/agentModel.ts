@@ -98,6 +98,25 @@ export type CodexRuntimeStatus = {
   authDetail: string;
 };
 
+export type CodexRateLimitWindow = {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+};
+
+export type CodexRateLimits = {
+  limitId: string;
+  limitName: string;
+  planType: string;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+  remainingPercent: number | null;
+  creditsBalance: string;
+  creditsUnlimited: boolean;
+  rateLimitReachedType: string;
+  updatedAt: number;
+};
+
 export type CodexInstallProgress = {
   stage: 'idle' | 'downloading' | 'verifying' | 'extracting' | 'ready' | 'error';
   message: string;

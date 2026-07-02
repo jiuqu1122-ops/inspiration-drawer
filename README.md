@@ -6,7 +6,7 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-## 画布 Agent（v4.2.1）
+## 画布 Agent（v4.2.2）
 
 设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
 
@@ -14,6 +14,8 @@ This template should help get you started developing with Tauri, React and Types
 - Codex App Server：应用会在首次登录时下载并校验 OpenAI 官方 Codex 运行时，也可以使用用户指定的 `codex` CLI。应用通过 stdio JSON-RPC 连接 App Server，支持 ChatGPT/设备码登录、线程恢复、流式消息和审批事件。
 
 Agent 侧边栏在画布右侧占用独立布局空间，可以收起或拖动左侧边缘调整宽度。节点创建、Prompt 修改、连线、工作流应用和布局整理都通过受控画布工具执行；运行工作流始终需要用户确认。
+
+Codex 侧边栏使用与画布一致的深浅配色，并通过 App Server 的 `account/rateLimits/read` 与更新事件显示 5 小时、每周额度的剩余比例和重置时间。最终回复以 `item/completed` 为准，画布动作使用严格 JSON Schema；失败状态和服务端错误会直接展示，不再伪装成空的成功回复。
 
 Codex 模式默认使用只读沙箱。登录令牌由 Codex 自己管理，前端不会读取 `~/.codex/auth.json`。API 模式的 Key 由 Tauri 后端配置保存，前端只接收“是否已配置”的状态。
 

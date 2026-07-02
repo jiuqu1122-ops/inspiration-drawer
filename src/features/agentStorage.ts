@@ -48,12 +48,12 @@ export const writeActiveAgentConversationId = (id: string) => {
 
 export const readAgentSidebarWidth = () => {
   const value = Number(localStorage.getItem(AGENT_SIDEBAR_WIDTH_STORAGE_KEY));
-  return Number.isFinite(value) ? Math.min(520, Math.max(300, value)) : 380;
+  return Number.isFinite(value) ? Math.min(620, Math.max(340, value)) : 420;
 };
 
 export const writeAgentSidebarWidth = (width: number) => {
   localStorage.setItem(
     AGENT_SIDEBAR_WIDTH_STORAGE_KEY,
-    String(Math.round(Math.min(520, Math.max(300, width)))),
+    String(Math.round(Math.min(620, Math.max(340, width)))),
   );
 };
