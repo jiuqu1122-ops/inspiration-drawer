@@ -39,7 +39,7 @@ import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSel
 import { clamp } from './features/common';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
-import type { AgentCanvasSelectionItem } from './features/agentModel';
+import type { AgentCanvasSelectionItem, AgentCanvasVisualReference } from './features/agentModel';
 import {
   getDrawerFolderDeletionPlan,
   getDrawerFolderPathName,
@@ -3027,7 +3027,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.2.5');
+        setAppVersion('4.2.6');
       });
   }, []);
 
@@ -17926,6 +17926,67 @@ useEffect(() => {
     document.addEventListener('pointercancel', cleanup, true);
   };
 
+  const getCanvasAgentVisualReferences = (canvasItem: CanvasImageItem): AgentCanvasVisualReference[] => {
+    const references: AgentCanvasVisualReference[] = [];
+    const seen = new Set<string>();
+    const pushReference = (reference: AgentCanvasVisualReference) => {
+      const key = [
+        reference.nodeId,
+        reference.outputId || '',
+        reference.path || '',
+        reference.source || '',
+        reference.thumbnail || '',
+      ].join('|');
+      if (seen.has(key)) return;
+      seen.add(key);
+      references.push(reference);
+    };
+
+    if (canvasItem.item.type === 'image') {
+      const source = getCanvasItemDisplaySource(canvasItem.item);
+      if (source || canvasItem.item.path || canvasItem.item.thumbnail) {
+        pushReference({
+          id: `${canvasItem.id}:item`,
+          nodeId: canvasItem.id,
+          name: canvasItem.item.name || canvasItem.item.content || '选中图片',
+          mediaType: 'image',
+          source: source || canvasItem.item.thumbnail,
+          path: canvasItem.item.path,
+          thumbnail: getCanvasItemNavSource(canvasItem.item) || source || canvasItem.item.thumbnail,
+        });
+      }
+    } else if (canvasItem.item.type === 'video' && canvasItem.item.thumbnail) {
+      pushReference({
+        id: `${canvasItem.id}:thumbnail`,
+        nodeId: canvasItem.id,
+        name: `${canvasItem.item.name || canvasItem.item.content || '选中视频'} 预览图`,
+        mediaType: 'image',
+        source: canvasItem.item.thumbnail,
+        thumbnail: canvasItem.item.thumbnail,
+      });
+    }
+
+    getCanvasAiOutputPreviewSlots(canvasItem)
+      .filter(output => output.status === 'success')
+      .forEach((output, outputIndex) => {
+        const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
+        const source = getCanvasAiOutputDisplaySource(output);
+        if (mediaType !== 'image' || !source) return;
+        pushReference({
+          id: `${canvasItem.id}:${output.id || outputIndex}`,
+          nodeId: canvasItem.id,
+          outputId: output.id || `${outputIndex}`,
+          name: output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `节点输出图 ${outputIndex + 1}`,
+          mediaType: 'image',
+          source,
+          path: output.path,
+          thumbnail: source,
+        });
+      });
+
+    return references;
+  };
+
   const buildCanvasAgentSelectedItems = (
     sourceItems: CanvasImageItem[] = canvasItemsRef.current,
     sourceSelectedIds: string[] = canvasSelectedIdsRef.current,
@@ -17935,9 +17996,13 @@ useEffect(() => {
       const canvasItem = byId.get(id);
       if (!canvasItem) return items;
       const item = canvasItem.item;
-      const thumbnail = item.type === 'image' || item.type === 'video'
-        ? getCanvasItemNavSource(item)
-        : '';
+      const references = getCanvasAgentVisualReferences(canvasItem);
+      const primaryReference = references.find(reference => reference.thumbnail || reference.source);
+      const thumbnail = primaryReference?.thumbnail
+        || primaryReference?.source
+        || (item.type === 'image' || item.type === 'video'
+          ? getCanvasItemNavSource(item)
+          : '');
       items.push({
         id,
         name: item.name || canvasItem.ai?.presetLabel || getCanvasAiNodeTitle(canvasItem.ai) || `选中素材 ${index + 1}`,
@@ -17945,6 +18010,8 @@ useEffect(() => {
         thumbnail: thumbnail || undefined,
         status: canvasItem.ai?.status,
         prompt: canvasItem.ai?.prompt || item.content || undefined,
+        referenceCount: references.length,
+        references: references.length > 0 ? references : undefined,
       });
       return items;
     }, []);
@@ -17955,29 +18022,67 @@ useEffect(() => {
     [canvasItems, canvasSelectedIds],
   );
 
+  const prepareCanvasAgentVisualReferences = async (
+    references: AgentCanvasVisualReference[],
+    provider: 'openai-compatible' | 'codex',
+  ): Promise<AgentCanvasVisualReference[]> => {
+    const prepared: AgentCanvasVisualReference[] = [];
+    for (const reference of references.filter(item => item.mediaType === 'image').slice(0, 6)) {
+      const source = (reference.source || reference.thumbnail || '').trim();
+      if (provider === 'codex' && reference.path) {
+        prepared.push(reference);
+        continue;
+      }
+      if (!source) continue;
+      const canUseDirectly = /^https?:\/\//i.test(source)
+        && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(source);
+      if (canUseDirectly) {
+        prepared.push(reference);
+        continue;
+      }
+      try {
+        const dataUrl = await imageSourceToModelDataUrl(source);
+        if (dataUrl) prepared.push({ ...reference, source: dataUrl });
+      } catch (error) {
+        console.warn('Agent 视觉引用准备失败:', error);
+        if (provider === 'codex' && /^data:image\//i.test(source)) {
+          prepared.push(reference);
+        }
+      }
+    }
+    return prepared;
+  };
+
   const canvasAgent = useCanvasAgentRuntime({
-    getContext: () => ({
-      selectedIds: [...canvasSelectedIdsRef.current],
-      selectedItems: buildCanvasAgentSelectedItems(),
-      nodes: canvasItemsRef.current.slice(0, 160).map(canvasItem => ({
-        id: canvasItem.id,
-        type: canvasItem.ai?.type || canvasItem.item.type,
-        name: canvasItem.item.name || getCanvasAiNodeTitle(canvasItem.ai),
-        prompt: canvasItem.ai?.prompt || canvasItem.item.content || undefined,
-        inputs: [...(canvasItem.inputs || [])],
-        status: canvasItem.ai?.status,
-      })),
-      presets: canvasAiPromptPresets.map(preset => ({
-        id: preset.id,
-        label: preset.label,
-        hint: preset.hint,
-      })),
-      workflows: canvasWorkflowTemplates.map(workflow => ({
-        id: workflow.id,
-        label: workflow.label,
-        hint: workflow.hint,
-      })),
-    }),
+    getContext: () => {
+      const selectedItems = buildCanvasAgentSelectedItems();
+      return {
+        selectedIds: [...canvasSelectedIdsRef.current],
+        selectedItems,
+        visualReferences: selectedItems.flatMap(item => item.references || []),
+        nodes: canvasItemsRef.current.slice(0, 160).map(canvasItem => ({
+          id: canvasItem.id,
+          type: canvasItem.ai?.type || canvasItem.item.type,
+          name: canvasItem.item.name || getCanvasAiNodeTitle(canvasItem.ai),
+          prompt: canvasItem.ai?.prompt || canvasItem.item.content || undefined,
+          inputs: [...(canvasItem.inputs || [])],
+          status: canvasItem.ai?.status,
+        })),
+        presets: canvasAiPromptPresets.map(preset => ({
+          id: preset.id,
+          label: preset.label,
+          hint: preset.hint,
+        })),
+        workflows: canvasWorkflowTemplates.map(workflow => ({
+          id: workflow.id,
+          label: workflow.label,
+          hint: workflow.hint,
+        })),
+      };
+    },
+    prepareVisualReferences: (context, provider) => (
+      prepareCanvasAgentVisualReferences(context.visualReferences || [], provider)
+    ),
     executeTool: async (name, args) => {
       if (name === 'canvas_get_context') {
         return {
@@ -19881,7 +19986,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.2.5'}
+                                      v{appVersion || '4.2.6'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -24533,7 +24638,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.5'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.6'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24671,7 +24776,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.5'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.6'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24764,7 +24869,7 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.5 画布 Agent 弹窗与复制修复</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.6 画布 Agent 自动引用选中图片</p>
                 <p>修复 Codex 回合完成却没有返回文字和画布动作的问题，并显示真实失败原因。</p>
                 <p>侧边栏升级为原生 Codex 风格，自动跟随画布的深浅配色，保留历史、审批、重试和可调宽度。</p>
                 <p>新增 ChatGPT Codex 剩余用量，展示 5 小时和每周额度、剩余百分比及重置时间。</p>

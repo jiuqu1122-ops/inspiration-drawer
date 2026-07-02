@@ -8,6 +8,7 @@ import {
   createAgentId,
   normalizeCodexModelOverride,
   type AgentCanvasContext,
+  type AgentCanvasVisualReference,
   type AgentCanvasToolExecutor,
   type AgentChatMessage,
   type AgentCodexApproval,
@@ -41,6 +42,10 @@ import {
 
 type RuntimeOptions = {
   getContext: () => AgentCanvasContext;
+  prepareVisualReferences?: (
+    context: AgentCanvasContext,
+    provider: AgentProvider,
+  ) => Promise<AgentCanvasVisualReference[]>;
   executeTool: AgentCanvasToolExecutor;
   onNotice?: (message: string) => void;
 };
@@ -109,6 +114,92 @@ const makeProviderHistory = (conversation: AgentConversation) => conversation.me
     role: message.role === 'agent' ? 'assistant' : 'user',
     content: message.content,
   }));
+
+const describeReferenceSource = (source?: string) => {
+  const value = String(source || '').trim();
+  if (!value) return undefined;
+  if (/^data:image\//i.test(value)) return '[attached image data]';
+  return value.length > 180 ? `${value.slice(0, 180)}…` : value;
+};
+
+const sanitizeVisualReferenceForPrompt = (reference: AgentCanvasVisualReference) => ({
+  id: reference.id,
+  nodeId: reference.nodeId,
+  outputId: reference.outputId,
+  name: reference.name,
+  mediaType: reference.mediaType,
+  source: describeReferenceSource(reference.source || reference.thumbnail),
+  hasLocalPath: !!reference.path,
+});
+
+const sanitizeCanvasContextForPrompt = (context: AgentCanvasContext): AgentCanvasContext => ({
+  ...context,
+  selectedItems: context.selectedItems?.map(item => ({
+    id: item.id,
+    name: item.name,
+    type: item.type,
+    status: item.status,
+    prompt: item.prompt,
+    thumbnail: describeReferenceSource(item.thumbnail),
+    referenceCount: item.referenceCount || item.references?.length || 0,
+    references: item.references?.map(sanitizeVisualReferenceForPrompt),
+  })),
+  visualReferences: context.visualReferences?.map(sanitizeVisualReferenceForPrompt),
+});
+
+const visualReferenceNotice = (references: AgentCanvasVisualReference[]) => {
+  const usable = references.filter(reference => reference.mediaType === 'image');
+  if (usable.length === 0) return '';
+  return [
+    '当前选中节点的图片已作为视觉参考随本轮消息附加：',
+    ...usable.slice(0, 6).map((reference, index) => (
+      `${index + 1}. ${reference.name}（nodeId: ${reference.nodeId}${reference.outputId ? `, outputId: ${reference.outputId}` : ''}）`
+    )),
+  ].join('\n');
+};
+
+const buildOpenAiUserContent = (
+  text: string,
+  references: AgentCanvasVisualReference[],
+) => {
+  const imageReferences = references
+    .filter(reference => reference.mediaType === 'image' && /^data:image\/|^https?:\/\//i.test(reference.source || ''))
+    .slice(0, 6);
+  const notice = visualReferenceNotice(imageReferences);
+  const textPart = [text, notice].filter(Boolean).join('\n\n');
+  if (imageReferences.length === 0) return textPart;
+  return [
+    { type: 'text', text: textPart },
+    ...imageReferences.map(reference => ({
+      type: 'image_url',
+      image_url: {
+        url: reference.source,
+        detail: 'low',
+      },
+    })),
+  ];
+};
+
+const buildCodexUserInput = (
+  text: string,
+  references: AgentCanvasVisualReference[],
+) => {
+  const input: Array<Record<string, unknown>> = [{ type: 'text', text, text_elements: [] }];
+  references
+    .filter(reference => reference.mediaType === 'image')
+    .slice(0, 6)
+    .forEach(reference => {
+      if (reference.path) {
+        input.push({ type: 'localImage', path: reference.path, detail: 'low' });
+        return;
+      }
+      const url = (reference.source || '').trim();
+      if (/^data:image\/|^https?:\/\//i.test(url)) {
+        input.push({ type: 'image', url, detail: 'low' });
+      }
+    });
+  return input;
+};
 
 const codexApprovalDetail = (method: string, params: Record<string, unknown>) => {
   if (typeof params.command === 'string') return params.command;
@@ -732,9 +823,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     assistantMessageId: string,
     userText: string,
     context: AgentCanvasContext,
+    visualReferences: AgentCanvasVisualReference[],
     forceDefaultCodexModel = false,
   ) => {
-    const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, context);
+    const contextForPrompt = sanitizeCanvasContextForPrompt(context);
+    const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, contextForPrompt);
     let threadId = '';
     try {
       threadId = await startOrResumeCodexThread(conversation, systemPrompt, {
@@ -754,6 +847,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           assistantMessageId,
           userText,
           context,
+          visualReferences,
           true,
         );
       }
@@ -771,7 +865,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           method: 'turn/start',
           params: {
             threadId,
-            input: [{ type: 'text', text }],
+            input: buildCodexUserInput(text, visualReferences),
             ...(withOutputSchema ? { outputSchema: CANVAS_AGENT_ACTION_SCHEMA } : {}),
             approvalPolicy: settingsRef.current.codexApprovalPolicy,
           },
@@ -784,10 +878,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         return completion;
       };
 
-      let completed = await startTurn(
-        `${userText}\n\n应用提供的当前画布上下文：${JSON.stringify(context)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`,
-        true,
-      );
+      const codexNotice = visualReferenceNotice(visualReferences);
+      const codexUserText = `${userText}${codexNotice ? `\n\n${codexNotice}` : ''}\n\n应用提供的当前画布上下文：${JSON.stringify(contextForPrompt)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`;
+      let completed = await startTurn(codexUserText, true);
       if (completed.interrupted === true) {
         patchMessage(conversation.id, assistantMessageId, message => ({
           ...message,
@@ -870,6 +963,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           assistantMessageId,
           userText,
           context,
+          visualReferences,
           true,
         );
       }
@@ -912,14 +1006,31 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     setBusy(true);
     try {
       const context = optionsRef.current.getContext();
+      let visualReferences = context.visualReferences || [];
+      if (optionsRef.current.prepareVisualReferences) {
+        try {
+          visualReferences = await optionsRef.current.prepareVisualReferences(context, provider);
+        } catch (error) {
+          console.warn('prepare canvas agent visual references failed:', error);
+          optionsRef.current.onNotice?.('选中节点图片准备失败，本轮将仅使用节点信息。');
+          visualReferences = [];
+        }
+      }
+      const contextWithVisualReferences = {
+        ...context,
+        visualReferences,
+      };
       if (provider === 'codex') {
-        await runCodexTurn(conversation, assistantMessage.id, text, context);
+        await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences);
       } else {
-        const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, context);
+        const systemPrompt = buildCanvasAgentSystemPrompt(
+          settingsRef.current.systemPrompt,
+          sanitizeCanvasContextForPrompt(contextWithVisualReferences),
+        );
         const providerMessages: Array<Record<string, unknown>> = [
           { role: 'system', content: systemPrompt },
           ...makeProviderHistory(conversation),
-          { role: 'user', content: text },
+          { role: 'user', content: buildOpenAiUserContent(text, visualReferences) },
         ];
         await runOpenAiLoop(conversation.id, assistantMessage.id, providerMessages, 0);
       }

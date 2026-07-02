@@ -95,11 +95,25 @@ export type AgentCanvasSelectionItem = {
   thumbnail?: string;
   status?: string;
   prompt?: string;
+  referenceCount?: number;
+  references?: AgentCanvasVisualReference[];
+};
+
+export type AgentCanvasVisualReference = {
+  id: string;
+  nodeId: string;
+  outputId?: string;
+  name: string;
+  mediaType: 'image' | 'video';
+  source?: string;
+  path?: string;
+  thumbnail?: string;
 };
 
 export type AgentCanvasContext = {
   selectedIds: string[];
   selectedItems?: AgentCanvasSelectionItem[];
+  visualReferences?: AgentCanvasVisualReference[];
   nodes: Array<{
     id: string;
     type: string;
