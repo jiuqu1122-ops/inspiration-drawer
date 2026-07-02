@@ -7,6 +7,8 @@ import {
   Clock3,
   Gauge,
   History,
+  Image as ImageIcon,
+  Film,
   LoaderCircle,
   MessageSquarePlus,
   Monitor,
@@ -16,11 +18,11 @@ import {
   ShieldCheck,
   Square,
   Trash2,
-  X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentChatMessage,
+  AgentCanvasSelectionItem,
   AgentCodexApproval,
   AgentConversation,
   AgentSettings,
@@ -42,8 +44,10 @@ type CanvasAgentSidebarProps = {
   conversations: AgentConversation[];
   activeConversationId: string;
   codexApprovals: AgentCodexApproval[];
+  selectedItems: AgentCanvasSelectionItem[];
   onWidthChange: (width: number) => void;
   onClose: () => void;
+  onFocusCanvasItem: (id: string) => void;
   onInputChange: (value: string) => void;
   onSendMessage: (content: string) => void;
   onCancel: () => void;
@@ -101,8 +105,10 @@ export function CanvasAgentSidebar({
   conversations,
   activeConversationId,
   codexApprovals,
+  selectedItems,
   onWidthChange,
   onClose,
+  onFocusCanvasItem,
   onInputChange,
   onSendMessage,
   onCancel,
@@ -152,6 +158,8 @@ export function CanvasAgentSidebar({
     () => conversations.find(item => item.id === activeConversationId),
     [activeConversationId, conversations],
   );
+  const visibleSelectedItems = selectedItems.slice(0, 5);
+  const hiddenSelectedCount = Math.max(0, selectedItems.length - visibleSelectedItems.length);
 
   const startResize = (event: React.PointerEvent) => {
     if (event.button !== 0) return;
@@ -199,7 +207,7 @@ export function CanvasAgentSidebar({
         title="拖动调整侧边栏宽度"
       />
 
-      <header className="relative z-10 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-blue-100/70 px-3.5 dark:border-white/8">
+      <header className="relative z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-blue-100/70 px-3.5 dark:border-white/8">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[11px] border border-blue-200/70 bg-blue-500 text-white shadow-[0_5px_14px_rgba(59,130,246,0.22)] dark:border-blue-300/15 dark:bg-blue-500/90">
             <Bot className="h-4 w-4" />
@@ -232,10 +240,15 @@ export function CanvasAgentSidebar({
         </div>
 
         {showHistory && (
-          <div className="absolute left-3 right-3 top-[50px] z-40 max-h-[300px] overflow-y-auto rounded-[16px] border border-blue-100/90 bg-white/96 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
+          <div className="absolute left-3 right-3 top-[50px] z-50 max-h-[320px] overflow-y-auto rounded-[16px] border border-blue-100/90 bg-white/96 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
             {conversations.map(conversation => (
               <div key={conversation.id} className={`group/history flex items-center gap-1 rounded-[11px] ${conversation.id === activeConversationId ? 'bg-blue-50 dark:bg-blue-400/10' : 'hover:bg-stone-50 dark:hover:bg-white/6'}`}>
-                <button type="button" onClick={() => { onSelectConversation(conversation.id); setShowHistory(false); }} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                <button
+                  type="button"
+                  onClick={() => { onSelectConversation(conversation.id); setShowHistory(false); }}
+                  className="min-w-0 flex-1 px-2.5 py-2 text-left"
+                  title="切换到此对话"
+                >
                   <div className="truncate text-[10px] font-semibold text-stone-700 dark:text-stone-200">{conversation.title}</div>
                   <div className="mt-1 flex items-center gap-1 text-[8px] text-stone-400">
                     <Clock3 className="h-2.5 w-2.5" />
@@ -243,8 +256,17 @@ export function CanvasAgentSidebar({
                     <span>· {conversation.provider === 'codex' ? 'Codex' : 'API'}</span>
                   </div>
                 </button>
-                <button type="button" onClick={() => onDeleteConversation(conversation.id)} className="mr-1 flex h-6 w-6 items-center justify-center rounded-[8px] text-stone-300 opacity-0 hover:bg-red-50 hover:text-red-500 group-hover/history:opacity-100 dark:hover:bg-red-400/10" title="删除会话">
-                  <X className="h-3 w-3" />
+                <button
+                  type="button"
+                  onClick={event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onDeleteConversation(conversation.id);
+                  }}
+                  className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] text-stone-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:text-stone-500 dark:hover:bg-red-400/10 dark:hover:text-red-200"
+                  title="删除会话"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
             ))}
@@ -340,7 +362,7 @@ export function CanvasAgentSidebar({
         )}
 
         {showUsage && settings.provider === 'codex' && (
-          <div data-codex-usage-popover="true" className="absolute bottom-[132px] left-3 right-3 z-30 rounded-[16px] border border-blue-100/90 bg-white/96 p-3 shadow-[0_18px_50px_rgba(30,64,104,0.20)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
+          <div data-codex-usage-popover="true" className="absolute left-3 right-3 z-30 rounded-[16px] border border-blue-100/90 bg-white/96 p-3 shadow-[0_18px_50px_rgba(30,64,104,0.20)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96" style={{ bottom: visibleSelectedItems.length > 0 ? 204 : 132 }}>
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-[10px] font-semibold text-stone-700 dark:text-stone-200">Codex 剩余用量</div>
@@ -372,6 +394,34 @@ export function CanvasAgentSidebar({
         )}
 
         <div className="rounded-[24px] border border-blue-100/90 bg-white/82 p-2 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
+          {visibleSelectedItems.length > 0 && (
+            <div className="mb-1.5 flex max-h-[58px] flex-wrap gap-1.5 overflow-y-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {visibleSelectedItems.map((item, index) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  onClick={() => onFocusCanvasItem(item.id)}
+                  className="group/selected flex h-7 max-w-[156px] items-center gap-1.5 rounded-[10px] border border-stone-200/80 bg-stone-50/86 px-1.5 text-[10px] font-medium text-stone-700 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:border-blue-300/20 dark:hover:bg-blue-400/10 dark:hover:text-blue-200"
+                  title={`当前选中：${item.name}`}
+                >
+                  <span className="relative flex h-5 w-5 shrink-0 overflow-hidden rounded-[7px] bg-stone-200 text-stone-500 dark:bg-stone-800 dark:text-stone-300">
+                    {item.thumbnail ? (
+                      <img src={item.thumbnail} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center">
+                        {item.type.includes('video') ? <Film className="h-3 w-3" /> : <ImageIcon className="h-3 w-3" />}
+                      </span>
+                    )}
+                    {selectedItems.length > 1 && <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-blue-500 px-0.5 text-[8px] leading-none text-white">{index + 1}</span>}
+                  </span>
+                  <span className="truncate">{item.name}</span>
+                </button>
+              ))}
+              {hiddenSelectedCount > 0 && (
+                <span className="flex h-7 items-center rounded-[10px] bg-stone-100 px-2 text-[10px] font-semibold text-stone-500 dark:bg-white/7 dark:text-stone-400">+{hiddenSelectedCount}</span>
+              )}
+            </div>
+          )}
           <textarea ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
           <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
             <div className="flex min-w-0 items-center gap-1">

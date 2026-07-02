@@ -517,7 +517,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     const settingsNow = settingsRef.current;
     for (const call of run.calls) {
       const requiresApproval = !isCanvasAgentToolReadOnly(call.name)
-        && (settingsNow.approvalMode === 'ask' || isCanvasAgentToolSensitive(call.name));
+        && settingsNow.approvalMode === 'ask'
+        && isCanvasAgentToolSensitive(call.name);
       if (requiresApproval) {
         call.status = 'awaiting-approval';
       } else {

@@ -38,6 +38,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
         prompt: { type: 'string' },
         presetId: { type: 'string' },
         inputIds: { type: 'array', items: { type: 'string' } },
+        autoRun: { type: 'boolean' },
       }, ['mediaType']),
     },
   },
@@ -130,7 +131,8 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
                 prompt: { type: ['string', 'null'] },
                 presetId: { type: ['string', 'null'] },
                 inputIds: { type: 'array', items: { type: 'string' } },
-              }, ['mediaType', 'prompt', 'presetId', 'inputIds']),
+                autoRun: { type: 'boolean' },
+              }, ['mediaType', 'prompt', 'presetId', 'inputIds', 'autoRun']),
             },
             required: ['tool', 'arguments'],
             additionalProperties: false,
@@ -271,6 +273,11 @@ export const buildCanvasAgentSystemPrompt = (
   basePrompt: string,
   context: AgentCanvasContext,
 ) => `${basePrompt.trim()}
+
+Agent 执行补充：
+- selectedItems 是用户当前明确选择的素材；回复时要说明你基于哪张/哪些选中素材处理。
+- 用户说“生成、制作、渲染、效果图、出图、做一张图/视频”时，使用 canvas_create_generator，并把 autoRun 设为 true，让应用创建节点后立即开始生成。
+- 用户只说“创建节点、搭工作流、预设节点”但没有要求立刻出结果时，autoRun 设为 false。
 
 当前画布上下文如下。节点 ID 必须原样使用，不要虚构不存在的 ID。创建复杂任务时优先使用已有 workflowId。
 ${JSON.stringify(context)}

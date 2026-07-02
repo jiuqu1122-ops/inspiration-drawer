@@ -88,8 +88,18 @@ export type AgentConversation = {
   codexThreadId?: string;
 };
 
+export type AgentCanvasSelectionItem = {
+  id: string;
+  name: string;
+  type: string;
+  thumbnail?: string;
+  status?: string;
+  prompt?: string;
+};
+
 export type AgentCanvasContext = {
   selectedIds: string[];
+  selectedItems?: AgentCanvasSelectionItem[];
   nodes: Array<{
     id: string;
     type: string;
