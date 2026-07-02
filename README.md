@@ -6,6 +6,17 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
+## 画布 Agent（v4.2.0）
+
+设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
+
+- OpenAI-compatible API：配置 Base URL、API Key、模型和可选 Header，使用 Chat Completions 流式响应及函数工具控制画布。
+- Codex App Server：本机需要可用的 `codex` CLI。应用通过 stdio JSON-RPC 连接 App Server，支持 ChatGPT/设备码登录、线程恢复、流式消息和审批事件。
+
+Agent 侧边栏在画布右侧占用独立布局空间，可以收起或拖动左侧边缘调整宽度。节点创建、Prompt 修改、连线、工作流应用和布局整理都通过受控画布工具执行；运行工作流始终需要用户确认。
+
+Codex 模式默认使用只读沙箱。登录令牌由 Codex 自己管理，前端不会读取 `~/.codex/auth.json`。API 模式的 Key 由 Tauri 后端配置保存，前端只接收“是否已配置”的状态。
+
 ## 离线授权
 
 本项目内置了第一版离线机器码授权：Tauri 前端只展示机器码、授权状态和导入入口，签名校验与高级功能拦截在 `src-tauri` Rust 后端完成。主应用只内置 Ed25519 公钥，私钥只通过独立的 `license-generator` 命令行工具使用。

@@ -1,6 +1,7 @@
 // src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent;
 mod commands;
 mod license;
 mod native_drag;
@@ -127,10 +128,7 @@ fn realesrgan_estimate_tasks() -> &'static Mutex<HashMap<String, RealEsrganEstim
     REAL_ESRGAN_ESTIMATE_TASKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn command_output_to_string(
-    label: &str,
-    output: std::process::Output,
-) -> Result<String, String> {
+fn command_output_to_string(label: &str, output: std::process::Output) -> Result<String, String> {
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
@@ -483,7 +481,7 @@ fn effective_proxy(
         .or_else(env_proxy)
 }
 
-fn build_http_client(
+pub(crate) fn build_http_client(
     app_handle: Option<&tauri::AppHandle>,
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
@@ -3090,15 +3088,14 @@ async fn get_realesrgan_enhancement_estimate(
     );
 
     let benchmark = (|| -> Result<(usize, f64, f64, f64, f64), String> {
-        let (sample_frames, extract_seconds) =
-            extract_video_benchmark_frames(
-                &ffmpeg_path,
-                &source,
-                &input_frames_dir,
-                &info,
-                REAL_ESRGAN_ESTIMATE_SAMPLE_FRAMES,
-                estimate_task_state,
-            )?;
+        let (sample_frames, extract_seconds) = extract_video_benchmark_frames(
+            &ffmpeg_path,
+            &source,
+            &input_frames_dir,
+            &info,
+            REAL_ESRGAN_ESTIMATE_SAMPLE_FRAMES,
+            estimate_task_state,
+        )?;
         let ai_started_at = Instant::now();
         // One process handles the complete sample directory. Never spawn one
         // Real-ESRGAN process per frame; process startup would dominate timing.
@@ -4675,7 +4672,7 @@ fn save_dropped_file(
     Ok(out_path.to_string_lossy().to_string())
 }
 
-fn get_user_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
+pub(crate) fn get_user_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
     let path = app_handle
         .path()
         .app_data_dir()
@@ -11726,6 +11723,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(agent::AgentRuntimeState::default())
         .manage(SnipState {
             pre_snip_bounds: std::sync::Mutex::new(None),
         })
@@ -11736,6 +11734,16 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             load_items,
+            agent::agent_load_settings,
+            agent::agent_save_settings,
+            agent::agent_openai_chat,
+            agent::agent_cancel_openai,
+            agent::agent_list_openai_models,
+            agent::agent_codex_status,
+            agent::agent_codex_start,
+            agent::agent_codex_request,
+            agent::agent_codex_respond,
+            agent::agent_codex_stop,
             save_items,
             load_folders,
             save_folders,

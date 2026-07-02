@@ -31,8 +31,14 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
+import { CanvasAgentSidebar } from './components/CanvasAgentSidebar';
+import { AgentSettingsSection } from './components/AgentSettingsSection';
+import { CanvasNavigator } from './components/CanvasNavigator';
+import { CanvasToolbar } from './components/CanvasToolbar';
 import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSelect';
 import { clamp } from './features/common';
+import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
+import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
 import {
   getDrawerFolderDeletionPlan,
   getDrawerFolderPathName,
@@ -682,8 +688,6 @@ const FLOATING_NOTE_CREATE_LOCK_STORAGE_PREFIX = 'drawer_floating_note_create_lo
 const DRAWER_INITIAL_RENDER_LIMIT = 48;
 const DRAWER_RENDER_BATCH_SIZE = 32;
 const DRAWER_RENDER_LOAD_AHEAD_PX = 640;
-const CANVAS_NAV_WIDTH = 188;
-const CANVAS_NAV_HEIGHT = 116;
 const CANVAS_NAV_THUMB_MAX_WIDTH = 96;
 const CANVAS_NAV_THUMB_MAX_HEIGHT = 72;
 const CANVAS_NAV_THUMB_QUALITY = 0.42;
@@ -830,10 +834,6 @@ const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-600 hover:!bg-stone-100 
 const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-stone-900 !text-white dark:!bg-white/14 dark:!text-white';
 const CANVAS_AI_PANEL_SELECT_CLASS = 'h-[34px] w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 text-xs font-medium text-stone-700 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:hover:bg-stone-900/70';
 const DRAWER_TOOL_BUTTON_BASE_CLASS = 'p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400';
-const CANVAS_SIDE_TOOL_CLASS = 'flex h-10 w-[68px] shrink-0 items-center justify-start gap-1.5 overflow-hidden rounded-full border bg-white/88 px-2 text-[10px] font-black text-stone-700 shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[transform,background-color,border-color] duration-200 hover:-translate-y-px dark:border-white/10 dark:bg-stone-950/70 dark:text-stone-100 dark:hover:bg-stone-900/90';
-const CANVAS_SIDE_SELECT_CLASS = 'relative h-10 w-[68px] shrink-0 items-center justify-start gap-1.5 overflow-hidden rounded-full border bg-white/88 px-2 text-[10px] font-black text-stone-700 shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[width,transform,background-color,border-color] duration-200 hover:w-[118px] hover:-translate-y-px dark:border-white/10 dark:bg-stone-950/70 dark:text-stone-100 dark:hover:bg-stone-900/90';
-const CANVAS_SIDE_CHEVRON_FLOAT_CLASS = 'pointer-events-none absolute right-2.5 top-1/2 z-10 h-3 w-3 -translate-y-1/2 rounded-full bg-white/90 opacity-0 shadow-sm ring-2 ring-white/80 transition-opacity group-hover/rounded-select:opacity-100 dark:bg-stone-950/90 dark:ring-stone-950/70';
-const CANVAS_SIDE_EXPAND_TOOL_CLASS = `group/canvas-tool ${CANVAS_SIDE_TOOL_CLASS} transition-[width,transform,background-color,border-color] hover:w-[118px] disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45`;
 const DRAWER_FOLDER_TONES = [
   {
     active: 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30',
@@ -2476,6 +2476,9 @@ function MainApp() {
   const [isCanvasChromeHidden, setIsCanvasChromeHidden] = useState(false);
   const [isCanvasNavigatorVisible, setIsCanvasNavigatorVisible] = useState(() => localStorage.getItem('drawer_canvas_navigator_visible') !== 'false');
   const [isCanvasGeneratedListVisible, setIsCanvasGeneratedListVisible] = useState(() => localStorage.getItem('drawer_canvas_generated_list_visible') !== 'false');
+  const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
+  const [canvasAgentInput, setCanvasAgentInput] = useState('');
+  const [canvasAgentSidebarWidth, setCanvasAgentSidebarWidth] = useState(readAgentSidebarWidth);
   const [showCanvasExitPrompt, setShowCanvasExitPrompt] = useState(false);
   const [canvasExitPromptStep, setCanvasExitPromptStep] = useState<'choice' | 'save'>('choice');
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
@@ -2740,6 +2743,9 @@ function MainApp() {
   useEffect(() => { isCanvasSpacePressedRef.current = isCanvasSpacePressed; }, [isCanvasSpacePressed]);
   useEffect(() => { localStorage.setItem('drawer_canvas_navigator_visible', isCanvasNavigatorVisible ? 'true' : 'false'); }, [isCanvasNavigatorVisible]);
   useEffect(() => { localStorage.setItem('drawer_canvas_generated_list_visible', isCanvasGeneratedListVisible ? 'true' : 'false'); }, [isCanvasGeneratedListVisible]);
+  useEffect(() => {
+    if (!isCanvasMode) setIsAgentChatOpen(false);
+  }, [isCanvasMode]);
   useEffect(() => {
     localStorage.setItem(CANVAS_AI_PROVIDER_STORAGE_KEY, canvasAiProvider);
     localStorage.setItem(CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY, CANVAS_AI_PROVIDER_DEFAULT_VERSION);
@@ -3020,7 +3026,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('4.1.5');
+        setAppVersion('4.2.0');
       });
   }, []);
 
@@ -17919,6 +17925,140 @@ useEffect(() => {
     document.addEventListener('pointercancel', cleanup, true);
   };
 
+  const canvasAgent = useCanvasAgentRuntime({
+    getContext: () => ({
+      selectedIds: [...canvasSelectedIdsRef.current],
+      nodes: canvasItemsRef.current.slice(0, 160).map(canvasItem => ({
+        id: canvasItem.id,
+        type: canvasItem.ai?.type || canvasItem.item.type,
+        name: canvasItem.item.name || getCanvasAiNodeTitle(canvasItem.ai),
+        prompt: canvasItem.ai?.prompt || canvasItem.item.content || undefined,
+        inputs: [...(canvasItem.inputs || [])],
+        status: canvasItem.ai?.status,
+      })),
+      presets: canvasAiPromptPresets.map(preset => ({
+        id: preset.id,
+        label: preset.label,
+        hint: preset.hint,
+      })),
+      workflows: canvasWorkflowTemplates.map(workflow => ({
+        id: workflow.id,
+        label: workflow.label,
+        hint: workflow.hint,
+      })),
+    }),
+    executeTool: async (name, args) => {
+      if (name === 'canvas_get_context') {
+        return {
+          selectedIds: [...canvasSelectedIdsRef.current],
+          nodeCount: canvasItemsRef.current.length,
+        };
+      }
+
+      if (name === 'canvas_create_generator') {
+        const mediaType = args.mediaType === 'video' ? 'video' : 'image';
+        const presetId = typeof args.presetId === 'string' ? args.presetId : '';
+        const preset = canvasAiPromptPresets.find(item => item.id === presetId);
+        const requestedInputs = Array.isArray(args.inputIds)
+          ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
+          : [];
+        const inputIds = requestedInputs.length > 0 ? requestedInputs : getSelectedCanvasAiInputIds();
+        const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+        const pos = inputBounds
+          ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+          : getCanvasDropPosition(0);
+        const node = buildCanvasAiGeneratorNode(pos, preset, inputIds, mediaType);
+        const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+        if (prompt) {
+          node.item = {
+            ...node.item,
+            content: prompt,
+            name: prompt.split(/\r?\n/)[0]?.slice(0, 24) || node.item.name,
+          };
+          node.ai = { ...node.ai!, prompt };
+        }
+        if (appendCanvasItems([node], mediaType === 'video' ? 'Agent 创建视频节点' : 'Agent 创建生图节点') <= 0) {
+          throw new Error('创建节点失败');
+        }
+        updateCanvasSelection([node.id]);
+        return { nodeId: node.id, mediaType, inputs: inputIds };
+      }
+
+      if (name === 'canvas_add_text') {
+        const content = typeof args.content === 'string' ? args.content.trim() : '';
+        if (!content) throw new Error('文字内容不能为空');
+        const node = createCanvasTextItemFromContent(content);
+        if (!node || appendCanvasItems([node], 'Agent 添加文字节点') <= 0) throw new Error('添加文字节点失败');
+        updateCanvasSelection([node.id]);
+        return { nodeId: node.id };
+      }
+
+      if (name === 'canvas_apply_workflow') {
+        const workflowId = typeof args.workflowId === 'string' ? args.workflowId.trim() : '';
+        const workflowName = typeof args.workflowName === 'string' ? args.workflowName.trim().toLowerCase() : '';
+        const workflow = canvasWorkflowTemplates.find(item => item.id === workflowId)
+          || canvasWorkflowTemplates.find(item => item.label.toLowerCase() === workflowName)
+          || canvasWorkflowTemplates.find(item => workflowName && item.label.toLowerCase().includes(workflowName));
+        if (!workflow) throw new Error('没有找到指定工作流');
+        const beforeIds = new Set(canvasItemsRef.current.map(item => item.id));
+        if (addCanvasWorkflowTemplate(workflow) <= 0) throw new Error('添加工作流失败');
+        const node = canvasItemsRef.current.find(item => !beforeIds.has(item.id));
+        return { workflowId: workflow.id, nodeId: node?.id };
+      }
+
+      if (name === 'canvas_update_prompt') {
+        const nodeId = typeof args.nodeId === 'string' ? args.nodeId : '';
+        const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+        const node = canvasItemsRef.current.find(item => item.id === nodeId);
+        if (!node || !canUseCanvasItemAsAiTarget(node)) throw new Error('目标生成节点不存在');
+        if (!prompt) throw new Error('Prompt 不能为空');
+        updateCanvasAiGeneratorData(nodeId, { prompt }, prompt);
+        updateCanvasSelection([nodeId]);
+        return { nodeId, promptLength: prompt.length };
+      }
+
+      if (name === 'canvas_connect_nodes') {
+        const sourceId = typeof args.sourceId === 'string' ? args.sourceId : '';
+        const targetId = typeof args.targetId === 'string' ? args.targetId : '';
+        if (!connectCanvasItems(sourceId, targetId)) throw new Error('节点无法连接，请检查输入与目标类型');
+        return { sourceId, targetId };
+      }
+
+      if (name === 'canvas_organize') {
+        const nodeIds = Array.isArray(args.nodeIds) ? args.nodeIds.map(String) : undefined;
+        organizeCanvasItems(nodeIds?.length ? nodeIds : undefined);
+        return { organized: nodeIds?.length || canvasItemsRef.current.length };
+      }
+
+      if (name === 'canvas_run_workflow') {
+        const nodeIds = Array.isArray(args.nodeIds)
+          ? args.nodeIds.map(String)
+          : [...canvasSelectedIdsRef.current];
+        await runSelectedCanvasWorkflowModules(nodeIds);
+        return { requestedNodeIds: nodeIds };
+      }
+
+      throw new Error(`不支持的画布工具：${name}`);
+    },
+    onNotice: showToast,
+  });
+
+  const sendCanvasAgentMessage = async (content: string) => {
+    if (await canvasAgent.sendMessage(content)) setCanvasAgentInput('');
+  };
+
+  const clearCanvasAgentChat = () => {
+    canvasAgent.clearConversation();
+    setCanvasAgentInput('');
+  };
+
+  useEffect(() => {
+    writeAgentSidebarWidth(canvasAgentSidebarWidth);
+    if (!isCanvasMode) return;
+    const frame = window.requestAnimationFrame(() => updateCanvasViewportNow());
+    return () => window.cancelAnimationFrame(frame);
+  }, [canvasAgentSidebarWidth, isAgentChatOpen, isCanvasMode]);
+
   const isCalendarCompactScale = drawerWidth <= CALENDAR_COMPACT_DRAWER_WIDTH;
   const calendarAvailableWidth = Math.max(1, drawerWidth - DRAWER_SIDE_RAIL_WIDTH - DRAWER_CONTENT_X_PADDING);
   const calendarPageScale = isCalendarCompactScale
@@ -17982,18 +18122,6 @@ useEffect(() => {
     item,
     box: getCanvasItemRenderedBox(item),
   })), [canvasItemsForNav, canvasAiPromptEditingId]);
-  const canvasNavBounds = useMemo(() => canvasNavItems.length > 0 ? {
-    left: Math.min(...canvasNavItems.map(entry => entry.box.x)),
-    top: Math.min(...canvasNavItems.map(entry => entry.box.y)),
-    right: Math.max(...canvasNavItems.map(entry => entry.box.x + entry.box.width)),
-    bottom: Math.max(...canvasNavItems.map(entry => entry.box.y + entry.box.height)),
-  } : null, [canvasNavItems]);
-  const canvasNavScale = canvasNavBounds
-    ? Math.min(
-      (CANVAS_NAV_WIDTH - 18) / Math.max(1, canvasNavBounds.right - canvasNavBounds.left),
-      (CANVAS_NAV_HEIGHT - 18) / Math.max(1, canvasNavBounds.bottom - canvasNavBounds.top),
-    )
-    : 1;
   const canvasSelectedIdsSet = useMemo(() => new Set(canvasSelectedIds), [canvasSelectedIds]);
   const canvasSelectedBoxesForRender = useMemo(() => (
     canvasSelectedIds.length > 1
@@ -19491,6 +19619,20 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
+                        <AgentSettingsSection
+                          expanded={activeSettingCategory === 'agent'}
+                          settings={canvasAgent.settings}
+                          loading={canvasAgent.settingsLoading}
+                          codexStatus={canvasAgent.codexStatus}
+                          codexLoginInfo={canvasAgent.codexLoginInfo}
+                          onToggle={() => setActiveSettingCategory(prev => prev === 'agent' ? '' : 'agent')}
+                          onSave={canvasAgent.saveSettings}
+                          onListModels={canvasAgent.listOpenAiModels}
+                          onRefreshCodexStatus={canvasAgent.refreshCodexStatus}
+                          onStartCodexLogin={canvasAgent.startCodexLogin}
+                          onLogoutCodex={canvasAgent.logoutCodex}
+                        />
+
                         <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
                           <button onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 离线授权</span>
@@ -19693,7 +19835,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '4.1.5'}
+                                      v{appVersion || '4.2.0'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -19710,7 +19852,7 @@ useEffect(() => {
                 <div
                   ref={!isCanvasMode ? drawerScrollRef : undefined}
                   onScroll={!isCanvasMode ? handleDrawerContentScroll : undefined}
-                  className={`flex-1 relative flex flex-col ${
+                  className={`flex-1 relative flex ${isCanvasMode ? 'min-h-0 min-w-0 flex-row' : 'flex-col'} ${
                   isCanvasMode
                     ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
                     : 'overflow-y-auto p-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
@@ -19721,7 +19863,7 @@ useEffect(() => {
                       ref={canvasSurfaceRef}
                       tabIndex={-1}
                       data-canvas-interacting={isCanvasInteracting ? 'true' : undefined}
-                      className={`relative min-h-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto', overflowAnchor: 'none' }}
                       onPointerEnter={() => {
                         isCanvasPointerInsideRef.current = true;
@@ -22446,310 +22588,96 @@ useEffect(() => {
                     </div>
                   )}
                   {isCanvasMode && (
-                    <div
-                      ref={canvasToolbarRef}
-                      data-no-drag="true"
-                      data-canvas-toolbar="true"
-                      className="absolute right-4 z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent transition-[top] duration-200"
-                      style={{ top: canvasToolbarTop }}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onMouseDown={(event) => event.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        data-no-drag="true"
-                        onClick={() => setIsCanvasNavigatorVisible(value => !value)}
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[transform,background-color,border-color] duration-200 hover:-translate-y-px hover:border-blue-300 hover:bg-blue-50/90 dark:border-white/10 dark:bg-stone-950/70 dark:text-blue-300 dark:hover:border-blue-400/30 dark:hover:bg-stone-900/90 ${
-                          isCanvasNavigatorVisible ? 'border-blue-300 bg-blue-50/95 text-blue-600 ring-2 ring-blue-100/80 dark:border-blue-400/35 dark:bg-blue-400/12 dark:text-blue-200 dark:ring-blue-400/10' : 'border-blue-200/80 bg-white/88 text-blue-500'
-                        }`}
-                        title={isCanvasNavigatorVisible ? '隐藏导航' : '显示导航'}
-                      >
-                        <Compass className="h-3.5 w-3.5" />
-                      </button>
-                      {isCanvasNavigatorVisible && (
-                        <div
-                          data-no-drag="true"
-                          ref={canvasNavigatorPanelRef}
-                          className="absolute bottom-full right-0 z-[100070] mb-2 w-[220px] rounded-[20px] border border-white/60 bg-white/78 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-600/80 dark:bg-stone-900/88 dark:text-stone-200"
-                          onPointerDown={(event) => {
-                            event.stopPropagation();
-                          }}
-                          onMouseDown={(event) => {
-                            event.stopPropagation();
-                          }}
-                        >
-                          <div className="flex items-center justify-between gap-2 px-0.5">
-                            <div className="flex items-center gap-1.5 text-[11px] font-black">
-                              <Compass className="h-3.5 w-3.5 text-blue-500 dark:text-blue-300" />
-                              导航
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <span className="font-mono text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                                {canvasItemsForNav.length}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setIsCanvasNavigatorVisible(false)}
-                                className="flex h-[18px] w-[18px] items-center justify-center rounded-[7px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-200"
-                                title="隐藏导航"
-                              >
-                                <X className="h-2.5 w-2.5" />
-                              </button>
-                            </div>
-                          </div>
-                          <div
-                            className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[14px] border border-blue-100/80 bg-blue-50/45 dark:border-stone-700/70 dark:bg-stone-950/45"
-                            title="点击缩略图定位"
-                          >
-                            {canvasNavItems.length === 0 ? (
-                              <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                                暂无节点
-                              </div>
-                            ) : canvasNavBounds && canvasNavItems.map(({ item, box }) => {
-                              const left = 9 + (box.x - canvasNavBounds.left) * canvasNavScale;
-                              const top = 9 + (box.y - canvasNavBounds.top) * canvasNavScale;
-                              const width = Math.max(10, box.width * canvasNavScale);
-                              const height = Math.max(10, box.height * canvasNavScale);
-                              const selected = canvasSelectedIdsSet.has(item.id);
-                              const preview = getCanvasItemNavPreview(item);
-                              const source = getCachedCanvasNavThumbnailSource(item, preview);
-                              const label = item.ai?.type === 'workflow'
-                                ? item.ai?.presetLabel || '工作流'
-                                : isCanvasAiGeneratorType(item.ai?.type)
-                                  ? item.ai?.presetLabel || (getCanvasAiMediaType(item.ai) === 'video' ? '视频' : '生图')
-                                  : item.item.type === 'text'
-                                    ? '文字'
-                                    : item.item.name || item.item.type || '节点';
-                              return (
-                                <button
-                                  key={item.id}
-                                  type="button"
-                                  className={`absolute overflow-hidden rounded-[6px] border bg-white shadow-sm transition-transform hover:scale-110 dark:bg-stone-800 ${
-                                    selected ? 'border-blue-500 ring-2 ring-blue-300/70' : 'border-white/85 dark:border-stone-600/80'
-                                  }`}
-                                  style={{ left, top, width, height }}
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    centerCanvasItemInView(item, { select: true });
-                                  }}
-                                  title={item.item.name || item.item.content || label}
-                                >
-                                  {source ? (
-                                    <img
-                                      src={source}
-                                      alt={item.item.name || '导航缩略图'}
-                                      loading="lazy"
-                                      decoding="async"
-                                      className="h-full w-full object-cover"
-                                      draggable={false}
-                                    />
-                                  ) : (
-                                    <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
-                                      item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
-                                        ? 'bg-violet-100 text-violet-600 dark:bg-violet-950/70 dark:text-violet-300'
-                                        : item.item.type === 'image'
-                                          ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/70 dark:text-cyan-300'
-                                          : 'bg-white/70 text-stone-500 dark:bg-stone-800 dark:text-stone-300'
-                                    }`}>
-                                      <span className="truncate">{item.item.type === 'video' ? '视频' : label}</span>
-                                    </div>
-                                  )}
-                                </button>
+                    <CanvasToolbar
+                      toolbarRef={canvasToolbarRef}
+                      top={canvasToolbarTop}
+                      right={isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16}
+                      navigator={(
+                        <CanvasNavigator
+                          visible={isCanvasNavigatorVisible}
+                          panelRef={canvasNavigatorPanelRef}
+                          items={canvasNavItems}
+                          selectedIds={canvasSelectedIdsSet}
+                          zoomPercent={Math.round(canvasScale * 100)}
+                          getPreview={getCanvasItemNavPreview}
+                          getThumbnailSource={getCachedCanvasNavThumbnailSource}
+                          onToggle={() => setIsCanvasNavigatorVisible(value => !value)}
+                          onClose={() => setIsCanvasNavigatorVisible(false)}
+                          onSelectItem={item => centerCanvasItemInView(item, { select: true })}
+                          onZoomOut={() => {
+                            const surface = canvasSurfaceRef.current;
+                            if (surface) {
+                              zoomCanvasAt(
+                                surface.getBoundingClientRect().left + surface.clientWidth / 2,
+                                surface.getBoundingClientRect().top + surface.clientHeight / 2,
+                                360
                               );
-                            })}
-                          </div>
-                          <div className="mt-2 flex items-center justify-between gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const surface = canvasSurfaceRef.current;
-                                if (surface) zoomCanvasAt(surface.getBoundingClientRect().left + surface.clientWidth / 2, surface.getBoundingClientRect().top + surface.clientHeight / 2, 360);
-                              }}
-                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                              title="缩小"
-                            >
-                              <Minimize2 className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                canvasScaleRef.current = 1;
-                                applyCanvasScaleStyles(1, canvasSizeRef.current);
-                                setCanvasScale(1);
-                              }}
-                              className="h-7 min-w-[58px] rounded-[11px] bg-stone-100 px-2 font-mono text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                              title="重置缩放"
-                            >
-                              {Math.round(canvasScale * 100)}%
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => fitCanvasViewToItems(canvasSelectedIds.length > 0 ? canvasSelectedIds : undefined)}
-                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-cyan-100 text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/38 dark:text-cyan-300 dark:hover:bg-cyan-900/55"
-                              title="适配全部 / 选中"
-                            >
-                              <LayoutGrid className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const surface = canvasSurfaceRef.current;
-                                if (surface) zoomCanvasAt(surface.getBoundingClientRect().left + surface.clientWidth / 2, surface.getBoundingClientRect().top + surface.clientHeight / 2, -360);
-                              }}
-                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                              title="放大"
-                            >
-                              <Maximize2 className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => centerCanvasItemInView(getCanvasPrimaryImageItem(), { select: true })}
-                              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-blue-100 text-blue-700 transition-colors hover:bg-blue-200 dark:bg-blue-900/38 dark:text-blue-300 dark:hover:bg-blue-900/55"
-                              title="定位最近图片"
-                            >
-                              <Compass className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </div>
+                            }
+                          }}
+                          onResetZoom={() => {
+                            canvasScaleRef.current = 1;
+                            applyCanvasScaleStyles(1, canvasSizeRef.current);
+                            setCanvasScale(1);
+                          }}
+                          onFit={() => fitCanvasViewToItems(
+                            canvasSelectedIds.length > 0 ? canvasSelectedIds : undefined
+                          )}
+                          onZoomIn={() => {
+                            const surface = canvasSurfaceRef.current;
+                            if (surface) {
+                              zoomCanvasAt(
+                                surface.getBoundingClientRect().left + surface.clientWidth / 2,
+                                surface.getBoundingClientRect().top + surface.clientHeight / 2,
+                                -360
+                              );
+                            }
+                          }}
+                          onLocatePrimary={() => centerCanvasItemInView(
+                            getCanvasPrimaryImageItem(),
+                            { select: true }
+                          )}
+                        />
                       )}
-                      <button
-                        type="button"
-                        onClick={() => addCanvasAiGeneratorNode()}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-violet-200/80 hover:border-violet-300 hover:bg-violet-50/90 dark:hover:border-violet-400/30`}
-                        title="新增 AI 生图节点"
-                      >
-                        <ImageIcon className="h-3.5 w-3.5 shrink-0 text-violet-500 dark:text-violet-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">图片</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => addCanvasAiVideoGeneratorNode()}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-emerald-200/80 hover:border-emerald-300 hover:bg-emerald-50/90 dark:hover:border-emerald-400/30`}
-                        title="新增 AI 视频节点"
-                      >
-                        <Film className="h-3.5 w-3.5 shrink-0 text-emerald-500 dark:text-emerald-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">视频</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => addCanvasFrameInterpolationNode()}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-cyan-200/80 hover:border-cyan-300 hover:bg-cyan-50/90 dark:hover:border-cyan-400/30`}
-                        title="新增视频补帧节点"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5 shrink-0 text-cyan-500 dark:text-cyan-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">补帧</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => addCanvasEnhancementNode('image')}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-violet-200/80 hover:border-violet-300 hover:bg-violet-50/90 dark:hover:border-violet-400/30`}
-                        title="新增图片清晰度增强节点"
-                      >
-                        <ImageIcon className="h-3.5 w-3.5 shrink-0 text-violet-500 dark:text-violet-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">图增强</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => addCanvasEnhancementNode('video')}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-fuchsia-200/80 hover:border-fuchsia-300 hover:bg-fuchsia-50/90 dark:hover:border-fuchsia-400/30`}
-                        title="新增视频清晰度增强节点"
-                      >
-                        <Film className="h-3.5 w-3.5 shrink-0 text-fuchsia-500 dark:text-fuchsia-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">视增强</span>
-                      </button>
-                      <RoundedSelect
-                        data-no-drag="true"
-                        data-canvas-edit-control="true"
-                        value={CANVAS_AI_PROMPT_PRESET_PLACEHOLDER}
-                        options={canvasAiPromptPresetSelectOptions}
-                        onChange={(value) => {
-                          if (value === CANVAS_AI_PROMPT_PRESET_ADD_VALUE) {
-                            openCanvasPresetEditor();
-                            return;
-                          }
-                          if (value === CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE) {
-                            openCanvasPresetManager();
-                            return;
-                          }
-                          const preset = canvasAiPromptPresets.find(item => item.id === value);
-                          if (preset) addCanvasAiGeneratorNode(undefined, preset);
-                        }}
-                        icon={<Palette className="h-3.5 w-3.5 shrink-0 text-sky-500 dark:text-sky-300" />}
-                        chevronClassName={`${CANVAS_SIDE_CHEVRON_FLOAT_CLASS} text-sky-500/80 dark:text-sky-300/80`}
-                        labelClassName="text-left"
-                        collapsedLabel="节点…"
-                        expandedLabel="节点预设"
-                        className={`${CANVAS_SIDE_SELECT_CLASS} border-sky-200/80 hover:border-sky-300 hover:bg-sky-50/90 dark:hover:border-sky-400/30`}
-                        menuClassName="!z-[100080] !min-w-[230px] !rounded-[18px] !border-sky-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-sky-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
-                        optionClassName="!rounded-[12px] !px-3 !py-2 hover:!bg-sky-50 hover:!text-sky-800 dark:hover:!bg-white/10 dark:hover:!text-white"
-                        selectedOptionClassName="!bg-sky-50 !text-sky-800 dark:!bg-sky-400/12 dark:!text-sky-100"
-                        title="选择节点预设"
-                        menuMinWidth={230}
-                      />
-                      <RoundedSelect
-                        data-no-drag="true"
-                        data-canvas-edit-control="true"
-                        value={CANVAS_WORKFLOW_SELECT_PLACEHOLDER}
-                        options={canvasWorkflowSelectOptions}
-                        onChange={(value) => {
-                          if (value === CANVAS_WORKFLOW_SAVE_SELECTION_VALUE) {
-                            saveSelectedCanvasWorkflow();
-                            return;
-                          }
-                          if (value === CANVAS_WORKFLOW_MANAGE_VALUE) {
-                            openCanvasWorkflowManager();
-                            return;
-                          }
-                          const workflow = canvasWorkflowTemplates.find(item => item.id === value);
-                          if (workflow) addCanvasWorkflowTemplate(workflow);
-                        }}
-                        icon={<Link className="h-3.5 w-3.5 shrink-0 text-teal-500 dark:text-teal-300" />}
-                        chevronClassName={`${CANVAS_SIDE_CHEVRON_FLOAT_CLASS} text-teal-500/80 dark:text-teal-300/80`}
-                        labelClassName="text-left"
-                        collapsedLabel="工作…"
-                        expandedLabel="工作流"
-                        className={`${CANVAS_SIDE_SELECT_CLASS} border-teal-200/80 hover:border-teal-300 hover:bg-teal-50/90 dark:hover:border-teal-400/30`}
-                        menuClassName="!z-[100080] !min-w-[250px] !rounded-[18px] !border-teal-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-teal-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
-                        optionClassName="!rounded-[12px] !px-3 !py-2 hover:!bg-teal-50 hover:!text-teal-800 dark:hover:!bg-white/10 dark:hover:!text-white"
-                        selectedOptionClassName="!bg-teal-50 !text-teal-800 dark:!bg-teal-400/12 dark:!text-teal-100"
-                        title="选择或保存工作流"
-                        menuMinWidth={250}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void runSelectedCanvasWorkflowModules()}
-                        disabled={!canvasItems.some(item => item.ai?.type === 'workflow')}
-                        className={`${CANVAS_SIDE_EXPAND_TOOL_CLASS} border-indigo-200/80 hover:border-indigo-300 hover:bg-indigo-50/90 dark:hover:border-indigo-400/30`}
-                        title="运行选中的工作流模块"
-                      >
-                        <Send className="h-3.5 w-3.5 shrink-0 text-indigo-500 dark:text-indigo-300" />
-                        <span className="flex min-w-0 flex-1 items-center overflow-hidden text-left">
-                          <span className="shrink-0">运行</span>
-                          <span className="shrink-0 group-hover/canvas-tool:hidden">…</span>
-                          <span className="max-w-0 overflow-hidden whitespace-nowrap opacity-0 transition-[max-width,opacity] duration-200 group-hover/canvas-tool:max-w-[44px] group-hover/canvas-tool:opacity-100">工作流</span>
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => addCanvasTextItem()}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-slate-200/80 hover:border-slate-300 hover:bg-slate-50/90 dark:hover:border-slate-400/30`}
-                        title="添加文字卡片"
-                      >
-                        <Type className="h-3.5 w-3.5 shrink-0 text-slate-600 dark:text-slate-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">文字</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => organizeCanvasItems()}
-                        disabled={canvasItems.length < 2}
-                        className={`${CANVAS_SIDE_TOOL_CLASS} border-orange-200/80 hover:border-orange-300 hover:bg-orange-50/90 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45 dark:hover:border-orange-400/30`}
-                        title="一键整理画布；多选时只整理选中节点"
-                      >
-                        <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-orange-500 dark:text-orange-300" />
-                        <span className="min-w-0 flex-1 truncate text-left">整理</span>
-                      </button>
-                    </div>
+                      promptValue={CANVAS_AI_PROMPT_PRESET_PLACEHOLDER}
+                      promptOptions={canvasAiPromptPresetSelectOptions}
+                      workflowValue={CANVAS_WORKFLOW_SELECT_PLACEHOLDER}
+                      workflowOptions={canvasWorkflowSelectOptions}
+                      hasWorkflow={canvasItems.some(item => item.ai?.type === 'workflow')}
+                      canOrganize={canvasItems.length >= 2}
+                      isAgentChatOpen={isAgentChatOpen}
+                      onToggleAgentChat={() => setIsAgentChatOpen(value => !value)}
+                      onAddImage={() => addCanvasAiGeneratorNode()}
+                      onAddVideo={() => addCanvasAiVideoGeneratorNode()}
+                      onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}
+                      onAddEnhancement={mediaType => addCanvasEnhancementNode(mediaType)}
+                      onPromptChange={(value) => {
+                        if (value === CANVAS_AI_PROMPT_PRESET_ADD_VALUE) {
+                          openCanvasPresetEditor();
+                          return;
+                        }
+                        if (value === CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE) {
+                          openCanvasPresetManager();
+                          return;
+                        }
+                        const preset = canvasAiPromptPresets.find(item => item.id === value);
+                        if (preset) addCanvasAiGeneratorNode(undefined, preset);
+                      }}
+                      onWorkflowChange={(value) => {
+                        if (value === CANVAS_WORKFLOW_SAVE_SELECTION_VALUE) {
+                          saveSelectedCanvasWorkflow();
+                          return;
+                        }
+                        if (value === CANVAS_WORKFLOW_MANAGE_VALUE) {
+                          openCanvasWorkflowManager();
+                          return;
+                        }
+                        const workflow = canvasWorkflowTemplates.find(item => item.id === value);
+                        if (workflow) addCanvasWorkflowTemplate(workflow);
+                      }}
+                      onRunWorkflow={() => runSelectedCanvasWorkflowModules()}
+                      onAddText={() => addCanvasTextItem()}
+                      onOrganize={() => organizeCanvasItems()}
+                    />
                   )}
                   {isCanvasMode && isCanvasGeneratedListVisible && (
                     <div
@@ -22945,11 +22873,37 @@ useEffect(() => {
                           canvasSurfaceRef.current?.focus({ preventScroll: true });
                         });
                       }}
-                      className="absolute bottom-4 right-4 z-[100050] flex h-11 w-11 items-center justify-center rounded-full border border-white/35 bg-stone-950/42 text-white shadow-[0_10px_30px_rgba(0,0,0,0.22)] backdrop-blur-xl transition-all hover:bg-stone-950/62 focus:outline-none focus:ring-2 focus:ring-emerald-300/80"
+                      className="absolute bottom-4 z-[100050] flex h-11 w-11 items-center justify-center rounded-full border border-white/35 bg-stone-950/42 text-white shadow-[0_10px_30px_rgba(0,0,0,0.22)] backdrop-blur-xl transition-all hover:bg-stone-950/62 focus:outline-none focus:ring-2 focus:ring-emerald-300/80"
+                      style={{ right: isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16 }}
                       title={isCanvasChromeHidden ? '显示菜单栏 (Tab)' : '隐藏菜单栏，画布全屏 (Tab)'}
                     >
                       {isCanvasChromeHidden ? <Minimize2 className="h-[18px] w-[18px]" /> : <Maximize2 className="h-[18px] w-[18px]" />}
                     </button>
+                  )}
+                  {isCanvasMode && isAgentChatOpen && (
+                    <CanvasAgentSidebar
+                      width={canvasAgentSidebarWidth}
+                      messages={canvasAgent.activeConversation?.messages || []}
+                      inputValue={canvasAgentInput}
+                      busy={canvasAgent.busy}
+                      settings={canvasAgent.settings}
+                      codexStatus={canvasAgent.codexStatus}
+                      conversations={canvasAgent.conversations}
+                      activeConversationId={canvasAgent.activeConversationId}
+                      codexApprovals={canvasAgent.codexApprovals}
+                      onWidthChange={setCanvasAgentSidebarWidth}
+                      onClose={() => setIsAgentChatOpen(false)}
+                      onInputChange={setCanvasAgentInput}
+                      onSendMessage={content => void sendCanvasAgentMessage(content)}
+                      onCancel={() => void canvasAgent.cancelCurrent()}
+                      onRetry={() => void canvasAgent.retryLast()}
+                      onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
+                      onResolveCodexApproval={(approval, approved) => void canvasAgent.resolveCodexApproval(approval, approved)}
+                      onNewConversation={canvasAgent.newConversation}
+                      onSelectConversation={canvasAgent.selectConversation}
+                      onDeleteConversation={canvasAgent.deleteConversation}
+                      onClearConversation={clearCanvasAgentChat}
+                    />
                   )}
                   {activeTab === 'notes' && (
                     <div className="flex-1 flex flex-col gap-3">
@@ -24527,7 +24481,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.1.5'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '4.2.0'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -24665,7 +24619,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.1.5'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '4.2.0'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -24758,11 +24712,11 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.1.5 画布节点与导航优化</p>
-                <p>修正视频补帧节点的实际渲染尺寸，让它和 UI 设计尺寸保持一致。</p>
-                <p>优化补帧节点与增强节点的进度条布局，避免进度显示挤压节点内容。</p>
-                <p>恢复画布导航缩略图，并在窗口高度不足时自动下移右侧工具列，保证导航完整可见。</p>
-                <p>优化大量图片时的抽屉卡片渲染、缩略图生成和画布视口裁剪，降低滚动、拖动与导航时的卡顿。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.0 画布 Agent</p>
+                <p>新增独立 AGENT 设置，支持 OpenAI-compatible API 与 Codex App Server 两种引擎。</p>
+                <p>新增可收缩、可拖动宽度的画布右侧聊天栏，不再遮挡画布节点。</p>
+                <p>Agent 可以创建和连接节点、应用预设工作流、整理画布，并在运行付费任务前请求确认。</p>
+                <p>支持 Codex ChatGPT 登录、流式会话、操作审批、中断恢复和本地会话历史。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

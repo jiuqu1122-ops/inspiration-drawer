@@ -1,0 +1,127 @@
+export type AgentProvider = 'openai-compatible' | 'codex';
+
+export type AgentSettings = {
+  provider: AgentProvider;
+  apiBaseUrl: string;
+  apiModel: string;
+  apiHeaders: Record<string, string>;
+  hasApiKey: boolean;
+  codexExecutable: string;
+  codexModel: string;
+  codexSandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  codexApprovalPolicy: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+  systemPrompt: string;
+  approvalMode: 'ask' | 'auto';
+  retainHistory: boolean;
+};
+
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  provider: 'openai-compatible',
+  apiBaseUrl: 'https://api.openai.com/v1',
+  apiModel: 'gpt-4o-mini',
+  apiHeaders: {},
+  hasApiKey: false,
+  codexExecutable: 'codex',
+  codexModel: '',
+  codexSandbox: 'read-only',
+  codexApprovalPolicy: 'on-request',
+  systemPrompt: '你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。',
+  approvalMode: 'ask',
+  retainHistory: true,
+};
+
+export type AgentToolCallStatus =
+  | 'pending'
+  | 'awaiting-approval'
+  | 'running'
+  | 'completed'
+  | 'declined'
+  | 'error';
+
+export type AgentToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  status: AgentToolCallStatus;
+  result?: unknown;
+  error?: string;
+};
+
+export type AgentChatMessage = {
+  id: string;
+  role: 'user' | 'agent' | 'system';
+  content: string;
+  timestamp: number;
+  status?: 'streaming' | 'completed' | 'error' | 'cancelled';
+  error?: string;
+  toolCalls?: AgentToolCall[];
+};
+
+export type AgentConversation = {
+  id: string;
+  title: string;
+  provider: AgentProvider;
+  createdAt: number;
+  updatedAt: number;
+  messages: AgentChatMessage[];
+  codexThreadId?: string;
+};
+
+export type AgentCanvasContext = {
+  selectedIds: string[];
+  nodes: Array<{
+    id: string;
+    type: string;
+    name: string;
+    prompt?: string;
+    inputs: string[];
+    status?: string;
+  }>;
+  presets: Array<{ id: string; label: string; hint: string }>;
+  workflows: Array<{ id: string; label: string; hint: string }>;
+};
+
+export type AgentCanvasToolExecutor = (
+  name: string,
+  args: Record<string, unknown>,
+) => Promise<unknown>;
+
+export type CodexRuntimeStatus = {
+  installed: boolean;
+  running: boolean;
+  authenticated: boolean;
+  executable: string;
+  version: string;
+  authDetail: string;
+};
+
+export type CodexLoginInfo = {
+  type: 'chatgpt' | 'chatgptDeviceCode';
+  authUrl?: string;
+  verificationUrl?: string;
+  userCode?: string;
+};
+
+export type AgentCodexApproval = {
+  id: string | number;
+  method: string;
+  title: string;
+  detail: string;
+  params: Record<string, unknown>;
+};
+
+export const createAgentId = (prefix: string) => (
+  `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+);
+
+export const createAgentConversation = (provider: AgentProvider): AgentConversation => {
+  const now = Date.now();
+  return {
+    id: createAgentId('agent-conversation'),
+    title: '新对话',
+    provider,
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+  };
+};
