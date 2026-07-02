@@ -86,6 +86,7 @@ export type AgentConversation = {
   updatedAt: number;
   messages: AgentChatMessage[];
   codexThreadId?: string;
+  codexThreadKey?: string;
 };
 
 export type AgentCanvasSelectionItem = {

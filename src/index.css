@@ -797,6 +797,12 @@ body,
   color: rgba(255, 255, 255, 0.34) !important;
 }
 
+.drawer-theme textarea[data-agent-composer-input="true"] {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
 .drawer-theme [class*="ring-emerald"],
 .drawer-theme [class*="ring-cyan"],
 .drawer-theme [class*="ring-sky"],

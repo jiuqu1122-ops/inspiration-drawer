@@ -542,7 +542,7 @@ export function CanvasAgentSidebar({
             </div>
           )}
 
-          <textarea ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
+          <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
           <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
             <div className="flex min-w-0 items-center gap-1">
               <button type="button" onClick={() => inputRef.current?.focus()} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="当前选中的画布节点会自动作为上下文"><Plus className="h-4 w-4" /></button>

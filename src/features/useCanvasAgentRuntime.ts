@@ -83,6 +83,19 @@ type PendingCodexTurn = {
   timeoutId: number;
 };
 
+const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'canvas-agent-preset-tools-v2';
+
+const buildCodexThreadKey = (
+  settings: AgentSettings,
+  forceDefaultModel = false,
+) => JSON.stringify({
+  protocol: CANVAS_AGENT_CODEX_THREAD_PROTOCOL,
+  model: forceDefaultModel ? '' : normalizeCodexModelOverride(settings.codexModel),
+  sandbox: settings.codexSandbox,
+  approvalPolicy: settings.codexApprovalPolicy,
+  systemPrompt: settings.systemPrompt,
+});
+
 const normalizeAgentSettings = (value: unknown): AgentSettings => {
   const record = value && typeof value === 'object' ? value as Partial<AgentSettings> : {};
   return {
@@ -761,7 +774,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     options: { forceNew?: boolean; forceDefaultModel?: boolean } = {},
   ) => {
     await ensureCodexStarted();
-    if (!options.forceNew && conversation.codexThreadId && !loadedCodexThreadsRef.current.has(conversation.codexThreadId)) {
+    const current = settingsRef.current;
+    const threadKey = buildCodexThreadKey(current, options.forceDefaultModel === true);
+    const canResumeThread = !options.forceNew
+      && conversation.codexThreadId
+      && conversation.codexThreadKey === threadKey;
+    if (canResumeThread && conversation.codexThreadId && !loadedCodexThreadsRef.current.has(conversation.codexThreadId)) {
       try {
         await invoke('agent_codex_request', {
           method: 'thread/resume',
@@ -772,11 +790,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       } catch (_) {
         // Persisted thread can be missing after a Codex reset; start a replacement below.
       }
-    } else if (!options.forceNew && conversation.codexThreadId) {
+    } else if (canResumeThread && conversation.codexThreadId) {
       return conversation.codexThreadId;
     }
 
-    const current = settingsRef.current;
     const codexModel = options.forceDefaultModel ? '' : normalizeCodexModelOverride(current.codexModel);
     const result = await invoke<Record<string, unknown>>('agent_codex_request', {
       method: 'thread/start',
@@ -794,7 +811,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     const threadId = String(thread.id || '');
     if (!threadId) throw new Error('Codex 没有返回 threadId');
     loadedCodexThreadsRef.current.add(threadId);
-    patchConversation(conversation.id, value => ({ ...value, codexThreadId: threadId }));
+    patchConversation(conversation.id, value => ({ ...value, codexThreadId: threadId, codexThreadKey: threadKey }));
     return threadId;
   }, [ensureCodexStarted, patchConversation]);
 
@@ -1133,6 +1150,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       title: '新对话',
       messages: [],
       codexThreadId: undefined,
+      codexThreadKey: undefined,
       updatedAt: Date.now(),
     }));
   }, [patchConversation]);
