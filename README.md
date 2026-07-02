@@ -6,9 +6,9 @@ This template should help get you started developing with Tauri, React and Types
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
-## 画布 Agent（v4.2.8）
+## 画布 Agent（v4.2.9）
 
-v4.2.8 增加 Agent 专用节点预设工具，用户要求创建/修改节点预设时会保存为真实 Prompt 预设，而不是生成画布文字节点；同时 Agent 输入区可直接切换 Codex 访问权限，权限或工具协议变化会自动启用新的 Codex 线程。
+v4.2.9 在 Agent 输入区增加与官方 Codex 一致的模型和推理强度选择器。模型列表直接读取当前 ChatGPT 账户的 Codex App Server `model/list`，选择结果会应用到新线程和后续回合；同时保留真实节点预设、画布权限切换与节点图片自动引用能力。
 
 设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
 

@@ -275,6 +275,24 @@ export function AgentSettingsSection({
                       className="rounded-[13px] border border-violet-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-violet-400/20 dark:bg-stone-900/45 dark:text-stone-200"
                     />
                   </label>
+                  <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+                    推理强度
+                    <select
+                      value={draft.codexReasoningEffort}
+                      onChange={event => setDraft(current => ({
+                        ...current,
+                        codexReasoningEffort: event.target.value as AgentSettings['codexReasoningEffort'],
+                      }))}
+                      className="rounded-[12px] border border-violet-100 bg-white/85 px-2 py-1.5 text-[10px] text-stone-700 dark:border-violet-400/20 dark:bg-stone-900/45 dark:text-stone-200"
+                    >
+                      <option value="">跟随模型默认</option>
+                      <option value="minimal">最低</option>
+                      <option value="low">低</option>
+                      <option value="medium">中</option>
+                      <option value="high">高</option>
+                      <option value="xhigh">超高</option>
+                    </select>
+                  </label>
                   <div className="grid grid-cols-2 gap-1.5">
                     <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
                       沙箱

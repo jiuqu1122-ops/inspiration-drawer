@@ -32,6 +32,8 @@ struct AgentSettingsStored {
     api_headers: BTreeMap<String, String>,
     codex_executable: String,
     codex_model: String,
+    #[serde(default)]
+    codex_reasoning_effort: String,
     codex_sandbox: String,
     codex_approval_policy: String,
     system_prompt: String,
@@ -49,6 +51,7 @@ impl Default for AgentSettingsStored {
             api_headers: BTreeMap::new(),
             codex_executable: "codex".to_string(),
             codex_model: String::new(),
+            codex_reasoning_effort: String::new(),
             codex_sandbox: "read-only".to_string(),
             codex_approval_policy: "on-request".to_string(),
             system_prompt: "你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。".to_string(),
@@ -68,6 +71,7 @@ pub struct AgentSettingsPublic {
     has_api_key: bool,
     codex_executable: String,
     codex_model: String,
+    codex_reasoning_effort: String,
     codex_sandbox: String,
     codex_approval_policy: String,
     system_prompt: String,
@@ -85,6 +89,7 @@ impl From<&AgentSettingsStored> for AgentSettingsPublic {
             has_api_key: !value.api_key.trim().is_empty(),
             codex_executable: value.codex_executable.clone(),
             codex_model: normalize_codex_model(&value.codex_model),
+            codex_reasoning_effort: normalize_codex_reasoning_effort(&value.codex_reasoning_effort),
             codex_sandbox: value.codex_sandbox.clone(),
             codex_approval_policy: value.codex_approval_policy.clone(),
             system_prompt: value.system_prompt.clone(),
@@ -107,6 +112,8 @@ pub struct AgentSettingsInput {
     api_headers: BTreeMap<String, String>,
     codex_executable: String,
     codex_model: String,
+    #[serde(default)]
+    codex_reasoning_effort: String,
     codex_sandbox: String,
     codex_approval_policy: String,
     system_prompt: String,
@@ -256,13 +263,23 @@ fn normalize_codex_model(value: &str) -> String {
         .to_ascii_lowercase()
         .replace(char::is_whitespace, "");
     match normalized.as_str() {
-        "auto" | "default" | "recommended" | "codex" | "5.5" | "gpt5.5" | "gpt-5.5" => {
-            String::new()
-        }
+        "auto" | "default" | "recommended" | "codex" => String::new(),
+        "5.5" | "gpt5.5" => "gpt-5.5".to_string(),
         "5.4" | "gpt5.4" => "gpt-5.4".to_string(),
         "5.4-mini" | "gpt5.4-mini" => "gpt-5.4-mini".to_string(),
         "spark" | "codex-spark" => "gpt-5.3-codex-spark".to_string(),
         _ => trimmed.to_string(),
+    }
+}
+
+fn normalize_codex_reasoning_effort(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "minimal" => "minimal".to_string(),
+        "low" => "low".to_string(),
+        "medium" => "medium".to_string(),
+        "high" => "high".to_string(),
+        "xhigh" => "xhigh".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -302,6 +319,8 @@ pub fn agent_save_settings(
         input.codex_executable.trim().to_string()
     };
     current.codex_model = normalize_codex_model(&input.codex_model);
+    current.codex_reasoning_effort =
+        normalize_codex_reasoning_effort(&input.codex_reasoning_effort);
     current.codex_sandbox = normalize_sandbox(&input.codex_sandbox);
     current.codex_approval_policy = normalize_approval_policy(&input.codex_approval_policy);
     current.system_prompt = input.system_prompt.trim().to_string();
@@ -1132,7 +1151,7 @@ pub async fn agent_codex_start(
                     "clientInfo": {
                         "name": "inspiration_drawer",
                         "title": "Inspiration Drawer",
-                        "version": "4.2.8"
+                        "version": "4.2.9"
                     }
                 }),
                 Duration::from_secs(20),
@@ -1274,12 +1293,19 @@ mod tests {
     }
 
     #[test]
-    fn codex_model_overrides_default_for_lite_incompatible_values() {
+    fn codex_model_normalization_preserves_explicit_catalog_models() {
         assert_eq!(normalize_codex_model(""), "");
         assert_eq!(normalize_codex_model("default"), "");
-        assert_eq!(normalize_codex_model("5.5"), "");
-        assert_eq!(normalize_codex_model("gpt-5.5"), "");
+        assert_eq!(normalize_codex_model("5.5"), "gpt-5.5");
+        assert_eq!(normalize_codex_model("gpt-5.5"), "gpt-5.5");
         assert_eq!(normalize_codex_model("5.4"), "gpt-5.4");
         assert_eq!(normalize_codex_model("codex-spark"), "gpt-5.3-codex-spark");
+    }
+
+    #[test]
+    fn codex_reasoning_effort_only_accepts_supported_values() {
+        assert_eq!(normalize_codex_reasoning_effort("xhigh"), "xhigh");
+        assert_eq!(normalize_codex_reasoning_effort(" HIGH "), "high");
+        assert_eq!(normalize_codex_reasoning_effort("default"), "");
     }
 }

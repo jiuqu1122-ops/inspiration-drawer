@@ -27,7 +27,9 @@ import type {
   AgentCodexApproval,
   AgentConversation,
   AgentSettings,
+  CodexModelOption,
   CodexRateLimits,
+  CodexReasoningEffort,
   CodexRuntimeStatus,
 } from '../features/agentModel';
 import { getCanvasAgentToolLabel } from '../features/canvasAgentTools';
@@ -42,6 +44,9 @@ type CanvasAgentSidebarProps = {
   codexRateLimits: CodexRateLimits | null;
   codexRateLimitsLoading: boolean;
   codexRateLimitsError: string;
+  codexModels: CodexModelOption[];
+  codexModelsLoading: boolean;
+  codexModelsError: string;
   conversations: AgentConversation[];
   activeConversationId: string;
   codexApprovals: AgentCodexApproval[];
@@ -54,6 +59,7 @@ type CanvasAgentSidebarProps = {
   onCancel: () => void;
   onRetry: () => void;
   onRefreshCodexRateLimits: () => Promise<unknown>;
+  onRefreshCodexModels: () => Promise<CodexModelOption[]>;
   onSaveSettings: (settings: AgentSettings) => Promise<AgentSettings>;
   onResolveToolCall: (id: string, approved: boolean) => void;
   onResolveCodexApproval: (approval: AgentCodexApproval, approved: boolean) => void;
@@ -116,6 +122,20 @@ const CODEX_SANDBOX_OPTIONS: Array<{
   },
 ];
 
+const CODEX_REASONING_LABELS: Record<Exclude<CodexReasoningEffort, ''>, string> = {
+  minimal: '最低',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '超高',
+};
+
+const compactCodexModelLabel = (value: string) => value
+  .replace(/^GPT-/i, '')
+  .replace(/^gpt-/i, '')
+  .replace(/-mini$/i, ' Mini')
+  .replace(/-codex-spark$/i, ' Spark');
+
 export function CanvasAgentSidebar({
   width,
   messages,
@@ -126,6 +146,9 @@ export function CanvasAgentSidebar({
   codexRateLimits,
   codexRateLimitsLoading,
   codexRateLimitsError,
+  codexModels,
+  codexModelsLoading,
+  codexModelsError,
   conversations,
   activeConversationId,
   codexApprovals,
@@ -138,6 +161,7 @@ export function CanvasAgentSidebar({
   onCancel,
   onRetry,
   onRefreshCodexRateLimits,
+  onRefreshCodexModels,
   onSaveSettings,
   onResolveToolCall,
   onResolveCodexApproval,
@@ -149,7 +173,9 @@ export function CanvasAgentSidebar({
   const [showHistory, setShowHistory] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [showAccessMenu, setShowAccessMenu] = useState(false);
+  const [showModelMenu, setShowModelMenu] = useState(false);
   const [savingAccess, setSavingAccess] = useState(false);
+  const [savingModel, setSavingModel] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -169,7 +195,7 @@ export function CanvasAgentSidebar({
   }, [codexStatus?.authenticated, onRefreshCodexRateLimits, settings.provider]);
 
   useEffect(() => {
-    if (!showHistory && !showUsage && !showAccessMenu) return;
+    if (!showHistory && !showUsage && !showAccessMenu && !showModelMenu) return;
     const closePopovers = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (!target) return;
@@ -182,10 +208,13 @@ export function CanvasAgentSidebar({
       if (showAccessMenu && !target.closest('[data-agent-access-menu="true"], [data-agent-access-toggle="true"]')) {
         setShowAccessMenu(false);
       }
+      if (showModelMenu && !target.closest('[data-agent-model-menu="true"], [data-agent-model-toggle="true"]')) {
+        setShowModelMenu(false);
+      }
     };
     document.addEventListener('pointerdown', closePopovers, true);
     return () => document.removeEventListener('pointerdown', closePopovers, true);
-  }, [showAccessMenu, showHistory, showUsage]);
+  }, [showAccessMenu, showHistory, showModelMenu, showUsage]);
 
   const providerReady = settings.provider === 'codex'
     ? !!codexStatus?.authenticated
@@ -198,9 +227,28 @@ export function CanvasAgentSidebar({
     : settings.codexSandbox === 'workspace-write'
       ? '工作区访问'
       : '只读模式';
+  const selectedCodexModel = useMemo(() => {
+    const configured = settings.codexModel.trim();
+    if (configured) {
+      return codexModels.find(model => model.model === configured || model.id === configured) || null;
+    }
+    return codexModels.find(model => model.isDefault) || codexModels[0] || null;
+  }, [codexModels, settings.codexModel]);
+  const selectedReasoningEffort = settings.codexReasoningEffort
+    || selectedCodexModel?.defaultReasoningEffort
+    || 'medium';
+  const reasoningOptions = selectedCodexModel?.supportedReasoningEfforts.length
+    ? selectedCodexModel.supportedReasoningEfforts
+    : (['low', 'medium', 'high', 'xhigh'] as const).map(reasoningEffort => ({
+      reasoningEffort,
+      description: '',
+    }));
   const modelLabel = settings.provider === 'codex'
-    ? settings.codexModel || 'Codex 默认'
+    ? selectedCodexModel?.displayName || settings.codexModel || 'Codex 默认'
     : settings.apiModel || 'API 模型';
+  const modelControlLabel = settings.provider === 'codex'
+    ? `${compactCodexModelLabel(modelLabel)} · ${CODEX_REASONING_LABELS[selectedReasoningEffort]}`
+    : modelLabel;
   const activeConversation = useMemo(
     () => conversations.find(item => item.id === activeConversationId),
     [activeConversationId, conversations],
@@ -269,6 +317,38 @@ export function CanvasAgentSidebar({
     }
   };
 
+  const updateCodexModel = async (model: CodexModelOption) => {
+    if (settings.provider !== 'codex' || savingModel || busy) return;
+    const supportedEfforts = model.supportedReasoningEfforts.map(option => option.reasoningEffort);
+    const nextEffort = settings.codexReasoningEffort
+      && supportedEfforts.includes(settings.codexReasoningEffort)
+      ? settings.codexReasoningEffort
+      : model.defaultReasoningEffort;
+    setSavingModel(true);
+    try {
+      await onSaveSettings({
+        ...settings,
+        codexModel: model.model,
+        codexReasoningEffort: nextEffort,
+      });
+    } finally {
+      setSavingModel(false);
+    }
+  };
+
+  const updateCodexReasoningEffort = async (
+    codexReasoningEffort: Exclude<CodexReasoningEffort, ''>,
+  ) => {
+    if (settings.provider !== 'codex' || savingModel || busy) return;
+    setSavingModel(true);
+    try {
+      await onSaveSettings({ ...settings, codexReasoningEffort });
+      setShowModelMenu(false);
+    } finally {
+      setSavingModel(false);
+    }
+  };
+
   return (
     <aside
       data-no-drag="true"
@@ -308,7 +388,7 @@ export function CanvasAgentSidebar({
         </div>
 
         <div className="flex items-center gap-0.5">
-          <button type="button" data-agent-history-toggle="true" onClick={() => { setShowHistory(value => !value); setShowUsage(false); setShowAccessMenu(false); }} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-stone-400 hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200'}`} title="会话历史">
+          <button type="button" data-agent-history-toggle="true" onClick={() => { setShowHistory(value => !value); setShowUsage(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-stone-400 hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200'}`} title="会话历史">
             <History className="h-3.5 w-3.5" />
           </button>
           <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-blue-600 dark:hover:bg-white/8 dark:hover:text-blue-300" title="新对话">
@@ -541,6 +621,77 @@ export function CanvasAgentSidebar({
               })}
             </div>
           )}
+          {showModelMenu && settings.provider === 'codex' && (
+            <div data-agent-model-menu="true" className="absolute bottom-12 right-2 z-50 w-[268px] overflow-hidden rounded-[18px] border border-blue-100/90 bg-white/98 p-1.5 shadow-[0_20px_56px_rgba(30,64,104,0.22)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/98">
+              <div className="flex items-center justify-between px-2 pb-1 pt-1">
+                <span className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">推理</span>
+                {savingModel && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
+              </div>
+              <div className="grid grid-cols-4 gap-1 px-1 pb-1.5">
+                {reasoningOptions.map(option => {
+                  const active = option.reasoningEffort === selectedReasoningEffort;
+                  return (
+                    <button
+                      key={option.reasoningEffort}
+                      type="button"
+                      onClick={() => void updateCodexReasoningEffort(option.reasoningEffort)}
+                      disabled={savingModel || busy}
+                      title={option.description || `推理强度：${CODEX_REASONING_LABELS[option.reasoningEffort]}`}
+                      className={`flex h-8 items-center justify-center rounded-[10px] text-[10px] font-semibold transition-colors disabled:cursor-wait disabled:opacity-55 ${active ? 'bg-blue-500 text-white shadow-sm' : 'text-stone-600 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-300 dark:hover:bg-white/7 dark:hover:text-blue-200'}`}
+                    >
+                      {CODEX_REASONING_LABELS[option.reasoningEffort]}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="border-t border-stone-100 px-1 pt-1.5 dark:border-white/8">
+                <div className="flex items-center justify-between px-1 pb-1">
+                  <span className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">模型</span>
+                  <button
+                    type="button"
+                    onClick={() => void onRefreshCodexModels().catch(() => {})}
+                    disabled={codexModelsLoading}
+                    className="flex h-6 w-6 items-center justify-center rounded-[8px] text-stone-400 hover:bg-blue-50 hover:text-blue-600 disabled:opacity-45 dark:hover:bg-white/7 dark:hover:text-blue-300"
+                    title="刷新可用模型"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${codexModelsLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+                <div className="max-h-[190px] space-y-0.5 overflow-y-auto pr-0.5 [scrollbar-width:thin]">
+                  {codexModels.map(model => {
+                    const active = selectedCodexModel?.model === model.model;
+                    return (
+                      <button
+                        key={model.id || model.model}
+                        type="button"
+                        onClick={() => void updateCodexModel(model)}
+                        disabled={savingModel || busy}
+                        className={`flex w-full items-center gap-2 rounded-[11px] px-2 py-1.5 text-left transition-colors disabled:cursor-wait disabled:opacity-55 ${active ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-600 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-white/6'}`}
+                        title={model.description || model.model}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[10px] font-semibold">{model.displayName}</span>
+                          <span className="mt-0.5 block truncate text-[8px] font-normal opacity-55">{model.model}</span>
+                        </span>
+                        {active && <Check className="h-3.5 w-3.5 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                  {codexModelsLoading && codexModels.length === 0 && (
+                    <div className="flex items-center justify-center gap-1.5 px-2 py-4 text-[9px] text-stone-400">
+                      <LoaderCircle className="h-3 w-3 animate-spin" /> 正在读取账户可用模型…
+                    </div>
+                  )}
+                  {!codexModelsLoading && codexModels.length === 0 && (
+                    <div className="px-2 py-3 text-[9px] leading-4 text-stone-400 dark:text-stone-500">
+                      {codexModelsError || '暂无可用模型，请刷新后重试。'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
           <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
@@ -557,6 +708,7 @@ export function CanvasAgentSidebar({
                   setShowAccessMenu(value => !value);
                   setShowHistory(false);
                   setShowUsage(false);
+                  setShowModelMenu(false);
                 }}
                 disabled={savingAccess}
                 className={`flex h-8 max-w-[124px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors disabled:cursor-wait disabled:opacity-70 ${showAccessMenu ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-500 hover:bg-amber-50 hover:text-amber-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-amber-100'}`}
@@ -570,12 +722,35 @@ export function CanvasAgentSidebar({
 
             <div className="flex shrink-0 items-center gap-1">
               {settings.provider === 'codex' && (
-                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); }} className={`flex h-8 items-center gap-1.5 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
+                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-8 items-center gap-1.5 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
                   <span className="relative flex h-4 w-4 items-center justify-center rounded-full" style={{ background: `conic-gradient(rgb(59 130 246) ${Math.max(0, primaryRemaining || 0)}%, rgba(148,163,184,.22) 0)` }}><span className="h-2.5 w-2.5 rounded-full bg-white dark:bg-stone-900" /></span>
                   <span>{primaryRemaining == null ? '用量' : `${primaryRemaining}%`}</span>
                 </button>
               )}
-              <div className="flex h-8 max-w-[92px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium text-stone-500 dark:text-stone-400" title={modelLabel}><Gauge className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{modelLabel}</span><ChevronDown className="h-3 w-3 shrink-0 opacity-45" /></div>
+              {settings.provider === 'codex' ? (
+                <button
+                  type="button"
+                  data-agent-model-toggle="true"
+                  onClick={() => {
+                    setShowModelMenu(value => !value);
+                    setShowHistory(false);
+                    setShowUsage(false);
+                    setShowAccessMenu(false);
+                    if (codexModels.length === 0 && !codexModelsLoading) {
+                      void onRefreshCodexModels().catch(() => {});
+                    }
+                  }}
+                  disabled={savingModel || busy || !providerReady}
+                  className={`flex h-8 max-w-[128px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors disabled:opacity-45 ${showModelMenu ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`}
+                  title={`模型：${modelLabel}；推理：${CODEX_REASONING_LABELS[selectedReasoningEffort]}`}
+                >
+                  {savingModel ? <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Gauge className="h-3.5 w-3.5 shrink-0" />}
+                  <span className="truncate">{modelControlLabel}</span>
+                  <ChevronDown className={`h-3 w-3 shrink-0 opacity-45 transition-transform ${showModelMenu ? 'rotate-180' : ''}`} />
+                </button>
+              ) : (
+                <div className="flex h-8 max-w-[92px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium text-stone-500 dark:text-stone-400" title={modelLabel}><Gauge className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{modelLabel}</span></div>
+              )}
               {busy ? (
                 <button type="button" onClick={onCancel} className="flex h-9 w-9 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-transform hover:scale-105 dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
               ) : (

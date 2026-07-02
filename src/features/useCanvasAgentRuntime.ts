@@ -7,6 +7,7 @@ import {
   createAgentConversation,
   createAgentId,
   normalizeCodexModelOverride,
+  normalizeCodexReasoningEffort,
   type AgentCanvasContext,
   type AgentCanvasVisualReference,
   type AgentCanvasToolExecutor,
@@ -18,6 +19,7 @@ import {
   type AgentToolCall,
   type CodexInstallProgress,
   type CodexLoginInfo,
+  type CodexModelOption,
   type CodexRateLimits,
   type CodexRateLimitWindow,
   type CodexRuntimeStatus,
@@ -91,6 +93,7 @@ const buildCodexThreadKey = (
 ) => JSON.stringify({
   protocol: CANVAS_AGENT_CODEX_THREAD_PROTOCOL,
   model: forceDefaultModel ? '' : normalizeCodexModelOverride(settings.codexModel),
+  reasoningEffort: normalizeCodexReasoningEffort(settings.codexReasoningEffort),
   sandbox: settings.codexSandbox,
   approvalPolicy: settings.codexApprovalPolicy,
   systemPrompt: settings.systemPrompt,
@@ -104,6 +107,7 @@ const normalizeAgentSettings = (value: unknown): AgentSettings => {
     provider: record.provider === 'codex' ? 'codex' : 'openai-compatible',
     apiHeaders: record.apiHeaders && typeof record.apiHeaders === 'object' ? record.apiHeaders : {},
     codexModel: normalizeCodexModelOverride(record.codexModel),
+    codexReasoningEffort: normalizeCodexReasoningEffort(record.codexReasoningEffort),
     codexSandbox: ['workspace-write', 'danger-full-access'].includes(String(record.codexSandbox))
       ? record.codexSandbox as AgentSettings['codexSandbox']
       : 'read-only',
@@ -237,6 +241,39 @@ const asRecord = (value: unknown): Record<string, unknown> => (
     : {}
 );
 
+const normalizeCodexModelOption = (value: unknown): CodexModelOption | null => {
+  const record = asRecord(value);
+  const model = String(record.model || record.id || '').trim();
+  if (!model) return null;
+  const supportedReasoningEfforts = (Array.isArray(record.supportedReasoningEfforts)
+    ? record.supportedReasoningEfforts
+    : [])
+    .map(option => {
+      const optionRecord = asRecord(option);
+      const reasoningEffort = normalizeCodexReasoningEffort(optionRecord.reasoningEffort as string);
+      if (!reasoningEffort) return null;
+      return {
+        reasoningEffort,
+        description: String(optionRecord.description || '').trim(),
+      };
+    })
+    .filter((option): option is NonNullable<typeof option> => !!option);
+  const catalogDefault = normalizeCodexReasoningEffort(record.defaultReasoningEffort as string);
+  return {
+    id: String(record.id || model),
+    model,
+    displayName: String(record.displayName || model).trim(),
+    description: String(record.description || '').trim(),
+    hidden: record.hidden === true,
+    supportedReasoningEfforts,
+    defaultReasoningEffort: catalogDefault || supportedReasoningEfforts[0]?.reasoningEffort || 'medium',
+    inputModalities: Array.isArray(record.inputModalities)
+      ? record.inputModalities.map(item => String(item))
+      : [],
+    isDefault: record.isDefault === true,
+  };
+};
+
 const normalizeCodexRateLimitWindow = (
   value: unknown,
   fallback: CodexRateLimitWindow | null = null,
@@ -333,6 +370,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const [codexRateLimits, setCodexRateLimits] = useState<CodexRateLimits | null>(null);
   const [codexRateLimitsLoading, setCodexRateLimitsLoading] = useState(false);
   const [codexRateLimitsError, setCodexRateLimitsError] = useState('');
+  const [codexModels, setCodexModels] = useState<CodexModelOption[]>([]);
+  const [codexModelsLoading, setCodexModelsLoading] = useState(false);
+  const [codexModelsError, setCodexModelsError] = useState('');
 
   const conversationsRef = useRef(conversations);
   const activeConversationIdRef = useRef(activeConversationId);
@@ -750,6 +790,47 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     return status;
   }, [installCodex]);
 
+  const refreshCodexModels = useCallback(async () => {
+    setCodexModelsLoading(true);
+    setCodexModelsError('');
+    try {
+      const status = await ensureCodexStarted();
+      if (!status.authenticated) throw new Error('请先登录 ChatGPT 账户');
+      const values: CodexModelOption[] = [];
+      let cursor = '';
+      for (let page = 0; page < 5; page += 1) {
+        const result = await invoke<Record<string, unknown>>('agent_codex_request', {
+          method: 'model/list',
+          params: {
+            limit: 100,
+            includeHidden: false,
+            ...(cursor ? { cursor } : {}),
+          },
+        });
+        const pageValues = (Array.isArray(result.data) ? result.data : [])
+          .map(normalizeCodexModelOption)
+          .filter((model): model is CodexModelOption => !!model && !model.hidden);
+        values.push(...pageValues);
+        cursor = typeof result.nextCursor === 'string' ? result.nextCursor : '';
+        if (!cursor) break;
+      }
+      const seen = new Set<string>();
+      const next = values.filter(model => {
+        if (seen.has(model.model)) return false;
+        seen.add(model.model);
+        return true;
+      });
+      if (next.length === 0) throw new Error('Codex 没有返回可选模型');
+      setCodexModels(next);
+      return next;
+    } catch (error) {
+      setCodexModelsError(String(error));
+      throw error;
+    } finally {
+      setCodexModelsLoading(false);
+    }
+  }, [ensureCodexStarted]);
+
   const refreshCodexRateLimits = useCallback(async () => {
     setCodexRateLimitsLoading(true);
     setCodexRateLimitsError('');
@@ -795,10 +876,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     }
 
     const codexModel = options.forceDefaultModel ? '' : normalizeCodexModelOverride(current.codexModel);
+    const reasoningEffort = normalizeCodexReasoningEffort(current.codexReasoningEffort);
     const result = await invoke<Record<string, unknown>>('agent_codex_request', {
       method: 'thread/start',
       params: {
         ...(codexModel ? { model: codexModel } : {}),
+        ...(reasoningEffort ? { config: { model_reasoning_effort: reasoningEffort } } : {}),
         sandbox: current.codexSandbox,
         approvalPolicy: current.codexApprovalPolicy,
         baseInstructions: systemPrompt,
@@ -876,6 +959,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       assistantMessageId,
     };
     try {
+      const turnModel = forceDefaultCodexModel
+        ? ''
+        : normalizeCodexModelOverride(settingsRef.current.codexModel);
+      const reasoningEffort = normalizeCodexReasoningEffort(
+        settingsRef.current.codexReasoningEffort,
+      );
       const startTurn = async (text: string, withOutputSchema: boolean) => {
         const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId);
         const response = await invoke<Record<string, unknown>>('agent_codex_request', {
@@ -885,6 +974,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
             input: buildCodexUserInput(text, visualReferences),
             ...(withOutputSchema ? { outputSchema: CANVAS_AGENT_ACTION_SCHEMA } : {}),
             approvalPolicy: settingsRef.current.codexApprovalPolicy,
+            ...(turnModel ? { model: turnModel } : {}),
+            ...(reasoningEffort ? { effort: reasoningEffort } : {}),
           },
         });
         const turn = asRecord(response.turn);
@@ -1214,6 +1305,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     setCodexLoginInfo(null);
     setCodexRateLimits(null);
     setCodexRateLimitsError('');
+    setCodexModels([]);
+    setCodexModelsError('');
     await refreshCodexStatus();
   }, [ensureCodexStarted, refreshCodexStatus]);
 
@@ -1237,11 +1330,15 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     codexRateLimits,
     codexRateLimitsLoading,
     codexRateLimitsError,
+    codexModels,
+    codexModelsLoading,
+    codexModelsError,
     codexInstallProgress,
     codexLoginInfo,
     installCodex,
     refreshCodexStatus,
     refreshCodexRateLimits,
+    refreshCodexModels,
     startCodexLogin,
     openCodexLoginUrl,
     logoutCodex,
