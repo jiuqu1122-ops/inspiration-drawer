@@ -421,7 +421,7 @@ export function AgentSettingsSection({
               </label>
               <div className="grid grid-cols-2 gap-1.5">
                 <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
-                  画布操作审批
+                  软件操作审批
                   <select
                     value={draft.approvalMode}
                     onChange={event => setDraft(current => ({ ...current, approvalMode: event.target.value === 'auto' ? 'auto' : 'ask' }))}

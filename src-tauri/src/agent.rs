@@ -1254,7 +1254,7 @@ pub async fn agent_codex_start(
                     "clientInfo": {
                         "name": "inspiration_drawer",
                         "title": "Inspiration Drawer",
-                        "version": "4.3.0"
+                        "version": "4.3.1"
                     }
                 }),
                 Duration::from_secs(20),

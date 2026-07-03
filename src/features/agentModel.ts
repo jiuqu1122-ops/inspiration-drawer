@@ -138,6 +138,7 @@ export type AgentCanvasVisualReference = {
 };
 
 export type AgentCanvasContext = {
+  surface?: 'drawer' | 'canvas';
   selectedIds: string[];
   selectedItems?: AgentCanvasSelectionItem[];
   visualReferences?: AgentCanvasVisualReference[];
@@ -151,6 +152,22 @@ export type AgentCanvasContext = {
   }>;
   presets: Array<{ id: string; label: string; hint: string }>;
   workflows: Array<{ id: string; label: string; hint: string }>;
+  drawer?: {
+    activeTab: string;
+    activeFolderId: string;
+    searchQuery: string;
+    pinned: boolean;
+    folders: Array<{ id: string; name: string; parentId?: string }>;
+    items: Array<{
+      id: string;
+      type: string;
+      name: string;
+      content?: string;
+      folderId?: string;
+      quickAccess?: boolean;
+      remarks?: string[];
+    }>;
+  };
 };
 
 export type AgentCanvasToolExecutor = (

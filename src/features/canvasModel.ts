@@ -13,7 +13,7 @@ export type CanvasImageItem = {
   workflowGroup?: unknown;
 };
 
-export type CanvasAiProvider = 'openai-compatible' | 'xais-chat' | 'aoduo-ai';
+export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'aoduo-ai';
 
 export type CanvasAiMediaType = 'image' | 'video';
 

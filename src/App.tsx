@@ -9,7 +9,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info
+  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
@@ -32,6 +32,7 @@ import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteSchedule
 import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
 import { CanvasAgentSidebar } from './components/CanvasAgentSidebar';
+import { DrawerAgentPanel } from './components/DrawerAgentPanel';
 import { AgentSettingsSection } from './components/AgentSettingsSection';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
@@ -154,6 +155,10 @@ import {
   AODUO_AI_IMAGE_MODEL_DEFAULT,
   AODUO_AI_IMAGE_MODEL_OPTIONS,
   CANVAS_AI_PROVIDER_OPTIONS,
+  NEW_API_ENDPOINT_DEFAULT,
+  NEW_API_ENDPOINT_PLACEHOLDER,
+  NEW_API_IMAGE_MODEL_DEFAULT,
+  NEW_API_IMAGE_MODEL_OPTIONS,
   OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS,
@@ -165,7 +170,9 @@ import {
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
   getXaisImage2RatioOptions,
+  isOpenAiLikeCanvasAiProvider,
   isXaisImage2Model,
+  normalizeNewApiBaseEndpoint,
   normalizeXaisImage2Model,
   resolveXaisImage2Ratio,
 } from './features/canvasAiImage';
@@ -708,6 +715,7 @@ const CANVAS_AI_API_KEY_STORAGE_PREFIX = 'drawer_canvas_ai_api_key_';
 const CANVAS_AI_ENDPOINT_STORAGE_KEY = 'drawer_canvas_ai_endpoint';
 const CANVAS_AI_ENDPOINT_STORAGE_PREFIX = 'drawer_canvas_ai_endpoint_';
 const CANVAS_AI_OPENAI_MODELS_STORAGE_KEY = 'drawer_canvas_ai_openai_models';
+const CANVAS_AI_NEW_API_MODELS_STORAGE_KEY = 'drawer_canvas_ai_new_api_models';
 const CANVAS_AI_XAIS_MODELS_STORAGE_KEY = 'drawer_canvas_ai_xais_models';
 const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
@@ -747,7 +755,7 @@ const CANVAS_AI_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_PROVI
   label: provider.label,
 }));
 const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'openai-compatible', 'aoduo-ai'];
+const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'openai-compatible', 'aoduo-ai'];
 const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_RATIOS.map(ratio => ({
   value: ratio,
   label: ratio,
@@ -1841,6 +1849,8 @@ const getCanvasAiDefaultModel = (provider: CanvasAiProvider, mediaType: 'image' 
     ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
     : provider === 'aoduo-ai'
       ? AODUO_AI_IMAGE_MODEL_DEFAULT
+    : provider === 'new-api'
+      ? NEW_API_IMAGE_MODEL_DEFAULT
     : OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT
 );
 const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
@@ -1848,6 +1858,8 @@ const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
     ? XAIS_CHAT_ENDPOINT_DEFAULT
     : provider === 'aoduo-ai'
       ? AODUO_AI_ENDPOINT_DEFAULT
+    : provider === 'new-api'
+      ? NEW_API_ENDPOINT_DEFAULT
     : provider === 'openai-compatible'
       ? OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
       : ''
@@ -1859,11 +1871,21 @@ const getCanvasAiModelOptions = (provider: CanvasAiProvider, mediaType: 'image' 
     ? XAIS_CHAT_IMAGE_MODEL_OPTIONS
     : provider === 'aoduo-ai'
       ? AODUO_AI_IMAGE_MODEL_OPTIONS
+    : provider === 'new-api'
+      ? NEW_API_IMAGE_MODEL_OPTIONS
     : OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS
 );
 const readStoredCanvasAiOpenAiModels = () => {
   try {
     const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_OPENAI_MODELS_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : [];
+  } catch (_) {
+    return [];
+  }
+};
+const readStoredCanvasAiNewApiModels = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_NEW_API_MODELS_STORAGE_KEY) || '[]');
     return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : [];
   } catch (_) {
     return [];
@@ -1877,11 +1899,15 @@ const readStoredCanvasAiXaisModels = () => {
     return [];
   }
 };
-const isCanvasAiEndpointEditable = (provider: CanvasAiProvider) => provider === 'openai-compatible' || provider === 'xais-chat';
-const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => provider === 'openai-compatible';
-const isCanvasAiRemoteModelProvider = (provider: CanvasAiProvider) => provider === 'openai-compatible' || provider === 'xais-chat';
+const isCanvasAiEndpointEditable = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat';
+const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider);
+const isCanvasAiRemoteModelProvider = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat';
 const getCanvasAiEndpointPlaceholder = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat' ? XAIS_CHAT_ENDPOINT_DEFAULT : OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
+  provider === 'xais-chat'
+    ? XAIS_CHAT_ENDPOINT_DEFAULT
+    : provider === 'new-api'
+      ? NEW_API_ENDPOINT_PLACEHOLDER
+      : OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
 );
 const normalizeCanvasAiXaisEndpoint = (endpoint: string) => {
   const trimmed = (endpoint || XAIS_CHAT_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
@@ -1897,11 +1923,13 @@ const getCanvasAiEndpointForRequest = (provider: CanvasAiProvider, endpoint: str
     }
     return normalizeCanvasAiXaisEndpoint(trimmed);
   }
+  if (provider === 'new-api') return normalizeNewApiBaseEndpoint(endpoint);
   return isCanvasAiEndpointEditable(provider)
     ? endpoint
     : getCanvasAiDefaultEndpoint(provider);
 };
 const getCanvasAiEndpointForModels = (provider: CanvasAiProvider, endpoint: string) => {
+  if (provider === 'new-api') return normalizeNewApiBaseEndpoint(endpoint);
   if (provider !== 'xais-chat') return endpoint.trim();
   const base = normalizeCanvasAiXaisEndpoint(endpoint);
   return /\/v1$/i.test(base) ? base : `${base}/v1`;
@@ -1942,7 +1970,11 @@ const isCanvasAiXaisWorkerModel = (model?: string | null) => {
     || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
 };
 const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat' ? CANVAS_AI_XAIS_MODELS_STORAGE_KEY : CANVAS_AI_OPENAI_MODELS_STORAGE_KEY
+  provider === 'xais-chat'
+    ? CANVAS_AI_XAIS_MODELS_STORAGE_KEY
+    : provider === 'new-api'
+      ? CANVAS_AI_NEW_API_MODELS_STORAGE_KEY
+      : CANVAS_AI_OPENAI_MODELS_STORAGE_KEY
 );
 const sortCanvasAiModelsForProvider = (provider: CanvasAiProvider, models: string[]) => {
   if (provider !== 'xais-chat') return [...models].sort((a, b) => a.localeCompare(b));
@@ -1990,6 +2022,8 @@ const getStoredCanvasAiEndpoint = (provider: CanvasAiProvider) => {
 const getCanvasAiApiKeyPlaceholder = (provider: CanvasAiProvider) => (
   provider === 'xais-chat'
     ? 'Xais / DCHAI API Key'
+    : provider === 'new-api'
+      ? 'New API Key'
     : provider === 'aoduo-ai'
       ? '中转2 API Key'
       : 'API Key'
@@ -2449,6 +2483,77 @@ function SnipOverlay() {
   );
 }
 
+let agentUiElementSequence = 0;
+
+const isAgentUiElementVisible = (element: HTMLElement) => {
+  const style = window.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  return style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && Number(style.opacity || 1) > 0
+    && rect.width > 1
+    && rect.height > 1
+    && !element.closest('[aria-hidden="true"]');
+};
+
+const getVisibleAgentUiSnapshot = () => Array.from(document.querySelectorAll<HTMLElement>(
+  'button, input, textarea, select, a[href], [role="button"], [contenteditable="true"]',
+)).filter(element => {
+  return isAgentUiElementVisible(element);
+}).slice(0, 240).map(element => {
+  if (!element.dataset.agentUiId) {
+    agentUiElementSequence += 1;
+    element.dataset.agentUiId = `ui-${agentUiElementSequence}`;
+  }
+  const input = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+    ? element
+    : null;
+  const select = element instanceof HTMLSelectElement ? element : null;
+  const text = String(
+    element.getAttribute('aria-label')
+      || element.getAttribute('title')
+      || element.textContent
+      || input?.placeholder
+      || element.getAttribute('name')
+      || '',
+  ).replace(/\s+/g, ' ').trim().slice(0, 120);
+  return {
+    elementId: element.dataset.agentUiId,
+    tag: element.tagName.toLowerCase(),
+    type: input?.type || element.getAttribute('role') || undefined,
+    text,
+    value: input?.type === 'password'
+      ? '[redacted]'
+      : String(input?.value ?? select?.value ?? '').slice(0, 160),
+    disabled: 'disabled' in element ? Boolean((element as HTMLButtonElement).disabled) : false,
+  };
+});
+
+const setAgentUiElementValue = (element: HTMLElement, value: string) => {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    const prototype = element instanceof HTMLInputElement
+      ? HTMLInputElement.prototype
+      : HTMLTextAreaElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (setter) setter.call(element, value);
+    else element.value = value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+  if (element instanceof HTMLSelectElement) {
+    element.value = value;
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+  if (element.isContentEditable) {
+    element.textContent = value;
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    return;
+  }
+  throw new Error('目标控件不支持输入');
+};
+
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
@@ -2498,6 +2603,8 @@ function MainApp() {
   const [isCanvasGeneratedListVisible, setIsCanvasGeneratedListVisible] = useState(() => localStorage.getItem('drawer_canvas_generated_list_visible') !== 'false');
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [canvasAgentInput, setCanvasAgentInput] = useState('');
+  const [isDrawerAgentOpen, setIsDrawerAgentOpen] = useState(false);
+  const [drawerAgentInput, setDrawerAgentInput] = useState('');
   const [canvasTextAgentRunningIds, setCanvasTextAgentRunningIds] = useState<string[]>([]);
   const [canvasAgentSidebarWidth, setCanvasAgentSidebarWidth] = useState(readAgentSidebarWidth);
   const [showCanvasExitPrompt, setShowCanvasExitPrompt] = useState(false);
@@ -2535,6 +2642,7 @@ function MainApp() {
   const [canvasAiApiKey, setCanvasAiApiKey] = useState(() => getStoredCanvasAiApiKey(getStoredCanvasAiProvider()));
   const [canvasAiEndpoint, setCanvasAiEndpoint] = useState(() => getStoredCanvasAiEndpoint(getStoredCanvasAiProvider()));
   const [canvasAiOpenAiModels, setCanvasAiOpenAiModels] = useState<string[]>(() => readStoredCanvasAiOpenAiModels());
+  const [canvasAiNewApiModels, setCanvasAiNewApiModels] = useState<string[]>(() => readStoredCanvasAiNewApiModels());
   const [canvasAiXaisModels, setCanvasAiXaisModels] = useState<string[]>(() => readStoredCanvasAiXaisModels());
   const [isRefreshingCanvasAiOpenAiModels, setIsRefreshingCanvasAiOpenAiModels] = useState(false);
   const [canvasAiOpenAiModelError, setCanvasAiOpenAiModelError] = useState('');
@@ -2773,6 +2881,7 @@ function MainApp() {
   useEffect(() => { localStorage.setItem('drawer_canvas_generated_list_visible', isCanvasGeneratedListVisible ? 'true' : 'false'); }, [isCanvasGeneratedListVisible]);
   useEffect(() => {
     if (!isCanvasMode) setIsAgentChatOpen(false);
+    else setIsDrawerAgentOpen(false);
   }, [isCanvasMode]);
   useEffect(() => {
     localStorage.setItem(CANVAS_AI_PROVIDER_STORAGE_KEY, canvasAiProvider);
@@ -3915,6 +4024,38 @@ function MainApp() {
       });
   }, [canvasAiOpenAiModels, canvasItems]);
 
+  const canvasAiNewApiModelOptions = useMemo(() => {
+    const merged = new Set<string>();
+    canvasAiNewApiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
+    const remoteModelSet = new Set(canvasAiNewApiModels.map(model => model.trim()).filter(Boolean));
+    if (canvasAiNewApiModels.length === 0) {
+      NEW_API_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
+    }
+    canvasItemsRef.current.forEach(item => {
+      if (item.ai?.type === 'image-generator' && item.ai?.provider === 'new-api' && item.ai.model?.trim()) {
+        const model = item.ai.model.trim();
+        if (remoteModelSet.size === 0 || remoteModelSet.has(model)) merged.add(model);
+      }
+    });
+    return Array.from(merged)
+      .sort((a, b) => {
+        const aImage = isCanvasAiLikelyOpenAiImageModel(a);
+        const bImage = isCanvasAiLikelyOpenAiImageModel(b);
+        if (aImage !== bImage) return aImage ? -1 : 1;
+        return a.localeCompare(b);
+      })
+      .map(value => {
+        const likelyImage = isCanvasAiLikelyOpenAiImageModel(value);
+        return {
+          value,
+          label: value,
+          meta: likelyImage ? '图像' : '未知',
+          hint: likelyImage ? '模型名看起来支持图像生成' : '未能从模型名判断图像能力，可手动测试',
+          section: likelyImage ? '可能支持图像' : '其它模型',
+        };
+      });
+  }, [canvasAiNewApiModels, canvasItems]);
+
   const canvasAiXaisModelOptions = useMemo(() => {
     const merged = new Set<string>();
     canvasAiXaisModels.forEach(model => {
@@ -3938,10 +4079,20 @@ function MainApp() {
       ? XAIS_CHAT_VIDEO_MODEL_OPTIONS
       : provider === 'xais-chat'
       ? canvasAiXaisModelOptions
+      : provider === 'new-api'
+      ? canvasAiNewApiModelOptions
       : provider === 'openai-compatible'
       ? canvasAiOpenAiModelOptions
       : getCanvasAiModelOptions(provider, mediaType)
   );
+  const getCanvasAiResolvedModel = (provider: CanvasAiProvider, model?: string | null, mediaType: 'image' | 'video' = 'image') => {
+    const trimmed = String(model || '').trim();
+    if (provider === 'new-api' && mediaType === 'image') {
+      const remoteModels = canvasAiNewApiModels.map(value => value.trim()).filter(Boolean);
+      if (remoteModels.length > 0 && (!trimmed || !remoteModels.includes(trimmed))) return remoteModels[0];
+    }
+    return trimmed || getCanvasAiDefaultModel(provider, mediaType);
+  };
   const canvasAiPromptPresets = useMemo(() => {
     const defaultIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
     const customById = new Map(customCanvasAiPromptPresets.map(preset => [preset.id, preset]));
@@ -4007,6 +4158,8 @@ function MainApp() {
   }, [canvasWorkflowTemplates]);
   const canvasAiRemoteModelCount = canvasAiProvider === 'xais-chat'
     ? canvasAiXaisModels.length
+    : canvasAiProvider === 'new-api'
+      ? canvasAiNewApiModels.length
     : canvasAiOpenAiModels.length;
   const canvasAiRemoteModelEmptyHint = canvasAiProvider === 'xais-chat'
     ? '填入 Key 后自动读取 /v1/models'
@@ -4084,12 +4237,14 @@ function MainApp() {
         .filter(model => model && (provider !== 'xais-chat' || isCanvasAiXaisImageModel(model))))));
       if (provider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
+      } else if (provider === 'new-api') {
+        setCanvasAiNewApiModels(normalized);
       } else {
         setCanvasAiOpenAiModels(normalized);
       }
       localStorage.setItem(getCanvasAiRemoteStorageKey(provider), JSON.stringify(normalized));
       const preferredDefaultModel = getCanvasAiDefaultModel(provider);
-      const preferredImageModel = provider === 'openai-compatible'
+      const preferredImageModel = isOpenAiLikeCanvasAiProvider(provider)
         ? normalized.find(isCanvasAiLikelyOpenAiImageModel)
         : '';
       const nextDefaultModel = normalized.includes(preferredDefaultModel)
@@ -4193,7 +4348,7 @@ function MainApp() {
     void refreshLicenseStatus(true);
   }, []);
 
-  const handleOpenTextInput = () => { setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
+  const handleOpenTextInput = () => { setIsDrawerAgentOpen(false); setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
   const normalizeWebImageCollectorTag = (value: string) => (
     String(value || '')
       .trim()
@@ -4291,6 +4446,7 @@ function MainApp() {
 
   const openWebImageCollector = (reference: WebImageCollectorReference | null = null) => {
     if (isCollectingWebImages || isGeneratingWebImageQuery) return;
+    setIsDrawerAgentOpen(false);
     setWebImageCollectorReference(reference);
     setWebImageCollectorStatus('');
     setShowWebImageCollector(true);
@@ -4855,6 +5011,7 @@ function MainApp() {
   };
   const toggleSettings = () => {
     if (!showSettings) {
+      setIsDrawerAgentOpen(false);
       setShowSettings(true); setIsSearchActive(false); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
     } else {
       setShowSettings(false);
@@ -10229,8 +10386,8 @@ function MainApp() {
     referenceFormat: 'any' | 'jpeg' = 'any'
   ) => {
     const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
-    const inputMode = provider === 'openai-compatible' ? 'stable' : mode;
-    const useDirectLocalInputs = provider === 'openai-compatible' || delivery === 'direct';
+    const inputMode = isOpenAiLikeCanvasAiProvider(provider) ? 'stable' : mode;
+    const useDirectLocalInputs = isOpenAiLikeCanvasAiProvider(provider) || delivery === 'direct';
     const requireRemoteInputs = delivery === 'remote-only';
     const inputImageItems = getCanvasImageInputBufferItemsForNode(canvasItem, sourceItems);
     const result: string[] = [];
@@ -12686,14 +12843,14 @@ function MainApp() {
     });
     let temporaryReferenceShares: TemporaryReferenceShare[] = [];
     try {
-      const requestModel = target.ai.model || getCanvasAiDefaultModel(provider, mediaType);
+      const requestModel = getCanvasAiResolvedModel(provider, target.ai.model, mediaType);
       const isXaisWorkerRequest = mediaType === 'video' || (provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel));
       const xaisReferenceFormat: 'any' | 'jpeg' = mediaType !== 'video' && provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel)
         ? 'jpeg'
         : 'any';
-      const useDirectReferenceImages = provider === 'openai-compatible'
+      const useDirectReferenceImages = isOpenAiLikeCanvasAiProvider(provider)
         || (provider === 'xais-chat' && !isXaisWorkerRequest);
-      const inputMode = provider === 'openai-compatible'
+      const inputMode = isOpenAiLikeCanvasAiProvider(provider)
         || (provider === 'xais-chat' && !isXaisWorkerRequest)
         ? 'stable'
         : 'remote-first';
@@ -17457,6 +17614,7 @@ useEffect(() => {
     !!selectedImage ||
     !!selectedVideo ||
     isTextEntryActive() ||
+    isDrawerAgentOpen ||
     showTextInput ||
     showWebImageCollector ||
     showFolderModal ||
@@ -17480,6 +17638,7 @@ useEffect(() => {
     !!selectedImage ||
     !!selectedVideo ||
     isTextEntryActive() ||
+    isDrawerAgentOpen ||
     showTextInput ||
     showWebImageCollector ||
     editingFolderId !== null ||
@@ -18184,6 +18343,35 @@ useEffect(() => {
     [canvasItems, canvasSelectedIds],
   );
 
+  const drawerAgentSelectedItems = useMemo<AgentCanvasSelectionItem[]>(() => {
+    const selectedSet = new Set(selectedIds);
+    return items.filter(item => selectedSet.has(item.id)).slice(0, 20).map(item => {
+      const source = item.url || item.thumbnail || (item.path ? convertFileSrc(item.path) : '');
+      const mediaType = item.type === 'video' ? 'video' : item.type === 'image' ? 'image' : null;
+      const localPath = item.path && !/^(?:https?:|data:|asset:)/i.test(item.path) ? item.path : undefined;
+      const references: AgentCanvasVisualReference[] = mediaType && source
+        ? [{
+            id: `drawer-${item.id}`,
+            nodeId: item.id,
+            name: item.name || item.content || '抽屉素材',
+            mediaType,
+            source,
+            path: localPath,
+            thumbnail: item.thumbnail || source,
+          }]
+        : [];
+      return {
+        id: item.id,
+        name: item.name || item.content || '抽屉素材',
+        type: item.type,
+        thumbnail: item.thumbnail || (item.type === 'image' ? source : undefined),
+        prompt: item.remark || item.content || undefined,
+        referenceCount: references.length,
+        references: references.length > 0 ? references : undefined,
+      };
+    });
+  }, [items, selectedIds]);
+
   const prepareCanvasAgentVisualReferences = async (
     references: AgentCanvasVisualReference[],
     provider: 'openai-compatible' | 'codex',
@@ -18217,10 +18405,14 @@ useEffect(() => {
 
   const canvasAgent = useCanvasAgentRuntime({
     getContext: () => {
-      const selectedItems = buildCanvasAgentSelectedItems();
+      const surface = isCanvasModeRef.current ? 'canvas' : 'drawer';
+      const selectedItems = surface === 'canvas'
+        ? buildCanvasAgentSelectedItems()
+        : drawerAgentSelectedItems;
       const selectedVisualReferences = selectedItems.flatMap(item => item.references || []);
       return {
-        selectedIds: [...canvasSelectedIdsRef.current],
+        surface,
+        selectedIds: surface === 'canvas' ? [...canvasSelectedIdsRef.current] : [...selectedIds],
         selectedItems,
         visualReferences: selectedVisualReferences,
         nodes: canvasItemsRef.current.slice(0, 160).map(canvasItem => ({
@@ -18241,12 +18433,468 @@ useEffect(() => {
           label: workflow.label,
           hint: workflow.hint,
         })),
+        drawer: {
+          activeTab: activeTabRef.current,
+          activeFolderId: activeFolderIdStateRef.current,
+          searchQuery,
+          pinned: isPinnedRef.current,
+          folders: foldersRef.current.slice(0, 120).map(folder => ({
+            id: folder.id,
+            name: folder.name,
+            parentId: folder.parentId,
+          })),
+          items: itemsRef.current.slice(0, 180).map(item => ({
+            id: item.id,
+            type: item.type,
+            name: item.name || item.content || '未命名素材',
+            content: item.type === 'text' ? item.content.slice(0, 320) : undefined,
+            folderId: item.folderId,
+            quickAccess: item.isQuickAccess,
+            remarks: item.remarks || (item.remark ? [item.remark] : undefined),
+          })),
+        },
       };
     },
     prepareVisualReferences: (context, provider) => (
       prepareCanvasAgentVisualReferences(context.visualReferences || [], provider)
     ),
     executeTool: async (name, args) => {
+      if (name === 'app_get_context') {
+        return {
+          surface: isCanvasModeRef.current ? 'canvas' : 'drawer',
+          drawer: {
+            activeTab: activeTabRef.current,
+            activeFolderId: activeFolderIdStateRef.current,
+            searchQuery,
+            selectedIds: [...selectedIds],
+            itemCount: itemsRef.current.length,
+            folderCount: foldersRef.current.length,
+            items: itemsRef.current.slice(0, 180).map(item => ({
+              id: item.id,
+              type: item.type,
+              name: item.name || item.content || '未命名素材',
+              folderId: item.folderId,
+              quickAccess: item.isQuickAccess,
+            })),
+            folders: foldersRef.current.slice(0, 120).map(folder => ({
+              id: folder.id,
+              name: folder.name,
+              parentId: folder.parentId,
+            })),
+          },
+          canvas: {
+            selectedIds: [...canvasSelectedIdsRef.current],
+            nodeCount: canvasItemsRef.current.length,
+            nodes: canvasItemsRef.current.slice(0, 180).map(item => ({
+              id: item.id,
+              type: item.ai?.type || item.item.type,
+              name: item.item.name || getCanvasAiNodeTitle(item.ai),
+              inputs: item.inputs || [],
+              status: item.ai?.status,
+            })),
+          },
+        };
+      }
+
+      if (name === 'app_get_ui_snapshot') {
+        return {
+          surface: isCanvasModeRef.current ? 'canvas' : 'drawer',
+          elements: getVisibleAgentUiSnapshot(),
+        };
+      }
+
+      if (name === 'app_ui_interact') {
+        const action = String(args.action || '');
+        const elementId = String(args.elementId || '').trim();
+        const element = Array.from(document.querySelectorAll<HTMLElement>('[data-agent-ui-id]'))
+          .find(item => item.dataset.agentUiId === elementId);
+        if (!element || !element.isConnected) throw new Error('目标控件已失效，请重新读取界面控件');
+        if (!isAgentUiElementVisible(element)) throw new Error('目标控件当前不可见，请重新读取界面控件');
+        if ('disabled' in element && Boolean((element as HTMLButtonElement).disabled)) throw new Error('目标控件当前不可用');
+        element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        element.focus({ preventScroll: true });
+        if (action === 'click') {
+          element.click();
+        } else if (action === 'set_value') {
+          setAgentUiElementValue(element, String(args.value || ''));
+        } else if (action === 'press_key') {
+          const key = String(args.key || 'Enter');
+          const keyboardInit: KeyboardEventInit = { key, bubbles: true, cancelable: true };
+          const allowed = element.dispatchEvent(new KeyboardEvent('keydown', keyboardInit));
+          if (allowed && key === 'Enter' && element instanceof HTMLButtonElement) element.click();
+          element.dispatchEvent(new KeyboardEvent('keyup', keyboardInit));
+        } else {
+          throw new Error(`不支持的界面操作：${action}`);
+        }
+        return { action, elementId };
+      }
+
+      if (name === 'app_navigate') {
+        const action = String(args.action || '');
+        if (action === 'open_drawer') {
+          setIsOpen(true);
+          setDrawerState('open');
+        } else if (action === 'close_drawer') {
+          setIsDrawerAgentOpen(false);
+          setIsOpen(false);
+          setIsPinned(false);
+          isPinnedRef.current = false;
+        } else if (action === 'toggle_pin') {
+          handleTogglePin();
+        } else if (action === 'enter_canvas') {
+          if (!isCanvasModeRef.current) enterCanvasMode();
+          setIsAgentChatOpen(true);
+        } else if (action === 'exit_canvas') {
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setIsDrawerAgentOpen(true);
+        } else if (action === 'switch_tab') {
+          const requestedTab = String(args.tab || 'all') as DrawerTabType;
+          const tabs: DrawerTabType[] = ['all', 'image', 'text', 'video', 'file', 'alchemy', 'notes', 'calendar'];
+          if (!tabs.includes(requestedTab)) throw new Error('未知抽屉分类');
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setActiveTab(requestedTab);
+          setIsOpen(true);
+        } else if (action === 'open_folder') {
+          const folderId = String(args.folderId || 'all');
+          if (folderId !== 'all' && !foldersRef.current.some(folder => folder.id === folderId)) {
+            throw new Error('文件夹不存在');
+          }
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setActiveFolderId(folderId);
+          setActiveTab('all');
+          setIsOpen(true);
+        } else if (action === 'search') {
+          const query = String(args.query || '').trim();
+          setSearchQuery(query);
+          setIsSearchActive(true);
+          setShowSettings(false);
+          setIsOpen(true);
+        } else if (action === 'clear_search') {
+          setSearchQuery('');
+          setIsSearchActive(false);
+        } else if (action === 'open_settings') {
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setShowSettings(true);
+          setIsSearchActive(false);
+          setShowTextInput(false);
+          setShowWebImageCollector(false);
+          setIsOpen(true);
+        } else if (action === 'open_text_capture') {
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setIsDrawerAgentOpen(false);
+          handleOpenTextInput();
+          setIsOpen(true);
+        } else if (action === 'open_web_collector') {
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setIsDrawerAgentOpen(false);
+          openWebImageCollector();
+        } else if (action === 'open_notes') {
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setActiveTab('notes');
+          setIsOpen(true);
+        } else if (action === 'open_calendar') {
+          if (isCanvasModeRef.current) leaveCanvasToDrawer();
+          setActiveTab('calendar');
+          setIsOpen(true);
+        } else if (action === 'undo') {
+          if (isCanvasModeRef.current) {
+            if (!undoLastCanvasChange()) showToast('没有可撤回的画布操作');
+          } else {
+            undoLastDrawerChange();
+          }
+        } else if (action === 'minimize') {
+          await appWindow.minimize();
+        } else if (action === 'toggle_maximize') {
+          await appWindow.toggleMaximize();
+        } else {
+          throw new Error(`不支持的软件导航操作：${action}`);
+        }
+        return { action, surface: isCanvasModeRef.current ? 'canvas' : 'drawer' };
+      }
+
+      if (name === 'drawer_manage') {
+        const action = String(args.action || '');
+        const requestedIds = Array.isArray(args.targetIds) ? args.targetIds.map(String) : [];
+        const targetIds = requestedIds.length > 0 ? requestedIds : [...selectedIds];
+        const targets = itemsRef.current.filter(item => targetIds.includes(item.id));
+        if (action === 'create_text') {
+          const content = String(args.content || '').trim();
+          if (!content) throw new Error('文字内容不能为空');
+          const folderId = String(args.folderId || '').trim();
+          if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
+          const item = {
+            ...createTextOrUrlItem(content, String(args.name || '').trim() || 'Agent 灵感'),
+            folderId: folderId || undefined,
+          };
+          pushDrawerUndoSnapshot('Agent 新增灵感');
+          setItems(prev => [item, ...prev]);
+          setActiveTab('text');
+          return { action, itemId: item.id };
+        }
+        if (action === 'add_web_image') {
+          const url = String(args.url || '').trim();
+          if (!/^https?:\/\//i.test(url)) throw new Error('需要有效的网页图片 URL');
+          addWebImageUrl(url, String(args.name || '').trim() || undefined);
+          return { action, url };
+        }
+        if (action === 'create_folder') {
+          const folderName = String(args.name || '').trim();
+          if (!folderName) throw new Error('文件夹名称不能为空');
+          const parentId = String(args.folderId || '').trim() || undefined;
+          const parent = parentId ? foldersRef.current.find(folder => folder.id === parentId && !folder.parentId) : undefined;
+          if (parentId && !parent) throw new Error('父文件夹不存在或不能继续嵌套');
+          if (foldersRef.current.some(folder => (folder.parentId || undefined) === parentId && folder.name.toLowerCase() === folderName.toLowerCase())) {
+            throw new Error('已有同名文件夹');
+          }
+          const folder: Folder = {
+            id: Math.random().toString(36).substring(2, 9),
+            name: folderName,
+            color: parent?.color || '#10b981',
+            parentId,
+          };
+          pushDrawerUndoSnapshot(parent ? 'Agent 新建子目录' : 'Agent 新建文件夹');
+          setFolders(prev => [...prev, folder]);
+          return { action, folderId: folder.id };
+        }
+        if (action === 'rename_folder') {
+          const folderId = String(args.folderId || '').trim();
+          const folderName = String(args.name || '').trim();
+          const current = foldersRef.current.find(folder => folder.id === folderId);
+          if (!current || !folderName) throw new Error('文件夹或新名称无效');
+          if (foldersRef.current.some(folder => folder.id !== folderId && (folder.parentId || undefined) === (current.parentId || undefined) && folder.name.toLowerCase() === folderName.toLowerCase())) {
+            throw new Error('已有同名文件夹');
+          }
+          pushDrawerUndoSnapshot('Agent 重命名文件夹');
+          setFolders(prev => prev.map(folder => folder.id === folderId ? { ...folder, name: folderName } : folder));
+          return { action, folderId, name: folderName };
+        }
+        if (action === 'delete_folder') {
+          const folderId = String(args.folderId || '').trim();
+          if (!foldersRef.current.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
+          handleDeleteFolder(folderId);
+          return { action, folderId };
+        }
+        if (action === 'select_items') {
+          const validIds = targetIds.filter(id => itemsRef.current.some(item => item.id === id));
+          setIsSelectMode(true);
+          setSelectedIds(validIds);
+          return { action, selectedIds: validIds };
+        }
+        if (action === 'clear_selection') {
+          setSelectedIds([]);
+          setIsSelectMode(false);
+          return { action };
+        }
+        if (action === 'delete_items') {
+          if (targets.length === 0) throw new Error('没有找到要删除的抽屉素材');
+          const deletable = targets.filter(item => !item.isQuickAccess);
+          if (deletable.length === 0) throw new Error('目标均已星标保护，请先取消星标');
+          const removed = removeDrawerItemsFromDrawer(deletable, 'Agent 删除素材');
+          setSelectedIds(prev => prev.filter(id => !deletable.some(item => item.id === id)));
+          return { action, removed };
+        }
+        if (action === 'move_items') {
+          if (targets.length === 0) throw new Error('没有找到要移动的素材');
+          const folderId = String(args.folderId || '').trim() || undefined;
+          if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
+          pushDrawerUndoSnapshot('Agent 移动素材');
+          const idSet = new Set(targets.map(item => item.id));
+          setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, folderId } : item));
+          return { action, moved: idSet.size, folderId: folderId || 'all' };
+        }
+        if (action === 'set_quick_access') {
+          if (targets.length === 0) throw new Error('没有找到要设置星标的素材');
+          const enabled = args.enabled !== false;
+          pushDrawerUndoSnapshot(enabled ? 'Agent 添加星标' : 'Agent 取消星标');
+          const idSet = new Set(targets.map(item => item.id));
+          setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, isQuickAccess: enabled } : item));
+          return { action, updated: idSet.size, enabled };
+        }
+        if (action === 'open_item') {
+          const item = targets[0];
+          if (!item) throw new Error('没有找到要打开的素材');
+          if (item.type === 'image' && item.url) openSelectedImagePreview(item.url);
+          else if (item.type === 'video' && item.path) openSelectedVideoPreview({ url: convertFileSrc(item.path), path: item.path });
+          else {
+            const target = item.path || item.url || item.content;
+            if (!target) throw new Error('素材没有可打开的内容');
+            await invoke('open_file', { path: target });
+          }
+          return { action, itemId: item.id };
+        }
+        if (action === 'create_floating_note') {
+          if (targets.length === 0) throw new Error('没有找到要创建便签的素材');
+          let created = 0;
+          for (const item of targets.slice(0, 6)) {
+            if (await createFloatingNote(item, { topmost: args.enabled === true, silent: true })) created += 1;
+          }
+          return { action, created };
+        }
+        if (action === 'add_items_to_canvas') {
+          const imageTargets = targets.filter(item => item.type === 'image');
+          if (imageTargets.length === 0) throw new Error('请选择要加入画布的图片素材');
+          if (!isCanvasModeRef.current) enterCanvasMode();
+          setIsAgentChatOpen(true);
+          let added = 0;
+          for (const item of imageTargets) {
+            if (await addDrawerImageItemToCanvas(item.id)) added += 1;
+          }
+          return { action, added };
+        }
+        if (action === 'update_item') {
+          if (targets.length === 0) throw new Error('没有找到要修改的素材');
+          const nextName = String(args.name || '').trim();
+          const nextContent = String(args.content || '').trim();
+          const folderId = String(args.folderId || '').trim();
+          if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
+          pushDrawerUndoSnapshot('Agent 修改素材');
+          const idSet = new Set(targets.map(item => item.id));
+          setItems(prev => prev.map(item => idSet.has(item.id) ? {
+            ...item,
+            ...(nextName ? { name: nextName } : {}),
+            ...(nextContent ? { content: nextContent } : {}),
+            ...(args.folderId !== undefined && args.folderId !== null ? { folderId: folderId || undefined } : {}),
+          } : item));
+          return { action, updated: idSet.size };
+        }
+        throw new Error(`不支持的抽屉操作：${action}`);
+      }
+
+      if (name === 'canvas_manage') {
+        const action = String(args.action || '');
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        setIsAgentChatOpen(true);
+        const requestedIds = Array.isArray(args.targetIds) ? args.targetIds.map(String) : [];
+        const targetIds = requestedIds.length > 0 ? requestedIds : [...canvasSelectedIdsRef.current];
+        const existingIds = new Set(canvasItemsRef.current.map(item => item.id));
+        const validIds = targetIds.filter(id => existingIds.has(id));
+        if (action === 'select_nodes') {
+          updateCanvasSelection(validIds);
+          return { action, selectedIds: validIds };
+        }
+        if (action === 'clear_selection') {
+          updateCanvasSelection([]);
+          return { action };
+        }
+        if (action === 'delete_nodes' || action === 'clear_canvas') {
+          const ids = action === 'clear_canvas' ? canvasItemsRef.current.map(item => item.id) : validIds;
+          if (ids.length === 0) throw new Error('没有找到要删除的画布节点');
+          return { action, removed: removeCanvasItemsByIds(ids, action === 'clear_canvas' ? 'Agent 清空画布' : 'Agent 删除节点') };
+        }
+        if (action === 'duplicate_nodes') {
+          if (validIds.length === 0) throw new Error('没有找到要复制的画布节点');
+          return { action, duplicated: duplicateCanvasItems(validIds) };
+        }
+        if (action === 'move_nodes') {
+          if (validIds.length === 0) throw new Error('没有找到要移动的画布节点');
+          const deltaX = Number(args.deltaX || 0);
+          const deltaY = Number(args.deltaY || 0);
+          const absoluteX = typeof args.x === 'number' ? args.x : null;
+          const absoluteY = typeof args.y === 'number' ? args.y : null;
+          const anchor = canvasItemsRef.current.find(item => item.id === validIds[0]);
+          const offsetX = absoluteX !== null && anchor ? absoluteX - anchor.x : deltaX;
+          const offsetY = absoluteY !== null && anchor ? absoluteY - anchor.y : deltaY;
+          pushCanvasUndoSnapshot('Agent 移动节点');
+          const idSet = new Set(validIds);
+          updateCanvasItemsImmediate(prev => prev.map(item => idSet.has(item.id) ? {
+            ...item,
+            x: Math.max(24, item.x + offsetX),
+            y: Math.max(24, item.y + offsetY),
+          } : item));
+          return { action, moved: validIds.length, deltaX: offsetX, deltaY: offsetY };
+        }
+        if (action === 'resize_node') {
+          const targetId = String(args.targetId || validIds[0] || '');
+          const target = canvasItemsRef.current.find(item => item.id === targetId);
+          if (!target) throw new Error('没有找到要缩放的节点');
+          const width = Math.max(120, Number(args.width || target.width));
+          const height = Math.max(96, Number(args.height || target.height));
+          pushCanvasUndoSnapshot('Agent 调整节点大小');
+          updateCanvasItemsImmediate(prev => prev.map(item => item.id === targetId ? { ...item, width, height } : item));
+          return { action, targetId, width, height };
+        }
+        if (action === 'disconnect_nodes') {
+          const sourceId = String(args.sourceId || '');
+          const targetId = String(args.targetId || '');
+          if (!removeCanvasConnection(targetId, sourceId, 'Agent 删除连接')) throw new Error('没有找到指定连接');
+          return { action, sourceId, targetId };
+        }
+        if (action === 'focus_node') {
+          const targetId = String(args.targetId || validIds[0] || '');
+          if (!targetId) throw new Error('没有指定要聚焦的节点');
+          scheduleCanvasFocusItemById(targetId);
+          return { action, targetId };
+        }
+        if (action === 'fit_view') {
+          window.requestAnimationFrame(() => fitCanvasViewToItems(validIds.length > 0 ? validIds : undefined));
+          return { action, targetIds: validIds };
+        }
+        if (action === 'zoom') {
+          const nextScale = clamp(Number(args.scale || canvasScaleRef.current || 1), CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
+          const surface = canvasSurfaceRef.current;
+          if (surface) {
+            const rect = surface.getBoundingClientRect();
+            const previous = canvasScaleRef.current || 1;
+            const deltaY = -Math.log(nextScale / previous) / 0.0008;
+            zoomCanvasAt(rect.left + rect.width / 2, rect.top + rect.height / 2, deltaY);
+          }
+          return { action, scale: nextScale };
+        }
+        if (action === 'undo') {
+          if (!undoLastCanvasChange()) throw new Error('没有可撤回的画布操作');
+          return { action };
+        }
+        if (action === 'add_drawer_items') {
+          const drawerIds = requestedIds.filter(id => itemsRef.current.some(item => item.id === id && item.type === 'image'));
+          if (drawerIds.length === 0) throw new Error('没有找到可加入画布的抽屉图片');
+          let added = 0;
+          for (const itemId of drawerIds) {
+            if (await addDrawerImageItemToCanvas(itemId)) added += 1;
+          }
+          return { action, added };
+        }
+        if (action === 'update_node') {
+          const ids = validIds.length > 0 ? validIds : [String(args.targetId || '')].filter(Boolean);
+          if (ids.length === 0) throw new Error('没有找到要修改的节点');
+          const idSet = new Set(ids);
+          const nextName = String(args.name || '').trim();
+          const nextModel = String(args.model || '').trim();
+          const nextProvider = String(args.provider || '').trim();
+          const nextAspectRatio = String(args.aspectRatio || '').trim();
+          const nextOutputFormat = String(args.outputFormat || '').trim().toLowerCase();
+          const rawCount = Number(args.count);
+          pushCanvasUndoSnapshot('Agent 修改节点参数');
+          updateCanvasItemsImmediate(prev => prev.map(item => {
+            if (!idSet.has(item.id)) return item;
+            return {
+              ...item,
+              item: nextName ? { ...item.item, name: nextName } : item.item,
+              ai: item.ai ? {
+                ...item.ai,
+                ...(nextProvider ? { provider: normalizeCanvasAiProvider(nextProvider) } : {}),
+                ...(nextModel ? { model: nextModel } : {}),
+                ...(nextAspectRatio ? { aspectRatio: normalizeCanvasAiAspectRatioForModel(nextModel || item.ai.model, nextAspectRatio) } : {}),
+                ...(CANVAS_AI_OUTPUT_FORMATS.includes(nextOutputFormat) ? { outputFormat: nextOutputFormat } : {}),
+                ...(Number.isFinite(rawCount) ? { count: clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT) } : {}),
+              } : item.ai,
+            };
+          }));
+          return { action, updated: ids.length };
+        }
+        if (action === 'run_nodes') {
+          if (validIds.length === 0) throw new Error('没有找到要运行的节点');
+          for (const nodeId of validIds) {
+            const node = canvasItemsRef.current.find(item => item.id === nodeId);
+            if (!node) continue;
+            if (node.ai?.type === 'workflow') await generateCanvasWorkflowModuleNode(nodeId);
+            else if (isCanvasAgentTextTarget(node)) await runCanvasTextAgentNode(nodeId);
+            else if (node.ai) await generateCanvasAiGeneratorNode(nodeId);
+          }
+          return { action, requestedNodeIds: validIds };
+        }
+        throw new Error(`不支持的画布管理操作：${action}`);
+      }
+
       if (name === 'canvas_get_context') {
         return {
           selectedIds: [...canvasSelectedIdsRef.current],
@@ -18912,9 +19560,18 @@ useEffect(() => {
     if (await canvasAgent.sendMessage(content)) setCanvasAgentInput('');
   };
 
+  const sendDrawerAgentMessage = async (content: string) => {
+    if (await canvasAgent.sendMessage(content)) setDrawerAgentInput('');
+  };
+
   const clearCanvasAgentChat = () => {
     canvasAgent.clearConversation();
     setCanvasAgentInput('');
+  };
+
+  const clearDrawerAgentChat = () => {
+    canvasAgent.clearConversation();
+    setDrawerAgentInput('');
   };
 
   useEffect(() => {
@@ -21952,7 +22609,7 @@ useEffect(() => {
                                               const provider = normalizeCanvasAiProvider(value);
                                               updateCanvasAiGeneratorData(canvasItem.id, {
                                                 provider,
-                                                model: getCanvasAiDefaultModel(provider),
+                                                model: getCanvasAiResolvedModel(provider, '', canvasAiMediaType),
                                               });
                                             }}
                                             icon={<Settings className="h-3.5 w-3.5" />}
@@ -21970,7 +22627,7 @@ useEffect(() => {
                                           <RoundedSelect
                                             data-no-drag="true"
                                             data-canvas-edit-control="true"
-                                            value={normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))}
+                                            value={normalizeXaisImage2Model(getCanvasAiResolvedModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasItem.ai?.model, canvasAiMediaType))}
                                             options={getCanvasAiModelOptionsForProvider(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)}
                                             onChange={(value) => {
                                               const model = normalizeXaisImage2Model(value);
@@ -21984,7 +22641,7 @@ useEffect(() => {
                                             }}
                                             labelClassName={`${canvasAiMediaType === 'video' ? 'max-w-[104px]' : 'max-w-[150px]'} truncate text-center leading-none`}
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`模型：${normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))}`}
+                                            title={`模型：${normalizeXaisImage2Model(getCanvasAiResolvedModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasItem.ai?.model, canvasAiMediaType))}`}
                                             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -24586,6 +25243,47 @@ useEffect(() => {
                     </div>
                   )}
                 </div>
+
+                {!isUtilityActiveTab && !showTextInput && !showWebImageCollector && isDrawerAgentOpen && (
+                  <DrawerAgentPanel
+                    messages={canvasAgent.activeConversation?.messages || []}
+                    inputValue={drawerAgentInput}
+                    busy={canvasAgent.busy}
+                    settings={canvasAgent.settings}
+                    codexStatus={canvasAgent.codexStatus}
+                    selectedItems={drawerAgentSelectedItems}
+                    onInputChange={setDrawerAgentInput}
+                    onSendMessage={content => void sendDrawerAgentMessage(content)}
+                    onCancel={() => void canvasAgent.cancelCurrent()}
+                    onClose={() => setIsDrawerAgentOpen(false)}
+                    onNewConversation={() => {
+                      canvasAgent.newConversation();
+                      setDrawerAgentInput('');
+                    }}
+                    onClearConversation={clearDrawerAgentChat}
+                    onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
+                  />
+                )}
+
+                <AnimatePresence>
+                  {!isUtilityActiveTab && !showTextInput && !showWebImageCollector && !isDrawerAgentOpen && (
+                    <motion.button
+                      initial={isShortcutReveal ? false : { opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={isShortcutReveal ? { duration: 0 } : { duration: 0.2, ease: 'easeOut' }}
+                      onClick={() => {
+                        setIsDrawerAgentOpen(true);
+                        setShowSettings(false);
+                        setShowFolderModal(false);
+                      }}
+                      className="absolute bottom-[84px] right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full border border-blue-100/80 bg-white/92 text-blue-600 shadow-[0_8px_20px_rgba(43,85,145,0.18)] backdrop-blur-xl transition-transform hover:scale-105 hover:bg-blue-50 active:scale-95 dark:border-blue-400/20 dark:bg-stone-900/90 dark:text-blue-300 dark:hover:bg-stone-800"
+                      title="软件 Agent"
+                    >
+                      <Bot className="h-5 w-5" />
+                    </motion.button>
+                  )}
+                </AnimatePresence>
 
                 <AnimatePresence>
                   {!isUtilityActiveTab && !showTextInput && (

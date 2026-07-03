@@ -85,7 +85,26 @@ type PendingCodexTurn = {
   timeoutId: number;
 };
 
-const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'canvas-agent-preset-tools-v2';
+const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'software-agent-full-control-v4';
+
+const ALWAYS_CONFIRM_TOOLS = new Set([
+  'app_ui_interact',
+]);
+
+const ALWAYS_CONFIRM_TOOL_ACTIONS: Record<string, Set<string>> = {
+  drawer_manage: new Set(['delete_items', 'delete_folder']),
+  canvas_manage: new Set(['delete_nodes', 'clear_canvas', 'run_nodes']),
+};
+
+const shouldAlwaysConfirmToolCall = (call: AgentToolCall) => (
+  ALWAYS_CONFIRM_TOOLS.has(call.name)
+  || ALWAYS_CONFIRM_TOOL_ACTIONS[call.name]?.has(String(call.arguments.action || '')) === true
+  || (
+    call.name === 'canvas_create_generator'
+    && call.arguments.mediaType === 'video'
+    && call.arguments.autoRun === true
+  )
+);
 
 const buildCodexThreadKey = (
   settings: AgentSettings,
@@ -660,12 +679,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   ) => {
     const settingsNow = settingsRef.current;
     for (const call of run.calls) {
-      const isExpensiveVideoGeneration = call.name === 'canvas_create_generator'
-        && call.arguments.mediaType === 'video'
-        && call.arguments.autoRun === true;
+      const alwaysConfirm = shouldAlwaysConfirmToolCall(call);
       const requiresApproval = !isCanvasAgentToolReadOnly(call.name)
         && isCanvasAgentToolSensitive(call.name, call.arguments)
-        && (settingsNow.approvalMode === 'ask' || isExpensiveVideoGeneration);
+        && (settingsNow.approvalMode === 'ask' || alwaysConfirm);
       if (requiresApproval) {
         call.status = 'awaiting-approval';
       } else {
@@ -1013,7 +1030,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       };
 
       const codexNotice = visualReferenceNotice(visualReferences);
-      const codexUserText = `${userText}${codexNotice ? `\n\n${codexNotice}` : ''}\n\n应用提供的当前画布上下文：${JSON.stringify(contextForPrompt)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`;
+      const codexUserText = `${userText}${codexNotice ? `\n\n${codexNotice}` : ''}\n\n应用提供的当前软件上下文：${JSON.stringify(contextForPrompt)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`;
       let completed = await startTurn(codexUserText, true);
       if (completed.interrupted === true) {
         patchMessage(conversation.id, assistantMessageId, message => ({
@@ -1034,7 +1051,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           status: 'streaming',
         }));
         completed = await startTurn(
-          '上一轮没有生成可见结果。请重新完成用户刚才的画布请求，只输出一个 JSON 对象，包含字符串 reply 和数组 actions；每个 action 包含 tool 与 arguments。不要运行 shell，不要修改本地文件。',
+          '上一轮没有生成可见结果。请重新完成用户刚才的软件操作请求，只输出一个 JSON 对象，包含字符串 reply 和数组 actions；每个 action 包含 tool 与 arguments。不要运行 shell，不要修改本地文件。',
           false,
         );
         if (completed.interrupted === true) {
@@ -1109,7 +1126,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     const text = content.trim();
     if (!text || busy) return false;
     if (pendingToolRunsRef.current.has(activeConversationIdRef.current)) {
-      optionsRef.current.onNotice?.('请先确认或拒绝当前画布操作');
+      optionsRef.current.onNotice?.('请先确认或拒绝当前软件操作');
       return false;
     }
     const conversation = conversationsRef.current.find(item => item.id === activeConversationIdRef.current)

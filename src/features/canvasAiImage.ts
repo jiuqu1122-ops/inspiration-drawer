@@ -2,6 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT = 'gpt-image-1';
 export const OPENAI_COMPATIBLE_ENDPOINT_DEFAULT = 'https://api.openai.com/v1';
+export const NEW_API_IMAGE_MODEL_DEFAULT = OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT;
+export const NEW_API_ENDPOINT_DEFAULT = '';
+export const NEW_API_ENDPOINT_PLACEHOLDER = 'https://your-new-api.example.com/v1';
 export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://sg2.dchai.cn';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Nano_Banana_Pro_2K_0';
 export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
@@ -12,6 +15,12 @@ export const AODUO_AI_GPT_IMAGE_2_GUAN_MODEL = 'gpt-image-2-guan';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS = [
   { value: OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT, label: 'gpt-image-1' },
+  { value: 'dall-e-3', label: 'DALL-E 3' },
+  { value: 'dall-e-2', label: 'DALL-E 2' },
+];
+
+export const NEW_API_IMAGE_MODEL_OPTIONS = [
+  { value: NEW_API_IMAGE_MODEL_DEFAULT, label: 'gpt-image-1' },
   { value: 'dall-e-3', label: 'DALL-E 3' },
   { value: 'dall-e-2', label: 'DALL-E 2' },
 ];
@@ -44,11 +53,16 @@ export const AODUO_AI_IMAGE_MODEL_OPTIONS = [
 
 export const CANVAS_AI_PROVIDER_OPTIONS = [
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
+  { value: 'new-api', label: 'New API 中转' },
   { value: 'openai-compatible', label: 'OpenAI Compatible' },
   { value: 'aoduo-ai', label: '中转2' },
 ] as const;
 
 export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
+
+export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
+  provider === 'openai-compatible' || provider === 'new-api'
+);
 
 export type CanvasAiBaseImageOptions = {
   apiKey: string;
@@ -107,11 +121,11 @@ const isRemoteHttpImageSource = (source?: string | null) => (
 
 const buildPromptWithOptions = (prompt: string, aspectRatio?: string, resolution?: string) => {
   const constraints = [
-    aspectRatio ? `aspect ratio ${aspectRatio}` : '',
+    aspectRatio ? `must output exactly ${aspectRatio} aspect ratio` : '',
     resolution ? `target resolution ${resolution}` : '',
   ].filter(Boolean);
   if (constraints.length === 0) return prompt.trim();
-  return `${prompt.trim()}\n\nImage constraints: ${constraints.join(', ')}.`;
+  return `${prompt.trim()}\n\nStrict image constraints: ${constraints.join(', ')}. Do not crop or pad to a different aspect ratio.`;
 };
 
 const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, resolution?: string) => {
@@ -135,6 +149,25 @@ const normalizeOpenAiEndpoint = (endpoint: string, path: 'images/generations' | 
   const trimmed = (endpoint || OPENAI_COMPATIBLE_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
   if (/\/(?:images\/generations|images\/edits)$/i.test(trimmed)) return trimmed;
   return `${trimmed}/${path}`;
+};
+
+export const normalizeNewApiBaseEndpoint = (endpoint: string) => {
+  let trimmed = String(endpoint || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  trimmed = trimmed
+    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '/v1')
+    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '')
+    .replace(/\/+$/, '');
+  return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+};
+
+const normalizeNewApiEndpoint = (
+  endpoint: string,
+  path: 'images/generations' | 'images/edits' | 'chat/completions'
+) => {
+  const base = normalizeNewApiBaseEndpoint(endpoint);
+  if (!base) throw new Error('Please enter New API Base URL first, for example https://your-new-api.example.com/v1');
+  return `${base}/${path}`;
 };
 
 const normalizeChatCompletionsEndpoint = (endpoint: string) => {
@@ -251,6 +284,11 @@ const imageSizeFromAspectRatio = (aspectRatio?: string) => {
   }
 };
 
+const normalizeImageAspectRatio = (aspectRatio?: string | null) => {
+  const value = String(aspectRatio || '').trim();
+  return ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(value) ? value : '1:1';
+};
+
 const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
   const isHighResolution = resolution === '4k';
   switch (aspectRatio) {
@@ -260,6 +298,32 @@ const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string)
     case '4:3': return isHighResolution ? '3200x2400' : '1280x960';
     default: return isHighResolution ? '2880x2880' : '1024x1024';
   }
+};
+
+const isGptImage2LikeModel = (model?: string | null) => (
+  /gpt[-_\s]?image[-_\s]?2/i.test(String(model || ''))
+);
+
+const newApiSizeFromAspectRatio = (model?: string | null, aspectRatio?: string, resolution?: string) => (
+  isGptImage2LikeModel(model)
+    ? gptImage2SizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio), resolution)
+    : imageSizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio))
+);
+
+const newApiImageRequestParams = (
+  model: string,
+  count: number,
+  aspectRatio?: string,
+  resolution?: string
+) => {
+  const ratio = normalizeImageAspectRatio(aspectRatio);
+  const size = newApiSizeFromAspectRatio(model, ratio, resolution);
+  return {
+    n: count,
+    size,
+    aspect_ratio: ratio,
+    ratio,
+  };
 };
 
 export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
@@ -1147,6 +1211,101 @@ const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => 
   return images.slice(0, count);
 };
 
+const generateNewApiImages = async (options: CanvasAiImageOptions) => {
+  const apiKey = options.apiKey.trim();
+  const prompt = options.prompt.trim();
+  if (!apiKey) throw new Error('Please enter New API Key first.');
+  if (!prompt) throw new Error('Please enter an image prompt.');
+
+  const endpoint = normalizeNewApiBaseEndpoint(options.endpoint || '');
+  if (!endpoint) throw new Error('Please enter New API Base URL first, for example https://your-new-api.example.com/v1');
+  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
+  const model = (options.model || NEW_API_IMAGE_MODEL_DEFAULT).trim() || NEW_API_IMAGE_MODEL_DEFAULT;
+  const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution);
+  const promptText = buildPromptWithOptions(prompt, options.aspectRatio, options.resolution);
+
+  const requestChatImages = async () => {
+    const content = inputImages.length > 0
+      ? [
+        { type: 'text', text: promptText },
+        ...inputImages.map(image => ({
+          type: 'image_url',
+          image_url: { url: image },
+        })),
+      ]
+      : promptText;
+    const body = {
+      model,
+      ...imageParams,
+      messages: [
+        {
+          role: 'user',
+          content,
+        },
+      ],
+      stream: false,
+      max_tokens: 8192,
+    };
+    const output: string[] = [];
+    let lastError: unknown = null;
+    for (let index = 0; index < count && Array.from(new Set(output)).length < count; index += 1) {
+      try {
+        const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'chat/completions'), apiKey, body);
+        output.push(...collectImageStrings(data));
+      } catch (error) {
+        lastError = error;
+        if (output.length > 0) break;
+        throw error;
+      }
+    }
+    const images = Array.from(new Set(output));
+    if (images.length === 0) {
+      throw new Error(lastError ? getErrorMessage(lastError) : 'New API chat/completions did not return image data.');
+    }
+    return images.slice(0, count);
+  };
+
+  if (inputImages.length > 0) {
+    try {
+      return await requestChatImages();
+    } catch (chatError) {
+      try {
+        const data = await postImageEditViaTauri(normalizeNewApiEndpoint(endpoint, 'images/edits'), apiKey, {
+          model,
+          prompt: promptText,
+          n: imageParams.n,
+          size: imageParams.size,
+          images: inputImages,
+        });
+        const images = Array.from(new Set(collectImageStrings(data)));
+        if (images.length > 0) return images.slice(0, count);
+        throw new Error('New API images/edits did not return image data.');
+      } catch (editError) {
+        throw new Error(`New API image-to-image failed: chat/completions ${getErrorMessage(chatError)}; images/edits ${getErrorMessage(editError)}`);
+      }
+    }
+  }
+
+  try {
+    const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'images/generations'), apiKey, {
+      model,
+      prompt: promptText,
+      ...imageParams,
+      response_format: 'b64_json',
+    });
+    const images = Array.from(new Set(collectImageStrings(data)));
+    if (images.length > 0) return images.slice(0, count);
+    throw new Error('New API images/generations did not return image data.');
+  } catch (generationError) {
+    try {
+      return await requestChatImages();
+    } catch (chatError) {
+      throw new Error(`New API generation failed: images/generations ${getErrorMessage(generationError)}; chat/completions ${getErrorMessage(chatError)}`);
+    }
+  }
+};
+
 const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
@@ -1399,6 +1558,7 @@ const generateAoduoImages = async (options: CanvasAiImageOptions) => {
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
   if (options.provider === 'xais-chat') return generateXaisChatImages(options);
+  if (options.provider === 'new-api') return generateNewApiImages(options);
   if (options.provider === 'aoduo-ai') return generateAoduoImages(options);
   return generateOpenAiCompatibleImages(options);
 };

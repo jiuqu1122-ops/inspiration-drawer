@@ -19,7 +19,154 @@ const objectSchema = (
   additionalProperties: false,
 });
 
+const APP_NAVIGATION_ACTIONS = [
+  'open_drawer',
+  'close_drawer',
+  'toggle_pin',
+  'enter_canvas',
+  'exit_canvas',
+  'switch_tab',
+  'open_folder',
+  'search',
+  'clear_search',
+  'open_settings',
+  'open_text_capture',
+  'open_web_collector',
+  'open_notes',
+  'open_calendar',
+  'undo',
+  'minimize',
+  'toggle_maximize',
+] as const;
+
+const DRAWER_MANAGE_ACTIONS = [
+  'create_text',
+  'add_web_image',
+  'create_folder',
+  'rename_folder',
+  'delete_folder',
+  'select_items',
+  'clear_selection',
+  'delete_items',
+  'move_items',
+  'set_quick_access',
+  'open_item',
+  'create_floating_note',
+  'add_items_to_canvas',
+  'update_item',
+] as const;
+
+const CANVAS_MANAGE_ACTIONS = [
+  'select_nodes',
+  'clear_selection',
+  'delete_nodes',
+  'clear_canvas',
+  'duplicate_nodes',
+  'move_nodes',
+  'resize_node',
+  'disconnect_nodes',
+  'focus_node',
+  'fit_view',
+  'zoom',
+  'undo',
+  'add_drawer_items',
+  'update_node',
+  'run_nodes',
+] as const;
+
+const APP_NAVIGATION_PROPERTIES = {
+  action: { type: 'string', enum: APP_NAVIGATION_ACTIONS },
+  tab: { type: ['string', 'null'] },
+  folderId: { type: ['string', 'null'] },
+  query: { type: ['string', 'null'] },
+};
+
+const DRAWER_MANAGE_PROPERTIES = {
+  action: { type: 'string', enum: DRAWER_MANAGE_ACTIONS },
+  targetIds: { type: 'array', items: { type: 'string' } },
+  folderId: { type: ['string', 'null'] },
+  name: { type: ['string', 'null'] },
+  content: { type: ['string', 'null'] },
+  url: { type: ['string', 'null'] },
+  enabled: { type: ['boolean', 'null'] },
+};
+
+const CANVAS_MANAGE_PROPERTIES = {
+  action: { type: 'string', enum: CANVAS_MANAGE_ACTIONS },
+  targetIds: { type: 'array', items: { type: 'string' } },
+  sourceId: { type: ['string', 'null'] },
+  targetId: { type: ['string', 'null'] },
+  x: { type: ['number', 'null'] },
+  y: { type: ['number', 'null'] },
+  width: { type: ['number', 'null'] },
+  height: { type: ['number', 'null'] },
+  deltaX: { type: ['number', 'null'] },
+  deltaY: { type: ['number', 'null'] },
+  scale: { type: ['number', 'null'] },
+  name: { type: ['string', 'null'] },
+  provider: { type: ['string', 'null'] },
+  model: { type: ['string', 'null'] },
+  aspectRatio: { type: ['string', 'null'] },
+  outputFormat: { type: ['string', 'null'] },
+  count: { type: ['number', 'null'] },
+};
+
+const APP_UI_INTERACT_PROPERTIES = {
+  action: { type: 'string', enum: ['click', 'set_value', 'press_key'] },
+  elementId: { type: 'string' },
+  value: { type: ['string', 'null'] },
+  key: { type: ['string', 'null'] },
+};
+
 export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'app_get_context',
+      description: '读取整个软件当前状态，包括所在界面、抽屉素材/文件夹、选中项、画布节点、预设和工作流。执行软件操作前优先读取。',
+      parameters: objectSchema({}),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'app_get_ui_snapshot',
+      description: '读取当前屏幕上可见的按钮、输入框、选择器和链接，返回可交互 elementId。仅当语义工具没有覆盖某个新功能时使用。密码值永远不会返回。',
+      parameters: objectSchema({}),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'app_ui_interact',
+      description: '按 app_get_ui_snapshot 返回的 elementId 复刻一次用户点击、输入或按键。此回退操作始终需要用户确认。',
+      parameters: objectSchema(APP_UI_INTERACT_PROPERTIES, ['action', 'elementId']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'app_navigate',
+      description: '复刻用户的界面导航操作：开关抽屉、钉住、进入/退出画布、切换分类/文件夹、搜索、打开设置/记录灵感/网络收图/便签/日历、撤销或控制窗口。',
+      parameters: objectSchema(APP_NAVIGATION_PROPERTIES, ['action']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'drawer_manage',
+      description: '操作抽屉中的素材、文字、网址、文件夹和桌面便签；targetIds 使用 app_get_context 返回的抽屉 item ID。',
+      parameters: objectSchema(DRAWER_MANAGE_PROPERTIES, ['action']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'canvas_manage',
+      description: '复刻画布节点的选择、删除、清空、复制、移动、缩放、断线、聚焦、运行和参数更新；也可把抽屉图片加入画布。',
+      parameters: objectSchema(CANVAS_MANAGE_PROPERTIES, ['action']),
+    },
+  },
   {
     type: 'function',
     function: {
@@ -192,6 +339,78 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
       type: 'array',
       items: {
         anyOf: [
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['app_get_context'] },
+              arguments: objectSchema({}),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['app_get_ui_snapshot'] },
+              arguments: objectSchema({}),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['app_ui_interact'] },
+              arguments: objectSchema(APP_UI_INTERACT_PROPERTIES, ['action', 'elementId', 'value', 'key']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['app_navigate'] },
+              arguments: objectSchema(APP_NAVIGATION_PROPERTIES, ['action', 'tab', 'folderId', 'query']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['drawer_manage'] },
+              arguments: objectSchema(DRAWER_MANAGE_PROPERTIES, ['action', 'targetIds', 'folderId', 'name', 'content', 'url', 'enabled']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_manage'] },
+              arguments: objectSchema(CANVAS_MANAGE_PROPERTIES, [
+                'action',
+                'targetIds',
+                'sourceId',
+                'targetId',
+                'x',
+                'y',
+                'width',
+                'height',
+                'deltaX',
+                'deltaY',
+                'scale',
+                'name',
+                'provider',
+                'model',
+                'aspectRatio',
+                'outputFormat',
+                'count',
+              ]),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
           {
             type: 'object',
             properties: {
@@ -386,13 +605,16 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
   additionalProperties: false,
 };
 
-const READ_ONLY_TOOLS = new Set(['canvas_get_context']);
+const READ_ONLY_TOOLS = new Set(['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context']);
 
 export const isCanvasAgentToolReadOnly = (name: string) => READ_ONLY_TOOLS.has(name);
 
 export const isCanvasAgentToolSensitive = (name: string, args: Record<string, unknown> = {}) => (
   name === 'canvas_run_workflow'
   || name === 'canvas_run_text_agent'
+  || name === 'app_ui_interact'
+  || (name === 'drawer_manage' && ['delete_items', 'delete_folder'].includes(String(args.action || '')))
+  || (name === 'canvas_manage' && ['delete_nodes', 'clear_canvas', 'run_nodes'].includes(String(args.action || '')))
   || (
     name === 'canvas_create_generator'
     && args.mediaType === 'video'
@@ -401,6 +623,12 @@ export const isCanvasAgentToolSensitive = (name: string, args: Record<string, un
 );
 
 export const getCanvasAgentToolLabel = (name: string) => ({
+  app_get_context: '读取软件状态',
+  app_get_ui_snapshot: '读取可见控件',
+  app_ui_interact: '复刻界面操作',
+  app_navigate: '操作软件界面',
+  drawer_manage: '操作灵感抽屉',
+  canvas_manage: '操作画布节点',
   canvas_get_context: '读取画布',
   canvas_create_generator: '创建生成节点',
   canvas_create_media_tool: '创建媒体处理节点',
@@ -471,6 +699,12 @@ export const buildCanvasAgentSystemPrompt = (
 ) => `${basePrompt.trim()}
 
 Agent 执行补充：
+- 你是整个“灵感抽屉”软件的操作 Agent，不只是聊天助手。用户要求操作界面、素材、文件夹、便签或画布时，必须调用 app_navigate、drawer_manage、canvas_manage 或已有画布工具实际执行。
+- surface 表示当前界面。位于 drawer 时优先操作抽屉；需要使用画布能力时先 app_navigate(action=enter_canvas)，退出画布使用 exit_canvas。
+- 抽屉素材和文件夹 ID 必须来自 drawer.items / drawer.folders；画布节点 ID 必须来自 nodes。不要虚构 ID。
+- “打开/切换/搜索/钉住/记录灵感/网络收图/设置/便签/日历”使用 app_navigate；素材增删改、归类、星标、桌面便签和加入画布使用 drawer_manage；节点选择、删除、复制、移动、缩放、断线、运行和参数修改使用 canvas_manage。
+- 如果用户要求的可见界面操作没有语义工具，先调用 app_get_ui_snapshot 获取控件 elementId，再调用 app_ui_interact 复刻点击、输入或按键；不要猜 elementId。app_ui_interact 会始终要求用户确认。
+- 用户明确要求删除、清空或运行付费节点时可以调用对应工具，应用会负责审批；不要只回复操作步骤。
 - selectedItems 是用户当前明确选择的素材；回复时要说明你基于哪张/哪些选中素材处理。
 - 用户说“节点预设、Prompt 预设、保存成预设、创建预设、修改预设”时，必须使用 canvas_create_preset；不要把预设内容写进 canvas_add_text。
 - 用户说“识别/分析参考图、根据图片输出信息、写视频脚本、写分镜脚本、提炼卖点/风格/材质/镜头语言”时，先基于 visualReferences 中的参考图进行分析，然后必须使用 canvas_add_text 把结果落成文字节点；不要只在聊天里口头回复。
@@ -484,11 +718,11 @@ Agent 执行补充：
 - 用户要求“做一个生成脚本的节点 / 生成文案的节点 / 生成分析文本的节点 / 可运行的文字节点 / 基于参考图写脚本或分镜”时，使用一个 canvas_create_text_agent，并把参考图/视频节点作为 inputIds 接入；如果用户要求立刻生成结果，把 autoRun 设为 true。
 - 用户说“补帧/插帧/RIFE”时，使用 canvas_create_media_tool 且 toolType=frame-interpolation；说“图增强/图片增强/图片清晰度增强/放大修复”时，toolType=image-enhancement；说“视增强/视频增强/视频清晰度增强”时，toolType=video-enhancement。
 
-当前画布上下文如下。节点 ID 必须原样使用，不要虚构不存在的 ID。创建复杂任务时优先使用已有 workflowId。
+当前软件上下文如下。所有 ID 必须原样使用。创建复杂任务时优先使用已有 workflowId。
 ${JSON.stringify(context)}
 
 执行原则：
-- 先理解用户目标，再选择最少的画布操作。
+- 先理解用户目标，再选择最少的软件操作。
 - 不要声称已经执行尚未调用的工具。
 - 涉及运行工作流时明确说明可能产生 API 费用。
 - 如果信息不足，可以只回复并返回空 actions。`;
