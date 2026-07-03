@@ -181,6 +181,7 @@ export function DrawerAgentPanel({
         )}
         <div className="rounded-[20px] border border-blue-100/90 bg-white/92 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-white/8">
           <textarea
+            data-agent-composer-input="true"
             ref={inputRef}
             value={inputValue}
             onChange={event => onInputChange(event.target.value)}
