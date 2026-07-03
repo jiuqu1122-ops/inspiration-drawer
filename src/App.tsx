@@ -287,8 +287,33 @@ const LazyFloatingNoteHost = React.lazy(() => (
 ));
 const CANVAS_WORKBENCH_MODE_STORAGE_KEY = 'drawer_canvas_workbench_mode';
 const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
+const DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_folder_sidebar_width';
+const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 178;
+const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 116;
+const DRAWER_FOLDER_SIDEBAR_MAX_WIDTH = 260;
+const EAGLE_API_BASE_URL = 'http://localhost:41595/api/v2';
+const EAGLE_IMPORT_PAGE_LIMIT = 1000;
+const EAGLE_IMPORT_CACHE_CONCURRENCY = 2;
 type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
 type DrawerSidebarLayout = 'icons' | 'folders';
+type EagleImportStatus = {
+  phase: 'idle' | 'checking' | 'reading' | 'importing' | 'caching' | 'done' | 'error';
+  message: string;
+  total: number;
+  imported: number;
+  cached: number;
+  failed: number;
+  startedAt?: number;
+  updatedAt?: number;
+};
+type EagleFolderPayload = {
+  id?: string;
+  name?: string;
+  parent?: string;
+  parentId?: string;
+  children?: EagleFolderPayload[];
+};
+type EagleItemPayload = Record<string, any>;
 type DrawerUndoSnapshot = {
   items: BufferItem[];
   folders: Folder[];
@@ -3101,6 +3126,16 @@ function MainApp() {
     localStorage.setItem(DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY, drawerSidebarLayout);
   }, [drawerSidebarLayout]);
   const isFolderSidebarLayout = drawerSidebarLayout === 'folders';
+  const [drawerFolderSidebarWidth, setDrawerFolderSidebarWidth] = useState(() => (
+    clamp(
+      Number(localStorage.getItem(DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY)) || DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH,
+      DRAWER_FOLDER_SIDEBAR_MIN_WIDTH,
+      DRAWER_FOLDER_SIDEBAR_MAX_WIDTH,
+    )
+  ));
+  useEffect(() => {
+    localStorage.setItem(DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(drawerFolderSidebarWidth)));
+  }, [drawerFolderSidebarWidth]);
 
   const [cardWidth, setCardWidth] = useState(() => Number(localStorage.getItem('drawer_card_width')) || 320);
   useEffect(() => { localStorage.setItem('drawer_card_width', cardWidth.toString()); }, [cardWidth]);
@@ -3682,6 +3717,14 @@ function MainApp() {
   const [showAboutSoftware, setShowAboutSoftware] = useState(false);
   const [showStoragePath, setShowStoragePath] = useState(false);
   const [showQR, setShowQR] = useState(false);
+  const [eagleImportStatus, setEagleImportStatus] = useState<EagleImportStatus>({
+    phase: 'idle',
+    message: '',
+    total: 0,
+    imported: 0,
+    cached: 0,
+    failed: 0,
+  });
   const [localIP, setLocalIP] = useState('');
   const [mobilePairUrl, setMobilePairUrl] = useState('');
   const [isAutoStart, setIsAutoStart] = useState(false);
@@ -5118,6 +5161,314 @@ function MainApp() {
     const next = !calendarNotificationsEnabled;
     setCalendarNotificationsEnabled(next);
     showToast(next ? '已开启日程通知' : '已关闭日程通知');
+  };
+
+  const updateEagleImportStatus = (patch: Partial<EagleImportStatus>) => {
+    setEagleImportStatus(previous => ({
+      ...previous,
+      ...patch,
+      updatedAt: Date.now(),
+    }));
+  };
+
+  const eagleApiGet = async <T,>(path: string, query?: Record<string, string | number | undefined>) => {
+    const queryString = query
+      ? Object.entries(query)
+        .filter(([, value]) => value !== undefined && value !== '')
+        .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value)))
+        .join('&')
+      : '';
+    const url = EAGLE_API_BASE_URL + path + (queryString ? '?' + queryString : '');
+    const response = await invoke<any>('eagle_api_get', { url });
+    if (!response || typeof response !== 'object') return response as T;
+    if (response.status && response.status !== 'success') {
+      throw new Error(response.message || response.error || 'Eagle API 返回失败');
+    }
+    return ((response.data !== undefined ? response.data : response) as T);
+  };
+
+  const normalizeEagleFoldersPayload = (payload: any): EagleFolderPayload[] => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.folders)) return payload.folders;
+    if (Array.isArray(payload?.data)) return payload.data;
+    return [];
+  };
+
+  const normalizeEagleItemsPayload = (payload: any) => {
+    const items = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.items)
+        ? payload.items
+        : Array.isArray(payload?.list)
+          ? payload.list
+          : Array.isArray(payload?.files)
+            ? payload.files
+            : Array.isArray(payload?.data)
+              ? payload.data
+              : [];
+    const total = Number(payload?.total ?? payload?.count ?? 0) || 0;
+    return { items: items as EagleItemPayload[], total };
+  };
+
+  const getEagleItemFolderIds = (item: EagleItemPayload) => {
+    const rawFolders = item.folders ?? item.folderIds ?? item.folderId ?? item.folder ?? [];
+    const values = Array.isArray(rawFolders) ? rawFolders : [rawFolders];
+    return values
+      .map(value => typeof value === 'object' && value ? value.id : value)
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+  };
+
+  const getEagleItemLocalPath = (item: EagleItemPayload) => {
+    const candidates = [
+      item.filePath,
+      item.path,
+      item.url && /^file:/i.test(String(item.url)) ? item.url : '',
+      item.metadataFilePath,
+    ];
+    return candidates
+      .map(value => typeof value === 'string' ? normalizeLocalDragPath(value) : '')
+      .find(Boolean) || '';
+  };
+
+  const getEagleItemThumbnailPath = (item: EagleItemPayload) => {
+    const candidates = [item.thumbnailPath, item.thumbPath, item.previewPath];
+    return candidates
+      .map(value => typeof value === 'string' ? normalizeLocalDragPath(value) : '')
+      .find(Boolean) || '';
+  };
+
+  const getEagleItemType = (item: EagleItemPayload, filePath: string): BufferItem['type'] => {
+    const ext = String(item.ext || item.extension || getFileExtension(filePath || item.name || '') || '').toLowerCase().replace(/^\./, '');
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'].includes(ext)) return 'image';
+    if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext)) return 'video';
+    return 'file';
+  };
+
+  const normalizeEagleTimestamp = (value: unknown, fallback: number) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value > 10_000_000_000 ? value : value * 1000;
+    }
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return fallback;
+  };
+
+  const importEagleCacheInBackground = (sourceItems: BufferItem[]) => {
+    const candidates = sourceItems.filter(item => (
+      (item as any).eagleSourcePath &&
+      (item.type === 'image' || item.type === 'video' || item.type === 'file')
+    ));
+    if (candidates.length === 0) {
+      updateEagleImportStatus({ phase: 'done', message: '已导入 ' + sourceItems.length + ' 个 Eagle 素材', total: sourceItems.length });
+      return;
+    }
+
+    let cursor = 0;
+    let cached = 0;
+    let failed = 0;
+    updateEagleImportStatus({
+      phase: 'caching',
+      message: '已导入 ' + sourceItems.length + ' 个素材，正在后台复制到缓存 0/' + candidates.length,
+      total: sourceItems.length,
+      imported: sourceItems.length,
+      cached,
+      failed,
+    });
+
+    const runNext = async () => {
+      const item = candidates[cursor++];
+      if (!item) return;
+      try {
+        const cachedPath = await invoke<string>('cache_local_file_to_dir', {
+          path: (item as any).eagleSourcePath,
+          dir: (await getLatestFileCacheDir()) || undefined,
+        });
+        if (!cachedPath) throw new Error('未返回缓存路径');
+        const cachedItem = {
+          ...item,
+          path: cachedPath,
+          url: convertFileSrc(cachedPath),
+          sourceUrl: (item as any).eagleSourceUrl || item.sourceUrl,
+          originalUrl: (item as any).eagleSourceUrl || item.originalUrl,
+          eagleSourcePath: undefined,
+          eagleThumbnailPath: undefined,
+        } as BufferItem;
+        setItems(prev => prev.map(current => current.id === item.id ? cachedItem : current));
+        ensureMediaThumbnail(cachedItem);
+        cached += 1;
+      } catch (err) {
+        console.warn('Eagle 素材后台缓存失败:', err);
+        failed += 1;
+      } finally {
+        const done = cursor >= candidates.length;
+        updateEagleImportStatus({
+          phase: done ? 'done' : 'caching',
+          message: done
+            ? 'Eagle 导入完成：' + sourceItems.length + ' 个素材，缓存 ' + cached + ' 个' + (failed ? '，失败 ' + failed + ' 个' : '')
+            : '已导入 ' + sourceItems.length + ' 个素材，正在后台复制到缓存 ' + Math.min(cursor, candidates.length) + '/' + candidates.length,
+          total: sourceItems.length,
+          imported: sourceItems.length,
+          cached,
+          failed,
+        });
+        if (!done) await runNext();
+      }
+    };
+
+    Array.from({ length: Math.min(EAGLE_IMPORT_CACHE_CONCURRENCY, candidates.length) }).forEach(() => {
+      void runNext();
+    });
+  };
+
+  const importFromEagle = async () => {
+    if (['checking', 'reading', 'importing', 'caching'].includes(eagleImportStatus.phase)) return;
+    const startedAt = Date.now();
+    setEagleImportStatus({
+      phase: 'checking',
+      message: '正在连接 Eagle 本地服务...',
+      total: 0,
+      imported: 0,
+      cached: 0,
+      failed: 0,
+      startedAt,
+      updatedAt: startedAt,
+    });
+
+    try {
+      await eagleApiGet('/app/info');
+      updateEagleImportStatus({ phase: 'reading', message: '已连接 Eagle，正在读取素材库...' });
+      const [libraryInfo, folderPayload] = await Promise.all([
+        eagleApiGet<any>('/library/info').catch(() => null),
+        eagleApiGet<any>('/folder/get'),
+      ]);
+
+      const eagleFolders = normalizeEagleFoldersPayload(folderPayload);
+      const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
+      const folderIdMap = new Map<string, string>();
+      const nextFolders: Folder[] = [];
+      const makeFolderId = () => Math.random().toString(36).substring(2, 9);
+      const pushEagleFolder = (folder: EagleFolderPayload, parentId?: string) => {
+        const name = String(folder.name || 'Eagle 文件夹').trim() || 'Eagle 文件夹';
+        const key = (parentId || '') + '|' + name.toLowerCase();
+        const existing = foldersRef.current.find(item => (item.parentId || '') === (parentId || '') && item.name.trim().toLowerCase() === name.toLowerCase())
+          || nextFolders.find(item => (item.parentId || '') === (parentId || '') && item.name.trim().toLowerCase() === name.toLowerCase());
+        const id = existing?.id || makeFolderId();
+        if (!existing && !existingFolderKeys.has(key)) {
+          nextFolders.push({ id, name, color: '#f59e0b', parentId });
+          existingFolderKeys.add(key);
+        }
+        if (folder.id) folderIdMap.set(String(folder.id), id);
+        if (Array.isArray(folder.children)) {
+          folder.children.forEach(child => pushEagleFolder(child, id));
+        }
+      };
+      eagleFolders.forEach(folder => pushEagleFolder(folder));
+
+      const existingEagleIds = new Set(itemsRef.current.map(item => String((item as any).eagleId || '')).filter(Boolean));
+      const existingPaths = new Set(itemsRef.current.map(item => normalizeLocalDragPath(item.path || '')).filter(Boolean));
+      const nextItems: BufferItem[] = [];
+      let offset = 0;
+      let total = 0;
+
+      while (true) {
+        updateEagleImportStatus({
+          phase: 'reading',
+          message: '正在读取 Eagle 素材 ' + offset + (total ? '/' + total : '') + '...',
+          total,
+          imported: nextItems.length,
+        });
+        const payload = await eagleApiGet<any>('/item/get', { limit: EAGLE_IMPORT_PAGE_LIMIT, offset });
+        const { items: eagleItems, total: pageTotal } = normalizeEagleItemsPayload(payload);
+        if (pageTotal > 0) total = pageTotal;
+        if (eagleItems.length === 0) break;
+
+        eagleItems.forEach((entry, index) => {
+          const eagleId = String(entry.id || entry._id || '').trim();
+          if (eagleId && existingEagleIds.has(eagleId)) return;
+          const filePath = getEagleItemLocalPath(entry);
+          if (!filePath) return;
+          const normalizedPath = normalizeLocalDragPath(filePath);
+          if (normalizedPath && existingPaths.has(normalizedPath)) return;
+
+          const thumbnailPath = getEagleItemThumbnailPath(entry);
+          const folderIds = getEagleItemFolderIds(entry);
+          const folderId = folderIds.map(id => folderIdMap.get(id)).find(Boolean);
+          const name = String(entry.name || normalizedPath.split(/[\\/]/).pop() || 'Eagle 素材 ' + (offset + index + 1)).trim();
+          const tags = Array.isArray(entry.tags) ? entry.tags.map((tag: unknown) => String(tag || '').trim()).filter(Boolean) : [];
+          const remarkParts = [
+            entry.annotation,
+            tags.length > 0 ? '#' + tags.join(' #') : '',
+            entry.url ? '来源：' + entry.url : '',
+          ].filter(value => typeof value === 'string' && value.trim());
+          const type = getEagleItemType(entry, normalizedPath);
+          const sourceUrl = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url) ? entry.url : undefined;
+          const item = {
+            id: Math.random().toString(36).substring(2, 9),
+            type,
+            content: name,
+            name,
+            path: normalizedPath,
+            url: convertFileSrc(normalizedPath),
+            thumbnail: thumbnailPath ? convertFileSrc(thumbnailPath) : undefined,
+            sourceUrl,
+            originalUrl: sourceUrl,
+            remark: remarkParts.join('\n') || undefined,
+            remarks: remarkParts.length > 0 ? remarkParts : undefined,
+            folderId,
+            createdAt: normalizeEagleTimestamp(entry.importedAt || entry.createdAt || entry.modifiedAt, startedAt + nextItems.length),
+            isQuickAccess: false,
+            eagleId: eagleId || undefined,
+            eagleSourcePath: normalizedPath,
+            eagleSourceUrl: sourceUrl || (typeof entry.url === 'string' ? entry.url : undefined),
+            eagleThumbnailPath: thumbnailPath || undefined,
+          } as BufferItem;
+          nextItems.push(item);
+          if (eagleId) existingEagleIds.add(eagleId);
+          if (normalizedPath) existingPaths.add(normalizedPath);
+        });
+
+        offset += eagleItems.length;
+        if (eagleItems.length < EAGLE_IMPORT_PAGE_LIMIT) break;
+        if (total > 0 && offset >= total) break;
+      }
+
+      if (nextItems.length === 0 && nextFolders.length === 0) {
+        updateEagleImportStatus({ phase: 'done', message: 'Eagle 没有新的可导入素材', total, imported: 0 });
+        showToast('Eagle 没有新的可导入素材');
+        return;
+      }
+
+      pushDrawerUndoSnapshot('从 Eagle 导入');
+      if (nextFolders.length > 0) setFolders(prev => normalizeDrawerFolders([...prev, ...nextFolders]));
+      if (nextItems.length > 0) {
+        setItems(prev => [...nextItems, ...prev]);
+        triggerAutoPaletteForItems(nextItems.filter(item => item.type === 'image'));
+        nextItems.slice(0, 24).forEach(ensureMediaThumbnail);
+      }
+      setActiveTab('all');
+      const firstFolderId = nextItems.find(item => item.folderId)?.folderId || nextFolders[0]?.id;
+      if (firstFolderId) setActiveFolderId(firstFolderId);
+      showToast('已从 Eagle 导入 ' + nextItems.length + ' 个素材');
+      updateEagleImportStatus({
+        phase: 'importing',
+        message: '已导入 ' + nextItems.length + ' 个素材，准备后台复制缓存...',
+        total: total || nextItems.length,
+        imported: nextItems.length,
+      });
+      importEagleCacheInBackground(nextItems);
+      if (libraryInfo?.name) console.info('Eagle library imported:', libraryInfo.name);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err || '未知错误');
+      console.warn('Eagle 导入失败:', err);
+      updateEagleImportStatus({
+        phase: 'error',
+        message: 'Eagle 导入失败：' + message,
+      });
+      showToast('Eagle 导入失败，请确认 Eagle 已打开并启用本地 API');
+    }
   };
 
   useEffect(() => {
@@ -6869,6 +7220,8 @@ function MainApp() {
       const normalized = /^file:/i.test(String(value || '').trim())
         ? normalizeLocalDragPath(String(value))
         : String(value || '').trim();
+      const eagleSourcePath = normalizeLocalDragPath((rawItem as any).eagleSourcePath || '');
+      if (eagleSourcePath && normalized === eagleSourcePath) return paths;
       if (!normalized || seen.has(normalized)) return paths;
       seen.add(normalized);
       paths.push(normalized);
@@ -16649,7 +17002,7 @@ useEffect(() => {
   const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 w-full h-full min-w-[320px] bg-white/82 dark:bg-stone-900/94 backdrop-blur-2xl border border-white/60 dark:border-stone-800/60 shadow-[0_18px_50px_rgba(0,0,0,0.10)] flex flex-row rounded-[30px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
   const drawerSidebarClassName = isCanvasMode && isCanvasChromeHidden
     ? 'hidden'
-    : `${isFolderSidebarLayout ? 'w-[178px]' : 'w-16'} h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
+    : `${isFolderSidebarLayout ? '' : 'w-16'} relative h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
 
   // 🌟 退出截图时，必须先把 Tauri 窗口恢复到抽屉尺寸，再卸载全屏截图层。
   // 否则 React 会先把抽屉内容显示在全屏窗口里，视觉上就像“先放大再缩小”。
@@ -18289,6 +18642,31 @@ useEffect(() => {
     const onMove = (me: PointerEvent) => {
       const nextHeight = clamp(startHeight + (me.clientY - startY), minHeight, maxHeight);
       setFolderRailHeight(nextHeight);
+    };
+
+    const cleanup = () => {
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', cleanup, true);
+      document.removeEventListener('pointercancel', cleanup, true);
+    };
+
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', cleanup, true);
+    document.addEventListener('pointercancel', cleanup, true);
+  };
+
+  const startResizingFolderSidebarWidth = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !isFolderSidebarLayout) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startX = e.clientX;
+    const startWidth = drawerFolderSidebarWidth;
+    const maxWidth = Math.min(DRAWER_FOLDER_SIDEBAR_MAX_WIDTH, Math.max(DRAWER_FOLDER_SIDEBAR_MIN_WIDTH, drawerWidthRef.current - 220));
+
+    const onMove = (event: PointerEvent) => {
+      const nextWidth = clamp(startWidth + (event.clientX - startX), DRAWER_FOLDER_SIDEBAR_MIN_WIDTH, maxWidth);
+      setDrawerFolderSidebarWidth(nextWidth);
     };
 
     const cleanup = () => {
@@ -20516,7 +20894,18 @@ useEffect(() => {
               )}
             </AnimatePresence>
 
-            <div className={drawerSidebarClassName}>
+            <div
+              className={drawerSidebarClassName}
+              style={isFolderSidebarLayout ? { width: drawerFolderSidebarWidth } : undefined}
+            >
+              {isFolderSidebarLayout && (
+                <div
+                  data-no-drag="true"
+                  onPointerDown={startResizingFolderSidebarWidth}
+                  className="absolute right-0 top-0 z-20 h-full w-2 cursor-col-resize transition-colors hover:bg-blue-400/28 dark:hover:bg-blue-300/20"
+                  title="拖动调整侧边栏宽度"
+                />
+              )}
               {isFolderSidebarLayout ? (
                 <div className="flex h-full min-w-0 flex-col px-2">
                   <div
@@ -21858,6 +22247,57 @@ useEffect(() => {
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void importFromEagle()}
+                                    disabled={['checking', 'reading', 'importing', 'caching'].includes(eagleImportStatus.phase)}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] disabled:cursor-wait disabled:opacity-70 dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="从正在运行的 Eagle 本地素材库导入，默认读取 http://localhost:41595/api/v2"
+                                  >
+                                    <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <FolderOpen className="w-3.5 h-3.5 shrink-0 text-orange-500" />
+                                      <span className="truncate">从 Eagle 导入</span>
+                                    </span>
+                                    <span className={'flex max-w-[150px] items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ' + (
+                                      eagleImportStatus.phase === 'error'
+                                        ? 'border-red-200 bg-red-50 text-red-600 dark:border-red-400/25 dark:bg-red-400/10 dark:text-red-200'
+                                        : eagleImportStatus.phase === 'done'
+                                          ? 'border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-800/50 dark:bg-emerald-900/30 dark:text-emerald-300'
+                                          : eagleImportStatus.phase === 'checking' || eagleImportStatus.phase === 'reading' || eagleImportStatus.phase === 'importing' || eagleImportStatus.phase === 'caching'
+                                            ? 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800/50 dark:bg-orange-900/30 dark:text-orange-300'
+                                            : 'border-stone-200 bg-white/75 text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300'
+                                    )}>
+                                      {(eagleImportStatus.phase === 'checking' || eagleImportStatus.phase === 'reading' || eagleImportStatus.phase === 'importing' || eagleImportStatus.phase === 'caching') && (
+                                        <RefreshCw className="h-3 w-3 shrink-0 animate-spin" />
+                                      )}
+                                      <span className="truncate">
+                                        {eagleImportStatus.phase === 'idle'
+                                          ? '开始导入'
+                                          : eagleImportStatus.phase === 'done'
+                                            ? '已导入 ' + eagleImportStatus.imported
+                                            : eagleImportStatus.phase === 'error'
+                                              ? '失败'
+                                              : eagleImportStatus.imported > 0
+                                                ? eagleImportStatus.imported + '/' + (eagleImportStatus.total || '?')
+                                                : '处理中'}
+                                      </span>
+                                      <ChevronRight className="w-3 h-3 shrink-0 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  {eagleImportStatus.phase !== 'idle' && (
+                                    <div className={'mx-2 rounded-[14px] border px-2.5 py-2 text-[10px] leading-4 ' + (
+                                      eagleImportStatus.phase === 'error'
+                                        ? 'border-red-200/80 bg-red-50/70 text-red-600 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200'
+                                        : 'border-orange-100 bg-orange-50/55 text-orange-700 dark:border-orange-800/35 dark:bg-orange-900/18 dark:text-orange-200'
+                                    )}>
+                                      <div className="font-bold">{eagleImportStatus.message || '准备导入 Eagle 素材'}</div>
+                                      {(eagleImportStatus.phase === 'caching' || eagleImportStatus.cached > 0 || eagleImportStatus.failed > 0) && (
+                                        <div className="mt-1 text-stone-500 dark:text-stone-400">
+                                          后台缓存：{eagleImportStatus.cached} 成功{eagleImportStatus.failed ? ' / ' + eagleImportStatus.failed + ' 失败' : ''}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => { setShowStoragePath(true); setShowSettings(false); }}

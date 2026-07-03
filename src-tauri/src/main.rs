@@ -4541,6 +4541,38 @@ fn cache_local_file_to_dir_impl(
     Ok(display_local_path(&target))
 }
 
+#[tauri::command]
+async fn eagle_api_get(url: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = url.trim();
+        if !(trimmed.starts_with("http://localhost:41595/api/v2/")
+            || trimmed.starts_with("http://127.0.0.1:41595/api/v2/"))
+        {
+            return Err("Eagle API 只允许访问本机 localhost:41595".to_string());
+        }
+
+        let client = Client::builder()
+            .user_agent(APP_USER_AGENT)
+            .connect_timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(30))
+            .redirect(Policy::limited(3))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let response = client
+            .get(trimmed)
+            .send()
+            .map_err(|e| format!("连接 Eagle 本地 API 失败：{}", e))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("Eagle API 返回 HTTP {}", status.as_u16()));
+        }
+        response.json::<serde_json::Value>().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn display_local_path(path: &std::path::Path) -> String {
     let value = path.to_string_lossy();
     if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
@@ -11840,6 +11872,7 @@ fn main() {
             show_in_folder,
             copy_local_file,
             cache_local_file_to_dir,
+            eagle_api_get,
             save_item_source_as,
             save_dropped_file,
             commands::license::get_machine_id,
