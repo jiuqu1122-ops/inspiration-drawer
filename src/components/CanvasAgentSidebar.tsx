@@ -431,7 +431,7 @@ export function CanvasAgentSidebar({
             </div>
             <div className="mt-0.5 flex items-center gap-1.5 text-[9px] font-medium text-stone-400 dark:text-stone-500">
               <span className={`h-1.5 w-1.5 rounded-full ${providerReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-              {settings.provider === 'codex' ? 'Codex · 本地 App Server' : 'OpenAI-compatible'}
+              {settings.provider === 'codex' ? 'ChatGPT · 本地 App Server' : '自定义 API · 本地 App Server'}
             </div>
           </div>
         </div>

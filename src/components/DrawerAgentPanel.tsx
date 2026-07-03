@@ -94,7 +94,7 @@ export function DrawerAgentPanel({
             </div>
             <div className="mt-0.5 flex items-center gap-1 text-[8px] text-stone-400 dark:text-stone-500">
               <span className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-              {settings.provider === 'codex' ? 'Codex · 可控制抽屉与画布' : 'API · 可控制抽屉与画布'}
+              {settings.provider === 'codex' ? 'ChatGPT · 可控制抽屉与画布' : 'API App Server · 可控制抽屉与画布'}
             </div>
           </div>
         </div>

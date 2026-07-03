@@ -15,11 +15,50 @@ use tauri::{Emitter, State};
 
 const AGENT_SETTINGS_FILE: &str = "agent_config.json";
 const CODEX_RPC_TIMEOUT_SECS: u64 = 45;
+const CODEX_API_KEY_ENV: &str = "LINGGAN_CODEX_API_KEY";
 const MANAGED_CODEX_VERSION: &str = "0.142.5";
 const MANAGED_CODEX_WINDOWS_X64_URL: &str = "https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-x86_64-pc-windows-msvc.exe.zip";
 const MANAGED_CODEX_WINDOWS_X64_SHA256: &str =
     "9d344a41dc15408bb2cc3ed3782cde33e7b4fd4a7016b5838dfeffaf1f6e6c0d";
 const MANAGED_CODEX_WINDOWS_X64_ZIP_SIZE: u64 = 109_265_503;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CodexRuntimeMode {
+    Chatgpt,
+    Api,
+}
+
+impl CodexRuntimeMode {
+    fn from_provider(provider: &str) -> Self {
+        if provider.trim().eq_ignore_ascii_case("codex") {
+            Self::Chatgpt
+        } else {
+            Self::Api
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Chatgpt => "chatgpt",
+            Self::Api => "api",
+        }
+    }
+
+    fn home_dir_name(self) -> &'static str {
+        match self {
+            Self::Chatgpt => "chatgpt",
+            Self::Api => "api-runtime",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CodexRuntimeProfile {
+    mode: CodexRuntimeMode,
+    codex_home: PathBuf,
+    api_key: Option<String>,
+    profile_key: String,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +168,9 @@ struct CodexRuntime {
     next_id: Arc<AtomicU64>,
     executable: String,
     version: String,
+    mode: CodexRuntimeMode,
+    codex_home: PathBuf,
+    profile_key: String,
 }
 
 impl CodexRuntime {
@@ -212,6 +254,135 @@ impl Drop for AgentRuntimeState {
 
 fn settings_path(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
     crate::get_user_data_dir(app_handle).join(AGENT_SETTINGS_FILE)
+}
+
+fn get_codex_home(app_handle: &tauri::AppHandle, mode: CodexRuntimeMode) -> PathBuf {
+    crate::get_user_data_dir(app_handle)
+        .join("codex")
+        .join(mode.home_dir_name())
+}
+
+fn normalize_base_url(base_url: &str) -> Result<String, String> {
+    let mut normalized = base_url.trim().trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        return Err("自定义 API 模式需要填写 Base URL".to_string());
+    }
+    if !normalized.starts_with("https://") && !normalized.starts_with("http://") {
+        return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
+    }
+    for suffix in ["/chat/completions", "/responses", "/models"] {
+        if normalized.to_ascii_lowercase().ends_with(suffix) {
+            let next_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(next_len);
+            normalized = normalized.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    if !normalized.to_ascii_lowercase().ends_with("/v1") {
+        normalized.push_str("/v1");
+    }
+    Ok(normalized)
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn build_codex_runtime_config(settings: &AgentSettingsStored) -> Result<String, String> {
+    let model = normalize_api_model(&settings.api_model);
+    if model.is_empty() {
+        return Err("自定义 API 模式需要填写模型名".to_string());
+    }
+    let base_url = normalize_base_url(&settings.api_base_url)?;
+    let mut lines = vec![
+        format!("model = \"{}\"", escape_toml_string(&model)),
+        "model_provider = \"custom\"".to_string(),
+        String::new(),
+        "approval_policy = \"on-request\"".to_string(),
+        "sandbox_mode = \"workspace-write\"".to_string(),
+        "model_reasoning_effort = \"medium\"".to_string(),
+        String::new(),
+        "[model_providers.custom]".to_string(),
+        "name = \"Custom API\"".to_string(),
+        format!("base_url = \"{}\"", escape_toml_string(&base_url)),
+        format!("env_key = \"{}\"", CODEX_API_KEY_ENV),
+        "wire_api = \"responses\"".to_string(),
+    ];
+    if !settings.api_headers.is_empty() {
+        let headers = settings
+            .api_headers
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "\"{}\" = \"{}\"",
+                    escape_toml_string(key),
+                    escape_toml_string(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("http_headers = {{ {} }}", headers));
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n"))
+}
+
+fn write_codex_runtime_config(
+    app_handle: &tauri::AppHandle,
+    settings: &AgentSettingsStored,
+) -> Result<PathBuf, String> {
+    let codex_home = get_codex_home(app_handle, CodexRuntimeMode::Api);
+    fs::create_dir_all(&codex_home)
+        .map_err(|error| format!("创建自定义 API CODEX_HOME 失败：{}", error))?;
+    let path = codex_home.join("config.toml");
+    fs::write(&path, build_codex_runtime_config(settings)?)
+        .map_err(|error| format!("写入自定义 API Codex 配置失败：{}", error))?;
+    Ok(path)
+}
+
+fn build_codex_runtime_profile(
+    app_handle: &tauri::AppHandle,
+    settings: &AgentSettingsStored,
+    prepare: bool,
+) -> Result<CodexRuntimeProfile, String> {
+    let mode = CodexRuntimeMode::from_provider(&settings.provider);
+    let codex_home = get_codex_home(app_handle, mode);
+    fs::create_dir_all(&codex_home)
+        .map_err(|error| format!("创建 Codex 运行目录失败：{}", error))?;
+    let api_key = if mode == CodexRuntimeMode::Api {
+        if prepare {
+            if settings.api_key.trim().is_empty() {
+                return Err("自定义 API 模式尚未配置 API Key".to_string());
+            }
+            write_codex_runtime_config(app_handle, settings)?;
+        }
+        Some(settings.api_key.trim().to_string())
+    } else {
+        None
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(mode.as_str().as_bytes());
+    hasher.update(codex_home.to_string_lossy().as_bytes());
+    if mode == CodexRuntimeMode::Api {
+        hasher.update(settings.api_base_url.as_bytes());
+        hasher.update(settings.api_model.as_bytes());
+        hasher.update(settings.api_key.as_bytes());
+        for (key, value) in &settings.api_headers {
+            hasher.update(key.as_bytes());
+            hasher.update(value.as_bytes());
+        }
+    }
+    Ok(CodexRuntimeProfile {
+        mode,
+        codex_home,
+        api_key,
+        profile_key: hex::encode(hasher.finalize()),
+    })
 }
 
 fn read_settings(app_handle: &tauri::AppHandle) -> AgentSettingsStored {
@@ -785,6 +956,8 @@ pub struct CodexStatus {
     executable: String,
     version: String,
     auth_detail: String,
+    runtime_mode: String,
+    codex_home: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1021,6 +1194,20 @@ fn command_output(executable: &str, args: &[&str]) -> Result<std::process::Outpu
         .map_err(|error| format!("无法运行 {}：{}", executable, error))
 }
 
+fn command_output_with_codex_home(
+    executable: &str,
+    args: &[&str],
+    codex_home: &Path,
+) -> Result<std::process::Output, String> {
+    let mut command = Command::new(executable);
+    hide_console(&mut command);
+    command.env("CODEX_HOME", codex_home);
+    command
+        .args(args)
+        .output()
+        .map_err(|error| format!("无法运行 {}：{}", executable, error))
+}
+
 fn codex_version(executable: &str) -> Result<String, String> {
     let output = command_output(executable, &["--version"])?;
     if !output.status.success() {
@@ -1029,7 +1216,13 @@ fn codex_version(executable: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn inspect_codex_status(executable: String, running: bool, managed: bool) -> CodexStatus {
+fn inspect_codex_status(
+    executable: String,
+    running: bool,
+    managed: bool,
+    profile: &CodexRuntimeProfile,
+    settings: &AgentSettingsStored,
+) -> CodexStatus {
     let version = match codex_version(&executable) {
         Ok(version) => version,
         Err(_) => {
@@ -1043,20 +1236,33 @@ fn inspect_codex_status(executable: String, running: bool, managed: bool) -> Cod
                 executable,
                 version: String::new(),
                 auth_detail: "尚未安装 Codex 运行时".to_string(),
+                runtime_mode: profile.mode.as_str().to_string(),
+                codex_home: profile.codex_home.to_string_lossy().to_string(),
             }
         }
     };
-    let output = command_output(&executable, &["login", "status"]);
-    let (authenticated, detail) = match output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            (
-                output.status.success(),
-                if stdout.is_empty() { stderr } else { stdout },
-            )
+    let (authenticated, detail) = if profile.mode == CodexRuntimeMode::Api {
+        let detail = normalize_base_url(&settings.api_base_url)
+            .map(|base_url| format!("Custom API · {}", base_url))
+            .unwrap_or_else(|error| error);
+        (!settings.api_key.trim().is_empty(), detail)
+    } else {
+        let output = command_output_with_codex_home(
+            &executable,
+            &["login", "status"],
+            &profile.codex_home,
+        );
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                (
+                    output.status.success(),
+                    if stdout.is_empty() { stderr } else { stdout },
+                )
+            }
+            Err(error) => (false, error),
         }
-        Err(error) => (false, error),
     };
     CodexStatus {
         installed: true,
@@ -1068,6 +1274,8 @@ fn inspect_codex_status(executable: String, running: bool, managed: bool) -> Cod
         executable,
         version,
         auth_detail: detail,
+        runtime_mode: profile.mode.as_str().to_string(),
+        codex_home: profile.codex_home.to_string_lossy().to_string(),
     }
 }
 
@@ -1086,7 +1294,14 @@ pub async fn agent_codex_status(
     tauri::async_runtime::spawn_blocking(move || {
         let executable = resolve_codex_executable(&app_handle, &settings.codex_executable);
         let managed = is_managed_codex_path(&app_handle, &executable);
-        Ok(inspect_codex_status(executable, running, managed))
+        let profile = build_codex_runtime_profile(&app_handle, &settings, false)?;
+        Ok(inspect_codex_status(
+            executable,
+            running,
+            managed,
+            &profile,
+            &settings,
+        ))
     })
     .await
     .map_err(|error| format!("检查 Codex 状态失败：{}", error))?
@@ -1097,6 +1312,7 @@ pub async fn agent_install_codex(
     app_handle: tauri::AppHandle,
     state: State<'_, AgentRuntimeState>,
 ) -> Result<CodexStatus, String> {
+    let settings = read_settings(&app_handle);
     let running = state
         .codex
         .lock()
@@ -1105,7 +1321,14 @@ pub async fn agent_install_codex(
         .unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let executable = install_managed_codex(&app_handle)?;
-        Ok(inspect_codex_status(executable, running, true))
+        let profile = build_codex_runtime_profile(&app_handle, &settings, false)?;
+        Ok(inspect_codex_status(
+            executable,
+            running,
+            true,
+            &profile,
+            &settings,
+        ))
     })
     .await
     .map_err(|error| format!("安装 Codex 后台任务失败：{}", error))?
@@ -1131,10 +1354,15 @@ fn response_id_key(value: &Value) -> Option<String> {
 fn spawn_codex_runtime(
     app_handle: &tauri::AppHandle,
     executable: &str,
+    profile: &CodexRuntimeProfile,
 ) -> Result<CodexRuntime, String> {
     let version = codex_version(executable)?;
     let mut command = Command::new(executable);
     hide_console(&mut command);
+    command.env("CODEX_HOME", &profile.codex_home);
+    if let Some(api_key) = &profile.api_key {
+        command.env(CODEX_API_KEY_ENV, api_key);
+    }
     let mut child = command
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
@@ -1209,6 +1437,9 @@ fn spawn_codex_runtime(
         next_id: Arc::new(AtomicU64::new(1)),
         executable: executable.to_string(),
         version,
+        mode: profile.mode,
+        codex_home: profile.codex_home.clone(),
+        profile_key: profile.profile_key.clone(),
     })
 }
 
@@ -1218,6 +1449,8 @@ pub async fn agent_codex_start(
     state: State<'_, AgentRuntimeState>,
 ) -> Result<CodexStatus, String> {
     let settings = read_settings(&app_handle);
+    let profile = build_codex_runtime_profile(&app_handle, &settings, true)
+        .map_err(|error| format!("准备 {} Codex 运行环境失败：{}", CodexRuntimeMode::from_provider(&settings.provider).as_str(), error))?;
     let executable = resolve_codex_executable(&app_handle, &settings.codex_executable);
     let managed = is_managed_codex_path(&app_handle, &executable);
     let existing = state
@@ -1227,7 +1460,13 @@ pub async fn agent_codex_start(
         .clone();
     let runtime = if let Some(runtime) = existing
         .as_ref()
-        .filter(|runtime| runtime.is_running() && runtime.executable == executable)
+        .filter(|runtime| {
+            runtime.is_running()
+                && runtime.executable == executable
+                && runtime.profile_key == profile.profile_key
+                && runtime.mode == profile.mode
+                && runtime.codex_home == profile.codex_home
+        })
         .cloned()
     {
         runtime
@@ -1235,7 +1474,7 @@ pub async fn agent_codex_start(
         if let Some(runtime) = existing {
             runtime.stop();
         }
-        let runtime = spawn_codex_runtime(&app_handle, &executable).map_err(|error| {
+        let runtime = spawn_codex_runtime(&app_handle, &executable, &profile).map_err(|error| {
             if is_default_codex_executable(&settings.codex_executable) {
                 format!("{}。请先安装 Codex 运行时", error)
             } else {
@@ -1254,7 +1493,7 @@ pub async fn agent_codex_start(
                     "clientInfo": {
                         "name": "inspiration_drawer",
                         "title": "Inspiration Drawer",
-                        "version": "4.3.1"
+                        "version": "4.3.6"
                     }
                 }),
                 Duration::from_secs(20),
@@ -1271,30 +1510,41 @@ pub async fn agent_codex_start(
         runtime
     };
 
-    let account_runtime = runtime.clone();
-    let account = tauri::async_runtime::spawn_blocking(move || {
-        account_runtime.request(
-            "account/read",
-            json!({ "refreshToken": false }),
-            Duration::from_secs(15),
+    let (authenticated, auth_detail) = if profile.mode == CodexRuntimeMode::Api {
+        (
+            !settings.api_key.trim().is_empty(),
+            format!(
+                "Custom API · {}",
+                normalize_base_url(&settings.api_base_url).unwrap_or_else(|_| settings.api_base_url.clone())
+            ),
         )
-    })
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .unwrap_or(Value::Null);
-    let authenticated = account.get("account").is_some_and(|value| !value.is_null());
-    let auth_detail = account
-        .pointer("/account/email")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            account
-                .pointer("/account/type")
-                .and_then(Value::as_str)
-                .unwrap_or("未登录")
-                .to_string()
-        });
+    } else {
+        let account_runtime = runtime.clone();
+        let account = tauri::async_runtime::spawn_blocking(move || {
+            account_runtime.request(
+                "account/read",
+                json!({ "refreshToken": false }),
+                Duration::from_secs(15),
+            )
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(Value::Null);
+        let authenticated = account.get("account").is_some_and(|value| !value.is_null());
+        let auth_detail = account
+            .pointer("/account/email")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                account
+                    .pointer("/account/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("未登录")
+                    .to_string()
+            });
+        (authenticated, auth_detail)
+    };
     Ok(CodexStatus {
         installed: true,
         running: runtime.is_running(),
@@ -1305,7 +1555,42 @@ pub async fn agent_codex_start(
         executable: runtime.executable,
         version: runtime.version,
         auth_detail,
+        runtime_mode: profile.mode.as_str().to_string(),
+        codex_home: profile.codex_home.to_string_lossy().to_string(),
     })
+}
+
+#[tauri::command]
+pub async fn agent_codex_restart(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    mode: String,
+) -> Result<CodexStatus, String> {
+    let settings = read_settings(&app_handle);
+    let configured_mode = CodexRuntimeMode::from_provider(&settings.provider);
+    let requested_mode = match mode.trim().to_ascii_lowercase().as_str() {
+        "chatgpt" | "codex" => CodexRuntimeMode::Chatgpt,
+        "api" | "openai-compatible" => CodexRuntimeMode::Api,
+        _ => return Err(format!("未知 Codex 运行模式：{}", mode)),
+    };
+    if requested_mode != configured_mode {
+        return Err(format!(
+            "Codex 模式切换失败：设置页当前为 {}，请求重启为 {}",
+            configured_mode.as_str(),
+            requested_mode.as_str()
+        ));
+    }
+    if let Some(runtime) = state
+        .codex
+        .lock()
+        .map_err(|_| "Codex runtime lock poisoned".to_string())?
+        .take()
+    {
+        runtime.stop();
+    }
+    agent_codex_start(app_handle, state)
+        .await
+        .map_err(|error| format!("重启 {} Codex App Server 失败：{}", requested_mode.as_str(), error))
 }
 
 #[tauri::command]
@@ -1375,6 +1660,40 @@ mod tests {
             models_url("https://api.example.com/v1/").unwrap(),
             "https://api.example.com/v1/models"
         );
+    }
+
+    #[test]
+    fn normalizes_custom_codex_provider_base_urls() {
+        assert_eq!(CodexRuntimeMode::Chatgpt.home_dir_name(), "chatgpt");
+        assert_eq!(CodexRuntimeMode::Api.home_dir_name(), "api-runtime");
+        assert_eq!(
+            normalize_base_url("https://api.example.com/").unwrap(),
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            normalize_base_url("https://api.example.com/v1/responses").unwrap(),
+            "https://api.example.com/v1"
+        );
+        assert!(normalize_base_url("api.example.com").is_err());
+    }
+
+    #[test]
+    fn custom_codex_config_uses_env_key_and_never_embeds_api_key() {
+        let mut stored = AgentSettingsStored::default();
+        stored.api_base_url = "https://api.example.com/".to_string();
+        stored.api_model = "custom-model".to_string();
+        stored.api_key = "super-secret-key".to_string();
+        stored
+            .api_headers
+            .insert("X-Tenant".to_string(), "drawer".to_string());
+
+        let config = build_codex_runtime_config(&stored).unwrap();
+        assert!(config.contains("model = \"custom-model\""));
+        assert!(config.contains("base_url = \"https://api.example.com/v1\""));
+        assert!(config.contains("env_key = \"LINGGAN_CODEX_API_KEY\""));
+        assert!(config.contains("wire_api = \"responses\""));
+        assert!(config.contains("http_headers = { \"X-Tenant\" = \"drawer\" }"));
+        assert!(!config.contains("super-secret-key"));
     }
 
     #[test]

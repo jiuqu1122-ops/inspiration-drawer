@@ -130,15 +130,42 @@ const buildThinkingStepId = (messageId: string, key: string) => (
   `${messageId}:thinking:${key}`
 );
 
+const getEffectiveCodexModel = (
+  settings: AgentSettings,
+  forceDefaultModel = false,
+) => {
+  if (settings.provider === 'openai-compatible') return settings.apiModel.trim();
+  return forceDefaultModel ? '' : normalizeCodexModelOverride(settings.codexModel);
+};
+
+const getEffectiveCodexReasoningEffort = (settings: AgentSettings) => (
+  settings.provider === 'openai-compatible'
+    ? 'medium'
+    : normalizeCodexReasoningEffort(settings.codexReasoningEffort)
+);
+
+const getEffectiveCodexSandbox = (settings: AgentSettings) => (
+  settings.provider === 'openai-compatible' ? 'workspace-write' : settings.codexSandbox
+);
+
+const getEffectiveCodexApprovalPolicy = (settings: AgentSettings) => (
+  settings.provider === 'openai-compatible' ? 'on-request' : settings.codexApprovalPolicy
+);
+
 const buildCodexThreadKey = (
   settings: AgentSettings,
   forceDefaultModel = false,
 ) => JSON.stringify({
   protocol: CANVAS_AGENT_CODEX_THREAD_PROTOCOL,
-  model: forceDefaultModel ? '' : normalizeCodexModelOverride(settings.codexModel),
-  reasoningEffort: normalizeCodexReasoningEffort(settings.codexReasoningEffort),
-  sandbox: settings.codexSandbox,
-  approvalPolicy: settings.codexApprovalPolicy,
+  provider: settings.provider,
+  model: getEffectiveCodexModel(settings, forceDefaultModel),
+  reasoningEffort: getEffectiveCodexReasoningEffort(settings),
+  sandbox: getEffectiveCodexSandbox(settings),
+  approvalPolicy: getEffectiveCodexApprovalPolicy(settings),
+  ...(settings.provider === 'openai-compatible' ? {
+    apiBaseUrl: settings.apiBaseUrl,
+    apiHeaders: settings.apiHeaders,
+  } : {}),
   systemPrompt: settings.systemPrompt,
 });
 
@@ -565,7 +592,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   }, [refreshSettings]);
 
   useEffect(() => {
-    if (settingsLoading || settings.provider !== 'codex') return;
+    if (settingsLoading) return;
     void invoke<CodexRuntimeStatus>('agent_codex_status').then(setCodexStatus).catch(() => {});
   }, [settings.provider, settingsLoading]);
 
@@ -1123,15 +1150,15 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       return conversation.codexThreadId;
     }
 
-    const codexModel = options.forceDefaultModel ? '' : normalizeCodexModelOverride(current.codexModel);
-    const reasoningEffort = normalizeCodexReasoningEffort(current.codexReasoningEffort);
+    const codexModel = getEffectiveCodexModel(current, options.forceDefaultModel === true);
+    const reasoningEffort = getEffectiveCodexReasoningEffort(current);
     const result = await invoke<Record<string, unknown>>('agent_codex_request', {
       method: 'thread/start',
       params: {
         ...(codexModel ? { model: codexModel } : {}),
         ...(reasoningEffort ? { config: { model_reasoning_effort: reasoningEffort } } : {}),
-        sandbox: current.codexSandbox,
-        approvalPolicy: current.codexApprovalPolicy,
+        sandbox: getEffectiveCodexSandbox(current),
+        approvalPolicy: getEffectiveCodexApprovalPolicy(current),
         baseInstructions: systemPrompt,
         personality: 'friendly',
       },
@@ -1202,7 +1229,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         status: 'completed',
       });
     } catch (error) {
-      if (!forceDefaultCodexModel && isCodexLiteUnsupportedModelError(error)) {
+      if (
+        settingsRef.current.provider === 'codex'
+        && !forceDefaultCodexModel
+        && isCodexLiteUnsupportedModelError(error)
+      ) {
         upsertThinkingStep(conversation.id, assistantMessageId, 'codex-thread', {
           title: '当前模型不兼容',
           detail: '正在切换为账户默认模型重试',
@@ -1238,12 +1269,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       assistantMessageId,
     };
     try {
-      const turnModel = forceDefaultCodexModel
-        ? ''
-        : normalizeCodexModelOverride(settingsRef.current.codexModel);
-      const reasoningEffort = normalizeCodexReasoningEffort(
-        settingsRef.current.codexReasoningEffort,
-      );
+      const turnModel = getEffectiveCodexModel(settingsRef.current, forceDefaultCodexModel);
+      const reasoningEffort = getEffectiveCodexReasoningEffort(settingsRef.current);
       const startTurn = async (text: string, withOutputSchema: boolean) => {
         upsertThinkingStep(conversation.id, assistantMessageId, 'codex-send', {
           title: withOutputSchema ? '正在发送请求给 Codex' : '正在发送重试请求给 Codex',
@@ -1257,7 +1284,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
             threadId,
             input: buildCodexUserInput(text, visualReferences),
             ...(withOutputSchema ? { outputSchema: CANVAS_AGENT_ACTION_SCHEMA } : {}),
-            approvalPolicy: settingsRef.current.codexApprovalPolicy,
+            approvalPolicy: getEffectiveCodexApprovalPolicy(settingsRef.current),
             ...(turnModel ? { model: turnModel } : {}),
             ...(reasoningEffort ? { effort: reasoningEffort } : {}),
           },
@@ -1365,7 +1392,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         window.clearTimeout(pending.timeoutId);
         pendingCodexTurnsRef.current.delete(threadId);
       }
-      if (!forceDefaultCodexModel && isCodexLiteUnsupportedModelError(error)) {
+      if (
+        settingsRef.current.provider === 'codex'
+        && !forceDefaultCodexModel
+        && isCodexLiteUnsupportedModelError(error)
+      ) {
         loadedCodexThreadsRef.current.delete(threadId);
         patchConversation(conversation.id, value => ({ ...value, codexThreadId: undefined }));
         upsertThinkingStep(conversation.id, assistantMessageId, 'codex-thread', {
@@ -1434,7 +1465,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       thinkingSteps: [{
         id: buildThinkingStepId(assistantMessageId, 'queued'),
         title: '请求已进入队列',
-        detail: provider === 'codex' ? '准备连接 Codex App Server' : '准备调用 OpenAI-compatible API',
+        detail: provider === 'codex'
+          ? '准备连接 ChatGPT Codex App Server'
+          : '准备连接自定义 API Codex App Server',
         status: 'running',
         timestamp: Date.now() + 1,
       }],
@@ -1456,7 +1489,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       let visualReferences = initialVisualReferences;
       if (optionsRef.current.prepareVisualReferences) {
         try {
-          visualReferences = await optionsRef.current.prepareVisualReferences(context, provider);
+          visualReferences = await optionsRef.current.prepareVisualReferences(context, 'codex');
           upsertThinkingStep(conversation.id, assistantMessage.id, 'references', {
             title: visualReferences.length > 0 ? '参考图已准备' : '没有可用参考图',
             detail: visualReferences.length > 0 ? `本轮附加 ${visualReferences.length} 张参考图` : '将仅使用节点文字和结构信息',
@@ -1490,7 +1523,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         selectedIds,
         visualReferences,
       };
-      if (provider === 'codex') {
+      if (provider === 'codex' || provider === 'openai-compatible') {
         await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot);
       } else {
         const systemPrompt = [
@@ -1633,11 +1666,41 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const saveSettings = useCallback(async (
     input: AgentSettings & { apiKey?: string; clearApiKey?: boolean },
   ) => {
+    const previous = settingsRef.current;
     const saved = normalizeAgentSettings(await invoke('agent_save_settings', { input }));
     settingsRef.current = saved;
     setSettings(saved);
+    const runtimeProfileChanged = previous.provider !== saved.provider
+      || previous.codexExecutable !== saved.codexExecutable
+      || (
+        saved.provider === 'openai-compatible'
+        && (
+          previous.apiBaseUrl !== saved.apiBaseUrl
+          || previous.apiModel !== saved.apiModel
+          || JSON.stringify(previous.apiHeaders) !== JSON.stringify(saved.apiHeaders)
+          || !!input.apiKey?.trim()
+          || input.clearApiKey === true
+        )
+      );
+    if (!runtimeProfileChanged) return saved;
+
+    loadedCodexThreadsRef.current.clear();
+    commitConversations(current => current.map(conversation => ({
+      ...conversation,
+      codexThreadId: undefined,
+      codexThreadKey: undefined,
+    })));
+    const mode = saved.provider === 'codex' ? 'chatgpt' : 'api';
+    try {
+      let status = await invoke<CodexRuntimeStatus>('agent_codex_status');
+      if (!status.installed && status.installAvailable) status = await installCodex();
+      const restarted = await invoke<CodexRuntimeStatus>('agent_codex_restart', { mode });
+      setCodexStatus(restarted);
+    } catch (error) {
+      throw new Error(`设置已保存，但切换到 ${mode === 'chatgpt' ? 'ChatGPT 登录' : '自定义 API'} 模式失败：${String(error)}`);
+    }
     return saved;
-  }, []);
+  }, [commitConversations, installCodex]);
 
   const listOpenAiModels = useCallback(async () => (
     invoke<string[]>('agent_list_openai_models')

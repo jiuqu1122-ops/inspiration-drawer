@@ -173,8 +173,8 @@ export function AgentSettingsSection({
                   }))}
                   className="w-full rounded-[14px] border border-blue-100 bg-white/82 px-3 py-1.5 text-xs text-stone-700 outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-blue-900/45 dark:bg-stone-800/70 dark:text-stone-200"
                 >
-                  <option value="openai-compatible">OpenAI-compatible API</option>
-                  <option value="codex">Codex App Server</option>
+                  <option value="openai-compatible">自定义 API（独立 Codex 运行时）</option>
+                  <option value="codex">ChatGPT 登录（独立 Codex 运行时）</option>
                 </select>
               </label>
 
@@ -182,12 +182,15 @@ export function AgentSettingsSection({
                 <div className="flex flex-col gap-2 rounded-[18px] border border-blue-100 bg-blue-50/55 p-3 dark:border-blue-400/20 dark:bg-blue-400/8">
                   <div className="flex items-center justify-between gap-2">
                     <span className="flex items-center gap-1.5 text-[11px] font-black text-blue-800 dark:text-blue-100">
-                      <Server className="h-3.5 w-3.5" /> API 接口
+                      <Server className="h-3.5 w-3.5" /> 自定义 API · Codex App Server
                     </span>
                     <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold ${draft.hasApiKey ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : 'bg-stone-100 text-stone-500 dark:bg-stone-700 dark:text-stone-300'}`}>
                       {draft.hasApiKey ? 'Key 已保存' : '未配置 Key'}
                     </span>
                   </div>
+                  <p className="text-[9px] leading-4 text-blue-700/75 dark:text-blue-100/65">
+                    使用应用专属的 api-runtime 配置；API Key 仅通过运行时环境变量传入，不修改系统 Codex 配置。
+                  </p>
                   <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
                     API Base URL
                     <input
@@ -252,11 +255,14 @@ export function AgentSettingsSection({
               ) : (
                 <div className="flex flex-col gap-2 rounded-[18px] border border-violet-100 bg-violet-50/55 p-3 dark:border-violet-400/20 dark:bg-violet-400/8">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-black text-violet-800 dark:text-violet-100">Codex App Server</span>
+                    <span className="text-[11px] font-black text-violet-800 dark:text-violet-100">ChatGPT · Codex App Server</span>
                     <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold ${codexStatus?.authenticated ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : 'bg-stone-100 text-stone-500 dark:bg-stone-700 dark:text-stone-300'}`}>
                       {statusLabel}
                     </span>
                   </div>
+                  <p className="text-[9px] leading-4 text-violet-700/75 dark:text-violet-100/65">
+                    登录信息保存在应用专属的 chatgpt 运行目录，不读取或修改 ~/.codex/config.toml。
+                  </p>
                   <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
                     Codex 可执行文件
                     <input

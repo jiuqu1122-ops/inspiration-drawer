@@ -11806,6 +11806,7 @@ fn main() {
             agent::agent_codex_status,
             agent::agent_install_codex,
             agent::agent_codex_start,
+            agent::agent_codex_restart,
             agent::agent_codex_request,
             agent::agent_codex_respond,
             agent::agent_codex_stop,

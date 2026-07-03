@@ -225,6 +225,8 @@ export type CodexRuntimeStatus = {
   executable: string;
   version: string;
   authDetail: string;
+  runtimeMode: 'chatgpt' | 'api';
+  codexHome: string;
 };
 
 export type CodexRateLimitWindow = {
