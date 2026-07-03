@@ -23,7 +23,6 @@ import { listen, emitTo } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { check as checkForAppUpdate } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 
 import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
@@ -2143,6 +2142,22 @@ type RifeEngineProgress = {
   total?: number;
   progress?: number;
 };
+type AppUpdateProgress = {
+  progressId?: string;
+  stage?: string;
+  message?: string;
+  version?: string | null;
+  sourceName?: string | null;
+  sourceUrl?: string | null;
+  loaded?: number;
+  total?: number;
+  progress?: number;
+};
+type AppUpdateInstallResult = {
+  available: boolean;
+  version?: string | null;
+  installed: boolean;
+};
 const rifeEstimateCache = new Map<string, Promise<RifeFrameInterpolationEstimate>>();
 const enhancementEstimateCache = new Map<string, Promise<RealEsrganEnhancementEstimate>>();
 const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
@@ -3308,42 +3323,81 @@ function MainApp() {
     }
 
     setIsCheckingAppUpdate(true);
+    const progressId = `app-update-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let unlistenAppUpdateProgress: (() => void) | undefined;
     try {
       if (!options.silent) showToast('正在检查更新...');
-      const update = await checkForAppUpdate({ timeout: 8000 });
-      if (!update) {
-        if (!options.silent) showToast('当前已是最新版本');
-        return;
-      }
-
-      showToast(`发现新版本 ${update.version}，正在下载更新`);
-      let downloadedBytes = 0;
-      let totalBytes = 0;
       let lastToastAt = 0;
+      let lastDownloadingSource = '';
+      unlistenAppUpdateProgress = await listen<AppUpdateProgress>('app-update-progress', (event) => {
+        const progress = event.payload;
+        if (progress?.progressId !== progressId) return;
+        const sourceName = progress.sourceName || '更新源';
+        const version = progress.version || '';
 
-      await update.downloadAndInstall(event => {
-        if (event.event === 'Started') {
-          totalBytes = event.data.contentLength || 0;
-          showToast(totalBytes > 0
-            ? `开始下载更新包 ${Math.max(1, Math.round(totalBytes / 1024 / 1024))}MB`
-            : '开始下载更新包');
+        if (progress.stage === 'found') {
+          showToast(version ? `发现新版本 ${version}，准备下载更新` : '发现新版本，准备下载更新');
           return;
         }
 
-        if (event.event === 'Progress') {
-          downloadedBytes += event.data.chunkLength;
+        if (progress.stage === 'source-started') {
+          lastDownloadingSource = sourceName;
+          showToast(`正在尝试 ${sourceName}`);
+          return;
+        }
+
+        if (progress.stage === 'downloading') {
+          const total = Number(progress.total || 0);
+          const loaded = Number(progress.loaded || 0);
           const now = Date.now();
-          if (totalBytes > 0 && now - lastToastAt > 1200) {
+          if (sourceName !== lastDownloadingSource || now - lastToastAt > 1200 || (total > 0 && loaded >= total)) {
             lastToastAt = now;
-            showToast(`正在更新 ${Math.min(99, Math.round((downloadedBytes / totalBytes) * 100))}%`);
+            lastDownloadingSource = sourceName;
+            showToast(total > 0
+              ? `正在从 ${sourceName} 下载 ${Math.min(99, Math.round((loaded / total) * 100))}%`
+              : `正在从 ${sourceName} 下载更新包`);
           }
           return;
         }
 
-        if (event.event === 'Finished') {
-          showToast('更新已安装，准备重启');
+        if (progress.stage === 'download-finished') {
+          showToast(`${sourceName} 下载完成，正在校验`);
+          return;
+        }
+
+        if (progress.stage === 'sha256-verified') {
+          showToast(`${sourceName} SHA256 校验通过`);
+          return;
+        }
+
+        if (progress.stage === 'installing') {
+          showToast('更新包校验通过，正在安装');
+          return;
+        }
+
+        if (progress.stage === 'source-failed') {
+          console.warn('[app-update] source failed:', {
+            sourceName: progress.sourceName,
+            sourceUrl: progress.sourceUrl,
+            message: progress.message,
+          });
+          if (!options.silent) showToast(`${sourceName} 下载失败，正在切换备用源`);
         }
       });
+
+      const result = await invoke<AppUpdateInstallResult>('check_and_install_app_update_mirrors', {
+        progressId,
+        checkTimeoutMs: 8000,
+        downloadTimeoutMs: 180000,
+      });
+
+      if (!result.available) {
+        if (!options.silent) showToast('当前已是最新版本');
+        return;
+      }
+
+      if (!result.installed) return;
+      showToast('更新已安装，准备重启');
 
       window.setTimeout(() => {
         void relaunch().catch(err => {
@@ -3355,6 +3409,7 @@ function MainApp() {
       console.warn('检查更新失败:', err);
       if (!options.silent) showToast(formatAppUpdateErrorMessage(err));
     } finally {
+      unlistenAppUpdateProgress?.();
       setIsCheckingAppUpdate(false);
     }
   };
@@ -16876,11 +16931,13 @@ function MainApp() {
     isPinnedRef.current = true;
     setDrawerState('open');
     invoke('toggle_pin', { pinned: true }).catch(() => {});
-    invoke('open_drawer', {
-      width: drawerWidthRef.current,
-      height: drawerHeightRef.current,
-      mode: triggerModeRef.current,
-    }).catch(() => {});
+    if (!isCanvasWorkbenchActiveRef.current) {
+      invoke('open_drawer', {
+        width: drawerWidthRef.current,
+        height: drawerHeightRef.current,
+        mode: triggerModeRef.current,
+      }).catch(() => {});
+    }
     window.requestAnimationFrame(() => {
       canvasSurfaceRef.current?.focus({ preventScroll: true });
     });
@@ -16921,13 +16978,16 @@ function MainApp() {
   };
 
   const isStartupOverlayActive = showLaunchIntro || isSplashVisible || showUpdateLog;
+  const isCanvasWorkbenchMediaPreviewActive =
+    isCanvasWorkbenchActive &&
+    isCanvasMode &&
+    (!!selectedImage || !!selectedVideo);
 
   const isDrawerActive =
     isOpen ||
     isPinned ||
     isStartupOverlayActive ||
-    !!selectedImage ||
-    !!selectedVideo;
+    ((!!selectedImage || !!selectedVideo) && !isCanvasWorkbenchMediaPreviewActive);
 
   // 启动欢迎/更新日志期间只做一次确定的“侧边滑出”序列：
   // 1. 先把真实 Tauri 窗口打开到抽屉尺寸

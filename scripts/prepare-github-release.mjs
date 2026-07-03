@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -30,6 +31,11 @@ const detectGitHubRepo = () => {
 const githubRepo = detectGitHubRepo();
 const releaseTag = process.env.GITHUB_RELEASE_TAG || `v${version}`;
 const baseUrl = (process.env.GITHUB_RELEASE_BASE_URL || `https://github.com/${githubRepo}/releases/download/${releaseTag}`).replace(/\/+$/, '');
+const giteeBaseUrl = (
+  process.env.GITEE_RELEASE_BASE_URL
+  || process.env.UPDATE_GITEE_BASE_URL
+  || ''
+).replace(/\/+$/, '');
 const notes = process.env.UPDATE_NOTES || `Inspiration Drawer ${version}`;
 
 const walk = (dir) => {
@@ -71,14 +77,35 @@ const artifactName = path.basename(artifactPath);
 const githubAssetName = artifactName.replace(/\s+/g, '.');
 const artifactUrlName = encodeURIComponent(githubAssetName);
 const signature = fs.readFileSync(signaturePath, 'utf8').trim();
+const artifactBytes = fs.readFileSync(artifactPath);
+const sha256 = crypto.createHash('sha256').update(artifactBytes).digest('hex').toUpperCase();
+const size = artifactBytes.length;
+const urls = [
+  ...(giteeBaseUrl
+    ? [{
+        name: 'Gitee 国内镜像',
+        url: `${giteeBaseUrl}/${artifactUrlName}`,
+      }]
+    : []),
+  {
+    name: 'GitHub Release',
+    url: `${baseUrl}/${artifactUrlName}`,
+  },
+];
 const latestJson = {
   version,
   notes,
+  sha256,
+  size,
+  urls,
   pub_date: new Date().toISOString(),
   platforms: {
     'windows-x86_64': {
       signature,
       url: `${baseUrl}/${artifactUrlName}`,
+      sha256,
+      size,
+      urls,
     },
   },
 };
@@ -93,11 +120,22 @@ console.log(`Prepared updater files in ${path.relative(repoRoot, outputDir)}:`);
 console.log(`- latest.json`);
 console.log(`- ${artifactName}`);
 console.log(`- ${artifactName}.sig`);
+console.log(`- sha256: ${sha256}`);
+console.log(`- size: ${size}`);
 console.log('');
 console.log(`Create or edit GitHub Release ${releaseTag}, then upload these assets:`);
 console.log(`- dist-updater/latest.json`);
 console.log(`- dist-updater/${artifactName} (GitHub asset name will be ${githubAssetName})`);
 console.log(`- dist-updater/${artifactName}.sig (GitHub asset name will be ${githubAssetName}.sig)`);
+console.log('');
+if (giteeBaseUrl) {
+  console.log('Gitee Release mirror is included in latest.json:');
+  console.log(`- ${giteeBaseUrl}/${artifactUrlName}`);
+  console.log('Upload the same installer asset to that Gitee Release URL.');
+} else {
+  console.log('Optional Gitee Release mirror: set GITEE_RELEASE_BASE_URL before running this script, e.g.');
+  console.log('- GITEE_RELEASE_BASE_URL=https://gitee.com/<owner>/<repo>/releases/download/v' + version);
+}
 console.log('');
 console.log('Optional China metadata mirror: upload dist-updater/latest.json to:');
 console.log('- http://theh8grtf.hn-bkt.clouddn.com/inspiration-drawer/latest.json');

@@ -1,7 +1,7 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "4.3.9",
+  "version": "4.3.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
     "license-generator:open": "npm run license-generator:build && start \"\" \"src-tauri\\target\\generator\\license-generator-app.exe\"",
     "updater:release": "node scripts/build-github-release.mjs",
     "updater:prepare": "node scripts/prepare-github-release.mjs",
+    "updater:sync:gitee": "node scripts/sync-gitee-release.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

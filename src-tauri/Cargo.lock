@@ -2368,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "inspiration-drawer"
-version = "4.3.9"
+version = "4.3.10"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2395,6 +2395,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "time",
+ "url",
  "winapi",
  "zip",
 ]

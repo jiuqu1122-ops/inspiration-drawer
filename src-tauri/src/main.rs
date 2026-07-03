@@ -32,7 +32,9 @@ use tauri::{
     Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
+use tauri_plugin_updater::UpdaterExt;
 use time::{format_description, OffsetDateTime};
+use url::Url;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -69,6 +71,35 @@ struct LocalVisionModelProgress {
     loaded: u64,
     total: u64,
     progress: f64,
+}
+
+#[derive(Clone)]
+struct AppUpdateDownloadSource {
+    name: String,
+    url: Url,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct AppUpdateProgress {
+    #[serde(rename = "progressId")]
+    progress_id: String,
+    stage: String,
+    message: String,
+    version: Option<String>,
+    #[serde(rename = "sourceName")]
+    source_name: Option<String>,
+    #[serde(rename = "sourceUrl")]
+    source_url: Option<String>,
+    loaded: u64,
+    total: u64,
+    progress: f64,
+}
+
+#[derive(serde::Serialize)]
+struct AppUpdateInstallResult {
+    available: bool,
+    version: Option<String>,
+    installed: bool,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -915,6 +946,579 @@ fn sha256_file_upper(path: &Path) -> Result<String, String> {
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()).to_ascii_uppercase())
+}
+
+fn normalize_sha256_value(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+fn sha256_bytes_upper(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes)).to_ascii_uppercase()
+}
+
+fn normalize_manifest_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some((_, rest)) = trimmed.split_once("](") {
+        if trimmed.starts_with('[') && rest.ends_with(')') {
+            return rest.trim_end_matches(')').trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn push_app_update_source(
+    sources: &mut Vec<AppUpdateDownloadSource>,
+    name: Option<&str>,
+    raw_url: Option<&str>,
+) {
+    let Some(raw_url) = raw_url else {
+        return;
+    };
+    let normalized = normalize_manifest_url(raw_url);
+    if normalized.is_empty() {
+        return;
+    }
+    let Ok(url) = Url::parse(&normalized) else {
+        eprintln!("[app-update] skip invalid update url: {normalized}");
+        return;
+    };
+    if sources.iter().any(|source| source.url == url) {
+        return;
+    }
+    let fallback_name = if url.domain().unwrap_or("").contains("gitee.com") {
+        "Gitee 国内镜像"
+    } else if url.domain().unwrap_or("").contains("github.com") {
+        "GitHub Release"
+    } else {
+        "更新源"
+    };
+    sources.push(AppUpdateDownloadSource {
+        name: name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(fallback_name)
+            .to_string(),
+        url,
+    });
+}
+
+fn push_app_update_sources_from_urls_value(
+    sources: &mut Vec<AppUpdateDownloadSource>,
+    urls_value: Option<&serde_json::Value>,
+) {
+    let Some(serde_json::Value::Array(urls)) = urls_value else {
+        return;
+    };
+    for item in urls {
+        match item {
+            serde_json::Value::String(url) => push_app_update_source(sources, None, Some(url)),
+            serde_json::Value::Object(entry) => push_app_update_source(
+                sources,
+                entry.get("name").and_then(serde_json::Value::as_str),
+                entry.get("url").and_then(serde_json::Value::as_str),
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn preferred_app_update_platform_keys(raw_json: &serde_json::Value) -> Vec<String> {
+    let mut keys = vec![
+        "windows-x86_64-nsis".to_string(),
+        "windows-x86_64".to_string(),
+        "windows-x86_64-msi".to_string(),
+    ];
+    if let Some(platforms) = raw_json
+        .get("platforms")
+        .and_then(serde_json::Value::as_object)
+    {
+        for key in platforms.keys() {
+            let lower = key.to_ascii_lowercase();
+            if lower.contains("windows") && !keys.iter().any(|existing| existing == key) {
+                keys.push(key.clone());
+            }
+        }
+        for key in platforms.keys() {
+            if !keys.iter().any(|existing| existing == key) {
+                keys.push(key.clone());
+            }
+        }
+    }
+    keys
+}
+
+fn collect_app_update_sources(
+    raw_json: &serde_json::Value,
+    fallback_url: &Url,
+) -> Vec<AppUpdateDownloadSource> {
+    let mut sources = Vec::new();
+    push_app_update_sources_from_urls_value(&mut sources, raw_json.get("urls"));
+
+    if let Some(platforms) = raw_json
+        .get("platforms")
+        .and_then(serde_json::Value::as_object)
+    {
+        for key in preferred_app_update_platform_keys(raw_json) {
+            let Some(platform) = platforms.get(&key) else {
+                continue;
+            };
+            push_app_update_sources_from_urls_value(&mut sources, platform.get("urls"));
+            push_app_update_source(
+                &mut sources,
+                Some(&format!("{key} url")),
+                platform.get("url").and_then(serde_json::Value::as_str),
+            );
+        }
+    }
+
+    push_app_update_source(
+        &mut sources,
+        Some("Legacy url"),
+        raw_json.get("url").and_then(serde_json::Value::as_str),
+    );
+
+    if !sources.iter().any(|source| source.url == *fallback_url) {
+        push_app_update_source(
+            &mut sources,
+            Some("Manifest url"),
+            Some(fallback_url.as_str()),
+        );
+    }
+
+    sources
+}
+
+fn find_app_update_platform_field<'a>(
+    raw_json: &'a serde_json::Value,
+    field: &str,
+) -> Option<&'a serde_json::Value> {
+    let platforms = raw_json.get("platforms")?.as_object()?;
+    for key in preferred_app_update_platform_keys(raw_json) {
+        if let Some(value) = platforms.get(&key).and_then(|platform| platform.get(field)) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn extract_app_update_sha256(raw_json: &serde_json::Value) -> Option<String> {
+    find_app_update_platform_field(raw_json, "sha256")
+        .or_else(|| raw_json.get("sha256"))
+        .and_then(serde_json::Value::as_str)
+        .map(normalize_sha256_value)
+        .filter(|value| !value.is_empty())
+}
+
+fn extract_app_update_size(raw_json: &serde_json::Value) -> Option<u64> {
+    find_app_update_platform_field(raw_json, "size")
+        .or_else(|| raw_json.get("size"))
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn app_update_manifest_for_source(raw_json: &serde_json::Value, source: &Url) -> serde_json::Value {
+    let mut manifest = raw_json.clone();
+    let source_url = serde_json::Value::String(source.as_str().to_string());
+    if let Some(object) = manifest.as_object_mut() {
+        object.insert("url".to_string(), source_url.clone());
+        if let Some(platforms) = object
+            .get_mut("platforms")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for platform in platforms.values_mut() {
+                if let Some(platform_object) = platform.as_object_mut() {
+                    platform_object.insert("url".to_string(), source_url.clone());
+                }
+            }
+        }
+    }
+    manifest
+}
+
+fn serve_one_app_update_manifest(
+    manifest: serde_json::Value,
+) -> Result<(Url, JoinHandle<()>), String> {
+    let body = serde_json::to_vec(&manifest).map_err(|e| format!("序列化临时更新配置失败: {e}"))?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("启动本地更新配置服务失败: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("配置本地更新配置服务失败: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("读取本地更新配置服务地址失败: {e}"))?;
+    let endpoint = Url::parse(&format!("http://{addr}/latest.json"))
+        .map_err(|e| format!("生成本地更新配置地址失败: {e}"))?;
+    let handle = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    if let Ok(mut reader_stream) = stream.try_clone() {
+                        let mut reader = BufReader::new(&mut reader_stream);
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            match reader.read_line(&mut line) {
+                                Ok(0) | Err(_) => break,
+                                Ok(_) if line == "\r\n" || line == "\n" => break,
+                                Ok(_) => {}
+                            }
+                        }
+                    }
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(headers.as_bytes());
+                    let _ = stream.write_all(&body);
+                    let _ = stream.flush();
+                    break;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok((endpoint, handle))
+}
+
+fn emit_app_update_progress(
+    app_handle: &tauri::AppHandle,
+    progress_id: &str,
+    stage: &str,
+    message: impl Into<String>,
+    version: Option<&str>,
+    source: Option<&AppUpdateDownloadSource>,
+    loaded: u64,
+    total: u64,
+) {
+    let progress = if total > 0 {
+        (loaded as f64 / total as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let payload = AppUpdateProgress {
+        progress_id: progress_id.to_string(),
+        stage: stage.to_string(),
+        message: message.into(),
+        version: version.map(str::to_string),
+        source_name: source.map(|source| source.name.clone()),
+        source_url: source.map(|source| source.url.as_str().to_string()),
+        loaded,
+        total,
+        progress,
+    };
+    let _ = app_handle.emit("app-update-progress", payload);
+}
+
+async fn download_app_update_from_source(
+    app_handle: &tauri::AppHandle,
+    progress_id: &str,
+    raw_json: &serde_json::Value,
+    source: &AppUpdateDownloadSource,
+    version: &str,
+    check_timeout: Duration,
+    download_timeout: Duration,
+) -> Result<(tauri_plugin_updater::Update, Vec<u8>), String> {
+    let manifest = app_update_manifest_for_source(raw_json, &source.url);
+    let (local_endpoint, server_handle) = serve_one_app_update_manifest(manifest)?;
+    let update_result = app_handle
+        .updater_builder()
+        .endpoints(vec![local_endpoint])
+        .map_err(|e| format!("配置更新源 {} 失败: {e}", source.name))?
+        .timeout(check_timeout)
+        .build()
+        .map_err(|e| format!("初始化更新源 {} 失败: {e}", source.name))?
+        .check()
+        .await;
+    let _ = server_handle.join();
+
+    let mut update = update_result
+        .map_err(|e| format!("检查更新源 {} 失败: {e}", source.name))?
+        .ok_or_else(|| format!("更新源 {} 未返回可安装版本", source.name))?;
+    update.timeout = Some(download_timeout);
+
+    let loaded_bytes = Arc::new(AtomicU64::new(0));
+    let total_bytes = Arc::new(AtomicU64::new(0));
+    let finished_loaded_bytes = Arc::clone(&loaded_bytes);
+    let finished_total_bytes = Arc::clone(&total_bytes);
+    let mut last_emit_at = Instant::now() - Duration::from_secs(1);
+    let bytes = update
+        .download(
+            |chunk_length, content_length| {
+                let loaded = loaded_bytes
+                    .fetch_add(chunk_length as u64, Ordering::Relaxed)
+                    .saturating_add(chunk_length as u64);
+                if let Some(content_length) = content_length {
+                    total_bytes.store(content_length, Ordering::Relaxed);
+                }
+                let total = total_bytes.load(Ordering::Relaxed);
+                if last_emit_at.elapsed() >= Duration::from_millis(350)
+                    || (total > 0 && loaded >= total)
+                {
+                    last_emit_at = Instant::now();
+                    emit_app_update_progress(
+                        app_handle,
+                        progress_id,
+                        "downloading",
+                        format!("正在从 {} 下载更新包", source.name),
+                        Some(version),
+                        Some(source),
+                        loaded,
+                        total,
+                    );
+                }
+            },
+            || {
+                let loaded = finished_loaded_bytes.load(Ordering::Relaxed);
+                let total = finished_total_bytes.load(Ordering::Relaxed);
+                emit_app_update_progress(
+                    app_handle,
+                    progress_id,
+                    "download-finished",
+                    format!("{} 下载完成，正在校验", source.name),
+                    Some(version),
+                    Some(source),
+                    loaded,
+                    total,
+                );
+            },
+        )
+        .await
+        .map_err(|e| format!("下载更新源 {} 失败: {e}", source.name))?;
+
+    Ok((update, bytes))
+}
+
+#[tauri::command]
+async fn check_and_install_app_update_mirrors(
+    app_handle: tauri::AppHandle,
+    progress_id: String,
+    check_timeout_ms: Option<u64>,
+    download_timeout_ms: Option<u64>,
+) -> Result<AppUpdateInstallResult, String> {
+    let progress_id = if progress_id.trim().is_empty() {
+        "app-update".to_string()
+    } else {
+        progress_id.trim().to_string()
+    };
+    let check_timeout =
+        Duration::from_millis(check_timeout_ms.unwrap_or(8_000).clamp(1_000, 120_000));
+    let download_timeout =
+        Duration::from_millis(download_timeout_ms.unwrap_or(120_000).clamp(5_000, 900_000));
+
+    emit_app_update_progress(
+        &app_handle,
+        &progress_id,
+        "checking",
+        "正在检查更新",
+        None,
+        None,
+        0,
+        0,
+    );
+
+    let update = app_handle
+        .updater_builder()
+        .timeout(check_timeout)
+        .build()
+        .map_err(|e| format!("初始化更新检查失败: {e}"))?
+        .check()
+        .await
+        .map_err(|e| format!("检查更新失败: {e}"))?;
+
+    let Some(update) = update else {
+        emit_app_update_progress(
+            &app_handle,
+            &progress_id,
+            "up-to-date",
+            "当前已是最新版本",
+            None,
+            None,
+            0,
+            0,
+        );
+        return Ok(AppUpdateInstallResult {
+            available: false,
+            version: None,
+            installed: false,
+        });
+    };
+
+    let version = update.version.clone();
+    let expected_sha256 = extract_app_update_sha256(&update.raw_json).ok_or_else(|| {
+        "更新配置缺少 sha256，已拒绝安装。请重新生成 latest.json/update.json。".to_string()
+    })?;
+    let expected_size = extract_app_update_size(&update.raw_json);
+    let sources = collect_app_update_sources(&update.raw_json, &update.download_url);
+
+    if sources.is_empty() {
+        return Err("更新配置没有可用下载地址 url/urls".to_string());
+    }
+
+    emit_app_update_progress(
+        &app_handle,
+        &progress_id,
+        "found",
+        format!("发现新版本 {version}，准备下载"),
+        Some(&version),
+        None,
+        0,
+        expected_size.unwrap_or(0),
+    );
+
+    let mut failures = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        emit_app_update_progress(
+            &app_handle,
+            &progress_id,
+            "source-started",
+            format!(
+                "尝试更新源 {}/{}：{}",
+                index + 1,
+                sources.len(),
+                source.name
+            ),
+            Some(&version),
+            Some(source),
+            0,
+            expected_size.unwrap_or(0),
+        );
+        eprintln!(
+            "[app-update] trying source {}/{}: {} <{}>",
+            index + 1,
+            sources.len(),
+            source.name,
+            source.url
+        );
+
+        match download_app_update_from_source(
+            &app_handle,
+            &progress_id,
+            &update.raw_json,
+            source,
+            &version,
+            check_timeout,
+            download_timeout,
+        )
+        .await
+        {
+            Ok((source_update, bytes)) => {
+                if let Some(expected_size) = expected_size {
+                    if bytes.len() as u64 != expected_size {
+                        let message = format!(
+                            "更新源 {} 文件大小不匹配，期望 {} 字节，实际 {} 字节",
+                            source.name,
+                            expected_size,
+                            bytes.len()
+                        );
+                        eprintln!("[app-update] {message}");
+                        emit_app_update_progress(
+                            &app_handle,
+                            &progress_id,
+                            "source-failed",
+                            message.clone(),
+                            Some(&version),
+                            Some(source),
+                            0,
+                            expected_size,
+                        );
+                        failures.push(message);
+                        continue;
+                    }
+                }
+
+                let actual_sha256 = sha256_bytes_upper(&bytes);
+                if actual_sha256 != expected_sha256 {
+                    let message = format!(
+                        "更新源 {} SHA256 校验失败，期望 {}，实际 {}",
+                        source.name, expected_sha256, actual_sha256
+                    );
+                    eprintln!("[app-update] {message}");
+                    emit_app_update_progress(
+                        &app_handle,
+                        &progress_id,
+                        "source-failed",
+                        message.clone(),
+                        Some(&version),
+                        Some(source),
+                        0,
+                        expected_size.unwrap_or(bytes.len() as u64),
+                    );
+                    failures.push(message);
+                    continue;
+                }
+
+                emit_app_update_progress(
+                    &app_handle,
+                    &progress_id,
+                    "sha256-verified",
+                    format!("{} SHA256 校验通过", source.name),
+                    Some(&version),
+                    Some(source),
+                    bytes.len() as u64,
+                    expected_size.unwrap_or(bytes.len() as u64),
+                );
+                emit_app_update_progress(
+                    &app_handle,
+                    &progress_id,
+                    "installing",
+                    "更新包校验通过，正在安装",
+                    Some(&version),
+                    Some(source),
+                    bytes.len() as u64,
+                    expected_size.unwrap_or(bytes.len() as u64),
+                );
+                eprintln!(
+                    "[app-update] installing update {version} from {}",
+                    source.name
+                );
+                source_update
+                    .install(bytes)
+                    .map_err(|e| format!("安装更新失败: {e}"))?;
+
+                return Ok(AppUpdateInstallResult {
+                    available: true,
+                    version: Some(version),
+                    installed: true,
+                });
+            }
+            Err(err) => {
+                let message = format!("更新源 {} 失败: {err}", source.name);
+                eprintln!("[app-update] {message}");
+                emit_app_update_progress(
+                    &app_handle,
+                    &progress_id,
+                    "source-failed",
+                    message.clone(),
+                    Some(&version),
+                    Some(source),
+                    0,
+                    expected_size.unwrap_or(0),
+                );
+                failures.push(message);
+            }
+        }
+    }
+
+    Err(format!(
+        "所有更新源均下载失败，已取消安装。\n{}",
+        failures
+            .iter()
+            .map(|failure| format!("- {failure}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
 }
 
 fn emit_rife_engine_progress(
@@ -11039,6 +11643,16 @@ fn open_drawer(
         .ok_or_else(|| "main window not found".to_string())?;
     let edge = app_handle.get_webview_window("edge");
 
+    if is_canvas_workbench_active() {
+        apply_main_canvas_workbench_mode(&main);
+        main.show().map_err(|e| e.to_string())?;
+        let _ = main.emit("drawer-opened", ());
+        if let Some(edge_window) = edge {
+            let _ = edge_window.hide();
+        }
+        return Ok(());
+    }
+
     let (work_pos, work_size, factor) = if let Some(edge_window) = edge.as_ref() {
         window_work_area_with_fallback(edge_window, Some(&main))?
     } else {
@@ -12136,6 +12750,7 @@ fn main() {
             get_mobile_pair_url,
             open_file,
             get_video_thumb,
+            check_and_install_app_update_mirrors,
             path_kind,
             delete_local_file,
             show_in_folder,
