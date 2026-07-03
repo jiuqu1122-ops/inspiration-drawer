@@ -94,6 +94,22 @@ export type AgentToolCall = {
   error?: string;
 };
 
+export type AgentThinkingStepStatus =
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'cancelled'
+  | 'error';
+
+export type AgentThinkingStep = {
+  id: string;
+  title: string;
+  detail?: string;
+  status: AgentThinkingStepStatus;
+  timestamp: number;
+  completedAt?: number;
+};
+
 export type AgentChatMessage = {
   id: string;
   role: 'user' | 'agent' | 'system';
@@ -101,6 +117,9 @@ export type AgentChatMessage = {
   timestamp: number;
   status?: 'streaming' | 'completed' | 'error' | 'cancelled';
   error?: string;
+  selectionSurface?: 'drawer' | 'canvas';
+  selectionSnapshot?: AgentCanvasSelectionItem[];
+  thinkingSteps?: AgentThinkingStep[];
   toolCalls?: AgentToolCall[];
 };
 
@@ -142,6 +161,22 @@ export type AgentCanvasContext = {
   selectedIds: string[];
   selectedItems?: AgentCanvasSelectionItem[];
   visualReferences?: AgentCanvasVisualReference[];
+  calendar?: {
+    activeDate?: number;
+    activeMonth?: number;
+    tagFilter?: string;
+    events?: Array<{
+      id: string;
+      noteLabel: string;
+      scheduleId: string;
+      title: string;
+      done: boolean;
+      priority?: string;
+      startAt?: number;
+      tagIds?: string[];
+      sourceTitle?: string;
+    }>;
+  };
   nodes: Array<{
     id: string;
     type: string;
@@ -170,9 +205,14 @@ export type AgentCanvasContext = {
   };
 };
 
+export type AgentToolExecutionContext = {
+  snapshot?: AgentCanvasContext;
+};
+
 export type AgentCanvasToolExecutor = (
   name: string,
   args: Record<string, unknown>,
+  execution?: AgentToolExecutionContext,
 ) => Promise<unknown>;
 
 export type CodexRuntimeStatus = {

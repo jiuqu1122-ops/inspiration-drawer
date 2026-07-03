@@ -117,6 +117,27 @@ export function DrawerAgentPanel({
               ? 'max-w-[88%] rounded-[18px_18px_6px_18px] bg-blue-500 px-3 py-2 text-[11px] leading-5 text-white shadow-sm'
               : 'group/message text-[11px] leading-5 text-stone-700 dark:text-stone-200'}>
               {message.content && <div className="whitespace-pre-wrap select-text">{message.content}</div>}
+              {message.selectionSnapshot && message.selectionSnapshot.length > 0 && (
+                <div className={['mt-1.5 flex flex-wrap gap-1', message.role === 'user' ? 'justify-end' : ''].filter(Boolean).join(' ')}>
+                  {message.selectionSnapshot.slice(0, 4).map(item => (
+                    <span
+                      key={item.id}
+                      className={message.role === 'user'
+                        ? 'max-w-[120px] truncate rounded-full bg-white/18 px-1.5 py-0.5 text-[8px] text-white/80'
+                        : 'max-w-[140px] truncate rounded-full bg-blue-50 px-1.5 py-0.5 text-[8px] text-blue-600 dark:bg-blue-400/10 dark:text-blue-200'}
+                    >
+                      发送时选中：{item.name}
+                    </span>
+                  ))}
+                  {message.selectionSnapshot.length > 4 && (
+                    <span className={message.role === 'user'
+                      ? 'rounded-full bg-white/18 px-1.5 py-0.5 text-[8px] text-white/80'
+                      : 'rounded-full bg-stone-100 px-1.5 py-0.5 text-[8px] text-stone-500 dark:bg-white/7 dark:text-stone-400'}>
+                      +{message.selectionSnapshot.length - 4}
+                    </span>
+                  )}
+                </div>
+              )}
               {message.error && <div className="mt-1 rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] text-red-600 dark:bg-red-400/10 dark:text-red-200">{message.error}</div>}
               {(message.toolCalls || []).map(call => (
                 <div key={call.id} className="mt-2 rounded-[14px] border border-blue-100/80 bg-white/75 px-2.5 py-2 text-stone-600 shadow-sm dark:border-white/9 dark:bg-white/5 dark:text-stone-300">
@@ -158,7 +179,7 @@ export function DrawerAgentPanel({
             {selectedItems.length > 4 && <span className="flex h-6 items-center rounded-[9px] bg-stone-100 px-2 text-[8px] text-stone-500 dark:bg-white/7 dark:text-stone-400">+{selectedItems.length - 4}</span>}
           </div>
         )}
-        <div className="rounded-[20px] border border-blue-100/90 bg-white/85 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-stone-950/55">
+        <div className="rounded-[20px] border border-blue-100/90 bg-white/92 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-white/8">
           <textarea
             ref={inputRef}
             value={inputValue}
@@ -171,7 +192,7 @@ export function DrawerAgentPanel({
             }}
             rows={2}
             placeholder="让 Agent 操作抽屉或画布…"
-            className="max-h-24 min-h-12 w-full resize-none bg-transparent px-1.5 py-1 text-[11px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600"
+            className="max-h-24 min-h-12 w-full resize-none bg-transparent px-1.5 py-1 text-[11px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
           />
           <div className="flex items-center justify-between px-1">
             <span className="text-[8px] text-stone-400">{ready ? '高风险操作会请求确认' : '请先在设置中配置 Agent'}</span>

@@ -74,6 +74,16 @@ const CANVAS_MANAGE_ACTIONS = [
   'run_nodes',
 ] as const;
 
+const CALENDAR_MANAGE_ACTIONS = [
+  'open',
+  'jump_today',
+  'select_date',
+  'add_schedule',
+  'update_schedule',
+  'delete_schedule',
+  'convert_text_notes_to_schedule',
+] as const;
+
 const APP_NAVIGATION_PROPERTIES = {
   action: { type: 'string', enum: APP_NAVIGATION_ACTIONS },
   tab: { type: ['string', 'null'] },
@@ -111,6 +121,19 @@ const CANVAS_MANAGE_PROPERTIES = {
   count: { type: ['number', 'null'] },
 };
 
+const CALENDAR_MANAGE_PROPERTIES = {
+  action: { type: 'string', enum: CALENDAR_MANAGE_ACTIONS },
+  scheduleId: { type: ['string', 'null'] },
+  noteLabel: { type: ['string', 'null'] },
+  targetIds: { type: 'array', items: { type: 'string' } },
+  text: { type: ['string', 'null'] },
+  title: { type: ['string', 'null'] },
+  date: { type: ['string', 'null'] },
+  priority: { type: ['string', 'null'], enum: ['S', 'A', 'B', 'C', null] },
+  done: { type: ['boolean', 'null'] },
+  tagId: { type: ['string', 'null'] },
+};
+
 const APP_UI_INTERACT_PROPERTIES = {
   action: { type: 'string', enum: ['click', 'set_value', 'press_key'] },
   elementId: { type: 'string' },
@@ -123,7 +146,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'app_get_context',
-      description: '读取整个软件当前状态，包括所在界面、抽屉素材/文件夹、选中项、画布节点、预设和工作流。执行软件操作前优先读取。',
+      description: '读取整个软件当前状态，包括所在界面、抽屉素材/文件夹、选中项、日历日程、画布节点、预设和工作流。执行软件操作前优先读取。',
       parameters: objectSchema({}),
     },
   },
@@ -165,6 +188,14 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
       name: 'canvas_manage',
       description: '复刻画布节点的选择、删除、清空、复制、移动、缩放、断线、聚焦、运行和参数更新；也可把抽屉图片加入画布。',
       parameters: objectSchema(CANVAS_MANAGE_PROPERTIES, ['action']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'calendar_manage',
+      description: '操作日历和日程便签：打开日历、选择日期、新增/更新/删除日程、把抽屉里的文字便签转换为日程便签。日期使用 YYYY-MM-DD、今天、明天或后天；targetIds 使用抽屉文字素材 ID；scheduleId/noteLabel 使用 app_get_context 返回的 calendar.events。',
+      parameters: objectSchema(CALENDAR_MANAGE_PROPERTIES, ['action']),
     },
   },
   {
@@ -414,6 +445,26 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['calendar_manage'] },
+              arguments: objectSchema(CALENDAR_MANAGE_PROPERTIES, [
+                'action',
+                'scheduleId',
+                'noteLabel',
+                'targetIds',
+                'text',
+                'title',
+                'date',
+                'priority',
+                'done',
+                'tagId',
+              ]),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_get_context'] },
               arguments: objectSchema({}),
             },
@@ -613,6 +664,7 @@ export const isCanvasAgentToolSensitive = (name: string, args: Record<string, un
   name === 'canvas_run_workflow'
   || name === 'canvas_run_text_agent'
   || name === 'app_ui_interact'
+  || (name === 'calendar_manage' && ['delete_schedule'].includes(String(args.action || '')))
   || (name === 'drawer_manage' && ['delete_items', 'delete_folder'].includes(String(args.action || '')))
   || (name === 'canvas_manage' && ['delete_nodes', 'clear_canvas', 'run_nodes'].includes(String(args.action || '')))
   || (
@@ -629,6 +681,7 @@ export const getCanvasAgentToolLabel = (name: string) => ({
   app_navigate: '操作软件界面',
   drawer_manage: '操作灵感抽屉',
   canvas_manage: '操作画布节点',
+  calendar_manage: '操作日历日程',
   canvas_get_context: '读取画布',
   canvas_create_generator: '创建生成节点',
   canvas_create_media_tool: '创建媒体处理节点',
@@ -699,13 +752,15 @@ export const buildCanvasAgentSystemPrompt = (
 ) => `${basePrompt.trim()}
 
 Agent 执行补充：
-- 你是整个“灵感抽屉”软件的操作 Agent，不只是聊天助手。用户要求操作界面、素材、文件夹、便签或画布时，必须调用 app_navigate、drawer_manage、canvas_manage 或已有画布工具实际执行。
+- 你是整个“灵感抽屉”软件的操作 Agent，不只是聊天助手。用户要求操作界面、素材、文件夹、便签、日历、日程或画布时，必须调用 app_navigate、drawer_manage、calendar_manage、canvas_manage 或已有画布工具实际执行。
 - surface 表示当前界面。位于 drawer 时优先操作抽屉；需要使用画布能力时先 app_navigate(action=enter_canvas)，退出画布使用 exit_canvas。
 - 抽屉素材和文件夹 ID 必须来自 drawer.items / drawer.folders；画布节点 ID 必须来自 nodes。不要虚构 ID。
-- “打开/切换/搜索/钉住/记录灵感/网络收图/设置/便签/日历”使用 app_navigate；素材增删改、归类、星标、桌面便签和加入画布使用 drawer_manage；节点选择、删除、复制、移动、缩放、断线、运行和参数修改使用 canvas_manage。
+- “打开/切换/搜索/钉住/记录灵感/网络收图/设置/便签/日历”使用 app_navigate；素材增删改、归类、星标、桌面便签和加入画布使用 drawer_manage；新增/修改/删除/完成日程、把文字便签转为日程便签使用 calendar_manage；节点选择、删除、复制、移动、缩放、断线、运行和参数修改使用 canvas_manage。
 - 如果用户要求的可见界面操作没有语义工具，先调用 app_get_ui_snapshot 获取控件 elementId，再调用 app_ui_interact 复刻点击、输入或按键；不要猜 elementId。app_ui_interact 会始终要求用户确认。
 - 用户明确要求删除、清空或运行付费节点时可以调用对应工具，应用会负责审批；不要只回复操作步骤。
 - selectedItems 是用户当前明确选择的素材；回复时要说明你基于哪张/哪些选中素材处理。
+- 当用户提到“日历、日程、待办、安排、转日程、便签转日程、完成/勾选/删除日程”时，优先使用 calendar_manage。新增日程传 text/date/priority；修改现有日程使用 calendar.events 里的 noteLabel 与 scheduleId；用户说“把这个/选中的便签转日程”时使用 calendar_manage(action=convert_text_notes_to_schedule,targetIds=selectedIds)。
+- 本轮消息发出时的 selectedIds/selectedItems 是稳定快照；即使用户之后取消选择，也要继续使用这些 ID 完成操作，不要因为当前界面选择为空而放弃。
 - 用户说“节点预设、Prompt 预设、保存成预设、创建预设、修改预设”时，必须使用 canvas_create_preset；不要把预设内容写进 canvas_add_text。
 - 用户说“识别/分析参考图、根据图片输出信息、写视频脚本、写分镜脚本、提炼卖点/风格/材质/镜头语言”时，先基于 visualReferences 中的参考图进行分析，然后必须使用 canvas_add_text 把结果落成文字节点；不要只在聊天里口头回复。
 - 如果 selectedItems 为空但 visualReferences 有图片，说明画布上已有可用参考图；用户说“参考图/这张图/这些图”时默认使用这些视觉参考。

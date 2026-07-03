@@ -9,6 +9,7 @@ import {
   normalizeCodexModelOverride,
   normalizeCodexReasoningEffort,
   type AgentCanvasContext,
+  type AgentCanvasSelectionItem,
   type AgentCanvasVisualReference,
   type AgentCanvasToolExecutor,
   type AgentChatMessage,
@@ -16,6 +17,8 @@ import {
   type AgentConversation,
   type AgentProvider,
   type AgentSettings,
+  type AgentThinkingStep,
+  type AgentThinkingStepStatus,
   type AgentToolCall,
   type CodexInstallProgress,
   type CodexLoginInfo,
@@ -52,6 +55,13 @@ type RuntimeOptions = {
   onNotice?: (message: string) => void;
 };
 
+type AgentSendSnapshot = {
+  context: AgentCanvasContext;
+  selectedItems: AgentCanvasSelectionItem[];
+  selectedIds: string[];
+  visualReferences: AgentCanvasVisualReference[];
+};
+
 type OpenAiToolCallResult = {
   id: string;
   name: string;
@@ -69,6 +79,7 @@ type PendingToolRun = {
   conversationId: string;
   assistantMessageId: string;
   provider: AgentProvider;
+  snapshot?: AgentSendSnapshot;
   providerMessages?: Array<Record<string, unknown>>;
   calls: AgentToolCall[];
   depth: number;
@@ -80,12 +91,21 @@ type PendingCodexTurn = {
   threadId: string;
   turnId?: string;
   raw: string;
+  deltaChars: number;
+  deltaReceived: boolean;
+  lastDeltaUiAt: number;
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   timeoutId: number;
 };
 
 const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'software-agent-full-control-v4';
+const AGENT_THINKING_STEP_LIMIT = 24;
+const AGENT_THINKING_TERMINAL_STATUSES = new Set<AgentThinkingStepStatus>([
+  'completed',
+  'cancelled',
+  'error',
+]);
 
 const ALWAYS_CONFIRM_TOOLS = new Set([
   'app_ui_interact',
@@ -104,6 +124,10 @@ const shouldAlwaysConfirmToolCall = (call: AgentToolCall) => (
     && call.arguments.mediaType === 'video'
     && call.arguments.autoRun === true
   )
+);
+
+const buildThinkingStepId = (messageId: string, key: string) => (
+  `${messageId}:thinking:${key}`
 );
 
 const buildCodexThreadKey = (
@@ -406,6 +430,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const loadedCodexThreadsRef = useRef(new Set<string>());
   const activeRequestRef = useRef<{
     provider: AgentProvider;
+    conversationId: string;
     requestId?: string;
     threadId?: string;
     turnId?: string;
@@ -447,6 +472,79 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       messages: conversation.messages.map(message => message.id === messageId ? updater(message) : message),
     }));
   }, [patchConversation]);
+
+  const upsertThinkingStep = useCallback((
+    conversationId: string,
+    messageId: string,
+    key: string,
+    step: {
+      title: string;
+      detail?: string;
+      status?: AgentThinkingStepStatus;
+      completedAt?: number;
+    },
+  ) => {
+    const now = Date.now();
+    const stepId = buildThinkingStepId(messageId, key);
+    patchMessage(conversationId, messageId, message => {
+      const currentSteps = message.thinkingSteps || [];
+      let found = false;
+      const nextSteps = currentSteps.map(currentStep => {
+        if (currentStep.id !== stepId) return currentStep;
+        found = true;
+        const status = step.status || currentStep.status;
+        return {
+          ...currentStep,
+          title: step.title,
+          detail: step.detail ?? currentStep.detail,
+          status,
+          completedAt: step.completedAt
+            ?? (AGENT_THINKING_TERMINAL_STATUSES.has(status) && !currentStep.completedAt
+              ? now
+              : currentStep.completedAt),
+        };
+      });
+      if (!found) {
+        const status = step.status || 'running';
+        const nextStep: AgentThinkingStep = {
+          id: stepId,
+          title: step.title,
+          detail: step.detail,
+          status,
+          timestamp: now,
+          completedAt: step.completedAt
+            ?? (AGENT_THINKING_TERMINAL_STATUSES.has(status) ? now : undefined),
+        };
+        nextSteps.push(nextStep);
+      }
+      return {
+        ...message,
+        thinkingSteps: nextSteps.slice(-AGENT_THINKING_STEP_LIMIT),
+      };
+    });
+  }, [patchMessage]);
+
+  const finishThinkingSteps = useCallback((
+    conversationId: string,
+    messageId: string,
+    status: AgentThinkingStepStatus = 'completed',
+    detail?: string,
+  ) => {
+    const now = Date.now();
+    patchMessage(conversationId, messageId, message => ({
+      ...message,
+      thinkingSteps: message.thinkingSteps?.map(step => (
+        AGENT_THINKING_TERMINAL_STATUSES.has(step.status)
+          ? step
+          : {
+            ...step,
+            status,
+            detail: detail ?? step.detail,
+            completedAt: step.completedAt || now,
+          }
+      )),
+    }));
+  }, [patchMessage]);
 
   const refreshSettings = useCallback(async () => {
     setSettingsLoading(true);
@@ -495,6 +593,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         const delta = String(event.payload?.delta || '');
         if (!delta) return;
         active.streamed = true;
+        upsertThinkingStep(active.conversationId, active.messageId, 'api-response', {
+          title: '正在接收模型回复',
+          detail: 'OpenAI-compatible API 已开始返回内容',
+          status: 'running',
+        });
         patchMessage(active.conversationId, active.messageId, message => ({
           ...message,
           content: `${message.content}${delta}`,
@@ -512,12 +615,25 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           const threadId = String(params.threadId || '');
           const pending = pendingCodexTurnsRef.current.get(threadId);
           if (!pending) return;
-          pending.raw += String(params.delta || '');
-          patchMessage(pending.conversationId, pending.assistantMessageId, message => ({
-            ...message,
-            content: 'Codex 正在理解画布并生成操作计划…',
-            status: 'streaming',
-          }));
+          const delta = String(params.delta || '');
+          if (!delta) return;
+          pending.raw += delta;
+          pending.deltaChars += delta.length;
+          pending.deltaReceived = true;
+          const now = Date.now();
+          if (now - pending.lastDeltaUiAt > 700) {
+            pending.lastDeltaUiAt = now;
+            upsertThinkingStep(pending.conversationId, pending.assistantMessageId, 'codex-response', {
+              title: '正在接收 Codex 回复',
+              detail: `已收到约 ${pending.deltaChars} 个字符`,
+              status: 'running',
+            });
+            patchMessage(pending.conversationId, pending.assistantMessageId, message => ({
+              ...message,
+              content: message.content.trim() || 'Codex 正在理解画布并生成操作计划…',
+              status: 'streaming',
+            }));
+          }
           return;
         }
 
@@ -528,6 +644,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           if (!pending || item.type !== 'agentMessage') return;
           const text = typeof item.text === 'string' ? item.text : '';
           if (text) pending.raw = text;
+          upsertThinkingStep(pending.conversationId, pending.assistantMessageId, 'codex-response', {
+            title: 'Codex 回复已生成',
+            detail: text ? `共约 ${text.length} 个字符` : '回复片段已接收完成',
+            status: 'completed',
+          });
           return;
         }
 
@@ -539,6 +660,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
             : {};
           if (pending) {
             pending.turnId = String(turn.id || '');
+            upsertThinkingStep(pending.conversationId, pending.assistantMessageId, 'codex-turn', {
+              title: 'Codex 回合已开始',
+              detail: pending.turnId ? `turnId: ${pending.turnId}` : undefined,
+              status: 'running',
+            });
             if (activeRequestRef.current?.threadId === threadId) {
               activeRequestRef.current.turnId = pending.turnId;
             }
@@ -557,8 +683,18 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
             : {};
           const status = String(turn.status || 'completed');
           if (status === 'failed') {
+            upsertThinkingStep(pending.conversationId, pending.assistantMessageId, 'codex-turn', {
+              title: 'Codex 回合失败',
+              detail: getCodexTurnError(turn),
+              status: 'error',
+            });
             pending.reject(new Error(getCodexTurnError(turn)));
           } else {
+            upsertThinkingStep(pending.conversationId, pending.assistantMessageId, 'codex-turn', {
+              title: status === 'interrupted' ? 'Codex 回合已停止' : 'Codex 回合已完成',
+              detail: pending.deltaReceived ? `已接收约 ${pending.deltaChars} 个字符` : '回合结束',
+              status: status === 'interrupted' ? 'cancelled' : 'completed',
+            });
             pending.resolve({
               turn,
               raw: pending.raw || extractCodexTurnText(turn),
@@ -583,6 +719,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         }
 
         if (payload.id !== undefined && method) {
+          const pendingThreadId = String(params.threadId || activeRequestRef.current?.threadId || '');
+          const pending = pendingThreadId ? pendingCodexTurnsRef.current.get(pendingThreadId) : undefined;
           const approval: AgentCodexApproval = {
             id: payload.id as string | number,
             method,
@@ -594,6 +732,13 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
                 : 'Codex 请求确认',
             detail: codexApprovalDetail(method, params),
           };
+          if (pending) {
+            upsertThinkingStep(pending.conversationId, pending.assistantMessageId, `codex-approval-${String(approval.id)}`, {
+              title: approval.title,
+              detail: approval.detail,
+              status: 'waiting',
+            });
+          }
           setCodexApprovals(current => current.some(item => String(item.id) === String(approval.id))
             ? current
             : [...current, approval]);
@@ -611,7 +756,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     return () => {
       unlisteners.forEach(promise => void promise.then(unlisten => unlisten()).catch(() => {}));
     };
-  }, [patchMessage, readCodexRateLimits]);
+  }, [patchMessage, readCodexRateLimits, upsertThinkingStep]);
 
   const activeConversation = useMemo(() => (
     conversations.find(conversation => conversation.id === activeConversationId)
@@ -630,27 +775,50 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
 
   const executeToolCall = useCallback(async (run: PendingToolRun, call: AgentToolCall) => {
     call.status = 'running';
+    upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+      title: `正在执行：${getCanvasAgentToolLabel(call.name)}`,
+      detail: JSON.stringify(call.arguments),
+      status: 'running',
+    });
     updateToolCalls(run);
     try {
-      call.result = await optionsRef.current.executeTool(call.name, call.arguments);
+      call.result = await optionsRef.current.executeTool(call.name, call.arguments, {
+        snapshot: run.snapshot?.context,
+      });
       call.status = 'completed';
+      upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+        title: `已执行：${getCanvasAgentToolLabel(call.name)}`,
+        detail: '画布操作已返回结果',
+        status: 'completed',
+      });
     } catch (error) {
       call.status = 'error';
       call.error = String(error);
       call.result = { error: String(error) };
+      upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+        title: `执行失败：${getCanvasAgentToolLabel(call.name)}`,
+        detail: String(error),
+        status: 'error',
+      });
     }
     updateToolCalls(run);
-  }, [updateToolCalls]);
+  }, [updateToolCalls, upsertThinkingStep]);
 
   const runOpenAiLoopRef = useRef<(
     conversationId: string,
     assistantMessageId: string,
+    snapshot: AgentSendSnapshot,
     providerMessages: Array<Record<string, unknown>>,
     depth: number,
   ) => Promise<void>>(async () => {});
 
   const continueAfterTools = useCallback(async (run: PendingToolRun) => {
     if (run.provider !== 'openai-compatible' || !run.providerMessages) {
+      finishThinkingSteps(
+        run.conversationId,
+        run.assistantMessageId,
+        run.calls.some(call => call.status === 'error') ? 'error' : 'completed',
+      );
       patchMessage(run.conversationId, run.assistantMessageId, message => ({
         ...message,
         status: run.calls.some(call => call.status === 'error') ? 'error' : 'completed',
@@ -666,13 +834,24 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         ? { declined: true }
         : (call.result ?? { error: call.error || '工具没有返回结果' })),
     }));
+    upsertThinkingStep(run.conversationId, run.assistantMessageId, `api-loop-${run.depth + 1}`, {
+      title: '正在把工具结果发回模型',
+      detail: `第 ${run.depth + 2} 轮推理`,
+      status: 'running',
+    });
     await runOpenAiLoopRef.current(
       run.conversationId,
       run.assistantMessageId,
+      run.snapshot || {
+        context: optionsRef.current.getContext(),
+        selectedItems: [],
+        selectedIds: [],
+        visualReferences: [],
+      },
       [...run.providerMessages, ...toolMessages],
       run.depth + 1,
     );
-  }, [patchMessage]);
+  }, [finishThinkingSteps, patchMessage, upsertThinkingStep]);
 
   const processToolCalls = useCallback(async (
     run: PendingToolRun,
@@ -685,6 +864,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         && (settingsNow.approvalMode === 'ask' || alwaysConfirm);
       if (requiresApproval) {
         call.status = 'awaiting-approval';
+        upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+          title: `等待确认：${getCanvasAgentToolLabel(call.name)}`,
+          detail: JSON.stringify(call.arguments),
+          status: 'waiting',
+        });
       } else {
         await executeToolCall(run, call);
       }
@@ -696,11 +880,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       return;
     }
     await continueAfterTools(run);
-  }, [continueAfterTools, executeToolCall, updateToolCalls]);
+  }, [continueAfterTools, executeToolCall, updateToolCalls, upsertThinkingStep]);
 
   const runOpenAiLoop = useCallback(async (
     conversationId: string,
     assistantMessageId: string,
+    snapshot: AgentSendSnapshot,
     providerMessages: Array<Record<string, unknown>>,
     depth: number,
   ) => {
@@ -712,6 +897,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         status: 'streaming',
       }));
     }
+    upsertThinkingStep(conversationId, assistantMessageId, `api-request-${depth}`, {
+      title: depth > 0 ? '继续请求模型整理结果' : '正在请求模型',
+      detail: `已发送 ${providerMessages.length} 条上下文消息`,
+      status: 'running',
+    });
     const requestId = createAgentId('agent-api');
     activeOpenAiRequestsRef.current.set(requestId, {
       conversationId,
@@ -720,18 +910,30 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     });
     activeRequestRef.current = {
       provider: 'openai-compatible',
+      conversationId,
       requestId,
       assistantMessageId,
     };
-    const result = await invoke<OpenAiChatResult>('agent_openai_chat', {
-      request: {
-        requestId,
-        messages: providerMessages,
-        tools: CANVAS_AGENT_TOOL_DEFINITIONS,
-      },
+    let result: OpenAiChatResult;
+    let activeStream: { conversationId: string; messageId: string; streamed: boolean } | undefined;
+    try {
+      result = await invoke<OpenAiChatResult>('agent_openai_chat', {
+        request: {
+          requestId,
+          messages: providerMessages,
+          tools: CANVAS_AGENT_TOOL_DEFINITIONS,
+        },
+      });
+      activeStream = activeOpenAiRequestsRef.current.get(requestId);
+    } finally {
+      activeStream ??= activeOpenAiRequestsRef.current.get(requestId);
+      activeOpenAiRequestsRef.current.delete(requestId);
+    }
+    upsertThinkingStep(conversationId, assistantMessageId, `api-request-${depth}`, {
+      title: '模型请求已返回',
+      detail: result.finishReason ? `finishReason: ${result.finishReason}` : undefined,
+      status: 'completed',
     });
-    const activeStream = activeOpenAiRequestsRef.current.get(requestId);
-    activeOpenAiRequestsRef.current.delete(requestId);
     if (!activeStream?.streamed && result.content) {
       patchMessage(conversationId, assistantMessageId, message => ({
         ...message,
@@ -751,6 +953,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
             conversationId,
             assistantMessageId,
             provider: 'codex',
+            snapshot,
             calls: fallbackEnvelope.actions.map(action => ({
               id: createAgentId('agent-tool'),
               name: action.tool,
@@ -767,6 +970,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         content: message.content.trim() || '已完成。',
         status: 'completed',
       }));
+      finishThinkingSteps(conversationId, assistantMessageId, 'completed');
       setBusy(false);
       activeRequestRef.current = null;
       return;
@@ -791,11 +995,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       conversationId,
       assistantMessageId,
       provider: 'openai-compatible',
+      snapshot,
       providerMessages: [...providerMessages, assistantProviderMessage],
       calls,
       depth,
     });
-  }, [patchMessage, processToolCalls]);
+  }, [finishThinkingSteps, patchMessage, processToolCalls, upsertThinkingStep]);
   runOpenAiLoopRef.current = runOpenAiLoop;
 
   const installCodex = useCallback(async () => {
@@ -955,6 +1160,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       assistantMessageId,
       threadId,
       raw: '',
+      deltaChars: 0,
+      deltaReceived: false,
+      lastDeltaUiAt: 0,
       resolve,
       reject,
       timeoutId,
@@ -968,17 +1176,38 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     context: AgentCanvasContext,
     visualReferences: AgentCanvasVisualReference[],
     forceDefaultCodexModel = false,
+    snapshot?: AgentSendSnapshot,
   ) => {
     const contextForPrompt = sanitizeCanvasContextForPrompt(context);
     const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, contextForPrompt);
     let threadId = '';
+    upsertThinkingStep(conversation.id, assistantMessageId, 'codex-prepare', {
+      title: '正在整理画布上下文',
+      detail: `节点 ${context.nodes.length} 个，参考图 ${visualReferences.length} 张`,
+      status: 'running',
+    });
     try {
+      upsertThinkingStep(conversation.id, assistantMessageId, 'codex-thread', {
+        title: conversation.codexThreadId ? '正在恢复 Codex 会话' : '正在启动 Codex 会话',
+        detail: forceDefaultCodexModel ? '使用账户默认模型重试' : undefined,
+        status: 'running',
+      });
       threadId = await startOrResumeCodexThread(conversation, systemPrompt, {
         forceNew: forceDefaultCodexModel,
         forceDefaultModel: forceDefaultCodexModel,
       });
+      upsertThinkingStep(conversation.id, assistantMessageId, 'codex-thread', {
+        title: 'Codex 会话已连接',
+        detail: `threadId: ${threadId}`,
+        status: 'completed',
+      });
     } catch (error) {
       if (!forceDefaultCodexModel && isCodexLiteUnsupportedModelError(error)) {
+        upsertThinkingStep(conversation.id, assistantMessageId, 'codex-thread', {
+          title: '当前模型不兼容',
+          detail: '正在切换为账户默认模型重试',
+          status: 'completed',
+        });
         patchMessage(conversation.id, assistantMessageId, message => ({
           ...message,
           content: 'Codex 当前模型不兼容，正在切换为默认模型重试…',
@@ -992,12 +1221,19 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           context,
           visualReferences,
           true,
+          snapshot,
         );
       }
       throw error;
     }
+    upsertThinkingStep(conversation.id, assistantMessageId, 'codex-prepare', {
+      title: '画布上下文已准备',
+      detail: `节点 ${context.nodes.length} 个，参考图 ${visualReferences.length} 张`,
+      status: 'completed',
+    });
     activeRequestRef.current = {
       provider: 'codex',
+      conversationId: conversation.id,
       threadId,
       assistantMessageId,
     };
@@ -1009,6 +1245,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         settingsRef.current.codexReasoningEffort,
       );
       const startTurn = async (text: string, withOutputSchema: boolean) => {
+        upsertThinkingStep(conversation.id, assistantMessageId, 'codex-send', {
+          title: withOutputSchema ? '正在发送请求给 Codex' : '正在发送重试请求给 Codex',
+          detail: `上下文约 ${text.length} 个字符${visualReferences.length ? `，参考图 ${visualReferences.length} 张` : ''}`,
+          status: 'running',
+        });
         const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId);
         const response = await invoke<Record<string, unknown>>('agent_codex_request', {
           method: 'turn/start',
@@ -1026,6 +1267,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         const pending = pendingCodexTurnsRef.current.get(threadId);
         if (pending && turnId) pending.turnId = turnId;
         if (activeRequestRef.current) activeRequestRef.current.turnId = turnId;
+        upsertThinkingStep(conversation.id, assistantMessageId, 'codex-send', {
+          title: '请求已送达 Codex',
+          detail: turnId ? `turnId: ${turnId}` : '正在等待回合事件',
+          status: 'completed',
+        });
         return completion;
       };
 
@@ -1033,6 +1279,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       const codexUserText = `${userText}${codexNotice ? `\n\n${codexNotice}` : ''}\n\n应用提供的当前软件上下文：${JSON.stringify(contextForPrompt)}\n\n请返回 reply 和 actions。不要运行 shell、不要修改本地文件。`;
       let completed = await startTurn(codexUserText, true);
       if (completed.interrupted === true) {
+        finishThinkingSteps(conversation.id, assistantMessageId, 'cancelled');
         patchMessage(conversation.id, assistantMessageId, message => ({
           ...message,
           content: message.content.trim() || '已停止。',
@@ -1050,11 +1297,17 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           content: 'Codex 正在重新整理画布操作…',
           status: 'streaming',
         }));
+        upsertThinkingStep(conversation.id, assistantMessageId, 'codex-retry', {
+          title: '没有收到可见结果',
+          detail: '正在要求 Codex 重新整理画布操作',
+          status: 'running',
+        });
         completed = await startTurn(
           '上一轮没有生成可见结果。请重新完成用户刚才的软件操作请求，只输出一个 JSON 对象，包含字符串 reply 和数组 actions；每个 action 包含 tool 与 arguments。不要运行 shell，不要修改本地文件。',
           false,
         );
         if (completed.interrupted === true) {
+          finishThinkingSteps(conversation.id, assistantMessageId, 'cancelled');
           patchMessage(conversation.id, assistantMessageId, message => ({
             ...message,
             content: message.content.trim() || '已停止。',
@@ -1065,6 +1318,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           return;
         }
         raw = String(completed.raw || '').trim();
+        upsertThinkingStep(conversation.id, assistantMessageId, 'codex-retry', {
+          title: '重试结果已返回',
+          detail: raw ? `共约 ${raw.length} 个字符` : '仍未返回可见内容',
+          status: raw ? 'completed' : 'error',
+        });
       }
       if (!raw) throw new Error('Codex 连续两次完成回合，但没有返回可用内容');
 
@@ -1076,6 +1334,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         arguments: action.arguments,
         status: 'pending',
       }));
+      upsertThinkingStep(conversation.id, assistantMessageId, 'codex-parse', {
+        title: calls.length > 0 ? '已解析画布操作计划' : '已生成回复',
+        detail: calls.length > 0 ? `准备执行 ${calls.length} 个画布操作` : '没有需要执行的画布操作',
+        status: 'completed',
+      });
       patchMessage(conversation.id, assistantMessageId, message => ({
         ...message,
         content: reply,
@@ -1089,10 +1352,12 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           provider: 'codex',
           calls,
           depth: 0,
+          snapshot,
         });
       } else {
         setBusy(false);
         activeRequestRef.current = null;
+        finishThinkingSteps(conversation.id, assistantMessageId, 'completed');
       }
     } catch (error) {
       const pending = pendingCodexTurnsRef.current.get(threadId);
@@ -1103,6 +1368,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       if (!forceDefaultCodexModel && isCodexLiteUnsupportedModelError(error)) {
         loadedCodexThreadsRef.current.delete(threadId);
         patchConversation(conversation.id, value => ({ ...value, codexThreadId: undefined }));
+        upsertThinkingStep(conversation.id, assistantMessageId, 'codex-thread', {
+          title: '当前模型不兼容',
+          detail: '正在切换为账户默认模型重试',
+          status: 'completed',
+        });
         patchMessage(conversation.id, assistantMessageId, message => ({
           ...message,
           content: 'Codex 当前模型不兼容，正在切换为默认模型重试…',
@@ -1116,11 +1386,13 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           context,
           visualReferences,
           true,
+          snapshot,
         );
       }
+      finishThinkingSteps(conversation.id, assistantMessageId, 'error', String(error));
       throw error;
     }
-  }, [patchConversation, patchMessage, processToolCalls, startOrResumeCodexThread, waitForCodexTurn]);
+  }, [finishThinkingSteps, patchConversation, patchMessage, processToolCalls, startOrResumeCodexThread, upsertThinkingStep, waitForCodexTurn]);
 
   const sendMessage = useCallback(async (content: string) => {
     const text = content.trim();
@@ -1133,19 +1405,39 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       || conversationsRef.current[0];
     if (!conversation) return false;
     const provider = settingsRef.current.provider;
+    const context = optionsRef.current.getContext();
+    const selectedItems = context.selectedItems || [];
+    const selectedIds = context.selectedIds || selectedItems.map(item => item.id);
+    const initialVisualReferences = context.visualReferences || selectedItems.flatMap(item => item.references || []);
+    const selectionSnapshot = selectedItems.map(item => ({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      referenceCount: item.referenceCount,
+    }));
     const userMessage: AgentChatMessage = {
       id: createAgentId('agent-user'),
       role: 'user',
       content: text,
       timestamp: Date.now(),
       status: 'completed',
+      selectionSurface: context.surface,
+      selectionSnapshot: selectionSnapshot.length > 0 ? selectionSnapshot : undefined,
     };
+    const assistantMessageId = createAgentId('agent-assistant');
     const assistantMessage: AgentChatMessage = {
-      id: createAgentId('agent-assistant'),
+      id: assistantMessageId,
       role: 'agent',
       content: '',
       timestamp: Date.now() + 1,
       status: 'streaming',
+      thinkingSteps: [{
+        id: buildThinkingStepId(assistantMessageId, 'queued'),
+        title: '请求已进入队列',
+        detail: provider === 'codex' ? '准备连接 Codex App Server' : '准备调用 OpenAI-compatible API',
+        status: 'running',
+        timestamp: Date.now() + 1,
+      }],
     };
     patchConversation(conversation.id, current => ({
       ...current,
@@ -1156,23 +1448,50 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     }));
     setBusy(true);
     try {
-      const context = optionsRef.current.getContext();
-      let visualReferences = context.visualReferences || [];
+      upsertThinkingStep(conversation.id, assistantMessage.id, 'queued', {
+        title: '正在收集软件上下文',
+        detail: '准备抽屉、日历、节点和已选参考图',
+        status: 'running',
+      });
+      let visualReferences = initialVisualReferences;
       if (optionsRef.current.prepareVisualReferences) {
         try {
           visualReferences = await optionsRef.current.prepareVisualReferences(context, provider);
+          upsertThinkingStep(conversation.id, assistantMessage.id, 'references', {
+            title: visualReferences.length > 0 ? '参考图已准备' : '没有可用参考图',
+            detail: visualReferences.length > 0 ? `本轮附加 ${visualReferences.length} 张参考图` : '将仅使用节点文字和结构信息',
+            status: 'completed',
+          });
         } catch (error) {
           console.warn('prepare canvas agent visual references failed:', error);
           optionsRef.current.onNotice?.('选中节点图片准备失败，本轮将仅使用节点信息。');
           visualReferences = [];
+          upsertThinkingStep(conversation.id, assistantMessage.id, 'references', {
+            title: '参考图准备失败',
+            detail: String(error),
+            status: 'error',
+          });
         }
       }
+      upsertThinkingStep(conversation.id, assistantMessage.id, 'queued', {
+        title: '软件上下文已收集',
+        detail: `抽屉素材 ${context.drawer?.items.length || 0} 个，节点 ${context.nodes.length} 个`,
+        status: 'completed',
+      });
       const contextWithVisualReferences = {
         ...context,
+        selectedIds,
+        selectedItems,
+        visualReferences,
+      };
+      const snapshot: AgentSendSnapshot = {
+        context: contextWithVisualReferences,
+        selectedItems,
+        selectedIds,
         visualReferences,
       };
       if (provider === 'codex') {
-        await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences);
+        await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot);
       } else {
         const systemPrompt = [
           buildCanvasAgentSystemPrompt(
@@ -1186,10 +1505,11 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           ...makeProviderHistory(conversation),
           { role: 'user', content: buildOpenAiUserContent(text, visualReferences) },
         ];
-        await runOpenAiLoop(conversation.id, assistantMessage.id, providerMessages, 0);
+        await runOpenAiLoop(conversation.id, assistantMessage.id, snapshot, providerMessages, 0);
       }
       return true;
     } catch (error) {
+      finishThinkingSteps(conversation.id, assistantMessage.id, 'error', String(error));
       patchMessage(conversation.id, assistantMessage.id, message => ({
         ...message,
         content: message.content.trim() || '这次请求没有完成。',
@@ -1211,10 +1531,20 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     if (!call || call.status !== 'awaiting-approval') return;
     setBusy(true);
     if (approved) {
+      upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+        title: `已确认：${getCanvasAgentToolLabel(call.name)}`,
+        detail: '开始执行画布操作',
+        status: 'running',
+      });
       await executeToolCall(run, call);
     } else {
       call.status = 'declined';
       call.result = { declined: true };
+      upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+        title: `已拒绝：${getCanvasAgentToolLabel(call.name)}`,
+        detail: '用户拒绝执行此操作',
+        status: 'cancelled',
+      });
       updateToolCalls(run);
     }
     if (run.calls.every(value => ['completed', 'declined', 'error'].includes(value.status))) {
@@ -1223,7 +1553,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     } else {
       setBusy(false);
     }
-  }, [continueAfterTools, executeToolCall, updateToolCalls]);
+  }, [continueAfterTools, executeToolCall, updateToolCalls, upsertThinkingStep]);
 
   const cancelCurrent = useCallback(async () => {
     const active = activeRequestRef.current;
@@ -1240,7 +1570,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     } catch (_) {
       // The completion event or request error below will still settle the UI.
     }
-    const conversationId = activeConversationIdRef.current;
+    const conversationId = active.conversationId || activeConversationIdRef.current;
+    finishThinkingSteps(conversationId, active.assistantMessageId, 'cancelled');
     patchMessage(conversationId, active.assistantMessageId, message => ({
       ...message,
       status: 'cancelled',
@@ -1363,8 +1694,22 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     let result: Record<string, unknown> = { decision: approved ? 'accept' : 'decline' };
     if (approval.method === 'item/tool/requestUserInput') result = { answers: {} };
     await invoke('agent_codex_respond', { id: approval.id, result });
+    const threadId = String(approval.params.threadId || activeRequestRef.current?.threadId || '');
+    const pending = threadId ? pendingCodexTurnsRef.current.get(threadId) : undefined;
+    if (pending) {
+      upsertThinkingStep(
+        pending.conversationId,
+        pending.assistantMessageId,
+        `codex-approval-${String(approval.id)}`,
+        {
+          title: approved ? 'Codex 操作已确认' : 'Codex 操作已拒绝',
+          detail: approval.detail,
+          status: approved ? 'completed' : 'cancelled',
+        },
+      );
+    }
     setCodexApprovals(current => current.filter(item => String(item.id) !== String(approval.id)));
-  }, []);
+  }, [upsertThinkingStep]);
 
   return {
     settings,

@@ -79,6 +79,7 @@ import {
   getSchedulePriorityClass,
   getScheduleTextContent,
   normalizeSchedulePriority,
+  parseDateInputValue,
   startOfLocalDay,
   type CalendarScheduleEvent,
   type SchedulePriority,
@@ -5684,6 +5685,19 @@ function MainApp() {
     .sort(compareCalendarEvents);
   const calendarOpenCount = filteredCalendarEvents.filter(event => !event.schedule.done).length;
   const selectedCalendarOpenCount = selectedCalendarEvents.filter(event => !event.schedule.done).length;
+  const buildAgentCalendarEvents = (limit = 80) => (
+    filteredCalendarEvents.slice(0, limit).map(event => ({
+      id: event.id,
+      noteLabel: event.noteLabel,
+      scheduleId: event.schedule.id,
+      title: event.title,
+      done: !!event.schedule.done,
+      priority: normalizeSchedulePriority(event.schedule.priority),
+      startAt: event.schedule.startAt,
+      tagIds: event.tagIds,
+      sourceTitle: event.sourceTitle,
+    }))
+  );
 
   const sendSystemNotification = async (title: string, body: string, options: { silent?: boolean } = {}) => {
     try {
@@ -18855,6 +18869,12 @@ useEffect(() => {
         selectedIds: surface === 'canvas' ? [...canvasSelectedIdsRef.current] : [...selectedIds],
         selectedItems,
         visualReferences: selectedVisualReferences,
+        calendar: {
+          activeDate: calendarSelectedDate,
+          activeMonth: calendarMonth,
+          tagFilter: calendarTagFilter,
+          events: buildAgentCalendarEvents(),
+        },
         nodes: canvasItemsRef.current.slice(0, 160).map(canvasItem => ({
           id: canvasItem.id,
           type: canvasItem.ai?.type || canvasItem.item.type,
@@ -18898,7 +18918,30 @@ useEffect(() => {
     prepareVisualReferences: (context, provider) => (
       prepareCanvasAgentVisualReferences(context.visualReferences || [], provider)
     ),
-    executeTool: async (name, args) => {
+    executeTool: async (name, args, execution) => {
+      const snapshot = execution?.snapshot;
+      const hasSelectionSnapshot = snapshot !== undefined;
+      const snapshotSelectedIds = Array.isArray(snapshot?.selectedIds)
+        ? snapshot.selectedIds.map(String)
+        : [];
+      const snapshotSurface = snapshot?.surface || (isCanvasModeRef.current ? 'canvas' : 'drawer');
+      const snapshotCalendarDate = Number(snapshot?.calendar?.activeDate);
+      const agentCalendarDate = Number.isFinite(snapshotCalendarDate)
+        ? snapshotCalendarDate
+        : calendarSelectedDate;
+      const agentCalendarTagFilter = snapshot?.calendar?.tagFilter || calendarTagFilter;
+      const parseAgentDate = (value: unknown, fallback = agentCalendarDate) => {
+        const text = String(value || '').trim();
+        if (!text) return startOfLocalDay(fallback);
+        if (text === '今天') return startOfLocalDay(Date.now());
+        if (text === '明天') return addLocalDays(Date.now(), 1);
+        if (text === '后天') return addLocalDays(Date.now(), 2);
+        const parsed = parseDateInputValue(text);
+        if (parsed !== undefined) return startOfLocalDay(parsed);
+        const native = Date.parse(text);
+        if (Number.isFinite(native)) return startOfLocalDay(native);
+        throw new Error(`无法识别日期：${text}`);
+      };
       if (name === 'app_get_context') {
         return {
           surface: isCanvasModeRef.current ? 'canvas' : 'drawer',
@@ -18932,6 +18975,12 @@ useEffect(() => {
               inputs: item.inputs || [],
               status: item.ai?.status,
             })),
+          },
+          calendar: {
+            activeDate: calendarSelectedDate,
+            activeMonth: calendarMonth,
+            tagFilter: calendarTagFilter,
+            events: buildAgentCalendarEvents(120),
           },
         };
       }
@@ -19055,7 +19104,10 @@ useEffect(() => {
       if (name === 'drawer_manage') {
         const action = String(args.action || '');
         const requestedIds = Array.isArray(args.targetIds) ? args.targetIds.map(String) : [];
-        const targetIds = requestedIds.length > 0 ? requestedIds : [...selectedIds];
+        const fallbackDrawerIds = hasSelectionSnapshot && snapshotSurface === 'drawer'
+          ? snapshotSelectedIds
+          : [...selectedIds];
+        const targetIds = requestedIds.length > 0 ? requestedIds : fallbackDrawerIds;
         const targets = itemsRef.current.filter(item => targetIds.includes(item.id));
         if (action === 'create_text') {
           const content = String(args.content || '').trim();
@@ -19200,12 +19252,154 @@ useEffect(() => {
         throw new Error(`不支持的抽屉操作：${action}`);
       }
 
+      if (name === 'calendar_manage') {
+        const action = String(args.action || '');
+        if (isCanvasModeRef.current) leaveCanvasToDrawer();
+        setActiveTab('calendar');
+        setIsOpen(true);
+        const requestedIds = Array.isArray(args.targetIds) ? args.targetIds.map(String) : [];
+        const fallbackDrawerIds = hasSelectionSnapshot && snapshotSurface === 'drawer'
+          ? snapshotSelectedIds
+          : [...selectedIds];
+        const targetIds = requestedIds.length > 0 ? requestedIds : fallbackDrawerIds;
+        const text = String(args.text || args.title || '').trim();
+        const date = parseAgentDate(args.date);
+        const priority = normalizeSchedulePriority(String(args.priority || 'B'));
+        const tagId = String(args.tagId || '').trim();
+        if (tagId && !foldersRef.current.some(folder => folder.id === tagId)) {
+          throw new Error('目标日程标签不存在');
+        }
+
+        if (action === 'open') {
+          return { action, activeDate: calendarSelectedDate };
+        }
+        if (action === 'jump_today') {
+          jumpCalendarToday();
+          return { action, activeDate: startOfLocalDay(Date.now()) };
+        }
+        if (action === 'select_date') {
+          setCalendarSelectedDate(date);
+          setCalendarMonth(new Date(new Date(date).getFullYear(), new Date(date).getMonth(), 1).getTime());
+          return { action, activeDate: date };
+        }
+        if (action === 'add_schedule') {
+          if (!text) throw new Error('日程内容不能为空');
+          const requestedTargetLabel = String(args.noteLabel || calendarTargetNoteLabel || CALENDAR_NEW_NOTE_TARGET);
+          const target = ensureCalendarScheduleNote(requestedTargetLabel);
+          if (!target) throw new Error('没有可用的日程便签');
+          pushDrawerUndoSnapshot('Agent 新增日程');
+          const now = Date.now();
+          const tagIds = tagId
+            ? [tagId]
+            : (agentCalendarTagFilter === 'untagged'
+              ? []
+              : (agentCalendarTagFilter !== 'all'
+                ? [agentCalendarTagFilter]
+                : getFolderTagIds(target.snapshot.folderId, target.snapshot.tagIds)));
+          const nextItem: FloatingNoteScheduleItem = {
+            id: `schedule_${now}_${Math.random().toString(36).slice(2, 7)}`,
+            text,
+            done: false,
+            priority,
+            startAt: date,
+            allDay: true,
+            tagIds,
+            sourceItemId: target.snapshot.itemId,
+            createdAt: now,
+          };
+          const next = {
+            ...target.snapshot,
+            type: 'text' as const,
+            noteMode: 'schedule' as const,
+            scheduleItems: [...(target.snapshot.scheduleItems || []), nextItem],
+            updatedAt: now,
+          };
+          await syncCalendarScheduleSnapshot(target.label, next);
+          if (requestedTargetLabel === CALENDAR_NEW_NOTE_TARGET) setCalendarTargetNoteLabel(target.label);
+          setCalendarSelectedDate(date);
+          setCalendarMonth(new Date(new Date(date).getFullYear(), new Date(date).getMonth(), 1).getTime());
+          return { action, noteLabel: target.label, scheduleId: nextItem.id, text, date };
+        }
+        if (action === 'update_schedule') {
+          const noteLabel = String(args.noteLabel || '').trim();
+          const scheduleId = String(args.scheduleId || '').trim();
+          if (!noteLabel || !scheduleId) throw new Error('修改日程需要 noteLabel 和 scheduleId');
+          const event = calendarEvents.find(item => item.noteLabel === noteLabel && item.schedule.id === scheduleId);
+          if (!event) throw new Error('没有找到要修改的日程');
+          const patch: Partial<FloatingNoteScheduleItem> = {};
+          if (typeof args.done === 'boolean') patch.done = args.done;
+          if (text) patch.text = text;
+          if (args.date !== undefined && args.date !== null) patch.startAt = date;
+          if (args.priority) patch.priority = priority;
+          if (tagId) patch.tagIds = [tagId];
+          if (Object.keys(patch).length === 0) throw new Error('没有提供要修改的日程字段');
+          await patchCalendarScheduleItem(noteLabel, scheduleId, patch);
+          return { action, noteLabel, scheduleId, patch };
+        }
+        if (action === 'delete_schedule') {
+          const noteLabel = String(args.noteLabel || '').trim();
+          const scheduleId = String(args.scheduleId || '').trim();
+          const event = calendarEvents.find(item => (
+            (noteLabel ? item.noteLabel === noteLabel : true)
+            && item.schedule.id === scheduleId
+          ));
+          if (!event) throw new Error('没有找到要删除的日程');
+          await deleteCalendarScheduleItem(event);
+          return { action, noteLabel: event.noteLabel, scheduleId };
+        }
+        if (action === 'convert_text_notes_to_schedule') {
+          const targets = itemsRef.current.filter(item => targetIds.includes(item.id) && item.type === 'text');
+          if (targets.length === 0) throw new Error('请选择要转为日程的文字便签/文字素材');
+          pushDrawerUndoSnapshot('Agent 便签转日程');
+          const converted: Array<{ itemId: string; noteLabel: string; count: number }> = [];
+          const openLabels = readOpenFloatingNoteLabels();
+          for (const item of targets.slice(0, 8)) {
+            const label = openLabels.find(candidate => readFloatingNoteSnapshot(candidate)?.itemId === item.id)
+              || FLOATING_NOTE_LABELS.find(candidate => !readOpenFloatingNoteLabels().includes(candidate));
+            if (!label) throw new Error('便签数量已达上限，无法继续转换');
+            const existing = readFloatingNoteSnapshot(label);
+            const baseSnapshot = existing && existing.itemId === item.id
+              ? existing
+              : makeFloatingNoteSnapshot(item);
+            const content = item.content || baseSnapshot.content || '';
+            const scheduleItems = buildScheduleItemsFromText(content, baseSnapshot.scheduleItems || [], {
+              tagIds: getFolderTagIds(item.folderId, baseSnapshot.tagIds),
+              sourceItemId: item.id,
+              defaultPriority: priority,
+            }).map(schedule => ({
+              ...schedule,
+              startAt: schedule.startAt ?? date,
+              priority: normalizeSchedulePriority(schedule.priority || priority),
+            }));
+            const next: FloatingNoteSnapshot = {
+              ...baseSnapshot,
+              type: 'text',
+              name: String(args.title || baseSnapshot.name || item.remark || item.name || '日程便签').trim(),
+              content: getScheduleTextContent(scheduleItems),
+              noteMode: 'schedule',
+              scheduleItems,
+              updatedAt: Date.now(),
+            };
+            localStorage.setItem(floatingNoteStorageKey(label), JSON.stringify(next));
+            rememberOpenFloatingNoteLabel(label);
+            await syncCalendarScheduleSnapshot(label, next);
+            converted.push({ itemId: item.id, noteLabel: label, count: scheduleItems.length });
+          }
+          setActiveTab('calendar');
+          return { action, converted };
+        }
+        throw new Error(`不支持的日历操作：${action}`);
+      }
+
       if (name === 'canvas_manage') {
         const action = String(args.action || '');
         if (!isCanvasModeRef.current) enterCanvasMode();
         setIsAgentChatOpen(true);
         const requestedIds = Array.isArray(args.targetIds) ? args.targetIds.map(String) : [];
-        const targetIds = requestedIds.length > 0 ? requestedIds : [...canvasSelectedIdsRef.current];
+        const fallbackCanvasIds = hasSelectionSnapshot && snapshotSurface === 'canvas'
+          ? snapshotSelectedIds
+          : [...canvasSelectedIdsRef.current];
+        const targetIds = requestedIds.length > 0 ? requestedIds : fallbackCanvasIds;
         const existingIds = new Set(canvasItemsRef.current.map(item => item.id));
         const validIds = targetIds.filter(id => existingIds.has(id));
         if (action === 'select_nodes') {
@@ -19350,7 +19544,13 @@ useEffect(() => {
         const requestedInputs = Array.isArray(args.inputIds)
           ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
           : [];
-        const inputIds = requestedInputs.length > 0 ? requestedInputs : getSelectedCanvasAiInputIds();
+        const hasCanvasSelectionSnapshot = hasSelectionSnapshot && snapshotSurface === 'canvas';
+        const snapshotInputIds = hasCanvasSelectionSnapshot
+          ? snapshotSelectedIds.filter(id => canvasItemsRef.current.some(item => item.id === id))
+          : [];
+        const inputIds = requestedInputs.length > 0
+          ? requestedInputs
+          : (hasCanvasSelectionSnapshot ? snapshotInputIds : getSelectedCanvasAiInputIds());
         const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
         const pos = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
@@ -19405,7 +19605,13 @@ useEffect(() => {
         const selectedInputs = isFrameInterpolation
           ? getSelectedFrameInterpolationInputIds()
           : getSelectedEnhancementInputIds(mediaType);
-        const inputIds = requestedInputs.length > 0 ? requestedInputs : selectedInputs;
+        const hasCanvasSelectionSnapshot = hasSelectionSnapshot && snapshotSurface === 'canvas';
+        const snapshotInputIds = hasCanvasSelectionSnapshot
+          ? snapshotSelectedIds.filter(id => isValidInput(canvasItemsRef.current.find(item => item.id === id))).slice(0, 1)
+          : [];
+        const inputIds = requestedInputs.length > 0
+          ? requestedInputs
+          : (hasCanvasSelectionSnapshot ? snapshotInputIds : selectedInputs);
         if (args.autoRun === true && inputIds.length === 0) {
           throw new Error(mediaType === 'video' ? '请先选择视频素材或视频生成结果' : '请先选择图片素材或图片生成结果');
         }
@@ -19490,7 +19696,13 @@ useEffect(() => {
           const requestedInputs = Array.isArray(args.inputIds)
             ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
             : [];
-          const inputIds = requestedInputs.length > 0 ? requestedInputs : getSelectedCanvasAiInputIds();
+          const hasCanvasSelectionSnapshot = hasSelectionSnapshot && snapshotSurface === 'canvas';
+          const snapshotInputIds = hasCanvasSelectionSnapshot
+            ? snapshotSelectedIds.filter(id => canvasItemsRef.current.some(item => item.id === id))
+            : [];
+          const inputIds = requestedInputs.length > 0
+            ? requestedInputs
+            : (hasCanvasSelectionSnapshot ? snapshotInputIds : getSelectedCanvasAiInputIds());
           const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
           const pos = inputBounds
             ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
@@ -19529,7 +19741,13 @@ useEffect(() => {
             return canUseCanvasItemAsAiInput(item);
           })
           : [];
-        const inputIds = requestedInputs.length > 0 ? requestedInputs : getSelectedCanvasAiInputIds();
+        const hasCanvasSelectionSnapshot = hasSelectionSnapshot && snapshotSurface === 'canvas';
+        const snapshotInputIds = hasCanvasSelectionSnapshot
+          ? snapshotSelectedIds.filter(id => canUseCanvasItemAsAiInput(canvasItemsRef.current.find(canvasItem => canvasItem.id === id)))
+          : [];
+        const inputIds = requestedInputs.length > 0
+          ? requestedInputs
+          : (hasCanvasSelectionSnapshot ? snapshotInputIds : getSelectedCanvasAiInputIds());
         const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
         const pos = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
@@ -26164,7 +26382,7 @@ useEffect(() => {
                   )}
                 </div>
 
-                {!isUtilityActiveTab && !showTextInput && !showWebImageCollector && isDrawerAgentOpen && (
+                {!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen && (
                   <DrawerAgentPanel
                     messages={canvasAgent.activeConversation?.messages || []}
                     inputValue={drawerAgentInput}
@@ -26186,7 +26404,7 @@ useEffect(() => {
                 )}
 
                 <AnimatePresence>
-                  {!isUtilityActiveTab && !showTextInput && !showWebImageCollector && !isDrawerAgentOpen && (
+                  {!isCanvasMode && !showTextInput && !showWebImageCollector && !isDrawerAgentOpen && (
                     <motion.button
                       initial={isShortcutReveal ? false : { opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}

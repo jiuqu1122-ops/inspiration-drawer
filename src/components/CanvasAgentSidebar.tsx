@@ -136,6 +136,39 @@ const compactCodexModelLabel = (value: string) => value
   .replace(/-mini$/i, ' Mini')
   .replace(/-codex-spark$/i, ' Spark');
 
+const THINKING_STATUS_LABELS = {
+  running: '进行中',
+  waiting: '等待确认',
+  completed: '已完成',
+  cancelled: '已停止',
+  error: '异常',
+};
+
+const thinkingStatusClassName = (status: string) => {
+  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200';
+  if (status === 'error') return 'border-red-200 bg-red-50 text-red-600 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200';
+  if (status === 'cancelled') return 'border-stone-200 bg-stone-50 text-stone-500 dark:border-white/10 dark:bg-white/6 dark:text-stone-400';
+  if (status === 'waiting') return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100';
+  return 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-200';
+};
+
+const thinkingDotClassName = (status: string) => {
+  if (status === 'completed') return 'bg-emerald-400';
+  if (status === 'error') return 'bg-red-400';
+  if (status === 'cancelled') return 'bg-stone-300 dark:bg-stone-600';
+  if (status === 'waiting') return 'bg-amber-400';
+  return 'bg-blue-500';
+};
+
+const formatThinkingDuration = (start: number, end: number) => {
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds <= 1) return '刚刚';
+  if (seconds < 60) return seconds + 's';
+  const minutes = Math.floor(seconds / 60);
+  const remain = seconds % 60;
+  return remain ? minutes + 'm ' + remain + 's' : minutes + 'm';
+};
+
 export function CanvasAgentSidebar({
   width,
   messages,
@@ -177,6 +210,8 @@ export function CanvasAgentSidebar({
   const [savingAccess, setSavingAccess] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState('');
+  const [expandedThinkingMessageIds, setExpandedThinkingMessageIds] = useState<string[]>([]);
+  const [thinkingNow, setThinkingNow] = useState(Date.now());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -187,6 +222,12 @@ export function CanvasAgentSidebar({
   useEffect(() => {
     window.setTimeout(() => inputRef.current?.focus(), 120);
   }, []);
+
+  useEffect(() => {
+    if (!messages.some(message => message.status === 'streaming' && message.thinkingSteps?.length)) return;
+    const id = window.setInterval(() => setThinkingNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [messages]);
 
   useEffect(() => {
     if (settings.provider === 'codex' && codexStatus?.authenticated) {
@@ -301,6 +342,14 @@ export function CanvasAgentSidebar({
     window.setTimeout(() => {
       setCopiedMessageId(current => (current === message.id ? '' : current));
     }, 1200);
+  };
+
+  const toggleThinkingExpanded = (messageId: string) => {
+    setExpandedThinkingMessageIds(current => (
+      current.includes(messageId)
+        ? current.filter(id => id !== messageId)
+        : [...current, messageId]
+    ));
   };
 
   const updateCodexSandbox = async (codexSandbox: AgentSettings['codexSandbox']) => {
@@ -461,6 +510,11 @@ export function CanvasAgentSidebar({
           <div className="space-y-5">
             {messages.map(message => {
               const isUser = message.role === 'user';
+              const thinkingSteps = !isUser ? (message.thinkingSteps || []) : [];
+              const latestThinkingStep = thinkingSteps[thinkingSteps.length - 1];
+              const hasActiveThinkingStep = thinkingSteps.some(step => step.status === 'running' || step.status === 'waiting');
+              const thinkingExpanded = message.status === 'streaming'
+                || expandedThinkingMessageIds.includes(message.id);
               return (
                 <section key={message.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
                   <div className={isUser ? 'max-w-[90%] rounded-[22px] bg-blue-500 px-3.5 py-2.5 text-white shadow-sm' : 'w-full'}>
@@ -473,6 +527,106 @@ export function CanvasAgentSidebar({
                     <p className={`select-text whitespace-pre-wrap text-[12px] leading-[1.72] ${isUser ? 'text-white' : 'text-stone-700 dark:text-stone-200'}`}>
                       {message.content || (message.status === 'streaming' ? '正在思考…' : '')}
                     </p>
+
+                    {message.selectionSnapshot && message.selectionSnapshot.length > 0 && (
+                      <div className={['mt-2 flex flex-wrap gap-1', isUser ? 'justify-end' : ''].filter(Boolean).join(' ')}>
+                        {message.selectionSnapshot.slice(0, 5).map(item => (
+                          <span
+                            key={item.id}
+                            className={isUser
+                              ? 'max-w-[142px] truncate rounded-full bg-white/16 px-2 py-0.5 text-[8px] font-medium text-white/78'
+                              : 'max-w-[160px] truncate rounded-full bg-blue-50 px-2 py-0.5 text-[8px] font-medium text-blue-600 dark:bg-blue-400/10 dark:text-blue-200'}
+                          >
+                            发送时选中：{item.name}
+                          </span>
+                        ))}
+                        {message.selectionSnapshot.length > 5 && (
+                          <span className={isUser
+                            ? 'rounded-full bg-white/16 px-2 py-0.5 text-[8px] font-medium text-white/78'
+                            : 'rounded-full bg-stone-100 px-2 py-0.5 text-[8px] font-medium text-stone-500 dark:bg-white/7 dark:text-stone-400'}>
+                            +{message.selectionSnapshot.length - 5}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {thinkingSteps.length > 0 && (
+                      <div className="mt-3 overflow-hidden rounded-[15px] border border-blue-100/85 bg-white/62 shadow-sm dark:border-white/8 dark:bg-white/4">
+                        <button
+                          type="button"
+                          onClick={() => toggleThinkingExpanded(message.id)}
+                          className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-blue-50/70 dark:hover:bg-white/6"
+                        >
+                          <span className="min-w-0">
+                            <span className="flex items-center gap-1.5 text-[10px] font-semibold text-stone-700 dark:text-stone-200">
+                              <span
+                                className={[
+                                  'h-1.5 w-1.5 rounded-full',
+                                  thinkingDotClassName(latestThinkingStep?.status || 'running'),
+                                  hasActiveThinkingStep ? 'animate-pulse' : '',
+                                ].filter(Boolean).join(' ')}
+                              />
+                              <span>{message.status === 'streaming' ? '思考与执行过程' : '过程摘要'}</span>
+                              <span
+                                className={[
+                                  'rounded-full border px-1.5 py-0.5 text-[8px] font-medium',
+                                  thinkingStatusClassName(latestThinkingStep?.status || 'running'),
+                                ].join(' ')}
+                              >
+                                {THINKING_STATUS_LABELS[(latestThinkingStep?.status || 'running') as keyof typeof THINKING_STATUS_LABELS] || '进行中'}
+                              </span>
+                            </span>
+                            <span className="mt-1 block truncate text-[9px] text-stone-400 dark:text-stone-500">
+                              {latestThinkingStep?.title || '正在处理'} · {thinkingSteps.length} 步 · 公开进度，不含模型私有推理
+                            </span>
+                          </span>
+                          <ChevronDown
+                            className={[
+                              'h-3.5 w-3.5 shrink-0 text-stone-400 transition-transform',
+                              thinkingExpanded ? 'rotate-180' : '',
+                            ].filter(Boolean).join(' ')}
+                          />
+                        </button>
+                        {thinkingExpanded && (
+                          <div className="border-t border-blue-50/90 px-2.5 py-2 dark:border-white/7">
+                            <div className="space-y-2">
+                              {thinkingSteps.map((step, index) => {
+                                const running = step.status === 'running' || step.status === 'waiting';
+                                const elapsed = formatThinkingDuration(
+                                  step.timestamp,
+                                  step.completedAt || (running ? thinkingNow : step.timestamp),
+                                );
+                                return (
+                                  <div key={step.id} className="flex gap-2">
+                                    <div className="flex flex-col items-center">
+                                      <span
+                                        className={[
+                                          'mt-1 h-2 w-2 rounded-full',
+                                          thinkingDotClassName(step.status),
+                                          running ? 'animate-pulse' : '',
+                                        ].filter(Boolean).join(' ')}
+                                      />
+                                      {index < thinkingSteps.length - 1 && <span className="mt-1 h-full min-h-[14px] w-px bg-blue-100 dark:bg-white/9" />}
+                                    </div>
+                                    <div className="min-w-0 flex-1 pb-1">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="truncate text-[10px] font-medium text-stone-600 dark:text-stone-200">{step.title}</span>
+                                        <span className="shrink-0 text-[8px] text-stone-400 dark:text-stone-600">{elapsed}</span>
+                                      </div>
+                                      {step.detail && (
+                                        <div className="mt-0.5 max-h-12 overflow-hidden break-all text-[8px] leading-3.5 text-stone-400 dark:text-stone-500">
+                                          {step.detail}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {message.toolCalls && message.toolCalls.length > 0 && (
                       <div className="mt-3 space-y-2">
