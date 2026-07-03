@@ -286,7 +286,9 @@ const LazyFloatingNoteHost = React.lazy(() => (
   import('./features/FloatingNoteHost').then(module => ({ default: module.FloatingNoteHost }))
 ));
 const CANVAS_WORKBENCH_MODE_STORAGE_KEY = 'drawer_canvas_workbench_mode';
+const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
 type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
+type DrawerSidebarLayout = 'icons' | 'folders';
 type DrawerUndoSnapshot = {
   items: BufferItem[];
   folders: Folder[];
@@ -648,6 +650,10 @@ type CanvasFolderImagePickerState = CanvasFolderImportPrompt & {
   y: number;
 };
 
+const CANVAS_FOLDER_PICKER_INITIAL_VISIBLE = 24;
+const CANVAS_FOLDER_PICKER_VISIBLE_STEP = 24;
+const CANVAS_FOLDER_PICKER_SCROLL_EDGE = 96;
+
 type CanvasNavPreview = { source: string; mediaType: 'image' | 'video' };
 type CanvasNavThumbnailCacheEntry = {
   signature: string;
@@ -860,6 +866,9 @@ const DRAWER_FOLDER_TONES = [
   },
 ];
 const DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY = 'drawer_collapsed_folder_ids';
+const normalizeDrawerSidebarLayout = (value: string | null): DrawerSidebarLayout => (
+  value === 'icons' ? 'icons' : 'folders'
+);
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
 const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
@@ -2305,8 +2314,22 @@ const readImageDisplaySize = (src: string) => new Promise<{ width: number; heigh
   const image = new window.Image();
   image.onload = () => resolve(getCanvasInitialImageSize(image.naturalWidth, image.naturalHeight));
   image.onerror = () => resolve(getCanvasInitialImageSize());
+  image.decoding = 'async';
   image.src = src;
 });
+
+const getFastCanvasImageDisplaySize = (item: BufferItem) => {
+  const thumbnail = item.thumbnail || '';
+  if (thumbnail.startsWith('data:image/')) {
+    const match = thumbnail.match(/(?:width|w)=["']?(\d+)["']?[^>]*(?:height|h)=["']?(\d+)["']?/i);
+    if (match) {
+      const width = Number(match[1]);
+      const height = Number(match[2]);
+      if (width > 0 && height > 0) return getCanvasInitialImageSize(width, height);
+    }
+  }
+  return getCanvasInitialImageSize();
+};
 
 
 
@@ -2621,6 +2644,7 @@ function MainApp() {
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
   const [canvasBrushEditor, setCanvasBrushEditor] = useState<CanvasBrushEditorState | null>(null);
+  const [canvasFolderPickerVisibleCount, setCanvasFolderPickerVisibleCount] = useState(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
   const [canvasBrushMode, setCanvasBrushMode] = useState<CanvasBrushEditorMode>('brush');
   const [canvasBrushColor, setCanvasBrushColor] = useState(CANVAS_BRUSH_COLORS[0]);
   const [canvasBrushSize, setCanvasBrushSize] = useState(26);
@@ -3070,6 +3094,14 @@ function MainApp() {
   const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark');
   useEffect(() => { localStorage.setItem('theme', isDark ? 'dark' : 'light'); }, [isDark]);
 
+  const [drawerSidebarLayout, setDrawerSidebarLayout] = useState<DrawerSidebarLayout>(() => (
+    normalizeDrawerSidebarLayout(localStorage.getItem(DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY))
+  ));
+  useEffect(() => {
+    localStorage.setItem(DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY, drawerSidebarLayout);
+  }, [drawerSidebarLayout]);
+  const isFolderSidebarLayout = drawerSidebarLayout === 'folders';
+
   const [cardWidth, setCardWidth] = useState(() => Number(localStorage.getItem('drawer_card_width')) || 320);
   useEffect(() => { localStorage.setItem('drawer_card_width', cardWidth.toString()); }, [cardWidth]);
 
@@ -3168,6 +3200,14 @@ function MainApp() {
     setToast({ show: true, msg });
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast({ show: false, msg: '' }), 2500);
+  };
+
+  const toggleDrawerSidebarLayout = () => {
+    setDrawerSidebarLayout(previous => {
+      const next: DrawerSidebarLayout = previous === 'folders' ? 'icons' : 'folders';
+      showToast(next === 'folders' ? '侧边栏已切换为文件夹列表' : '侧边栏已切换为大图标');
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -5125,6 +5165,22 @@ function MainApp() {
       count + 1 + (collapsedFolderIds.includes(folder.id) ? 0 : (folderChildrenByParent.get(folder.id)?.length || 0))
     ), 0)
   ), [rootFolders, folderChildrenByParent, collapsedFolderIds]);
+  const folderItemCounts = useMemo(() => {
+    const directCounts = new Map<string, number>();
+    items.forEach(item => {
+      if (!item.folderId) return;
+      directCounts.set(item.folderId, (directCounts.get(item.folderId) || 0) + 1);
+    });
+    const counts = new Map<string, number>();
+    folders.forEach(folder => {
+      const scopeIds = getDrawerFolderScopeIds(folders, folder.id);
+      let count = 0;
+      scopeIds.forEach(id => { count += directCounts.get(id) || 0; });
+      counts.set(folder.id, count);
+    });
+    return counts;
+  }, [folders, items]);
+  const mainDrawerItemCount = useMemo(() => items.filter(item => !item.folderId).length, [items]);
   const displayItems = useMemo(() => {
     let result = items as AlchemyBufferItem[];
     if (searchQuery.trim()) {
@@ -14055,6 +14111,7 @@ function MainApp() {
       showToast('这个文件夹里还没有图片');
       return;
     }
+    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt({
       folderId,
       folderName,
@@ -14072,7 +14129,7 @@ function MainApp() {
     }
 
     const now = Date.now();
-    const nextItems = await Promise.all(imageItems.map(async (source, index) => {
+    const nextItems = imageItems.map((source, index) => {
       const item: BufferItem = {
         ...source,
         id: Math.random().toString(36).substring(2, 9),
@@ -14080,7 +14137,7 @@ function MainApp() {
         isQuickAccess: false,
       };
       const pos = getCanvasDropPosition(index);
-      const size = await readImageDisplaySize(item.url || (item.path ? convertFileSrc(item.path) : ''));
+      const size = getFastCanvasImageDisplaySize(item);
       return {
         id: `canvas_${item.id}`,
         item,
@@ -14089,7 +14146,7 @@ function MainApp() {
         width: size.width,
         height: size.height,
       } as CanvasImageItem;
-    }));
+    });
 
     const addedCount = appendCanvasItems(nextItems, '添加图片到画布');
     if (addedCount > 0) showToast(`已添加 ${addedCount} 张图片到无限画布`);
@@ -14098,11 +14155,13 @@ function MainApp() {
   const confirmAddFolderImagesToCanvas = () => {
     const prompt = canvasFolderImportPrompt;
     if (!prompt) return;
+    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt(null);
     void addFolderImagesToCanvas(prompt.folderId);
   };
 
   const addFolderImagePickerItemToCanvas = (itemId: string) => {
+    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt(null);
     void addDrawerImageItemToCanvas(itemId);
   };
@@ -16588,6 +16647,9 @@ useEffect(() => {
   }
   const drawerShellTransform = transformX === '0px' ? 'none' : `translateX(${transformX})`;
   const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 w-full h-full min-w-[320px] bg-white/82 dark:bg-stone-900/94 backdrop-blur-2xl border border-white/60 dark:border-stone-800/60 shadow-[0_18px_50px_rgba(0,0,0,0.10)] flex flex-row rounded-[30px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
+  const drawerSidebarClassName = isCanvasMode && isCanvasChromeHidden
+    ? 'hidden'
+    : `${isFolderSidebarLayout ? 'w-[178px]' : 'w-16'} h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
 
   // 🌟 退出截图时，必须先把 Tauri 窗口恢复到抽屉尺寸，再卸载全屏截图层。
   // 否则 React 会先把抽屉内容显示在全屏窗口里，视觉上就像“先放大再缩小”。
@@ -19918,9 +19980,15 @@ useEffect(() => {
       return canUseCanvasItemAsAiInput(item);
     }).length
     : 0;
-  const canvasFolderPickerItems = canvasFolderImportPrompt
-    ? getFolderImageItemsForCanvas(canvasFolderImportPrompt.folderId)
-    : [];
+  const canvasFolderPickerItems = useMemo(() => (
+    canvasFolderImportPrompt
+      ? getFolderImageItemsForCanvas(canvasFolderImportPrompt.folderId)
+      : []
+  ), [canvasFolderImportPrompt?.folderId, folders, items]);
+  const visibleCanvasFolderPickerItems = useMemo(
+    () => canvasFolderPickerItems.slice(0, canvasFolderPickerVisibleCount),
+    [canvasFolderPickerItems, canvasFolderPickerVisibleCount],
+  );
   const canvasPresetEditingPreset = canvasAiPromptPresets.find(item => item.id === canvasPresetEditingId) || null;
   const canvasPresetEditorTitle = canvasPresetEditorMode === 'manage' ? '管理预设' : '新增预设';
   const canvasWorkflowEditingTemplate = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId) || null;
@@ -19992,8 +20060,7 @@ useEffect(() => {
     const isFolderActive = activeFolderId === folder.id;
     const isFolderDragOver = dragOverFolderId === folder.id;
     const folderPathName = getDrawerFolderPathName(folders, folder.id) || folder.name;
-    const folderScopeIds = getDrawerFolderScopeIds(folders, folder.id);
-    const folderItemCount = items.filter(item => !!item.folderId && folderScopeIds.has(item.folderId)).length;
+    const folderItemCount = folderItemCounts.get(folder.id) || 0;
     const childFolders = isChild ? [] : (folderChildrenByParent.get(folder.id) || []);
     const isCollapsed = collapsedFolderIds.includes(folder.id);
     return (
@@ -20082,6 +20149,115 @@ useEffect(() => {
               </>
             ) : folder.name}
           </span>
+        )}
+      </div>
+    );
+  };
+
+  const renderDrawerFolderListItem = (folder: Folder, _folderIndex: number, isChild = false) => {
+    const isFolderActive = activeFolderId === folder.id;
+    const isFolderDragOver = dragOverFolderId === folder.id;
+    const folderPathName = getDrawerFolderPathName(folders, folder.id) || folder.name;
+    const folderItemCount = folderItemCounts.get(folder.id) || 0;
+    const childFolders = isChild ? [] : (folderChildrenByParent.get(folder.id) || []);
+    const isCollapsed = collapsedFolderIds.includes(folder.id);
+    const rowClassName = isFolderDragOver
+      ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25'
+      : isFolderActive
+        ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white'
+        : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white';
+
+    return (
+      <div
+        key={folder.id}
+        className="group/folder-list relative w-full shrink-0"
+        data-folder-drop-id={folder.id}
+        data-folder-drop-name={folderPathName}
+        onPointerEnter={() => handleDrawerFolderPointerEnter(folder.id)}
+        onPointerLeave={() => handleDrawerFolderPointerLeave(folder.id)}
+        onPointerUp={() => handleDrawerFolderPointerUp(folder.id, folderPathName)}
+        onDragEnter={(event) => handleDrawerItemDragOverFolder(event, folder.id)}
+        onDragOver={(event) => handleDrawerItemDragOverFolder(event, folder.id)}
+        onDragLeave={(event) => handleDrawerItemDragLeaveFolder(event, folder.id)}
+        onDrop={(event) => handleDrawerItemDropToFolder(event, folder.id, folderPathName)}
+      >
+        <button
+          type="button"
+          onClick={(event) => {
+            if (isCanvasMode) {
+              const rect = event.currentTarget.getBoundingClientRect();
+              requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
+              return;
+            }
+            setActiveFolderId(folder.id);
+          }}
+          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 text-left text-[13px] font-semibold transition-all ${rowClassName} ${isChild ? 'pl-6' : ''}`}
+          title={isCanvasMode ? `${folderPathName}：点击把图片加入画布` : folderPathName}
+        >
+          {!isChild && childFolders.length > 0 ? (
+            <span
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setCollapsedFolderIds(prev => (
+                  prev.includes(folder.id) ? prev.filter(id => id !== folder.id) : [...prev, folder.id]
+                ));
+              }}
+              className={`-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors ${isFolderActive ? 'text-white/70 hover:bg-white/12 hover:text-white' : 'text-stone-400 hover:bg-stone-200/70 hover:text-stone-700 dark:text-stone-500 dark:hover:bg-white/10 dark:hover:text-stone-200'}`}
+              title={isCollapsed ? '展开子目录' : '收起子目录'}
+            >
+              {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </span>
+          ) : (
+            <span className={`h-5 w-5 shrink-0 ${isChild ? 'hidden' : ''}`} />
+          )}
+          {isChild && <span aria-hidden="true" className="h-px w-3 shrink-0 bg-stone-300 dark:bg-stone-700" />}
+          <FolderOpen className={`h-4 w-4 shrink-0 ${isFolderActive ? 'text-amber-300' : 'fill-amber-300/35 text-amber-500 dark:fill-amber-300/18 dark:text-amber-300'}`} />
+          {editingFolderId === folder.id ? (
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={event => setRenameValue(event.target.value)}
+              onBlur={() => handleRenameFolder(folder.id)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') handleRenameFolder(folder.id);
+                if (event.key === 'Escape') setEditingFolderId(null);
+              }}
+              onClick={event => event.stopPropagation()}
+              className="min-w-0 flex-1 rounded bg-white/90 px-1.5 py-0.5 text-[12px] text-stone-800 outline-none ring-1 ring-emerald-400 dark:bg-stone-800 dark:text-stone-100"
+            />
+          ) : (
+            <span
+              onDoubleClick={(event) => { event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
+              onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
+              className="min-w-0 flex-1 truncate"
+              title={`${folderPathName}；双击或右键改名`}
+            >
+              {folder.name}
+            </span>
+          )}
+          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black leading-none ${isFolderActive ? 'bg-white/16 text-white/78' : 'bg-stone-200/75 text-stone-500 dark:bg-white/[0.08] dark:text-stone-400'}`}>
+            {folderItemCount}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); handleDeleteFolder(folder.id); }}
+          className="absolute right-1 top-1/2 z-10 hidden -translate-y-1/2 rounded-full bg-red-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/folder-list:block"
+          title={isChild ? '删除子目录（内容移回项目）' : childFolders.length > 0 ? '删除项目及子目录（不删内容）' : '删除文件夹（不删内容）'}
+        >
+          <X className="h-2.5 w-2.5" />
+        </button>
+        {!isChild && (
+          <button
+            type="button"
+            onClick={(event) => { event.stopPropagation(); handleOpenFolderModal(folder.id); }}
+            className="absolute right-7 top-1/2 z-10 hidden -translate-y-1/2 rounded-full bg-emerald-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/folder-list:block"
+            title={`在「${folder.name}」中新建子目录`}
+          >
+            <Plus className="h-2.5 w-2.5" />
+          </button>
         )}
       </div>
     );
@@ -20340,7 +20516,295 @@ useEffect(() => {
               )}
             </AnimatePresence>
 
-            <div className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'w-16 h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col items-center pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden'}>
+            <div className={drawerSidebarClassName}>
+              {isFolderSidebarLayout ? (
+                <div className="flex h-full min-w-0 flex-col px-2">
+                  <div
+                    className="relative w-full shrink-0"
+                    data-folder-drop-id="all"
+                    data-folder-drop-name="主抽屉"
+                    onPointerEnter={() => handleDrawerFolderPointerEnter('all')}
+                    onPointerLeave={() => handleDrawerFolderPointerLeave('all')}
+                    onPointerUp={() => handleDrawerFolderPointerUp(undefined)}
+                    onPointerDown={startMainDrawerLongPress}
+                    onPointerCancel={finishMainDrawerPress}
+                    onDragEnter={(e) => handleDrawerItemDragOverFolder(e, 'all')}
+                    onDragOver={(e) => handleDrawerItemDragOverFolder(e, 'all')}
+                    onDragLeave={(e) => handleDrawerItemDragLeaveFolder(e, 'all')}
+                    onDrop={(e) => handleDrawerItemDropToFolder(e, undefined)}
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        if (mainDrawerLongPressTriggeredRef.current) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          return;
+                        }
+                        if (isCanvasMode) {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          requestAddFolderImagesToCanvas(undefined, '主抽屉', { x: rect.right + 10, y: rect.top });
+                          return;
+                        }
+                        setActiveFolderId('all');
+                      }}
+                      onPointerUp={finishMainDrawerPress}
+                      onPointerLeave={finishMainDrawerPress}
+                      className={`flex h-10 w-full min-w-0 items-center gap-2 rounded-[12px] px-2 text-left text-[13px] font-black transition-all ${isCanvasMode ? 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950' : dragOverFolderId === 'all' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25' : activeFolderId === 'all' ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'}`}
+                      title={isCanvasMode ? '点击把主抽屉图片加入画布，长按退出画布' : '长按进入无限画布'}
+                    >
+                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] ${isCanvasMode ? 'bg-white/18 text-white dark:bg-stone-950/14 dark:text-stone-950' : activeFolderId === 'all' ? 'bg-white/14 text-blue-200' : 'bg-blue-50 text-blue-600 dark:bg-blue-400/12 dark:text-blue-200'}`}>
+                        {isCanvasMode ? <LayoutGrid className="h-4 w-4" /> : <Lightbulb className="h-4 w-4" />}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{isCanvasMode ? '无限画布' : '主抽屉'}</span>
+                      <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black leading-none ${activeFolderId === 'all' || isCanvasMode ? 'bg-white/16 text-white/78 dark:text-stone-950/70' : 'bg-stone-200/75 text-stone-500 dark:bg-white/[0.08] dark:text-stone-400'}`}>
+                        {mainDrawerItemCount}
+                      </span>
+                    </button>
+                  </div>
+
+                  <div className="my-2 h-px w-full shrink-0 bg-stone-300/75 dark:bg-stone-700/80" />
+
+                  <div className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
+                    <div
+                      className="flex h-full w-full flex-col gap-1 overflow-y-auto overflow-x-hidden pr-0.5 [&::-webkit-scrollbar]:hidden"
+                      style={{
+                        WebkitMaskImage: visibleFolderRailEntryCount > 7
+                          ? 'linear-gradient(to bottom, black 0%, black calc(100% - 34px), transparent 100%)'
+                          : undefined,
+                        maskImage: visibleFolderRailEntryCount > 7
+                          ? 'linear-gradient(to bottom, black 0%, black calc(100% - 34px), transparent 100%)'
+                          : undefined,
+                      }}
+                    >
+                      {rootFolders.map((folder, folderIndex) => {
+                        const childFolders = folderChildrenByParent.get(folder.id) || [];
+                        const isCollapsed = collapsedFolderIds.includes(folder.id);
+                        return (
+                          <div key={folder.id} className="flex w-full shrink-0 flex-col gap-1">
+                            {renderDrawerFolderListItem(folder, folderIndex)}
+                            {!isCollapsed && childFolders.map(childFolder => (
+                              renderDrawerFolderListItem(childFolder, folderIndex, true)
+                            ))}
+                          </div>
+                        );
+                      })}
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenFolderModal()}
+                        className={`mt-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed px-2 text-left text-[12px] font-bold transition-all ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950' : 'border-blue-200 bg-blue-50/30 text-blue-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
+                        title="新建收纳夹"
+                      >
+                        <Plus className="h-4 w-4 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate">新建文件夹</span>
+                      </button>
+                    </div>
+
+                    {visibleFolderRailEntryCount > 7 && (
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent via-stone-100/45 to-stone-100/90 dark:via-stone-900/35 dark:to-stone-900/80" />
+                    )}
+                  </div>
+
+                  <div
+                    data-no-drag="true"
+                    onPointerDown={startResizingSidebarAreas}
+                    className="group relative flex w-full shrink-0 cursor-row-resize items-center justify-center py-1.5"
+                    title="拖动调整文件夹 / 快速导航区域高度"
+                  >
+                    <div className="h-1 w-10 rounded-full bg-stone-300/75 transition-all group-hover:w-14 group-hover:bg-emerald-400/80 dark:bg-stone-700/80 dark:group-hover:bg-emerald-500/70" />
+                  </div>
+
+                  <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+                    <div
+                      data-no-drag="true"
+                      className="mb-2 grid shrink-0 grid-cols-2 gap-1 rounded-[12px] border border-white/70 bg-white/55 p-1 shadow-sm backdrop-blur-md dark:border-stone-700/60 dark:bg-stone-800/50"
+                    >
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setQuickRailMode('quick');
+                          if (activeTab === 'notes') setActiveTab('all');
+                        }}
+                        className={`flex h-7 items-center justify-center gap-1 rounded-[9px] text-[11px] font-black transition-all ${quickRailMode === 'quick' ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/18 dark:text-blue-200 dark:ring-blue-400/25' : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'}`}
+                        title="快速访问"
+                      >
+                        <Compass className="h-3.5 w-3.5" />
+                        快捷
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setQuickRailMode('notes');
+                          refreshNoteManager();
+                          if (activeTab === 'notes') setActiveTab('all');
+                        }}
+                        className={`relative flex h-7 items-center justify-center gap-1 rounded-[9px] text-[11px] font-black transition-all ${quickRailMode === 'notes' ? 'bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 dark:bg-amber-900/35 dark:text-amber-300 dark:ring-amber-800/55' : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'}`}
+                        title={openFloatingNoteCount > 0 ? `便签（${openFloatingNoteCount} 个）` : '便签'}
+                      >
+                        <BookOpen className="h-3.5 w-3.5" />
+                        便签
+                        {openFloatingNoteCount > 0 && (
+                          <span className="absolute right-1 top-1 min-w-[14px] rounded-full bg-amber-500 px-1 text-[8px] leading-[14px] text-white">
+                            {openFloatingNoteCount}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="flex min-h-0 w-full flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden pr-0.5 [&::-webkit-scrollbar]:hidden">
+                      {quickRailMode === 'quick' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); invoke('open_file', { path: 'SYSTEM_COMPUTER' }).catch(() => {}); }}
+                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] px-2 text-left text-[12px] font-semibold text-stone-700 transition-all hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white"
+                            title="打开此电脑"
+                          >
+                            <HardDrive className="h-4 w-4 shrink-0 text-blue-500/90 dark:text-blue-400/90" />
+                            <span className="min-w-0 flex-1 truncate">此电脑</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); invoke('open_file', { path: 'SYSTEM_DESKTOP' }).catch(() => {}); }}
+                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] px-2 text-left text-[12px] font-semibold text-stone-700 transition-all hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white"
+                            title="打开桌面"
+                          >
+                            <Monitor className="h-4 w-4 shrink-0 text-cyan-500/90 dark:text-cyan-300/90" />
+                            <span className="min-w-0 flex-1 truncate">桌面</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openWebImageCollector()}
+                            disabled={isCollectingWebImages || isGeneratingWebImageQuery}
+                            className={`flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] px-2 text-left text-[12px] font-semibold transition-all disabled:cursor-wait disabled:opacity-65 ${showWebImageCollector ? 'bg-sky-500 text-white shadow-sm dark:bg-sky-400 dark:text-stone-950' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'}`}
+                            title="网络收图"
+                          >
+                            {isCollectingWebImages || isGeneratingWebImageQuery ? (
+                              <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                            ) : (
+                              <ImageIcon className={`h-4 w-4 shrink-0 ${showWebImageCollector ? '' : 'text-sky-500 dark:text-sky-300'}`} />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">收图</span>
+                          </button>
+                          <AnimatePresence>
+                            {quickAccessItems.map(item => {
+                              const visual = getQuickAccessVisual(item as BufferItem & { isDirectory?: boolean; isUrl?: boolean });
+                              const quickName = item.name || item.content || item.path || '快速访问';
+                              return (
+                                <motion.div
+                                  key={item.id}
+                                  layout
+                                  initial={{ opacity: 0, scale: 0.98 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  exit={{ opacity: 0, scale: 0.98 }}
+                                  transition={{ layout: { type: 'tween', duration: 0.18, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.14, ease: [0.16, 1, 0.3, 1] } }}
+                                  className="group/quick-list relative w-full shrink-0"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={(e) => openQuickAccessItem(item as BufferItem & { isDirectory?: boolean; isUrl?: boolean }, e)}
+                                    className="flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-7 text-left text-[12px] font-semibold text-stone-700 transition-all hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white"
+                                    title={`${visual.label}：${quickName}`}
+                                  >
+                                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">{visual.icon}</span>
+                                    <span className="min-w-0 flex-1 truncate">{quickName}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      pushDrawerUndoSnapshot('取消快速访问');
+                                      setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: false } : i));
+                                    }}
+                                    className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded-full bg-red-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/quick-list:block"
+                                    title="取消快速访问"
+                                  >
+                                    <X className="h-2.5 w-2.5" />
+                                  </button>
+                                </motion.div>
+                              );
+                            })}
+                          </AnimatePresence>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={createBlankFloatingNote}
+                            disabled={isCreatingBlankNote}
+                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-amber-100/80 bg-amber-50/70 px-2 text-left text-[12px] font-bold text-amber-700 shadow-sm transition-all hover:bg-amber-100 disabled:opacity-55 dark:border-amber-800/45 dark:bg-amber-900/24 dark:text-amber-300 dark:hover:bg-amber-900/38"
+                            title={`新增便签（${noteShortcut}）`}
+                          >
+                            <Plus className="h-4 w-4 shrink-0" />
+                            <span className="min-w-0 flex-1 truncate">新增便签</span>
+                          </button>
+                          {openFloatingNoteEntries.length === 0 ? (
+                            <div className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed border-amber-200/90 px-2 text-[12px] font-semibold text-stone-400 opacity-75 dark:border-amber-800/60 dark:text-stone-500">
+                              <StickyNote className="h-4 w-4 shrink-0 text-amber-400" />
+                              <span className="min-w-0 flex-1 truncate">无便签</span>
+                            </div>
+                          ) : (
+                            <AnimatePresence>
+                              {openFloatingNoteEntries.map(({ label, snapshot }) => {
+                                if (!snapshot) return null;
+                                const noteName = snapshot.name || snapshot.content || '桌面便签';
+                                const thumb = snapshot.thumbnail || snapshot.url || (snapshot.path && snapshot.type === 'image' ? convertFileSrc(snapshot.path) : '');
+                                const noteIcon = snapshot.type === 'image'
+                                  ? (thumb ? <img src={thumb} alt={noteName} loading="lazy" decoding="async" className="h-5 w-5 rounded-md object-cover" draggable={false} /> : <ImageIcon className="h-4 w-4 text-stone-500" />)
+                                  : snapshot.type === 'text'
+                                    ? <Type className="h-4 w-4 text-amber-500" />
+                                    : snapshot.type === 'video'
+                                      ? <Film className="h-4 w-4 text-emerald-500" />
+                                      : <FileIcon className="h-4 w-4 text-stone-400" />;
+                                return (
+                                  <motion.div
+                                    key={label}
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.98 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.98 }}
+                                    transition={{ layout: { type: 'tween', duration: 0.18, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.14, ease: [0.16, 1, 0.3, 1] } }}
+                                    className="group/note-list relative w-full shrink-0"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => focusFloatingNote(label, snapshot)}
+                                      className="flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-7 text-left text-[12px] font-semibold text-stone-700 transition-all hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white"
+                                      title={`显示便签：${noteName}`}
+                                    >
+                                      <span className="flex h-5 w-5 shrink-0 items-center justify-center">{noteIcon}</span>
+                                      <span className="min-w-0 flex-1 truncate">{noteName}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        closeFloatingNoteByLabel(label);
+                                      }}
+                                      className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded-full bg-white/85 p-1 text-stone-400 shadow-sm ring-1 ring-stone-200/80 transition-all hover:bg-red-50 hover:text-red-400 group-hover/note-list:block dark:bg-stone-800/82 dark:text-stone-500 dark:ring-stone-700/80 dark:hover:bg-red-950/30 dark:hover:text-red-300/80"
+                                      title="删除便签"
+                                    >
+                                      <X className="h-2.5 w-2.5" />
+                                    </button>
+                                  </motion.div>
+                                );
+                              })}
+                            </AnimatePresence>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
               {/* 主抽屉：固定在侧边栏顶部，不参与文件夹滚动 */}
               <div
                 className="relative shrink-0 flex flex-col items-center w-full px-1 pt-0"
@@ -20645,6 +21109,8 @@ useEffect(() => {
                   )}
                 </div>
               </div>
+                </>
+              )}
             </div>
 
             {/* ====== 右侧主内容区开始 ====== */}
@@ -20887,6 +21353,20 @@ useEffect(() => {
                                       {isDark ? '切换浅色' : '切换深色'}
                                     </button>
                                   </div>
+                                  <button
+                                    type="button"
+                                    onClick={toggleDrawerSidebarLayout}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="切换左侧侧边栏显示方式"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <FolderOpen className="w-3.5 h-3.5 text-amber-500" /> 侧边栏样式
+                                    </span>
+                                    <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ${isFolderSidebarLayout ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300' : 'border-stone-200 bg-stone-50 text-stone-500 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-300'}`}>
+                                      {isFolderSidebarLayout ? '文件夹列表' : '大图标'}
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
                                 </div>
                               </motion.div>
                             )}
@@ -26145,7 +26625,10 @@ useEffect(() => {
               </div>
               <button
                 type="button"
-                onClick={() => setCanvasFolderImportPrompt(null)}
+                onClick={() => {
+                  setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
+                  setCanvasFolderImportPrompt(null);
+                }}
                 className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
                 title="关闭"
               >
@@ -26162,9 +26645,19 @@ useEffect(() => {
               全部加入画布
             </button>
 
-            <div className="mt-2 max-h-[320px] overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div
+              className="mt-2 max-h-[320px] overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                if (target.scrollTop + target.clientHeight < target.scrollHeight - CANVAS_FOLDER_PICKER_SCROLL_EDGE) return;
+                setCanvasFolderPickerVisibleCount(prev => Math.min(
+                  canvasFolderPickerItems.length,
+                  prev + CANVAS_FOLDER_PICKER_VISIBLE_STEP,
+                ));
+              }}
+            >
               <div className="grid grid-cols-3 gap-1.5">
-                {canvasFolderPickerItems.map(item => (
+                {visibleCanvasFolderPickerItems.map(item => (
                   <button
                     key={item.id}
                     type="button"
@@ -26172,18 +26665,31 @@ useEffect(() => {
                     className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-blue-300 hover:ring-2 hover:ring-blue-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-blue-300/50 dark:hover:ring-blue-300/20"
                     title={item.name || item.content || '加入画布'}
                   >
-                    <img
-                      src={getCanvasItemDisplaySource(item)}
-                      alt=""
-                      className="h-full w-full object-cover"
-                      draggable={false}
-                    />
+                    {item.thumbnail ? (
+                      <img
+                        src={item.thumbnail}
+                        alt=""
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                        draggable={false}
+                      />
+                    ) : (
+                      <span className="flex h-full w-full items-center justify-center bg-stone-100 text-[10px] font-bold text-stone-300 dark:bg-stone-900 dark:text-stone-600">
+                        预览
+                      </span>
+                    )}
                     <span className="absolute inset-x-0 bottom-0 hidden bg-black/58 px-1 py-1 text-[9px] font-bold text-white group-hover:block">
                       <span className="block truncate">{item.name || item.content || '加入画布'}</span>
                     </span>
                   </button>
                 ))}
               </div>
+              {visibleCanvasFolderPickerItems.length < canvasFolderPickerItems.length && (
+                <div className="py-2 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                  继续滚动加载更多（{visibleCanvasFolderPickerItems.length}/{canvasFolderPickerItems.length}）
+                </div>
+              )}
             </div>
           </motion.div>
         )}
