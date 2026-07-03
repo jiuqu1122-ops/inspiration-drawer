@@ -710,6 +710,7 @@ const TABS: { id: DrawerTabType; label: string; icon: any }[] = [
 ];
 
 const CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY = 'drawer_calendar_notifications_enabled';
+const SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY = 'drawer_screenshot_auto_pin_note';
 const CALENDAR_NOTIFICATION_SENT_STORAGE_PREFIX = 'drawer_calendar_notification_sent_';
 const CALENDAR_NOTIFICATION_HOURS = [10, 15];
 const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
@@ -3476,10 +3477,19 @@ function MainApp() {
   const [calendarNotificationsEnabled, setCalendarNotificationsEnabled] = useState(
     () => localStorage.getItem(CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY) === 'true',
   );
+  const [screenshotAutoPinNote, setScreenshotAutoPinNote] = useState(
+    () => localStorage.getItem(SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY) === 'true',
+  );
+  const screenshotAutoPinNoteRef = useRef(screenshotAutoPinNote);
 
   useEffect(() => {
     localStorage.setItem(CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY, String(calendarNotificationsEnabled));
   }, [calendarNotificationsEnabled]);
+
+  useEffect(() => {
+    screenshotAutoPinNoteRef.current = screenshotAutoPinNote;
+    localStorage.setItem(SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY, String(screenshotAutoPinNote));
+  }, [screenshotAutoPinNote]);
 
   const [noteManagerVersion, setNoteManagerVersion] = useState(0);
   const [quickRailMode, setQuickRailMode] = useState<'quick' | 'notes'>('quick');
@@ -5162,6 +5172,13 @@ function MainApp() {
     const next = !calendarNotificationsEnabled;
     setCalendarNotificationsEnabled(next);
     showToast(next ? '已开启日程通知' : '已关闭日程通知');
+  };
+
+  const toggleScreenshotAutoPinNoteSetting = () => {
+    const next = !screenshotAutoPinNote;
+    screenshotAutoPinNoteRef.current = next;
+    setScreenshotAutoPinNote(next);
+    showToast(next ? '截图后将自动置顶为便签' : '已关闭截图自动置顶便签');
   };
 
   const updateEagleImportStatus = (patch: Partial<EagleImportStatus>) => {
@@ -17135,6 +17152,7 @@ useEffect(() => {
     if (!currentSelection || currentSelection.w < 10 || currentSelection.h < 10) return exitSnip();
     snipCaptureInFlightRef.current = true;
     playSnipShutterSound();
+    const shouldAutoPinNote = screenshotAutoPinNoteRef.current;
 
     const createdAt = Date.now();
     const placeholderId = `snip_${createdAt}_${Math.random().toString(36).substring(2, 7)}`;
@@ -17158,6 +17176,7 @@ useEffect(() => {
     let snipNotePromise: Promise<{ noteLabel: string; snapshot: FloatingNoteSnapshot } | null | undefined> | null = null;
 
     const openSnipNoteOnce = (item: BufferItem = placeholderItem) => {
+      if (!shouldAutoPinNote) return Promise.resolve(null);
       if (!snipNotePromise) {
         snipNotePromise = createFloatingNote(item, {
           topmost: true,
@@ -17273,10 +17292,10 @@ useEffect(() => {
 
       const clipboardResult = await clipboardPromise;
       if (clipboardResult.copied) {
-        showToast('截图成功，已复制并置顶为便签');
+        showToast(shouldAutoPinNote ? '截图成功，已复制并置顶为便签' : '截图成功，已复制并保存到抽屉');
       } else {
         console.warn('截图复制失败详情:', clipboardResult.error);
-        showToast('截图成功，已置顶为便签，自动复制失败');
+        showToast(shouldAutoPinNote ? '截图成功，已置顶为便签，自动复制失败' : '截图成功，已保存到抽屉，自动复制失败');
       }
     } catch (err) {
       if (captureTimeout !== null) window.clearTimeout(captureTimeout);
@@ -17415,10 +17434,11 @@ useEffect(() => {
     setActiveTab('image');
     pushDrawerUndoSnapshot('截图');
     setItems(prev => [finalItem, ...prev]);
+    const shouldAutoPinNote = screenshotAutoPinNoteRef.current;
     if (isCanvasModeRef.current) {
       const canvasItem = await createCanvasImageItemFromPath(savedPath, 0);
       if (canvasItem) addCanvasImageItems([canvasItem]);
-    } else {
+    } else if (shouldAutoPinNote) {
       await createFloatingNote(finalItem, {
         topmost: true,
         x: Math.round(Number(payload?.noteX) || Number(payload?.x) || 0),
@@ -17431,10 +17451,18 @@ useEffect(() => {
 
     void copyScreenshotToClipboard().then((clipboardResult) => {
     if (clipboardResult.copied) {
-      showToast(isCanvasModeRef.current ? '截图成功，已复制并加入画布' : '截图成功，已复制并置顶为便签');
+      showToast(isCanvasModeRef.current
+        ? '截图成功，已复制并加入画布'
+        : shouldAutoPinNote
+          ? '截图成功，已复制并置顶为便签'
+          : '截图成功，已复制并保存到抽屉');
     } else {
       console.warn('截图复制失败详情:', clipboardResult.error);
-      showToast(isCanvasModeRef.current ? '截图成功，已加入画布，自动复制失败' : '截图成功，已置顶为便签，自动复制失败');
+      showToast(isCanvasModeRef.current
+        ? '截图成功，已加入画布，自动复制失败'
+        : shouldAutoPinNote
+          ? '截图成功，已置顶为便签，自动复制失败'
+          : '截图成功，已保存到抽屉，自动复制失败');
     }
     });
     } catch (err) {
@@ -22428,6 +22456,25 @@ useEffect(() => {
                                     }`}>
                                       {calendarNotificationsEnabled ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />}
                                       {calendarNotificationsEnabled ? '已开启' : '已关闭'}
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={toggleScreenshotAutoPinNoteSetting}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="截图完成后自动创建并置顶桌面便签"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <StickyNote className="w-3.5 h-3.5 text-amber-500" /> 截图自动置顶便签
+                                    </span>
+                                    <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ${
+                                      screenshotAutoPinNote
+                                        ? 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800/50'
+                                        : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'
+                                    }`}>
+                                      {screenshotAutoPinNote ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />}
+                                      {screenshotAutoPinNote ? '已开启' : '已关闭'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -27719,7 +27766,7 @@ useEffect(() => {
 
                 <section className="space-y-1.5">
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">截图与手机传输</h3>
-                  <p>点击相机按钮或使用截图快捷键后，框选区域即可截图。截图会先显示占位卡片，保存完成后自动替换成真实图片，并自动复制到剪贴板。</p>
+                  <p>点击相机按钮或使用截图快捷键后，框选区域即可截图。截图会先显示占位卡片，保存完成后自动替换成真实图片，并自动复制到剪贴板；“截图自动置顶便签”默认关闭，可在高级与系统设置中开启。</p>
                   <p>手机配对需要手机和电脑在同一局域网。打开二维码后，用手机 App 扫码连接，即可从手机发送文字、图片和文件到电脑抽屉。</p>
                 </section>
 
