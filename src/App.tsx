@@ -20,8 +20,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, emitTo } from '@tauri-apps/api/event';
-import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
-import { Image as TauriImage } from '@tauri-apps/api/image';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -128,6 +126,7 @@ import {
 } from './features/floatingNotes';
 import { EdgeTrigger } from './features/EdgeTrigger';
 import { clearLegacyStartupFlags, isLaunchIntroDoneThisPage, markLaunchIntroDoneThisPage } from './features/startup';
+import { writeImageSourceToClipboard } from './features/imageClipboard';
 import {
   CALENDAR_COMPACT_CANVAS_WIDTH,
   CALENDAR_COMPACT_DRAWER_WIDTH,
@@ -292,8 +291,9 @@ const DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_folder_sidebar_width';
 const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 178;
 const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 116;
 const DRAWER_FOLDER_SIDEBAR_MAX_WIDTH = 260;
-const EAGLE_API_BASE_URL = 'http://localhost:41595/api/v2';
-const EAGLE_IMPORT_PAGE_LIMIT = 1000;
+const EAGLE_API_V2_BASE_URL = 'http://127.0.0.1:41595/api/v2';
+const EAGLE_API_V1_BASE_URL = 'http://127.0.0.1:41595/api';
+const EAGLE_IMPORT_PAGE_LIMIT = 200;
 const EAGLE_IMPORT_CACHE_CONCURRENCY = 2;
 type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
 type DrawerSidebarLayout = 'icons' | 'folders';
@@ -306,6 +306,26 @@ type EagleImportStatus = {
   failed: number;
   startedAt?: number;
   updatedAt?: number;
+  diagnostics?: EagleConnectionDiagnostics;
+};
+type EagleApiVersion = 'v2' | 'v1';
+type EagleConnectionDiagnostics = {
+  eagleOpen: boolean;
+  portAccessible: boolean;
+  libraryOpen: boolean | null;
+  apiVersion?: EagleApiVersion;
+  v2Error?: string;
+  v1Error?: string;
+  libraryError?: string;
+};
+type EagleDetectionResult = EagleConnectionDiagnostics & {
+  baseUrl?: string;
+  libraryInfo?: any;
+};
+type EagleOfflineLibraryPayload = {
+  library?: { name?: string; path?: string };
+  folders?: EagleFolderPayload[];
+  items?: EagleItemPayload[];
 };
 type EagleFolderPayload = {
   id?: string;
@@ -5189,20 +5209,83 @@ function MainApp() {
     }));
   };
 
-  const eagleApiGet = async <T,>(path: string, query?: Record<string, string | number | undefined>) => {
+  const eagleApiGet = async <T,>(baseUrl: string, path: string, query?: Record<string, string | number | undefined>) => {
     const queryString = query
       ? Object.entries(query)
         .filter(([, value]) => value !== undefined && value !== '')
         .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(String(value)))
         .join('&')
       : '';
-    const url = EAGLE_API_BASE_URL + path + (queryString ? '?' + queryString : '');
+    const url = baseUrl + path + (queryString ? '?' + queryString : '');
     const response = await invoke<any>('eagle_api_get', { url });
     if (!response || typeof response !== 'object') return response as T;
     if (response.status && response.status !== 'success') {
       throw new Error(response.message || response.error || 'Eagle API 返回失败');
     }
     return ((response.data !== undefined ? response.data : response) as T);
+  };
+
+  const getEagleErrorMessage = (error: unknown) => (
+    error instanceof Error ? error.message : String(error || '未知错误')
+  );
+
+  const detectEagleConnection = async (): Promise<EagleDetectionResult> => {
+    let v2Error = '';
+    let v1Error = '';
+    let apiVersion: EagleApiVersion | undefined;
+    let baseUrl = '';
+
+    try {
+      await eagleApiGet(EAGLE_API_V2_BASE_URL, '/app/info');
+      apiVersion = 'v2';
+      baseUrl = EAGLE_API_V2_BASE_URL;
+    } catch (error) {
+      v2Error = getEagleErrorMessage(error);
+      try {
+        await eagleApiGet(EAGLE_API_V1_BASE_URL, '/application/info');
+        apiVersion = 'v1';
+        baseUrl = EAGLE_API_V1_BASE_URL;
+      } catch (fallbackError) {
+        v1Error = getEagleErrorMessage(fallbackError);
+      }
+    }
+
+    if (!apiVersion) {
+      const [eagleOpen, portAccessible] = await Promise.all([
+        invoke<boolean>('eagle_probe_process').catch(() => false),
+        invoke<boolean>('eagle_probe_port').catch(() => false),
+      ]);
+      return {
+        eagleOpen,
+        portAccessible,
+        libraryOpen: null,
+        v2Error,
+        v1Error,
+      };
+    }
+
+    try {
+      const libraryInfo = await eagleApiGet<any>(baseUrl, '/library/info');
+      return {
+        eagleOpen: true,
+        portAccessible: true,
+        libraryOpen: true,
+        apiVersion,
+        baseUrl,
+        libraryInfo,
+        v2Error: v2Error || undefined,
+      };
+    } catch (error) {
+      return {
+        eagleOpen: true,
+        portAccessible: true,
+        libraryOpen: false,
+        apiVersion,
+        baseUrl,
+        v2Error: v2Error || undefined,
+        libraryError: getEagleErrorMessage(error),
+      };
+    }
   };
 
   const normalizeEagleFoldersPayload = (payload: any): EagleFolderPayload[] => {
@@ -5237,16 +5320,25 @@ function MainApp() {
       .filter(Boolean);
   };
 
-  const getEagleItemLocalPath = (item: EagleItemPayload) => {
+  const getEagleItemLocalPath = (item: EagleItemPayload, libraryPath?: string) => {
     const candidates = [
       item.filePath,
       item.path,
       item.url && /^file:/i.test(String(item.url)) ? item.url : '',
       item.metadataFilePath,
     ];
-    return candidates
+    const directPath = candidates
       .map(value => typeof value === 'string' ? normalizeLocalDragPath(value) : '')
       .find(Boolean) || '';
+    if (directPath) return directPath;
+
+    const id = String(item.id || item._id || '').trim();
+    const name = String(item.name || '').trim();
+    const ext = String(item.ext || item.extension || '').trim().replace(/^\./, '');
+    const root = normalizeLocalDragPath(libraryPath || '').replace(/[\\/]+$/g, '');
+    if (!root || !id || !name || !ext) return '';
+    const separator = root.includes('\\') ? '\\' : '/';
+    return `${root}${separator}images${separator}${id}.info${separator}${name}.${ext}`;
   };
 
   const getEagleItemThumbnailPath = (item: EagleItemPayload) => {
@@ -5341,6 +5433,112 @@ function MainApp() {
     });
   };
 
+  const applyEagleImportRecords = async (options: {
+    folders: EagleFolderPayload[];
+    entries: EagleItemPayload[];
+    libraryInfo?: any;
+    startedAt: number;
+    total?: number;
+    sourceLabel: string;
+  }) => {
+    const { folders: eagleFolders, entries, libraryInfo, startedAt, sourceLabel } = options;
+    const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
+    const folderIdMap = new Map<string, string>();
+    const nextFolders: Folder[] = [];
+    const makeFolderId = () => Math.random().toString(36).substring(2, 9);
+    const pushEagleFolder = (folder: EagleFolderPayload, parentId?: string) => {
+      const name = String(folder.name || 'Eagle 文件夹').trim() || 'Eagle 文件夹';
+      const key = (parentId || '') + '|' + name.toLowerCase();
+      const existing = foldersRef.current.find(item => (item.parentId || '') === (parentId || '') && item.name.trim().toLowerCase() === name.toLowerCase())
+        || nextFolders.find(item => (item.parentId || '') === (parentId || '') && item.name.trim().toLowerCase() === name.toLowerCase());
+      const id = existing?.id || makeFolderId();
+      if (!existing && !existingFolderKeys.has(key)) {
+        nextFolders.push({ id, name, color: '#f59e0b', parentId });
+        existingFolderKeys.add(key);
+      }
+      if (folder.id) folderIdMap.set(String(folder.id), id);
+      if (Array.isArray(folder.children)) folder.children.forEach(child => pushEagleFolder(child, id));
+    };
+    eagleFolders.forEach(folder => pushEagleFolder(folder));
+
+    const existingEagleIds = new Set(itemsRef.current.map(item => String((item as any).eagleId || '')).filter(Boolean));
+    const existingPaths = new Set(itemsRef.current.map(item => normalizeLocalDragPath(item.path || '')).filter(Boolean));
+    const nextItems: BufferItem[] = [];
+    const libraryPath = String(libraryInfo?.path || '').trim();
+
+    entries.forEach((entry, index) => {
+      const eagleId = String(entry.id || entry._id || '').trim();
+      if (eagleId && existingEagleIds.has(eagleId)) return;
+      const filePath = getEagleItemLocalPath(entry, libraryPath);
+      if (!filePath) return;
+      const normalizedPath = normalizeLocalDragPath(filePath);
+      if (normalizedPath && existingPaths.has(normalizedPath)) return;
+
+      const thumbnailPath = getEagleItemThumbnailPath(entry);
+      const folderIds = getEagleItemFolderIds(entry);
+      const folderId = folderIds.map(id => folderIdMap.get(id)).find(Boolean);
+      const name = String(entry.name || normalizedPath.split(/[\\/]/).pop() || 'Eagle 素材 ' + (index + 1)).trim();
+      const tags = Array.isArray(entry.tags) ? entry.tags.map((tag: unknown) => String(tag || '').trim()).filter(Boolean) : [];
+      const remarkParts = [
+        entry.annotation,
+        tags.length > 0 ? '#' + tags.join(' #') : '',
+        entry.url ? '来源：' + entry.url : '',
+      ].filter(value => typeof value === 'string' && value.trim());
+      const type = getEagleItemType(entry, normalizedPath);
+      const sourceUrl = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url) ? entry.url : undefined;
+      const item = {
+        id: Math.random().toString(36).substring(2, 9),
+        type,
+        content: name,
+        name,
+        path: normalizedPath,
+        url: convertFileSrc(normalizedPath),
+        thumbnail: thumbnailPath ? convertFileSrc(thumbnailPath) : undefined,
+        sourceUrl,
+        originalUrl: sourceUrl,
+        remark: remarkParts.join('\n') || undefined,
+        remarks: remarkParts.length > 0 ? remarkParts : undefined,
+        folderId,
+        createdAt: normalizeEagleTimestamp(entry.importedAt || entry.createdAt || entry.modificationTime || entry.modifiedAt, startedAt + nextItems.length),
+        isQuickAccess: false,
+        eagleId: eagleId || undefined,
+        eagleSourcePath: normalizedPath,
+        eagleSourceUrl: sourceUrl || (typeof entry.url === 'string' ? entry.url : undefined),
+        eagleThumbnailPath: thumbnailPath || undefined,
+      } as BufferItem;
+      nextItems.push(item);
+      if (eagleId) existingEagleIds.add(eagleId);
+      if (normalizedPath) existingPaths.add(normalizedPath);
+    });
+
+    const total = options.total || entries.length;
+    if (nextItems.length === 0 && nextFolders.length === 0) {
+      updateEagleImportStatus({ phase: 'done', message: sourceLabel + ' 没有新的可导入素材', total, imported: 0 });
+      showToast(sourceLabel + ' 没有新的可导入素材');
+      return 0;
+    }
+
+    pushDrawerUndoSnapshot('从 ' + sourceLabel + ' 导入');
+    if (nextFolders.length > 0) setFolders(prev => normalizeDrawerFolders([...prev, ...nextFolders]));
+    if (nextItems.length > 0) {
+      setItems(prev => [...nextItems, ...prev]);
+      triggerAutoPaletteForItems(nextItems.filter(item => item.type === 'image'));
+      nextItems.slice(0, 24).forEach(ensureMediaThumbnail);
+    }
+    setActiveTab('all');
+    const firstFolderId = nextItems.find(item => item.folderId)?.folderId || nextFolders[0]?.id;
+    if (firstFolderId) setActiveFolderId(firstFolderId);
+    showToast('已从 ' + sourceLabel + ' 导入 ' + nextItems.length + ' 个素材');
+    updateEagleImportStatus({
+      phase: 'importing',
+      message: '已导入 ' + nextItems.length + ' 个素材，准备后台复制缓存...',
+      total,
+      imported: nextItems.length,
+    });
+    importEagleCacheInBackground(nextItems);
+    return nextItems.length;
+  };
+
   const importFromEagle = async () => {
     if (['checking', 'reading', 'importing', 'caching'].includes(eagleImportStatus.phase)) return;
     const startedAt = Date.now();
@@ -5353,15 +5551,40 @@ function MainApp() {
       failed: 0,
       startedAt,
       updatedAt: startedAt,
+      diagnostics: undefined,
     });
 
     try {
-      await eagleApiGet('/app/info');
-      updateEagleImportStatus({ phase: 'reading', message: '已连接 Eagle，正在读取素材库...' });
-      const [libraryInfo, folderPayload] = await Promise.all([
-        eagleApiGet<any>('/library/info').catch(() => null),
-        eagleApiGet<any>('/folder/get'),
-      ]);
+      const detection = await detectEagleConnection();
+      if (!detection.apiVersion || !detection.baseUrl) {
+        updateEagleImportStatus({
+          phase: 'error',
+          message: '未检测到可用的 Eagle 本地 API，可改用 .library 离线导入',
+          diagnostics: detection,
+        });
+        showToast('Eagle 连接检测失败，请查看诊断或选择 .library 离线导入');
+        return;
+      }
+      if (!detection.libraryOpen) {
+        updateEagleImportStatus({
+          phase: 'error',
+          message: 'Eagle 已打开，但当前没有可读取的资料库',
+          diagnostics: detection,
+        });
+        showToast('请先在 Eagle 中打开资料库，或选择 .library 离线导入');
+        return;
+      }
+
+      updateEagleImportStatus({
+        phase: 'reading',
+        message: '已连接 Eagle ' + detection.apiVersion.toUpperCase() + '，正在读取素材库...',
+        diagnostics: detection,
+      });
+      const libraryInfo = detection.libraryInfo;
+      const folderPayload = await eagleApiGet<any>(
+        detection.baseUrl,
+        detection.apiVersion === 'v2' ? '/folder/get' : '/folder/list',
+      );
 
       const eagleFolders = normalizeEagleFoldersPayload(folderPayload);
       const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
@@ -5398,7 +5621,11 @@ function MainApp() {
           total,
           imported: nextItems.length,
         });
-        const payload = await eagleApiGet<any>('/item/get', { limit: EAGLE_IMPORT_PAGE_LIMIT, offset });
+        const payload = await eagleApiGet<any>(
+          detection.baseUrl,
+          detection.apiVersion === 'v2' ? '/item/get' : '/item/list',
+          { limit: EAGLE_IMPORT_PAGE_LIMIT, offset },
+        );
         const { items: eagleItems, total: pageTotal } = normalizeEagleItemsPayload(payload);
         if (pageTotal > 0) total = pageTotal;
         if (eagleItems.length === 0) break;
@@ -5406,7 +5633,7 @@ function MainApp() {
         eagleItems.forEach((entry, index) => {
           const eagleId = String(entry.id || entry._id || '').trim();
           if (eagleId && existingEagleIds.has(eagleId)) return;
-          const filePath = getEagleItemLocalPath(entry);
+          const filePath = getEagleItemLocalPath(entry, libraryInfo?.path);
           if (!filePath) return;
           const normalizedPath = normalizeLocalDragPath(filePath);
           if (normalizedPath && existingPaths.has(normalizedPath)) return;
@@ -5485,7 +5712,59 @@ function MainApp() {
         phase: 'error',
         message: 'Eagle 导入失败：' + message,
       });
-      showToast('Eagle 导入失败，请确认 Eagle 已打开并启用本地 API');
+      showToast('Eagle 导入失败，请查看诊断或选择 .library 离线导入');
+    }
+  };
+
+  const importFromEagleLibrary = async () => {
+    if (['checking', 'reading', 'importing', 'caching'].includes(eagleImportStatus.phase)) return;
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: '选择 Eagle .library 资料库目录',
+      });
+      if (typeof selected !== 'string' || !selected) return;
+      if (!/\.library[\\/]?$/i.test(selected)) {
+        showToast('请选择以 .library 结尾的 Eagle 资料库目录');
+        return;
+      }
+
+      const startedAt = Date.now();
+      setEagleImportStatus({
+        phase: 'reading',
+        message: '正在只读扫描 Eagle 离线资料库...',
+        total: 0,
+        imported: 0,
+        cached: 0,
+        failed: 0,
+        startedAt,
+        updatedAt: startedAt,
+      });
+      const payload = await invoke<EagleOfflineLibraryPayload>('eagle_read_offline_library', { path: selected });
+      const entries = Array.isArray(payload.items) ? payload.items : [];
+      const eagleFolders = normalizeEagleFoldersPayload(payload.folders || []);
+      updateEagleImportStatus({
+        phase: 'importing',
+        message: '已扫描 ' + entries.length + ' 个离线素材，正在导入...',
+        total: entries.length,
+      });
+      await applyEagleImportRecords({
+        folders: eagleFolders,
+        entries,
+        libraryInfo: payload.library,
+        startedAt,
+        total: entries.length,
+        sourceLabel: payload.library?.name ? 'Eagle 离线库「' + payload.library.name + '」' : 'Eagle 离线库',
+      });
+    } catch (error) {
+      const message = getEagleErrorMessage(error);
+      console.warn('Eagle 离线导入失败:', error);
+      updateEagleImportStatus({
+        phase: 'error',
+        message: 'Eagle 离线导入失败：' + message,
+      });
+      showToast('Eagle 离线导入失败：' + message);
     }
   };
 
@@ -9892,29 +10171,19 @@ function MainApp() {
     }
     const pngDataUrl = await imageDataUrlToPngDataUrl(dataUrl);
 
-    let backendError: unknown = null;
     let pluginError: unknown = null;
     let browserError: unknown = null;
+    let backendError: unknown = null;
 
     try {
-      await invoke('copy_image', { dataUrl: pngDataUrl });
-      return;
-    } catch (err) {
-      backendError = err;
-      console.warn('backend copy canvas image failed:', err);
-    }
-
-    const blob = await dataUrlToBlob(pngDataUrl);
-
-    try {
-      const buffer = await blob.arrayBuffer();
-      const image = await TauriImage.fromBytes(new Uint8Array(buffer));
-      await writeImage(image);
+      await writeImageSourceToClipboard(pngDataUrl);
       return;
     } catch (err) {
       pluginError = err;
       console.warn('clipboard-manager copy canvas image failed:', err);
     }
+
+    const blob = await dataUrlToBlob(pngDataUrl);
 
     try {
       const ClipboardItemCtor = (window as any).ClipboardItem;
@@ -9926,6 +10195,14 @@ function MainApp() {
     } catch (err) {
       browserError = err;
       console.warn('browser clipboard canvas image copy failed:', err);
+    }
+
+    try {
+      await invoke('copy_image', { dataUrl: pngDataUrl });
+      return;
+    } catch (err) {
+      backendError = err;
+      console.warn('backend copy canvas image failed:', err);
     }
 
     throw backendError || pluginError || browserError || new Error('copy canvas image failed');
@@ -9954,12 +10231,20 @@ function MainApp() {
   const copyImageSourceToSystemClipboard = async (source: string) => {
     let directError: unknown = null;
 
+    try {
+      await writeImageSourceToClipboard(source);
+      return;
+    } catch (err) {
+      directError = err;
+      console.warn('fast clipboard image copy failed:', err);
+    }
+
     if (shouldTryBackendImageCopyDirectly(source)) {
       try {
         await invoke('copy_image', { dataUrl: source });
         return;
       } catch (err) {
-        directError = err;
+        directError ||= err;
         console.warn('backend copy canvas image source failed:', err);
       }
     }
@@ -16745,32 +17030,16 @@ function MainApp() {
       let browserError: unknown = null;
       let backendError: unknown = null;
 
-      // 本地截图文件优先走后端复制。它不依赖 WebView 焦点/用户激活，
-      // 比前端 Clipboard API 更适合截图结束后窗口切换的场景。
+      // 首选 Tauri clipboard-manager，避免每次复制都启动 PowerShell 进程。
       try {
-        await invoke('copy_image', { dataUrl: source });
-        return;
-      } catch (err) {
-        backendError = err;
-        console.warn('backend copy_image failed:', err);
-      }
-
-      // 兜底 1：Tauri clipboard-manager。之前直接把 Uint8Array 传给 writeImage，
-      // 在 Tauri v2 下不够稳定；这里先转成 @tauri-apps/api/image 的 Image 对象。
-      try {
-        const response = await fetch(convertFileSrc(source));
-        if (!response.ok) throw new Error(`读取截图文件失败: ${response.status}`);
-        const blob = await response.blob();
-        const buffer = await blob.arrayBuffer();
-        const image = await TauriImage.fromBytes(new Uint8Array(buffer));
-        await writeImage(image);
+        await writeImageSourceToClipboard(source);
         return;
       } catch (err) {
         pluginError = err;
         console.warn('clipboard-manager copy image failed:', err);
       }
 
-      // 兜底 2：浏览器 ClipboardItem。部分 WebView2 环境允许这样写入 PNG。
+      // 兜底 1：浏览器 ClipboardItem。部分 WebView2 环境允许这样写入 PNG。
       try {
         const ClipboardItemCtor = (window as any).ClipboardItem;
         if (!navigator.clipboard || !ClipboardItemCtor) throw new Error('ClipboardItem unavailable');
@@ -16785,6 +17054,15 @@ function MainApp() {
       } catch (err) {
         browserError = err;
         console.warn('browser clipboard image copy failed:', err);
+      }
+
+      // 最后才走兼容后端；旧系统会为此启动 PowerShell，可靠但明显更慢。
+      try {
+        await invoke('copy_image', { dataUrl: source });
+        return;
+      } catch (err) {
+        backendError = err;
+        console.warn('backend copy_image failed:', err);
       }
 
       throw backendError || browserError || pluginError || new Error('copy image failed');
@@ -22518,7 +22796,7 @@ useEffect(() => {
                                     onClick={() => void importFromEagle()}
                                     disabled={['checking', 'reading', 'importing', 'caching'].includes(eagleImportStatus.phase)}
                                     className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] disabled:cursor-wait disabled:opacity-70 dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
-                                    title="从正在运行的 Eagle 本地素材库导入，默认读取 http://localhost:41595/api/v2"
+                                    title="依次检测 127.0.0.1:41595 的 Eagle V2 / V1 本地 API"
                                   >
                                     <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
                                       <FolderOpen className="w-3.5 h-3.5 shrink-0 text-orange-500" />
@@ -22550,6 +22828,19 @@ useEffect(() => {
                                       <ChevronRight className="w-3 h-3 shrink-0 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void importFromEagleLibrary()}
+                                    disabled={['checking', 'reading', 'importing', 'caching'].includes(eagleImportStatus.phase)}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] disabled:cursor-wait disabled:opacity-70 dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="选择本机 .library 目录进行只读离线导入"
+                                  >
+                                    <span className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Upload className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                                      <span className="truncate">选择 .library 离线导入</span>
+                                    </span>
+                                    <ChevronRight className="w-3.5 h-3.5 text-stone-400 transition-transform group-hover:translate-x-0.5" />
+                                  </button>
                                   {eagleImportStatus.phase !== 'idle' && (
                                     <div className={'mx-2 rounded-[14px] border px-2.5 py-2 text-[10px] leading-4 ' + (
                                       eagleImportStatus.phase === 'error'
@@ -22557,6 +22848,23 @@ useEffect(() => {
                                         : 'border-orange-100 bg-orange-50/55 text-orange-700 dark:border-orange-800/35 dark:bg-orange-900/18 dark:text-orange-200'
                                     )}>
                                       <div className="font-bold">{eagleImportStatus.message || '准备导入 Eagle 素材'}</div>
+                                      {eagleImportStatus.phase === 'error' && eagleImportStatus.diagnostics && (
+                                        <div className="mt-2 grid gap-1 rounded-[10px] border border-red-100 bg-white/60 px-2 py-1.5 text-stone-600 dark:border-red-400/15 dark:bg-stone-900/35 dark:text-stone-300">
+                                          <div>Eagle 是否打开：<b>{eagleImportStatus.diagnostics.eagleOpen ? '是' : '未检测到'}</b></div>
+                                          <div>41595 端口是否可访问：<b>{eagleImportStatus.diagnostics.portAccessible ? '是' : '否'}</b></div>
+                                          <div>当前是否打开资料库：<b>{eagleImportStatus.diagnostics.libraryOpen === true ? '是' : eagleImportStatus.diagnostics.libraryOpen === false ? '否' : '无法确认'}</b></div>
+                                          {eagleImportStatus.diagnostics.apiVersion && (
+                                            <div>已识别接口：<b>{eagleImportStatus.diagnostics.apiVersion.toUpperCase()}</b></div>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => void importFromEagleLibrary()}
+                                            className="mt-1 flex items-center justify-center gap-1 rounded-[9px] bg-amber-100 px-2 py-1 font-bold text-amber-700 hover:bg-amber-200 dark:bg-amber-400/15 dark:text-amber-200"
+                                          >
+                                            <Upload className="h-3 w-3" /> 选择 .library 离线导入
+                                          </button>
+                                        </div>
+                                      )}
                                       {(eagleImportStatus.phase === 'caching' || eagleImportStatus.cached > 0 || eagleImportStatus.failed > 0) && (
                                         <div className="mt-1 text-stone-500 dark:text-stone-400">
                                           后台缓存：{eagleImportStatus.cached} 成功{eagleImportStatus.failed ? ' / ' + eagleImportStatus.failed + ' 失败' : ''}

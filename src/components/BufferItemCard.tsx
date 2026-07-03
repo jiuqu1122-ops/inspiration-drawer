@@ -9,6 +9,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { save } from '@tauri-apps/plugin-dialog';
+import { writeImageSourceToClipboard } from '../features/imageClipboard';
 
 type LazyCardImageProps = {
   src?: string;
@@ -394,6 +395,13 @@ function BufferItemCard({
 
   const copyImageSource = async (source: string) => {
     if (!source) throw new Error('empty image source');
+
+    try {
+      await writeImageSourceToClipboard(source);
+      return;
+    } catch (err) {
+      console.warn('fast card image copy failed:', err);
+    }
 
     await new Promise<void>((resolve, reject) => {
       normalizeImageToPng(source, async (pngUrl) => {

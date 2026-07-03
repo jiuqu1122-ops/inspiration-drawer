@@ -4541,21 +4541,23 @@ fn cache_local_file_to_dir_impl(
     Ok(display_local_path(&target))
 }
 
+fn is_allowed_eagle_api_url(url: &str) -> bool {
+    url.trim().starts_with("http://127.0.0.1:41595/api/")
+}
+
 #[tauri::command]
 async fn eagle_api_get(url: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let trimmed = url.trim();
-        if !(trimmed.starts_with("http://localhost:41595/api/v2/")
-            || trimmed.starts_with("http://127.0.0.1:41595/api/v2/"))
-        {
-            return Err("Eagle API 只允许访问本机 localhost:41595".to_string());
+        if !is_allowed_eagle_api_url(trimmed) {
+            return Err("Eagle API 只允许访问本机 127.0.0.1:41595".to_string());
         }
 
         let client = Client::builder()
             .user_agent(APP_USER_AGENT)
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(30))
-            .redirect(Policy::limited(3))
+            .connect_timeout(Duration::from_millis(1500))
+            .timeout(Duration::from_millis(1500))
+            .redirect(Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
 
@@ -4571,6 +4573,272 @@ async fn eagle_api_get(url: String) -> Result<serde_json::Value, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn eagle_probe_port() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let address = "127.0.0.1:41595"
+            .parse()
+            .map_err(|error| format!("Eagle 端口地址无效：{}", error))?;
+        Ok(TcpStream::connect_timeout(&address, Duration::from_millis(1500)).is_ok())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn eagle_probe_process() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "windows")]
+        {
+            let mut command = SysCommand::new("tasklist.exe");
+            hide_console_window(&mut command);
+            let output = command
+                .args(["/FI", "IMAGENAME eq Eagle.exe", "/FO", "CSV", "/NH"])
+                .output()
+                .map_err(|error| format!("检测 Eagle 进程失败：{}", error))?;
+            let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+            return Ok(output.status.success() && text.contains("eagle.exe"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let output = SysCommand::new("pgrep")
+                .args(["-x", "Eagle"])
+                .output()
+                .map_err(|error| format!("检测 Eagle 进程失败：{}", error))?;
+            Ok(output.status.success())
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn read_eagle_json(path: &Path) -> Option<serde_json::Value> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+}
+
+fn eagle_offline_item_file(info_dir: &Path, metadata: &serde_json::Value) -> Option<PathBuf> {
+    let name = metadata.get("name").and_then(serde_json::Value::as_str).unwrap_or("");
+    let ext = metadata.get("ext").and_then(serde_json::Value::as_str).unwrap_or("");
+    if !name.is_empty() && !ext.is_empty() {
+        let preferred = info_dir.join(format!("{}.{}", name, ext.trim_start_matches('.')));
+        if preferred.is_file() {
+            return Some(preferred);
+        }
+    }
+
+    fs::read_dir(info_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            if !path.is_file() {
+                return false;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            file_name != "metadata.json"
+                && !file_name.contains("thumbnail")
+                && !file_name.contains("preview")
+        })
+}
+
+fn eagle_offline_thumbnail_file(info_dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(info_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            if !path.is_file() {
+                return false;
+            }
+            let file_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            file_name.contains("thumbnail") || file_name.contains("preview")
+        })
+}
+
+#[tauri::command]
+async fn eagle_read_offline_library(path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let library_path = fs::canonicalize(path.trim())
+            .map_err(|error| format!("无法打开 Eagle 资料库：{}", error))?;
+        let is_library = library_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("library"));
+        if !is_library || !library_path.is_dir() {
+            return Err("请选择以 .library 结尾的 Eagle 资料库目录".to_string());
+        }
+        let images_dir = library_path.join("images");
+        if !images_dir.is_dir() {
+            return Err("所选 .library 中没有 images 目录".to_string());
+        }
+
+        let library_metadata = read_eagle_json(&library_path.join("metadata.json"))
+            .unwrap_or_else(|| serde_json::json!({}));
+        let folders = library_metadata
+            .get("folders")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        let mut items = Vec::new();
+        for entry in fs::read_dir(&images_dir)
+            .map_err(|error| format!("读取 Eagle images 目录失败：{}", error))?
+            .filter_map(Result::ok)
+        {
+            let info_dir = entry.path();
+            if !info_dir.is_dir()
+                || !info_dir
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.to_ascii_lowercase().ends_with(".info"))
+            {
+                continue;
+            }
+            let Some(mut metadata) = read_eagle_json(&info_dir.join("metadata.json")) else {
+                continue;
+            };
+            let Some(file_path) = eagle_offline_item_file(&info_dir, &metadata) else {
+                continue;
+            };
+            let thumbnail_path = eagle_offline_thumbnail_file(&info_dir);
+            let Some(record) = metadata.as_object_mut() else {
+                continue;
+            };
+            if !record.contains_key("id") {
+                let id = info_dir
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .trim_end_matches(".info")
+                    .to_string();
+                record.insert("id".to_string(), serde_json::Value::String(id));
+            }
+            record.insert(
+                "filePath".to_string(),
+                serde_json::Value::String(display_local_path(&file_path)),
+            );
+            if let Some(thumbnail_path) = thumbnail_path {
+                record.insert(
+                    "thumbnailPath".to_string(),
+                    serde_json::Value::String(display_local_path(&thumbnail_path)),
+                );
+            }
+            items.push(metadata);
+        }
+
+        let library_name = library_metadata
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                library_path
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "Eagle Library".to_string());
+
+        Ok(serde_json::json!({
+            "library": {
+                "name": library_name,
+                "path": display_local_path(&library_path),
+            },
+            "folders": folders,
+            "items": items,
+        }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+mod eagle_import_tests {
+    use super::*;
+
+    #[test]
+    fn eagle_api_only_allows_loopback_v1_and_v2_paths() {
+        assert!(is_allowed_eagle_api_url(
+            "http://127.0.0.1:41595/api/v2/app/info"
+        ));
+        assert!(is_allowed_eagle_api_url(
+            "http://127.0.0.1:41595/api/application/info"
+        ));
+        assert!(!is_allowed_eagle_api_url(
+            "http://localhost:41595/api/v2/app/info"
+        ));
+        assert!(!is_allowed_eagle_api_url(
+            "http://127.0.0.1:41596/api/v2/app/info"
+        ));
+    }
+
+    #[test]
+    fn eagle_offline_item_prefers_original_over_thumbnail() {
+        let root = std::env::temp_dir().join(format!(
+            "inspiration-drawer-eagle-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("metadata.json"), "{}").unwrap();
+        fs::write(root.join("Product.png"), b"image").unwrap();
+        fs::write(root.join("Product_thumbnail.png"), b"thumbnail").unwrap();
+        let metadata = serde_json::json!({ "name": "Product", "ext": "png" });
+
+        assert_eq!(
+            eagle_offline_item_file(&root, &metadata).unwrap(),
+            root.join("Product.png")
+        );
+        assert_eq!(
+            eagle_offline_thumbnail_file(&root).unwrap(),
+            root.join("Product_thumbnail.png")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scans_a_read_only_eagle_library_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "inspiration-drawer-eagle-library-test-{}.library",
+            std::process::id()
+        ));
+        let info_dir = root.join("images").join("ITEM-1.info");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&info_dir).unwrap();
+        fs::write(
+            root.join("metadata.json"),
+            r#"{"name":"Design","folders":[{"id":"F1","name":"Products"}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            info_dir.join("metadata.json"),
+            r#"{"id":"ITEM-1","name":"Wheel","ext":"png","folders":["F1"]}"#,
+        )
+        .unwrap();
+        fs::write(info_dir.join("Wheel.png"), b"image").unwrap();
+
+        let result = tauri::async_runtime::block_on(eagle_read_offline_library(
+            root.to_string_lossy().to_string(),
+        ))
+        .unwrap();
+        assert_eq!(result.pointer("/library/name").and_then(|value| value.as_str()), Some("Design"));
+        assert_eq!(result.pointer("/items/0/id").and_then(|value| value.as_str()), Some("ITEM-1"));
+        assert!(result
+            .pointer("/items/0/filePath")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.ends_with("Wheel.png")));
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 fn display_local_path(path: &std::path::Path) -> String {
@@ -11874,6 +12142,9 @@ fn main() {
             copy_local_file,
             cache_local_file_to_dir,
             eagle_api_get,
+            eagle_probe_port,
+            eagle_probe_process,
+            eagle_read_offline_library,
             save_item_source_as,
             save_dropped_file,
             commands::license::get_machine_id,
