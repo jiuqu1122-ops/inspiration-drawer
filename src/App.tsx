@@ -17430,12 +17430,14 @@ useEffect(() => {
         console.warn('截图复制到剪贴板失败:', err);
         return { copied: false, error: err as unknown };
       });
+    const capturedInCanvasMode = isCanvasModeRef.current;
+    const clipboardPromise = copyScreenshotToClipboard();
 
     setActiveTab('image');
     pushDrawerUndoSnapshot('截图');
     setItems(prev => [finalItem, ...prev]);
     const shouldAutoPinNote = screenshotAutoPinNoteRef.current;
-    if (isCanvasModeRef.current) {
+    if (capturedInCanvasMode) {
       const canvasItem = await createCanvasImageItemFromPath(savedPath, 0);
       if (canvasItem) addCanvasImageItems([canvasItem]);
     } else if (shouldAutoPinNote) {
@@ -17449,22 +17451,21 @@ useEffect(() => {
       });
     }
 
-    void copyScreenshotToClipboard().then((clipboardResult) => {
+    const clipboardResult = await clipboardPromise;
     if (clipboardResult.copied) {
-      showToast(isCanvasModeRef.current
+      showToast(capturedInCanvasMode
         ? '截图成功，已复制并加入画布'
         : shouldAutoPinNote
           ? '截图成功，已复制并置顶为便签'
           : '截图成功，已复制并保存到抽屉');
     } else {
       console.warn('截图复制失败详情:', clipboardResult.error);
-      showToast(isCanvasModeRef.current
+      showToast(capturedInCanvasMode
         ? '截图成功，已加入画布，自动复制失败'
         : shouldAutoPinNote
           ? '截图成功，已置顶为便签，自动复制失败'
           : '截图成功，已保存到抽屉，自动复制失败');
     }
-    });
     } catch (err) {
       console.error('snip window capture handling failed:', err);
       showToast('截图失败');
