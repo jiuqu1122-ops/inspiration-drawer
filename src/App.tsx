@@ -8996,13 +8996,14 @@ function MainApp() {
 
   const takeCanvasUndoSnapshot = (label: string): CanvasUndoSnapshot => {
     const surface = canvasSurfaceRef.current;
+    const fallbackScroll = canvasScrollLockRef.current || canvasReturnScrollRef.current || { left: 0, top: 0 };
     return {
       items: cloneDrawerValue(canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)),
       selectedIds: cloneDrawerValue(canvasSelectedIdsRef.current),
       size: cloneDrawerValue(canvasSizeRef.current),
       scroll: {
-        left: surface?.scrollLeft ?? 0,
-        top: surface?.scrollTop ?? 0,
+        left: surface?.scrollLeft ?? fallbackScroll.left,
+        top: surface?.scrollTop ?? fallbackScroll.top,
       },
       label,
       createdAt: Date.now(),
@@ -9019,15 +9020,28 @@ function MainApp() {
 
   const restoreCanvasUndoSnapshot = (snapshot: CanvasUndoSnapshot) => {
     canvasUndoRestoringRef.current = true;
+    const surface = canvasSurfaceRef.current;
+    const currentScroll = cloneDrawerValue(surface
+      ? { left: surface.scrollLeft, top: surface.scrollTop }
+      : canvasScrollLockRef.current || canvasReturnScrollRef.current || snapshot.scroll
+    );
     setCanvasSizeImmediate(cloneDrawerValue(snapshot.size));
     updateCanvasItemsImmediate(() => cloneDrawerValue(snapshot.items));
     updateCanvasSelection(cloneDrawerValue(snapshot.selectedIds));
     setCanvasSelectionBox(null);
-    canvasScrollLockRef.current = cloneDrawerValue(snapshot.scroll);
+    canvasScrollLockRef.current = currentScroll;
     window.requestAnimationFrame(() => {
       if (!isCanvasModeRef.current) return;
-      const surface = canvasSurfaceRef.current;
-      if (surface) writeCanvasSurfaceScroll(surface, snapshot.scroll.left, snapshot.scroll.top);
+      const nextSurface = canvasSurfaceRef.current;
+      if (!nextSurface) return;
+      const clampedScroll = clampCanvasSurfaceScroll(
+        nextSurface,
+        currentScroll.left,
+        currentScroll.top,
+        canvasScaleRef.current || 1,
+        snapshot.size
+      );
+      writeCanvasSurfaceScroll(nextSurface, clampedScroll.left, clampedScroll.top);
     });
     window.setTimeout(() => {
       canvasUndoRestoringRef.current = false;
