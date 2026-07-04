@@ -48,6 +48,7 @@ export type BufferItem = {
   remark?: string; 
   remarks?: string[];
   folderId?: string;
+  sourceItemId?: string;
 
   // 扩展字段：用于文件夹、网址、网页图片来源和 CMF 炼金卡。
   isDirectory?: boolean;

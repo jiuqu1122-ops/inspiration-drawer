@@ -35,6 +35,23 @@ export type AgentSettings = {
   retainHistory: boolean;
 };
 
+const LEGACY_CANVAS_AGENT_SYSTEM_PROMPT = '你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。';
+
+export const DEFAULT_AGENT_SYSTEM_PROMPT = [
+  '你是「灵感抽屉」的全局软件 Agent，不是只会画布操作的聊天助手。',
+  '你可以跨抽屉素材、文件夹、便签、日历日程、画布节点、生成工作流和设置界面完成任务。',
+  '先理解目标并拆成最小可执行步骤；需要信息时读取软件上下文或可见控件；能用工具完成时就直接执行，不要只给操作说明。',
+  '执行时优先使用语义工具，必要时导航到对应界面；当前在画布或抽屉都不限制你的行动范围。',
+  '高风险操作（删除、清空、运行可能产生费用的生成任务、未知界面复刻操作）要等待确认；完成后简短说明结果和下一步。',
+].join('\n');
+
+export const isBuiltInAgentSystemPrompt = (value?: string | null) => {
+  const prompt = String(value || '').trim();
+  return !prompt
+    || prompt === LEGACY_CANVAS_AGENT_SYSTEM_PROMPT
+    || prompt === DEFAULT_AGENT_SYSTEM_PROMPT;
+};
+
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   provider: 'openai-compatible',
   apiBaseUrl: 'https://api.openai.com/v1',
@@ -46,7 +63,7 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   codexReasoningEffort: '',
   codexSandbox: 'read-only',
   codexApprovalPolicy: 'on-request',
-  systemPrompt: '你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。',
+  systemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
   approvalMode: 'ask',
   retainHistory: true,
 };
@@ -136,6 +153,7 @@ export type AgentConversation = {
 
 export type AgentCanvasSelectionItem = {
   id: string;
+  sourceItemId?: string;
   name: string;
   type: string;
   thumbnail?: string;
@@ -148,6 +166,7 @@ export type AgentCanvasSelectionItem = {
 export type AgentCanvasVisualReference = {
   id: string;
   nodeId: string;
+  sourceItemId?: string;
   outputId?: string;
   name: string;
   mediaType: 'image' | 'video';
@@ -179,6 +198,7 @@ export type AgentCanvasContext = {
   };
   nodes: Array<{
     id: string;
+    sourceItemId?: string;
     type: string;
     name: string;
     prompt?: string;

@@ -317,6 +317,7 @@ export function CanvasAgentSidebar({
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    event.stopPropagation();
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     if (inputValue.trim() && !busy && providerReady) onSendMessage(inputValue.trim());
@@ -847,7 +848,7 @@ export function CanvasAgentSidebar({
             </div>
           )}
 
-          <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
+          <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} onKeyUp={event => event.stopPropagation()} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
           <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
             <div className="flex min-w-0 items-center gap-1">
               <button type="button" onClick={() => inputRef.current?.focus()} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="当前选中的画布节点会自动作为上下文"><Plus className="h-4 w-4" /></button>
@@ -915,7 +916,7 @@ export function CanvasAgentSidebar({
         </div>
 
         <div className="mt-2 flex items-center justify-between px-1 text-[8px] text-stone-400 dark:text-stone-600">
-          <span className="flex items-center gap-1"><Monitor className="h-3 w-3" /> 本地模式 · 画布上下文</span>
+          <span className="flex items-center gap-1"><Monitor className="h-3 w-3" /> 本地模式 · 全局上下文</span>
           <button type="button" onClick={onRetry} disabled={busy || !messages.some(message => message.role === 'user')} className="flex items-center gap-1 rounded-[8px] px-1.5 py-1 transition-colors hover:bg-white/70 hover:text-stone-600 disabled:opacity-30 dark:hover:bg-white/6 dark:hover:text-stone-300"><RotateCcw className="h-3 w-3" /> 重试</button>
         </div>
       </footer>

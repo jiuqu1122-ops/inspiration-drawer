@@ -67,6 +67,10 @@ export function DrawerAgentPanel({
     if (content && ready && !busy) onSendMessage(content);
   };
 
+  const stopAgentKeyboardEvent = (event: React.KeyboardEvent) => {
+    event.stopPropagation();
+  };
+
   const copyMessage = async (message: AgentChatMessage) => {
     const text = [message.content, message.error].filter(Boolean).join('\n\n').trim();
     if (!text) return;
@@ -81,6 +85,8 @@ export function DrawerAgentPanel({
       className="absolute bottom-[84px] left-6 right-6 z-[125] flex h-[min(500px,70vh)] flex-col overflow-hidden rounded-[26px] border border-blue-100/80 bg-white/92 shadow-[0_26px_70px_rgba(24,58,104,0.24)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/94 sm:left-auto sm:w-[390px]"
       onMouseDown={event => event.stopPropagation()}
       onPointerDown={event => event.stopPropagation()}
+      onKeyDown={stopAgentKeyboardEvent}
+      onKeyUp={stopAgentKeyboardEvent}
     >
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-blue-100/70 px-3 dark:border-white/8">
         <div className="flex min-w-0 items-center gap-2">
@@ -186,6 +192,7 @@ export function DrawerAgentPanel({
             value={inputValue}
             onChange={event => onInputChange(event.target.value)}
             onKeyDown={event => {
+              event.stopPropagation();
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 send();

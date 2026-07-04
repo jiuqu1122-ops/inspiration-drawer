@@ -37,7 +37,7 @@ import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSel
 import { clamp } from './features/common';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
-import type { AgentCanvasSelectionItem, AgentCanvasVisualReference } from './features/agentModel';
+import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference } from './features/agentModel';
 import {
   getDrawerFolderDeletionPlan,
   getDrawerFolderPathName,
@@ -2643,6 +2643,28 @@ const setAgentUiElementValue = (element: HTMLElement, value: string) => {
   throw new Error('目标控件不支持输入');
 };
 
+const insertDrawerFolderAtTop = (currentFolders: Folder[], folder: Folder) => {
+  if (folder.parentId) {
+    const firstSiblingIndex = currentFolders.findIndex(item => item.parentId === folder.parentId);
+    const insertIndex = firstSiblingIndex >= 0
+      ? firstSiblingIndex
+      : Math.max(currentFolders.findIndex(item => item.id === folder.parentId) + 1, 0);
+    return [
+      ...currentFolders.slice(0, insertIndex),
+      folder,
+      ...currentFolders.slice(insertIndex),
+    ];
+  }
+
+  const firstRootIndex = currentFolders.findIndex(item => !item.parentId);
+  const insertIndex = firstRootIndex >= 0 ? firstRootIndex : 0;
+  return [
+    ...currentFolders.slice(0, insertIndex),
+    folder,
+    ...currentFolders.slice(insertIndex),
+  ];
+};
+
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
@@ -4986,7 +5008,7 @@ function MainApp() {
 
       pushDrawerUndoSnapshot('网络收集图片');
       if (!existingFolder) {
-        setFolders(prev => prev.some(item => item.id === folder.id || item.name === folder.name) ? prev : [...prev, folder]);
+        setFolders(prev => prev.some(item => item.id === folder.id || item.name === folder.name) ? prev : insertDrawerFolderAtTop(prev, folder));
       }
       setItems(prev => [...newItems, ...prev]);
       triggerAutoPaletteForItems(newItems);
@@ -6605,7 +6627,7 @@ function MainApp() {
     };
     setFolders(prev => prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)
       ? prev
-      : [...prev, newFolder]);
+      : insertDrawerFolderAtTop(prev, newFolder));
     return newFolder.id;
   };
 
@@ -6620,7 +6642,7 @@ function MainApp() {
     };
     setFolders(prev => prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)
       ? prev
-      : [...prev, newFolder]);
+      : insertDrawerFolderAtTop(prev, newFolder));
     return newFolder.id;
   };
 
@@ -14901,6 +14923,7 @@ function MainApp() {
     const item: BufferItem = {
       ...source,
       id: Math.random().toString(36).substring(2, 9),
+      sourceItemId: source.id,
       createdAt: Date.now(),
       isQuickAccess: false,
     };
@@ -14955,6 +14978,7 @@ function MainApp() {
       const item: BufferItem = {
         ...source,
         id: Math.random().toString(36).substring(2, 9),
+        sourceItemId: source.id,
         createdAt: now + index,
         isQuickAccess: false,
       };
@@ -16072,7 +16096,7 @@ function MainApp() {
     });
 
     pushDrawerUndoSnapshot('保存画布');
-    setFolders(prev => [...prev, newFolder]);
+    setFolders(prev => insertDrawerFolderAtTop(prev, newFolder));
     setItems(prev => [...savedItems, ...prev]);
     triggerAutoPaletteForItems(savedItems);
     keepCanvasSessionOnLeaveRef.current = false;
@@ -16495,7 +16519,7 @@ function MainApp() {
       parentId,
     };
     pushDrawerUndoSnapshot(parent ? '新建子目录' : '新建文件夹');
-    setFolders(prev => [...prev, newFolder]);
+    setFolders(prev => insertDrawerFolderAtTop(prev, newFolder));
     if (parentId) setCollapsedFolderIds(prev => prev.filter(id => id !== parentId));
     closeFolderModal();
     showToast(parent ? `已在「${parent.name}」中新建子目录` : '文件夹创建成功');
@@ -16765,7 +16789,7 @@ function MainApp() {
     const idSet = new Set(selectedIds);
     const count = selectedIds.length;
     pushDrawerUndoSnapshot(parentFolder ? '新建子目录并移动' : '新建文件夹并移动');
-    setFolders(prev => [...prev, newFolder]);
+    setFolders(prev => insertDrawerFolderAtTop(prev, newFolder));
     if (parentId) setCollapsedFolderIds(prev => prev.filter(id => id !== parentId));
     setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, folderId: newFolder.id } : item));
     setMoveFolderName('');
@@ -18619,6 +18643,7 @@ useEffect(() => {
           const wasInternalInteraction = Date.now() - lastDrawerPointerDownAtRef.current < 500 && pointerInsideForClose;
           if (
             !isOpen ||
+            shouldBlockAutoClose() ||
             isCanvasWorkbenchActiveRef.current ||
             isPinnedRef.current ||
             pointerInsideForClose ||
@@ -19181,6 +19206,7 @@ useEffect(() => {
         pushReference({
           id: `${canvasItem.id}:item`,
           nodeId: canvasItem.id,
+          sourceItemId: canvasItem.item.sourceItemId,
           name: canvasItem.item.name || canvasItem.item.content || '选中图片',
           mediaType: 'image',
           source: source || canvasItem.item.thumbnail,
@@ -19192,6 +19218,7 @@ useEffect(() => {
       pushReference({
         id: `${canvasItem.id}:thumbnail`,
         nodeId: canvasItem.id,
+        sourceItemId: canvasItem.item.sourceItemId,
         name: `${canvasItem.item.name || canvasItem.item.content || '选中视频'} 预览图`,
         mediaType: 'image',
         source: canvasItem.item.thumbnail,
@@ -19208,6 +19235,7 @@ useEffect(() => {
         pushReference({
           id: `${canvasItem.id}:${output.id || outputIndex}`,
           nodeId: canvasItem.id,
+          sourceItemId: output.id || canvasItem.item.sourceItemId,
           outputId: output.id || `${outputIndex}`,
           name: output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `节点输出图 ${outputIndex + 1}`,
           mediaType: 'image',
@@ -19245,6 +19273,7 @@ useEffect(() => {
           : '');
       items.push({
         id,
+        sourceItemId: item.sourceItemId,
         name: item.name || canvasItem.ai?.presetLabel || getCanvasAiNodeTitle(canvasItem.ai) || `选中素材 ${index + 1}`,
         type: String(canvasItem.ai?.type || item.type),
         thumbnail: thumbnail || undefined,
@@ -19342,6 +19371,7 @@ useEffect(() => {
         },
         nodes: canvasItemsRef.current.slice(0, 160).map(canvasItem => ({
           id: canvasItem.id,
+          sourceItemId: canvasItem.item.sourceItemId,
           type: canvasItem.ai?.type || canvasItem.item.type,
           name: canvasItem.item.name || getCanvasAiNodeTitle(canvasItem.ai),
           prompt: canvasItem.ai?.prompt || canvasItem.item.content || undefined,
@@ -19435,6 +19465,7 @@ useEffect(() => {
             nodeCount: canvasItemsRef.current.length,
             nodes: canvasItemsRef.current.slice(0, 180).map(item => ({
               id: item.id,
+              sourceItemId: item.item.sourceItemId,
               type: item.ai?.type || item.item.type,
               name: item.item.name || getCanvasAiNodeTitle(item.ai),
               inputs: item.inputs || [],
@@ -19573,7 +19604,81 @@ useEffect(() => {
           ? snapshotSelectedIds
           : [...selectedIds];
         const targetIds = requestedIds.length > 0 ? requestedIds : fallbackDrawerIds;
-        const targets = itemsRef.current.filter(item => targetIds.includes(item.id));
+        const normalizeAgentSourceKey = (value?: string | null) => {
+          const text = String(value || '').trim();
+          if (!text) return '';
+          return text
+            .replace(/^asset:\/\/localhost\//i, '')
+            .replace(/^https?:\/\/asset\.localhost\//i, '')
+            .replace(/^file:\/\//i, '')
+            .replace(/\\/g, '/')
+            .toLowerCase();
+        };
+        const drawerItemSourceKeys = (item: BufferItem) => [
+          item.path,
+          item.url,
+          item.thumbnail,
+          item.sourceUrl,
+          item.originalUrl,
+        ].map(normalizeAgentSourceKey).filter(Boolean);
+        const resolveDrawerTargets = (ids: string[]) => {
+          const drawerById = new Map(itemsRef.current.map(item => [item.id, item]));
+          const drawerBySource = new Map<string, BufferItem>();
+          itemsRef.current.forEach(item => {
+            drawerItemSourceKeys(item).forEach(key => {
+              if (!drawerBySource.has(key)) drawerBySource.set(key, item);
+            });
+          });
+          const resolved = new Map<string, BufferItem>();
+          ids.forEach(id => {
+            const direct = drawerById.get(id);
+            if (direct) {
+              resolved.set(direct.id, direct);
+              return;
+            }
+            const [nodeIdFromReference, outputIdFromReference] = id.includes(':') ? id.split(':') : ['', ''];
+            const canvasNode = canvasItemsRef.current.find(node => (
+              node.id === id
+              || node.item.id === id
+              || node.id === nodeIdFromReference
+              || getCanvasAiSuccessfulOutputs(node).some(output => output.id === id || (node.id === nodeIdFromReference && output.id === outputIdFromReference))
+            ));
+            if (!canvasNode) return;
+            const matchedOutput = getCanvasAiSuccessfulOutputs(canvasNode)
+              .find(output => output.id === id || output.id === outputIdFromReference);
+            if (matchedOutput) {
+              const outputItem = createCanvasAiOutputBufferItem(
+                canvasNode,
+                matchedOutput,
+                getCanvasAiSuccessfulOutputs(canvasNode).findIndex(output => output === matchedOutput),
+              );
+              const outputDirect = outputItem ? drawerById.get(outputItem.id) : undefined;
+              if (outputDirect) {
+                resolved.set(outputDirect.id, outputDirect);
+                return;
+              }
+              const outputMatchedBySource = outputItem
+                ? drawerItemSourceKeys(outputItem).map(key => drawerBySource.get(key)).find(Boolean)
+                : undefined;
+              if (outputMatchedBySource) {
+                resolved.set(outputMatchedBySource.id, outputMatchedBySource);
+                return;
+              }
+            }
+            const sourceId = canvasNode.item.sourceItemId;
+            const sourceItem = sourceId ? drawerById.get(sourceId) : undefined;
+            if (sourceItem) {
+              resolved.set(sourceItem.id, sourceItem);
+              return;
+            }
+            const matchedBySource = drawerItemSourceKeys(canvasNode.item)
+              .map(key => drawerBySource.get(key))
+              .find(Boolean);
+            if (matchedBySource) resolved.set(matchedBySource.id, matchedBySource);
+          });
+          return [...resolved.values()];
+        };
+        const targets = resolveDrawerTargets(targetIds);
         if (action === 'create_text') {
           const content = String(args.content || '').trim();
           if (!content) throw new Error('文字内容不能为空');
@@ -19610,7 +19715,7 @@ useEffect(() => {
             parentId,
           };
           pushDrawerUndoSnapshot(parent ? 'Agent 新建子目录' : 'Agent 新建文件夹');
-          setFolders(prev => [...prev, folder]);
+          setFolders(prev => insertDrawerFolderAtTop(prev, folder));
           return { action, folderId: folder.id };
         }
         if (action === 'rename_folder') {
@@ -19632,7 +19737,7 @@ useEffect(() => {
           return { action, folderId };
         }
         if (action === 'select_items') {
-          const validIds = targetIds.filter(id => itemsRef.current.some(item => item.id === id));
+          const validIds = targets.map(item => item.id);
           setIsSelectMode(true);
           setSelectedIds(validIds);
           return { action, selectedIds: validIds };
@@ -20634,8 +20739,11 @@ useEffect(() => {
       }
     }
 
+    const customAgentPrompt = isBuiltInAgentSystemPrompt(canvasAgent.settings.systemPrompt)
+      ? ''
+      : canvasAgent.settings.systemPrompt.trim();
     const systemPrompt = [
-      canvasAgent.settings.systemPrompt || '',
+      customAgentPrompt,
       [
         '你是画布文字节点的 Agent 执行器。',
         '用户会在当前文字节点里写需求，也可能连接上游文字和参考图。',
@@ -20710,11 +20818,21 @@ useEffect(() => {
   };
 
   const sendCanvasAgentMessage = async (content: string) => {
-    if (await canvasAgent.sendMessage(content)) setCanvasAgentInput('');
+    const text = content.trim();
+    if (!text) return;
+    setCanvasAgentInput('');
+    if (!await canvasAgent.sendMessage(text)) {
+      setCanvasAgentInput(current => current || content);
+    }
   };
 
   const sendDrawerAgentMessage = async (content: string) => {
-    if (await canvasAgent.sendMessage(content)) setDrawerAgentInput('');
+    const text = content.trim();
+    if (!text) return;
+    setDrawerAgentInput('');
+    if (!await canvasAgent.sendMessage(text)) {
+      setDrawerAgentInput(current => current || content);
+    }
   };
 
   const clearCanvasAgentChat = () => {
@@ -21679,6 +21797,16 @@ useEffect(() => {
                           : undefined,
                       }}
                     >
+                      <button
+                        type="button"
+                        onClick={() => handleOpenFolderModal()}
+                        className={`mb-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed px-2 text-left text-[12px] font-bold transition-all ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950' : 'border-blue-200 bg-blue-50/30 text-blue-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
+                        title="新建收纳夹"
+                      >
+                        <Plus className="h-4 w-4 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate">新建文件夹</span>
+                      </button>
+
                       {rootFolders.map((folder, folderIndex) => {
                         const childFolders = folderChildrenByParent.get(folder.id) || [];
                         const isCollapsed = collapsedFolderIds.includes(folder.id);
@@ -21691,16 +21819,6 @@ useEffect(() => {
                           </div>
                         );
                       })}
-
-                      <button
-                        type="button"
-                        onClick={() => handleOpenFolderModal()}
-                        className={`mt-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed px-2 text-left text-[12px] font-bold transition-all ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950' : 'border-blue-200 bg-blue-50/30 text-blue-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
-                        title="新建收纳夹"
-                      >
-                        <Plus className="h-4 w-4 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">新建文件夹</span>
-                      </button>
                     </div>
 
                     {visibleFolderRailEntryCount > 7 && (
@@ -21974,6 +22092,18 @@ useEffect(() => {
                       : undefined,
                   }}
                 >
+                  {/* 新建收纳夹按钮固定在文件夹区域顶部 */}
+                  <div className="relative shrink-0 flex flex-col items-center w-full mb-1">
+                    <button
+                      onClick={() => handleOpenFolderModal()}
+                      className={`w-10 h-10 mb-1 rounded-[16px] flex items-center justify-center border-2 border-dashed transition-all hover:scale-105 shrink-0 ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30' : 'border-blue-200 bg-blue-50/30 text-blue-400 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
+                      title="新建收纳夹"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                    <span className="text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 text-stone-400 dark:text-stone-500">新增</span>
+                  </div>
+
                   {rootFolders.map((folder, folderIndex) => {
                     const childFolders = folderChildrenByParent.get(folder.id) || [];
                     const isCollapsed = collapsedFolderIds.includes(folder.id);
@@ -21986,18 +22116,6 @@ useEffect(() => {
                       </div>
                     );
                   })}
-
-                  {/* 新建收纳夹按钮保留在文件夹区域底部，文件夹列表滚动到底即可看到 */}
-                  <div className="relative shrink-0 flex flex-col items-center w-full mt-1">
-                    <button
-                      onClick={() => handleOpenFolderModal()}
-                      className={`w-10 h-10 mb-1 rounded-[16px] flex items-center justify-center border-2 border-dashed transition-all hover:scale-105 shrink-0 ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30' : 'border-blue-200 bg-blue-50/30 text-blue-400 hover:border-blue-300 hover:text-blue-600 hover:bg-blue-50 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
-                      title="新建收纳夹"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                    <span className="text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 text-stone-400 dark:text-stone-500">新增</span>
-                  </div>
                 </div>
 
                 {visibleFolderRailEntryCount > 4 && (
