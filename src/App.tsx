@@ -242,6 +242,8 @@ type CanvasWorkflowNodeTemplate = {
   item: Pick<BufferItem, 'type' | 'content'> & Partial<BufferItem>;
   inputs?: string[];
   fixedInput?: boolean;
+  textMode?: CanvasImageItem['textMode'];
+  acceptsExternalInputs?: boolean;
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
 type CanvasWorkflowTemplate = {
@@ -1856,6 +1858,8 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       fixedInput: typeof node.fixedInput === 'boolean'
         ? node.fixedInput
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
+      textMode: node.textMode === 'plain' ? 'plain' : node.textMode === 'agent' ? 'agent' : undefined,
+      acceptsExternalInputs: node.acceptsExternalInputs === true,
       ai: node.ai && typeof node.ai === 'object'
         ? {
           ...(node.ai as Partial<NonNullable<CanvasImageItem['ai']>>),
@@ -8616,7 +8620,7 @@ function MainApp() {
   );
 
   const isCanvasAgentTextTarget = (canvasItem?: CanvasImageItem | null) => (
-    !!canvasItem && canvasItem.item.type === 'text' && !canvasItem.ai
+    !!canvasItem && canvasItem.item.type === 'text' && !canvasItem.ai && canvasItem.textMode !== 'plain'
   );
 
   const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) => (
@@ -11034,7 +11038,7 @@ function MainApp() {
   ) => (
     getCanvasInputItemsForNode(canvasItem, sourceItems)
       .filter(item => item.item.type === 'text' && !item.ai)
-      .map(item => item.item.content || '')
+      .map(item => (item.item.remark || '').trim() || item.item.content || '')
       .filter(Boolean)
   );
 
@@ -12086,9 +12090,10 @@ function MainApp() {
       x: Math.min(...cleanWorkflow.nodes.map(node => node.x)),
       y: Math.min(...cleanWorkflow.nodes.map(node => node.y)),
     };
-    const templateAiNodeIds = new Set(cleanWorkflow.nodes
+    const runnableTemplateNodeIds = new Set(cleanWorkflow.nodes
       .filter(node => node.ai?.type === 'image-generator')
       .map(node => node.id));
+    const hasExplicitExternalInputTargets = cleanWorkflow.nodes.some(node => node.acceptsExternalInputs);
     const idMap = new Map<string, string>();
 
     cleanWorkflow.nodes.forEach(node => {
@@ -12101,11 +12106,14 @@ function MainApp() {
       const nextBufferId = Math.random().toString(36).substring(2, 9);
       const nextCanvasId = idMap.get(node.id) || (node.ai?.type === 'image-generator' ? `canvas_ai_${nextBufferId}` : `canvas_${nextBufferId}`);
       const isAiGenerator = node.ai?.type === 'image-generator';
+      const isAgentTextNode = node.item.type === 'text' && node.textMode !== 'plain' && !node.ai;
       const provider = normalizeCanvasAiProvider(node.ai?.provider || canvasAiProvider);
       const internalInputs = (node.inputs || [])
         .map(inputId => idMap.get(inputId))
         .filter((inputId): inputId is string => !!inputId);
-      const isRootAiNode = isAiGenerator && !(node.inputs || []).some(inputId => templateAiNodeIds.has(inputId));
+      const shouldAttachExternalInputs = hasExplicitExternalInputTargets
+        ? node.acceptsExternalInputs === true
+        : isAiGenerator && !(node.inputs || []).some(inputId => runnableTemplateNodeIds.has(inputId));
       const item: BufferItem = {
         ...cloneDrawerValue(node.item),
         id: nextBufferId,
@@ -12124,8 +12132,9 @@ function MainApp() {
         height: node.height,
         inputs: Array.from(new Set([
           ...internalInputs,
-          ...(isRootAiNode ? externalInputIds : []),
+          ...(shouldAttachExternalInputs ? externalInputIds : []),
         ])),
+        textMode: isAgentTextNode ? 'agent' : node.textMode,
         ai: isAiGenerator
           ? {
             ...cloneDrawerValue(node.ai || {}),
@@ -12245,6 +12254,8 @@ function MainApp() {
     const workflowNodeIds = new Set(workflowItems.map(item => item.id));
     const nodes = workflowItems.map((item): CanvasWorkflowNodeTemplate => {
       const savedItem = prepareCanvasWorkflowTemplateItem(item.item);
+      const internalInputs = (item.inputs || []).filter(inputId => workflowNodeIds.has(inputId));
+      const acceptsExternalInputs = (item.inputs || []).some(inputId => !workflowNodeIds.has(inputId));
       return {
         id: item.id,
         x: item.x - bounds.x,
@@ -12260,8 +12271,10 @@ function MainApp() {
           createdAt: 0,
           isQuickAccess: false,
         },
-        inputs: (item.inputs || []).filter(inputId => workflowNodeIds.has(inputId)),
+        inputs: internalInputs,
         fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
+        textMode: item.textMode,
+        acceptsExternalInputs,
         ai: item.ai
           ? {
             ...cloneDrawerValue(item.ai),
@@ -12616,6 +12629,10 @@ function MainApp() {
     const nodes = groupItems.map((item): CanvasWorkflowNodeTemplate => {
       const templateId = templateIdByCanvasId.get(item.id) || item.id;
       const savedItem = prepareCanvasWorkflowTemplateItem(item.item);
+      const internalInputs = (item.inputs || [])
+        .map(inputId => templateIdByCanvasId.get(inputId))
+        .filter((inputId): inputId is string => !!inputId);
+      const acceptsExternalInputs = (item.inputs || []).some(inputId => !groupCanvasIds.has(inputId));
       return {
         id: templateId,
         x: item.x - bounds.x,
@@ -12631,10 +12648,10 @@ function MainApp() {
           createdAt: 0,
           isQuickAccess: false,
         },
-        inputs: (item.inputs || [])
-          .map(inputId => templateIdByCanvasId.get(inputId))
-          .filter((inputId): inputId is string => !!inputId),
+        inputs: internalInputs,
         fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
+        textMode: item.textMode,
+        acceptsExternalInputs,
         ai: item.ai
           ? {
             ...cloneDrawerValue(item.ai),
@@ -12677,6 +12694,8 @@ function MainApp() {
         },
         inputs: [...(node.inputs || [])].sort(),
         fixedInput: !!node.fixedInput,
+        textMode: node.textMode || '',
+        acceptsExternalInputs: !!node.acceptsExternalInputs,
         ai: node.ai
           ? {
             type: node.ai.type,
@@ -14437,16 +14456,18 @@ function MainApp() {
 
   const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
     const itemsById = new Map(sourceItems.map(item => [item.id, item]));
-    const aiIds = sourceItems.filter(item => item.ai?.type === 'image-generator').map(item => item.id);
-    const nodeSet = new Set(aiIds);
-    const indegree = new Map(aiIds.map(id => [id, 0]));
+    const runnableIds = sourceItems
+      .filter(item => item.ai?.type === 'image-generator' || (isCanvasAgentTextTarget(item) && (item.inputs || []).length > 0))
+      .map(item => item.id);
+    const nodeSet = new Set(runnableIds);
+    const indegree = new Map(runnableIds.map(id => [id, 0]));
     const children = new Map<string, string[]>();
 
-    aiIds.forEach(targetId => {
+    runnableIds.forEach(targetId => {
       const target = itemsById.get(targetId);
       (target?.inputs || []).forEach(inputId => {
         const source = itemsById.get(inputId);
-        if (!source || source.ai?.type !== 'image-generator' || !nodeSet.has(inputId)) return;
+        if (!source || !nodeSet.has(inputId)) return;
         indegree.set(targetId, (indegree.get(targetId) || 0) + 1);
         children.set(inputId, [...(children.get(inputId) || []), targetId]);
       });
@@ -14457,7 +14478,7 @@ function MainApp() {
       const itemB = itemsById.get(b);
       return (itemA?.x || 0) - (itemB?.x || 0) || (itemA?.y || 0) - (itemB?.y || 0);
     };
-    const queue = aiIds.filter(id => (indegree.get(id) || 0) === 0).sort(byCanvasPosition);
+    const queue = runnableIds.filter(id => (indegree.get(id) || 0) === 0).sort(byCanvasPosition);
     const order: string[] = [];
 
     while (queue.length > 0) {
@@ -14474,9 +14495,9 @@ function MainApp() {
       });
     }
 
-    if (order.length < aiIds.length) {
+    if (order.length < runnableIds.length) {
       const ordered = new Set(order);
-      order.push(...aiIds.filter(id => !ordered.has(id)).sort(byCanvasPosition));
+      order.push(...runnableIds.filter(id => !ordered.has(id)).sort(byCanvasPosition));
     }
     return order;
   };
@@ -14549,22 +14570,44 @@ function MainApp() {
     let successCount = 0;
     for (const nodeId of runIds) {
       const current = canvasItemsRef.current.find(item => item.id === nodeId);
-      if (!current || current.ai?.type !== 'image-generator') continue;
+      if (!current) continue;
 
-      const upstreamAiIds = (current.inputs || []).filter(inputId => {
+      const upstreamRunnableIds = (current.inputs || []).filter(inputId => {
         const source = canvasItemsRef.current.find(item => item.id === inputId);
-        return !!source && runIdSet.has(inputId) && source.ai?.type === 'image-generator';
+        return !!source && runIdSet.has(inputId) && (source.ai?.type === 'image-generator' || isCanvasAgentTextTarget(source));
       });
-      if (upstreamAiIds.some(inputId => failedIds.has(inputId))) {
+      if (upstreamRunnableIds.some(inputId => failedIds.has(inputId))) {
         failedIds.add(nodeId);
-        updateCanvasAiGeneratorData(nodeId, {
-          status: 'error',
-          error: '上游节点生成失败，已跳过',
-          outputs: [],
-          generatedAt: Date.now(),
-        });
+        if (current.ai?.type === 'image-generator') {
+          updateCanvasAiGeneratorData(nodeId, {
+            status: 'error',
+            error: '上游节点生成失败，已跳过',
+            outputs: [],
+            generatedAt: Date.now(),
+          });
+        }
         continue;
       }
+
+      if (isCanvasAgentTextTarget(current)) {
+        try {
+          const output = await runCanvasTextAgentTarget(current, {
+            sourceItems: () => canvasItemsRef.current,
+            getLatestTarget: () => canvasItemsRef.current.find(item => item.id === nodeId),
+            updateTextOutput: (textOutput) => updateCanvasTextOutputItem(nodeId, textOutput),
+            showResultToast: false,
+            showReferenceToast: false,
+          });
+          if (output.trim()) successCount += 1;
+          else failedIds.add(nodeId);
+        } catch (error) {
+          console.warn('展开工作流内部文字节点运行失败:', error);
+          failedIds.add(nodeId);
+        }
+        continue;
+      }
+
+      if (current.ai?.type !== 'image-generator') continue;
 
       await runCanvasAiGeneratorTarget(current, {
         sourceItems: () => canvasItemsRef.current,
@@ -14614,7 +14657,8 @@ function MainApp() {
     const runtime = instantiateCanvasWorkflowTemplateItems(workflow, { x: moduleNode.x, y: moduleNode.y }, moduleNode.inputs || []);
     let runtimeItems = runtime.items;
     const runOrder = sortCanvasWorkflowRuntimeNodeIds(runtimeItems);
-    if (runOrder.length === 0) {
+    const generatorRunIds = runOrder.filter(nodeId => runtimeItems.find(item => item.id === nodeId)?.ai?.type === 'image-generator');
+    if (generatorRunIds.length === 0) {
       updateCanvasAiGeneratorData(targetId, { status: 'error', error: '工作流内部没有生图节点' });
       showToast('工作流内部没有生图节点');
       return;
@@ -14664,19 +14708,59 @@ function MainApp() {
       generatedAt: Date.now(),
     });
     updateCanvasSelection([targetId]);
-    showToast(`开始运行工作流「${workflow.label}」：${runOrder.length} 个内部生图节点`);
+    showToast(`开始运行工作流「${workflow.label}」：${runOrder.length} 个内部节点`);
 
     for (const nodeId of runOrder) {
       const current = runtimeItems.find(item => item.id === nodeId);
-      if (!current || current.ai?.type !== 'image-generator') continue;
-      const upstreamAiIds = (current.inputs || []).filter(inputId => {
+      if (!current) continue;
+      const upstreamRunnableIds = (current.inputs || []).filter(inputId => {
         const source = runtimeItems.find(item => item.id === inputId);
-        return source?.ai?.type === 'image-generator' && runSet.has(inputId);
+        return !!source && runSet.has(inputId) && (source.ai?.type === 'image-generator' || isCanvasAgentTextTarget(source));
       });
-      if (upstreamAiIds.some(inputId => failedIds.has(inputId))) {
+      if (upstreamRunnableIds.some(inputId => failedIds.has(inputId))) {
         failedIds.add(nodeId);
         continue;
       }
+      if (isCanvasAgentTextTarget(current)) {
+        try {
+          const output = await runCanvasTextAgentTarget(current, {
+            sourceItems: getRuntimeSourceItems,
+            getLatestTarget: () => runtimeItems.find(item => item.id === nodeId),
+            updateTextOutput: (textOutput) => {
+              runtimeItems = runtimeItems.map(item => (
+                item.id === nodeId
+                  ? {
+                    ...item,
+                    item: {
+                      ...item.item,
+                      remark: textOutput,
+                    },
+                  }
+                  : item
+              ));
+            },
+            showResultToast: false,
+            showReferenceToast: false,
+          });
+          if (output.trim()) {
+            completedCount += 1;
+            updateCanvasAiGeneratorData(targetId, {
+              outputs: collectModuleOutputs('working'),
+              workflowRuntime: getRuntimeSnapshots(),
+              status: 'working',
+              error: undefined,
+              generatedAt: Date.now(),
+            });
+          } else {
+            failedIds.add(nodeId);
+          }
+        } catch (error) {
+          console.warn('工作流内部文字节点运行失败:', error);
+          failedIds.add(nodeId);
+        }
+        continue;
+      }
+      if (current.ai?.type !== 'image-generator') continue;
       if (getCanvasAiSuccessfulOutputs(current).length > 0) {
         completedCount += 1;
         continue;
@@ -20267,6 +20351,12 @@ useEffect(() => {
             ? step.prompt.trim()
             : stepLabel;
           const y = index * 260;
+          const inputStepIds = Array.isArray(step.inputStepIds)
+            ? step.inputStepIds.map(String).filter(id => usedStepIds.has(id) && id !== stepId)
+            : [];
+          const inputs = inputStepIds.length > 0
+            ? inputStepIds
+            : (previousConnectableId ? [previousConnectableId] : []);
 
           if (kind === 'text') {
             workflowNodes.push({
@@ -20283,7 +20373,10 @@ useEffect(() => {
                 createdAt: 0,
                 isQuickAccess: false,
               },
+              inputs,
               fixedInput: true,
+              textMode: 'agent',
+              acceptsExternalInputs: inputs.length === 0,
             });
             previousConnectableId = stepId;
             return;
@@ -20310,12 +20403,6 @@ useEffect(() => {
             promptText: prompt,
             promptExpanded: true,
           });
-          const inputStepIds = Array.isArray(step.inputStepIds)
-            ? step.inputStepIds.map(String).filter(id => usedStepIds.has(id))
-            : [];
-          const inputs = inputStepIds.length > 0
-            ? inputStepIds
-            : (previousConnectableId ? [previousConnectableId] : []);
           workflowNodes.push({
             id: stepId,
             x: 420,
@@ -20331,6 +20418,7 @@ useEffect(() => {
               isQuickAccess: false,
             },
             inputs,
+            acceptsExternalInputs: inputs.length === 0,
             ai: {
               type: 'image-generator',
               provider: canvasAiProvider,
@@ -20501,6 +20589,83 @@ useEffect(() => {
     ];
   };
 
+  const runCanvasTextAgentTarget = async (
+    target: CanvasImageItem,
+    options: {
+      sourceItems?: () => CanvasImageItem[];
+      updateTextOutput: (output: string) => void;
+      getLatestTarget?: () => CanvasImageItem | undefined;
+      showResultToast?: boolean;
+      showReferenceToast?: boolean;
+    }
+  ) => {
+    if (!isCanvasAgentTextTarget(target)) return '';
+    const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
+    const latestTarget = options.getLatestTarget?.() || target;
+    const userRequest = (latestTarget.item.content || target.item.content || '').trim();
+    if (!userRequest) {
+      throw new Error('先在文字节点里输入需求');
+    }
+
+    const inputItems = getCanvasInputItemsForNode(latestTarget, getSourceItems());
+    const upstreamTexts = inputItems
+      .filter(item => item.item.type === 'text' && !item.ai && item.id !== target.id)
+      .map((item, index) => {
+        const content = ((item.item.remark || '').trim() || item.item.content || '').trim();
+        if (!content) return '';
+        return '上游文字 ' + (index + 1) + '（' + (item.item.name || item.id) + '）：\n' + content;
+      })
+      .filter(Boolean);
+    const visualReferences = inputItems.flatMap(item => getCanvasAgentVisualReferences(item));
+    let preparedReferences: AgentCanvasVisualReference[] = [];
+
+    if (visualReferences.length > 0) {
+      try {
+        preparedReferences = await prepareCanvasAgentVisualReferences(visualReferences, 'openai-compatible');
+        if (preparedReferences.length === 0 && options.showReferenceToast !== false) {
+            showToast('连接的参考图暂时无法读取，本次仅使用文字运行');
+        }
+      } catch (error) {
+        console.warn('文字节点参考图准备失败:', error);
+        if (options.showReferenceToast !== false) {
+          showToast('参考图准备失败，本次仅使用文字运行');
+        }
+        preparedReferences = [];
+      }
+    }
+
+    const systemPrompt = [
+      canvasAgent.settings.systemPrompt || '',
+      [
+        '你是画布文字节点的 Agent 执行器。',
+        '用户会在当前文字节点里写需求，也可能连接上游文字和参考图。',
+        '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
+        '如果参考图存在，请把它们作为视觉依据；如果没有参考图，就只根据文字需求完成。',
+      ].join('\n'),
+    ].filter(Boolean).join('\n\n');
+    const promptParts = [
+      '当前文字节点需求：\n' + userRequest,
+      upstreamTexts.length > 0 ? upstreamTexts.join('\n\n') : '',
+    ].filter(Boolean);
+    const requestId = 'canvas_text_agent_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
+      request: {
+        requestId,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: buildCanvasTextAgentUserContent(promptParts.join('\n\n'), preparedReferences) },
+        ],
+      },
+    });
+    const output = String(result.content || '').trim();
+    if (!output) throw new Error('Agent API 没有返回可写入的文字结果');
+    options.updateTextOutput(output);
+    if (options.showResultToast !== false) {
+      showToast('文字节点已由 Agent 生成结果');
+    }
+    return output;
+  };
+
   const runCanvasTextAgentNode = async (targetId: string) => {
     const liveTextarea = canvasTextAreaRefs.current[targetId];
     if (liveTextarea) {
@@ -20514,78 +20679,27 @@ useEffect(() => {
       showToast('请选择一个普通文字节点运行 Agent');
       return;
     }
-    const userRequest = ((liveTextarea?.value ?? target.item.content) || '').trim();
-    if (!userRequest) {
-      showToast('先在文字节点里输入需求');
-      return;
-    }
     if (canvasTextAgentRunningIds.includes(targetId)) return;
-
-    const inputItems = getCanvasInputItemsForNode(target);
-    const upstreamTexts = inputItems
-      .filter(item => item.item.type === 'text' && !item.ai && item.id !== targetId)
-      .map((item, index) => {
-        const content = (item.item.content || '').trim();
-        if (!content) return '';
-        return '上游文字 ' + (index + 1) + '（' + (item.item.name || item.id) + '）：\n' + content;
-      })
-      .filter(Boolean);
-    const visualReferences = inputItems.flatMap(item => getCanvasAgentVisualReferences(item));
-    let preparedReferences: AgentCanvasVisualReference[] = [];
 
     setCanvasTextAgentRunning(targetId, true);
     try {
-      if (visualReferences.length > 0) {
-        try {
-          preparedReferences = await prepareCanvasAgentVisualReferences(visualReferences, 'openai-compatible');
-          if (preparedReferences.length === 0) {
-            showToast('连接的参考图暂时无法读取，本次仅使用文字运行');
+      await runCanvasTextAgentTarget(target, {
+        getLatestTarget: () => canvasItemsRef.current.find(item => item.id === targetId),
+        updateTextOutput: (output) => {
+          if (!canvasItemsRef.current.some(item => item.id === targetId)) return;
+          pushCanvasUndoSnapshot('Agent 运行文字节点');
+          updateCanvasTextOutputItem(targetId, output);
+          delete canvasTextOutputDraftValuesRef.current[targetId];
+          const timer = canvasTextOutputDraftTimersRef.current[targetId];
+          if (timer !== undefined) {
+            window.clearTimeout(timer);
+            delete canvasTextOutputDraftTimersRef.current[targetId];
           }
-        } catch (error) {
-          console.warn('文字节点参考图准备失败:', error);
-          showToast('参考图准备失败，本次仅使用文字运行');
-          preparedReferences = [];
-        }
-      }
-
-      const systemPrompt = [
-        canvasAgent.settings.systemPrompt || '',
-        [
-          '你是画布文字节点的 Agent 执行器。',
-          '用户会在当前文字节点里写需求，也可能连接上游文字和参考图。',
-          '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
-          '如果参考图存在，请把它们作为视觉依据；如果没有参考图，就只根据文字需求完成。',
-        ].join('\n'),
-      ].filter(Boolean).join('\n\n');
-      const promptParts = [
-        '当前文字节点需求：\n' + userRequest,
-        upstreamTexts.length > 0 ? upstreamTexts.join('\n\n') : '',
-      ].filter(Boolean);
-      const requestId = 'canvas_text_agent_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-      const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
-        request: {
-          requestId,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: buildCanvasTextAgentUserContent(promptParts.join('\n\n'), preparedReferences) },
-          ],
+          const outputTextarea = canvasTextOutputAreaRefs.current[targetId];
+          if (outputTextarea) outputTextarea.value = output;
+          updateCanvasSelection([targetId]);
         },
       });
-      const output = String(result.content || '').trim();
-      if (!output) throw new Error('Agent API 没有返回可写入的文字结果');
-      if (!canvasItemsRef.current.some(item => item.id === targetId)) return;
-      pushCanvasUndoSnapshot('Agent 运行文字节点');
-      updateCanvasTextOutputItem(targetId, output);
-      delete canvasTextOutputDraftValuesRef.current[targetId];
-      const timer = canvasTextOutputDraftTimersRef.current[targetId];
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-        delete canvasTextOutputDraftTimersRef.current[targetId];
-      }
-      const outputTextarea = canvasTextOutputAreaRefs.current[targetId];
-      if (outputTextarea) outputTextarea.value = output;
-      updateCanvasSelection([targetId]);
-      showToast('文字节点已由 Agent 生成结果');
     } catch (error) {
       const message = getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error));
       console.warn('文字节点 Agent 运行失败:', error);
