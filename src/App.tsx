@@ -27051,6 +27051,8 @@ useEffect(() => {
                     busy={canvasAgent.busy}
                     settings={canvasAgent.settings}
                     codexStatus={canvasAgent.codexStatus}
+                    conversations={canvasAgent.conversations}
+                    activeConversationId={canvasAgent.activeConversationId}
                     selectedItems={drawerAgentSelectedItems}
                     onInputChange={setDrawerAgentInput}
                     onSendMessage={content => void sendDrawerAgentMessage(content)}
@@ -27060,6 +27062,11 @@ useEffect(() => {
                       canvasAgent.newConversation();
                       setDrawerAgentInput('');
                     }}
+                    onSelectConversation={id => {
+                      canvasAgent.selectConversation(id);
+                      setDrawerAgentInput('');
+                    }}
+                    onDeleteConversation={canvasAgent.deleteConversation}
                     onClearConversation={clearDrawerAgentChat}
                     onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
                   />

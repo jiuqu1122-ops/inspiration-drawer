@@ -210,6 +210,28 @@ const makeProviderHistory = (conversation: AgentConversation) => conversation.me
     content: message.content,
   }));
 
+const buildLocalConversationHistoryPrompt = (
+  conversation: AgentConversation,
+  currentAssistantMessageId?: string,
+) => {
+  const lines = conversation.messages
+    .filter(message => message.id !== currentAssistantMessageId)
+    .filter(message => (message.role === 'user' || message.role === 'agent') && message.content.trim())
+    .filter(message => message.status !== 'error' && message.status !== 'cancelled')
+    .slice(-18)
+    .map(message => {
+      const role = message.role === 'user' ? '用户' : 'Agent';
+      const content = message.content.trim().replace(/\s+/g, ' ');
+      const compact = content.length > 600 ? content.slice(0, 600) + '…' : content;
+      return role + ': ' + compact;
+    });
+  if (lines.length === 0) return '';
+  return [
+    '以下是灵感抽屉软件本地保存的当前对话历史。它是权威历史来源；不要依赖 Codex CLI thread 是否存在或是否连续。',
+    ...lines,
+  ].join('\n');
+};
+
 const describeReferenceSource = (source?: string) => {
   const value = String(source || '').trim();
   if (!value) return undefined;
@@ -1264,7 +1286,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
 
     const completion = waitForCodexTurn(run.conversationId, run.assistantMessageId, threadId);
     const doneExample = '{\"reply\":\"简短中文总结\",\"actions\":[]}';
-    const followupText = '上一轮软件工具已经执行完成。工具结果如下：\n' + JSON.stringify(toolResults)
+    const historyPrompt = buildLocalConversationHistoryPrompt(conversation, run.assistantMessageId);
+    const followupText = (historyPrompt ? historyPrompt + '\n\n' : '') + '上一轮软件工具已经执行完成。工具结果如下：\n' + JSON.stringify(toolResults)
       + '\n\n最新软件上下文：' + JSON.stringify(nextContext)
       + '\n\n请判断目标是否已经完成：如果已完成，返回 ' + doneExample
       + '；如果还需要继续执行，返回下一批 actions。不要运行 shell，不要修改本地文件。';
@@ -1452,7 +1475,13 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       };
 
       const codexNotice = visualReferenceNotice(visualReferences);
-      const codexUserText = `${userText}${codexNotice ? `\n\n${codexNotice}` : ''}\n\n你现在是全局软件 Agent。请自己判断要操作抽屉、日历、画布、设置还是可见界面；可以一次返回多个 actions 连续完成任务。能执行就执行，不要只给步骤。\n\n应用提供的当前软件上下文：${JSON.stringify(contextForPrompt)}\n\n请只返回 reply 和 actions。reply 用简短中文说明结果或下一步；actions 使用应用工具。不要运行 shell、不要修改本地文件。`;
+      const localHistoryPrompt = buildLocalConversationHistoryPrompt(conversation, assistantMessageId);
+      const codexUserText = (localHistoryPrompt ? localHistoryPrompt + '\n\n' : '')
+        + userText
+        + (codexNotice ? '\n\n' + codexNotice : '')
+        + '\n\n你现在是全局软件 Agent。请自己判断要操作抽屉、日历、画布、设置还是可见界面；可以一次返回多个 actions 连续完成任务。能执行就执行，不要只给步骤。'
+        + '\n\n应用提供的当前软件上下文：' + JSON.stringify(contextForPrompt)
+        + '\n\n请只返回 reply 和 actions。reply 用简短中文说明结果或下一步；actions 使用应用工具。不要运行 shell、不要修改本地文件。';
       let completed = await startTurn(codexUserText, true);
       if (completed.interrupted === true) {
         finishThinkingSteps(conversation.id, assistantMessageId, 'cancelled');

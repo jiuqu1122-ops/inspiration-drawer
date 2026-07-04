@@ -29,7 +29,12 @@ export const writeAgentConversations = (conversations: AgentConversation[]) => {
     AGENT_CONVERSATIONS_STORAGE_KEY,
     JSON.stringify([...conversations]
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, MAX_AGENT_CONVERSATIONS)),
+      .slice(0, MAX_AGENT_CONVERSATIONS)
+      .map(conversation => ({
+        ...conversation,
+        codexThreadId: undefined,
+        codexThreadKey: undefined,
+      }))),
   );
 };
 

@@ -3,6 +3,8 @@ import {
   Bot,
   Check,
   Copy,
+  Clock3,
+  History,
   LoaderCircle,
   MessageSquarePlus,
   Square,
@@ -13,6 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import type {
   AgentCanvasSelectionItem,
   AgentChatMessage,
+  AgentConversation,
   AgentSettings,
   CodexRuntimeStatus,
 } from '../features/agentModel';
@@ -24,12 +27,16 @@ type DrawerAgentPanelProps = {
   busy: boolean;
   settings: AgentSettings;
   codexStatus: CodexRuntimeStatus | null;
+  conversations: AgentConversation[];
+  activeConversationId: string;
   selectedItems: AgentCanvasSelectionItem[];
   onInputChange: (value: string) => void;
   onSendMessage: (content: string) => void;
   onCancel: () => void;
   onClose: () => void;
   onNewConversation: () => void;
+  onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
   onClearConversation: () => void;
   onResolveToolCall: (id: string, approved: boolean) => void;
 };
@@ -40,19 +47,25 @@ export function DrawerAgentPanel({
   busy,
   settings,
   codexStatus,
+  conversations,
+  activeConversationId,
   selectedItems,
   onInputChange,
   onSendMessage,
   onCancel,
   onClose,
   onNewConversation,
+  onSelectConversation,
+  onDeleteConversation,
   onClearConversation,
   onResolveToolCall,
 }: DrawerAgentPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   const ready = settings.provider === 'codex' ? !!codexStatus?.authenticated : settings.hasApiKey;
+  const activeConversation = conversations.find(conversation => conversation.id === activeConversationId);
 
   useEffect(() => {
     window.setTimeout(() => inputRef.current?.focus(), 80);
@@ -61,6 +74,18 @@ export function DrawerAgentPanel({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!showHistory) return;
+    const closeHistory = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest('[data-drawer-agent-history-menu="true"], [data-drawer-agent-history-toggle="true"]')) {
+        setShowHistory(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeHistory, true);
+    return () => document.removeEventListener('pointerdown', closeHistory, true);
+  }, [showHistory]);
 
   const send = () => {
     const content = inputValue.trim();
@@ -95,7 +120,7 @@ export function DrawerAgentPanel({
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[12px] font-bold text-stone-800 dark:text-stone-100">
-              软件 Agent
+              <span className="max-w-[180px] truncate">{activeConversation?.title || '软件 Agent'}</span>
               {busy && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
             </div>
             <div className="mt-0.5 flex items-center gap-1 text-[8px] text-stone-400 dark:text-stone-500">
@@ -105,10 +130,44 @@ export function DrawerAgentPanel({
           </div>
         </div>
         <div className="flex items-center gap-0.5">
+          <button type="button" data-drawer-agent-history-toggle="true" onClick={() => setShowHistory(value => !value)} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-50 text-blue-600 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300'}`} title="会话历史"><History className="h-3.5 w-3.5" /></button>
           <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="新对话"><MessageSquarePlus className="h-3.5 w-3.5" /></button>
           <button type="button" onClick={onClearConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-white/7" title="清空对话"><Trash2 className="h-3.5 w-3.5" /></button>
           <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-white/7 dark:hover:text-stone-200" title="收起 Agent"><X className="h-4 w-4" /></button>
         </div>
+        {showHistory && (
+          <div data-drawer-agent-history-menu="true" className="absolute left-3 right-3 top-[50px] z-20 max-h-[280px] overflow-y-auto rounded-[16px] border border-blue-100/90 bg-white/96 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
+            {conversations.map(conversation => (
+              <div key={conversation.id} className={`group/history flex items-center gap-1 rounded-[11px] ${conversation.id === activeConversationId ? 'bg-blue-50 dark:bg-blue-400/10' : 'hover:bg-stone-50 dark:hover:bg-white/6'}`}>
+                <button
+                  type="button"
+                  onClick={() => { onSelectConversation(conversation.id); setShowHistory(false); }}
+                  className="min-w-0 flex-1 px-2.5 py-2 text-left"
+                  title="切换到此对话"
+                >
+                  <div className="truncate text-[10px] font-semibold text-stone-700 dark:text-stone-200">{conversation.title}</div>
+                  <div className="mt-1 flex items-center gap-1 text-[8px] text-stone-400">
+                    <Clock3 className="h-2.5 w-2.5" />
+                    {new Date(conversation.updatedAt).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    <span>· {conversation.provider === 'codex' ? 'Codex' : 'API'}</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onDeleteConversation(conversation.id);
+                  }}
+                  className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] text-stone-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:text-stone-500 dark:hover:bg-red-400/10 dark:hover:text-red-200"
+                  title="删除会话"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 [scrollbar-width:thin]">
