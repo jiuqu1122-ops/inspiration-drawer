@@ -43,6 +43,11 @@ export type BufferItem = {
   path?: string; 
   url?: string; 
   thumbnail?: string; 
+  fileSize?: number;
+  modifiedAt?: number;
+  fingerprint?: string;
+  width?: number;
+  height?: number;
   createdAt: number; 
   isQuickAccess?: boolean; 
   remark?: string; 

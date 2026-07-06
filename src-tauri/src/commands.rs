@@ -1,4 +1,6 @@
+pub mod assets;
 pub mod license;
+pub mod migration;
 
 // 🌟 换成这行：
 use base64::{engine::general_purpose, Engine as _};

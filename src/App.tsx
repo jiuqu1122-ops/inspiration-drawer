@@ -126,6 +126,11 @@ import {
 import { EdgeTrigger } from './features/EdgeTrigger';
 import { clearLegacyStartupFlags, isLaunchIntroDoneThisPage, markLaunchIntroDoneThisPage } from './features/startup';
 import { writeImageSourceToClipboard } from './features/imageClipboard';
+import { LruCache } from './features/lruCache';
+import {
+  getPreviewOriginalSource,
+  getPreviewPlaceholderSource,
+} from './features/mediaSources';
 import {
   CALENDAR_COMPACT_CANVAS_WIDTH,
   CALENDAR_COMPACT_DRAWER_WIDTH,
@@ -222,6 +227,15 @@ type LocalVisionModelStatusPayload = {
   model?: string;
   progress?: number;
 };
+type ImageThumbnailFileResult = {
+  path: string;
+  url: string;
+  width: number;
+  height: number;
+  fingerprint?: string;
+  file_size?: number;
+  modified_at?: number;
+};
 const LOCAL_VISION_MODEL_STORAGE_KEY = 'drawer_local_vision_model';
 const DEFAULT_LOCAL_VISION_MODEL = 'qwen2.5vl:3b';
 const LEGACY_LOCAL_VISION_MODEL = 'qwen2.5vl:7b';
@@ -244,6 +258,8 @@ type CanvasWorkflowNodeTemplate = {
   fixedInput?: boolean;
   textMode?: CanvasImageItem['textMode'];
   acceptsExternalInputs?: boolean;
+  externalInputTypes?: Array<'image' | 'text' | 'video'>;
+  outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
 type CanvasWorkflowTemplate = {
@@ -270,6 +286,11 @@ type CanvasWorkflowRuntimeNodeSnapshot = {
   item?: Partial<BufferItem>;
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
+type CanvasWorkflowValidationResult = {
+  errors: string[];
+  warnings: string[];
+};
+type CanvasWorkflowRunStatus = 'idle' | 'waiting' | 'ready' | 'running' | 'success' | 'failed' | 'skipped';
 type CanvasWorkflowExpandedGroup = {
   groupId: string;
   templateId: string;
@@ -532,7 +553,7 @@ const hasCanvasVideoFileExtension = (value?: string | null) => (
 );
 
 const hasCanvasImageFileExtension = (value?: string | null) => (
-  /\.(?:jpe?g|png|webp|gif|bmp|svg)(?:[?#].*)?$/i.test(cleanCanvasMediaUrl(value))
+  /\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#].*)?$/i.test(cleanCanvasMediaUrl(value))
 );
 
 const isInvalidCanvasVideoSuccessOutput = (output: CanvasAiGeneratedOutput) => {
@@ -757,6 +778,9 @@ const FLOATING_NOTE_CREATE_LOCK_STORAGE_PREFIX = 'drawer_floating_note_create_lo
 const DRAWER_INITIAL_RENDER_LIMIT = 48;
 const DRAWER_RENDER_BATCH_SIZE = 32;
 const DRAWER_RENDER_LOAD_AHEAD_PX = 640;
+const DRAWER_VIRTUALIZATION_THRESHOLD = 240;
+const DRAWER_VIRTUALIZATION_OVERSCAN_ROWS = 2;
+const PREVIEW_ORIGINAL_CACHE_LIMIT = 5;
 const CANVAS_NAV_THUMB_MAX_WIDTH = 96;
 const CANVAS_NAV_THUMB_MAX_HEIGHT = 72;
 const CANVAS_NAV_THUMB_QUALITY = 0.42;
@@ -1205,6 +1229,9 @@ const makeCanvasWorkflowAiNode = (
     width: size.width,
     height: size.height,
     inputs,
+    acceptsExternalInputs: inputs.length === 0,
+    externalInputTypes: inputs.length === 0 ? ['image', 'text'] : undefined,
+    outputType: (options.count || 1) > 1 ? 'image[]' : 'image',
     item: {
       id,
       type: 'text',
@@ -1227,6 +1254,277 @@ const makeCanvasWorkflowAiNode = (
       status: 'idle',
     },
   };
+};
+const CANVAS_PRODUCT_DETAILS_NODE_IDS = [
+  'hero_main',
+  'lifestyle_scene',
+  'detail_macro',
+  'exploded_view',
+  'usage_instruction',
+] as const;
+const getCanvasWorkflowTextBlob = (workflow: CanvasWorkflowTemplate) => (
+  [
+    workflow.label,
+    workflow.hint,
+    ...workflow.nodes.flatMap(node => [
+      node.id,
+      node.item.name,
+      node.item.content,
+      node.item.remark,
+      node.ai?.presetLabel,
+      node.ai?.prompt,
+      node.ai?.presetPrompt,
+    ]),
+  ].filter(Boolean).join('\n').toLowerCase()
+);
+const doesWorkflowTextRequireImageReference = (text: string) => (
+  /产品一致性|参考图|外部连接|产品图|product\s*(reference|refs?)|image\s*(reference|refs?)|subject_ref|based on connected/i.test(text)
+);
+const isCanvasProductDetailsWorkflowIntent = (label: string, hint: string, steps: unknown[]) => {
+  const text = [
+    label,
+    hint,
+    ...steps.map(step => {
+      const record = step && typeof step === 'object' ? step as Record<string, unknown> : {};
+      return [record.id, record.label, record.kind, record.prompt].filter(Boolean).join(' ');
+    }),
+  ].join('\n').toLowerCase();
+  return /详情页|五图|5图|五张|product detail|detail page|e[-\s]?commerce|商品详情|主图|卖点图/i.test(text)
+    && /产品一致性|产品参考|参考图|product|cmf|结构约束|外部连接|product_strategy|product_refs/i.test(text);
+};
+const buildCanvasProductDetailsWorkflowTemplate = (options: {
+  label: string;
+  hint: string;
+  steps?: unknown[];
+  provider: CanvasAiProvider;
+  model?: string;
+}): CanvasWorkflowTemplate => {
+  const label = (options.label || '详情页五图 workflow').slice(0, 32);
+  const hint = (options.hint || 'product_refs -> product_strategy -> five parallel detail-page images').slice(0, 80);
+  const stepRecords = (options.steps || [])
+    .map(step => step && typeof step === 'object' ? step as Record<string, unknown> : null)
+    .filter((step): step is Record<string, unknown> => !!step);
+  const stepById = new Map(stepRecords.map(step => [String(step.id || '').trim(), step]));
+  const findStep = (id: string, fallbackLabel: string) => (
+    stepById.get(id)
+    || stepRecords.find(step => {
+      const text = [step.id, step.label, step.prompt].filter(Boolean).join(' ').toLowerCase();
+      return text.includes(id.toLowerCase()) || text.includes(fallbackLabel.toLowerCase());
+    })
+    || null
+  );
+  const specs = [
+    ['hero_main', 'Hero main', '主视觉首图', 'Create the first product detail page hero image: clear product silhouette, premium commercial composition, strong first-screen selling point, no extra logo/text.'],
+    ['lifestyle_scene', 'Lifestyle scene', '真实使用氛围图', 'Create a realistic lifestyle scene for the same product: credible usage context, product remains the visual subject, materials and proportions unchanged.'],
+    ['detail_macro', 'Detail macro', '材质/结构细节特写', 'Create a macro detail image: focus on key edge, material, button, port, texture or construction detail from the reference product.'],
+    ['exploded_view', 'Exploded view', '结构拆解/卖点说明图', 'Create a clean exploded or layered structure view: show components and functional selling points while preserving real product geometry.'],
+    ['usage_instruction', 'Usage instruction', '使用方式/步骤图', 'Create a usage instruction image: show how the product is used or installed with simple visual steps, no unreadable text blocks.'],
+  ] as const;
+  const commonReferenceInstruction = [
+    'Use the connected product reference images as SUBJECT_REF / PRODUCT_REF.',
+    'Use the upstream product_strategy text as the CMF, structure, proportion, and visual strategy constraint.',
+    'Do not invent a different product. Preserve silhouette, proportions, materials, buttons, ports, parting lines, color logic, and functional layout from PRODUCT_REF.',
+    'If multiple product reference images are connected, reconcile them as the same product and prioritize the clearest structure.',
+    'No random logo, no malformed text, no unrelated props that hide product details.',
+  ].join('\n');
+  return {
+    id: 'product-details-workflow-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+    label,
+    hint,
+    createdAt: Date.now(),
+    nodes: [
+      {
+        id: 'product_refs',
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 220,
+        item: { id: 'product_refs', type: 'image', content: '', name: 'Product references', remark: 'External image[] input for product consistency', createdAt: 0, isQuickAccess: false },
+        inputs: [],
+        fixedInput: true,
+        acceptsExternalInputs: true,
+        externalInputTypes: ['image'],
+        outputType: 'image[]',
+      },
+      {
+        id: 'product_strategy',
+        x: 420,
+        y: 0,
+        width: 460,
+        height: 260,
+        item: {
+          id: 'product_strategy',
+          type: 'text',
+          content: [
+            'Analyze the connected PRODUCT_REF images and write a compact product detail-page strategy.',
+            'Must include: product identity, silhouette/proportion locks, CMF/material constraints, key structural details, functional selling points, and visual direction for the five downstream images.',
+            'Return only the strategy text. Do not generate JSON.',
+          ].join('\n'),
+          name: 'Product strategy',
+          remark: '',
+          createdAt: 0,
+          isQuickAccess: false,
+        },
+        inputs: ['product_refs'],
+        fixedInput: false,
+        textMode: 'agent',
+        outputType: 'text',
+      },
+      ...specs.map(([id, specLabel, specHint, fallbackPrompt], index) => {
+        const step = findStep(id, specLabel);
+        const prompt = typeof step?.prompt === 'string' && step.prompt.trim() ? step.prompt.trim() : fallbackPrompt;
+        const requestedAspectRatio = typeof step?.aspectRatio === 'string' ? step.aspectRatio.trim() : '';
+        const aspectRatio = requestedAspectRatio
+          ? normalizeCanvasAiAspectRatioForModel(options.model, requestedAspectRatio)
+          : CANVAS_AI_DEFAULT_ASPECT_RATIO;
+        const requestedOutputFormat = typeof step?.outputFormat === 'string' ? step.outputFormat.trim().toLowerCase() : '';
+        const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
+          ? requestedOutputFormat
+          : CANVAS_AI_DEFAULT_OUTPUT_FORMAT;
+        const rawCount = typeof step?.count === 'number' || typeof step?.count === 'string' ? Number(step.count) : 1;
+        const count = Number.isFinite(rawCount) ? clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT) : 1;
+        return {
+          id,
+          x: 980,
+          y: index * (430 + 100),
+          width: 560,
+          height: 430,
+          item: { id, type: 'text', content: '', name: `AI ${specLabel}`, remark: specHint, createdAt: 0, isQuickAccess: false },
+          inputs: ['product_refs', 'product_strategy'],
+          acceptsExternalInputs: false,
+          outputType: count > 1 ? 'image[]' as const : 'image' as const,
+          ai: {
+            type: 'image-generator' as const,
+            provider: options.provider,
+            model: options.model,
+            presetId: `workflow-product-details-${id}`,
+            presetLabel: specLabel,
+            presetPrompt: [commonReferenceInstruction, '', `Task: ${prompt}`].join('\n'),
+            aspectRatio,
+            outputFormat,
+            count,
+            status: 'idle' as const,
+            outputs: [],
+          },
+        } as CanvasWorkflowNodeTemplate;
+      }),
+    ],
+  };
+};
+const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): CanvasWorkflowValidationResult => {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const nodesById = new Map<string, CanvasWorkflowNodeTemplate>();
+  const duplicateIds = new Set<string>();
+  const allowedItemTypes = new Set(['text', 'image', 'file', 'video']);
+  const allowedAiTypes = new Set(['image-generator', 'video-generator', 'frame-interpolation', 'image-enhancement', 'video-enhancement', 'generated-image', 'generated-video', 'workflow']);
+
+  workflow.nodes.forEach(node => {
+    if (!node.id) errors.push('Workflow node is missing id.');
+    if (nodesById.has(node.id)) duplicateIds.add(node.id);
+    nodesById.set(node.id, node);
+    if (!allowedItemTypes.has(node.item?.type || '')) errors.push(`Node "${node.id}" has unknown item type "${node.item?.type || ''}".`);
+    if (node.ai?.type && !allowedAiTypes.has(node.ai.type)) errors.push(`Node "${node.id}" has unknown ai type "${node.ai.type}".`);
+  });
+  duplicateIds.forEach(id => errors.push(`Duplicate workflow node id "${id}".`));
+  workflow.nodes.forEach(node => {
+    (node.inputs || []).forEach(inputId => {
+      if (!nodesById.has(inputId)) errors.push(`Node "${node.id}" references missing input "${inputId}".`);
+    });
+  });
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (nodeId: string, path: string[]) => {
+    if (visiting.has(nodeId)) {
+      errors.push(`Workflow has a cycle: ${[...path, nodeId].join(' -> ')}.`);
+      return;
+    }
+    if (visited.has(nodeId)) return;
+    const node = nodesById.get(nodeId);
+    if (!node) return;
+    visiting.add(nodeId);
+    (node.inputs || []).forEach(inputId => visit(inputId, [...path, nodeId]));
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+  workflow.nodes.forEach(node => visit(node.id, []));
+
+  const nodeOutputsImage = (node?: CanvasWorkflowNodeTemplate) => (
+    !!node && (
+      node.item.type === 'image'
+      || node.outputType === 'image'
+      || node.outputType === 'image[]'
+      || node.ai?.type === 'image-generator'
+      || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('image'))
+    )
+  );
+  const nodeOutputsText = (node?: CanvasWorkflowNodeTemplate) => (
+    !!node && (
+      node.item.type === 'text'
+      || node.outputType === 'text'
+      || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('text'))
+    )
+  );
+  const hasUpstreamImageInput = (node: CanvasWorkflowNodeTemplate) => {
+    const seen = new Set<string>();
+    const walk = (sourceId: string): boolean => {
+      if (seen.has(sourceId)) return false;
+      seen.add(sourceId);
+      const source = nodesById.get(sourceId);
+      if (!source) return false;
+      if (nodeOutputsImage(source)) return true;
+      return (source.inputs || []).some(walk);
+    };
+    return (node.inputs || []).some(walk);
+  };
+  const hasExternalImageInputNode = workflow.nodes.some(node => (
+    node.acceptsExternalInputs === true
+    && (node.item.type === 'image' || node.outputType === 'image[]' || node.outputType === 'image' || (node.externalInputTypes || []).includes('image'))
+  ));
+  const workflowText = getCanvasWorkflowTextBlob(workflow);
+  if (doesWorkflowTextRequireImageReference(workflowText) && !hasExternalImageInputNode) {
+    errors.push('Workflow prompt mentions external/reference product images but no acceptsExternalInputs=true image input node exists.');
+  }
+
+  workflow.nodes.forEach(node => {
+    if (node.ai?.type !== 'image-generator') return;
+    const prompt = [node.ai.presetPrompt, node.ai.prompt, node.item.content, node.item.remark].filter(Boolean).join('\n');
+    if (!String(node.ai.presetPrompt || node.ai.prompt || node.item.content || '').trim()) errors.push(`Image-generator node "${node.id}" is missing executable prompt.`);
+    if (!node.ai.aspectRatio) errors.push(`Image-generator node "${node.id}" is missing aspectRatio.`);
+    if (!node.ai.outputFormat) errors.push(`Image-generator node "${node.id}" is missing outputFormat.`);
+    if (!Number.isFinite(Number(node.ai.count)) || Number(node.ai.count) <= 0) errors.push(`Image-generator node "${node.id}" is missing valid count.`);
+    if (doesWorkflowTextRequireImageReference(prompt) && !hasUpstreamImageInput(node)) {
+      errors.push(`Image-generator node "${node.id}" requires product/reference images but has no connected image input.`);
+    }
+  });
+
+  const productStrategy = nodesById.get('product_strategy');
+  if (productStrategy && workflow.nodes.some(node => (node.inputs || []).includes('product_strategy')) && productStrategy.textMode !== 'agent') {
+    warnings.push('product_strategy is used downstream but is not an executable text-agent node; downstream prompts will only see static text.');
+  }
+
+  for (let index = 0; index < workflow.nodes.length; index += 1) {
+    const a = workflow.nodes[index];
+    for (let j = index + 1; j < workflow.nodes.length; j += 1) {
+      const b = workflow.nodes[j];
+      if (a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y) {
+        warnings.push(`Workflow layout overlap: "${a.id}" overlaps "${b.id}".`);
+      }
+    }
+  }
+
+  workflow.nodes.forEach(node => {
+    if (node.ai?.type !== 'image-generator') return;
+    (node.inputs || []).forEach(inputId => {
+      const source = nodesById.get(inputId);
+      if (source && !nodeOutputsImage(source) && !nodeOutputsText(source)) {
+        warnings.push(`Input "${inputId}" connected to image-generator "${node.id}" has no declared compatible output type.`);
+      }
+    });
+  });
+
+  return { errors: Array.from(new Set(errors)), warnings: Array.from(new Set(warnings)) };
 };
 const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
   {
@@ -1768,6 +2066,11 @@ const isLegacyProductRenderPrompt = (prompt: string) =>
   prompt.includes('简约深色背景') && prompt.includes('暗光环境');
 const getBuiltInProductRenderPrompt = () =>
   CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === PRODUCT_RENDER_PRESET_ID)?.prompt || '';
+const isCanvasWorkflowLongDuplicateText = (a?: string, b?: string) => {
+  const left = String(a || '').trim();
+  const right = String(b || '').trim();
+  return left.length > 120 && left === right;
+};
 const readCanvasTemplateHiddenIds = (storageKey: string) => {
   try {
     const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
@@ -1829,6 +2132,17 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       ? rawItem.type
       : 'text';
     const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
+    const rawAi = node.ai && typeof node.ai === 'object'
+      ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
+      : undefined;
+    const aiPrompt = String(rawAi?.prompt || '').trim();
+    const aiPresetPrompt = String(rawAi?.presetPrompt || '').trim();
+    const itemContent = String(rawItem.content || '');
+    const executablePrompt = rawAi?.type === 'image-generator'
+      ? (aiPresetPrompt || aiPrompt || itemContent.trim())
+      : '';
+    const shouldCompactItemContent = rawAi?.type === 'image-generator'
+      && isCanvasWorkflowLongDuplicateText(itemContent, executablePrompt);
     return {
       id,
       x: Number(node.x) || 0,
@@ -1838,7 +2152,7 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       item: {
         id,
         type: itemType,
-        content: String(rawItem.content || ''),
+        content: shouldCompactItemContent ? '' : itemContent,
         name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : undefined,
         path: typeof rawItem.path === 'string' ? rawItem.path : undefined,
         url: typeof rawItem.url === 'string' ? rawItem.url : undefined,
@@ -1860,9 +2174,23 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
       textMode: node.textMode === 'plain' ? 'plain' : node.textMode === 'agent' ? 'agent' : undefined,
       acceptsExternalInputs: node.acceptsExternalInputs === true,
-      ai: node.ai && typeof node.ai === 'object'
+      externalInputTypes: Array.isArray(node.externalInputTypes)
+        ? node.externalInputTypes
+          .map(type => String(type || '').trim())
+          .filter((type): type is 'image' | 'text' | 'video' => type === 'image' || type === 'text' || type === 'video')
+        : undefined,
+      outputType: node.outputType === 'image'
+        || node.outputType === 'image[]'
+        || node.outputType === 'text'
+        || node.outputType === 'video'
+        || node.outputType === 'video[]'
+        ? node.outputType
+        : undefined,
+      ai: rawAi
         ? {
-          ...(node.ai as Partial<NonNullable<CanvasImageItem['ai']>>),
+          ...rawAi,
+          prompt: rawAi.type === 'image-generator' ? undefined : rawAi.prompt,
+          presetPrompt: rawAi.type === 'image-generator' && executablePrompt ? executablePrompt : rawAi.presetPrompt,
           outputs: [],
           status: 'idle' as const,
           error: undefined,
@@ -2150,9 +2478,16 @@ type AppUpdateProgress = {
   progressId?: string;
   stage?: string;
   message?: string;
+  updaterKind?: string | null;
+  manifestEndpoint?: string | null;
+  statusCode?: number | null;
   version?: string | null;
+  currentVersion?: string | null;
+  available?: boolean | null;
   sourceName?: string | null;
   sourceUrl?: string | null;
+  selectedUrl?: string | null;
+  errorMessage?: string | null;
   loaded?: number;
   total?: number;
   progress?: number;
@@ -3092,6 +3427,7 @@ function MainApp() {
   useEffect(() => { triggerModeRef.current = triggerMode; }, [triggerMode]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const selectedImageReturnToCanvasRef = useRef(false);
+  const selectedImageOriginalCacheRef = useRef(new LruCache<string, string>(PREVIEW_ORIGINAL_CACHE_LIMIT));
   const [selectedVideo, setSelectedVideo] = useState<{url: string, path: string, fromCanvas?: boolean} | null>(null);
   const selectedVideoReturnToCanvasRef = useRef(false);
   const [selectedImageZoom, setSelectedImageZoom] = useState(1);
@@ -3322,20 +3658,52 @@ function MainApp() {
     const raw = err instanceof Error ? err.message : String(err || '未知错误');
     const lower = raw.toLowerCase();
 
-    if (lower.includes('url field was not set') || lower.includes('signature field was not set')) {
-      return '检查更新失败：备用更新源还没同步，请稍后重试';
+    if (raw.includes('manifest 请求失败')) {
+      return `检查更新失败：manifest 请求失败。原始错误：${raw}`;
     }
 
-    if (
-      raw.includes('github.com') ||
-      lower.includes('sending request') ||
-      lower.includes('timed out') ||
-      lower.includes('timeout') ||
-      lower.includes('dns') ||
-      lower.includes('network') ||
-      lower.includes('connection')
-    ) {
-      return '检查更新失败：更新源连接不稳定，请稍后重试';
+    if (raw.includes('manifest 不是合法 JSON')) {
+      return `检查更新失败：manifest 不是合法 JSON。原始错误：${raw}`;
+    }
+
+    if (raw.includes('manifest 格式不符合预期') || lower.includes('url field was not set')) {
+      return `检查更新失败：manifest 格式不符合预期。原始错误：${raw}`;
+    }
+
+    if (raw.includes('版本号比较失败')) {
+      return `检查更新失败：版本号比较失败。原始错误：${raw}`;
+    }
+
+    if (lower.includes('signature field was not set')) {
+      return `检查更新失败：signature 缺失。当前安装阶段仍借用 Tauri updater，signature 必须是 .sig 文件内容。原始错误：${raw}`;
+    }
+
+    if (lower.includes('signature')) {
+      return `检查更新失败：signature 缺失或不匹配。原始错误：${raw}`;
+    }
+
+    if (lower.includes('sha256')) {
+      return `检查更新失败：sha256 缺失或不匹配。原始错误：${raw}`;
+    }
+
+    if (raw.includes('文件大小不匹配') || lower.includes('size')) {
+      return `检查更新失败：安装包大小不匹配。原始错误：${raw}`;
+    }
+
+    if (raw.includes('下载更新源') || raw.includes('下载失败') || lower.includes('download')) {
+      return `检查更新失败：安装包下载失败。原始错误：${raw}`;
+    }
+
+    if (raw.includes('安装包路径不存在') || raw.includes('路径不存在')) {
+      return `检查更新失败：安装包路径不存在。原始错误：${raw}`;
+    }
+
+    if (raw.includes('安装更新失败')) {
+      return `检查更新失败：安装阶段失败。原始错误：${raw}`;
+    }
+
+    if (lower.includes('sending request') || lower.includes('timed out') || lower.includes('timeout') || lower.includes('dns') || lower.includes('network') || lower.includes('connection')) {
+      return `检查更新失败：请求失败。原始错误：${raw}`;
     }
 
     return `检查更新失败：${raw}`;
@@ -3358,6 +3726,23 @@ function MainApp() {
       unlistenAppUpdateProgress = await listen<AppUpdateProgress>('app-update-progress', (event) => {
         const progress = event.payload;
         if (progress?.progressId !== progressId) return;
+        console.info('[app-update]', {
+          updaterKind: progress.updaterKind,
+          stage: progress.stage,
+          message: progress.message,
+          manifestEndpoint: progress.manifestEndpoint,
+          statusCode: progress.statusCode,
+          version: progress.version,
+          currentVersion: progress.currentVersion,
+          available: progress.available,
+          sourceName: progress.sourceName,
+          sourceUrl: progress.sourceUrl,
+          selectedUrl: progress.selectedUrl,
+          errorMessage: progress.errorMessage,
+          loaded: progress.loaded,
+          total: progress.total,
+          progress: progress.progress,
+        });
         const sourceName = progress.sourceName || '更新源';
         const version = progress.version || '';
 
@@ -3406,8 +3791,23 @@ function MainApp() {
             sourceName: progress.sourceName,
             sourceUrl: progress.sourceUrl,
             message: progress.message,
+            errorMessage: progress.errorMessage,
           });
-          if (!options.silent) showToast(`${sourceName} 下载失败，正在切换备用源`);
+          if (!options.silent) {
+            const detail = `${progress.message || ''}\n${progress.errorMessage || ''}`.toLowerCase();
+            const reason = detail.includes('signature')
+              ? 'signature 校验/格式失败'
+              : detail.includes('sha256')
+                ? 'SHA256 校验失败'
+                : detail.includes('文件大小') || detail.includes('size')
+                  ? '文件大小不匹配'
+                  : detail.includes('url field')
+                    ? 'manifest 下载 URL 缺失'
+                    : detail.includes('download') || detail.includes('下载')
+                      ? '下载失败'
+                      : '处理失败';
+            showToast(`${sourceName} ${reason}，正在切换备用源`);
+          }
         }
       });
 
@@ -5943,18 +6343,83 @@ function MainApp() {
     aiApiModel,
   ]);
   const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
+  const [drawerScrollTop, setDrawerScrollTop] = useState(0);
+  const [drawerViewportHeight, setDrawerViewportHeight] = useState(1);
+  const canVirtualizeDrawerGrid = !isUtilityActiveTab && displayItems.length >= DRAWER_VIRTUALIZATION_THRESHOLD && activeTab !== 'alchemy';
+  const drawerGridColumnCount = useMemo(() => {
+    const width = drawerScrollRef.current?.clientWidth || 1;
+    const gap = 10;
+    const targetWidth = cardWidth;
+    return Math.max(1, Math.floor((width + gap) / Math.max(1, targetWidth + gap)));
+  }, [cardWidth, drawerViewportHeight]);
+  const drawerVirtualWindow = useMemo(() => {
+    if (!canVirtualizeDrawerGrid) {
+      return { start: 0, end: Math.min(displayItems.length, drawerRenderLimit), top: 0, bottom: 0 };
+    }
+    const rowHeight = Math.max(1, cardMediaHeight + 118);
+    const firstRow = Math.max(0, Math.floor(drawerScrollTop / rowHeight) - DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
+    const visibleRows = Math.max(
+      firstRow + 1,
+      Math.ceil((drawerScrollTop + Math.max(drawerViewportHeight, 1)) / rowHeight) + DRAWER_VIRTUALIZATION_OVERSCAN_ROWS,
+    );
+    const totalRows = Math.ceil(displayItems.length / drawerGridColumnCount);
+    const start = Math.min(displayItems.length, firstRow * drawerGridColumnCount);
+    const end = Math.min(displayItems.length, visibleRows * drawerGridColumnCount);
+    return {
+      start,
+      end,
+      top: firstRow * rowHeight,
+      bottom: Math.max(0, (totalRows - visibleRows) * rowHeight),
+    };
+  }, [
+    canVirtualizeDrawerGrid,
+    cardMediaHeight,
+    cardWidth,
+    displayItems.length,
+    drawerGridColumnCount,
+    drawerRenderLimit,
+    drawerScrollTop,
+    drawerViewportHeight,
+  ]);
   const renderedDisplayItems = useMemo(
-    () => displayItems.slice(0, drawerRenderLimit),
-    [displayItems, drawerRenderLimit],
+    () => displayItems.slice(drawerVirtualWindow.start, drawerVirtualWindow.end),
+    [displayItems, drawerVirtualWindow.end, drawerVirtualWindow.start],
   );
-  const optimizeLargeDrawerList = renderedDisplayItems.length > 80;
-  const hasMoreDisplayItems = drawerRenderLimit < displayItems.length;
+  const optimizeLargeDrawerList = canVirtualizeDrawerGrid || renderedDisplayItems.length > 80;
+  const hasMoreDisplayItems = !canVirtualizeDrawerGrid && drawerRenderLimit < displayItems.length;
   const loadMoreDisplayItems = () => {
     setDrawerRenderLimit(limit => Math.min(displayItems.length, limit + DRAWER_RENDER_BATCH_SIZE));
   };
+  useLayoutEffect(() => {
+    if (isCanvasMode) return;
+    const node = drawerScrollRef.current;
+    if (!node) return;
+
+    const updateDrawerViewportMetrics = () => {
+      setDrawerScrollTop(node.scrollTop || 0);
+      setDrawerViewportHeight(node.clientHeight || 1);
+    };
+
+    updateDrawerViewportMetrics();
+    const frame = window.requestAnimationFrame(updateDrawerViewportMetrics);
+    const observer = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(updateDrawerViewportMetrics)
+      : null;
+
+    observer?.observe(node);
+    window.addEventListener('resize', updateDrawerViewportMetrics);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', updateDrawerViewportMetrics);
+    };
+  }, [activeFolderId, activeTab, displayItems.length, isCanvasMode, searchQuery]);
+
   const handleDrawerContentScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    if (isUtilityActiveTab || !hasMoreDisplayItems) return;
     const node = event.currentTarget;
+    setDrawerScrollTop(node.scrollTop);
+    setDrawerViewportHeight(node.clientHeight || 1);
+    if (isUtilityActiveTab || !hasMoreDisplayItems) return;
     if (node.scrollTop + node.clientHeight >= node.scrollHeight - DRAWER_RENDER_LOAD_AHEAD_PX) {
       loadMoreDisplayItems();
     }
@@ -5962,6 +6427,7 @@ function MainApp() {
 
   useEffect(() => {
     setDrawerRenderLimit(DRAWER_INITIAL_RENDER_LIMIT);
+    setDrawerScrollTop(0);
     drawerScrollRef.current?.scrollTo({ top: 0 });
   }, [activeTab, activeFolderId, searchQuery, isCanvasMode]);
 
@@ -7552,7 +8018,7 @@ function MainApp() {
   const activeFolderIdRef = useRef(activeFolderId);
   useEffect(() => { activeFolderIdRef.current = activeFolderId; }, [activeFolderId]);
 
-  const isCanvasImageFileName = (value?: string) => /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(value || '');
+  const isCanvasImageFileName = (value?: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(value || '');
   const isCanvasVideoFileName = (value?: string) => /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value || '');
 
   const fileUrlToLocalPath = (value: string) => {
@@ -8242,6 +8708,11 @@ function MainApp() {
       void shouldRefresh
         .then((refresh) => {
           if (!refresh) return '';
+          if (item.path) {
+            return invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', { path: item.path, size: 512 })
+              .then(result => result.url || (result.path ? convertFileSrc(result.path) : ''))
+              .catch(() => createImageThumbnailInWebview(source));
+          }
           return createImageThumbnailInWebview(source);
         })
         .then(async (thumbnail) => {
@@ -8911,6 +9382,17 @@ function MainApp() {
     invoke('save_canvas_state', { state }).catch((err) => {
       console.warn('保存画布状态失败:', err);
     });
+    if (state.items.length > 0) {
+      const assetItems = state.items.map(item => item.item).filter(Boolean);
+      if (assetItems.length > 0) {
+        invoke('upsert_assets', { assets: assetItems }).catch((err) => {
+          console.warn('同步画布素材到 SQLite 失败:', err);
+        });
+      }
+      invoke('upsert_canvas_nodes', { canvasId: 'default', canvas_id: 'default', nodes: state.items }).catch((err) => {
+        console.warn('同步画布节点到 SQLite 失败:', err);
+      });
+    }
   };
 
   const scheduleCanvasStateSave = () => {
@@ -11075,16 +11557,23 @@ function MainApp() {
     const maxVideoInputs = isVideoGenerator && !isFirstLastFrameMode ? 1 : 0;
     let imageInputCount = 0;
     let videoInputCount = 0;
+    const seenMediaKeys = new Set<string>();
     const pushInput = (item: BufferItem) => {
+      const key = item.id || item.path || item.url || item.thumbnail || item.content;
+      if (key && seenMediaKeys.has(key)) return;
       if (item.type === 'image' && imageInputCount < maxImageInputs) {
+        if (key) seenMediaKeys.add(key);
         mediaInputs.push(item);
         imageInputCount += 1;
       } else if (item.type === 'video' && videoInputCount < maxVideoInputs) {
+        if (key) seenMediaKeys.add(key);
         mediaInputs.push(item);
         videoInputCount += 1;
       }
     };
-    for (const inputItem of getCanvasInputItemsForNode(canvasItem, sourceItems)) {
+    const visitInputItem = (inputItem: CanvasImageItem, seenNodeIds: Set<string>) => {
+      if (seenNodeIds.has(inputItem.id)) return;
+      seenNodeIds.add(inputItem.id);
       if (inputItem.item.type === 'image' || inputItem.item.type === 'video') {
         pushInput(inputItem.item);
       } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
@@ -11097,7 +11586,12 @@ function MainApp() {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);
         });
+      } else if (!inputItem.ai && (inputItem.inputs || []).length > 0) {
+        getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visitInputItem(upstreamItem, seenNodeIds));
       }
+    };
+    for (const inputItem of getCanvasInputItemsForNode(canvasItem, sourceItems)) {
+      visitInputItem(inputItem, new Set([canvasItem.id]));
       if (imageInputCount >= maxImageInputs && videoInputCount >= maxVideoInputs) break;
     }
     return mediaInputs;
@@ -12182,6 +12676,14 @@ function MainApp() {
   ): CanvasImageItem | null => {
     const cleanWorkflow = normalizeCanvasWorkflowTemplate(workflow);
     if (!cleanWorkflow) return null;
+    const validation = validateCanvasWorkflowTemplate(cleanWorkflow);
+    if (validation.errors.length > 0) {
+      console.warn('Invalid canvas workflow template:', validation.errors, cleanWorkflow);
+      return null;
+    }
+    if (validation.warnings.length > 0) {
+      console.warn('Canvas workflow validation warnings:', validation.warnings, cleanWorkflow);
+    }
     const itemId = Math.random().toString(36).substring(2, 9);
     const outputSlots = getCanvasWorkflowOutputSlotTemplates(cleanWorkflow);
     const outputSlotCount = Math.max(1, outputSlots.length);
@@ -12227,6 +12729,15 @@ function MainApp() {
     if (!cleanWorkflow) {
       showToast('工作流模板不可用');
       return 0;
+    }
+    const validation = validateCanvasWorkflowTemplate(cleanWorkflow);
+    if (validation.errors.length > 0) {
+      showToast(`Workflow 校验失败：${validation.errors[0].slice(0, 96)}`);
+      console.warn('Canvas workflow validation failed:', validation.errors, cleanWorkflow);
+      return 0;
+    }
+    if (validation.warnings.length > 0) {
+      console.warn('Canvas workflow validation warnings:', validation.warnings, cleanWorkflow);
     }
     const selectedInputIds = getSelectedCanvasAiInputIds();
     const inputBounds = selectedInputIds.length > 0 ? getCanvasItemsBounds(selectedInputIds) : null;
@@ -14694,7 +15205,18 @@ function MainApp() {
       }))
       .filter((slot): slot is { node: CanvasWorkflowNodeTemplate; index: number; runtimeId: string } => !!slot.runtimeId);
     const runSet = new Set(runOrder);
+    const runStatus = new Map<string, CanvasWorkflowRunStatus>(runOrder.map(nodeId => [nodeId, 'waiting']));
+    const dependencyMap = new Map<string, string[]>();
+    runOrder.forEach(nodeId => {
+      const current = runtimeItems.find(item => item.id === nodeId);
+      const dependencies = (current?.inputs || []).filter(inputId => {
+        const source = runtimeItems.find(item => item.id === inputId);
+        return !!source && runSet.has(inputId) && (source.ai?.type === 'image-generator' || isCanvasAgentTextTarget(source));
+      });
+      dependencyMap.set(nodeId, dependencies);
+    });
     const failedIds = new Set<string>();
+    const skippedIds = new Set<string>();
     let completedCount = 0;
 
     const getRuntimeSourceItems = () => [
@@ -14732,17 +15254,64 @@ function MainApp() {
     updateCanvasSelection([targetId]);
     showToast(`开始运行工作流「${workflow.label}」：${runOrder.length} 个内部节点`);
 
-    for (const nodeId of runOrder) {
-      const current = runtimeItems.find(item => item.id === nodeId);
-      if (!current) continue;
-      const upstreamRunnableIds = (current.inputs || []).filter(inputId => {
-        const source = runtimeItems.find(item => item.id === inputId);
-        return !!source && runSet.has(inputId) && (source.ai?.type === 'image-generator' || isCanvasAgentTextTarget(source));
+    const updateRuntimeItemAi = (
+      nodeId: string,
+      patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+      content?: string
+    ) => {
+      runtimeItems = runtimeItems.map(item => {
+        if (item.id !== nodeId) return item;
+        return {
+          ...item,
+          ai: item.ai
+            ? {
+              ...item.ai,
+              ...patch,
+              type: patch.type || item.ai.type,
+            }
+            : item.ai,
+          item: content === undefined ? item.item : {
+            ...item.item,
+            content,
+            name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || item.item.name,
+          },
+        };
       });
-      if (upstreamRunnableIds.some(inputId => failedIds.has(inputId))) {
-        failedIds.add(nodeId);
-        continue;
+    };
+    const markRuntimeNodeSkipped = (nodeId: string, reason = '上游依赖失败') => {
+      runStatus.set(nodeId, 'skipped');
+      skippedIds.add(nodeId);
+      failedIds.add(nodeId);
+      const current = runtimeItems.find(item => item.id === nodeId);
+      if (current?.ai?.type === 'image-generator') {
+        updateRuntimeItemAi(nodeId, {
+          status: 'error',
+          error: reason,
+          outputs: [],
+          generatedAt: Date.now(),
+        });
+      } else if (isCanvasAgentTextTarget(current)) {
+        runtimeItems = runtimeItems.map(item => (
+          item.id === nodeId
+            ? {
+              ...item,
+              item: {
+                ...item.item,
+                remark: reason,
+              },
+            }
+            : item
+        ));
       }
+    };
+    const runRuntimeNode = async (nodeId: string) => {
+      const current = runtimeItems.find(item => item.id === nodeId);
+      if (!current) {
+        runStatus.set(nodeId, 'failed');
+        failedIds.add(nodeId);
+        return;
+      }
+      runStatus.set(nodeId, 'running');
       if (isCanvasAgentTextTarget(current)) {
         try {
           const output = await runCanvasTextAgentTarget(current, {
@@ -14765,6 +15334,7 @@ function MainApp() {
             showReferenceToast: false,
           });
           if (output.trim()) {
+            runStatus.set(nodeId, 'success');
             completedCount += 1;
             updateCanvasAiGeneratorData(targetId, {
               outputs: collectModuleOutputs('working'),
@@ -14774,44 +15344,34 @@ function MainApp() {
               generatedAt: Date.now(),
             });
           } else {
+            runStatus.set(nodeId, 'failed');
             failedIds.add(nodeId);
           }
         } catch (error) {
-          console.warn('工作流内部文字节点运行失败:', error);
+          console.warn('Workflow text node failed', error);
+          runStatus.set(nodeId, 'failed');
           failedIds.add(nodeId);
         }
-        continue;
+        return;
       }
-      if (current.ai?.type !== 'image-generator') continue;
+      if (current.ai?.type !== 'image-generator') {
+        runStatus.set(nodeId, 'success');
+        return;
+      }
       if (getCanvasAiSuccessfulOutputs(current).length > 0) {
+        runStatus.set(nodeId, 'success');
         completedCount += 1;
-        continue;
+        return;
       }
       await runCanvasAiGeneratorTarget(current, {
         sourceItems: getRuntimeSourceItems,
-        updateAi: (patch, content) => {
-          runtimeItems = runtimeItems.map(item => {
-            if (item.id !== nodeId) return item;
-            return {
-              ...item,
-              ai: {
-                ...(item.ai || {}),
-                ...patch,
-                type: patch.type || item.ai?.type || 'image-generator',
-              },
-              item: content === undefined ? item.item : {
-                ...item.item,
-                content,
-                name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || item.item.name,
-              },
-            };
-          });
-        },
+        updateAi: (patch, content) => updateRuntimeItemAi(nodeId, patch, content),
         getLatestTarget: () => runtimeItems.find(item => item.id === nodeId),
         showResultToast: false,
       });
       const latest = runtimeItems.find(item => item.id === nodeId);
       if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+        runStatus.set(nodeId, 'success');
         completedCount += 1;
         updateCanvasAiGeneratorData(targetId, {
           outputs: collectModuleOutputs('working'),
@@ -14821,7 +15381,40 @@ function MainApp() {
           generatedAt: Date.now(),
         });
       } else {
+        runStatus.set(nodeId, 'failed');
         failedIds.add(nodeId);
+      }
+    };
+
+    while (Array.from(runStatus.values()).some(status => status === 'waiting' || status === 'ready')) {
+      let changed = false;
+      for (const nodeId of runOrder) {
+        if (runStatus.get(nodeId) !== 'waiting') continue;
+        const dependencies = dependencyMap.get(nodeId) || [];
+        if (dependencies.some(inputId => {
+          const status = runStatus.get(inputId);
+          return status === 'failed' || status === 'skipped';
+        })) {
+          markRuntimeNodeSkipped(nodeId);
+          changed = true;
+          continue;
+        }
+        if (dependencies.every(inputId => runStatus.get(inputId) === 'success')) {
+          runStatus.set(nodeId, 'ready');
+          changed = true;
+        }
+      }
+      const readyIds = runOrder.filter(nodeId => runStatus.get(nodeId) === 'ready');
+      if (readyIds.length > 0) {
+        await Promise.all(readyIds.map(runRuntimeNode));
+        changed = true;
+        continue;
+      }
+      if (!changed) {
+        runOrder
+          .filter(nodeId => runStatus.get(nodeId) === 'waiting')
+          .forEach(nodeId => markRuntimeNodeSkipped(nodeId, 'DAG 调度无法继续，可能存在未满足的依赖'));
+        break;
       }
     }
 
@@ -14832,7 +15425,7 @@ function MainApp() {
         outputs: finalOutputs,
         workflowRuntime: getRuntimeSnapshots(),
         status: 'error',
-        error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败或被中断` : '部分终端输出没有生成',
+        error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}` : '部分终端输出没有生成',
         generatedAt: Date.now(),
       });
       showToast(failedIds.size > 0
@@ -14906,7 +15499,18 @@ function MainApp() {
     lastCanvasDroppedPathsKeyRef.current = key;
     lastCanvasDropAtRef.current = now;
 
-    const created = await Promise.all(cleanPaths.map((path, index) => (
+    let mediaPaths = cleanPaths;
+    try {
+      const collected = await invoke<string[]>('collect_drop_media_paths', { paths: cleanPaths });
+      if (Array.isArray(collected) && collected.length > 0) {
+        mediaPaths = Array.from(new Set(collected.map(normalizeLocalDragPath).filter(Boolean)));
+      }
+    } catch (err) {
+      console.warn('扫描拖入文件夹失败，回退为直接路径处理:', err);
+    }
+    console.info('[canvas-drop] media paths', { input: cleanPaths.length, media: mediaPaths.length, first: mediaPaths.slice(0, 5) });
+
+    const created = await Promise.all(mediaPaths.map((path, index) => (
       isCanvasVideoFileName(path)
         ? createCanvasVideoItemFromPath(path, index, client)
         : createCanvasImageItemFromPath(path, index, client)
@@ -14914,6 +15518,7 @@ function MainApp() {
     const mediaItems = created.filter((item): item is CanvasImageItem => !!item);
     addCanvasImageItems(mediaItems);
     if (mediaItems.length === 0) showToast('无限画布只接收图片或视频');
+    else if (mediaItems.length !== mediaPaths.length) showToast(`已添加 ${mediaItems.length} 个媒体，${mediaPaths.length - mediaItems.length} 个文件暂未显示`);
   };
 
   const addDrawerImageItemToCanvas = async (itemId: string, client?: { x: number; y: number }) => {
@@ -17030,11 +17635,34 @@ function MainApp() {
   useEffect(() => { drawerWidthRef.current = drawerWidth; }, [drawerWidth]);
   useEffect(() => { drawerHeightRef.current = drawerHeight; }, [drawerHeight]);
 
-  const openSelectedImagePreview = (url: string, options: { fromCanvas?: boolean } = {}) => {
-    const source = String(url || '').trim();
+  const openSelectedImagePreview = (
+    sourceOrItem: string | BufferItem,
+    options: { fromCanvas?: boolean } = {}
+  ) => {
+    const item = typeof sourceOrItem === 'string' ? null : sourceOrItem;
+    const originalSource = typeof sourceOrItem === 'string'
+      ? String(sourceOrItem || '').trim()
+      : getPreviewOriginalSource(sourceOrItem);
+    const placeholderSource = item
+      ? getPreviewPlaceholderSource(item)
+      : originalSource;
+    const cacheKey = item?.id || originalSource;
+    const cachedSource = selectedImageOriginalCacheRef.current.get(cacheKey);
+    const source = cachedSource || placeholderSource || originalSource;
     if (!source) return;
     selectedImageReturnToCanvasRef.current = !!options.fromCanvas;
     setSelectedImage(source);
+    if (!cachedSource && originalSource && originalSource !== source) {
+      const image = new Image();
+      image.onload = () => {
+        selectedImageOriginalCacheRef.current.set(cacheKey, originalSource);
+        setSelectedImage(current => current === source ? originalSource : current);
+      };
+      image.onerror = (err) => {
+        console.warn('preview original image load failed:', err);
+      };
+      image.src = originalSource;
+    }
   };
 
   const restoreCanvasAfterMediaPreview = () => {
@@ -19248,6 +19876,38 @@ useEffect(() => {
     return references;
   };
 
+  const getCanvasAgentVisualReferencesForNodeInputs = (
+    canvasItem: CanvasImageItem,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current
+  ) => {
+    const references: AgentCanvasVisualReference[] = [];
+    const seenReferenceIds = new Set<string>();
+    const pushReference = (reference: AgentCanvasVisualReference) => {
+      const key = [
+        reference.id,
+        reference.nodeId,
+        reference.outputId || '',
+        reference.path || '',
+        reference.source || '',
+        reference.thumbnail || '',
+      ].join('|');
+      if (seenReferenceIds.has(key)) return;
+      seenReferenceIds.add(key);
+      references.push(reference);
+    };
+    const visit = (inputItem: CanvasImageItem, seenNodeIds: Set<string>) => {
+      if (seenNodeIds.has(inputItem.id)) return;
+      seenNodeIds.add(inputItem.id);
+      getCanvasAgentVisualReferences(inputItem).forEach(pushReference);
+      if (!inputItem.ai && (inputItem.inputs || []).length > 0) {
+        getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visit(upstreamItem, seenNodeIds));
+      }
+    };
+    getCanvasInputItemsForNode(canvasItem, sourceItems)
+      .forEach(inputItem => visit(inputItem, new Set([canvasItem.id])));
+    return references;
+  };
+
   const buildCanvasAgentSelectedItems = (
     sourceItems: CanvasImageItem[] = canvasItemsRef.current,
     sourceSelectedIds: string[] = canvasSelectedIdsRef.current,
@@ -19259,8 +19919,7 @@ useEffect(() => {
       const item = canvasItem.item;
       const references = getCanvasAgentVisualReferences(canvasItem);
       if (isCanvasAgentTextTarget(canvasItem)) {
-        getCanvasInputItemsForNode(canvasItem, sourceItems)
-          .flatMap(inputItem => getCanvasAgentVisualReferences(inputItem))
+        getCanvasAgentVisualReferencesForNodeInputs(canvasItem, sourceItems)
           .forEach(reference => {
             if (!references.some(existing => existing.id === reference.id)) references.push(reference);
           });
@@ -20391,6 +21050,38 @@ useEffect(() => {
         const selectedInputIds = requestedInputs.length > 0 ? requestedInputs : getSelectedCanvasAiInputIds();
         const rawSteps = Array.isArray(args.steps) ? args.steps : [];
 
+        if (isCanvasProductDetailsWorkflowIntent(label, hint, rawSteps)) {
+          const workflow = normalizeCanvasWorkflowTemplate(buildCanvasProductDetailsWorkflowTemplate({
+            label,
+            hint,
+            steps: rawSteps,
+            provider: canvasAiProvider,
+            model: getCanvasAiDefaultModel(canvasAiProvider),
+          }));
+          if (!workflow) throw new Error('详情页五图 workflow 编译失败');
+          const validation = validateCanvasWorkflowTemplate(workflow);
+          if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
+          if (validation.warnings.length > 0) console.warn('Product details workflow validation warnings:', validation.warnings, workflow);
+          const inputBounds = selectedInputIds.length > 0 ? getCanvasItemsBounds(selectedInputIds) : null;
+          const base = inputBounds
+            ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
+            : getCanvasDropPosition(0);
+          const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, selectedInputIds);
+          if (!moduleNode) throw new Error('详情页五图 workflow 模块创建失败');
+          setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
+          if (appendCanvasItems([moduleNode], 'Agent 创建详情页五图 workflow') <= 0) throw new Error('添加详情页五图 workflow 模块失败');
+          updateCanvasSelection([moduleNode.id]);
+          if (args.autoRun === true) await generateCanvasWorkflowModuleNode(moduleNode.id);
+          return {
+            workflowId: workflow.id,
+            nodeId: moduleNode.id,
+            templateId: 'product_details_five_images',
+            stages: [['product_refs'], ['product_strategy'], [...CANVAS_PRODUCT_DETAILS_NODE_IDS]],
+            inputs: selectedInputIds,
+            autoRun: args.autoRun === true,
+          };
+        }
+
         if (rawSteps.length === 0) {
           const draft = buildCanvasWorkflowSaveDraftFromSelection(label);
           if (!draft) throw new Error('创建工作流需要 steps，或先选中要封装的节点');
@@ -20517,18 +21208,20 @@ useEffect(() => {
             item: {
               id: stepId,
               type: 'text',
-              content: prompt,
+              content: prompt.length > 120 ? '' : prompt,
               name: stepLabel,
               createdAt: 0,
               isQuickAccess: false,
             },
             inputs,
             acceptsExternalInputs: inputs.length === 0,
+            externalInputTypes: inputs.length === 0 ? ['image', 'text'] : undefined,
+            outputType: count > 1 ? 'image[]' : 'image',
             ai: {
               type: 'image-generator',
               provider: canvasAiProvider,
               model: getCanvasAiDefaultModel(canvasAiProvider),
-              prompt,
+              prompt: undefined,
               presetLabel: stepLabel,
               presetPrompt: prompt,
               aspectRatio,
@@ -20563,17 +21256,20 @@ useEffect(() => {
             item: {
               id: stepId,
               type: 'text',
-              content: fallbackPrompt,
+              content: fallbackPrompt.length > 120 ? '' : fallbackPrompt,
               name: '最终输出',
               createdAt: 0,
               isQuickAccess: false,
             },
             inputs: previousConnectableId ? [previousConnectableId] : [],
+            acceptsExternalInputs: !previousConnectableId,
+            externalInputTypes: !previousConnectableId ? ['image', 'text'] : undefined,
+            outputType: 'image',
             ai: {
               type: 'image-generator',
               provider: canvasAiProvider,
               model: getCanvasAiDefaultModel(canvasAiProvider),
-              prompt: fallbackPrompt,
+              prompt: undefined,
               presetLabel: '最终输出',
               presetPrompt: fallbackPrompt,
               aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
@@ -20585,13 +21281,17 @@ useEffect(() => {
           });
         }
 
-        const workflow: CanvasWorkflowTemplate = {
+        const workflow = normalizeCanvasWorkflowTemplate({
           id: 'custom-workflow-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
           label,
           hint,
           nodes: workflowNodes,
           createdAt: Date.now(),
-        };
+        });
+        if (!workflow) throw new Error('Workflow 编译失败');
+        const validation = validateCanvasWorkflowTemplate(workflow);
+        if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
+        if (validation.warnings.length > 0) console.warn('Agent workflow validation warnings:', validation.warnings, workflow);
         const inputBounds = selectedInputIds.length > 0 ? getCanvasItemsBounds(selectedInputIds) : null;
         const base = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
@@ -20721,7 +21421,7 @@ useEffect(() => {
         return '上游文字 ' + (index + 1) + '（' + (item.item.name || item.id) + '）：\n' + content;
       })
       .filter(Boolean);
-    const visualReferences = inputItems.flatMap(item => getCanvasAgentVisualReferences(item));
+    const visualReferences = getCanvasAgentVisualReferencesForNodeInputs(latestTarget, getSourceItems());
     let preparedReferences: AgentCanvasVisualReference[] = [];
 
     if (visualReferences.length > 0) {
@@ -23233,7 +23933,7 @@ useEffect(() => {
                 <div
                   ref={!isCanvasMode ? drawerScrollRef : undefined}
                   onScroll={!isCanvasMode ? handleDrawerContentScroll : undefined}
-                  className={`flex-1 relative flex ${isCanvasMode ? 'min-h-0 min-w-0 flex-row' : 'flex-col'} ${
+                  className={`min-h-0 min-w-0 flex-1 relative flex ${isCanvasMode ? 'flex-row' : 'flex-col'} ${
                   isCanvasMode
                     ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
                     : 'overflow-y-auto p-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
@@ -26894,8 +27594,12 @@ useEffect(() => {
                     </div>
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
+                    <>
+                    {canVirtualizeDrawerGrid && drawerVirtualWindow.top > 0 && (
+                      <div style={{ height: drawerVirtualWindow.top, flexShrink: 0 }} />
+                    )}
                     <div
-                      className="grid gap-2.5 items-start"
+                      className="grid shrink-0 gap-2.5 items-start"
                       onWheel={handleDrawerCardWheel}
                       style={activeTab === 'alchemy'
                         ? { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${ALCHEMY_CARD_WIDTH}px), 1fr))` }
@@ -26966,7 +27670,7 @@ useEffect(() => {
                                     pushDrawerUndoSnapshot(item.isQuickAccess ? '取消快速访问' : '固定快速访问');
                                     setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: !i.isQuickAccess } : i));
                                   }}
-                                  onImageClick={(url: string) => openSelectedImagePreview(url)}
+                                  onImageClick={() => openSelectedImagePreview(item)}
                                   onVideoClick={() => {
                                     if (item.path) openSelectedVideoPreview({ url: convertFileSrc(item.path), path: item.path });
                                   }}
@@ -26974,6 +27678,14 @@ useEffect(() => {
                                   onToggleSelect={(event?: React.MouseEvent) => handleDrawerItemSelect(item.id, event)}
                                   onTextEditStart={beginDrawerTextEditUndo}
                                   onTextEditEnd={endDrawerTextEditUndo}
+                                  optimizeLargeList={optimizeLargeDrawerList}
+                                  preferFullImageSource={
+                                    displayItems.length < DRAWER_VIRTUALIZATION_THRESHOLD
+                                    || item.type !== 'image'
+                                    || !!item.thumbnail
+                                    || item.folderId === AI_GENERATED_FOLDER_ID
+                                    || String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
+                                  }
                                   onUpdateRemark={(id: string, newRemark: string, nextRemarks?: string[]) => {
                                     const cleanRemarks = Array.isArray(nextRemarks) ? nextRemarks.filter(Boolean) : undefined;
                                     pushDrawerUndoSnapshot('修改标签备注');
@@ -27011,13 +27723,8 @@ useEffect(() => {
                                   showAlchemy={isAlchemyCandidate(item as AlchemyBufferItem)}
                                   onAlchemy={() => runAiAlchemyFromCard(item as AlchemyBufferItem)}
                                   onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
-                                  optimizeLargeList={optimizeLargeDrawerList}
                                   selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}`}
                                   actionContext={drawerCardActionContext}
-                                  preferFullImageSource={
-                                    item.folderId === AI_GENERATED_FOLDER_ID ||
-                                    String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
-                                  }
                                 />
                               </>
                             )}
@@ -27025,6 +27732,10 @@ useEffect(() => {
                         ))}
                       </AnimatePresence>
                     </div>
+                    {canVirtualizeDrawerGrid && drawerVirtualWindow.bottom > 0 && (
+                      <div style={{ height: drawerVirtualWindow.bottom, flexShrink: 0 }} />
+                    )}
+                    </>
                   )}
                   {!isUtilityActiveTab && hasMoreDisplayItems && (
                     <div className="mt-4 flex justify-center">

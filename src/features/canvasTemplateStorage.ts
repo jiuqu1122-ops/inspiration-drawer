@@ -16,6 +16,12 @@ export const PRODUCT_RENDER_PRESET_ID = 'product-render';
 
 const canvasWorkflowNormalizeCache = new WeakMap<object, CanvasWorkflowTemplate | null>();
 
+const isCanvasWorkflowLongDuplicateText = (a?: string, b?: string) => {
+  const left = String(a || '').trim();
+  const right = String(b || '').trim();
+  return left.length > 120 && left === right;
+};
+
 export const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
 
 export const isLegacyProductRenderPrompt = (prompt: string) => (
@@ -98,6 +104,19 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       ? rawItem.type
       : 'text';
     const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
+    const rawAi = node.ai && typeof node.ai === 'object'
+      ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
+      : undefined;
+    const aiPrompt = String(rawAi?.prompt || '').trim();
+    const aiPresetPrompt = String(rawAi?.presetPrompt || '').trim();
+    const itemContent = String(rawItem.content || '');
+    const executablePrompt = rawAi?.type === 'image-generator'
+      ? (aiPresetPrompt || aiPrompt || itemContent.trim())
+      : '';
+    const shouldCompactItemContent = rawAi?.type === 'image-generator'
+      && isCanvasWorkflowLongDuplicateText(itemContent, executablePrompt);
+    const shouldCompactAiPrompt = rawAi?.type === 'image-generator'
+      && isCanvasWorkflowLongDuplicateText(aiPrompt, executablePrompt);
     return {
       id,
       x: Number(node.x) || 0,
@@ -107,7 +126,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       item: {
         id,
         type: itemType,
-        content: String(rawItem.content || ''),
+        content: shouldCompactItemContent ? '' : itemContent,
         name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : undefined,
         path: typeof rawItem.path === 'string' ? rawItem.path : undefined,
         url: typeof rawItem.url === 'string' ? rawItem.url : undefined,
@@ -127,9 +146,25 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       fixedInput: typeof node.fixedInput === 'boolean'
         ? node.fixedInput
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
-      ai: node.ai && typeof node.ai === 'object'
+      textMode: node.textMode === 'plain' ? 'plain' : node.textMode === 'agent' ? 'agent' : undefined,
+      acceptsExternalInputs: node.acceptsExternalInputs === true,
+      externalInputTypes: Array.isArray(node.externalInputTypes)
+        ? node.externalInputTypes
+          .map(type => String(type || '').trim())
+          .filter((type): type is 'image' | 'text' | 'video' => type === 'image' || type === 'text' || type === 'video')
+        : undefined,
+      outputType: node.outputType === 'image'
+        || node.outputType === 'image[]'
+        || node.outputType === 'text'
+        || node.outputType === 'video'
+        || node.outputType === 'video[]'
+        ? node.outputType
+        : undefined,
+      ai: rawAi
         ? {
-          ...(node.ai as Partial<NonNullable<CanvasImageItem['ai']>>),
+          ...rawAi,
+          prompt: shouldCompactAiPrompt ? undefined : rawAi.prompt,
+          presetPrompt: rawAi.type === 'image-generator' && executablePrompt ? executablePrompt : rawAi.presetPrompt,
           outputs: [],
           status: 'idle' as const,
           error: undefined,

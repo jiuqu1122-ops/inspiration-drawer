@@ -296,7 +296,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_create_workflow',
-      description: '创建并插入一个新的可复用工作流模块。仅当用户明确要求“封装/复用/多阶段工作流/自动化流程”时使用；如果只是基于参考图生成脚本/分镜/分析文本，优先使用单个 canvas_create_text_agent，不要拆成多个文字节点。',
+      description: '创建并插入一个新的可复用工作流模块。仅当用户明确要求“封装/复用/多阶段工作流/自动化流程”时使用；如果是详情页五图/产品一致性 workflow，只传 compact steps 和 inputIds，应用会本地编译真实 product_refs -> product_strategy -> 五图 DAG。',
       parameters: objectSchema({
         label: { type: 'string' },
         hint: { type: 'string' },
@@ -767,7 +767,7 @@ Agent 执行补充：
 - 用户说“节点预设、Prompt 预设、保存成预设、创建预设、修改预设”时，必须使用 canvas_create_preset；不要把预设内容写进 canvas_add_text。
 - 用户说“识别/分析参考图、根据图片输出信息、写视频脚本、写分镜脚本、提炼卖点/风格/材质/镜头语言”时，先基于 visualReferences 中的参考图进行分析，然后必须使用 canvas_add_text 把结果落成文字节点；不要只在聊天里口头回复。
 - 如果 selectedItems 为空但 visualReferences 有图片，说明画布上已有可用参考图；用户说“参考图/这张图/这些图”时默认使用这些视觉参考。
-- 用户明确要求“封装/复用/多阶段工作流/自动化流程/套流程”时，才使用 canvas_create_workflow；如果目标只是基于参考图生成脚本、分镜脚本、文案或分析文本，使用单个 canvas_create_text_agent，不要拆成多个文字节点。
+- 用户明确要求“封装/复用/多阶段工作流/自动化流程/套流程”时，才使用 canvas_create_workflow；如果是“详情页五图/产品一致性/电商详情页”类工作流，只返回 template 意图所需的 compact steps，不要输出完整 workflow JSON，应用会自动创建 product_refs 外部图片输入、product_strategy 可执行文字分析节点，并让五个生图节点同时依赖 product_refs 和 product_strategy。
 - 用户说“生成、制作、渲染、效果图、出图、做一张图/视频”时，使用 canvas_create_generator，并把 autoRun 设为 true，让应用创建节点后立即开始生成。
 - 用户只说“创建生成节点、放一个预设节点”但没有要求立刻出结果时，使用 canvas_create_generator 并把 autoRun 设为 false。
 - 如果用户要求最终产出视频/动画，默认链路是：先创建一个 canvas_create_text_agent 连接参考图生成脚本/分镜，再创建 mediaType=video 的 canvas_create_generator，并把 inputIds 显式连接到这个脚本/分镜节点；不要只创建图片节点或文字节点就结束。

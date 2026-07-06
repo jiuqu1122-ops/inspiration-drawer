@@ -3,15 +3,19 @@
 
 mod agent;
 mod commands;
+mod db;
 mod license;
 mod native_drag;
 mod native_drop;
+mod repositories;
+mod services;
 
 use hmac::{Hmac, Mac};
 use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fs;
 use std::fs::File;
@@ -25,7 +29,7 @@ use std::process::{Child, Command as SysCommand, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
@@ -40,6 +44,7 @@ use url::Url;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const APP_USER_AGENT: &str = "inspiration-drawer";
 const MAX_STORED_DATA_THUMBNAIL_CHARS: usize = 96 * 1024;
+const DEFAULT_CANVAS_ID: &str = "default";
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
@@ -79,17 +84,36 @@ struct AppUpdateDownloadSource {
     url: Url,
 }
 
+struct AppUpdateManifestProbe {
+    endpoint: Url,
+    raw_json: serde_json::Value,
+    status_code: u16,
+}
+
 #[derive(Clone, serde::Serialize)]
 struct AppUpdateProgress {
     #[serde(rename = "progressId")]
     progress_id: String,
     stage: String,
     message: String,
+    #[serde(rename = "updaterKind")]
+    updater_kind: Option<String>,
+    #[serde(rename = "manifestEndpoint")]
+    manifest_endpoint: Option<String>,
+    #[serde(rename = "statusCode")]
+    status_code: Option<u16>,
     version: Option<String>,
+    #[serde(rename = "currentVersion")]
+    current_version: Option<String>,
+    available: Option<bool>,
     #[serde(rename = "sourceName")]
     source_name: Option<String>,
     #[serde(rename = "sourceUrl")]
     source_url: Option<String>,
+    #[serde(rename = "selectedUrl")]
+    selected_url: Option<String>,
+    #[serde(rename = "errorMessage")]
+    error_message: Option<String>,
     loaded: u64,
     total: u64,
     progress: f64,
@@ -100,6 +124,28 @@ struct AppUpdateInstallResult {
     available: bool,
     version: Option<String>,
     installed: bool,
+}
+
+#[derive(serde::Serialize)]
+struct LocalMediaMetadata {
+    path: String,
+    size: u64,
+    #[serde(rename = "modifiedAt")]
+    modified_at: u64,
+    fingerprint: String,
+}
+
+#[derive(serde::Serialize)]
+struct ImageThumbnailFileResult {
+    path: String,
+    size: u32,
+    width: u32,
+    height: u32,
+    fingerprint: String,
+    #[serde(rename = "fileSize")]
+    file_size: u64,
+    #[serde(rename = "modifiedAt")]
+    modified_at: u64,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -961,6 +1007,90 @@ fn sha256_bytes_upper(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes)).to_ascii_uppercase()
 }
 
+fn app_update_manifest_endpoints_from_config() -> Result<Vec<Url>, String> {
+    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+        .map_err(|e| format!("manifest 格式不符合预期：读取 tauri.conf.json 失败: {e}"))?;
+    let endpoints = config
+        .get("plugins")
+        .and_then(|plugins| plugins.get("updater"))
+        .and_then(|updater| updater.get("endpoints"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "manifest 格式不符合预期：未配置 plugins.updater.endpoints".to_string())?;
+
+    let mut urls = Vec::new();
+    let mut invalid = Vec::new();
+    for endpoint in endpoints {
+        let Some(raw) = endpoint.as_str() else {
+            invalid.push(endpoint.to_string());
+            continue;
+        };
+        let normalized = normalize_manifest_url(raw);
+        match Url::parse(&normalized) {
+            Ok(url) => {
+                if !urls.iter().any(|existing| existing == &url) {
+                    urls.push(url);
+                }
+            }
+            Err(err) => invalid.push(format!("{normalized} ({err})")),
+        }
+    }
+
+    if urls.is_empty() {
+        return Err(format!(
+            "manifest 格式不符合预期：没有合法 manifest endpoint{}",
+            if invalid.is_empty() {
+                String::new()
+            } else {
+                format!("；非法项：{}", invalid.join("；"))
+            }
+        ));
+    }
+    Ok(urls)
+}
+
+fn extract_app_update_version(raw_json: &serde_json::Value) -> Option<String> {
+    raw_json
+        .get("version")
+        .or_else(|| raw_json.get("latest"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn parse_app_version_segments(version: &str) -> Result<Vec<u64>, String> {
+    let segments = version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            segment
+                .parse::<u64>()
+                .map_err(|e| format!("版本号比较失败：无法解析版本号 {version:?} 中的 {segment:?}: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if segments.is_empty() {
+        return Err(format!("版本号比较失败：无法从版本号 {version:?} 提取数字段"));
+    }
+    Ok(segments)
+}
+
+fn compare_app_versions(remote: &str, current: &str) -> Result<CmpOrdering, String> {
+    let remote_segments = parse_app_version_segments(remote)?;
+    let current_segments = parse_app_version_segments(current)?;
+    let len = remote_segments.len().max(current_segments.len());
+    for index in 0..len {
+        let left = *remote_segments.get(index).unwrap_or(&0);
+        let right = *current_segments.get(index).unwrap_or(&0);
+        match left.cmp(&right) {
+            CmpOrdering::Equal => {}
+            other => return Ok(other),
+        }
+    }
+    Ok(CmpOrdering::Equal)
+}
+
 fn normalize_manifest_url(raw: &str) -> String {
     let trimmed = raw.trim();
     if let Some((_, rest)) = trimmed.split_once("](") {
@@ -1054,7 +1184,7 @@ fn preferred_app_update_platform_keys(raw_json: &serde_json::Value) -> Vec<Strin
 
 fn collect_app_update_sources(
     raw_json: &serde_json::Value,
-    fallback_url: &Url,
+    fallback_url: Option<&Url>,
 ) -> Vec<AppUpdateDownloadSource> {
     let mut sources = Vec::new();
     push_app_update_sources_from_urls_value(&mut sources, raw_json.get("urls"));
@@ -1082,7 +1212,9 @@ fn collect_app_update_sources(
         raw_json.get("url").and_then(serde_json::Value::as_str),
     );
 
-    if !sources.iter().any(|source| source.url == *fallback_url) {
+    if let Some(fallback_url) = fallback_url.filter(|url| {
+        !sources.iter().any(|source| source.url == **url)
+    }) {
         push_app_update_source(
             &mut sources,
             Some("Manifest url"),
@@ -1117,7 +1249,11 @@ fn extract_app_update_sha256(raw_json: &serde_json::Value) -> Option<String> {
 fn extract_app_update_size(raw_json: &serde_json::Value) -> Option<u64> {
     find_app_update_platform_field(raw_json, "size")
         .or_else(|| raw_json.get("size"))
-        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<u64>().ok()))
+        })
 }
 
 fn app_update_manifest_for_source(raw_json: &serde_json::Value, source: &Url) -> serde_json::Value {
@@ -1202,6 +1338,42 @@ fn emit_app_update_progress(
     loaded: u64,
     total: u64,
 ) {
+    emit_app_update_progress_detail(
+        app_handle,
+        progress_id,
+        stage,
+        message,
+        version,
+        source,
+        loaded,
+        total,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+}
+
+fn emit_app_update_progress_detail(
+    app_handle: &tauri::AppHandle,
+    progress_id: &str,
+    stage: &str,
+    message: impl Into<String>,
+    version: Option<&str>,
+    source: Option<&AppUpdateDownloadSource>,
+    loaded: u64,
+    total: u64,
+    updater_kind: Option<&str>,
+    manifest_endpoint: Option<&str>,
+    status_code: Option<u16>,
+    current_version: Option<&str>,
+    available: Option<bool>,
+    selected_url: Option<&str>,
+    error_message: Option<&str>,
+) {
     let progress = if total > 0 {
         (loaded as f64 / total as f64).clamp(0.0, 1.0)
     } else {
@@ -1211,14 +1383,217 @@ fn emit_app_update_progress(
         progress_id: progress_id.to_string(),
         stage: stage.to_string(),
         message: message.into(),
+        updater_kind: updater_kind.map(str::to_string),
+        manifest_endpoint: manifest_endpoint.map(str::to_string),
+        status_code,
         version: version.map(str::to_string),
+        current_version: current_version.map(str::to_string),
+        available,
         source_name: source.map(|source| source.name.clone()),
         source_url: source.map(|source| source.url.as_str().to_string()),
+        selected_url: selected_url.map(str::to_string),
+        error_message: error_message.map(str::to_string),
         loaded,
         total,
         progress,
     };
     let _ = app_handle.emit("app-update-progress", payload);
+}
+
+fn fetch_app_update_manifest_probe(
+    app_handle: &tauri::AppHandle,
+    progress_id: &str,
+    timeout: Duration,
+) -> Result<AppUpdateManifestProbe, String> {
+    let endpoints = app_update_manifest_endpoints_from_config()?;
+    let timeout_secs = timeout.as_secs().max(1);
+    let client = build_http_client(Some(app_handle), None, timeout_secs)?;
+    let mut failures = Vec::new();
+
+    for endpoint in endpoints {
+        let endpoint_text = endpoint.as_str().to_string();
+        emit_app_update_progress_detail(
+            app_handle,
+            progress_id,
+            "manifest-request",
+            format!("请求 manifest: {endpoint_text}"),
+            None,
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&endpoint_text),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        eprintln!("[app-update] updater=自定义多源 updater manifest endpoint={endpoint_text}");
+
+        let response = match client.get(endpoint.clone()).send() {
+            Ok(response) => response,
+            Err(err) => {
+                let message = format!("manifest 请求失败：{endpoint_text}；原始错误: {err}");
+                eprintln!("[app-update] {message}");
+                emit_app_update_progress_detail(
+                    app_handle,
+                    progress_id,
+                    "manifest-request-failed",
+                    &message,
+                    None,
+                    None,
+                    0,
+                    0,
+                    Some("自定义多源 updater"),
+                    Some(&endpoint_text),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&err.to_string()),
+                );
+                failures.push(message);
+                continue;
+            }
+        };
+
+        let status = response.status();
+        let status_code = status.as_u16();
+        emit_app_update_progress_detail(
+            app_handle,
+            progress_id,
+            "manifest-response",
+            format!("manifest HTTP 状态码: {status_code}"),
+            None,
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&endpoint_text),
+            Some(status_code),
+            None,
+            None,
+            None,
+            None,
+        );
+        eprintln!("[app-update] manifest endpoint={endpoint_text} http_status={status_code}");
+
+        if !status.is_success() {
+            let message = format!("manifest 请求失败：{endpoint_text}；HTTP 状态码: {status_code}");
+            emit_app_update_progress_detail(
+                app_handle,
+                progress_id,
+                "manifest-http-failed",
+                &message,
+                None,
+                None,
+                0,
+                0,
+                Some("自定义多源 updater"),
+                Some(&endpoint_text),
+                Some(status_code),
+                None,
+                None,
+                None,
+                Some(&message),
+            );
+            failures.push(message);
+            continue;
+        }
+
+        let body = match response.text() {
+            Ok(body) => body,
+            Err(err) => {
+                let message = format!("manifest 请求失败：读取响应体失败 {endpoint_text}；原始错误: {err}");
+                eprintln!("[app-update] {message}");
+                failures.push(message.clone());
+                emit_app_update_progress_detail(
+                    app_handle,
+                    progress_id,
+                    "manifest-body-failed",
+                    &message,
+                    None,
+                    None,
+                    0,
+                    0,
+                    Some("自定义多源 updater"),
+                    Some(&endpoint_text),
+                    Some(status_code),
+                    None,
+                    None,
+                    None,
+                    Some(&err.to_string()),
+                );
+                continue;
+            }
+        };
+
+        let raw_json = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(raw_json) => raw_json,
+            Err(err) => {
+                let snippet = body.chars().take(180).collect::<String>();
+                let message = format!(
+                    "manifest 不是合法 JSON：{endpoint_text}；原始错误: {err}；响应开头: {snippet}"
+                );
+                eprintln!("[app-update] {message}");
+                failures.push(message.clone());
+                emit_app_update_progress_detail(
+                    app_handle,
+                    progress_id,
+                    "manifest-json-failed",
+                    &message,
+                    None,
+                    None,
+                    0,
+                    0,
+                    Some("自定义多源 updater"),
+                    Some(&endpoint_text),
+                    Some(status_code),
+                    None,
+                    None,
+                    None,
+                    Some(&err.to_string()),
+                );
+                continue;
+            }
+        };
+
+        let parsed_version = extract_app_update_version(&raw_json);
+        emit_app_update_progress_detail(
+            app_handle,
+            progress_id,
+            "manifest-json-ok",
+            "manifest JSON 解析成功",
+            parsed_version.as_deref(),
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&endpoint_text),
+            Some(status_code),
+            None,
+            None,
+            None,
+            None,
+        );
+        eprintln!("[app-update] manifest json parse ok endpoint={endpoint_text}");
+
+        return Ok(AppUpdateManifestProbe {
+            endpoint,
+            raw_json,
+            status_code,
+        });
+    }
+
+    Err(format!(
+        "manifest 请求失败：所有 endpoint 均不可用或不是合法 JSON。\n{}",
+        failures
+            .iter()
+            .map(|failure| format!("- {failure}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
 }
 
 async fn download_app_update_from_source(
@@ -1232,6 +1607,11 @@ async fn download_app_update_from_source(
 ) -> Result<(tauri_plugin_updater::Update, Vec<u8>), String> {
     let manifest = app_update_manifest_for_source(raw_json, &source.url);
     let (local_endpoint, server_handle) = serve_one_app_update_manifest(manifest)?;
+    eprintln!(
+        "[app-update] internal official Tauri updater check local_manifest={} selected_download_url={}",
+        local_endpoint,
+        source.url
+    );
     let update_result = app_handle
         .updater_builder()
         .endpoints(vec![local_endpoint])
@@ -1317,56 +1697,183 @@ async fn check_and_install_app_update_mirrors(
     let download_timeout =
         Duration::from_millis(download_timeout_ms.unwrap_or(120_000).clamp(5_000, 900_000));
 
-    emit_app_update_progress(
+    let current_version = app_handle.package_info().version.to_string();
+
+    emit_app_update_progress_detail(
         &app_handle,
         &progress_id,
         "checking",
-        "正在检查更新",
+        "正在检查更新（自定义多源 updater）",
         None,
         None,
         0,
         0,
+        Some("自定义多源 updater"),
+        None,
+        None,
+        Some(&current_version),
+        None,
+        None,
+        None,
     );
 
-    let update = app_handle
-        .updater_builder()
-        .timeout(check_timeout)
-        .build()
-        .map_err(|e| format!("初始化更新检查失败: {e}"))?
-        .check()
-        .await
-        .map_err(|e| format!("检查更新失败: {e}"))?;
+    eprintln!("[app-update] updater=自定义多源 updater current_version={current_version}");
 
-    let Some(update) = update else {
-        emit_app_update_progress(
+    let manifest_probe = fetch_app_update_manifest_probe(&app_handle, &progress_id, check_timeout)?;
+    let manifest_endpoint = manifest_probe.endpoint.as_str().to_string();
+    let raw_json = manifest_probe.raw_json;
+    let version = extract_app_update_version(&raw_json).ok_or_else(|| {
+        let message = "manifest 格式不符合预期：缺少 version 字段".to_string();
+        emit_app_update_progress_detail(
+            &app_handle,
+            &progress_id,
+            "manifest-format-failed",
+            &message,
+            None,
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&manifest_endpoint),
+            Some(manifest_probe.status_code),
+            Some(&current_version),
+            None,
+            None,
+            Some(&message),
+        );
+        message
+    })?;
+
+    let version_order = compare_app_versions(&version, &current_version).map_err(|err| {
+        emit_app_update_progress_detail(
+            &app_handle,
+            &progress_id,
+            "version-compare-failed",
+            &err,
+            Some(&version),
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&manifest_endpoint),
+            Some(manifest_probe.status_code),
+            Some(&current_version),
+            None,
+            None,
+            Some(&err),
+        );
+        err
+    })?;
+    let has_update = version_order == CmpOrdering::Greater;
+    emit_app_update_progress_detail(
+        &app_handle,
+        &progress_id,
+        "version-compared",
+        format!(
+            "版本比较完成：远端 {version} / 本地 {current_version} / 有新版本: {}",
+            if has_update { "是" } else { "否" }
+        ),
+        Some(&version),
+        None,
+        0,
+        0,
+        Some("自定义多源 updater"),
+        Some(&manifest_endpoint),
+        Some(manifest_probe.status_code),
+        Some(&current_version),
+        Some(has_update),
+        None,
+        None,
+    );
+    eprintln!(
+        "[app-update] manifest endpoint={manifest_endpoint} parsed_version={version} current_version={current_version} has_update={has_update}"
+    );
+
+    if !has_update {
+        emit_app_update_progress_detail(
             &app_handle,
             &progress_id,
             "up-to-date",
             "当前已是最新版本",
-            None,
+            Some(&version),
             None,
             0,
             0,
+            Some("自定义多源 updater"),
+            Some(&manifest_endpoint),
+            Some(manifest_probe.status_code),
+            Some(&current_version),
+            Some(false),
+            None,
+            None,
         );
         return Ok(AppUpdateInstallResult {
             available: false,
-            version: None,
+            version: Some(version),
             installed: false,
         });
-    };
-
-    let version = update.version.clone();
-    let expected_sha256 = extract_app_update_sha256(&update.raw_json).ok_or_else(|| {
-        "更新配置缺少 sha256，已拒绝安装。请重新生成 latest.json/update.json。".to_string()
-    })?;
-    let expected_size = extract_app_update_size(&update.raw_json);
-    let sources = collect_app_update_sources(&update.raw_json, &update.download_url);
-
-    if sources.is_empty() {
-        return Err("更新配置没有可用下载地址 url/urls".to_string());
     }
 
-    emit_app_update_progress(
+    let expected_sha256 = extract_app_update_sha256(&raw_json).ok_or_else(|| {
+        let message = "manifest 格式不符合预期：更新配置缺少 sha256，已拒绝安装。自定义多源 updater 不能用 signature 替代 sha256。".to_string();
+        emit_app_update_progress_detail(
+            &app_handle,
+            &progress_id,
+            "manifest-format-failed",
+            &message,
+            Some(&version),
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&manifest_endpoint),
+            Some(manifest_probe.status_code),
+            Some(&current_version),
+            Some(true),
+            None,
+            Some(&message),
+        );
+        message
+    })?;
+    let expected_size = extract_app_update_size(&raw_json);
+    let sources = collect_app_update_sources(&raw_json, None);
+
+    if sources.is_empty() {
+        let message = "manifest 格式不符合预期：更新配置没有可用下载地址 urls / platforms.windows-x86_64.url / url".to_string();
+        emit_app_update_progress_detail(
+            &app_handle,
+            &progress_id,
+            "manifest-format-failed",
+            &message,
+            Some(&version),
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&manifest_endpoint),
+            Some(manifest_probe.status_code),
+            Some(&current_version),
+            Some(true),
+            None,
+            Some(&message),
+        );
+        return Err(message);
+    }
+
+    eprintln!(
+        "[app-update] manifest fields ok endpoint={manifest_endpoint} version={version} sha256={} size={} urls={}",
+        expected_sha256,
+        expected_size
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        sources
+            .iter()
+            .map(|source| source.url.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    emit_app_update_progress_detail(
         &app_handle,
         &progress_id,
         "found",
@@ -1375,11 +1882,18 @@ async fn check_and_install_app_update_mirrors(
         None,
         0,
         expected_size.unwrap_or(0),
+        Some("自定义多源 updater"),
+        Some(&manifest_endpoint),
+        Some(manifest_probe.status_code),
+        Some(&current_version),
+        Some(true),
+        None,
+        None,
     );
 
     let mut failures = Vec::new();
     for (index, source) in sources.iter().enumerate() {
-        emit_app_update_progress(
+        emit_app_update_progress_detail(
             &app_handle,
             &progress_id,
             "source-started",
@@ -1393,9 +1907,16 @@ async fn check_and_install_app_update_mirrors(
             Some(source),
             0,
             expected_size.unwrap_or(0),
+            Some("自定义多源 updater"),
+            Some(&manifest_endpoint),
+            Some(manifest_probe.status_code),
+            Some(&current_version),
+            Some(true),
+            Some(source.url.as_str()),
+            None,
         );
         eprintln!(
-            "[app-update] trying source {}/{}: {} <{}>",
+            "[app-update] selected download url source {}/{}: {} <{}>",
             index + 1,
             sources.len(),
             source.name,
@@ -1405,7 +1926,7 @@ async fn check_and_install_app_update_mirrors(
         match download_app_update_from_source(
             &app_handle,
             &progress_id,
-            &update.raw_json,
+            &raw_json,
             source,
             &version,
             check_timeout,
@@ -1423,7 +1944,7 @@ async fn check_and_install_app_update_mirrors(
                             bytes.len()
                         );
                         eprintln!("[app-update] {message}");
-                        emit_app_update_progress(
+                        emit_app_update_progress_detail(
                             &app_handle,
                             &progress_id,
                             "source-failed",
@@ -1432,6 +1953,13 @@ async fn check_and_install_app_update_mirrors(
                             Some(source),
                             0,
                             expected_size,
+                            Some("自定义多源 updater"),
+                            Some(&manifest_endpoint),
+                            Some(manifest_probe.status_code),
+                            Some(&current_version),
+                            Some(true),
+                            Some(source.url.as_str()),
+                            Some(&message),
                         );
                         failures.push(message);
                         continue;
@@ -1445,7 +1973,7 @@ async fn check_and_install_app_update_mirrors(
                         source.name, expected_sha256, actual_sha256
                     );
                     eprintln!("[app-update] {message}");
-                    emit_app_update_progress(
+                    emit_app_update_progress_detail(
                         &app_handle,
                         &progress_id,
                         "source-failed",
@@ -1454,12 +1982,19 @@ async fn check_and_install_app_update_mirrors(
                         Some(source),
                         0,
                         expected_size.unwrap_or(bytes.len() as u64),
+                        Some("自定义多源 updater"),
+                        Some(&manifest_endpoint),
+                        Some(manifest_probe.status_code),
+                        Some(&current_version),
+                        Some(true),
+                        Some(source.url.as_str()),
+                        Some(&message),
                     );
                     failures.push(message);
                     continue;
                 }
 
-                emit_app_update_progress(
+                emit_app_update_progress_detail(
                     &app_handle,
                     &progress_id,
                     "sha256-verified",
@@ -1468,8 +2003,15 @@ async fn check_and_install_app_update_mirrors(
                     Some(source),
                     bytes.len() as u64,
                     expected_size.unwrap_or(bytes.len() as u64),
+                    Some("自定义多源 updater"),
+                    Some(&manifest_endpoint),
+                    Some(manifest_probe.status_code),
+                    Some(&current_version),
+                    Some(true),
+                    Some(source.url.as_str()),
+                    None,
                 );
-                emit_app_update_progress(
+                emit_app_update_progress_detail(
                     &app_handle,
                     &progress_id,
                     "installing",
@@ -1478,14 +2020,40 @@ async fn check_and_install_app_update_mirrors(
                     Some(source),
                     bytes.len() as u64,
                     expected_size.unwrap_or(bytes.len() as u64),
+                    Some("自定义多源 updater"),
+                    Some(&manifest_endpoint),
+                    Some(manifest_probe.status_code),
+                    Some(&current_version),
+                    Some(true),
+                    Some(source.url.as_str()),
+                    None,
                 );
                 eprintln!(
                     "[app-update] installing update {version} from {}",
                     source.name
                 );
-                source_update
-                    .install(bytes)
-                    .map_err(|e| format!("安装更新失败: {e}"))?;
+                if let Err(err) = source_update.install(bytes) {
+                    let message = format!("安装更新失败: {err}");
+                    eprintln!("[app-update] {message}");
+                    emit_app_update_progress_detail(
+                        &app_handle,
+                        &progress_id,
+                        "install-failed",
+                        &message,
+                        Some(&version),
+                        Some(source),
+                        0,
+                        expected_size.unwrap_or(0),
+                        Some("自定义多源 updater"),
+                        Some(&manifest_endpoint),
+                        Some(manifest_probe.status_code),
+                        Some(&current_version),
+                        Some(true),
+                        Some(source.url.as_str()),
+                        Some(&err.to_string()),
+                    );
+                    return Err(message);
+                }
 
                 return Ok(AppUpdateInstallResult {
                     available: true,
@@ -1496,7 +2064,7 @@ async fn check_and_install_app_update_mirrors(
             Err(err) => {
                 let message = format!("更新源 {} 失败: {err}", source.name);
                 eprintln!("[app-update] {message}");
-                emit_app_update_progress(
+                emit_app_update_progress_detail(
                     &app_handle,
                     &progress_id,
                     "source-failed",
@@ -1505,6 +2073,13 @@ async fn check_and_install_app_update_mirrors(
                     Some(source),
                     0,
                     expected_size.unwrap_or(0),
+                    Some("自定义多源 updater"),
+                    Some(&manifest_endpoint),
+                    Some(manifest_probe.status_code),
+                    Some(&current_version),
+                    Some(true),
+                    Some(source.url.as_str()),
+                    Some(&err),
                 );
                 failures.push(message);
             }
@@ -4914,6 +5489,96 @@ fn path_kind(path: String) -> Result<String, String> {
     }
 }
 
+fn is_supported_drop_media_path(path: &Path) -> bool {
+    matches!(
+        local_file_extension(path).as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "avif" | "svg"
+            | "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v"
+    )
+}
+
+fn collect_media_paths_recursive(path: &Path, output: &mut Vec<String>) -> Result<(), String> {
+    if path.is_file() {
+        if is_supported_drop_media_path(path) {
+            output.push(path.to_string_lossy().to_string());
+        }
+        return Ok(());
+    }
+    if !path.is_dir() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(path).map_err(|err| err.to_string())?;
+    for entry in entries.flatten() {
+        collect_media_paths_recursive(&entry.path(), output)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn collect_drop_media_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
+    let mut output = Vec::new();
+    let mut seen = HashSet::new();
+    for value in paths {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        collect_media_paths_recursive(Path::new(trimmed), &mut output)?;
+    }
+    output.retain(|path| seen.insert(path.to_ascii_lowercase()));
+    Ok(output)
+}
+
+fn local_media_metadata_impl(path: String) -> Result<LocalMediaMetadata, String> {
+    let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
+    if !normalized.is_file() {
+        return Err("not a local file".to_string());
+    }
+    let resolved = normalized.canonicalize().unwrap_or_else(|_| normalized.clone());
+    let metadata = fs::metadata(&resolved).map_err(|e| e.to_string())?;
+    let size = metadata.len();
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+
+    let mut file = File::open(&resolved).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"inspiration-drawer-fast-fingerprint-v1");
+    hasher.update(size.to_le_bytes());
+    hasher.update(modified_at.to_le_bytes());
+
+    let mut head = vec![0u8; 64 * 1024];
+    let head_len = file.read(&mut head).map_err(|e| e.to_string())?;
+    hasher.update(&head[..head_len]);
+
+    if size > 128 * 1024 {
+        use std::io::Seek;
+        use std::io::SeekFrom;
+        let tail_start = size.saturating_sub(64 * 1024);
+        file.seek(SeekFrom::Start(tail_start)).map_err(|e| e.to_string())?;
+        let mut tail = vec![0u8; 64 * 1024];
+        let tail_len = file.read(&mut tail).map_err(|e| e.to_string())?;
+        hasher.update(&tail[..tail_len]);
+    }
+
+    Ok(LocalMediaMetadata {
+        path: resolved.to_string_lossy().to_string(),
+        size,
+        modified_at,
+        fingerprint: hex::encode(hasher.finalize()),
+    })
+}
+
+#[tauri::command]
+async fn get_local_media_metadata(path: String) -> Result<LocalMediaMetadata, String> {
+    tauri::async_runtime::spawn_blocking(move || local_media_metadata_impl(path))
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn delete_local_file(path: String) -> Result<bool, String> {
     let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
@@ -5611,6 +6276,19 @@ pub(crate) fn get_user_data_dir(app_handle: &tauri::AppHandle) -> PathBuf {
     path
 }
 
+pub(crate) fn current_time_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn stable_hash_hex(value: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn emit_local_vision_model_progress(
     app_handle: &tauri::AppHandle,
     stage: &str,
@@ -5870,7 +6548,7 @@ fn compact_item_like_json(value: &mut serde_json::Value) {
     }
 }
 
-fn compact_items_payload(value: &mut serde_json::Value) {
+pub(crate) fn compact_items_payload(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(items) => {
             for item in items {
@@ -5941,10 +6619,203 @@ fn load_canvas_state(app_handle: tauri::AppHandle) -> Result<serde_json::Value, 
         let content = fs::read_to_string(path).unwrap_or_else(|_| "{}".to_string());
         let mut value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
         compact_items_payload(&mut value);
+        if canvas_state_item_count(&value) > 0 {
+            return Ok(value);
+        }
+        if let Some(recovered) = recover_canvas_state_from_sqlite_or_backup(&app_handle)? {
+            return Ok(recovered);
+        }
         Ok(value)
     } else {
-        Ok(serde_json::json!({}))
+        Ok(recover_canvas_state_from_sqlite_or_backup(&app_handle)?
+            .unwrap_or_else(|| serde_json::json!({})))
     }
+}
+
+fn canvas_state_item_count(value: &serde_json::Value) -> usize {
+    value
+        .get("items")
+        .and_then(|items| items.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0)
+}
+
+fn existing_canvas_node_count(app_handle: &tauri::AppHandle) -> Result<i64, String> {
+    if !db::connection::sqlite_database_exists(app_handle) {
+        return Ok(0);
+    }
+    let conn = db::connection::open_connection(app_handle)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM canvas_nodes WHERE canvas_id = ?1",
+        rusqlite::params![DEFAULT_CANVAS_ID],
+        |row| row.get(0),
+    )
+    .map_err(|err| err.to_string())
+}
+
+fn recover_canvas_state_from_sqlite_or_backup(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    if let Some(state) = recover_canvas_state_from_latest_backup(app_handle)? {
+        return Ok(Some(state));
+    }
+    recover_canvas_state_from_sqlite(app_handle)
+}
+
+fn recover_canvas_state_from_sqlite(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    if !db::connection::sqlite_database_exists(app_handle) {
+        return Ok(None);
+    }
+    let conn = db::connection::open_connection(app_handle)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT metadata_json
+            FROM canvas_nodes
+            WHERE canvas_id = ?1
+            ORDER BY z_index ASC, created_at ASC
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![DEFAULT_CANVAS_ID], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    let mut items = Vec::new();
+    for row in rows {
+        let metadata = row.map_err(|err| err.to_string())?;
+        if let Ok(mut node) = serde_json::from_str::<serde_json::Value>(&metadata) {
+            compact_items_payload(&mut node);
+            items.push(node);
+        }
+    }
+    if items.is_empty() {
+        return Ok(None);
+    }
+    let mut state = serde_json::json!({
+        "items": items,
+        "scale": 1,
+        "scroll": { "left": 0, "top": 0 },
+        "size": { "width": 20000, "height": 20000 },
+        "updatedAt": current_time_millis(),
+        "recoveredFrom": "sqlite_canvas_nodes",
+    });
+    fit_recovered_canvas_view(&mut state);
+    Ok(Some(state))
+}
+
+fn recover_canvas_state_from_latest_backup(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
+    let backup_root = get_user_data_dir(app_handle).join("json_backups");
+    if !backup_root.is_dir() {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(backup_root).map_err(|err| err.to_string())?.flatten() {
+        let canvas_path = entry.path().join("drawer_canvas.json");
+        if !canvas_path.is_file() {
+            continue;
+        }
+        let modified = canvas_path
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        candidates.push((modified, canvas_path));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, canvas_path) in candidates {
+        let Ok(content) = fs::read_to_string(&canvas_path) else {
+            continue;
+        };
+        let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        compact_items_payload(&mut state);
+        if canvas_state_item_count(&state) == 0 {
+            continue;
+        }
+        if let Some(object) = state.as_object_mut() {
+            object.insert(
+                "recoveredFrom".to_string(),
+                serde_json::Value::String(canvas_path.to_string_lossy().to_string()),
+            );
+        }
+        ensure_recovered_canvas_size(&mut state);
+        return Ok(Some(state));
+    }
+    Ok(None)
+}
+
+fn fit_recovered_canvas_view(state: &mut serde_json::Value) {
+    let Some(items) = state.get("items").and_then(|value| value.as_array()) else {
+        return;
+    };
+    if items.is_empty() {
+        return;
+    }
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = 0.0_f64;
+    let mut max_y = 0.0_f64;
+    for item in items {
+        let x = item.get("x").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        let y = item.get("y").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        let width = item.get("width").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
+        let height = item.get("height").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x + width);
+        max_y = max_y.max(y + height);
+    }
+    if !min_x.is_finite() || !min_y.is_finite() {
+        return;
+    }
+    let margin = 800.0_f64;
+    let scale = 0.2_f64;
+    state["scroll"] = serde_json::json!({
+        "left": (min_x - margin).max(0.0) * scale,
+        "top": (min_y - margin).max(0.0) * scale,
+    });
+    state["scale"] = serde_json::json!(scale);
+    state["size"] = serde_json::json!({
+        "width": (max_x + margin).max(20000.0).ceil(),
+        "height": (max_y + margin).max(20000.0).ceil(),
+    });
+}
+
+fn ensure_recovered_canvas_size(state: &mut serde_json::Value) {
+    let Some(items) = state.get("items").and_then(|value| value.as_array()) else {
+        return;
+    };
+    if items.is_empty() {
+        return;
+    }
+    let mut max_x = 0.0_f64;
+    let mut max_y = 0.0_f64;
+    for item in items {
+        let x = item.get("x").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        let y = item.get("y").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        let width = item.get("width").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
+        let height = item.get("height").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
+        max_x = max_x.max(x + width);
+        max_y = max_y.max(y + height);
+    }
+    let current_width = state
+        .get("size")
+        .and_then(|value| value.get("width"))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(20000.0);
+    let current_height = state
+        .get("size")
+        .and_then(|value| value.get("height"))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(20000.0);
+    state["size"] = serde_json::json!({
+        "width": current_width.max(max_x + 800.0).ceil(),
+        "height": current_height.max(max_y + 800.0).ceil(),
+    });
 }
 
 #[tauri::command]
@@ -5954,8 +6825,27 @@ fn save_canvas_state(
 ) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
     compact_items_payload(&mut state);
+    if canvas_state_item_count(&state) == 0 && has_recoverable_canvas_state(&app_handle).unwrap_or(false) {
+        let backup_path = path.with_file_name(format!(
+            "drawer_canvas.empty-save-blocked.{}.json",
+            current_time_millis()
+        ));
+        let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
+        let _ = fs::write(backup_path, content);
+        return Ok(());
+    }
     let content = serde_json::to_string(&state).map_err(|e| e.to_string())?;
     fs::write(path, content).map_err(|e| e.to_string())
+}
+
+fn has_recoverable_canvas_state(app_handle: &tauri::AppHandle) -> Result<bool, String> {
+    if existing_canvas_node_count(app_handle).unwrap_or(0) > 0 {
+        return Ok(true);
+    }
+    Ok(recover_canvas_state_from_latest_backup(app_handle)?
+        .as_ref()
+        .map(canvas_state_item_count)
+        .unwrap_or(0) > 0)
 }
 
 #[tauri::command]
@@ -6007,6 +6897,76 @@ fn read_web_image_cache_dir(app_handle: &tauri::AppHandle) -> PathBuf {
         }
     }
     default_web_image_cache_dir(app_handle)
+}
+
+fn normalize_thumbnail_size(size: Option<u32>) -> u32 {
+    match size.unwrap_or(512) {
+        0..=256 => 256,
+        257..=512 => 512,
+        513..=1024 => 1024,
+        _ => 2048,
+    }
+}
+
+fn ensure_image_thumbnail_file_impl(
+    app_handle: tauri::AppHandle,
+    path: String,
+    size: Option<u32>,
+) -> Result<ImageThumbnailFileResult, String> {
+    let thumb_size = normalize_thumbnail_size(size);
+    let metadata = local_media_metadata_impl(path)?;
+    let cache_root = read_web_image_cache_dir(&app_handle)
+        .join("thumbs")
+        .join(thumb_size.to_string());
+    fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
+
+    let out_path = cache_root.join(format!("{}.jpg", metadata.fingerprint));
+    if out_path.is_file() {
+        let (thumb_width, thumb_height) = screenshots::image::image_dimensions(&out_path).unwrap_or((0, 0));
+        return Ok(ImageThumbnailFileResult {
+            path: out_path.to_string_lossy().to_string(),
+            size: thumb_size,
+            width: thumb_width,
+            height: thumb_height,
+            fingerprint: metadata.fingerprint,
+            file_size: metadata.size,
+            modified_at: metadata.modified_at,
+        });
+    }
+
+    let image = screenshots::image::open(&metadata.path).map_err(|e| e.to_string())?;
+    let width = image.width().max(1);
+    let height = image.height().max(1);
+    let scale = (thumb_size as f32 / width.max(height) as f32).min(1.0);
+    let next_width = ((width as f32 * scale).round() as u32).max(1);
+    let next_height = ((height as f32 * scale).round() as u32).max(1);
+    let resized = image.resize(
+        next_width,
+        next_height,
+        screenshots::image::imageops::FilterType::Triangle,
+    );
+    resized.save(&out_path).map_err(|e| e.to_string())?;
+
+    Ok(ImageThumbnailFileResult {
+        path: out_path.to_string_lossy().to_string(),
+        size: thumb_size,
+        width: next_width,
+        height: next_height,
+        fingerprint: metadata.fingerprint,
+        file_size: metadata.size,
+        modified_at: metadata.modified_at,
+    })
+}
+
+#[tauri::command]
+async fn ensure_image_thumbnail_file(
+    app_handle: tauri::AppHandle,
+    path: String,
+    size: Option<u32>,
+) -> Result<ImageThumbnailFileResult, String> {
+    tauri::async_runtime::spawn_blocking(move || ensure_image_thumbnail_file_impl(app_handle, path, size))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -12680,6 +13640,22 @@ fn main() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             load_items,
+            commands::assets::list_assets,
+            commands::assets::get_asset_by_id,
+            commands::assets::get_asset_count,
+            commands::assets::upsert_assets,
+            commands::assets::update_asset,
+            commands::assets::delete_asset,
+            commands::assets::get_assets_by_ids,
+            commands::assets::get_assets_in_viewport,
+            commands::assets::debug_get_all_canvas_nodes,
+            commands::assets::upsert_canvas_nodes,
+            commands::assets::list_folders,
+            commands::assets::list_tags,
+            commands::assets::get_asset_thumbnails,
+            commands::migration::migrate_json_to_sqlite,
+            commands::migration::get_migration_status,
+            commands::migration::rollback_to_json_mode,
             agent::agent_load_settings,
             agent::agent_save_settings,
             agent::agent_openai_chat,
@@ -12703,6 +13679,7 @@ fn main() {
             save_ai_analysis_config,
             get_web_image_cache_dir,
             set_web_image_cache_dir,
+            ensure_image_thumbnail_file,
             get_local_vision_model_status,
             install_ollama_silent,
             ensure_ollama_vision_model,
@@ -12752,6 +13729,8 @@ fn main() {
             get_video_thumb,
             check_and_install_app_update_mirrors,
             path_kind,
+            collect_drop_media_paths,
+            get_local_media_metadata,
             delete_local_file,
             show_in_folder,
             copy_local_file,

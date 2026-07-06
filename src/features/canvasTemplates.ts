@@ -15,6 +15,10 @@ export type CanvasWorkflowNodeTemplate = {
   item: Pick<BufferItem, 'type' | 'content'> & Partial<BufferItem>;
   inputs?: string[];
   fixedInput?: boolean;
+  textMode?: CanvasImageItem['textMode'];
+  acceptsExternalInputs?: boolean;
+  externalInputTypes?: Array<'image' | 'text' | 'video'>;
+  outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
 

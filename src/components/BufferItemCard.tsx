@@ -10,6 +10,7 @@ import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
 import { Image as TauriImage } from '@tauri-apps/api/image';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeImageSourceToClipboard } from '../features/imageClipboard';
+import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
 
 type LazyCardImageProps = {
   src?: string;
@@ -521,8 +522,9 @@ function BufferItemCard({
   const isPaletteOnlyAlchemy = alchemyResult?.analysisMode === 'palette';
   const hasCompactPalette = item.type === 'image' && (isAlchemyLoading || alchemyColors.length > 0);
   const hasAiAlchemyDone = isAlchemyDone && !isPaletteOnlyAlchemy;
-  const imageCardSource = preferFullImageSource ? (item.url || item.thumbnail || '') : (item.thumbnail || item.url || '');
-  const imagePreviewSource = item.url || item.thumbnail || '';
+  const imageCardSource = getImageListSource(item, { allowOriginalFallback: !!preferFullImageSource });
+  const imagePreviewSource = getPreviewOriginalSource(item);
+  const imagePreviewPlaceholderSource = getPreviewPlaceholderSource(item);
   const imageDisplayName = item.name || item.content || 'image';
   const videoThumbnail = item.thumbnail || item.cover || (typeof item.url === 'string' && item.url.startsWith('data:image/') ? item.url : '');
   const rawVideoPreviewSource = item.url || (item.path ? convertFileSrc(item.path) : '');
@@ -546,6 +548,12 @@ function BufferItemCard({
     const playPromise = video.play();
     if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
   }, [canPreviewVideoInline, videoPreviewSource, item?.id]);
+
+  useEffect(() => {
+    if (item.type !== 'image' || item.thumbnail || imageCardSource) return;
+    const timer = window.setTimeout(() => onEnsureThumbnail?.(item), optimizeLargeList ? 120 : 0);
+    return () => window.clearTimeout(timer);
+  }, [imageCardSource, item?.id, item?.thumbnail, item?.type, optimizeLargeList, onEnsureThumbnail]);
 
   const handleAlchemyClick = (e: React.MouseEvent | any) => {
     e.preventDefault();
@@ -716,7 +724,7 @@ return (
             onVisible={() => {
               if (!item.thumbnail) onEnsureThumbnail?.(item);
             }}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource); }}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource, item, imagePreviewPlaceholderSource); }}
           />
           <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] rounded-t-[22px] bg-gradient-to-b from-black/55 via-black/24 to-transparent px-3.5 pb-7 pt-3" style={roundedTopStyle}>
             <div className="min-w-0 pr-12">
