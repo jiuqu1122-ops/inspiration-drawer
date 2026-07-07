@@ -5349,6 +5349,13 @@ fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, 
         return decode_data_image(value);
     }
 
+    if let Some(path) = local_path_from_url_like(value) {
+        if path.is_file() {
+            let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
+            return Ok((bytes, guess_mime_from_path(&path).to_string()));
+        }
+    }
+
     if value.starts_with("http://") || value.starts_with("https://") {
         let response = client
             .get(value)
@@ -5384,7 +5391,7 @@ fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, 
         return Ok((bytes, mime));
     }
 
-    let path = local_path_from_url_like(value).unwrap_or_else(|| PathBuf::from(value));
+    let path = PathBuf::from(value);
     if path.is_file() {
         let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
         return Ok((bytes, guess_mime_from_path(&path).to_string()));
@@ -11770,6 +11777,12 @@ fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
             let mut decoded = percent_decode_lossy(path_part);
             if cfg!(target_os = "windows") {
                 decoded = decoded.replace('/', "\\");
+                if decoded.len() >= 4
+                    && decoded.starts_with('\\')
+                    && decoded.as_bytes()[2] == b':'
+                {
+                    decoded = decoded.trim_start_matches('\\').to_string();
+                }
             }
             return Some(PathBuf::from(decoded));
         }
