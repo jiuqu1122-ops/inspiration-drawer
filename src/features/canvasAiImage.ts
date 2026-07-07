@@ -808,9 +808,6 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     };
     if (inputImages.length > 0) {
       taskBody.ref = inputImages;
-      taskBody.refs = inputImages;
-      taskBody.referenceImages = inputImages;
-      taskBody.inputImages = inputImages;
     }
 
     const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
