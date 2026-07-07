@@ -3407,6 +3407,12 @@ function MainApp() {
   const canvasAiModelRefreshSignatureRef = useRef('');
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
   const canvasRunButtonPointerRef = useRef<{ targetId: string; at: number } | null>(null);
+  const canvasPointerInteractionCleanupRef = useRef<(() => void) | null>(null);
+  const canvasDragDebugRef = useRef<{
+    startNodeCount: number;
+    pointerMoveCount: number;
+    lastNodeCount: number;
+  } | null>(null);
   const canvasInteractionTimerRef = useRef<number | null>(null);
   const [canvasToolbarTop, setCanvasToolbarTop] = useState('max(50%, 444px)');
   const isCanvasInteractingRef = useRef(false);
@@ -3535,6 +3541,11 @@ function MainApp() {
     }, releaseDelay);
   };
 
+  const preventCanvasNativeDrag = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   useEffect(() => {
     isCanvasModeRef.current = isCanvasMode;
     if (!isCanvasMode) {
@@ -3569,9 +3580,7 @@ function MainApp() {
       canvasTextOutputDraftTimersRef.current = {};
       canvasTextOutputDraftValuesRef.current = {};
       canvasPanRef.current = null;
-      canvasDragRef.current = null;
-      canvasResizeRef.current = null;
-      canvasGroupResizeRef.current = null;
+      cancelCanvasItemDragVisuals();
       canvasSelectionDragRef.current = null;
       canvasConnectionDragRef.current = null;
       canvasInputActionDragRef.current = null;
@@ -9690,13 +9699,44 @@ function MainApp() {
       const element = getCanvasItemElement(id);
       if (!element) return;
       element.style.transform = '';
-      element.style.left = '';
-      element.style.top = '';
-      element.style.width = '';
-      element.style.height = '';
       element.removeAttribute('data-canvas-dragging');
       element.removeAttribute('data-canvas-resizing');
     });
+  };
+
+  const restoreCanvasItemBoxStyles = (ids: string[]) => {
+    ids.forEach((id) => {
+      const element = getCanvasItemElement(id);
+      const item = canvasItemsRef.current.find(canvasItem => canvasItem.id === id);
+      if (!element || !item) return;
+      element.style.left = `${item.x}px`;
+      element.style.top = `${item.y}px`;
+      element.style.width = `${item.width}px`;
+      element.style.height = `${item.height}px`;
+    });
+  };
+
+  const cancelCanvasItemDragVisuals = () => {
+    canvasPointerInteractionCleanupRef.current?.();
+    canvasPointerInteractionCleanupRef.current = null;
+    const drag = canvasDragRef.current;
+    const resize = canvasResizeRef.current;
+    const groupResize = canvasGroupResizeRef.current;
+    canvasDragRef.current = null;
+    canvasResizeRef.current = null;
+    canvasGroupResizeRef.current = null;
+    canvasDragDebugRef.current = null;
+    cancelCanvasInteractionPaint();
+    if (drag) clearCanvasItemInteractionStyles(drag.ids);
+    if (resize) {
+      clearCanvasItemInteractionStyles([resize.id]);
+      restoreCanvasItemBoxStyles([resize.id]);
+    }
+    if (groupResize) {
+      const ids = Object.keys(groupResize.startItems);
+      clearCanvasItemInteractionStyles(ids);
+      restoreCanvasItemBoxStyles(ids);
+    }
   };
 
   const hideCanvasSelectionOverlay = () => {
@@ -16529,6 +16569,8 @@ function MainApp() {
     }
     e.preventDefault();
     e.stopPropagation();
+    const pointerCaptureTarget = e.currentTarget as HTMLElement;
+    pointerCaptureTarget.setPointerCapture?.(e.pointerId);
     setCanvasInteractionActive(true);
     const currentSelected = canvasSelectedIdsRef.current;
     const isAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
@@ -16556,6 +16598,16 @@ function MainApp() {
       latestDelta: { dx: 0, dy: 0 },
       hasMoved: false,
     };
+    canvasDragDebugRef.current = {
+      startNodeCount: canvasItemsRef.current.length,
+      pointerMoveCount: 0,
+      lastNodeCount: canvasItemsRef.current.length,
+    };
+    console.debug('[canvas-drag] start', {
+      ids: dragIds,
+      draggingNodeCount: dragIds.length,
+      nodeCount: canvasItemsRef.current.length,
+    });
     setCanvasItemDraggingFlag(dragIds, true);
 
     const onMove = (event: PointerEvent) => {
@@ -16563,6 +16615,20 @@ function MainApp() {
       if (!drag || !drag.ids.includes(id)) return;
       event.preventDefault();
       event.stopPropagation();
+      const debug = canvasDragDebugRef.current;
+      if (debug) {
+        debug.pointerMoveCount += 1;
+        debug.lastNodeCount = canvasItemsRef.current.length;
+        if (debug.pointerMoveCount === 1 || debug.pointerMoveCount % 30 === 0) {
+          console.debug('[canvas-drag] pointermove node count', {
+            pointerMoveCount: debug.pointerMoveCount,
+            draggingNodeCount: drag.ids.length,
+            nodeCount: debug.lastNodeCount,
+            createdCanvasNodeCountDuringDrag: Math.max(0, debug.lastNodeCount - debug.startNodeCount),
+            duplicatedNodeCountDuringDrag: Math.max(0, debug.lastNodeCount - new Set(canvasItemsRef.current.map(item => item.id)).size),
+          });
+        }
+      }
       autoScrollCanvasNearEdge(event);
       const scale = canvasScaleRef.current || 1;
       const surface = canvasSurfaceRef.current;
@@ -16592,10 +16658,21 @@ function MainApp() {
       scheduleCanvasInteractionPaint({ kind: 'move', ids: drag.ids, dx, dy });
     };
 
+    const removeDragListeners = () => {
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', onUp, true);
+      if (canvasPointerInteractionCleanupRef.current === removeDragListeners) {
+        canvasPointerInteractionCleanupRef.current = null;
+      }
+    };
+
     const onUp = () => {
       const drag = canvasDragRef.current;
       canvasDragRef.current = null;
       cancelCanvasInteractionPaint();
+      const debug = canvasDragDebugRef.current;
+      canvasDragDebugRef.current = null;
       if (drag) {
         if (drag.hasMoved) {
           const { dx, dy } = drag.latestDelta;
@@ -16616,16 +16693,25 @@ function MainApp() {
           }
         }
         clearCanvasItemInteractionStyles(drag.ids);
+        const endNodeCount = canvasItemsRef.current.length;
+        console.debug('[canvas-drag] pointerup', {
+          draggingNodeCount: drag.ids.length,
+          nodeCount: endNodeCount,
+          startNodeCount: debug?.startNodeCount ?? endNodeCount,
+          pointerMoveCount: debug?.pointerMoveCount ?? 0,
+          createdCanvasNodeCountDuringDrag: Math.max(0, endNodeCount - (debug?.startNodeCount ?? endNodeCount)),
+          duplicatedNodeCountDuringDrag: Math.max(0, endNodeCount - new Set(canvasItemsRef.current.map(item => item.id)).size),
+        });
       }
       setCanvasInteractionActive(false, 0);
-      document.removeEventListener('pointermove', onMove, true);
-      document.removeEventListener('pointerup', onUp, true);
-      document.removeEventListener('pointercancel', onUp, true);
+      pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+      removeDragListeners();
     };
 
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);
+    canvasPointerInteractionCleanupRef.current = removeDragListeners;
   };
 
   const startCanvasItemResize = (e: React.PointerEvent, id: string, corner: CanvasResizeCorner) => {
@@ -16634,6 +16720,8 @@ function MainApp() {
     if (!current) return;
     e.preventDefault();
     e.stopPropagation();
+    const pointerCaptureTarget = e.currentTarget as HTMLElement;
+    pointerCaptureTarget.setPointerCapture?.(e.pointerId);
     setCanvasInteractionActive(true);
     if (!canvasSelectedIdsRef.current.includes(id)) updateCanvasSelection([id]);
 
@@ -16685,6 +16773,15 @@ function MainApp() {
       growCanvasToFit(finalX + nextWidth, finalY + nextHeight);
       scheduleCanvasInteractionPaint({ kind: 'resize', boxes: { [id]: nextBox } });
     };
+    const removeResizeListeners = () => {
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', onUp, true);
+      if (canvasPointerInteractionCleanupRef.current === removeResizeListeners) {
+        canvasPointerInteractionCleanupRef.current = null;
+      }
+    };
+
     const onUp = () => {
       const resize = canvasResizeRef.current;
       canvasResizeRef.current = null;
@@ -16704,15 +16801,16 @@ function MainApp() {
         markCanvasNodesChanged([id]);
       }
       clearCanvasItemInteractionStyles([id]);
+      restoreCanvasItemBoxStyles([id]);
       setCanvasInteractionActive(false, 0);
-      document.removeEventListener('pointermove', onMove, true);
-      document.removeEventListener('pointerup', onUp, true);
-      document.removeEventListener('pointercancel', onUp, true);
+      pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+      removeResizeListeners();
     };
 
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);
+    canvasPointerInteractionCleanupRef.current = removeResizeListeners;
   };
 
   const startCanvasGroupResize = (e: React.PointerEvent, corner: CanvasResizeCorner) => {
@@ -16723,6 +16821,8 @@ function MainApp() {
     if (!startBounds || startBounds.width <= 0 || startBounds.height <= 0) return;
     e.preventDefault();
     e.stopPropagation();
+    const pointerCaptureTarget = e.currentTarget as HTMLElement;
+    pointerCaptureTarget.setPointerCapture?.(e.pointerId);
     setCanvasInteractionActive(true);
 
     canvasGroupResizeRef.current = {
@@ -16780,6 +16880,15 @@ function MainApp() {
 
       scheduleCanvasInteractionPaint({ kind: 'resize', boxes: nextItemsById });
     };
+    const removeGroupResizeListeners = () => {
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', onUp, true);
+      if (canvasPointerInteractionCleanupRef.current === removeGroupResizeListeners) {
+        canvasPointerInteractionCleanupRef.current = null;
+      }
+    };
+
     const onUp = () => {
       const resize = canvasGroupResizeRef.current;
       const changedIds = resize ? Object.keys(resize.startItems) : [];
@@ -16804,15 +16913,16 @@ function MainApp() {
         markCanvasNodesChanged(Object.keys(latestBoxes));
       }
       clearCanvasItemInteractionStyles(changedIds);
+      restoreCanvasItemBoxStyles(changedIds);
       setCanvasInteractionActive(false, 0);
-      document.removeEventListener('pointermove', onMove, true);
-      document.removeEventListener('pointerup', onUp, true);
-      document.removeEventListener('pointercancel', onUp, true);
+      pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+      removeGroupResizeListeners();
     };
 
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);
+    canvasPointerInteractionCleanupRef.current = removeGroupResizeListeners;
   };
 
   const startCanvasSelection = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -17200,6 +17310,10 @@ function MainApp() {
   const handleCanvasDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    const eventTarget = e.target as HTMLElement | null;
+    if (eventTarget?.closest('[data-canvas-item-id]')) {
+      return;
+    }
     const client = { x: e.clientX, y: e.clientY };
     lastCanvasDragClientRef.current = client;
 
@@ -17228,6 +17342,13 @@ function MainApp() {
     }
 
     showToast('无限画布只接收图片');
+  };
+
+  const blockInternalCanvasNativeDrag = (e: React.DragEvent<HTMLDivElement>) => {
+    const eventTarget = e.target as HTMLElement | null;
+    if (!eventTarget?.closest('[data-canvas-item-id]')) return;
+    e.preventDefault();
+    e.stopPropagation();
   };
 
   const leaveCanvasToDrawer = () => {
@@ -17405,9 +17526,18 @@ function MainApp() {
         return;
       }
       if (isCanvasModeRef.current && event.key === 'Escape') {
-        if (canvasContextMenuRef.current || canvasSelectedIdsRef.current.length > 0 || canvasConnectionDraft || canvasInputPickTargetIdRef.current) {
+        if (
+          canvasDragRef.current
+          || canvasResizeRef.current
+          || canvasGroupResizeRef.current
+          || canvasContextMenuRef.current
+          || canvasSelectedIdsRef.current.length > 0
+          || canvasConnectionDraft
+          || canvasInputPickTargetIdRef.current
+        ) {
           event.preventDefault();
           event.stopPropagation();
+          cancelCanvasItemDragVisuals();
           setCanvasContextMenu(null);
           setCanvasInputMenuForId(null);
           setCanvasInputPickTargetId(null);
@@ -17447,6 +17577,8 @@ function MainApp() {
       setIsCanvasSpacePressed(false);
       canvasSpaceKeyCapturedRef.current = false;
       canvasPanRef.current = null;
+      cancelCanvasItemDragVisuals();
+      setCanvasInteractionActive(false, 0);
     };
     const handleCanvasPaste = (event: ClipboardEvent) => {
       if (!isCanvasModeRef.current || isTextEntryActive()) return;
@@ -25059,12 +25191,16 @@ useEffect(() => {
                         openCanvasContextMenu(e, 'canvas');
                       }}
                       onDragEnter={(e) => {
+                        blockInternalCanvasNativeDrag(e);
+                        if (e.defaultPrevented) return;
                         e.preventDefault();
                         e.stopPropagation();
                         lastCanvasDragClientRef.current = { x: e.clientX, y: e.clientY };
                         e.dataTransfer.dropEffect = 'copy';
                       }}
                       onDragOver={(e) => {
+                        blockInternalCanvasNativeDrag(e);
+                        if (e.defaultPrevented) return;
                         e.preventDefault();
                         e.stopPropagation();
                         lastCanvasDragClientRef.current = { x: e.clientX, y: e.clientY };
@@ -25380,6 +25516,7 @@ useEffect(() => {
                               touchAction: 'none',
                             }}
                             onPointerDown={(e) => startCanvasItemDrag(e, canvasItem.id)}
+                            onDragStart={preventCanvasNativeDrag}
                             onContextMenu={(e) => {
                               if (!canvasSelectedIdsRef.current.includes(canvasItem.id)) updateCanvasSelection([canvasItem.id]);
                               openCanvasContextMenu(e, 'item', { itemId: canvasItem.id });
@@ -25465,6 +25602,7 @@ useEffect(() => {
                                                         decoding="async"
                                                         className="h-full w-full rounded-[14px] border border-stone-200/32 object-cover mix-blend-multiply shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:mix-blend-normal dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]"
                                                         draggable={false}
+                                                        onDragStart={preventCanvasNativeDrag}
                                                       />
                                                     ) : inputItem && (isCanvasAiGeneratorType(inputItem.ai?.type) || inputItem.ai?.type === 'workflow') ? (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
@@ -25528,6 +25666,7 @@ useEffect(() => {
                                                         decoding="async"
                                                         className="h-full w-full rounded-[14px] border border-stone-200/32 object-cover mix-blend-multiply shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:mix-blend-normal dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]"
                                                         draggable={false}
+                                                        onDragStart={preventCanvasNativeDrag}
                                                       />
                                                     ) : isCanvasAiGeneratorType(inputItem.ai?.type) || inputItem.ai?.type === 'workflow' ? (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
@@ -25757,6 +25896,7 @@ useEffect(() => {
                                                       preload="metadata"
                                                       className="h-full w-full object-contain"
                                                       draggable={false}
+                                                      onDragStart={preventCanvasNativeDrag}
                                                     />
                                                   ) : outputSource && !isOutputError ? (
                                                     <img
@@ -25766,6 +25906,7 @@ useEffect(() => {
                                                       decoding="async"
                                                       className="h-full w-full object-contain"
                                                       draggable={false}
+                                                      onDragStart={preventCanvasNativeDrag}
                                                     />
                                                   ) : (
                                                     <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2">
@@ -26515,6 +26656,7 @@ useEffect(() => {
                                                   decoding="async"
                                                   className="h-full w-full object-cover"
                                                   draggable={false}
+                                                  onDragStart={preventCanvasNativeDrag}
                                                 />
                                               ) : isVideoReference ? (
                                                 <Film className="h-4 w-4" />
@@ -26648,6 +26790,7 @@ useEffect(() => {
                                       preload="metadata"
                                       className="h-full w-full select-none object-contain"
                                       draggable={false}
+                                      onDragStart={preventCanvasNativeDrag}
                                     />
                                   ) : (
                                     <img
@@ -26659,6 +26802,7 @@ useEffect(() => {
                                       className="h-full w-full select-none object-contain"
                                       style={{ imageRendering: 'auto' }}
                                       draggable={false}
+                                      onDragStart={preventCanvasNativeDrag}
                                     />
                                   )}
                                   {!isGeneratedMediaItem && (
