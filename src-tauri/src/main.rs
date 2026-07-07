@@ -5393,6 +5393,182 @@ fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, 
     Err("参考图必须是公网 URL、data URL 或本地图片路径".to_string())
 }
 
+#[derive(Clone)]
+struct XaisUploadUrlResponse {
+    url: String,
+    name: String,
+}
+
+fn find_xais_upload_url_response(value: &serde_json::Value) -> Option<XaisUploadUrlResponse> {
+    match value {
+        serde_json::Value::Object(object) => {
+            let url = object
+                .get("url")
+                .or_else(|| object.get("uploadUrl"))
+                .or_else(|| object.get("upload_url"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            let name = object
+                .get("name")
+                .or_else(|| object.get("att"))
+                .or_else(|| object.get("attachment"))
+                .or_else(|| object.get("key"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            if !url.is_empty() && !name.is_empty() {
+                return Some(XaisUploadUrlResponse {
+                    url: url.to_string(),
+                    name: name.to_string(),
+                });
+            }
+            for key in ["data", "result", "upload", "attachment"] {
+                if let Some(nested) = object.get(key) {
+                    if let Some(found) = find_xais_upload_url_response(nested) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(found) = find_xais_upload_url_response(item) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn parse_xais_upload_url_response(raw: &str) -> Result<XaisUploadUrlResponse, String> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| format!("XAIS reference upload URL JSON parse failed: {}; raw: {}", e, raw))?;
+    find_xais_upload_url_response(&value)
+        .ok_or_else(|| format!("XAIS reference upload URL response missing url/name: {}", raw))
+}
+
+fn normalize_xais_worker_endpoint_for_upload(endpoint: &str) -> String {
+    let fallback = "https://sg2.dchai.cn/xais";
+    let mut value = endpoint.trim().trim_end_matches('/').to_string();
+    if value.is_empty() {
+        return fallback.to_string();
+    }
+    loop {
+        let lower = value.to_ascii_lowercase();
+        let suffixes = [
+            "/v1/chat/completions",
+            "/v1/images/generations",
+            "/v1/images/edits",
+            "/workertaskstart",
+            "/workertaskwait",
+            "/fileattachmentuploadurl",
+            "/atturls",
+            "/v1/models",
+            "/models",
+            "/v1",
+        ];
+        let Some(suffix) = suffixes.iter().find(|suffix| lower.ends_with(**suffix)) else {
+            break;
+        };
+        let next_len = value.len().saturating_sub(suffix.len());
+        value.truncate(next_len);
+        value = value.trim_end_matches('/').to_string();
+    }
+    let lower = value.to_ascii_lowercase();
+    if lower.ends_with("/xais") {
+        value
+    } else if lower.contains("dchai.cn") {
+        format!("{}/xais", value)
+    } else {
+        value
+    }
+}
+
+fn xais_upload_reference_image(
+    app_handle: &tauri::AppHandle,
+    endpoint: &str,
+    api_key: &str,
+    source: &str,
+    explicit_proxy: Option<&str>,
+) -> Result<String, String> {
+    let timeout_secs = 300;
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let (bytes, mime) = image_edit_source_to_bytes(&client, source).or_else(|first_err| {
+        let can_retry_direct = explicit_proxy
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true);
+        if !can_retry_direct {
+            return Err(first_err);
+        }
+        let direct_client = build_direct_http_client(timeout_secs)?;
+        image_edit_source_to_bytes(&direct_client, source).map_err(|second_err| {
+            format!(
+                "XAIS reference image read failed: {}; direct retry also failed: {}",
+                first_err, second_err
+            )
+        })
+    })?;
+    let ext = image_mime_extension(&mime);
+    let upload_endpoint = normalize_xais_worker_endpoint_for_upload(endpoint);
+    let upload_url_raw = http_get_text(
+        app_handle,
+        &format!("{}/fileAttachmentUploadUrl?ext={}", upload_endpoint, ext),
+        api_key,
+        explicit_proxy,
+    )?;
+    let upload = parse_xais_upload_url_response(&upload_url_raw)?;
+    let upload_result = client
+        .put(&upload.url)
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(bytes.clone())
+        .send();
+    let response = match upload_result {
+        Ok(response) => response,
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("XAIS reference image upload failed: {}", first_err));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            direct_client
+                .put(&upload.url)
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(bytes)
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "XAIS reference image upload failed: {}; direct retry also failed: {}",
+                        first_err, second_err
+                    )
+                })?
+        }
+    };
+    let status = response.status();
+    let text = response.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "XAIS reference image upload failed: HTTP {}; {}",
+            status, text
+        ));
+    }
+
+    let name = upload.name.trim().to_string();
+    let encoded_name: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+    let _ = http_get_text(
+        app_handle,
+        &format!("{}/attUrls?att={}", upload_endpoint, encoded_name),
+        api_key,
+        explicit_proxy,
+    );
+    Ok(name)
+}
+
 fn build_ai_image_edit_form(
     client: &Client,
     model: &str,
@@ -5568,6 +5744,44 @@ async fn post_ai_image_edit(
     })
     .await
     .map_err(|e| format!("AI 图片上传任务失败：{}", e))?
+}
+
+#[tauri::command]
+async fn upload_xais_reference_images(
+    app_handle: tauri::AppHandle,
+    endpoint: String,
+    api_key: String,
+    sources: Vec<String>,
+    proxy: Option<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_key.trim().is_empty() {
+            return Err("Please enter XAIS API Key first.".to_string());
+        }
+        let clean_sources: Vec<String> = sources
+            .into_iter()
+            .map(|source| source.trim().to_string())
+            .filter(|source| !source.is_empty())
+            .take(8)
+            .collect();
+        if clean_sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let endpoint = normalize_xais_worker_endpoint_for_upload(&endpoint);
+        let mut output = Vec::with_capacity(clean_sources.len());
+        for source in clean_sources {
+            output.push(xais_upload_reference_image(
+                &app_handle,
+                &endpoint,
+                &api_key,
+                &source,
+                proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            )?);
+        }
+        Ok(output)
+    })
+    .await
+    .map_err(|e| format!("XAIS reference image upload task failed: {}", e))?
 }
 
 #[tauri::command]
@@ -13863,6 +14077,7 @@ fn main() {
             post_ai_json,
             post_ai_text,
             post_ai_image_edit,
+            upload_xais_reference_images,
             get_ai_text,
             create_cloudflared_public_image_urls,
             stop_cloudflared_share,

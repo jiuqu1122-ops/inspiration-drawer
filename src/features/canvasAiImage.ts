@@ -119,6 +119,16 @@ const isRemoteHttpImageSource = (source?: string | null) => (
   /^https?:\/\//i.test(String(source || '').trim()) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(String(source || ''))
 );
 
+const isXaisAttachmentImageRef = (source?: string | null) => {
+  const value = String(source || '').trim();
+  return value.length > 0
+    && value.length <= 512
+    && !/^(?:https?:|data:|asset:|file:)/i.test(value)
+    && !/^[a-zA-Z]:[\\/]/.test(value)
+    && !/^\\\\/.test(value)
+    && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp)$/i.test(value);
+};
+
 const buildPromptWithOptions = (prompt: string, aspectRatio?: string, resolution?: string) => {
   const constraints = [
     aspectRatio ? `must output exactly ${aspectRatio} aspect ratio` : '',
@@ -787,7 +797,8 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
   const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
   const requestCount = Math.max(1, Math.min(4, count));
   const inputImages = (options.inputImages || [])
-    .filter(image => isRemoteHttpImageSource(image))
+    .map(image => String(image || '').trim())
+    .filter(image => isRemoteHttpImageSource(image) || isXaisAttachmentImageRef(image))
     .slice(0, 8);
   const image2Ratio = resolveXaisImage2Ratio(model, options.aspectRatio);
   const promptText = prompt;
@@ -810,7 +821,16 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       taskBody.ref = inputImages;
     }
 
+    debugXaisImage2('workerTaskStart request', {
+      endpoint,
+      model,
+      ratio: image2Ratio,
+      refCount: inputImages.length,
+      refs: inputImages.map(image => isXaisAttachmentImageRef(image) ? image : '[remote-url]'),
+      custom_field: customField,
+    });
     const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
+    debugXaisImage2('workerTaskStart response', trimDebugText(startedRaw));
     const started = parseAiResponseText(startedRaw);
     const startFailure = getXaisWorkerTaskFailureMessage(started);
     if (startFailure) throw new Error(`Xais ${model} 任务启动失败：${startFailure}`);
@@ -831,7 +851,14 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
         `Xais ${model} 任务等待`
       );
       const waited = parseAiResponseText(waitedRaw);
+      debugXaisImage2('workerTaskWait response', {
+        attempt: attempt + 1,
+        taskId,
+        raw: trimDebugText(waitedRaw),
+      });
       lastWait = waited;
+      const waitFailure = getXaisWorkerTaskFailureMessage(waited);
+      if (waitFailure) throw new Error(`Xais ${model} task failed: ${waitFailure}`);
       const waitedImages = collectImageStrings(waited);
       if (waitedImages.length > 0) return waitedImages;
 
@@ -889,6 +916,21 @@ const XAIS_DEBUG_PREFIX = '[canvas:xais-video]';
 const trimDebugText = (value: unknown, max = 900) => {
   const text = typeof value === 'string' ? value : getErrorMessage(value);
   return text.length > max ? `${text.slice(0, max)}...` : text;
+};
+
+const debugXaisImage2 = (label: string, value?: unknown) => {
+  try {
+    if (typeof console === 'undefined') return;
+    const at = new Date().toISOString();
+    const line = JSON.stringify({ at, label, value }, (_key, nested) => (
+      typeof nested === 'string' && nested.length > 4000 ? `${nested.slice(0, 4000)}...` : nested
+    ));
+    void invoke('append_ai_debug_log', { name: 'xais-image2', line }).catch(() => {});
+    if (value === undefined) console.info('[canvas:xais-image2]', label);
+    else console.info('[canvas:xais-image2]', label, value);
+  } catch (_) {
+    // Best-effort diagnostics only.
+  }
 };
 
 const debugXaisVideo = (label: string, value?: unknown) => {

@@ -11550,6 +11550,15 @@ function MainApp() {
     return /^data:image\/(?:png|jpe?g);base64,/i.test(value)
       || /\.(?:png|jpe?g)(?:[?#].*)?$/i.test(value);
   };
+  const isXaisAttachmentImageRef = (source?: string | null) => {
+    const value = String(source || '').trim();
+    return value.length > 0
+      && value.length <= 512
+      && !/^(?:https?:|data:|asset:|file:)/i.test(value)
+      && !/^[a-zA-Z]:[\\/]/.test(value)
+      && !/^\\\\/.test(value)
+      && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp)$/i.test(value);
+  };
 
   const getDataUrlByteSize = (dataUrl: string) => {
     const commaIndex = dataUrl.indexOf(',');
@@ -12792,6 +12801,26 @@ function MainApp() {
     throw new Error(summary || '公网参考图发布失败');
   };
 
+  const uploadXaisReferenceInputs = async (
+    sources: string[],
+    provider: CanvasAiProvider
+  ) => {
+    const cleanSources = sources.map(source => source.trim()).filter(Boolean).slice(0, 8);
+    if (cleanSources.length === 0) return [] as string[];
+    const apiKey = (provider === canvasAiProvider ? canvasAiApiKey : getStoredCanvasAiApiKey(provider)).trim();
+    if (!apiKey) throw new Error('Please enter XAIS API Key first.');
+    const endpoint = getCanvasAiEndpointForRequest(
+      provider,
+      provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
+    );
+    const refs = await invoke<string[]>('upload_xais_reference_images', {
+      endpoint,
+      apiKey,
+      sources: cleanSources,
+    });
+    return (refs || []).map(ref => ref.trim()).filter(Boolean);
+  };
+
   const getCanvasImageInputsForNode = async (
     canvasItem: CanvasImageItem,
     mode: 'stable' | 'remote-first' = 'stable',
@@ -12803,6 +12832,7 @@ function MainApp() {
     const inputMode = isOpenAiLikeCanvasAiProvider(provider) ? 'stable' : mode;
     const useDirectLocalInputs = isOpenAiLikeCanvasAiProvider(provider) || delivery === 'direct';
     const requireRemoteInputs = delivery === 'remote-only';
+    const uploadXaisAttachmentInputs = provider === 'xais-chat' && requireRemoteInputs && referenceFormat === 'jpeg';
     const inputImageItems = getCanvasImageInputBufferItemsForNode(canvasItem, sourceItems);
     const result: string[] = [];
     let usedRemoteFirst = false;
@@ -12824,7 +12854,11 @@ function MainApp() {
         if (prepared.warning) {
           console.warn('AI 节点参考图浏览器读取失败，改用本地源:', prepared.warning);
         }
-        if (isRemoteHttpImageSource(prepared.source)) {
+        if (isXaisAttachmentImageRef(prepared.source)) {
+          result.push(prepared.source);
+          continue;
+        }
+        if (isRemoteHttpImageSource(prepared.source) && !uploadXaisAttachmentInputs) {
           result.push(prepared.source);
           continue;
         }
@@ -12850,6 +12884,16 @@ function MainApp() {
       const localSources = localInputsForCloudflared.map(item => item.source);
       if (provider === 'openai-compatible') {
         result.push(...localSources);
+      } else if (uploadXaisAttachmentInputs) {
+        try {
+          const refs = await uploadXaisReferenceInputs(localSources, provider);
+          if (refs.length === 0) throw new Error('XAIS did not return reference attachment names.');
+          result.push(...refs);
+        } catch (err) {
+          preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
+          failedItems.push(...localInputsForCloudflared.map(item => item.label));
+          failedVideoItems.push(...localInputsForCloudflared.filter(item => item.type === 'video').map(item => item.label));
+        }
       } else if (requireRemoteInputs) {
         try {
           const published = await publishLocalAiInputs(
