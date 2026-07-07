@@ -684,6 +684,11 @@ const FFMPEG_TOOLS_SHA256: &str =
 const FFMPEG_TOOLS_ZIP_SIZE: u64 = 109_205_730;
 const REALESRGAN_ENGINE_VERSION: &str = "20220424";
 const REALESRGAN_NATIVE_SCALE: u32 = 4;
+const REALESRGAN_TILE_SIZE: u32 = 256;
+const REALESRGAN_SAFE_INTERMEDIATE_MAX_EDGE: u32 = 8_192;
+const REALESRGAN_SAFE_INTERMEDIATE_MAX_PIXELS: u64 = 48_000_000;
+const REALESRGAN_SAFE_FINAL_MAX_EDGE: u32 = 4_096;
+const REALESRGAN_SAFE_FINAL_MAX_PIXELS: u64 = 16_000_000;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
 const REALESRGAN_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
@@ -2370,7 +2375,7 @@ fn download_realesrgan_engine_archive(
         0,
         0,
     );
-    let client = build_engine_download_http_client(app_handle, 1800)?;
+    let client = build_engine_download_http_client(app_handle, 120)?;
     let mut response = client
         .get(REALESRGAN_ENGINE_ASSET_URL)
         .send()
@@ -2723,7 +2728,9 @@ async fn get_realesrgan_engine_status() -> Result<RealEsrganEngineStatus, String
 async fn install_realesrgan_engine(
     app_handle: tauri::AppHandle,
 ) -> Result<RealEsrganEngineStatus, String> {
-    ensure_realesrgan_engine_installed(&app_handle, None)
+    tauri::async_runtime::spawn_blocking(move || ensure_realesrgan_engine_installed(&app_handle, None))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2737,6 +2744,44 @@ fn run_hidden_command(command: &mut SysCommand, label: &str) -> Result<String, S
         .output()
         .map_err(|e| format!("{} 调用失败: {}", label, e))?;
     command_output_to_string(label, output)
+}
+
+fn run_hidden_command_with_timeout(
+    command: &mut SysCommand,
+    label: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    hide_console_window(command);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("{} 调用失败: {}", label, e))?;
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|e| format!("{} 调用失败: {}", label, e))?;
+                return command_output_to_string(label, output);
+            }
+            Ok(None) => {
+                if started_at.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{} 超时", label));
+                }
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{} 执行失败: {}", label, e));
+            }
+        }
+        thread::sleep(Duration::from_millis(80));
+    }
 }
 
 fn run_hidden_command_cancellable(
@@ -3480,10 +3525,118 @@ fn run_realesrgan_on_path(
         .arg(model_name)
         .arg("-s")
         .arg(REALESRGAN_NATIVE_SCALE.to_string())
+        .arg("-t")
+        .arg(REALESRGAN_TILE_SIZE.to_string())
         .arg("-f")
         .arg(output_format);
     run_hidden_command_cancellable(&mut cmd, "Real-ESRGAN 清晰度增强", task_state)?;
     Ok(())
+}
+
+fn run_realesrgan_image_on_path(
+    exe_path: &Path,
+    engine_dir: &Path,
+    input: &Path,
+    output: &Path,
+    mode: &str,
+    output_format: &str,
+) -> Result<(), String> {
+    let model_name = realesrgan_model_name(mode);
+    let mut cmd = SysCommand::new(exe_path);
+    cmd.current_dir(engine_dir)
+        .arg("-i")
+        .arg(input)
+        .arg("-o")
+        .arg(output)
+        .arg("-n")
+        .arg(model_name)
+        .arg("-s")
+        .arg(REALESRGAN_NATIVE_SCALE.to_string())
+        .arg("-t")
+        .arg(REALESRGAN_TILE_SIZE.to_string())
+        .arg("-f")
+        .arg(output_format);
+    run_hidden_command_with_timeout(&mut cmd, "Real-ESRGAN 图片增强", Duration::from_secs(90))?;
+    Ok(())
+}
+
+fn checked_image_scale_dimension(value: u32, scale: u32) -> Result<u32, String> {
+    value
+        .checked_mul(scale)
+        .filter(|next| *next > 0)
+        .ok_or_else(|| "enhanced image size is too large".to_string())
+}
+
+fn realesrgan_fit_dimensions_to_limit(
+    width: u32,
+    height: u32,
+    max_edge: u32,
+    max_pixels: u64,
+) -> (u32, u32, bool) {
+    let width_f = f64::from(width.max(1));
+    let height_f = f64::from(height.max(1));
+    let edge_ratio = f64::from(max_edge) / width_f.max(height_f);
+    let pixel_ratio = (max_pixels as f64 / (width_f * height_f)).sqrt();
+    let ratio = edge_ratio.min(pixel_ratio).min(1.0);
+    if ratio >= 0.999 {
+        return (width.max(1), height.max(1), false);
+    }
+    (
+        (width_f * ratio).floor().max(1.0) as u32,
+        (height_f * ratio).floor().max(1.0) as u32,
+        true,
+    )
+}
+
+fn realesrgan_safe_input_dimensions(width: u32, height: u32) -> (u32, u32, bool) {
+    let width_f = f64::from(width.max(1));
+    let height_f = f64::from(height.max(1));
+    let native_scale = f64::from(REALESRGAN_NATIVE_SCALE);
+    let edge_ratio =
+        f64::from(REALESRGAN_SAFE_INTERMEDIATE_MAX_EDGE) / (width_f.max(height_f) * native_scale);
+    let pixel_ratio = (REALESRGAN_SAFE_INTERMEDIATE_MAX_PIXELS as f64
+        / (width_f * height_f * native_scale * native_scale))
+        .sqrt();
+    let ratio = edge_ratio.min(pixel_ratio).min(1.0);
+    if ratio >= 0.999 {
+        return (width.max(1), height.max(1), false);
+    }
+
+    let next_width = (width_f * ratio).floor().max(1.0) as u32;
+    let next_height = (height_f * ratio).floor().max(1.0) as u32;
+    (next_width, next_height, true)
+}
+
+fn save_dynamic_image_with_format(
+    image: &screenshots::image::DynamicImage,
+    output: &Path,
+    output_format: &str,
+) -> Result<(), String> {
+    let file = File::create(output).map_err(|e| e.to_string())?;
+    let mut writer = BufWriter::new(file);
+    let format = match output_format {
+        "jpg" => screenshots::image::ImageFormat::Jpeg,
+        _ => screenshots::image::ImageFormat::Png,
+    };
+    image
+        .write_to(&mut writer, format)
+        .map_err(|e| e.to_string())
+}
+
+fn run_local_image_resize(
+    input: &Path,
+    output: &Path,
+    target_width: u32,
+    target_height: u32,
+    output_format: &str,
+) -> Result<(), String> {
+    let image = screenshots::image::open(input).map_err(|e| e.to_string())?;
+    let resized = image.resize_exact(
+        target_width.max(1),
+        target_height.max(1),
+        screenshots::image::imageops::FilterType::Lanczos3,
+    );
+    save_dynamic_image_with_format(&resized, output, output_format)
 }
 
 #[tauri::command]
@@ -4645,8 +4798,7 @@ async fn get_realesrgan_enhancement_estimate(
     })
 }
 
-#[tauri::command]
-async fn run_realesrgan_image_enhancement(
+fn run_realesrgan_image_enhancement_impl(
     app_handle: tauri::AppHandle,
     input_path: String,
     scale: Option<u32>,
@@ -4660,11 +4812,11 @@ async fn run_realesrgan_image_enhancement(
     let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
     let output_format = normalize_realesrgan_image_format(output_format);
     let progress_id_ref = progress_id.as_deref();
-    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
+    let status = build_realesrgan_engine_status()?;
     let engine_dir = PathBuf::from(&status.engine_dir);
     let exe_path = PathBuf::from(&status.exe_path);
     if !exe_path.is_file() {
-        return Err("Real-ESRGAN 引擎不可用，请重新安装引擎".to_string());
+        return Err("Real-ESRGAN 引擎不可用，请先安装引擎".to_string());
     }
 
     let source =
@@ -4688,6 +4840,27 @@ async fn run_realesrgan_image_enhancement(
     fs::create_dir_all(&work_dir).map_err(|e| format!("创建图片增强临时目录失败: {}", e))?;
 
     let result = (|| -> Result<RealEsrganEnhancementResult, String> {
+        let (source_width, source_height) =
+            screenshots::image::image_dimensions(&source).map_err(|e| e.to_string())?;
+        let requested_target_width = if resize_mode == "keep" {
+            source_width
+        } else {
+            checked_image_scale_dimension(source_width, scale)?
+        };
+        let requested_target_height = if resize_mode == "keep" {
+            source_height
+        } else {
+            checked_image_scale_dimension(source_height, scale)?
+        };
+        let (target_width, target_height, clamped_final_size) = realesrgan_fit_dimensions_to_limit(
+            requested_target_width,
+            requested_target_height,
+            REALESRGAN_SAFE_FINAL_MAX_EDGE,
+            REALESRGAN_SAFE_FINAL_MAX_PIXELS,
+        );
+
+        let (safe_input_width, safe_input_height, needs_pre_resize) =
+            realesrgan_safe_input_dimensions(source_width, source_height);
         let source_stem = source
             .file_stem()
             .and_then(|value| value.to_str())
@@ -4697,7 +4870,23 @@ async fn run_realesrgan_image_enhancement(
             "{}_realesrgan_{}x_{}.{}",
             source_stem, scale, resize_mode, output_format
         )));
-        let needs_post_resize = resize_mode == "keep" || scale < REALESRGAN_NATIVE_SCALE;
+        let needs_post_resize = resize_mode == "keep"
+            || scale < REALESRGAN_NATIVE_SCALE
+            || needs_pre_resize
+            || clamped_final_size;
+        let realesrgan_input_path = if needs_pre_resize {
+            let prepared_path = work_dir.join("source_safe_input.png");
+            run_local_image_resize(
+                &source,
+                &prepared_path,
+                safe_input_width,
+                safe_input_height,
+                "png",
+            )?;
+            prepared_path
+        } else {
+            source.clone()
+        };
         let enhanced_path = if needs_post_resize {
             work_dir.join(format!(
                 "enhanced_{}x.{}",
@@ -4715,43 +4904,23 @@ async fn run_realesrgan_image_enhancement(
             0,
             0,
         );
-        run_realesrgan_on_path(
+        run_realesrgan_image_on_path(
             &exe_path,
             &engine_dir,
-            &source,
+            &realesrgan_input_path,
             &enhanced_path,
             &mode,
-            scale,
             &output_format,
-            None,
         )?;
 
         if needs_post_resize {
-            let (ffmpeg_path, _ffprobe_path) =
-                ensure_media_tools_available(&app_handle, progress_id_ref)?;
-            let downsample_divisor = if resize_mode == "keep" {
-                REALESRGAN_NATIVE_SCALE
-            } else {
-                REALESRGAN_NATIVE_SCALE / scale
-            };
-            let mut resize_cmd = SysCommand::new(&ffmpeg_path);
-            resize_cmd
-                .args(["-y", "-hide_banner", "-loglevel", "error", "-i"])
-                .arg(&enhanced_path)
-                .args([
-                    "-vf",
-                    &format!(
-                        "scale=iw/{}:ih/{}:flags=lanczos",
-                        downsample_divisor, downsample_divisor
-                    ),
-                    "-frames:v",
-                    "1",
-                ]);
-            if output_format == "jpg" {
-                resize_cmd.args(["-q:v", "2"]);
-            }
-            resize_cmd.arg(&output_path);
-            run_hidden_command(&mut resize_cmd, "FFmpeg 图片缩回原尺寸")?;
+            run_local_image_resize(
+                &enhanced_path,
+                &output_path,
+                target_width,
+                target_height,
+                &output_format,
+            )?;
         }
 
         if !output_path.is_file() {
@@ -4782,6 +4951,31 @@ async fn run_realesrgan_image_enhancement(
 
     let _ = fs::remove_dir_all(&work_dir);
     result
+}
+
+#[tauri::command]
+async fn run_realesrgan_image_enhancement(
+    app_handle: tauri::AppHandle,
+    input_path: String,
+    scale: Option<u32>,
+    mode: Option<String>,
+    resize_mode: Option<String>,
+    output_format: Option<String>,
+    progress_id: Option<String>,
+) -> Result<RealEsrganEnhancementResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_realesrgan_image_enhancement_impl(
+            app_handle,
+            input_path,
+            scale,
+            mode,
+            resize_mode,
+            output_format,
+            progress_id,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -6485,8 +6679,7 @@ fn display_local_path(path: &std::path::Path) -> String {
     }
 }
 
-#[tauri::command]
-fn save_item_source_as(
+fn save_item_source_as_impl(
     app_handle: tauri::AppHandle,
     source: String,
     dest: String,
@@ -6539,6 +6732,22 @@ fn save_item_source_as(
     }
 
     Err(format!("unsupported source: {}", input))
+}
+
+#[tauri::command]
+async fn save_item_source_as(
+    app_handle: tauri::AppHandle,
+    source: String,
+    dest: String,
+    content: Option<String>,
+    item_type: Option<String>,
+    feature: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        save_item_source_as_impl(app_handle, source, dest, content, item_type, feature)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn sanitize_file_name(name: &str) -> String {
