@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod canvas;
 pub mod license;
 pub mod migration;
 

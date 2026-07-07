@@ -44,10 +44,45 @@ pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection, Stri
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
+    backup_before_canvas_schema_migration(app_handle)?;
     let conn = Connection::open(path).map_err(|err| err.to_string())?;
     conn.pragma_update(None, "foreign_keys", "ON").map_err(|err| err.to_string())?;
     conn.pragma_update(None, "journal_mode", "WAL").map_err(|err| err.to_string())?;
     conn.pragma_update(None, "synchronous", "NORMAL").map_err(|err| err.to_string())?;
     ensure_schema(&conn)?;
     Ok(conn)
+}
+
+fn backup_before_canvas_schema_migration(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let data_dir = get_user_data_dir(app_handle);
+    let marker = data_dir.join("canvas_schema_v2_backup_done.txt");
+    if marker.exists() {
+        return Ok(());
+    }
+
+    let backup_dir = data_dir
+        .join("canvas_schema_backups")
+        .join(format!("before_v2_{}", crate::current_time_millis()));
+    fs::create_dir_all(&backup_dir).map_err(|err| err.to_string())?;
+
+    let db_path = database_path(app_handle);
+    for source in [
+        db_path.clone(),
+        PathBuf::from(format!("{}-wal", db_path.to_string_lossy())),
+        PathBuf::from(format!("{}-shm", db_path.to_string_lossy())),
+        data_dir.join("drawer_canvas.json"),
+        data_dir.join("drawer_items.json"),
+        data_dir.join("drawer_folders.json"),
+    ] {
+        if !source.exists() {
+            continue;
+        }
+        let Some(file_name) = source.file_name() else {
+            continue;
+        };
+        fs::copy(&source, backup_dir.join(file_name)).map_err(|err| err.to_string())?;
+    }
+
+    fs::write(marker, backup_dir.to_string_lossy().as_bytes()).map_err(|err| err.to_string())?;
+    Ok(())
 }

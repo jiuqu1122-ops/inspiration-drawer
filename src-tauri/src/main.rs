@@ -1400,6 +1400,7 @@ fn emit_app_update_progress_detail(
     let _ = app_handle.emit("app-update-progress", payload);
 }
 
+#[allow(dead_code)]
 fn fetch_app_update_manifest_probe(
     app_handle: &tauri::AppHandle,
     progress_id: &str,
@@ -1596,6 +1597,148 @@ fn fetch_app_update_manifest_probe(
     ))
 }
 
+fn fetch_app_update_manifest_probe_for_current_version(
+    app_handle: &tauri::AppHandle,
+    progress_id: &str,
+    timeout: Duration,
+    current_version: &str,
+) -> Result<AppUpdateManifestProbe, String> {
+    let endpoints = app_update_manifest_endpoints_from_config()?;
+    let timeout_secs = timeout.as_secs().max(1);
+    let client = build_http_client(Some(app_handle), None, timeout_secs)?;
+    let mut failures = Vec::new();
+    let mut best_probe: Option<(AppUpdateManifestProbe, String)> = None;
+
+    for endpoint in endpoints {
+        let endpoint_text = endpoint.as_str().to_string();
+        emit_app_update_progress_detail(
+            app_handle,
+            progress_id,
+            "manifest-request",
+            format!("请求 manifest: {endpoint_text}"),
+            None,
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&endpoint_text),
+            None,
+            Some(current_version),
+            None,
+            None,
+            None,
+        );
+        eprintln!("[app-update] updater=自定义多源 updater manifest endpoint={endpoint_text}");
+
+        let response = match client.get(endpoint.clone()).send() {
+            Ok(response) => response,
+            Err(err) => {
+                let message = format!("manifest 请求失败：{endpoint_text}；原始错误: {err}");
+                eprintln!("[app-update] {message}");
+                failures.push(message);
+                continue;
+            }
+        };
+
+        let status = response.status();
+        let status_code = status.as_u16();
+        emit_app_update_progress_detail(
+            app_handle,
+            progress_id,
+            "manifest-response",
+            format!("manifest HTTP 状态码: {status_code}"),
+            None,
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&endpoint_text),
+            Some(status_code),
+            Some(current_version),
+            None,
+            None,
+            None,
+        );
+        eprintln!("[app-update] manifest endpoint={endpoint_text} http_status={status_code}");
+        if !status.is_success() {
+            failures.push(format!("manifest 请求失败：{endpoint_text}；HTTP 状态码: {status_code}"));
+            continue;
+        }
+
+        let body = match response.text() {
+            Ok(body) => body,
+            Err(err) => {
+                failures.push(format!("manifest 请求失败：读取响应体失败 {endpoint_text}；原始错误: {err}"));
+                continue;
+            }
+        };
+        let raw_json = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(raw_json) => raw_json,
+            Err(err) => {
+                let snippet = body.chars().take(180).collect::<String>();
+                failures.push(format!("manifest 不是合法 JSON：{endpoint_text}；原始错误: {err}；响应开头: {snippet}"));
+                continue;
+            }
+        };
+
+        let parsed_version = extract_app_update_version(&raw_json);
+        emit_app_update_progress_detail(
+            app_handle,
+            progress_id,
+            "manifest-json-ok",
+            "manifest JSON 解析成功",
+            parsed_version.as_deref(),
+            None,
+            0,
+            0,
+            Some("自定义多源 updater"),
+            Some(&endpoint_text),
+            Some(status_code),
+            Some(current_version),
+            None,
+            None,
+            None,
+        );
+        eprintln!("[app-update] manifest json parse ok endpoint={endpoint_text}");
+
+        let Some(parsed_version) = parsed_version else {
+            failures.push(format!("manifest 格式不符合预期：缺少 version 字段 {endpoint_text}"));
+            continue;
+        };
+        let probe = AppUpdateManifestProbe {
+            endpoint,
+            raw_json,
+            status_code,
+        };
+        match compare_app_versions(&parsed_version, current_version)? {
+            CmpOrdering::Greater => return Ok(probe),
+            _ => {
+                let keep_best = best_probe
+                    .as_ref()
+                    .map(|(_, best_version)| compare_app_versions(&parsed_version, best_version) == Ok(CmpOrdering::Greater))
+                    .unwrap_or(true);
+                if keep_best {
+                    best_probe = Some((probe, parsed_version.clone()));
+                }
+                eprintln!("[app-update] manifest version {parsed_version} from {endpoint_text} is not newer than current {current_version}; trying next endpoint");
+            }
+        }
+    }
+
+    if let Some((probe, _)) = best_probe {
+        return Ok(probe);
+    }
+
+    Err(format!(
+        "manifest 请求失败：所有 endpoint 均不可用或不是合法 JSON。\n{}",
+        failures
+            .iter()
+            .map(|failure| format!("- {failure}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
 async fn download_app_update_from_source(
     app_handle: &tauri::AppHandle,
     progress_id: &str,
@@ -1719,7 +1862,7 @@ async fn check_and_install_app_update_mirrors(
 
     eprintln!("[app-update] updater=自定义多源 updater current_version={current_version}");
 
-    let manifest_probe = fetch_app_update_manifest_probe(&app_handle, &progress_id, check_timeout)?;
+    let manifest_probe = fetch_app_update_manifest_probe_for_current_version(&app_handle, &progress_id, check_timeout, &current_version)?;
     let manifest_endpoint = manifest_probe.endpoint.as_str().to_string();
     let raw_json = manifest_probe.raw_json;
     let version = extract_app_update_version(&raw_json).ok_or_else(|| {
@@ -13653,6 +13796,23 @@ fn main() {
             commands::assets::list_folders,
             commands::assets::list_tags,
             commands::assets::get_asset_thumbnails,
+            commands::canvas::list_canvases,
+            commands::canvas::list_deleted_canvases,
+            commands::canvas::get_canvas,
+            commands::canvas::create_canvas,
+            commands::canvas::duplicate_canvas,
+            commands::canvas::save_canvas_snapshot,
+            commands::canvas::rename_canvas,
+            commands::canvas::soft_delete_canvas,
+            commands::canvas::restore_canvas,
+            commands::canvas::permanently_delete_canvas,
+            commands::canvas::get_canvas_trash_count,
+            commands::canvas::set_active_canvas,
+            commands::canvas::get_active_canvas,
+            commands::canvas::list_canvas_nodes,
+            commands::canvas::get_canvas_nodes_in_viewport,
+            commands::canvas::update_canvas_nodes,
+            commands::canvas::patch_canvas_nodes,
             commands::migration::migrate_json_to_sqlite,
             commands::migration::get_migration_status,
             commands::migration::rollback_to_json_mode,

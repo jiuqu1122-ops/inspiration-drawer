@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -9,7 +9,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot
+  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
@@ -34,6 +34,27 @@ import { AgentSettingsSection } from './components/AgentSettingsSection';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
 import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSelect';
+import {
+  DEFAULT_CANVAS_ID,
+  DEFAULT_LIBRARY_ID,
+  DEFAULT_PROJECT_ID,
+  createCanvas,
+  duplicateCanvas,
+  getActiveCanvas,
+  getCanvasTrashCount,
+  listCanvasNodes,
+  listCanvases,
+  listDeletedCanvases,
+  permanentlyDeleteCanvas,
+  patchCanvasNodes,
+  renameCanvas,
+  restoreCanvas,
+  saveCanvasSnapshot,
+  setActiveCanvas,
+  softDeleteCanvas,
+  updateCanvasNodes,
+  type CanvasRecord,
+} from './services/canvasApi';
 import { clamp } from './features/common';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
@@ -60,7 +81,6 @@ import {
   type CanvasImageItem,
   type CanvasItemBox,
   type CanvasResizeCorner,
-  type CanvasSelectionBox,
 } from './features/canvasModel';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
@@ -819,8 +839,6 @@ const CANVAS_SELECTION_RADIUS = 18;
 const CANVAS_NODE_RADIUS = 20;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
 const CANVAS_INTERACTION_OVERSCAN_PX = 680;
-const CANVAS_DENSE_RENDER_THRESHOLD = 80;
-const CANVAS_DENSE_COMMIT_INTERVAL_MS = 30;
 const CANVAS_GENERATED_LIST_RENDER_LIMIT = 60;
 const AI_GENERATED_FOLDER_ID = 'ai_generated_images';
 const AI_GENERATED_FOLDER_NAME = 'AI生图';
@@ -3000,6 +3018,234 @@ const insertDrawerFolderAtTop = (currentFolders: Folder[], folder: Folder) => {
   ];
 };
 
+type CanvasActionMenuPlacement = 'floating' | 'inline' | 'plain';
+
+function useEventCallback<T extends (...args: any[]) => any>(handler: T): T {
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => {
+    handlerRef.current = handler;
+  });
+  return useCallback(((...args: Parameters<T>) => handlerRef.current(...args)) as T, []);
+}
+
+const formatCanvasDeletedAt = (value?: number | null) => {
+  if (!value) return '删除时间未知';
+  return new Date(value).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+};
+
+const sameCanvasForList = (previous: CanvasRecord, next: CanvasRecord) => (
+  previous.id === next.id
+  && previous.name === next.name
+  && previous.isSnapshot === next.isSnapshot
+  && previous.deletedAt === next.deletedAt
+);
+
+type CanvasListItemProps = {
+  canvas: CanvasRecord;
+  isActive: boolean;
+  canDelete: boolean;
+  isSwitching: boolean;
+  isMenuOpen: boolean;
+  onOpen: (canvasId: string) => void;
+  onOpenMenu: (canvasId: string) => void;
+  onToggleMenu: (canvasId: string) => void;
+  onDelete: (canvas: CanvasRecord) => void;
+  renderMenu: (canvas: CanvasRecord, placement: CanvasActionMenuPlacement) => React.ReactNode;
+};
+
+const CanvasListItem = React.memo(function CanvasListItem({
+  canvas,
+  isActive,
+  canDelete,
+  isSwitching,
+  isMenuOpen,
+  onOpen,
+  onOpenMenu,
+  onToggleMenu,
+  onDelete,
+  renderMenu,
+}: CanvasListItemProps) {
+  return (
+    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true">
+      <div className="relative">
+        <button
+          type="button"
+          disabled={isSwitching}
+          onClick={() => onOpen(canvas.id)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenMenu(canvas.id);
+          }}
+          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-16 text-left text-[12px] font-bold transition-colors ${isActive ? 'bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'} disabled:cursor-wait disabled:opacity-60`}
+          title={canvas.name}
+        >
+          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${isActive ? 'bg-white/18 text-white dark:bg-stone-950/14 dark:text-stone-950' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/12 dark:text-indigo-200'}`}>
+            <Layers className="h-3.5 w-3.5" />
+          </span>
+          <span className="min-w-0 flex-1 truncate">{canvas.name || '画布'}</span>
+          {canvas.isSnapshot && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black ${isActive ? 'bg-white/18 text-white/80 dark:text-stone-950/70' : 'bg-indigo-100 text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-200'}`}>快照</span>}
+        </button>
+        <button
+          type="button"
+          disabled={!canDelete}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onDelete(canvas);
+          }}
+          className="absolute right-8 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-red-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-stone-300 disabled:opacity-0 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-red-300 dark:ring-stone-700 dark:hover:bg-red-950/35 dark:hover:text-red-200 dark:disabled:text-stone-600"
+          title={canDelete ? '删除画布' : '正在切换画布'}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onToggleMenu(canvas.id);
+          }}
+          className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-stone-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:text-stone-900 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700 dark:hover:text-white"
+          title="画布菜单"
+        >
+          <MoreVertical className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {isMenuOpen && renderMenu(canvas, 'inline')}
+    </div>
+  );
+}, (previous, next) => (
+  sameCanvasForList(previous.canvas, next.canvas)
+  && previous.isActive === next.isActive
+  && previous.canDelete === next.canDelete
+  && previous.isSwitching === next.isSwitching
+  && previous.isMenuOpen === next.isMenuOpen
+  && previous.onOpen === next.onOpen
+  && previous.onOpenMenu === next.onOpenMenu
+  && previous.onToggleMenu === next.onToggleMenu
+  && previous.onDelete === next.onDelete
+  && previous.renderMenu === next.renderMenu
+));
+
+type CanvasRailItemProps = Omit<CanvasListItemProps, 'canDelete' | 'onDelete'>;
+
+const CanvasRailItem = React.memo(function CanvasRailItem({
+  canvas,
+  isActive,
+  isSwitching,
+  isMenuOpen,
+  onOpen,
+  onOpenMenu,
+  onToggleMenu,
+  renderMenu,
+}: CanvasRailItemProps) {
+  return (
+    <div className="group/canvas-rail relative flex w-full shrink-0 flex-col items-center" data-canvas-list-item="true">
+      <button
+        type="button"
+        disabled={isSwitching}
+        onClick={() => onOpen(canvas.id)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenMenu(canvas.id);
+        }}
+        className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border transition-colors ${isActive ? 'border-indigo-300 bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'border-white/70 bg-white/65 text-indigo-500 hover:bg-indigo-50 dark:border-stone-700/60 dark:bg-stone-800/65 dark:text-indigo-200 dark:hover:bg-indigo-400/12'} disabled:cursor-wait disabled:opacity-60`}
+        title={canvas.name}
+      >
+        <Layers className="h-5 w-5" />
+      </button>
+      <span className={`w-14 truncate px-0.5 pb-1 text-center text-[10px] ${isActive ? 'font-bold text-indigo-700 dark:text-indigo-200' : 'text-stone-500 dark:text-stone-400'}`}>
+        {canvas.name || '画布'}
+      </span>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleMenu(canvas.id);
+        }}
+        className="absolute right-0 top-0 hidden h-5 w-5 items-center justify-center rounded-full bg-white/88 text-stone-500 ring-1 ring-stone-200 group-hover/canvas-rail:flex dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700"
+        title="画布菜单"
+      >
+        <MoreVertical className="h-3 w-3" />
+      </button>
+      {isMenuOpen && (
+        <div className="absolute left-10 top-0 z-[100060]">
+          {renderMenu(canvas, 'plain')}
+        </div>
+      )}
+    </div>
+  );
+}, (previous, next) => (
+  sameCanvasForList(previous.canvas, next.canvas)
+  && previous.isActive === next.isActive
+  && previous.isSwitching === next.isSwitching
+  && previous.isMenuOpen === next.isMenuOpen
+  && previous.onOpen === next.onOpen
+  && previous.onOpenMenu === next.onOpenMenu
+  && previous.onToggleMenu === next.onToggleMenu
+  && previous.renderMenu === next.renderMenu
+));
+
+type CanvasTrashListItemProps = {
+  canvas: CanvasRecord;
+  onRestore: (canvas: CanvasRecord) => void;
+  onPermanentlyDelete: (canvas: CanvasRecord) => void;
+};
+
+const CanvasTrashListItem = React.memo(function CanvasTrashListItem({
+  canvas,
+  onRestore,
+  onPermanentlyDelete,
+}: CanvasTrashListItemProps) {
+  return (
+    <div className="rounded-[10px] border border-stone-200/80 bg-white/70 p-2 text-stone-700 dark:border-stone-700/70 dark:bg-stone-900/50 dark:text-stone-200">
+      <div className="flex items-start gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-stone-100 text-stone-500 dark:bg-stone-800 dark:text-stone-300">
+          <Layers className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12px] font-bold">{canvas.name || '画布'}</div>
+          <div className="mt-0.5 truncate text-[10px] font-medium text-stone-400 dark:text-stone-500">
+            {formatCanvasDeletedAt(canvas.deletedAt)}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <button
+          type="button"
+          onClick={() => onRestore(canvas)}
+          className="inline-flex h-7 items-center justify-center gap-1 rounded-[8px] bg-emerald-50 text-[10px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:bg-emerald-400/12 dark:text-emerald-200 dark:hover:bg-emerald-400/20"
+        >
+          <ArchiveRestore className="h-3 w-3" />
+          恢复
+        </button>
+        <button
+          type="button"
+          onClick={() => onPermanentlyDelete(canvas)}
+          className="inline-flex h-7 items-center justify-center gap-1 rounded-[8px] bg-red-50 text-[10px] font-black text-red-600 transition-colors hover:bg-red-100 dark:bg-red-400/12 dark:text-red-200 dark:hover:bg-red-400/20"
+        >
+          <Trash2 className="h-3 w-3" />
+          永久删除
+        </button>
+      </div>
+    </div>
+  );
+}, (previous, next) => (
+  sameCanvasForList(previous.canvas, next.canvas)
+  && previous.onRestore === next.onRestore
+  && previous.onPermanentlyDelete === next.onPermanentlyDelete
+));
+
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
@@ -3057,11 +3303,17 @@ function MainApp() {
   const [canvasExitPromptStep, setCanvasExitPromptStep] = useState<'choice' | 'save'>('choice');
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
   const [canvasViewport, setCanvasViewport] = useState<CanvasViewportRect | null>(null);
-  const [canvasSelectionBox, setCanvasSelectionBox] = useState<CanvasSelectionBox | null>(null);
+  const [canvases, setCanvases] = useState<CanvasRecord[]>([]);
+  const [activeCanvasId, setActiveCanvasId] = useState(DEFAULT_CANVAS_ID);
+  const [canvasActionMenuId, setCanvasActionMenuId] = useState<string | null>(null);
+  const [isSwitchingCanvas, setIsSwitchingCanvas] = useState(false);
+  const [isCanvasTrashOpen, setIsCanvasTrashOpen] = useState(false);
+  const [deletedCanvases, setDeletedCanvases] = useState<CanvasRecord[]>([]);
+  const [canvasTrashCount, setCanvasTrashCount] = useState(0);
+  const [isLoadingCanvasTrash, setIsLoadingCanvasTrash] = useState(false);
   const [canvasFolderImportPrompt, setCanvasFolderImportPrompt] = useState<CanvasFolderImagePickerState | null>(null);
   const [canvasConnectionDraft, setCanvasConnectionDraft] = useState<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number } | null>(null);
   const [canvasInputActionDraft, setCanvasInputActionDraft] = useState<{ targetId: string; fromX: number; fromY: number; toX: number; toY: number } | null>(null);
-  const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
@@ -3112,6 +3364,8 @@ function MainApp() {
   const [canvasPresetPromptDraft, setCanvasPresetPromptDraft] = useState('');
   const [canvasWorkflowSingleEditGroupIds, setCanvasWorkflowSingleEditGroupIds] = useState<string[]>([]);
   const isCanvasModeRef = useRef(false);
+  const activeCanvasIdRef = useRef(DEFAULT_CANVAS_ID);
+  const isSwitchingCanvasRef = useRef(false);
   const canvasItemsRef = useRef<CanvasImageItem[]>([]);
   const canvasSelectedIdsRef = useRef<string[]>([]);
   const canvasWorkflowSingleEditGroupIdsRef = useRef<Set<string>>(new Set());
@@ -3124,11 +3378,31 @@ function MainApp() {
   const canvasNavigatorPanelRef = useRef<HTMLDivElement | null>(null);
   const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
   const canvasViewportFrameRef = useRef<number | null>(null);
-  const canvasItemsCommitFrameRef = useRef<number | null>(null);
-  const canvasItemsLastCommitAtRef = useRef(0);
-  const pendingCanvasItemsCommitRef = useRef<CanvasImageItem[] | null>(null);
+  const canvasInteractionFrameRef = useRef<number | null>(null);
+  const canvasInteractionPayloadRef = useRef<null | {
+    kind: 'move';
+    ids: string[];
+    dx: number;
+    dy: number;
+  } | {
+    kind: 'resize';
+    boxes: Record<string, CanvasItemBox>;
+  } | {
+    kind: 'selection';
+    rect: CanvasItemBox;
+  }>(null);
+  const canvasSelectionOverlayRef = useRef<HTMLDivElement | null>(null);
+  const canvasInteractionChangedNodeIdsRef = useRef<Set<string>>(new Set());
+  const canvasItemsPatchCommitRef = useRef(false);
+  const canvasPatchSaveTimerRef = useRef<number | null>(null);
+  const canvasPatchSavePendingIdsRef = useRef<Set<string>>(new Set());
+  const isCanvasZoomingRef = useRef(false);
+  const canvasZoomSettleTimerRef = useRef<number | null>(null);
+  const canvasViewportDeferredDuringZoomRef = useRef(false);
+  const canvasSizeCommitDeferredRef = useRef(false);
   const canvasNavThumbnailCacheRef = useRef<Map<string, CanvasNavThumbnailCacheEntry>>(new Map());
   const [canvasNavThumbnailRevision, setCanvasNavThumbnailRevision] = useState(0);
+  const [canvasZoomSettledRevision, setCanvasZoomSettledRevision] = useState(0);
   const canvasAiRunTokensRef = useRef<Record<string, string>>({});
   const canvasAiModelRefreshSignatureRef = useRef('');
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
@@ -3150,6 +3424,7 @@ function MainApp() {
     startScrollLeft: number;
     startScrollTop: number;
     startItems: Record<string, CanvasItemBox>;
+    latestDelta: { dx: number; dy: number };
     hasMoved: boolean;
   } | null>(null);
   const canvasResizeRef = useRef<{
@@ -3162,6 +3437,7 @@ function MainApp() {
     startWidth: number;
     startHeight: number;
     aspect: number;
+    latestBox: CanvasItemBox | null;
     hasResized: boolean;
   } | null>(null);
   const canvasGroupResizeRef = useRef<{
@@ -3171,12 +3447,15 @@ function MainApp() {
     startBounds: CanvasItemBox;
     startItems: Record<string, CanvasItemBox>;
     aspect: number;
+    latestBoxes: Record<string, CanvasItemBox> | null;
     hasResized: boolean;
   } | null>(null);
   const canvasSelectionDragRef = useRef<{
     pointerId: number;
     startX: number;
     startY: number;
+    currentX: number;
+    currentY: number;
     additive: boolean;
     baseSelectedIds: string[];
   } | null>(null);
@@ -3220,6 +3499,9 @@ function MainApp() {
   const canvasReturnScrollRef = useRef<{ left: number; top: number } | null>(null);
   const canvasStateLoadedRef = useRef(false);
   const canvasPersistSaveTimerRef = useRef<number | null>(null);
+  const canvasPersistSaveSyncNodesRef = useRef(false);
+  const canvasLastSyncedNodesSignatureRef = useRef('');
+  const canvasStateSaveDeferredDuringZoomRef = useRef(false);
   const pendingCanvasFocusItemIdRef = useRef<string | null>(null);
   const setCanvasInteractionActive = (active: boolean, releaseDelay = 120) => {
     if (canvasInteractionTimerRef.current !== null) {
@@ -3228,10 +3510,8 @@ function MainApp() {
     }
 
     if (active) {
-      if (!isCanvasInteractingRef.current) {
-        isCanvasInteractingRef.current = true;
-        setIsCanvasInteracting(true);
-      }
+      isCanvasInteractingRef.current = true;
+      canvasSurfaceRef.current?.setAttribute('data-canvas-interacting', 'true');
       return;
     }
 
@@ -3239,7 +3519,19 @@ function MainApp() {
       canvasInteractionTimerRef.current = null;
       if (!isCanvasInteractingRef.current) return;
       isCanvasInteractingRef.current = false;
-      setIsCanvasInteracting(false);
+      canvasSurfaceRef.current?.removeAttribute('data-canvas-interacting');
+      if (canvasSizeCommitDeferredRef.current) {
+        canvasSizeCommitDeferredRef.current = false;
+        setCanvasSize(canvasSizeRef.current);
+      }
+      if (canvasViewportDeferredDuringZoomRef.current) {
+        canvasViewportDeferredDuringZoomRef.current = false;
+      }
+      scheduleCanvasViewportUpdate();
+      setCanvasZoomSettledRevision(value => value + 1);
+      flushCanvasChangedNodePatches();
+      scheduleCanvasChangedNodesPatchSave([]);
+      scheduleCanvasStateSave({ syncNodes: canvasPersistSaveSyncNodesRef.current });
     }, releaseDelay);
   };
 
@@ -3256,12 +3548,13 @@ function MainApp() {
       setCanvasSelectedIds([]);
       canvasViewportRef.current = null;
       setCanvasViewport(null);
-      setCanvasSelectionBox(null);
+      hideCanvasSelectionOverlay();
       setCanvasFolderImportPrompt(null);
       setCanvasConnectionDraft(null);
       setCanvasInputActionDraft(null);
       setCanvasInteractionActive(false, 0);
       setCanvasContextMenu(null);
+      setCanvasActionMenuId(null);
       setCanvasInputMenuForId(null);
       setCanvasInputPickTargetId(null);
       setIsCanvasAiPanelOpen(false);
@@ -3288,6 +3581,8 @@ function MainApp() {
     }
   }, [isCanvasMode]);
   useEffect(() => { canvasItemsRef.current = canvasItems; }, [canvasItems]);
+  useEffect(() => { activeCanvasIdRef.current = activeCanvasId; }, [activeCanvasId]);
+  useEffect(() => { isSwitchingCanvasRef.current = isSwitchingCanvas; }, [isSwitchingCanvas]);
   useEffect(() => { canvasSelectedIdsRef.current = canvasSelectedIds; }, [canvasSelectedIds]);
   useEffect(() => {
     if (canvasScaleCommitTimerRef.current !== null && Math.abs((canvasScaleRef.current || 1) - canvasScale) > 0.001) {
@@ -3398,7 +3693,6 @@ function MainApp() {
     };
   }, [isCanvasMode]);
   useEffect(() => () => {
-    flushCanvasItemsInFrame();
     if (canvasViewportFrameRef.current !== null) {
       window.cancelAnimationFrame(canvasViewportFrameRef.current);
       canvasViewportFrameRef.current = null;
@@ -3406,6 +3700,7 @@ function MainApp() {
     if (canvasScaleCommitTimerRef.current !== null) {
       window.clearTimeout(canvasScaleCommitTimerRef.current);
       canvasScaleCommitTimerRef.current = null;
+      canvasZoomSettleTimerRef.current = null;
     }
     if (canvasInteractionTimerRef.current !== null) {
       window.clearTimeout(canvasInteractionTimerRef.current);
@@ -6294,6 +6589,9 @@ function MainApp() {
       count + 1 + (collapsedFolderIds.includes(folder.id) ? 0 : (folderChildrenByParent.get(folder.id)?.length || 0))
     ), 0)
   ), [rootFolders, folderChildrenByParent, collapsedFolderIds]);
+  const activeCanvas = useMemo(() => (
+    canvases.find(canvas => canvas.id === activeCanvasId) || canvases.find(canvas => canvas.isActive) || null
+  ), [canvases, activeCanvasId]);
   const folderItemCounts = useMemo(() => {
     const directCounts = new Map<string, number>();
     items.forEach(item => {
@@ -7723,9 +8021,11 @@ function MainApp() {
       if (savedItems && savedItems.length > 0) setItems(savedItems.map(stripHeavyDataThumbnail));
       setIsDataLoaded(true);
     }).catch(() => setIsDataLoaded(true));
-    invoke('load_canvas_state').then((savedState: unknown) => {
+    const restoreLegacyCanvasState = async () => {
+      const savedState = await invoke('load_canvas_state');
       const restored = sanitizeCanvasPersistedState(savedState);
       canvasItemsRef.current = restored.items;
+      canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
       canvasSizeRef.current = restored.size;
       canvasScaleRef.current = restored.scale;
       canvasReturnScrollRef.current = restored.scroll;
@@ -7734,11 +8034,34 @@ function MainApp() {
       setCanvasSize(restored.size);
       setCanvasScale(restored.scale);
       applyCanvasScaleStyles(restored.scale, restored.size);
-    }).catch((err) => {
-      console.warn('恢复画布状态失败:', err);
-    }).finally(() => {
-      canvasStateLoadedRef.current = true;
-    });
+    };
+    const restoreActiveCanvas = async () => {
+      try {
+        const [active, canvasList, trashCount] = await Promise.all([
+          getActiveCanvas(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
+          listCanvases(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
+          getCanvasTrashCount(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
+        ]);
+        const nodes = await listCanvasNodes(active.id);
+        const restored = sanitizeCanvasPersistedState({ items: nodes });
+        activeCanvasIdRef.current = active.id;
+        setActiveCanvasId(active.id);
+        setCanvases(canvasList.length > 0 ? canvasList : [active]);
+        setCanvasTrashCount(trashCount);
+        canvasItemsRef.current = restored.items;
+        canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
+        setCanvasItems(restored.items);
+        canvasSizeRef.current = restored.size;
+        setCanvasSize(restored.size);
+        applyCanvasScaleStyles(canvasScaleRef.current || restored.scale, restored.size);
+      } catch (err) {
+        console.warn('恢复 SQLite 画布失败，尝试旧画布状态:', err);
+        await restoreLegacyCanvasState();
+      } finally {
+        canvasStateLoadedRef.current = true;
+      }
+    };
+    void restoreActiveCanvas();
     invoke('load_folders').then((savedFolders: any) => {
       if (savedFolders && savedFolders.length > 0) {
         const normalizedFolders = normalizeDrawerFolders(savedFolders);
@@ -7772,13 +8095,22 @@ function MainApp() {
     }
     saveDrawerItemsNow();
   }, [isDataLoaded]);
-  useEffect(() => { scheduleCanvasStateSave(); }, [canvasItems, canvasSize, canvasScale]);
+  useEffect(() => {
+    if (canvasItemsPatchCommitRef.current) {
+      canvasItemsPatchCommitRef.current = false;
+      scheduleCanvasStateSave();
+      return;
+    }
+    scheduleCanvasStateSave({ syncNodes: true });
+  }, [canvasItems]);
+  useEffect(() => { scheduleCanvasStateSave(); }, [canvasSize]);
+  useEffect(() => { scheduleCanvasStateSave(); }, [canvasScale]);
   useEffect(() => () => {
     if (canvasPersistSaveTimerRef.current !== null) {
       window.clearTimeout(canvasPersistSaveTimerRef.current);
       canvasPersistSaveTimerRef.current = null;
     }
-    saveCanvasStateNow();
+    saveCanvasStateNow({ syncNodes: true });
   }, []);
   useEffect(() => {
     localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(folders));
@@ -8932,7 +9264,7 @@ function MainApp() {
     };
   };
 
-  const normalizeCanvasSelectionBox = (box: CanvasSelectionBox): CanvasItemBox => {
+  const normalizeCanvasSelectionBox = (box: { startX: number; startY: number; currentX: number; currentY: number }): CanvasItemBox => {
     const left = Math.min(box.startX, box.currentX);
     const top = Math.min(box.startY, box.currentY);
     return {
@@ -9320,40 +9652,161 @@ function MainApp() {
   };
 
   const updateCanvasItemsImmediate = (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => {
-    if (canvasItemsCommitFrameRef.current !== null) {
-      window.cancelAnimationFrame(canvasItemsCommitFrameRef.current);
-      canvasItemsCommitFrameRef.current = null;
-    }
-    pendingCanvasItemsCommitRef.current = null;
     const next = updater(canvasItemsRef.current);
     canvasItemsRef.current = next;
     setCanvasItems(next);
     return next;
   };
 
-  const updateCanvasItemsInFrame = (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => {
-    const next = updater(canvasItemsRef.current);
-    canvasItemsRef.current = next;
-    pendingCanvasItemsCommitRef.current = next;
-    if (canvasItemsCommitFrameRef.current === null) {
-      const commitPendingItems = (timestamp: number) => {
-        const isDenseCanvas = canvasItemsRef.current.length >= CANVAS_DENSE_RENDER_THRESHOLD;
-        const elapsed = timestamp - canvasItemsLastCommitAtRef.current;
-        if (isDenseCanvas && elapsed < CANVAS_DENSE_COMMIT_INTERVAL_MS) {
-          canvasItemsCommitFrameRef.current = window.requestAnimationFrame(commitPendingItems);
-          return;
-        }
-        canvasItemsCommitFrameRef.current = null;
-        const pending = pendingCanvasItemsCommitRef.current;
-        pendingCanvasItemsCommitRef.current = null;
-        if (pending) {
-          canvasItemsLastCommitAtRef.current = timestamp;
-          setCanvasItems(pending);
-        }
-      };
-      canvasItemsCommitFrameRef.current = window.requestAnimationFrame(commitPendingItems);
+  const getCanvasItemElement = (id: string) => {
+    const content = canvasContentRef.current;
+    if (!content) return null;
+    const selectorId = typeof CSS !== 'undefined' && CSS.escape
+      ? CSS.escape(id)
+      : id.replace(/["\\]/g, '\\$&');
+    return content.querySelector<HTMLElement>(`[data-canvas-item-id="${selectorId}"]`);
+  };
+
+  const setCanvasItemDraggingFlag = (ids: string[], active: boolean) => {
+    ids.forEach((id) => {
+      const element = getCanvasItemElement(id);
+      if (!element) return;
+      if (active) element.setAttribute('data-canvas-dragging', 'true');
+      else element.removeAttribute('data-canvas-dragging');
+    });
+  };
+
+  const setCanvasItemResizingFlag = (ids: string[], active: boolean) => {
+    ids.forEach((id) => {
+      const element = getCanvasItemElement(id);
+      if (!element) return;
+      if (active) element.setAttribute('data-canvas-resizing', 'true');
+      else element.removeAttribute('data-canvas-resizing');
+    });
+  };
+
+  const clearCanvasItemInteractionStyles = (ids: string[]) => {
+    ids.forEach((id) => {
+      const element = getCanvasItemElement(id);
+      if (!element) return;
+      element.style.transform = '';
+      element.style.left = '';
+      element.style.top = '';
+      element.style.width = '';
+      element.style.height = '';
+      element.removeAttribute('data-canvas-dragging');
+      element.removeAttribute('data-canvas-resizing');
+    });
+  };
+
+  const hideCanvasSelectionOverlay = () => {
+    const overlay = canvasSelectionOverlayRef.current;
+    if (!overlay) return;
+    overlay.style.display = 'none';
+    overlay.style.transform = '';
+    overlay.style.left = '0px';
+    overlay.style.top = '0px';
+    overlay.style.width = '0px';
+    overlay.style.height = '0px';
+  };
+
+  const flushCanvasInteractionFrame = () => {
+    canvasInteractionFrameRef.current = null;
+    const payload = canvasInteractionPayloadRef.current;
+    if (!payload) return;
+
+    if (payload.kind === 'move') {
+      payload.ids.forEach((id) => {
+        const element = getCanvasItemElement(id);
+        if (!element) return;
+        element.style.transform = `translate3d(${payload.dx}px, ${payload.dy}px, 0)`;
+      });
+      return;
     }
-    return next;
+
+    if (payload.kind === 'resize') {
+      Object.entries(payload.boxes).forEach(([id, box]) => {
+        const element = getCanvasItemElement(id);
+        if (!element) return;
+        element.style.left = `${box.x}px`;
+        element.style.top = `${box.y}px`;
+        element.style.width = `${box.width}px`;
+        element.style.height = `${box.height}px`;
+      });
+      return;
+    }
+
+    const overlay = canvasSelectionOverlayRef.current;
+    if (!overlay) return;
+    overlay.style.display = payload.rect.width < 4 && payload.rect.height < 4 ? 'none' : 'block';
+    overlay.style.transform = `translate3d(${payload.rect.x}px, ${payload.rect.y}px, 0)`;
+    overlay.style.width = `${payload.rect.width}px`;
+    overlay.style.height = `${payload.rect.height}px`;
+  };
+
+  const scheduleCanvasInteractionPaint = (payload: NonNullable<typeof canvasInteractionPayloadRef.current>) => {
+    canvasInteractionPayloadRef.current = payload;
+    if (canvasInteractionFrameRef.current !== null) return;
+    canvasInteractionFrameRef.current = window.requestAnimationFrame(flushCanvasInteractionFrame);
+  };
+
+  const cancelCanvasInteractionPaint = () => {
+    if (canvasInteractionFrameRef.current !== null) {
+      window.cancelAnimationFrame(canvasInteractionFrameRef.current);
+      canvasInteractionFrameRef.current = null;
+    }
+    canvasInteractionPayloadRef.current = null;
+  };
+
+  const scheduleCanvasChangedNodesPatchSave = (ids: string[]) => {
+    if (!canvasStateLoadedRef.current) return;
+    ids.filter(Boolean).forEach(id => canvasPatchSavePendingIdsRef.current.add(id));
+    if (canvasPatchSavePendingIdsRef.current.size === 0) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
+    if (canvasPatchSaveTimerRef.current !== null) {
+      window.clearTimeout(canvasPatchSaveTimerRef.current);
+    }
+    canvasPatchSaveTimerRef.current = window.setTimeout(() => {
+      canvasPatchSaveTimerRef.current = null;
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+        scheduleCanvasChangedNodesPatchSave([]);
+        return;
+      }
+      const pendingIds = Array.from(canvasPatchSavePendingIdsRef.current);
+      canvasPatchSavePendingIdsRef.current.clear();
+      const pendingSet = new Set(pendingIds);
+      const changedNodes = canvasItemsRef.current
+        .filter(item => pendingSet.has(item.id))
+        .map(stripCanvasItemDataImageProvenance);
+      if (changedNodes.length === 0) return;
+      const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+      const assetItems = changedNodes.map(item => item.item).filter(Boolean);
+      if (assetItems.length > 0) {
+        invoke('upsert_assets', { assets: assetItems }).catch((err) => {
+          console.warn('同步变更画布素材到 SQLite 失败:', err);
+        });
+      }
+      patchCanvasNodes(targetCanvasId, changedNodes)
+        .then(() => {
+          canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(
+            canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)
+          );
+        })
+        .catch((err) => {
+          pendingIds.forEach(id => canvasPatchSavePendingIdsRef.current.add(id));
+          console.warn('保存变更画布节点失败:', err);
+        });
+    }, 700);
+  };
+
+  const markCanvasNodesChanged = (ids: string[]) => {
+    ids.filter(Boolean).forEach(id => canvasInteractionChangedNodeIdsRef.current.add(id));
+  };
+
+  const flushCanvasChangedNodePatches = () => {
+    const changedIds = Array.from(canvasInteractionChangedNodeIdsRef.current);
+    canvasInteractionChangedNodeIdsRef.current.clear();
+    scheduleCanvasChangedNodesPatchSave(changedIds);
   };
 
   const buildCanvasPersistedState = (): CanvasPersistedState => ({
@@ -9376,12 +9829,23 @@ function MainApp() {
     updatedAt: Date.now(),
   });
 
-  const saveCanvasStateNow = () => {
+  const getCanvasNodesPersistSignature = (items: CanvasImageItem[]) => JSON.stringify(items);
+
+  const saveCanvasStateNow = (options: { syncNodes?: boolean } = {}) => {
     if (!canvasStateLoadedRef.current) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+      canvasStateSaveDeferredDuringZoomRef.current = true;
+      canvasPersistSaveSyncNodesRef.current = canvasPersistSaveSyncNodesRef.current || !!options.syncNodes;
+      return;
+    }
     const state = buildCanvasPersistedState();
     invoke('save_canvas_state', { state }).catch((err) => {
       console.warn('保存画布状态失败:', err);
     });
+    if (!options.syncNodes) return;
+    const nodesSignature = getCanvasNodesPersistSignature(state.items);
+    if (canvasLastSyncedNodesSignatureRef.current === nodesSignature) return;
+    const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
     if (state.items.length > 0) {
       const assetItems = state.items.map(item => item.item).filter(Boolean);
       if (assetItems.length > 0) {
@@ -9389,39 +9853,302 @@ function MainApp() {
           console.warn('同步画布素材到 SQLite 失败:', err);
         });
       }
-      invoke('upsert_canvas_nodes', { canvasId: 'default', canvas_id: 'default', nodes: state.items }).catch((err) => {
+    }
+    updateCanvasNodes(targetCanvasId, state.items)
+      .then(() => {
+        canvasLastSyncedNodesSignatureRef.current = nodesSignature;
+      })
+      .catch((err) => {
         console.warn('同步画布节点到 SQLite 失败:', err);
       });
-    }
   };
 
-  const scheduleCanvasStateSave = () => {
+  const scheduleCanvasStateSave = (options: { syncNodes?: boolean } = {}) => {
     if (!canvasStateLoadedRef.current) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+      canvasStateSaveDeferredDuringZoomRef.current = true;
+      canvasPersistSaveSyncNodesRef.current = canvasPersistSaveSyncNodesRef.current || !!options.syncNodes;
+      return;
+    }
+    canvasPersistSaveSyncNodesRef.current = canvasPersistSaveSyncNodesRef.current || !!options.syncNodes;
     if (canvasPersistSaveTimerRef.current !== null) {
       window.clearTimeout(canvasPersistSaveTimerRef.current);
     }
     canvasPersistSaveTimerRef.current = window.setTimeout(() => {
       canvasPersistSaveTimerRef.current = null;
-      saveCanvasStateNow();
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+        canvasStateSaveDeferredDuringZoomRef.current = true;
+        return;
+      }
+      const shouldSyncNodes = canvasPersistSaveSyncNodesRef.current;
+      canvasPersistSaveSyncNodesRef.current = false;
+      saveCanvasStateNow({ syncNodes: shouldSyncNodes });
     }, CANVAS_STATE_SAVE_DEBOUNCE_MS);
   };
 
-  const flushCanvasItemsInFrame = () => {
-    if (canvasItemsCommitFrameRef.current !== null) {
-      window.cancelAnimationFrame(canvasItemsCommitFrameRef.current);
-      canvasItemsCommitFrameRef.current = null;
+  const refreshCanvases = async () => {
+    const [canvasList, trashCount] = await Promise.all([
+      listCanvases(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
+      getCanvasTrashCount(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
+    ]);
+    setCanvases(canvasList);
+    setCanvasTrashCount(trashCount);
+    const active = canvasList.find(canvas => canvas.isActive) || canvasList[0];
+    if (active && active.id !== activeCanvasIdRef.current && !isSwitchingCanvasRef.current) {
+      activeCanvasIdRef.current = active.id;
+      setActiveCanvasId(active.id);
     }
-    const pending = pendingCanvasItemsCommitRef.current;
-    pendingCanvasItemsCommitRef.current = null;
-    if (pending) {
-      canvasItemsLastCommitAtRef.current = performance.now();
-      setCanvasItems(pending);
+    return canvasList;
+  };
+
+  const refreshDeletedCanvases = async () => {
+    const deletedList = await listDeletedCanvases(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID);
+    setDeletedCanvases(deletedList);
+    setCanvasTrashCount(deletedList.length);
+    return deletedList;
+  };
+
+  const openCanvasTrash = async () => {
+    setCanvasActionMenuId(null);
+    setIsCanvasTrashOpen(true);
+    setIsLoadingCanvasTrash(true);
+    try {
+      await refreshDeletedCanvases();
+    } catch (err) {
+      console.warn('读取画布回收站失败:', err);
+      showToast('读取回收站失败');
+    } finally {
+      setIsLoadingCanvasTrash(false);
     }
   };
 
+  const loadCanvasItems = async (canvasId: string) => {
+    const nodes = await listCanvasNodes(canvasId);
+    const restored = sanitizeCanvasPersistedState({ items: nodes });
+    const fitSize = restored.items.reduce((size, item) => ({
+      width: Math.max(size.width, Math.ceil((item.x + item.width + CANVAS_GROW_CHUNK * 0.35) / CANVAS_GROW_CHUNK) * CANVAS_GROW_CHUNK),
+      height: Math.max(size.height, Math.ceil((item.y + item.height + CANVAS_GROW_CHUNK * 0.35) / CANVAS_GROW_CHUNK) * CANVAS_GROW_CHUNK),
+    }), { width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
+    canvasItemsRef.current = restored.items;
+    canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
+    setCanvasItems(restored.items);
+    canvasSizeRef.current = fitSize;
+    setCanvasSize(fitSize);
+    applyCanvasScaleStyles(canvasScaleRef.current || 1, fitSize);
+    updateCanvasSelection([]);
+    hideCanvasSelectionOverlay();
+    setCanvasContextMenu(null);
+    setCanvasInputMenuForId(null);
+    setCanvasInputPickTargetId(null);
+    setCanvasConnectionDraft(null);
+    setCanvasInputActionDraft(null);
+    clearCanvasUndoStack();
+    canvasViewportRef.current = null;
+    setCanvasViewport(null);
+    return restored.items;
+  };
+
+  const saveCurrentCanvasBeforeSwitch = async () => {
+    if (canvasPersistSaveTimerRef.current !== null) {
+      window.clearTimeout(canvasPersistSaveTimerRef.current);
+      canvasPersistSaveTimerRef.current = null;
+    }
+    const state = buildCanvasPersistedState();
+    const currentCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    if (state.items.length > 0) {
+      const assetItems = state.items.map(item => item.item).filter(Boolean);
+      if (assetItems.length > 0) {
+        await invoke('upsert_assets', { assets: assetItems });
+      }
+    }
+    await updateCanvasNodes(currentCanvasId, state.items);
+    canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(state.items);
+    invoke('save_canvas_state', { state }).catch(() => {});
+  };
+
+  const makeCanvasNodeId = (seed: string, kind = 'node') => {
+    const scope = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    return `canvas_${kind}_${scope}_${seed}_${Math.random().toString(36).slice(2, 7)}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  };
+
+  const switchToCanvas = async (canvasId: string) => {
+    if (!canvasId || canvasId === activeCanvasIdRef.current || isSwitchingCanvasRef.current) return;
+    const previousCanvasId = activeCanvasIdRef.current;
+    isSwitchingCanvasRef.current = true;
+    setIsSwitchingCanvas(true);
+    setCanvasActionMenuId(null);
+    try {
+      await saveCurrentCanvasBeforeSwitch();
+      const active = await setActiveCanvas(canvasId, DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID);
+      activeCanvasIdRef.current = active.id;
+      setActiveCanvasId(active.id);
+      await loadCanvasItems(active.id);
+      await refreshCanvases();
+      if (!isCanvasModeRef.current) enterCanvasMode();
+      showToast(`已切换到「${active.name || '画布'}」`);
+    } catch (err) {
+      activeCanvasIdRef.current = previousCanvasId;
+      setActiveCanvasId(previousCanvasId);
+      console.warn('切换画布失败:', err);
+      showToast('切换画布失败，原画布内容已保留');
+    } finally {
+      isSwitchingCanvasRef.current = false;
+      setIsSwitchingCanvas(false);
+    }
+  };
+
+  const createNewCanvasPage = async () => {
+    const name = window.prompt('新建画布名称', `画布 ${canvases.length + 1}`);
+    if (!name?.trim()) return;
+    try {
+      await saveCurrentCanvasBeforeSwitch();
+      const canvas = await createCanvas(name.trim(), DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID);
+      await refreshCanvases();
+      await switchToCanvas(canvas.id);
+    } catch (err) {
+      console.warn('新建画布失败:', err);
+      showToast('新建画布失败');
+    }
+  };
+
+  const renameCanvasPage = async (canvas: CanvasRecord) => {
+    const name = window.prompt('重命名画布', canvas.name || '画布');
+    if (!name?.trim() || name.trim() === canvas.name) return;
+    try {
+      const next = await renameCanvas(canvas.id, name.trim());
+      setCanvases(prev => prev.map(item => item.id === canvas.id && next ? next : item));
+      showToast('画布已重命名');
+    } catch (err) {
+      console.warn('重命名画布失败:', err);
+      showToast('重命名画布失败');
+    }
+  };
+
+  const duplicateCanvasPage = async (canvas: CanvasRecord) => {
+    const name = window.prompt('复制画布名称', `${canvas.name || '画布'} 副本`);
+    if (!name?.trim()) return;
+    try {
+      await saveCurrentCanvasBeforeSwitch();
+      const copied = await duplicateCanvas(canvas.id, name.trim());
+      await refreshCanvases();
+      showToast(`已复制画布「${copied.name || name.trim()}」`);
+    } catch (err) {
+      console.warn('复制画布失败:', err);
+      showToast('复制画布失败');
+    }
+  };
+
+  const saveCurrentCanvasAsSnapshot = async (canvas: CanvasRecord, switchAfterSave = false) => {
+    const defaultName = `快照 ${new Date().toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).replace(/\//g, '-').replace(/\s+/g, ' ')}`;
+    const name = window.prompt('快照名称', defaultName);
+    if (!name?.trim()) return;
+    try {
+      await saveCurrentCanvasBeforeSwitch();
+      const snapshot = await saveCanvasSnapshot(canvas.id, name.trim());
+      await refreshCanvases();
+      showToast(`已保存快照「${snapshot.name || name.trim()}」`);
+      if (switchAfterSave) await switchToCanvas(snapshot.id);
+    } catch (err) {
+      console.warn('保存画布快照失败:', err);
+      showToast('保存画布快照失败');
+    }
+  };
+
+  const confirmSoftDeleteCanvasPage = (canvas: CanvasRecord) => {
+    setCanvasActionMenuId(null);
+    setConfirmDialog({
+      isOpen: true,
+      title: '删除画布',
+      message: '该画布会被移动到回收站，不会删除素材文件。你可以之后从回收站恢复。',
+      onConfirm: async () => {
+        closeConfirmDialog();
+        try {
+          if (canvas.id === activeCanvasIdRef.current) {
+            await saveCurrentCanvasBeforeSwitch();
+          }
+          const result = await softDeleteCanvas(canvas.id);
+          const canvasList = await refreshCanvases();
+          const nextCanvasId = result.activeCanvasId || canvasList.find(item => item.isActive)?.id || canvasList[0]?.id || DEFAULT_CANVAS_ID;
+          if (canvas.id === activeCanvasIdRef.current || nextCanvasId !== activeCanvasIdRef.current) {
+            activeCanvasIdRef.current = nextCanvasId;
+            setActiveCanvasId(nextCanvasId);
+            await loadCanvasItems(nextCanvasId);
+          }
+          if (isCanvasTrashOpen) {
+            await refreshDeletedCanvases();
+          }
+          showToast('画布已移到回收站');
+        } catch (err) {
+          console.warn('删除画布失败:', err);
+          showToast('删除画布失败');
+        }
+      },
+    });
+  };
+
+  const restoreDeletedCanvasPage = async (canvas: CanvasRecord) => {
+    try {
+      const restored = await restoreCanvas(canvas.id);
+      await Promise.all([
+        refreshCanvases(),
+        refreshDeletedCanvases(),
+      ]);
+      showToast(`已恢复「${restored?.name || canvas.name || '画布'}」`);
+    } catch (err) {
+      console.warn('恢复画布失败:', err);
+      showToast('恢复画布失败');
+    }
+  };
+
+  const confirmPermanentlyDeleteCanvasPage = (canvas: CanvasRecord) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: '永久删除画布',
+      message: '永久删除后无法恢复，但不会删除素材文件。确定继续吗？',
+      onConfirm: async () => {
+        closeConfirmDialog();
+        try {
+          await permanentlyDeleteCanvas(canvas.id);
+          await refreshDeletedCanvases();
+          showToast('画布已永久删除');
+        } catch (err) {
+          console.warn('永久删除画布失败:', err);
+          showToast('永久删除失败');
+        }
+      },
+    });
+  };
+
+  const handleCanvasListOpen = useEventCallback((canvasId: string) => {
+    void switchToCanvas(canvasId);
+  });
+  const handleCanvasMenuOpen = useEventCallback((canvasId: string) => {
+    setCanvasActionMenuId(canvasId);
+  });
+  const handleCanvasMenuToggle = useEventCallback((canvasId: string) => {
+    setCanvasActionMenuId(prev => prev === canvasId ? null : canvasId);
+  });
+  const handleCanvasListDelete = useEventCallback((canvas: CanvasRecord) => {
+    confirmSoftDeleteCanvasPage(canvas);
+  });
+  const handleRestoreDeletedCanvas = useEventCallback((canvas: CanvasRecord) => {
+    void restoreDeletedCanvasPage(canvas);
+  });
+  const handlePermanentlyDeleteCanvas = useEventCallback((canvas: CanvasRecord) => {
+    confirmPermanentlyDeleteCanvasPage(canvas);
+  });
+
   function applyCanvasScaleStyles(
     scale = canvasScaleRef.current || 1,
-    size = canvasSizeRef.current
+    size = canvasSizeRef.current,
+    options: { updateViewport?: boolean } = {}
   ) {
     const sizer = canvasSizerRef.current;
     if (sizer) {
@@ -9435,7 +10162,7 @@ function MainApp() {
       content.style.height = `${size.height}px`;
       content.style.transform = `scale(${scale})`;
     }
-    scheduleCanvasViewportUpdate();
+    if (options.updateViewport !== false) scheduleCanvasViewportUpdate();
   }
 
   function readCanvasViewportRect(surface = canvasSurfaceRef.current): CanvasViewportRect | null {
@@ -9466,25 +10193,71 @@ function MainApp() {
 
   function scheduleCanvasViewportUpdate() {
     if (!isCanvasModeRef.current || canvasViewportFrameRef.current !== null) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+      canvasViewportDeferredDuringZoomRef.current = true;
+      return;
+    }
     canvasViewportFrameRef.current = window.requestAnimationFrame(updateCanvasViewportNow);
   }
 
+  const beginCanvasZoomInteraction = () => {
+    isCanvasZoomingRef.current = true;
+    if (canvasViewportFrameRef.current !== null) {
+      window.cancelAnimationFrame(canvasViewportFrameRef.current);
+      canvasViewportFrameRef.current = null;
+      canvasViewportDeferredDuringZoomRef.current = true;
+    }
+  };
+
+  const finishCanvasZoomInteraction = () => {
+    canvasZoomSettleTimerRef.current = null;
+    if (!isCanvasZoomingRef.current) return;
+    isCanvasZoomingRef.current = false;
+    const nextScale = canvasScaleRef.current || 1;
+    setCanvasScale(nextScale);
+    if (canvasSizeCommitDeferredRef.current) {
+      canvasSizeCommitDeferredRef.current = false;
+      setCanvasSize(canvasSizeRef.current);
+    }
+    if (canvasViewportDeferredDuringZoomRef.current) {
+      canvasViewportDeferredDuringZoomRef.current = false;
+    }
+    scheduleCanvasViewportUpdate();
+    setCanvasZoomSettledRevision(value => value + 1);
+    if (canvasStateSaveDeferredDuringZoomRef.current) {
+      canvasStateSaveDeferredDuringZoomRef.current = false;
+      scheduleCanvasStateSave({ syncNodes: canvasPersistSaveSyncNodesRef.current });
+    } else {
+      scheduleCanvasStateSave();
+    }
+  };
+
   const commitCanvasScaleSoon = () => {
+    beginCanvasZoomInteraction();
     if (canvasScaleCommitTimerRef.current !== null) {
       window.clearTimeout(canvasScaleCommitTimerRef.current);
+    }
+    if (canvasZoomSettleTimerRef.current !== null) {
+      window.clearTimeout(canvasZoomSettleTimerRef.current);
     }
 
     canvasScaleCommitTimerRef.current = window.setTimeout(() => {
       canvasScaleCommitTimerRef.current = null;
-      setCanvasScale(canvasScaleRef.current || 1);
+      canvasZoomSettleTimerRef.current = null;
+      finishCanvasZoomInteraction();
     }, 220);
+    canvasZoomSettleTimerRef.current = canvasScaleCommitTimerRef.current;
   };
 
   const setCanvasSizeImmediate = (nextSize: { width: number; height: number }) => {
     const current = canvasSizeRef.current;
     if (current.width === nextSize.width && current.height === nextSize.height) return;
     canvasSizeRef.current = nextSize;
-    applyCanvasScaleStyles(canvasScaleRef.current || 1, nextSize);
+    applyCanvasScaleStyles(canvasScaleRef.current || 1, nextSize, { updateViewport: !isCanvasZoomingRef.current && !isCanvasInteractingRef.current && !canvasPanRef.current });
+    if (isCanvasZoomingRef.current || isCanvasInteractingRef.current || canvasPanRef.current) {
+      canvasSizeCommitDeferredRef.current = true;
+      return;
+    }
     setCanvasSize(nextSize);
   };
 
@@ -9536,7 +10309,7 @@ function MainApp() {
     setCanvasSizeImmediate(cloneDrawerValue(snapshot.size));
     updateCanvasItemsImmediate(() => cloneDrawerValue(snapshot.items));
     updateCanvasSelection(cloneDrawerValue(snapshot.selectedIds));
-    setCanvasSelectionBox(null);
+    hideCanvasSelectionOverlay();
     canvasScrollLockRef.current = currentScroll;
     window.requestAnimationFrame(() => {
       if (!isCanvasModeRef.current) return;
@@ -9633,7 +10406,7 @@ function MainApp() {
     const now = Date.now();
     const itemId = Math.random().toString(36).substring(2, 9);
     const canvasItem: CanvasImageItem = {
-      id: `canvas_${itemId}`,
+      id: makeCanvasNodeId(itemId, 'media'),
       item: {
         ...cloneDrawerValue(outputItem),
         id: itemId,
@@ -9842,7 +10615,7 @@ function MainApp() {
       const pos = placements.get(item.id);
       return pos ? { ...item, x: pos.x, y: pos.y } : item;
     }));
-    setCanvasSelectionBox(null);
+    hideCanvasSelectionOverlay();
     if (selectedIds.length > 1 || ids?.length) {
       updateCanvasSelection(arrangedIds);
     } else {
@@ -9934,7 +10707,13 @@ function MainApp() {
 
     const nextItems = sourceItems.map((sourceItem, index) => {
       const nextBufferId = Math.random().toString(36).substring(2, 9);
-      const nextCanvasId = sourceItem.id.startsWith('canvas_ai_') ? `canvas_ai_${nextBufferId}` : `canvas_${nextBufferId}`;
+      const nextCanvasId = makeCanvasNodeId(
+        nextBufferId,
+        sourceItem.id.startsWith('canvas_ai_') ? 'ai'
+          : sourceItem.id.startsWith('canvas_rife_') ? 'rife'
+            : sourceItem.id.startsWith('canvas_realesrgan_') ? 'realesrgan'
+              : 'node'
+      );
       idMap.set(sourceItem.id, nextCanvasId);
       const nextItem: CanvasImageItem = {
         ...cloneDrawerValue(sourceItem),
@@ -10014,15 +10793,7 @@ function MainApp() {
       selection.startY += deltaY;
     }
 
-    setCanvasSelectionBox(box => box
-      ? {
-        startX: box.startX + deltaX,
-        startY: box.startY + deltaY,
-        currentX: box.currentX + deltaX,
-        currentY: box.currentY + deltaY,
-      }
-      : box
-    );
+    hideCanvasSelectionOverlay();
   };
 
   const expandCanvasBeforeViewport = (left: number, top: number) => {
@@ -10069,8 +10840,9 @@ function MainApp() {
     if (deltaX === 0 && deltaY === 0) return;
 
     const scale = canvasScaleRef.current || 1;
-    const growLeft = deltaX < 0 && surface.scrollLeft < Math.abs(deltaX) * 1.5 ? CANVAS_GROW_CHUNK : 0;
-    const growTop = deltaY < 0 && surface.scrollTop < Math.abs(deltaY) * 1.5 ? CANVAS_GROW_CHUNK : 0;
+    const canShiftWorldNow = !isCanvasInteractingRef.current && !canvasPanRef.current;
+    const growLeft = canShiftWorldNow && deltaX < 0 && surface.scrollLeft < Math.abs(deltaX) * 1.5 ? CANVAS_GROW_CHUNK : 0;
+    const growTop = canShiftWorldNow && deltaY < 0 && surface.scrollTop < Math.abs(deltaY) * 1.5 ? CANVAS_GROW_CHUNK : 0;
     if (growLeft || growTop) expandCanvasBeforeViewport(growLeft, growTop);
 
     const nextLeft = Math.max(0, surface.scrollLeft + deltaX);
@@ -10123,7 +10895,7 @@ function MainApp() {
     const pos = getCanvasDropPosition(index, client);
     const size = await readImageDisplaySize(item.url || (item.path ? convertFileSrc(item.path) : ''));
     return {
-      id: `canvas_${item.id}`,
+      id: makeCanvasNodeId(item.id, 'text'),
       item,
       x: pos.x,
       y: pos.y,
@@ -10184,7 +10956,7 @@ function MainApp() {
       ? await readImageDisplaySize(thumbnail)
       : { width: 320, height: 180 };
     return {
-      id: `canvas_${item.id}`,
+      id: makeCanvasNodeId(item.id, 'image'),
       item,
       x: pos.x,
       y: pos.y,
@@ -10208,7 +10980,7 @@ function MainApp() {
       createdAt: Date.now(),
       isQuickAccess: false,
     };
-    const canvasId = `canvas_${item.id}`;
+    const canvasId = makeCanvasNodeId(item.id, 'text');
     const canvasItem = {
       id: canvasId,
       item,
@@ -10232,7 +11004,7 @@ function MainApp() {
       isQuickAccess: false,
     };
     const canvasItem = {
-      id: `canvas_${item.id}`,
+      id: makeCanvasNodeId(item.id, 'text'),
       item,
       x: Math.max(24, world.x),
       y: Math.max(24, world.y),
@@ -10260,7 +11032,7 @@ function MainApp() {
       isQuickAccess: false,
     };
     return {
-      id: `canvas_${item.id}`,
+      id: makeCanvasNodeId(item.id, 'text'),
       item,
       x: pos.x,
       y: pos.y,
@@ -10446,7 +11218,7 @@ function MainApp() {
       const pos = getCanvasDropPosition(index, client);
       const size = await readImageDisplaySize(displayUrl);
       resolve({
-        id: `canvas_${item.id}`,
+        id: makeCanvasNodeId(item.id, 'image'),
         item,
         x: pos.x,
         y: pos.y,
@@ -11348,7 +12120,7 @@ function MainApp() {
     };
     const displaySize = getCanvasInitialImageSize(editor.width, editor.height);
     const canvasItem: CanvasImageItem = {
-      id: `canvas_${item.id}`,
+      id: makeCanvasNodeId(item.id, 'image'),
       item,
       x: editor.x + Math.min(editor.nodeWidth + 48, 360),
       y: editor.y + 28,
@@ -12183,7 +12955,7 @@ function MainApp() {
       isQuickAccess: false,
     };
     return {
-      id: `canvas_ai_${itemId}`,
+      id: makeCanvasNodeId(itemId, 'ai'),
       item,
       x: pos.x,
       y: pos.y,
@@ -12276,7 +13048,7 @@ function MainApp() {
       localMediaTool: true,
     });
     return {
-      id: `canvas_rife_${itemId}`,
+      id: makeCanvasNodeId(itemId, 'rife'),
       item: {
         id: itemId,
         type: 'text',
@@ -12356,7 +13128,7 @@ function MainApp() {
       localMediaTool: true,
     });
     return {
-      id: `canvas_realesrgan_${mediaType}_${itemId}`,
+      id: makeCanvasNodeId(`${mediaType}_${itemId}`, 'realesrgan'),
       item: {
         id: itemId,
         type: 'text',
@@ -12614,13 +13386,13 @@ function MainApp() {
 
     cleanWorkflow.nodes.forEach(node => {
       const nextBufferId = Math.random().toString(36).substring(2, 9);
-      idMap.set(node.id, node.ai?.type === 'image-generator' ? `canvas_ai_${nextBufferId}` : `canvas_${nextBufferId}`);
+      idMap.set(node.id, makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow'));
     });
 
     const now = Date.now();
     const nextItems = cleanWorkflow.nodes.map((node, index) => {
       const nextBufferId = Math.random().toString(36).substring(2, 9);
-      const nextCanvasId = idMap.get(node.id) || (node.ai?.type === 'image-generator' ? `canvas_ai_${nextBufferId}` : `canvas_${nextBufferId}`);
+      const nextCanvasId = idMap.get(node.id) || makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow');
       const isAiGenerator = node.ai?.type === 'image-generator';
       const isAgentTextNode = node.item.type === 'text' && node.textMode !== 'plain' && !node.ai;
       const provider = normalizeCanvasAiProvider(node.ai?.provider || canvasAiProvider);
@@ -12694,7 +13466,7 @@ function MainApp() {
       outputCount: outputSlotCount,
     });
     return {
-      id: `canvas_workflow_${itemId}`,
+      id: makeCanvasNodeId(itemId, 'workflow'),
       item: {
         id: itemId,
         type: 'text',
@@ -13774,7 +14546,7 @@ function MainApp() {
       isQuickAccess: false,
     };
     const canvasItem: CanvasImageItem = {
-      id: `canvas_${item.id}`,
+      id: makeCanvasNodeId(item.id, 'text_input'),
       item,
       x: Math.max(24, world.x),
       y: Math.max(24, world.y),
@@ -13983,7 +14755,7 @@ function MainApp() {
       const draft = canvasConnectionDragRef.current;
       canvasConnectionDragRef.current = null;
       setCanvasConnectionDraft(null);
-      setCanvasInteractionActive(false);
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', finish, true);
       document.removeEventListener('pointercancel', finish, true);
@@ -14052,7 +14824,7 @@ function MainApp() {
       const draft = canvasInputActionDragRef.current;
       canvasInputActionDragRef.current = null;
       setCanvasInputActionDraft(null);
-      setCanvasInteractionActive(false);
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', finish, true);
       document.removeEventListener('pointercancel', finish, true);
@@ -14105,7 +14877,7 @@ function MainApp() {
   const cloneCanvasAiGeneratorForRerun = (source: CanvasImageItem) => {
     if (!isCanvasAiGeneratorType(source.ai?.type)) return null;
     const nextBufferId = Math.random().toString(36).substring(2, 9);
-    const nextCanvasId = `canvas_ai_${nextBufferId}`;
+    const nextCanvasId = makeCanvasNodeId(nextBufferId, 'ai');
     const pos = getCanvasAiRerunNodePosition(source);
     const now = Date.now();
     return {
@@ -15533,7 +16305,7 @@ function MainApp() {
       isQuickAccess: false,
     };
     const pos = getCanvasDropPosition(0, client);
-    const canvasId = `canvas_${item.id}`;
+    const canvasId = makeCanvasNodeId(item.id, 'image');
     const size = await readImageDisplaySize(item.url || (item.path ? convertFileSrc(item.path) : ''));
     const canvasItem = {
       id: canvasId,
@@ -15590,7 +16362,7 @@ function MainApp() {
       const pos = getCanvasDropPosition(index);
       const size = getFastCanvasImageDisplaySize(item);
       return {
-        id: `canvas_${item.id}`,
+        id: makeCanvasNodeId(item.id, 'image'),
         item,
         x: pos.x,
         y: pos.y,
@@ -15640,7 +16412,7 @@ function MainApp() {
       isQuickAccess: false,
     };
     const pos = getCanvasDropPosition(0, client);
-    const canvasId = `canvas_${itemId}`;
+    const canvasId = makeCanvasNodeId(itemId, 'web_image');
     const size = await readImageDisplaySize(normalizedUrl);
     const canvasItem = {
       id: canvasId,
@@ -15781,8 +16553,10 @@ function MainApp() {
       startScrollLeft: canvasSurfaceRef.current?.scrollLeft ?? 0,
       startScrollTop: canvasSurfaceRef.current?.scrollTop ?? 0,
       startItems: makeCanvasItemBoxMap(dragIds),
+      latestDelta: { dx: 0, dy: 0 },
       hasMoved: false,
     };
+    setCanvasItemDraggingFlag(dragIds, true);
 
     const onMove = (event: PointerEvent) => {
       const drag = canvasDragRef.current;
@@ -15800,33 +16574,50 @@ function MainApp() {
         pushCanvasUndoSnapshot('移动画布元素');
         drag.hasMoved = true;
       }
-      const nextById = drag.ids.reduce<Record<string, CanvasItemBox>>((acc, dragId) => {
-        const start = drag.startItems[dragId];
-        if (!start) return acc;
-        acc[dragId] = {
+      drag.latestDelta = { dx, dy };
+      const moved = drag.ids
+        .map(dragId => drag.startItems[dragId])
+        .filter((item): item is CanvasItemBox => !!item)
+        .map(start => ({
           ...start,
           x: Math.max(0, start.x + dx),
           y: Math.max(0, start.y + dy),
-        };
-        return acc;
-      }, {});
-      const moved = Object.values(nextById);
+        }));
       if (moved.length > 0) {
         growCanvasToFit(
           Math.max(...moved.map(item => item.x + item.width)),
           Math.max(...moved.map(item => item.y + item.height))
         );
       }
-      updateCanvasItemsInFrame(prev => prev.map(item => {
-        const next = nextById[item.id];
-        return next ? { ...item, x: next.x, y: next.y } : item;
-      }));
+      scheduleCanvasInteractionPaint({ kind: 'move', ids: drag.ids, dx, dy });
     };
 
     const onUp = () => {
-      flushCanvasItemsInFrame();
+      const drag = canvasDragRef.current;
       canvasDragRef.current = null;
-      setCanvasInteractionActive(false);
+      cancelCanvasInteractionPaint();
+      if (drag) {
+        if (drag.hasMoved) {
+          const { dx, dy } = drag.latestDelta;
+          const changedIds = drag.ids.filter(dragId => !!drag.startItems[dragId]);
+          if (changedIds.length > 0) {
+            canvasItemsPatchCommitRef.current = true;
+            flushSync(() => {
+              updateCanvasItemsImmediate(prev => prev.map(item => {
+                const start = drag.startItems[item.id];
+                return start ? {
+                  ...item,
+                  x: Math.max(0, start.x + dx),
+                  y: Math.max(0, start.y + dy),
+                } : item;
+              }));
+            });
+            markCanvasNodesChanged(changedIds);
+          }
+        }
+        clearCanvasItemInteractionStyles(drag.ids);
+      }
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -15856,8 +16647,10 @@ function MainApp() {
       startWidth: current.width,
       startHeight: current.height,
       aspect: current.width / Math.max(1, current.height),
+      latestBox: null,
       hasResized: false,
     };
+    setCanvasItemResizingFlag([id], true);
 
     const onMove = (event: PointerEvent) => {
       const resize = canvasResizeRef.current;
@@ -15881,20 +16674,37 @@ function MainApp() {
       const nextY = isNorth ? resize.startY + resize.startHeight - nextHeight : resize.startY;
       const finalX = Math.max(0, nextX);
       const finalY = Math.max(0, nextY);
-
-      growCanvasToFit(finalX + nextWidth, finalY + nextHeight);
-      updateCanvasItemsInFrame(prev => prev.map(item => item.id === id ? {
-        ...item,
+      const nextBox = {
         x: finalX,
         y: finalY,
         width: nextWidth,
         height: nextHeight,
-      } : item));
+      };
+      resize.latestBox = nextBox;
+
+      growCanvasToFit(finalX + nextWidth, finalY + nextHeight);
+      scheduleCanvasInteractionPaint({ kind: 'resize', boxes: { [id]: nextBox } });
     };
     const onUp = () => {
-      flushCanvasItemsInFrame();
+      const resize = canvasResizeRef.current;
       canvasResizeRef.current = null;
-      setCanvasInteractionActive(false);
+      cancelCanvasInteractionPaint();
+      if (resize?.hasResized && resize.latestBox) {
+        const nextBox = resize.latestBox;
+        canvasItemsPatchCommitRef.current = true;
+        flushSync(() => {
+          updateCanvasItemsImmediate(prev => prev.map(item => item.id === id ? {
+            ...item,
+            x: nextBox.x,
+            y: nextBox.y,
+            width: nextBox.width,
+            height: nextBox.height,
+          } : item));
+        });
+        markCanvasNodesChanged([id]);
+      }
+      clearCanvasItemInteractionStyles([id]);
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -15922,8 +16732,10 @@ function MainApp() {
       startBounds,
       startItems: makeCanvasItemBoxMap(selectedIds),
       aspect: startBounds.width / Math.max(1, startBounds.height),
+      latestBoxes: null,
       hasResized: false,
     };
+    setCanvasItemResizingFlag(selectedIds, true);
 
     const onMove = (event: PointerEvent) => {
       const resize = canvasGroupResizeRef.current;
@@ -15957,6 +16769,7 @@ function MainApp() {
         };
         return acc;
       }, {});
+      resize.latestBoxes = nextItemsById;
       const resized = Object.values(nextItemsById);
       if (resized.length > 0) {
         growCanvasToFit(
@@ -15965,22 +16778,33 @@ function MainApp() {
         );
       }
 
-      updateCanvasItemsInFrame(prev => prev.map(item => {
-        const next = nextItemsById[item.id];
-        if (!next) return item;
-        return {
-          ...item,
-          x: next.x,
-          y: next.y,
-          width: next.width,
-          height: next.height,
-        };
-      }));
+      scheduleCanvasInteractionPaint({ kind: 'resize', boxes: nextItemsById });
     };
     const onUp = () => {
-      flushCanvasItemsInFrame();
+      const resize = canvasGroupResizeRef.current;
+      const changedIds = resize ? Object.keys(resize.startItems) : [];
       canvasGroupResizeRef.current = null;
-      setCanvasInteractionActive(false);
+      cancelCanvasInteractionPaint();
+      if (resize?.hasResized && resize.latestBoxes) {
+        const latestBoxes = resize.latestBoxes;
+        canvasItemsPatchCommitRef.current = true;
+        flushSync(() => {
+          updateCanvasItemsImmediate(prev => prev.map(item => {
+            const next = latestBoxes[item.id];
+            if (!next) return item;
+            return {
+              ...item,
+              x: next.x,
+              y: next.y,
+              width: next.width,
+              height: next.height,
+            };
+          }));
+        });
+        markCanvasNodesChanged(Object.keys(latestBoxes));
+      }
+      clearCanvasItemInteractionStyles(changedIds);
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -16004,10 +16828,12 @@ function MainApp() {
       pointerId: e.pointerId,
       startX: start.x,
       startY: start.y,
+      currentX: start.x,
+      currentY: start.y,
       additive,
       baseSelectedIds: canvasSelectedIdsRef.current,
     };
-    setCanvasSelectionBox({ startX: start.x, startY: start.y, currentX: start.x, currentY: start.y });
+    hideCanvasSelectionOverlay();
 
     const onMove = (event: PointerEvent) => {
       const selection = canvasSelectionDragRef.current;
@@ -16016,26 +16842,38 @@ function MainApp() {
       event.stopPropagation();
       autoScrollCanvasNearEdge(event);
       const point = getCanvasPointFromClient(event.clientX, event.clientY);
-      const nextBox = { startX: selection.startX, startY: selection.startY, currentX: point.x, currentY: point.y };
-      setCanvasSelectionBox(nextBox);
-      const rect = normalizeCanvasSelectionBox(nextBox);
-      const hits = rect.width < 4 && rect.height < 4
-        ? []
-        : canvasItemsRef.current
-          .filter(item => canvasRectsIntersect(rect, item))
-          .map(item => item.id);
-      updateCanvasSelection(selection.additive ? [...selection.baseSelectedIds, ...hits] : hits);
+      selection.currentX = point.x;
+      selection.currentY = point.y;
+      const rect = normalizeCanvasSelectionBox({
+        startX: selection.startX,
+        startY: selection.startY,
+        currentX: selection.currentX,
+        currentY: selection.currentY,
+      });
+      scheduleCanvasInteractionPaint({ kind: 'selection', rect });
     };
     const onUp = (event: PointerEvent) => {
       const selection = canvasSelectionDragRef.current;
       if (selection) {
         const point = getCanvasPointFromClient(event.clientX, event.clientY);
         const rect = normalizeCanvasSelectionBox({ startX: selection.startX, startY: selection.startY, currentX: point.x, currentY: point.y });
-        if (rect.width < 4 && rect.height < 4 && !selection.additive) updateCanvasSelection([]);
+        if (rect.width < 4 && rect.height < 4) {
+          if (!selection.additive) updateCanvasSelection([]);
+        } else {
+          const renderViewport = canvasViewportRef.current;
+          const candidates = renderViewport
+            ? canvasItemsRef.current.filter(item => canvasRectsIntersect(renderViewport, item))
+            : canvasItemsRef.current;
+          const hits = candidates
+            .filter(item => canvasRectsIntersect(rect, item))
+            .map(item => item.id);
+          updateCanvasSelection(selection.additive ? [...selection.baseSelectedIds, ...hits] : hits);
+        }
       }
       canvasSelectionDragRef.current = null;
-      setCanvasInteractionActive(false);
-      setCanvasSelectionBox(null);
+      cancelCanvasInteractionPaint();
+      hideCanvasSelectionOverlay();
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -16123,10 +16961,11 @@ function MainApp() {
       CANVAS_MIN_SCALE,
       Math.min(1.6, CANVAS_MAX_SCALE)
     );
+    beginCanvasZoomInteraction();
     growCanvasToFit(bounds.x + bounds.width + padding, bounds.y + bounds.height + padding);
     canvasScaleRef.current = nextScale;
-    applyCanvasScaleStyles(nextScale, canvasSizeRef.current);
-    setCanvasScale(nextScale);
+    applyCanvasScaleStyles(nextScale, canvasSizeRef.current, { updateViewport: false });
+    commitCanvasScaleSoon();
     writeCanvasSurfaceScroll(
       surface,
       Math.max(0, (bounds.x + bounds.width / 2) * nextScale - surface.clientWidth / 2),
@@ -16190,13 +17029,8 @@ function MainApp() {
       const scale = canvasScaleRef.current || 1;
       let nextLeft = pan.startScrollLeft - (event.clientX - pan.startClientX);
       let nextTop = pan.startScrollTop - (event.clientY - pan.startClientY);
-      const growLeft = nextLeft < 0 ? CANVAS_GROW_CHUNK : 0;
-      const growTop = nextTop < 0 ? CANVAS_GROW_CHUNK : 0;
-      if (growLeft || growTop) {
-        expandCanvasBeforeViewport(growLeft, growTop);
-        nextLeft += growLeft * scale;
-        nextTop += growTop * scale;
-      }
+      nextLeft = Math.max(0, nextLeft);
+      nextTop = Math.max(0, nextTop);
       growCanvasToFit(
         (nextLeft + targetSurface.clientWidth) / scale + CANVAS_GROW_CHUNK * 0.8,
         (nextTop + targetSurface.clientHeight) / scale + CANVAS_GROW_CHUNK * 0.8
@@ -16205,7 +17039,9 @@ function MainApp() {
     };
     const onUp = () => {
       canvasPanRef.current = null;
-      setCanvasInteractionActive(false);
+      scheduleCanvasViewportUpdate();
+      scheduleCanvasStateSave();
+      setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -16223,6 +17059,7 @@ function MainApp() {
     const previousScale = canvasScaleRef.current || 1;
     const nextScale = clamp(previousScale * Math.exp(-deltaY * 0.0008), CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
     if (Math.abs(nextScale - previousScale) < 0.001) return;
+    beginCanvasZoomInteraction();
 
     const rect = surface.getBoundingClientRect();
     const localX = clamp(clientX - rect.left, 0, surface.clientWidth);
@@ -16237,7 +17074,7 @@ function MainApp() {
       (Math.max(0, targetLeft) + surface.clientWidth) / nextScale + CANVAS_GROW_CHUNK * 0.4,
       (Math.max(0, targetTop) + surface.clientHeight) / nextScale + CANVAS_GROW_CHUNK * 0.4
     );
-    applyCanvasScaleStyles(nextScale, canvasSizeRef.current);
+    applyCanvasScaleStyles(nextScale, canvasSizeRef.current, { updateViewport: false });
     const targetScroll = clampCanvasSurfaceScroll(surface, targetLeft, targetTop, nextScale, canvasSizeRef.current);
     writeCanvasSurfaceScroll(surface, targetScroll.left, targetScroll.top);
     commitCanvasScaleSoon();
@@ -16310,6 +17147,15 @@ function MainApp() {
     };
 
     const handleCanvasScroll = () => {
+      if (isCanvasZoomingRef.current) {
+        canvasScrollLockRef.current = {
+          left: surface.scrollLeft,
+          top: surface.scrollTop,
+        };
+        canvasViewportDeferredDuringZoomRef.current = true;
+        canvasStateSaveDeferredDuringZoomRef.current = true;
+        return;
+      }
       scheduleCanvasViewportUpdate();
       const shouldLockScroll = isCanvasSpacePressedRef.current || canvasPanRef.current !== null;
       if (!shouldLockScroll) {
@@ -16389,7 +17235,7 @@ function MainApp() {
     canvasReturnScrollRef.current = surface
       ? { left: surface.scrollLeft, top: surface.scrollTop }
       : canvasScrollLockRef.current;
-    saveCanvasStateNow();
+    saveCanvasStateNow({ syncNodes: true });
     keepCanvasSessionOnLeaveRef.current = true;
     isCanvasModeRef.current = false;
     setCanvasExitPromptStep('choice');
@@ -16567,7 +17413,7 @@ function MainApp() {
           setCanvasInputPickTargetId(null);
           setCanvasConnectionDraft(null);
           updateCanvasSelection([]);
-          setCanvasSelectionBox(null);
+          hideCanvasSelectionOverlay();
         }
         return;
       }
@@ -16656,7 +17502,7 @@ function MainApp() {
     clearCanvasUndoStack();
     updateCanvasItemsImmediate(() => []);
     updateCanvasSelection([]);
-    saveCanvasStateNow();
+    saveCanvasStateNow({ syncNodes: true });
     setCanvasExitPromptStep('choice');
     setShowCanvasExitPrompt(false);
     setIsCanvasMode(false);
@@ -16710,7 +17556,7 @@ function MainApp() {
     clearCanvasUndoStack();
     updateCanvasItemsImmediate(() => []);
     updateCanvasSelection([]);
-    saveCanvasStateNow();
+    saveCanvasStateNow({ syncNodes: true });
     setCanvasExitPromptStep('choice');
     setShowCanvasExitPrompt(false);
     setIsCanvasMode(false);
@@ -20984,7 +21830,7 @@ useEffect(() => {
         const itemId = Math.random().toString(36).substring(2, 9);
         const title = prompt.split(/\r?\n/)[0]?.slice(0, 32) || 'Agent 文字节点';
         const node: CanvasImageItem = {
-          id: `canvas_${itemId}`,
+          id: makeCanvasNodeId(itemId, 'text'),
           item: {
             id: itemId,
             type: 'text',
@@ -21637,21 +22483,20 @@ useEffect(() => {
       ? getCanvasItemRenderedBox(canvasSingleSelectedItemForRender)
       : null
   ), [canvasSingleSelectedItemForRender, canvasAiPromptEditingId]);
-  const canvasSelectionRect = canvasSelectionBox ? normalizeCanvasSelectionBox(canvasSelectionBox) : null;
   const canvasScaledSelectionRadius = CANVAS_SELECTION_RADIUS;
   const canvasScaledNodeRadius = CANVAS_NODE_RADIUS;
-  const canvasRenderScale = clamp(canvasScaleRef.current || canvasScale || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
+  const canvasRenderScale = clamp(canvasScale || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
   const canvasItemsById = useMemo(() => new Map(canvasItems.map(item => [item.id, item])), [canvasItems]);
   const canvasRenderViewport = useMemo<CanvasItemBox | null>(() => {
     if (!canvasViewport) return null;
-    const overscan = isCanvasInteracting ? CANVAS_INTERACTION_OVERSCAN_PX : CANVAS_VIEWPORT_OVERSCAN_PX;
+    const overscan = isCanvasInteractingRef.current ? CANVAS_INTERACTION_OVERSCAN_PX : CANVAS_VIEWPORT_OVERSCAN_PX;
     return {
       x: canvasViewport.x - overscan,
       y: canvasViewport.y - overscan,
       width: canvasViewport.width + overscan * 2,
       height: canvasViewport.height + overscan * 2,
     };
-  }, [canvasViewport, isCanvasInteracting]);
+  }, [canvasViewport]);
   const canvasAlwaysRenderedIds = useMemo(() => {
     const ids = new Set(canvasSelectedIds);
     if (canvasSingleSelectedItemForRender) ids.add(canvasSingleSelectedItemForRender.id);
@@ -21767,6 +22612,7 @@ useEffect(() => {
       }
     }
     if (!isCanvasNavigatorVisible) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
 
     canvasNavItems.forEach(({ item }) => {
       const preview = getCanvasItemNavPreview(item);
@@ -21815,7 +22661,7 @@ useEffect(() => {
           setCanvasNavThumbnailRevision(value => value + 1);
       });
     });
-  }, [isCanvasMode, isCanvasNavigatorVisible, canvasNavItems, canvasItemsById]);
+  }, [isCanvasMode, isCanvasNavigatorVisible, canvasNavItems, canvasItemsById, canvasZoomSettledRevision]);
   useLayoutEffect(() => {
     if (!isCanvasMode) {
       setCanvasToolbarTop('50%');
@@ -22171,6 +23017,100 @@ useEffect(() => {
       </div>
     );
   };
+
+  const renderCanvasActionMenu = useEventCallback((canvas: CanvasRecord, placement: CanvasActionMenuPlacement = 'floating') => {
+    const canDeleteCanvas = !isSwitchingCanvas;
+    const placementClass = placement === 'floating'
+      ? 'absolute right-1 top-9 w-36'
+      : placement === 'inline'
+        ? 'mt-1 w-full'
+        : 'w-36';
+    return (
+      <div
+        data-no-drag="true"
+        className={`${placementClass} z-[100060] overflow-hidden rounded-[12px] border border-stone-200 bg-white py-1 text-[11px] font-bold text-stone-700 shadow-xl dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200`}
+        onClick={event => event.stopPropagation()}
+        onMouseDown={event => event.stopPropagation()}
+      >
+        <button type="button" onClick={() => { setCanvasActionMenuId(null); void switchToCanvas(canvas.id); }} className="flex w-full items-center px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800">打开</button>
+        <button type="button" onClick={() => { setCanvasActionMenuId(null); void renameCanvasPage(canvas); }} className="flex w-full items-center px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800">重命名</button>
+        <button type="button" onClick={() => { setCanvasActionMenuId(null); void duplicateCanvasPage(canvas); }} className="flex w-full items-center px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800">复制</button>
+        <button type="button" onClick={() => { setCanvasActionMenuId(null); void saveCurrentCanvasAsSnapshot(canvas); }} className="flex w-full items-center px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800">保存为快照</button>
+        <button
+          type="button"
+          disabled={!canDeleteCanvas}
+          onClick={() => confirmSoftDeleteCanvasPage(canvas)}
+          className="flex w-full items-center px-3 py-1.5 text-left text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-transparent dark:text-red-300 dark:hover:bg-red-950/30 dark:disabled:text-stone-600"
+        >
+          移到回收站
+        </button>
+      </div>
+    );
+  });
+
+  const canvasListItems = useMemo(() => (
+    canvases.map(canvas => (
+      <CanvasListItem
+        key={canvas.id}
+        canvas={canvas}
+        isActive={activeCanvasId === canvas.id}
+        canDelete={!isSwitchingCanvas}
+        isSwitching={isSwitchingCanvas}
+        isMenuOpen={canvasActionMenuId === canvas.id}
+        onOpen={handleCanvasListOpen}
+        onOpenMenu={handleCanvasMenuOpen}
+        onToggleMenu={handleCanvasMenuToggle}
+        onDelete={handleCanvasListDelete}
+        renderMenu={renderCanvasActionMenu}
+      />
+    ))
+  ), [
+    canvases,
+    activeCanvasId,
+    isSwitchingCanvas,
+    canvasActionMenuId,
+    handleCanvasListOpen,
+    handleCanvasMenuOpen,
+    handleCanvasMenuToggle,
+    handleCanvasListDelete,
+    renderCanvasActionMenu,
+  ]);
+
+  const canvasRailItems = useMemo(() => (
+    canvases.map(canvas => (
+      <CanvasRailItem
+        key={canvas.id}
+        canvas={canvas}
+        isActive={activeCanvasId === canvas.id}
+        isSwitching={isSwitchingCanvas}
+        isMenuOpen={canvasActionMenuId === canvas.id}
+        onOpen={handleCanvasListOpen}
+        onOpenMenu={handleCanvasMenuOpen}
+        onToggleMenu={handleCanvasMenuToggle}
+        renderMenu={renderCanvasActionMenu}
+      />
+    ))
+  ), [
+    canvases,
+    activeCanvasId,
+    isSwitchingCanvas,
+    canvasActionMenuId,
+    handleCanvasListOpen,
+    handleCanvasMenuOpen,
+    handleCanvasMenuToggle,
+    renderCanvasActionMenu,
+  ]);
+
+  const deletedCanvasItems = useMemo(() => (
+    deletedCanvases.map(canvas => (
+      <CanvasTrashListItem
+        key={canvas.id}
+        canvas={canvas}
+        onRestore={handleRestoreDeletedCanvas}
+        onPermanentlyDelete={handlePermanentlyDeleteCanvas}
+      />
+    ))
+  ), [deletedCanvases, handleRestoreDeletedCanvas, handlePermanentlyDeleteCanvas]);
 
   return (
     <div
@@ -22535,6 +23475,70 @@ useEffect(() => {
                     <div className="h-1 w-10 rounded-full bg-stone-300/75 transition-all group-hover:w-14 group-hover:bg-emerald-400/80 dark:bg-stone-700/80 dark:group-hover:bg-emerald-500/70" />
                   </div>
 
+                  <div className="mb-2 flex w-full shrink-0 flex-col gap-1">
+                    <div className="flex items-center justify-between px-1">
+                      <span className="flex items-center gap-1.5 text-[11px] font-black text-stone-500 dark:text-stone-400">
+                        <Layers className="h-3.5 w-3.5 text-indigo-500" />
+                        画布
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void createNewCanvasPage()}
+                        className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-50 text-indigo-600 transition-colors hover:bg-indigo-100 dark:bg-indigo-400/12 dark:text-indigo-200 dark:hover:bg-indigo-400/20"
+                        title="新建画布"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto overflow-x-visible pr-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      <div className="flex flex-col gap-1">
+                        {canvasListItems}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void openCanvasTrash()}
+                      className={`mt-1 flex h-8 w-full items-center gap-2 rounded-[10px] px-2 text-left text-[11px] font-bold transition-colors ${isCanvasTrashOpen ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950' : 'text-stone-500 hover:bg-white/70 hover:text-stone-800 dark:text-stone-400 dark:hover:bg-white/[0.07] dark:hover:text-white'}`}
+                      title="打开画布回收站"
+                    >
+                      <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                      <span className="min-w-0 flex-1 truncate">回收站</span>
+                      {canvasTrashCount > 0 && (
+                        <span className="min-w-[18px] rounded-full bg-red-500 px-1.5 text-center text-[9px] leading-[18px] text-white">
+                          {canvasTrashCount}
+                        </span>
+                      )}
+                    </button>
+                    {isCanvasTrashOpen && (
+                      <div className="mt-1 rounded-[12px] border border-stone-200/80 bg-white/58 p-2 dark:border-stone-700/70 dark:bg-stone-800/40">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">画布回收站</span>
+                          <button
+                            type="button"
+                            onClick={() => setIsCanvasTrashOpen(false)}
+                            className="flex h-6 w-6 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-stone-700 dark:hover:text-white"
+                            title="关闭回收站"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="max-h-44 overflow-y-auto pr-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                          {isLoadingCanvasTrash ? (
+                            <div className="rounded-[10px] border border-dashed border-stone-200 px-2 py-3 text-center text-[11px] font-semibold text-stone-400 dark:border-stone-700 dark:text-stone-500">
+                              读取中...
+                            </div>
+                          ) : deletedCanvasItems.length > 0 ? (
+                            <div className="flex flex-col gap-2">{deletedCanvasItems}</div>
+                          ) : (
+                            <div className="rounded-[10px] border border-dashed border-stone-200 px-2 py-3 text-center text-[11px] font-semibold text-stone-400 dark:border-stone-700 dark:text-stone-500">
+                              回收站为空
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
                     <div
                       data-no-drag="true"
@@ -22833,6 +23837,41 @@ useEffect(() => {
               </div>
 
               {/* 快速访问 / 便签区域：独立滚动 */}
+              <div className="w-full shrink-0 px-1 pb-2">
+                <div className="mb-2 flex flex-col items-center">
+                  <span className="mb-1 flex items-center gap-1 text-[10px] font-black text-stone-400 dark:text-stone-500">
+                    <Layers className="h-3 w-3 text-indigo-400" />
+                    画布
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void createNewCanvasPage()}
+                    className="flex h-9 w-9 items-center justify-center rounded-[14px] border border-dashed border-indigo-200 bg-indigo-50/40 text-indigo-500 transition-all hover:scale-105 hover:bg-indigo-50 dark:border-indigo-400/25 dark:bg-indigo-400/10 dark:text-indigo-200"
+                    title="新建画布"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="max-h-44 overflow-y-auto overflow-x-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div className="flex flex-col items-center gap-2">
+                    {canvasRailItems}
+                    <button
+                      type="button"
+                      onClick={() => void openCanvasTrash()}
+                      className={`relative flex h-9 w-9 items-center justify-center rounded-[14px] border transition-colors ${isCanvasTrashOpen ? 'border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-950' : 'border-stone-200 bg-white/65 text-stone-500 hover:bg-stone-100 dark:border-stone-700/60 dark:bg-stone-800/65 dark:text-stone-300 dark:hover:bg-stone-700'}`}
+                      title="画布回收站"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      {canvasTrashCount > 0 && (
+                        <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full bg-red-500 px-1 text-center text-[8px] leading-[16px] text-white">
+                          {canvasTrashCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className="w-full min-h-0 flex-1 flex flex-col items-center overflow-hidden px-1">
                 <div className="relative shrink-0 flex flex-col items-center w-full mb-4 mt-1">
                   <div
@@ -23033,6 +24072,38 @@ useEffect(() => {
               )}
             </div>
 
+            {isCanvasTrashOpen && !isFolderSidebarLayout && (
+              <div
+                data-no-drag="true"
+                className="absolute left-[76px] top-4 z-[100070] w-[248px] rounded-[14px] border border-stone-200/90 bg-white/96 p-3 text-stone-800 shadow-xl dark:border-stone-700/80 dark:bg-stone-900/96 dark:text-stone-100"
+              >
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-[12px] font-black">画布回收站</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsCanvasTrashOpen(false)}
+                    className="flex h-6 w-6 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-stone-700 dark:hover:text-white"
+                    title="关闭回收站"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="max-h-[52vh] overflow-y-auto pr-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {isLoadingCanvasTrash ? (
+                    <div className="rounded-[10px] border border-dashed border-stone-200 px-2 py-3 text-center text-[11px] font-semibold text-stone-400 dark:border-stone-700 dark:text-stone-500">
+                      读取中...
+                    </div>
+                  ) : deletedCanvasItems.length > 0 ? (
+                    <div className="flex flex-col gap-2">{deletedCanvasItems}</div>
+                  ) : (
+                    <div className="rounded-[10px] border border-dashed border-stone-200 px-2 py-3 text-center text-[11px] font-semibold text-stone-400 dark:border-stone-700 dark:text-stone-500">
+                      回收站为空
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* ====== 右侧主内容区开始 ====== */}
             <div className="flex-1 h-full flex flex-col relative min-w-0 bg-stone-50/30 dark:bg-stone-900/30">
 
@@ -23110,6 +24181,14 @@ useEffect(() => {
                       <>
                         {isCanvasMode && (
                           <>
+                          <button
+                            onClick={() => activeCanvas && void saveCurrentCanvasAsSnapshot(activeCanvas)}
+                            disabled={!activeCanvas || isSwitchingCanvas}
+                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-indigo-50 text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100 disabled:cursor-wait disabled:opacity-55 dark:bg-indigo-400/14 dark:text-indigo-200 dark:hover:bg-indigo-400/20"
+                            title="保存当前画布为快照"
+                          >
+                            <Layers className="w-3.5 h-3.5" /> 保存快照
+                          </button>
                           {isCanvasWorkbenchActive && (
                             <div
                               data-no-drag="true"
@@ -23943,7 +25022,6 @@ useEffect(() => {
                     <div
                       ref={canvasSurfaceRef}
                       tabIndex={-1}
-                      data-canvas-interacting={isCanvasInteracting ? 'true' : undefined}
                       className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto', overflowAnchor: 'none' }}
                       onPointerEnter={() => {
@@ -24175,10 +25253,11 @@ useEffect(() => {
                           const showCanvasAiOutputPreview = isCanvasWorkflowItem || canvasAiRealOutputs.length > 0;
                           const isCanvasAiPromptExpanded = canvasAiPromptEditingId === canvasItem.id;
                           const canvasFullImageSource = getCanvasItemDisplaySource(canvasItem.item);
+                          const isCanvasZooming = isCanvasZoomingRef.current;
                           const canUseCanvasThumbnail = canvasItem.item.type === 'image'
                             && !!canvasItem.item.thumbnail
                             && !isSelected
-                            && Math.max(canvasItem.width, canvasItem.height) * canvasRenderScale <= 480;
+                            && (isCanvasZooming || Math.max(canvasItem.width, canvasItem.height) * canvasRenderScale <= 480);
                           const canvasImageSource = canUseCanvasThumbnail
                             ? canvasItem.item.thumbnail || canvasFullImageSource
                             : canvasFullImageSource;
@@ -25894,18 +26973,16 @@ useEffect(() => {
                             ))}
                           </div>
                         )}
-                        {canvasSelectionRect && (
-                          <div
-                            className="pointer-events-none absolute border border-blue-400 bg-blue-300/16"
-                            style={{
-                              left: canvasSelectionRect.x,
-                              top: canvasSelectionRect.y,
-                              width: canvasSelectionRect.width,
-                              height: canvasSelectionRect.height,
-                              borderRadius: canvasScaledSelectionRadius,
-                            }}
-                          />
-                        )}
+                        <div
+                          ref={canvasSelectionOverlayRef}
+                          className="pointer-events-none absolute left-0 top-0 hidden border border-blue-400 bg-blue-300/16"
+                          style={{
+                            width: 0,
+                            height: 0,
+                            borderRadius: canvasScaledSelectionRadius,
+                            willChange: 'transform, width, height',
+                          }}
+                        />
                         </div>
                       </div>
                     </div>
@@ -26937,8 +28014,8 @@ useEffect(() => {
                           }}
                           onResetZoom={() => {
                             canvasScaleRef.current = 1;
-                            applyCanvasScaleStyles(1, canvasSizeRef.current);
-                            setCanvasScale(1);
+                            applyCanvasScaleStyles(1, canvasSizeRef.current, { updateViewport: false });
+                            commitCanvasScaleSoon();
                           }}
                           onFit={() => fitCanvasViewToItems(
                             canvasSelectedIds.length > 0 ? canvasSelectedIds : undefined
@@ -28912,8 +29989,8 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>设置项已统一为整行可点击，右侧增加状态胶囊和箭头提示。</p>
-                  <p className="mt-1">更新检查增加备用源容错，并优化失败时的中文提示。</p>
+                  <p>画布列表现在支持多画布管理，菜单可稳定展开，并新增直接删除按钮。</p>
+                  <p className="mt-1">更新源调整为 Gitee + GitHub 双源，并会跳过旧版本或缓存异常的 manifest。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -29130,11 +30207,11 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v4.2.9 Codex 模型与推理选择</p>
-                <p>Agent 输入区现在可以直接选择当前 ChatGPT 账户可用的 Codex 模型。</p>
-                <p>每个模型会显示自身支持的低、中、高、超高推理强度，选择后会真实应用到新线程和后续回合。</p>
-                <p>模型菜单、用量、历史和权限弹窗都支持点击空白处自动收回，并跟随画布深浅配色。</p>
-                <p>继续支持真实节点预设、节点图片自动引用、画布工具审批和对话复制。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v4.4.3 画布管理与更新修复</p>
+                <p>新增多画布管理入口，画布列表支持新建、切换、重命名、复制和保存快照。</p>
+                <p>修复画布菜单在滚动列表中点开后被裁切的问题，并在画布行右侧加入删除按钮。</p>
+                <p>更新器改为 Gitee + GitHub 双源检查，会跳过低于或等于当前版本的旧 manifest，避免缓存源误报“已是最新版本”。</p>
+                <p>更新包下载增加大小与 SHA256 校验，当前源失败时会继续尝试备用源。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

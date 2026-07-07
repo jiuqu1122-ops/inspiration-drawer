@@ -41,6 +41,14 @@ body,
 }
 
 [data-canvas-interacting="true"] [data-canvas-item-id] {
+  will-change: auto;
+}
+
+[data-canvas-item-id][data-canvas-dragging="true"] {
+  will-change: transform;
+}
+
+[data-canvas-item-id][data-canvas-resizing="true"] {
   will-change: left, top, width, height;
 }
 
@@ -57,6 +65,22 @@ body,
 
 [data-canvas-item-id] {
   contain: layout paint style;
+}
+
+[data-canvas-list-item="true"] {
+  contain: layout paint style;
+}
+
+[data-canvas-list-item="true"],
+[data-canvas-list-item="true"] * {
+  transition-property: background-color, color, border-color, opacity !important;
+}
+
+[data-canvas-list-item="true"]:hover,
+[data-canvas-list-item="true"]:hover * {
+  box-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
 }
 
 :is([data-drawer-settings-panel="true"], [data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) {

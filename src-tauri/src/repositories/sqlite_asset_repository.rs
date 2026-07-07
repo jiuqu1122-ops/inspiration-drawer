@@ -247,6 +247,7 @@ impl AssetRepository for SqliteAssetRepository {
             FROM canvas_nodes
             LEFT JOIN assets ON assets.id = canvas_nodes.asset_id
             WHERE canvas_nodes.canvas_id = ?1
+              AND canvas_nodes.deleted_at IS NULL
               AND canvas_nodes.x + canvas_nodes.width >= ?2
               AND canvas_nodes.x <= ?3
               AND canvas_nodes.y + canvas_nodes.height >= ?4
@@ -269,7 +270,7 @@ impl AssetRepository for SqliteAssetRepository {
         let canvas_id = options.canvas_id.unwrap_or_else(|| "default".to_string());
         let limit = options.limit.unwrap_or(20).clamp(1, 200);
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM canvas_nodes WHERE canvas_id = ?1",
+            "SELECT COUNT(*) FROM canvas_nodes WHERE canvas_id = ?1 AND deleted_at IS NULL",
             params![canvas_id],
             |row| row.get(0),
         ).map_err(|err| err.to_string())?;
@@ -277,7 +278,7 @@ impl AssetRepository for SqliteAssetRepository {
             r#"
             SELECT id, canvas_id, asset_id, x, y, width, height, rotation, z_index, metadata_json
             FROM canvas_nodes
-            WHERE canvas_id = ?1
+            WHERE canvas_id = ?1 AND deleted_at IS NULL
             ORDER BY z_index ASC, created_at ASC
             LIMIT ?2
             "#,
@@ -318,7 +319,7 @@ impl AssetRepository for SqliteAssetRepository {
         let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
         let mut written = 0_usize;
         for node in nodes {
-            crate::services::migration_service::insert_canvas_node(&tx, &canvas_id, &node, now)?;
+            let _ = crate::services::migration_service::insert_canvas_node(&tx, &canvas_id, &node, now)?;
             written += 1;
         }
         tx.commit().map_err(|err| err.to_string())?;

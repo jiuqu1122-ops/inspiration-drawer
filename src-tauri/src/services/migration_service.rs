@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::db::connection::{
     database_path, open_connection, set_json_mode_forced, sqlite_database_exists,
 };
-use crate::db::schema::DEFAULT_LIBRARY_ID;
+use crate::db::schema::{DEFAULT_CANVAS_ID, DEFAULT_LIBRARY_ID, DEFAULT_PROJECT_ID};
 use crate::repositories::json_asset_repository::JsonAssetRepository;
 
 const MIGRATION_ID_JSON_TO_SQLITE: &str = "json-to-sqlite-v1";
@@ -259,6 +259,14 @@ fn migrate_payloads(
         "INSERT OR IGNORE INTO libraries (id, name, path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![DEFAULT_LIBRARY_ID, "Default Library", "", started_at, started_at],
     ).map_err(|err| err.to_string())?;
+    conn.execute(
+        r#"
+        INSERT OR IGNORE INTO canvases
+        (id, project_id, library_id, name, description, thumbnail_path, sort_order, is_active, is_snapshot, source_canvas_id, created_at, updated_at, last_opened_at, deleted_at)
+        VALUES (?1, ?2, ?3, '默认画布', '', NULL, 0, 1, 0, NULL, ?4, ?4, ?4, NULL)
+        "#,
+        params![DEFAULT_CANVAS_ID, DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID, started_at],
+    ).map_err(|err| err.to_string())?;
 
     for (index, chunk) in folders.chunks(MIGRATION_BATCH_SIZE).enumerate() {
         let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
@@ -418,7 +426,7 @@ fn insert_canvas_nodes(conn: &Connection, canvas_state: &Value, now: i64) -> Res
     for chunk in items.chunks(MIGRATION_BATCH_SIZE) {
         let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
         for node in chunk {
-            insert_canvas_node(&tx, "default", node, now)?;
+            let _ = insert_canvas_node(&tx, DEFAULT_CANVAS_ID, node, now)?;
         }
         tx.commit().map_err(|err| err.to_string())?;
     }
@@ -430,9 +438,26 @@ pub(crate) fn insert_canvas_node(
     canvas_id: &str,
     node: &Value,
     now: i64,
-) -> Result<(), String> {
-    let id = value_string(node, "id")
+) -> Result<String, String> {
+    insert_canvas_node_with_z_index(conn, canvas_id, node, now, value_i64(node, "zIndex").or_else(|| value_i64(node, "z_index")).unwrap_or(0))
+}
+
+pub(crate) fn insert_canvas_node_with_z_index(
+    conn: &Connection,
+    canvas_id: &str,
+    node: &Value,
+    now: i64,
+    fallback_z_index: i64,
+) -> Result<String, String> {
+    let mut id = value_string(node, "id")
         .unwrap_or_else(|| format!("canvas-node-{}", crate::stable_hash_hex(&node.to_string())));
+    if canvas_node_id_belongs_to_other_canvas(conn, &id, canvas_id)? {
+        id = format!(
+            "{}-{}",
+            canvas_id,
+            crate::stable_hash_hex(&format!("{}:{}", id, canvas_id))
+        );
+    }
     let item = node.get("item");
     let raw_asset_id = item.and_then(|item| value_string(item, "id"));
     let asset_id = resolve_canvas_asset_id(conn, raw_asset_id.as_deref(), item)?;
@@ -440,7 +465,12 @@ pub(crate) fn insert_canvas_node(
     let y = value_f64(node, "y").unwrap_or(0.0);
     let width = value_f64(node, "width").unwrap_or(0.0);
     let height = value_f64(node, "height").unwrap_or(0.0);
+    let rotation = value_f64(node, "rotation").unwrap_or(0.0);
+    let z_index = value_i64(node, "zIndex").or_else(|| value_i64(node, "z_index")).unwrap_or(fallback_z_index);
     let mut metadata = node.clone();
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("id".to_string(), Value::String(id.clone()));
+    }
     if asset_id.is_none() && raw_asset_id.is_some() {
         if let Some(object) = metadata.as_object_mut() {
             object.insert("orphanAssetId".to_string(), Value::String(raw_asset_id.unwrap_or_default()));
@@ -448,11 +478,54 @@ pub(crate) fn insert_canvas_node(
         }
     }
     let metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
-    conn.execute(
-        "INSERT OR REPLACE INTO canvas_nodes (id, canvas_id, asset_id, x, y, width, height, rotation, z_index, created_at, updated_at, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, ?9, ?10)",
-        params![id, canvas_id, asset_id, x, y, width, height, now, now, metadata_json],
+    let updated = conn.execute(
+        r#"
+        UPDATE canvas_nodes
+        SET canvas_id = ?2,
+            asset_id = ?3,
+            x = ?4,
+            y = ?5,
+            width = ?6,
+            height = ?7,
+            rotation = ?8,
+            z_index = ?9,
+            updated_at = ?10,
+            deleted_at = NULL,
+            metadata_json = ?11
+        WHERE id = ?1 AND canvas_id = ?2
+        "#,
+        params![id, canvas_id, asset_id, x, y, width, height, rotation, z_index, now, metadata_json],
     ).map_err(|err| err.to_string())?;
-    Ok(())
+    if updated == 0 {
+        conn.execute(
+            r#"
+            INSERT INTO canvas_nodes
+            (id, canvas_id, asset_id, x, y, width, height, rotation, z_index, created_at, updated_at, deleted_at, metadata_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, NULL, ?11)
+            "#,
+            params![id, canvas_id, asset_id, x, y, width, height, rotation, z_index, now, metadata_json],
+        ).map_err(|err| err.to_string())?;
+    }
+    Ok(id)
+}
+
+fn canvas_node_id_belongs_to_other_canvas(
+    conn: &Connection,
+    id: &str,
+    canvas_id: &str,
+) -> Result<bool, String> {
+    match conn.query_row(
+        "SELECT canvas_id FROM canvas_nodes WHERE id = ?1 LIMIT 1",
+        params![id],
+        |row| row.get::<_, Option<String>>(0),
+    ) {
+        Ok(existing_canvas_id) => Ok(existing_canvas_id
+            .as_deref()
+            .map(|value| value != canvas_id)
+            .unwrap_or(false)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 fn resolve_canvas_asset_id(
