@@ -806,10 +806,17 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       ratio: image2Ratio,
       client: 'XAIS',
     };
-    if (inputImages.length > 0) taskBody.ref = inputImages;
+    if (inputImages.length > 0) {
+      taskBody.ref = inputImages;
+      taskBody.refs = inputImages;
+      taskBody.referenceImages = inputImages;
+      taskBody.inputImages = inputImages;
+    }
 
     const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
     const started = parseAiResponseText(startedRaw);
+    const startFailure = getXaisWorkerTaskFailureMessage(started);
+    if (startFailure) throw new Error(`Xais ${model} 任务启动失败：${startFailure}`);
     const immediateImages = collectImageStrings(started);
     if (immediateImages.length > 0) return immediateImages;
 

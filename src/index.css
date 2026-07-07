@@ -44,6 +44,10 @@ body,
   will-change: auto;
 }
 
+[data-canvas-interacting="true"] [data-canvas-content-layer="true"] {
+  will-change: transform;
+}
+
 [data-canvas-item-id][data-canvas-dragging="true"] {
   will-change: transform;
 }

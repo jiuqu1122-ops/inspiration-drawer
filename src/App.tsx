@@ -794,6 +794,7 @@ const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 36;
 const CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE = 1;
 const CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE = 0.65;
 const CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD = 480;
+const CANVAS_INTERACTION_DEBUG = false;
 const VIDEO_THUMBNAIL_MAX_WIDTH = 360;
 const VIDEO_THUMBNAIL_MAX_HEIGHT = 220;
 const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
@@ -3380,6 +3381,7 @@ function MainApp() {
   const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
   const canvasSizerRef = useRef<HTMLDivElement | null>(null);
   const canvasContentRef = useRef<HTMLDivElement | null>(null);
+  const canvasVisualViewportRef = useRef<CanvasViewportRect | null>(null);
   const canvasToolbarRef = useRef<HTMLDivElement | null>(null);
   const canvasNavigatorPanelRef = useRef<HTMLDivElement | null>(null);
   const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
@@ -3425,6 +3427,9 @@ function MainApp() {
     lastNodeCount: number;
   } | null>(null);
   const canvasInteractionTimerRef = useRef<number | null>(null);
+  const canvasScaleRenderFrameRef = useRef<number | null>(null);
+  const canvasWheelZoomFrameRef = useRef<number | null>(null);
+  const canvasWheelZoomPayloadRef = useRef<{ clientX: number; clientY: number; deltaY: number } | null>(null);
   const [canvasToolbarTop, setCanvasToolbarTop] = useState('max(50%, 444px)');
   const isCanvasInteractingRef = useRef(false);
   const isCanvasPointerInsideRef = useRef(false);
@@ -3724,6 +3729,15 @@ function MainApp() {
       window.clearTimeout(canvasScaleCommitTimerRef.current);
       canvasScaleCommitTimerRef.current = null;
       canvasZoomSettleTimerRef.current = null;
+    }
+    if (canvasScaleRenderFrameRef.current !== null) {
+      window.cancelAnimationFrame(canvasScaleRenderFrameRef.current);
+      canvasScaleRenderFrameRef.current = null;
+    }
+    if (canvasWheelZoomFrameRef.current !== null) {
+      window.cancelAnimationFrame(canvasWheelZoomFrameRef.current);
+      canvasWheelZoomFrameRef.current = null;
+      canvasWheelZoomPayloadRef.current = null;
     }
     if (canvasInteractionTimerRef.current !== null) {
       window.clearTimeout(canvasInteractionTimerRef.current);
@@ -8127,7 +8141,6 @@ function MainApp() {
     scheduleCanvasStateSave({ syncNodes: true });
   }, [canvasItems]);
   useEffect(() => { scheduleCanvasStateSave(); }, [canvasSize]);
-  useEffect(() => { scheduleCanvasStateSave(); }, [canvasScale]);
   useEffect(() => () => {
     if (canvasPersistSaveTimerRef.current !== null) {
       window.clearTimeout(canvasPersistSaveTimerRef.current);
@@ -10391,17 +10404,27 @@ function MainApp() {
     size = canvasSizeRef.current,
     options: { updateViewport?: boolean } = {}
   ) {
+    const visualViewport = isCanvasZoomingRef.current ? canvasVisualViewportRef.current : null;
     const sizer = canvasSizerRef.current;
-    if (sizer) {
+    const shouldUpdateSizer = !isCanvasZoomingRef.current || options.updateViewport !== false;
+    if (sizer && shouldUpdateSizer) {
       sizer.style.width = `${size.width * scale}px`;
       sizer.style.height = `${size.height * scale}px`;
     }
 
     const content = canvasContentRef.current;
     if (content) {
-      content.style.width = `${size.width}px`;
-      content.style.height = `${size.height}px`;
-      content.style.transform = `scale(${scale})`;
+      if (!isCanvasZoomingRef.current || options.updateViewport !== false) {
+        content.style.width = `${size.width}px`;
+        content.style.height = `${size.height}px`;
+      }
+      if (visualViewport && canvasSurfaceRef.current) {
+        const translateX = canvasSurfaceRef.current.scrollLeft - visualViewport.x * scale;
+        const translateY = canvasSurfaceRef.current.scrollTop - visualViewport.y * scale;
+        content.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`;
+      } else {
+        content.style.transform = `scale(${scale})`;
+      }
     }
     if (options.updateViewport !== false) scheduleCanvasViewportUpdate();
   }
@@ -10452,12 +10475,36 @@ function MainApp() {
     }
   };
 
+  const scheduleCanvasScaleRenderSync = () => {
+    if (canvasScaleRenderFrameRef.current !== null) return;
+    canvasScaleRenderFrameRef.current = window.requestAnimationFrame(() => {
+      canvasScaleRenderFrameRef.current = null;
+      const nextScale = canvasScaleRef.current || 1;
+      setCanvasScale(current => (Math.abs(current - nextScale) < 0.001 ? current : nextScale));
+    });
+  };
+
   const finishCanvasZoomInteraction = () => {
     canvasZoomSettleTimerRef.current = null;
     if (!isCanvasZoomingRef.current) return;
     isCanvasZoomingRef.current = false;
-    const nextScale = canvasScaleRef.current || 1;
-    setCanvasScale(nextScale);
+    const visualViewport = canvasVisualViewportRef.current;
+    canvasVisualViewportRef.current = null;
+    scheduleCanvasScaleRenderSync();
+    applyCanvasScaleStyles(canvasScaleRef.current || 1, canvasSizeRef.current, { updateViewport: false });
+    if (visualViewport && canvasSurfaceRef.current) {
+      const scale = canvasScaleRef.current || 1;
+      writeCanvasSurfaceScroll(
+        canvasSurfaceRef.current,
+        visualViewport.x * scale,
+        visualViewport.y * scale,
+        false
+      );
+      canvasScrollLockRef.current = {
+        left: canvasSurfaceRef.current.scrollLeft,
+        top: canvasSurfaceRef.current.scrollTop,
+      };
+    }
     if (canvasSizeCommitDeferredRef.current) {
       canvasSizeCommitDeferredRef.current = false;
       setCanvasSize(canvasSizeRef.current);
@@ -12474,6 +12521,30 @@ function MainApp() {
     }
 
     let lastError: unknown = null;
+    if (forceJpegReference) {
+      const compatibleRemoteSource = remoteFallback && isLikelyJpegOrPngImageSource(remoteFallback)
+        ? remoteFallback
+        : '';
+      const compatibleDirectSource = localCandidates.find(source => (
+        !isDataMediaSourceValue(source) &&
+        isDirectCanvasAiInputSource(source) &&
+        isLikelyJpegOrPngImageSource(source)
+      ));
+      const compatibleDataSource = localCandidates.find(source => (
+        isDataMediaSourceValue(source) &&
+        isLikelyJpegOrPngImageSource(source)
+      ));
+      const compatibleSource = delivery === 'remote-only'
+        ? compatibleDirectSource || compatibleRemoteSource || compatibleDataSource
+        : compatibleRemoteSource || compatibleDirectSource || compatibleDataSource;
+      if (compatibleSource) {
+        return {
+          source: compatibleSource,
+          remoteFallback,
+          usedRemoteFirst: compatibleSource === remoteFallback,
+        };
+      }
+    }
     const readableCandidates = forceJpegReference
       ? Array.from(new Set([...localCandidates, remoteFallback].filter((source): source is string => !!source)))
       : localCandidates;
@@ -12781,7 +12852,10 @@ function MainApp() {
         result.push(...localSources);
       } else if (requireRemoteInputs) {
         try {
-          const published = await publishLocalAiInputs(localSources, 'hosted-first');
+          const published = await publishLocalAiInputs(
+            localSources,
+            referenceFormat === 'jpeg' ? 'cloudflared-first' : 'hosted-first'
+          );
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
         } catch (err) {
@@ -16820,11 +16894,13 @@ function MainApp() {
       pointerMoveCount: 0,
       lastNodeCount: canvasItemsRef.current.length,
     };
-    console.debug('[canvas-drag] start', {
-      ids: dragIds,
-      draggingNodeCount: dragIds.length,
-      nodeCount: canvasItemsRef.current.length,
-    });
+    if (CANVAS_INTERACTION_DEBUG) {
+      console.debug('[canvas-drag] start', {
+        ids: dragIds,
+        draggingNodeCount: dragIds.length,
+        nodeCount: canvasItemsRef.current.length,
+      });
+    }
     setCanvasItemDraggingFlag(dragIds, true);
 
     const onMove = (event: PointerEvent) => {
@@ -16833,7 +16909,7 @@ function MainApp() {
       event.preventDefault();
       event.stopPropagation();
       const debug = canvasDragDebugRef.current;
-      if (debug) {
+      if (CANVAS_INTERACTION_DEBUG && debug) {
         debug.pointerMoveCount += 1;
         debug.lastNodeCount = canvasItemsRef.current.length;
         if (debug.pointerMoveCount === 1 || debug.pointerMoveCount % 30 === 0) {
@@ -16896,8 +16972,10 @@ function MainApp() {
           const changedIds = drag.ids.filter(dragId => !!drag.startItems[dragId]);
           if (changedIds.length > 0) {
             canvasItemsPatchCommitRef.current = true;
+            const changedSet = new Set(changedIds);
             flushSync(() => {
               updateCanvasItemsImmediate(prev => prev.map(item => {
+                if (!changedSet.has(item.id)) return item;
                 const start = drag.startItems[item.id];
                 return start ? {
                   ...item,
@@ -16911,14 +16989,16 @@ function MainApp() {
         }
         clearCanvasItemInteractionStyles(drag.ids);
         const endNodeCount = canvasItemsRef.current.length;
-        console.debug('[canvas-drag] pointerup', {
-          draggingNodeCount: drag.ids.length,
-          nodeCount: endNodeCount,
-          startNodeCount: debug?.startNodeCount ?? endNodeCount,
-          pointerMoveCount: debug?.pointerMoveCount ?? 0,
-          createdCanvasNodeCountDuringDrag: Math.max(0, endNodeCount - (debug?.startNodeCount ?? endNodeCount)),
-          duplicatedNodeCountDuringDrag: Math.max(0, endNodeCount - new Set(canvasItemsRef.current.map(item => item.id)).size),
-        });
+        if (CANVAS_INTERACTION_DEBUG) {
+          console.debug('[canvas-drag] pointerup', {
+            draggingNodeCount: drag.ids.length,
+            nodeCount: endNodeCount,
+            startNodeCount: debug?.startNodeCount ?? endNodeCount,
+            pointerMoveCount: debug?.pointerMoveCount ?? 0,
+            createdCanvasNodeCountDuringDrag: Math.max(0, endNodeCount - (debug?.startNodeCount ?? endNodeCount)),
+            duplicatedNodeCountDuringDrag: Math.max(0, endNodeCount - new Set(canvasItemsRef.current.map(item => item.id)).size),
+          });
+        }
       }
       setCanvasInteractionActive(false, 0);
       pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
@@ -17235,7 +17315,11 @@ function MainApp() {
         left: surface.scrollLeft,
         top: surface.scrollTop,
       };
-      scheduleCanvasStateSave();
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+        canvasStateSaveDeferredDuringZoomRef.current = true;
+      } else {
+        scheduleCanvasStateSave();
+      }
     }
     releaseCanvasScrollWriteGuard();
   };
@@ -17391,20 +17475,44 @@ function MainApp() {
     const rect = surface.getBoundingClientRect();
     const localX = clamp(clientX - rect.left, 0, surface.clientWidth);
     const localY = clamp(clientY - rect.top, 0, surface.clientHeight);
-    const canvasX = (surface.scrollLeft + localX) / previousScale;
-    const canvasY = (surface.scrollTop + localY) / previousScale;
+    const currentViewport = canvasVisualViewportRef.current;
+    const currentViewportX = currentViewport?.x ?? surface.scrollLeft / previousScale;
+    const currentViewportY = currentViewport?.y ?? surface.scrollTop / previousScale;
+    const canvasX = currentViewportX + localX / previousScale;
+    const canvasY = currentViewportY + localY / previousScale;
     const targetLeft = canvasX * nextScale - localX;
     const targetTop = canvasY * nextScale - localY;
+    const visualX = Math.max(0, targetLeft / nextScale);
+    const visualY = Math.max(0, targetTop / nextScale);
 
     canvasScaleRef.current = nextScale;
+    canvasVisualViewportRef.current = {
+      x: visualX,
+      y: visualY,
+      width: surface.clientWidth / nextScale,
+      height: surface.clientHeight / nextScale,
+    };
     growCanvasToFit(
       (Math.max(0, targetLeft) + surface.clientWidth) / nextScale + CANVAS_GROW_CHUNK * 0.4,
       (Math.max(0, targetTop) + surface.clientHeight) / nextScale + CANVAS_GROW_CHUNK * 0.4
     );
     applyCanvasScaleStyles(nextScale, canvasSizeRef.current, { updateViewport: false });
-    const targetScroll = clampCanvasSurfaceScroll(surface, targetLeft, targetTop, nextScale, canvasSizeRef.current);
-    writeCanvasSurfaceScroll(surface, targetScroll.left, targetScroll.top);
     commitCanvasScaleSoon();
+  };
+
+  const scheduleCanvasWheelZoom = (clientX: number, clientY: number, deltaY: number) => {
+    const pending = canvasWheelZoomPayloadRef.current;
+    canvasWheelZoomPayloadRef.current = pending
+      ? { clientX, clientY, deltaY: clamp(pending.deltaY + deltaY, -240, 240) }
+      : { clientX, clientY, deltaY };
+    if (canvasWheelZoomFrameRef.current !== null) return;
+    canvasWheelZoomFrameRef.current = window.requestAnimationFrame(() => {
+      canvasWheelZoomFrameRef.current = null;
+      const payload = canvasWheelZoomPayloadRef.current;
+      canvasWheelZoomPayloadRef.current = null;
+      if (!payload) return;
+      zoomCanvasAt(payload.clientX, payload.clientY, payload.deltaY);
+    });
   };
 
   const normalizeCanvasWheelDelta = (event: { deltaY: number; deltaMode: number }) => {
@@ -17454,7 +17562,7 @@ function MainApp() {
       event.stopPropagation();
       event.stopImmediatePropagation();
       if (shouldBlockCanvasWheelZoomTarget(event.target)) return;
-      zoomCanvasAt(event.clientX, event.clientY, deltaY);
+      scheduleCanvasWheelZoom(event.clientX, event.clientY, deltaY);
     };
 
     surface.addEventListener('wheel', handleCanvasWheel, { passive: false, capture: true });
@@ -25469,6 +25577,7 @@ useEffect(() => {
                       >
                         <div
                           ref={canvasContentRef}
+                          data-canvas-content-layer="true"
                           className="relative"
                           style={{
                             width: canvasSize.width,
