@@ -7170,28 +7170,50 @@ fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Res
 #[tauri::command]
 fn load_folders(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
-    if path.exists() {
-        let content = fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
-        let value = serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!([]));
-        if folder_payload_count(&value) > 0 || is_folder_empty_state_confirmed(&app_handle, Some(&path)) {
-            return Ok(value);
-        }
-        if let Some(recovered) = recover_folders_from_latest_backup(&app_handle)? {
-            write_folders_payload(&path, &recovered)?;
-            let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
-            return Ok(recovered);
-        }
-        Ok(value)
-    } else {
-        if !is_folder_empty_state_confirmed(&app_handle, None) {
-            if let Some(recovered) = recover_folders_from_latest_backup(&app_handle)? {
-                write_folders_payload(&path, &recovered)?;
-                let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
-                return Ok(recovered);
+    if is_folder_empty_state_confirmed(&app_handle, if path.exists() { Some(&path) } else { None }) {
+        return Ok(serde_json::json!([]));
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(candidate) = folder_payload_candidate_from_path(&path)? {
+        candidates.push(candidate);
+    }
+    collect_folder_backup_candidates(&get_user_data_dir(&app_handle).join("json_backups"), &mut candidates)?;
+    collect_folder_backup_candidates(&get_user_data_dir(&app_handle).join("canvas_schema_backups"), &mut candidates)?;
+
+    if crate::db::connection::should_use_sqlite(&app_handle) {
+        if let Ok(sqlite_folders) = crate::services::asset_service::list_folders(
+            app_handle.clone(),
+            Some(crate::db::schema::DEFAULT_LIBRARY_ID.to_string()),
+        ) {
+            let payload = serde_json::Value::Array(sqlite_folders);
+            let count = folder_payload_count(&payload);
+            if count > 0 {
+                candidates.push(FolderPayloadCandidate {
+                    payload,
+                    count,
+                    modified_at: current_time_millis(),
+                });
             }
         }
-        Ok(serde_json::json!([]))
     }
+
+    sort_folder_payload_candidates(&mut candidates);
+
+    let Some(best) = candidates.first() else {
+        return Ok(serde_json::json!([]));
+    };
+    let recovered = merge_folder_payload_candidates(&best.payload, &candidates);
+    write_folders_payload(&path, &recovered)?;
+    if let Some(folder_array) = recovered.as_array() {
+        let _ = crate::services::asset_service::replace_folders(
+            app_handle.clone(),
+            Some(crate::db::schema::DEFAULT_LIBRARY_ID.to_string()),
+            folder_array.clone(),
+        );
+    }
+    let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
+    Ok(recovered)
 }
 
 #[tauri::command]
@@ -7259,6 +7281,68 @@ fn folder_payload_count(value: &serde_json::Value) -> usize {
         .unwrap_or(0)
 }
 
+fn folder_payload_score(value: &serde_json::Value) -> i64 {
+    let Some(folders) = value.as_array() else {
+        return 0;
+    };
+    let ids = folders
+        .iter()
+        .filter_map(|folder| json_value_string(folder, "id"))
+        .collect::<HashSet<_>>();
+    let child_links = folders
+        .iter()
+        .filter_map(|folder| json_value_string(folder, "parentId"))
+        .filter(|parent_id| ids.contains(parent_id))
+        .count();
+    (folders.len() as i64 * 100) + (child_links as i64 * 1000)
+}
+
+fn merge_folder_payload_candidates(
+    primary: &serde_json::Value,
+    candidates: &[FolderPayloadCandidate],
+) -> serde_json::Value {
+    let mut merged_by_id: HashMap<String, (serde_json::Value, i32)> = HashMap::new();
+    let mut ordered_ids = Vec::new();
+    let mut apply_candidate = |payload: &serde_json::Value| {
+        let Some(folders) = payload.as_array() else {
+            return;
+        };
+        let ids = folders
+            .iter()
+            .filter_map(|folder| json_value_string(folder, "id"))
+            .collect::<HashSet<_>>();
+        for folder in folders {
+            let Some(id) = json_value_string(folder, "id") else {
+                continue;
+            };
+            let parent_score = json_value_string(folder, "parentId")
+                .map(|parent_id| if ids.contains(&parent_id) { 2 } else { 1 })
+                .unwrap_or(0);
+            match merged_by_id.get(&id) {
+                None => {
+                    ordered_ids.push(id.clone());
+                    merged_by_id.insert(id, (folder.clone(), parent_score));
+                }
+                Some((_, existing_parent_score)) if parent_score > *existing_parent_score => {
+                    merged_by_id.insert(id, (folder.clone(), parent_score));
+                }
+                _ => {}
+            }
+        }
+    };
+
+    apply_candidate(primary);
+    for candidate in candidates {
+        apply_candidate(&candidate.payload);
+    }
+    serde_json::Value::Array(
+        ordered_ids
+            .into_iter()
+            .filter_map(|id| merged_by_id.remove(&id).map(|(folder, _)| folder))
+            .collect(),
+    )
+}
+
 fn has_recoverable_folder_payloads(app_handle: &tauri::AppHandle) -> Result<bool, String> {
     let path = get_user_data_dir(app_handle).join("drawer_folders.json");
     if folder_payload_from_path(&path)?.is_some() {
@@ -7283,13 +7367,17 @@ fn recover_folders_from_latest_backup(app_handle: &tauri::AppHandle) -> Result<O
             }
         }
     }
+    sort_folder_payload_candidates(&mut candidates);
+    Ok(candidates.into_iter().next().map(|candidate| candidate.payload))
+}
+
+fn sort_folder_payload_candidates(candidates: &mut [FolderPayloadCandidate]) {
     candidates.sort_by(|left, right| {
-        right
-            .count
-            .cmp(&left.count)
+        folder_payload_score(&right.payload)
+            .cmp(&folder_payload_score(&left.payload))
+            .then_with(|| right.count.cmp(&left.count))
             .then_with(|| right.modified_at.cmp(&left.modified_at))
     });
-    Ok(candidates.into_iter().next().map(|candidate| candidate.payload))
 }
 
 struct FolderPayloadCandidate {

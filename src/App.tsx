@@ -1013,17 +1013,35 @@ const scoreRestoredFolders = (folders: Folder[]) => {
   const childLinks = folders.filter(folder => folder.parentId && ids.has(folder.parentId)).length;
   return folders.length * 100 + childLinks * 1000;
 };
+const restoredFolderParentScore = (folder: Folder, ids: Set<string>) => {
+  if (!folder.parentId) return 0;
+  return ids.has(folder.parentId) ? 2 : 1;
+};
 const mergeRestoredFolderCandidates = (primary: Folder[], candidates: Folder[][]) => {
-  const seen = new Set(primary.map(folder => folder.id));
-  const merged = [...primary];
-  candidates.forEach(candidate => {
+  const mergedById = new Map<string, { folder: Folder; parentScore: number }>();
+  const orderedIds: string[] = [];
+  const applyCandidate = (candidate: Folder[]) => {
+    const ids = new Set(candidate.map(folder => folder.id));
     candidate.forEach(folder => {
-      if (seen.has(folder.id)) return;
-      seen.add(folder.id);
-      merged.push(folder);
+      if (!folder.id) return;
+      const parentScore = restoredFolderParentScore(folder, ids);
+      const existing = mergedById.get(folder.id);
+      if (!existing) {
+        orderedIds.push(folder.id);
+        mergedById.set(folder.id, { folder, parentScore });
+        return;
+      }
+      if (parentScore > existing.parentScore) {
+        mergedById.set(folder.id, { folder, parentScore });
+      }
     });
+  };
+
+  applyCandidate(primary);
+  candidates.forEach(candidate => {
+    applyCandidate(candidate);
   });
-  return normalizeDrawerFolders(merged);
+  return normalizeDrawerFolders(orderedIds.map(id => mergedById.get(id)!.folder));
 };
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
@@ -4364,7 +4382,9 @@ function MainApp() {
     });
     writeOpenFloatingNoteLabels(snapshot.openFloatingNoteLabels);
     setItems(cloneDrawerValue(snapshot.items));
-    setFolders(cloneDrawerValue(snapshot.folders));
+    const nextFolders = cloneDrawerValue(snapshot.folders);
+    setFolders(nextFolders);
+    persistFoldersSnapshot(nextFolders);
     setActiveFolderId(snapshot.activeFolderId);
     setActiveTab(snapshot.activeTab);
     setSelectedIds([]);
@@ -5837,7 +5857,12 @@ function MainApp() {
 
       pushDrawerUndoSnapshot('网络收集图片');
       if (!existingFolder) {
-        setFolders(prev => prev.some(item => item.id === folder.id || item.name === folder.name) ? prev : insertDrawerFolderAtTop(prev, folder));
+        setFolders(prev => {
+          if (prev.some(item => item.id === folder.id || item.name === folder.name)) return prev;
+          const nextFolders = insertDrawerFolderAtTop(prev, folder);
+          persistFoldersSnapshot(nextFolders);
+          return nextFolders;
+        });
       }
       setItems(prev => [...newItems, ...prev]);
       triggerAutoPaletteForItems(newItems);
@@ -6449,7 +6474,11 @@ function MainApp() {
     }
 
     pushDrawerUndoSnapshot('从 ' + sourceLabel + ' 导入');
-    if (nextFolders.length > 0) setFolders(prev => normalizeDrawerFolders([...prev, ...nextFolders]));
+    if (nextFolders.length > 0) setFolders(prev => {
+      const mergedFolders = normalizeDrawerFolders([...prev, ...nextFolders]);
+      persistFoldersSnapshot(mergedFolders);
+      return mergedFolders;
+    });
     if (nextItems.length > 0) {
       setItems(prev => [...nextItems, ...prev]);
       triggerAutoPaletteForItems(nextItems.filter(item => item.type === 'image'));
@@ -6617,7 +6646,11 @@ function MainApp() {
       }
 
       pushDrawerUndoSnapshot('从 Eagle 导入');
-      if (nextFolders.length > 0) setFolders(prev => normalizeDrawerFolders([...prev, ...nextFolders]));
+      if (nextFolders.length > 0) setFolders(prev => {
+        const mergedFolders = normalizeDrawerFolders([...prev, ...nextFolders]);
+        persistFoldersSnapshot(mergedFolders);
+        return mergedFolders;
+      });
       if (nextItems.length > 0) {
         setItems(prev => [...nextItems, ...prev]);
         triggerAutoPaletteForItems(nextItems.filter(item => item.type === 'image'));
@@ -7550,9 +7583,12 @@ function MainApp() {
       name: AI_GENERATED_FOLDER_NAME,
       color: AI_GENERATED_FOLDER_COLOR,
     };
-    setFolders(prev => prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)
-      ? prev
-      : insertDrawerFolderAtTop(prev, newFolder));
+    setFolders(prev => {
+      if (prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)) return prev;
+      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     return newFolder.id;
   };
 
@@ -7565,9 +7601,12 @@ function MainApp() {
       name: AI_GENERATED_VIDEO_FOLDER_NAME,
       color: AI_GENERATED_VIDEO_FOLDER_COLOR,
     };
-    setFolders(prev => prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)
-      ? prev
-      : insertDrawerFolderAtTop(prev, newFolder));
+    setFolders(prev => {
+      if (prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)) return prev;
+      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     return newFolder.id;
   };
 
@@ -8259,10 +8298,6 @@ function MainApp() {
           const mergedFolders = mergeRestoredFolderCandidates(bestFolders, candidates);
           hasRestoredNonEmptyFoldersRef.current = true;
           setFolders(mergedFolders);
-          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(mergedFolders));
-          replaceFolders(mergedFolders, DEFAULT_LIBRARY_ID).catch(err => {
-            console.warn('同步文件夹树到后端失败:', err);
-          });
         }
         setIsFoldersLoaded(true);
       }
@@ -8310,17 +8345,22 @@ function MainApp() {
     }
     saveCanvasStateNow({ syncNodes: true });
   }, []);
-  useEffect(() => {
-    localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(folders));
-    if (folders.length > 0) {
+  const persistFoldersSnapshot = (nextFolders: Folder[]) => {
+    if (nextFolders.length > 0) {
       hasRestoredNonEmptyFoldersRef.current = true;
     }
-    if (isFoldersLoaded && (folders.length > 0 || hasRestoredNonEmptyFoldersRef.current)) {
-      invoke('save_folders', { folders, allowEmpty: true, allow_empty: true }).catch(()=>{});
-      replaceFolders(folders, DEFAULT_LIBRARY_ID).catch(err => {
-        console.warn('同步文件夹树到后端失败:', err);
-      });
+    if (nextFolders.length === 0 && !hasRestoredNonEmptyFoldersRef.current) {
+      return;
     }
+    localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(nextFolders));
+    invoke('save_folders', { folders: nextFolders, allowEmpty: true, allow_empty: true }).catch(()=>{});
+    replaceFolders(nextFolders, DEFAULT_LIBRARY_ID).catch(err => {
+      console.warn('同步文件夹树到后端失败:', err);
+    });
+  };
+  useEffect(() => {
+    if (!isFoldersLoaded) return;
+    persistFoldersSnapshot(folders);
   }, [folders, isFoldersLoaded]);
   const broadcastFloatingNoteTextUpdate = (itemId: string, content?: string, name?: string, sourceLabel?: string) => {
     const labels = readOpenFloatingNoteLabels();
@@ -18419,7 +18459,11 @@ function MainApp() {
     });
 
     pushDrawerUndoSnapshot('保存画布');
-    setFolders(prev => insertDrawerFolderAtTop(prev, newFolder));
+    setFolders(prev => {
+      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     setItems(prev => [...savedItems, ...prev]);
     triggerAutoPaletteForItems(savedItems);
     keepCanvasSessionOnLeaveRef.current = false;
@@ -18842,7 +18886,11 @@ function MainApp() {
       parentId,
     };
     pushDrawerUndoSnapshot(parent ? '新建子目录' : '新建文件夹');
-    setFolders(prev => insertDrawerFolderAtTop(prev, newFolder));
+    setFolders(prev => {
+      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     if (parentId) setCollapsedFolderIds(prev => prev.filter(id => id !== parentId));
     closeFolderModal();
     showToast(parent ? `已在「${parent.name}」中新建子目录` : '文件夹创建成功');
@@ -18853,7 +18901,11 @@ function MainApp() {
     if (!deletionPlan) return;
     const { target, childIds, removedIds, destinationId } = deletionPlan;
     pushDrawerUndoSnapshot(target.parentId ? '删除子目录' : '删除文件夹');
-    setFolders(prev => prev.filter(folder => !removedIds.has(folder.id)));
+    setFolders(prev => {
+      const nextFolders = prev.filter(folder => !removedIds.has(folder.id));
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     setItems(prev => prev.map(item => (
       item.folderId && removedIds.has(item.folderId) ? { ...item, folderId: destinationId } : item
     )));
@@ -18929,6 +18981,7 @@ function MainApp() {
       )));
       const existingIds = new Set(normalizedFolders.map(folder => folder.id));
       setFolders(normalizedFolders);
+      persistFoldersSnapshot(normalizedFolders);
       setSelectedFolderIds(cleanIds.filter(id => existingIds.has(id)));
       await moveFolders({
         folderIds: cleanIds,
@@ -18989,7 +19042,11 @@ function MainApp() {
       return undefined;
     };
     pushDrawerUndoSnapshot(cleanIds.length > 1 ? '删除多个文件夹' : '删除文件夹');
-    setFolders(prev => prev.filter(folder => !removedIds.has(folder.id)));
+    setFolders(prev => {
+      const nextFolders = prev.filter(folder => !removedIds.has(folder.id));
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     setItems(prev => prev.map(item => (
       item.folderId && removedIds.has(item.folderId)
         ? { ...item, folderId: getDestinationId(item.folderId) }
@@ -19368,7 +19425,11 @@ function MainApp() {
     const idSet = new Set(selectedIds);
     const count = selectedIds.length;
     pushDrawerUndoSnapshot(parentFolder ? '新建子目录并移动' : '新建文件夹并移动');
-    setFolders(prev => insertDrawerFolderAtTop(prev, newFolder));
+    setFolders(prev => {
+      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
+      persistFoldersSnapshot(nextFolders);
+      return nextFolders;
+    });
     if (parentId) setCollapsedFolderIds(prev => prev.filter(id => id !== parentId));
     setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, folderId: newFolder.id } : item));
     setMoveFolderName('');
@@ -19590,7 +19651,9 @@ function MainApp() {
         return;
       }
       pushDrawerUndoSnapshot('重命名文件夹');
-      setFolders(folders.map(f => f.id === id ? { ...f, name: nextName } : f));
+      const nextFolders = folders.map(f => f.id === id ? { ...f, name: nextName } : f);
+      setFolders(nextFolders);
+      persistFoldersSnapshot(nextFolders);
       showToast(current.parentId ? '子目录已重命名' : '文件夹已重命名');
     }
     setEditingFolderId(null);
@@ -22530,7 +22593,11 @@ useEffect(() => {
             parentId,
           };
           pushDrawerUndoSnapshot(parent ? 'Agent 新建子目录' : 'Agent 新建文件夹');
-          setFolders(prev => insertDrawerFolderAtTop(prev, folder));
+          setFolders(prev => {
+            const nextFolders = insertDrawerFolderAtTop(prev, folder);
+            persistFoldersSnapshot(nextFolders);
+            return nextFolders;
+          });
           return { action, folderId: folder.id };
         }
         if (action === 'rename_folder') {
@@ -22542,7 +22609,11 @@ useEffect(() => {
             throw new Error('已有同名文件夹');
           }
           pushDrawerUndoSnapshot('Agent 重命名文件夹');
-          setFolders(prev => prev.map(folder => folder.id === folderId ? { ...folder, name: folderName } : folder));
+          setFolders(prev => {
+            const nextFolders = prev.map(folder => folder.id === folderId ? { ...folder, name: folderName } : folder);
+            persistFoldersSnapshot(nextFolders);
+            return nextFolders;
+          });
           return { action, folderId, name: folderName };
         }
         if (action === 'delete_folder') {
