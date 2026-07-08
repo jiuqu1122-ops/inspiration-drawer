@@ -4841,6 +4841,7 @@ function MainApp() {
   const draggingFolderIdsRef = useRef<string[]>([]);
   useEffect(() => { draggingFolderIdsRef.current = draggingFolderIds; }, [draggingFolderIds]);
   const [folderMoveDragOverId, setFolderMoveDragOverId] = useState<string | null>(null);
+  const suppressNextFolderClickRef = useRef(false);
   const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
   const [showMoveExistingFolderModal, setShowMoveExistingFolderModal] = useState(false);
   const [folderMoveTargetId, setFolderMoveTargetId] = useState<string | null>(null);
@@ -19021,6 +19022,84 @@ function MainApp() {
     clearDrawerFolderDragState();
   };
 
+  const startDrawerFolderPointerDrag = (event: React.PointerEvent, folderId: string) => {
+    if (event.button !== 0 || editingFolderId) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-folder-control="true"], input, textarea, select')) return;
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const actionIds = getFolderActionIds(folderId);
+    const dragIds = actionIds.length > 0 ? actionIds : [folderId];
+    let activated = false;
+    let disposed = false;
+
+    const cleanup = () => {
+      if (disposed) return;
+      disposed = true;
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', onUp, true);
+      document.removeEventListener('pointercancel', cleanup, true);
+      document.body.style.cursor = '';
+      clearDrawerFolderDragState();
+    };
+
+    const updateDropTarget = (clientX: number, clientY: number) => {
+      const el = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      const dropEl = el?.closest('[data-folder-drop-id]') as HTMLElement | null;
+      const dropId = dropEl?.dataset.folderDropId || '';
+      if (!dropId) {
+        setDragOverFolderId(null);
+        setFolderMoveDragOverId(null);
+        return null;
+      }
+      const targetId = dropId === 'all' ? null : dropId;
+      const invalid = isInvalidFolderMoveTarget(targetId, dragIds);
+      setDragOverFolderId(dropId);
+      setFolderMoveDragOverId(invalid ? dropId : null);
+      return { targetId, invalid };
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (disposed) return;
+      const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+      if (!activated && distance < 6) return;
+      if (!activated) {
+        activated = true;
+        suppressNextFolderClickRef.current = true;
+        setSelectedFolderIds(dragIds);
+        lastSelectedFolderIdRef.current = folderId;
+        setDraggingFolderIds(dragIds);
+        document.body.style.cursor = 'grabbing';
+      }
+      moveEvent.preventDefault();
+      updateDropTarget(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      if (activated) {
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        const dropTarget = updateDropTarget(upEvent.clientX, upEvent.clientY);
+        if (dropTarget) {
+          if (dropTarget.invalid) {
+            showToast('不能移动到自身或子文件夹中');
+          } else {
+            void moveDrawerFoldersToParent(dragIds, dropTarget.targetId);
+          }
+        }
+      }
+      cleanup();
+      window.setTimeout(() => {
+        suppressNextFolderClickRef.current = false;
+      }, 250);
+    };
+
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', onUp, true);
+    document.addEventListener('pointercancel', cleanup, true);
+  };
+
   const moveDrawerItemToFolder = (itemId: string, folderId?: string, folderName?: string) => {
     if (!itemId || !items.some(i => i.id === itemId)) return false;
     const currentFolderId = items.find(i => i.id === itemId)?.folderId;
@@ -23897,7 +23976,8 @@ useEffect(() => {
         style={isNested ? { paddingLeft: nestedOffset } : undefined}
         data-folder-drop-id={folder.id}
         data-folder-drop-name={folderPathName}
-        draggable={!editingFolderId}
+        draggable={false}
+        onPointerDown={(event) => startDrawerFolderPointerDrag(event, folder.id)}
         onDragStart={(event) => handleDrawerFolderDragStart(event, folder.id)}
         onDragEnd={handleDrawerFolderDragEnd}
         onContextMenu={(event) => handleFolderContextMenu(event, folder.id)}
@@ -23911,6 +23991,12 @@ useEffect(() => {
       >
         <div
           onClick={(event) => {
+            if (suppressNextFolderClickRef.current) {
+              suppressNextFolderClickRef.current = false;
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
             if (isCanvasMode) {
               const rect = event.currentTarget.getBoundingClientRect();
               requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
@@ -24015,7 +24101,8 @@ useEffect(() => {
         className="group/folder-list relative w-full shrink-0"
         data-folder-drop-id={folder.id}
         data-folder-drop-name={folderPathName}
-        draggable={!editingFolderId}
+        draggable={false}
+        onPointerDown={(event) => startDrawerFolderPointerDrag(event, folder.id)}
         onDragStart={(event) => handleDrawerFolderDragStart(event, folder.id)}
         onDragEnd={handleDrawerFolderDragEnd}
         onContextMenu={(event) => handleFolderContextMenu(event, folder.id)}
@@ -24030,6 +24117,12 @@ useEffect(() => {
         <button
           type="button"
           onClick={(event) => {
+            if (suppressNextFolderClickRef.current) {
+              suppressNextFolderClickRef.current = false;
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
             if (isCanvasMode) {
               const rect = event.currentTarget.getBoundingClientRect();
               requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
