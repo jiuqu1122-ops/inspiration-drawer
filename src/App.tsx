@@ -8069,7 +8069,13 @@ function MainApp() {
         clearIdleAutoClose();
         idleAutoCloseTimerRef.current = window.setTimeout(() => {
           idleAutoCloseTimerRef.current = null;
-          if (!isPointerInsideDrawerRef.current && !shouldBlockIdleAutoClose()) {
+          const isPanelInteractionHeld = Date.now() < drawerPanelInteractionHoldUntilRef.current;
+          if (
+            !isPointerInsideDrawerRef.current &&
+            !isPanelInteractionHeld &&
+            !drawerAutoCloseBlockRef.current &&
+            !isTextEntryActive()
+          ) {
             setIsOpen(false);
             setIsPinned(false);
           }
@@ -19585,6 +19591,8 @@ function MainApp() {
 
   const isPointerInsideDrawerRef = useRef(false);
   const lastDrawerPointerDownAtRef = useRef(0);
+  const drawerPanelInteractionHoldUntilRef = useRef(0);
+  const drawerAutoCloseBlockRef = useRef(false);
   const drawerWidthRef = useRef(drawerWidth);
   const drawerHeightRef = useRef(drawerHeight);
   const pendingBoundsRef = useRef<{ width: number; height: number; anchor?: 'left' | 'right' } | null>(null);
@@ -20956,6 +20964,59 @@ useEffect(() => {
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || element.isContentEditable || !!element.closest('[data-canvas-edit-control="true"]');
   };
 
+  useEffect(() => {
+    drawerAutoCloseBlockRef.current = (
+      isDraggingTitleRef.current ||
+      startupAutoCloseSuppressedRef.current ||
+      isGlobalMouseDown.current ||
+      isResizingState.current ||
+      isDraggingOver ||
+      isCanvasWorkbenchActive ||
+      isPinned ||
+      !!canvasBrushEditor ||
+      !!selectedImage ||
+      !!selectedVideo ||
+      isTextEntryActive() ||
+      isDrawerAgentOpen ||
+      showTextInput ||
+      showWebImageCollector ||
+      showFolderModal ||
+      showMoveFolderModal ||
+      showMoveExistingFolderModal ||
+      !!folderContextMenu ||
+      isSearchActive ||
+      editingFolderId !== null ||
+      confirmDialog.isOpen ||
+      showLaunchIntro ||
+      isSplashVisible ||
+      showUpdateLog ||
+      snipMode.active ||
+      isSnipSessionActive
+    );
+  }, [
+    isDraggingOver,
+    isCanvasWorkbenchActive,
+    isPinned,
+    canvasBrushEditor,
+    selectedImage,
+    selectedVideo,
+    isDrawerAgentOpen,
+    showTextInput,
+    showWebImageCollector,
+    showFolderModal,
+    showMoveFolderModal,
+    showMoveExistingFolderModal,
+    folderContextMenu,
+    isSearchActive,
+    editingFolderId,
+    confirmDialog.isOpen,
+    showLaunchIntro,
+    isSplashVisible,
+    showUpdateLog,
+    snipMode.active,
+    isSnipSessionActive,
+  ]);
+
   const blurCanvasActiveTextEntry = (nextTarget?: EventTarget | null) => {
     if (!isCanvasModeRef.current) return false;
     const element = document.activeElement as HTMLElement | null;
@@ -21114,6 +21175,7 @@ useEffect(() => {
     // 只保留真正需要阻止自动缩回的情况：
     // 1. 用户手动点了钉住；2. 正在预览图片/视频；3. 正在拖动/缩放这类瞬时操作。
     // 设置、搜索、文本输入、二维码、弹窗等面板不再阻止自动缩回；鼠标是否在抽屉内由 scheduleAutoClose 单独判断。
+    Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
     isGlobalMouseDown.current ||
@@ -21141,6 +21203,7 @@ useEffect(() => {
   );
 
   const shouldBlockIdleAutoClose = () => (
+    Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
     isGlobalMouseDown.current ||
@@ -21173,6 +21236,33 @@ useEffect(() => {
       clearTimeout(idleAutoCloseTimerRef.current);
       idleAutoCloseTimerRef.current = null;
     }
+  };
+
+  const holdDrawerForPanelInteraction = (duration = 1400) => {
+    drawerPanelInteractionHoldUntilRef.current = Math.max(
+      drawerPanelInteractionHoldUntilRef.current,
+      Date.now() + duration
+    );
+    lastDrawerPointerDownAtRef.current = Date.now();
+    clearIdleAutoClose();
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const handleDrawerPanelPointerDown = (event: React.PointerEvent) => {
+    holdDrawerForPanelInteraction();
+    event.stopPropagation();
+  };
+
+  const handleDrawerPanelMouseDown = (event: React.MouseEvent) => {
+    holdDrawerForPanelInteraction();
+    event.stopPropagation();
+  };
+
+  const handleDrawerPanelKeyDown = () => {
+    holdDrawerForPanelInteraction(1800);
   };
 
   const scheduleIdleAutoClose = (delay = 3000) => {
@@ -21213,6 +21303,30 @@ useEffect(() => {
     if (drawerState === 'open' && !shouldBlockAutoClose()) scheduleAutoClose(180);
     else scheduleIdleAutoClose(3000);
   };
+
+  useEffect(() => {
+    if (
+      showTextInput ||
+      showWebImageCollector ||
+      showFolderModal ||
+      showMoveFolderModal ||
+      showMoveExistingFolderModal ||
+      isDrawerAgentOpen ||
+      !!folderContextMenu ||
+      confirmDialog.isOpen
+    ) {
+      holdDrawerForPanelInteraction(1800);
+    }
+  }, [
+    showTextInput,
+    showWebImageCollector,
+    showFolderModal,
+    showMoveFolderModal,
+    showMoveExistingFolderModal,
+    isDrawerAgentOpen,
+    folderContextMenu,
+    confirmDialog.isOpen,
+  ]);
 
   useEffect(() => {
     let disposed = false;
@@ -21300,6 +21414,23 @@ useEffect(() => {
     isOpen,
     drawerState,
     isCanvasWorkbenchActive,
+    canvasBrushEditor,
+    selectedImage,
+    selectedVideo,
+    showTextInput,
+    showWebImageCollector,
+    showFolderModal,
+    showMoveFolderModal,
+    showMoveExistingFolderModal,
+    isDrawerAgentOpen,
+    folderContextMenu,
+    isSearchActive,
+    editingFolderId,
+    confirmDialog.isOpen,
+    showLaunchIntro,
+    isSplashVisible,
+    showUpdateLog,
+    snipMode.active,
     isSelectMode,
     isSnipSessionActive,
     isDraggingOver,
@@ -21326,7 +21457,12 @@ useEffect(() => {
     selectedImage,
     selectedVideo,
     showTextInput,
+    showWebImageCollector,
     showFolderModal,
+    showMoveFolderModal,
+    showMoveExistingFolderModal,
+    isDrawerAgentOpen,
+    folderContextMenu,
     isSearchActive,
     editingFolderId,
     confirmDialog.isOpen,
@@ -21355,7 +21491,26 @@ useEffect(() => {
       document.removeEventListener('focusin', handleFocusIn, true);
       document.removeEventListener('focusout', handleFocusOut, true);
     };
-  }, [isDrawerActive, drawerState, isPinned, isCanvasWorkbenchActive, showTextInput, editingFolderId, showLaunchIntro, isSplashVisible, showUpdateLog, snipMode.active]);
+  }, [
+    isDrawerActive,
+    drawerState,
+    isPinned,
+    isCanvasWorkbenchActive,
+    showTextInput,
+    showWebImageCollector,
+    showFolderModal,
+    showMoveFolderModal,
+    showMoveExistingFolderModal,
+    isDrawerAgentOpen,
+    folderContextMenu,
+    editingFolderId,
+    confirmDialog.isOpen,
+    showLaunchIntro,
+    isSplashVisible,
+    showUpdateLog,
+    snipMode.active,
+    isSnipSessionActive,
+  ]);
 
   const flashSelectedImageZoom = () => {
     setShowSelectedImageZoom(true);
@@ -30167,7 +30322,7 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showTextInput && (
-                    <motion.div initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
+                    <motion.div initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
                       <div className="flex justify-between items-center px-1">
                         <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-blue-500" /> 记录灵感</span>
                         <button onClick={handleCloseTextInput} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
@@ -30207,7 +30362,9 @@ useEffect(() => {
                       exit={{ opacity: 0, y: 40, scale: 0.95 }}
                       transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }}
                       className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform"
-                      onMouseDown={e => e.stopPropagation()}
+                      onPointerDown={handleDrawerPanelPointerDown}
+                      onMouseDown={handleDrawerPanelMouseDown}
+                      onKeyDown={handleDrawerPanelKeyDown}
                     >
                       <div className="flex justify-between items-center px-1">
                         <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><ImageIcon className="w-4 h-4 text-sky-500" /> 网络收图</span>
@@ -30413,7 +30570,7 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showMoveFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
+                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
                       <div className="flex justify-between items-center px-1">
                         <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Move className="w-4 h-4 text-emerald-500" /> 移动 {selectedIds.length} 个卡片</span>
                         <button onClick={() => setShowMoveFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
@@ -30459,7 +30616,7 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showMoveExistingFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
+                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
                       <div className="flex items-center justify-between gap-3 px-1">
                         <span className="min-w-0 truncate text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5">
                           <Move className="w-4 h-4 text-emerald-500" />
@@ -30516,7 +30673,7 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
+                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
                       <div className="flex justify-between items-center px-1">
                         <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> {newFolderParent ? `在「${newFolderParent.name}」中新建子目录` : '新建项目文件夹'}</span>
                         <button onClick={closeFolderModal} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
