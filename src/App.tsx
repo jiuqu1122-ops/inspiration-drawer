@@ -261,7 +261,7 @@ type ImageThumbnailFileResult = {
 };
 type CanvasImageSourceCacheEntry = {
   src: string;
-  quality: 'thumb' | 'preview';
+  quality: 'thumb' | 'preview' | 'original';
   path?: string;
   thumbnail?: string;
   size?: number;
@@ -9592,6 +9592,16 @@ function MainApp() {
       : getCanvasItemDisplaySource(item)
   );
 
+  const getCanvasOriginalImageSource = (item: BufferItem) => {
+    if (item.type !== 'image') return '';
+    const path = String(item.path || '').trim();
+    if (path) {
+      if (/^(?:asset:|file:|blob:|data:|https?:)/i.test(path)) return path;
+      return convertFileSrc(path);
+    }
+    return String(item.url || item.sourceUrl || item.originalUrl || '').trim();
+  };
+
   const getCanvasImageUpgradeLocalPath = (canvasItem: CanvasImageItem) => {
     const path = (canvasItem.item.path || '').trim();
     if (!path || /^(?:https?:|data:|asset:|file:|blob:)/i.test(path)) return '';
@@ -9617,6 +9627,15 @@ function MainApp() {
     const cached = canvasImageSourceCacheRef.current.get(canvasItem.id);
     if (cached?.src) {
       if (cached.quality === 'thumb' && cached.src === initialSource) return cached.src;
+      if (
+        cached.quality === 'original'
+        && canvasSelectedIdsRef.current.length === 1
+        && canvasSelectedIdsRef.current[0] === canvasItem.id
+        && cached.src === getCanvasOriginalImageSource(canvasItem.item)
+        && cached.thumbnail === initialSource
+      ) {
+        return cached.src;
+      }
       if (
         CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED
         && cached.quality === 'preview'
@@ -9650,7 +9669,7 @@ function MainApp() {
         canvasPreviewSourceIdsRef.current.delete(id);
         return;
       }
-      if (cached.quality !== 'preview') {
+      if (cached.quality !== 'preview' && cached.quality !== 'original') {
         canvasPreviewSourceIdsRef.current.delete(id);
         return;
       }
@@ -9671,7 +9690,7 @@ function MainApp() {
     Array.from(canvasPreviewSourceIdsRef.current).forEach((id) => {
       if (keepIds.has(id)) return;
       const cached = canvasImageSourceCacheRef.current.get(id);
-      if (!cached || cached.quality !== 'preview') {
+      if (!cached || (cached.quality !== 'preview' && cached.quality !== 'original')) {
         canvasPreviewSourceIdsRef.current.delete(id);
         return;
       }
@@ -9688,6 +9707,49 @@ function MainApp() {
     });
   };
 
+  const updateSelectedCanvasOriginalImageSource = (selectedIds: string[]) => {
+    const selectedId = selectedIds.length === 1 ? selectedIds[0] : '';
+    const selectedItem = selectedId
+      ? canvasItemsRef.current.find(item => item.id === selectedId && item.item.type === 'image')
+      : undefined;
+    const initialSource = selectedItem ? getCanvasInitialImageSource(selectedItem.item) : '';
+    const originalSource = selectedItem ? getCanvasOriginalImageSource(selectedItem.item) : '';
+    const selectedCanUseOriginal = !!selectedItem && !!initialSource && !!originalSource && originalSource !== initialSource;
+
+    Array.from(canvasPreviewSourceIdsRef.current).forEach((id) => {
+      if (selectedCanUseOriginal && id === selectedId) return;
+      const cached = canvasImageSourceCacheRef.current.get(id);
+      if (cached?.quality !== 'original') return;
+      const latest = canvasItemsRef.current.find(item => item.id === id);
+      const fallbackSource = latest ? getCanvasInitialImageSource(latest.item) : '';
+      if (fallbackSource) {
+        canvasImageSourceCacheRef.current.set(id, { src: fallbackSource, quality: 'thumb' });
+        applyCanvasImageSourceToElement(id, fallbackSource);
+      } else {
+        canvasImageSourceCacheRef.current.delete(id);
+      }
+      canvasPreviewSourceIdsRef.current.delete(id);
+    });
+
+    if (!selectedCanUseOriginal || !selectedItem) return;
+    const cached = canvasImageSourceCacheRef.current.get(selectedItem.id);
+    if (
+      cached?.quality === 'original'
+      && cached.src === originalSource
+      && cached.thumbnail === initialSource
+    ) {
+      return;
+    }
+    canvasImageSourceCacheRef.current.set(selectedItem.id, {
+      src: originalSource,
+      quality: 'original',
+      path: String(selectedItem.item.path || '').trim() || undefined,
+      thumbnail: initialSource,
+    });
+    canvasPreviewSourceIdsRef.current.add(selectedItem.id);
+    applyCanvasImageSourceToElement(selectedItem.id, originalSource);
+  };
+
   const shouldUpgradeCanvasImageSource = (canvasItem: CanvasImageItem, scale = canvasScaleRef.current || 1) => {
     if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED) return false;
     if (canvasItem.item.type !== 'image') return false;
@@ -9698,6 +9760,7 @@ function MainApp() {
     if (!localPath) return false;
     if (canvasImageUpgradeFailedRef.current.has(getCanvasImageUpgradeFailureKey(canvasItem))) return false;
     const cached = canvasImageSourceCacheRef.current.get(canvasItem.id);
+    if (cached?.quality === 'original') return false;
     if (
       cached?.quality === 'preview'
       && cached.path === localPath
@@ -9784,6 +9847,7 @@ function MainApp() {
     cancelCanvasImageSourceUpgradeQueue();
     if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED) return;
     if (!isCanvasModeRef.current || isCanvasZoomingRef.current || isCanvasInteractingRef.current || canvasPanRef.current) return;
+    updateSelectedCanvasOriginalImageSource(canvasSelectedIdsRef.current);
     const viewport = canvasViewportRef.current || readCanvasViewportRect();
     if (!viewport) return;
     const scale = canvasScaleRef.current || 1;
@@ -10151,7 +10215,9 @@ function MainApp() {
     const current = canvasSelectedIdsRef.current;
     if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     canvasSelectedIdsRef.current = unique;
+    updateSelectedCanvasOriginalImageSource(unique);
     setCanvasSelectedIds(unique);
+    scheduleCanvasVisibleImageSourceUpgrades();
   };
 
   const updateCanvasSelection = (ids: string[]) => {
@@ -10159,7 +10225,9 @@ function MainApp() {
     const current = canvasSelectedIdsRef.current;
     if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     canvasSelectedIdsRef.current = unique;
+    updateSelectedCanvasOriginalImageSource(unique);
     setCanvasSelectedIds(unique);
+    scheduleCanvasVisibleImageSourceUpgrades();
   };
 
   const enableCanvasWorkflowSingleEditForItem = (id: string) => {
