@@ -129,7 +129,19 @@ export const compactFloatingNoteSnapshot = (snapshot: FloatingNoteSnapshot): Flo
 
 export const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): CanvasImageItem => {
   const nextItem = stripHeavyDataThumbnail(item.item);
-  return nextItem === item.item ? item : { ...item, item: nextItem };
+  let nextAi = item.ai;
+  if (item.ai?.outputs?.length) {
+    let outputsChanged = false;
+    const outputs = item.ai.outputs.map(output => {
+      const thumbnail = output.thumbnail || '';
+      if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) return output;
+      outputsChanged = true;
+      return { ...output, thumbnail: undefined };
+    });
+    if (outputsChanged) nextAi = { ...item.ai, outputs };
+  }
+  if (nextItem === item.item && nextAi === item.ai) return item;
+  return { ...item, item: nextItem, ai: nextAi };
 };
 
 const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem => {

@@ -249,12 +249,19 @@ type LocalVisionModelStatusPayload = {
 };
 type ImageThumbnailFileResult = {
   path: string;
-  url: string;
+  url?: string;
   width: number;
   height: number;
   fingerprint?: string;
   file_size?: number;
   modified_at?: number;
+};
+type CanvasImageSourceCacheEntry = {
+  src: string;
+  quality: 'thumb' | 'preview';
+  path?: string;
+  thumbnail?: string;
+  size?: number;
 };
 const LOCAL_VISION_MODEL_STORAGE_KEY = 'drawer_local_vision_model';
 const DEFAULT_LOCAL_VISION_MODEL = 'qwen2.5vl:3b';
@@ -642,7 +649,19 @@ const compactFloatingNoteSnapshot = (snapshot: FloatingNoteSnapshot): FloatingNo
 
 const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): CanvasImageItem => {
   const nextItem = stripHeavyDataThumbnail(item.item);
-  return nextItem === item.item ? item : { ...item, item: nextItem };
+  let nextAi = item.ai;
+  if (item.ai?.outputs?.length) {
+    let outputsChanged = false;
+    const outputs = item.ai.outputs.map(output => {
+      const thumbnail = output.thumbnail || '';
+      if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) return output;
+      outputsChanged = true;
+      return { ...output, thumbnail: undefined };
+    });
+    if (outputsChanged) nextAi = { ...item.ai, outputs };
+  }
+  if (nextItem === item.item && nextAi === item.ai) return item;
+  return { ...item, item: nextItem, ai: nextAi };
 };
 
 const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem => {
@@ -748,6 +767,14 @@ type CanvasNavThumbnailCacheEntry = {
   thumbnail: string;
   status: 'loading' | 'ready' | 'error' | 'empty';
 };
+type CanvasAiOutputThumbnailJob = {
+  key: string;
+  canvasItemId: string;
+  outputIndex: number;
+  outputId?: string;
+  source: string;
+  path?: string;
+};
 
 const getCanvasAiErrorSummary = (error?: string | null) => {
   const message = String(error || '').replace(/\s+/g, ' ').trim();
@@ -788,12 +815,15 @@ const IMAGE_THUMBNAIL_LEGACY_MAX_HEIGHT = 240;
 const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
 const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
 const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
-const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 2;
-const CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE = 6;
-const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 36;
-const CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE = 1;
+const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 1;
+const CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE = 3;
+const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 90;
+const CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE = 1.15;
 const CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE = 0.65;
 const CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD = 480;
+const CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE = 1024;
+const CANVAS_IMAGE_SOURCE_UPGRADE_MAX_ACTIVE_PREVIEWS = 3;
+const CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED = true;
 const CANVAS_INTERACTION_DEBUG = false;
 const VIDEO_THUMBNAIL_MAX_WIDTH = 360;
 const VIDEO_THUMBNAIL_MAX_HEIGHT = 220;
@@ -3410,12 +3440,14 @@ function MainApp() {
   const canvasSizeCommitDeferredRef = useRef(false);
   const canvasNavThumbnailCacheRef = useRef<Map<string, CanvasNavThumbnailCacheEntry>>(new Map());
   const [canvasNavThumbnailRevision, setCanvasNavThumbnailRevision] = useState(0);
-  const canvasImageSourceCacheRef = useRef(new Map<string, { src: string; quality: 'thumb' | 'full' }>());
+  const canvasImageSourceCacheRef = useRef(new Map<string, CanvasImageSourceCacheEntry>());
+  const canvasPreviewSourceIdsRef = useRef(new Set<string>());
   const canvasImageUpgradeQueueRef = useRef<string[]>([]);
   const canvasImageUpgradeInFlightRef = useRef(new Set<string>());
   const canvasImageUpgradeFailedRef = useRef(new Set<string>());
   const canvasImageUpgradeTimerRef = useRef<number | null>(null);
   const canvasImageUpgradeTokenRef = useRef(0);
+  const canvasHoveredItemIdRef = useRef('');
   const canvasAiRunTokensRef = useRef<Record<string, string>>({});
   const canvasAiModelRefreshSignatureRef = useRef('');
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
@@ -3533,6 +3565,7 @@ function MainApp() {
 
     if (active) {
       cancelCanvasImageSourceUpgradeQueue();
+      downgradeCanvasPreviewSources();
       isCanvasInteractingRef.current = true;
       canvasSurfaceRef.current?.setAttribute('data-canvas-interacting', 'true');
       return;
@@ -3552,6 +3585,7 @@ function MainApp() {
       }
       scheduleCanvasViewportUpdate();
       scheduleCanvasVisibleImageSourceUpgrades();
+      runNextCanvasAiOutputThumbnailJob();
       flushCanvasChangedNodePatches();
       scheduleCanvasChangedNodesPatchSave([]);
       scheduleCanvasStateSave({ syncNodes: canvasPersistSaveSyncNodesRef.current });
@@ -3576,6 +3610,7 @@ function MainApp() {
       setCanvasSelectedIds([]);
       canvasViewportRef.current = null;
       setCanvasViewport(null);
+      canvasHoveredItemIdRef.current = '';
       hideCanvasSelectionOverlay();
       setCanvasFolderImportPrompt(null);
       setCanvasConnectionDraft(null);
@@ -3598,6 +3633,7 @@ function MainApp() {
       canvasTextOutputDraftValuesRef.current = {};
       cancelCanvasImageSourceUpgradeQueue();
       canvasImageSourceCacheRef.current.clear();
+      canvasPreviewSourceIdsRef.current.clear();
       canvasPanRef.current = null;
       cancelCanvasItemDragVisuals();
       canvasSelectionDragRef.current = null;
@@ -8980,6 +9016,8 @@ function MainApp() {
   const imageThumbnailPendingUpdatesRef = useRef(new Map<string, { thumbnail: string; existingThumbnail?: string }>());
   const imageThumbnailUpdateTimerRef = useRef<number | null>(null);
   const imageThumbnailDisposedRef = useRef(false);
+  const canvasAiOutputThumbnailQueueRef = useRef<CanvasAiOutputThumbnailJob[]>([]);
+  const canvasAiOutputThumbnailInFlightRef = useRef(new Set<string>());
 
   const readDataImageSize = (source?: string) => new Promise<{ width: number; height: number } | null>((resolve) => {
     const rawSource = (source || '').trim();
@@ -9031,6 +9069,7 @@ function MainApp() {
     if (imageThumbnailDisposedRef.current || imageThumbnailPendingUpdatesRef.current.size === 0) return;
     const updates = new Map(imageThumbnailPendingUpdatesRef.current);
     imageThumbnailPendingUpdatesRef.current.clear();
+    const updatedCanvasNodeIds: string[] = [];
     setItems(prev => {
       let changed = false;
       const next = prev.map(current => {
@@ -9041,6 +9080,32 @@ function MainApp() {
       });
       return changed ? next : prev;
     });
+    updateCanvasItemsImmediate(prev => {
+      let changed = false;
+      const next = prev.map(canvasItem => {
+        if (canvasItem.item.type !== 'image') return canvasItem;
+        const update = updates.get(canvasItem.item.id) || (canvasItem.item.sourceItemId ? updates.get(canvasItem.item.sourceItemId) : undefined);
+        if (!update || canvasItem.item.thumbnail === update.thumbnail) return canvasItem;
+        if (canvasItem.item.thumbnail && canvasItem.item.thumbnail !== update.existingThumbnail) return canvasItem;
+        changed = true;
+        updatedCanvasNodeIds.push(canvasItem.id);
+        canvasPreviewSourceIdsRef.current.delete(canvasItem.id);
+        canvasImageSourceCacheRef.current.set(canvasItem.id, { src: update.thumbnail, quality: 'thumb' });
+        applyCanvasImageSourceToElement(canvasItem.id, update.thumbnail);
+        return {
+          ...canvasItem,
+          item: {
+            ...canvasItem.item,
+            thumbnail: update.thumbnail,
+          },
+        };
+      });
+      return changed ? next : prev;
+    });
+    if (updatedCanvasNodeIds.length > 0) {
+      scheduleCanvasChangedNodesPatchSave(updatedCanvasNodeIds);
+      scheduleCanvasStateSave({ syncNodes: false });
+    }
   };
 
   const scheduleImageThumbnailUpdate = (itemId: string, thumbnail: string, existingThumbnail?: string) => {
@@ -9343,19 +9408,24 @@ function MainApp() {
     ''
   );
 
-  const getCanvasItemFullImageSource = (item: BufferItem) => (
-    item.url ||
-    (item.path ? convertFileSrc(item.path) : '') ||
-    item.originalUrl ||
-    item.sourceUrl ||
-    item.thumbnail ||
-    ''
+  const getCanvasItemThumbnailSource = (item: BufferItem) => (
+    item.thumbnail || ''
   );
 
   const getCanvasInitialImageSource = (item: BufferItem) => (
     item.type === 'image'
-      ? item.thumbnail || getCanvasItemFullImageSource(item)
+      ? getCanvasItemThumbnailSource(item)
       : getCanvasItemDisplaySource(item)
+  );
+
+  const getCanvasImageUpgradeLocalPath = (canvasItem: CanvasImageItem) => {
+    const path = (canvasItem.item.path || '').trim();
+    if (!path || /^(?:https?:|data:|asset:|file:|blob:)/i.test(path)) return '';
+    return path;
+  };
+
+  const getCanvasImageUpgradeFailureKey = (canvasItem: CanvasImageItem) => (
+    `${canvasItem.id}:${getCanvasImageUpgradeLocalPath(canvasItem)}:${CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE}`
   );
 
   const cancelCanvasImageSourceUpgradeQueue = () => {
@@ -9368,31 +9438,28 @@ function MainApp() {
     }
   };
 
-  const preloadCanvasImageSource = (source: string) => new Promise<void>((resolve, reject) => {
-    if (!source) {
-      resolve();
-      return;
-    }
-    const image = new window.Image();
-    image.decoding = 'async';
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error('canvas image source preload failed'));
-    image.src = source;
-  });
-
   const getStableCanvasImageSource = (canvasItem: CanvasImageItem) => {
-    const fullSource = getCanvasItemFullImageSource(canvasItem.item);
     const initialSource = getCanvasInitialImageSource(canvasItem.item);
     const cached = canvasImageSourceCacheRef.current.get(canvasItem.id);
     if (cached?.src) {
-      if (cached.quality === 'full' || cached.src === fullSource || cached.src === initialSource) {
+      if (cached.quality === 'thumb' && cached.src === initialSource) return cached.src;
+      if (
+        CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED
+        && cached.quality === 'preview'
+        && cached.path === getCanvasImageUpgradeLocalPath(canvasItem)
+        && cached.thumbnail === initialSource
+        && cached.size === CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE
+      ) {
         return cached.src;
       }
     }
-    const nextQuality = initialSource && initialSource === fullSource ? 'full' : 'thumb';
-    if (initialSource) {
-      canvasImageSourceCacheRef.current.set(canvasItem.id, { src: initialSource, quality: nextQuality });
+    if (!initialSource) {
+      canvasPreviewSourceIdsRef.current.delete(canvasItem.id);
+      canvasImageSourceCacheRef.current.delete(canvasItem.id);
+      return '';
     }
+    canvasPreviewSourceIdsRef.current.delete(canvasItem.id);
+    canvasImageSourceCacheRef.current.set(canvasItem.id, { src: initialSource, quality: 'thumb' });
     return initialSource;
   };
 
@@ -9402,17 +9469,74 @@ function MainApp() {
     element.setAttribute('src', source);
   };
 
+  const downgradeCanvasPreviewSources = () => {
+    Array.from(canvasPreviewSourceIdsRef.current).forEach((id) => {
+      const cached = canvasImageSourceCacheRef.current.get(id);
+      if (!cached) {
+        canvasPreviewSourceIdsRef.current.delete(id);
+        return;
+      }
+      if (cached.quality !== 'preview') {
+        canvasPreviewSourceIdsRef.current.delete(id);
+        return;
+      }
+      const latest = canvasItemsRef.current.find(item => item.id === id);
+      const initialSource = latest ? getCanvasInitialImageSource(latest.item) : '';
+      if (!initialSource) {
+        canvasImageSourceCacheRef.current.delete(id);
+        canvasPreviewSourceIdsRef.current.delete(id);
+        return;
+      }
+      canvasImageSourceCacheRef.current.set(id, { src: initialSource, quality: 'thumb' });
+      canvasPreviewSourceIdsRef.current.delete(id);
+      applyCanvasImageSourceToElement(id, initialSource);
+    });
+  };
+
+  const trimCanvasPreviewSourceCache = (keepIds: Set<string>) => {
+    Array.from(canvasPreviewSourceIdsRef.current).forEach((id) => {
+      if (keepIds.has(id)) return;
+      const cached = canvasImageSourceCacheRef.current.get(id);
+      if (!cached || cached.quality !== 'preview') {
+        canvasPreviewSourceIdsRef.current.delete(id);
+        return;
+      }
+      const latest = canvasItemsRef.current.find(item => item.id === id);
+      const initialSource = latest ? getCanvasInitialImageSource(latest.item) : '';
+      if (!initialSource) {
+        canvasImageSourceCacheRef.current.delete(id);
+        canvasPreviewSourceIdsRef.current.delete(id);
+        return;
+      }
+      canvasImageSourceCacheRef.current.set(id, { src: initialSource, quality: 'thumb' });
+      canvasPreviewSourceIdsRef.current.delete(id);
+      applyCanvasImageSourceToElement(id, initialSource);
+    });
+  };
+
   const shouldUpgradeCanvasImageSource = (canvasItem: CanvasImageItem, scale = canvasScaleRef.current || 1) => {
+    if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED) return false;
     if (canvasItem.item.type !== 'image') return false;
     if (isCanvasAiGeneratedType(canvasItem.ai?.type) && canvasItem.ai?.status !== 'success') return false;
-    const fullSource = getCanvasItemFullImageSource(canvasItem.item);
     const initialSource = getCanvasInitialImageSource(canvasItem.item);
-    if (!fullSource || fullSource === initialSource) return false;
-    if (canvasImageUpgradeFailedRef.current.has(canvasItem.id)) return false;
+    if (!initialSource) return false;
+    const localPath = getCanvasImageUpgradeLocalPath(canvasItem);
+    if (!localPath) return false;
+    if (canvasImageUpgradeFailedRef.current.has(getCanvasImageUpgradeFailureKey(canvasItem))) return false;
     const cached = canvasImageSourceCacheRef.current.get(canvasItem.id);
-    if (cached?.quality === 'full' || cached?.src === fullSource) return false;
+    if (
+      cached?.quality === 'preview'
+      && cached.path === localPath
+      && cached.thumbnail === initialSource
+      && cached.size === CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE
+    ) {
+      return false;
+    }
+    const hasDirectAttention = canvasSelectedIdsRef.current.includes(canvasItem.id)
+      || canvasHoveredItemIdRef.current === canvasItem.id;
     const renderedPixels = Math.max(canvasItem.width, canvasItem.height) * scale;
-    return scale > CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE
+    return hasDirectAttention
+      || scale > CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE
       && renderedPixels > CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD;
   };
 
@@ -9435,20 +9559,39 @@ function MainApp() {
       if (!id || canvasImageUpgradeInFlightRef.current.has(id)) continue;
       const canvasItem = canvasItemsRef.current.find(item => item.id === id);
       if (!canvasItem || !shouldUpgradeCanvasImageSource(canvasItem)) continue;
-      const fullSource = getCanvasItemFullImageSource(canvasItem.item);
-      if (!fullSource) continue;
+      const localPath = getCanvasImageUpgradeLocalPath(canvasItem);
+      const initialSource = getCanvasInitialImageSource(canvasItem.item);
+      if (!localPath || !initialSource) continue;
 
       canvasImageUpgradeInFlightRef.current.add(id);
-      void preloadCanvasImageSource(fullSource)
-        .then(() => {
+      void invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', {
+        path: localPath,
+        size: CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE,
+      })
+        .then((result) => {
           if (token !== canvasImageUpgradeTokenRef.current) return;
           const latest = canvasItemsRef.current.find(item => item.id === id);
-          if (!latest || getCanvasItemFullImageSource(latest.item) !== fullSource) return;
-          canvasImageSourceCacheRef.current.set(id, { src: fullSource, quality: 'full' });
-          applyCanvasImageSourceToElement(id, fullSource);
+          if (
+            !latest
+            || getCanvasImageUpgradeLocalPath(latest) !== localPath
+            || getCanvasInitialImageSource(latest.item) !== initialSource
+          ) {
+            return;
+          }
+          const previewSource = result.url || (result.path ? convertFileSrc(result.path) : '');
+          if (!previewSource) throw new Error('canvas preview thumbnail source is empty');
+          canvasImageSourceCacheRef.current.set(id, {
+            src: previewSource,
+            quality: 'preview',
+            path: localPath,
+            thumbnail: initialSource,
+            size: CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE,
+          });
+          canvasPreviewSourceIdsRef.current.add(id);
+          applyCanvasImageSourceToElement(id, previewSource);
         })
         .catch(() => {
-          canvasImageUpgradeFailedRef.current.add(id);
+          canvasImageUpgradeFailedRef.current.add(getCanvasImageUpgradeFailureKey(canvasItem));
         })
         .finally(() => {
           canvasImageUpgradeInFlightRef.current.delete(id);
@@ -9465,27 +9608,38 @@ function MainApp() {
 
   const scheduleCanvasVisibleImageSourceUpgrades = () => {
     cancelCanvasImageSourceUpgradeQueue();
+    if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED) return;
     if (!isCanvasModeRef.current || isCanvasZoomingRef.current || isCanvasInteractingRef.current || canvasPanRef.current) return;
     const viewport = canvasViewportRef.current || readCanvasViewportRect();
     if (!viewport) return;
     const scale = canvasScaleRef.current || 1;
-    if (scale < CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE) return;
+    const selectedIds = new Set(canvasSelectedIdsRef.current);
+    const hoveredId = canvasHoveredItemIdRef.current;
+    if (scale < CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE && !hoveredId && selectedIds.size === 0) return;
     const centerX = viewport.x + viewport.width / 2;
     const centerY = viewport.y + viewport.height / 2;
     const visible = canvasItemsRef.current
-      .filter(item => canvasRectsIntersect(viewport, getCanvasItemRenderedBox(item)))
-      .filter(item => shouldUpgradeCanvasImageSource(item, scale))
+      .map(item => ({ item, box: getCanvasItemRenderedBox(item) }))
+      .filter(entry => canvasRectsIntersect(viewport, entry.box))
+      .filter(entry => shouldUpgradeCanvasImageSource(entry.item, scale))
       .sort((a, b) => {
-        const aBox = getCanvasItemRenderedBox(a);
-        const bBox = getCanvasItemRenderedBox(b);
-        const aDx = aBox.x + aBox.width / 2 - centerX;
-        const aDy = aBox.y + aBox.height / 2 - centerY;
-        const bDx = bBox.x + bBox.width / 2 - centerX;
-        const bDy = bBox.y + bBox.height / 2 - centerY;
+        const aPriority = selectedIds.has(a.item.id) ? 0 : a.item.id === hoveredId ? 1 : 2;
+        const bPriority = selectedIds.has(b.item.id) ? 0 : b.item.id === hoveredId ? 1 : 2;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        const aDx = a.box.x + a.box.width / 2 - centerX;
+        const aDy = a.box.y + a.box.height / 2 - centerY;
+        const bDx = b.box.x + b.box.width / 2 - centerX;
+        const bDy = b.box.y + b.box.height / 2 - centerY;
         return (aDx * aDx + aDy * aDy) - (bDx * bDx + bDy * bDy);
       })
       .slice(0, CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE)
-      .map(item => item.id);
+      .map(entry => entry.item.id);
+    const keepPreviewIds = new Set(visible.slice(0, CANVAS_IMAGE_SOURCE_UPGRADE_MAX_ACTIVE_PREVIEWS));
+    Array.from(canvasPreviewSourceIdsRef.current).forEach((id) => {
+      if (keepPreviewIds.size >= CANVAS_IMAGE_SOURCE_UPGRADE_MAX_ACTIVE_PREVIEWS) return;
+      keepPreviewIds.add(id);
+    });
+    trimCanvasPreviewSourceCache(keepPreviewIds);
     if (visible.length === 0) return;
     const token = canvasImageUpgradeTokenRef.current;
     canvasImageUpgradeQueueRef.current = visible;
@@ -9499,6 +9653,10 @@ function MainApp() {
     output?.url ||
     (output?.path ? convertFileSrc(output.path) : '') ||
     ''
+  );
+
+  const getCanvasAiOutputThumbnailSource = (output?: CanvasAiGeneratedOutput | null) => (
+    output?.thumbnail || ''
   );
 
   const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
@@ -9675,6 +9833,7 @@ function MainApp() {
       name,
       url: rawUrl,
       path: rawPath || undefined,
+      thumbnail: output.thumbnail || undefined,
       sourceUrl: remoteSource || undefined,
       originalUrl: remoteSource || undefined,
       remark: output.prompt || canvasItem.ai?.prompt || canvasItem.item.content || '',
@@ -9728,7 +9887,9 @@ function MainApp() {
   };
 
   const getCanvasItemNavSource = (item: BufferItem) => (
-    item.thumbnail || getCanvasItemDisplaySource(item)
+    (item.type === 'image' || item.type === 'video')
+      ? item.thumbnail || ''
+      : getCanvasItemDisplaySource(item)
   );
 
   const getCanvasBufferItemNavPreview = (item?: BufferItem | null): CanvasNavPreview | null => {
@@ -9749,11 +9910,14 @@ function MainApp() {
     canvasItem: CanvasImageItem,
     output?: CanvasAiGeneratedOutput | null
   ): CanvasNavPreview | null => {
-    const source = getCanvasAiOutputDisplaySource(output);
+    const mediaType = output?.mediaType || getCanvasAiMediaType(canvasItem.ai);
+    const source = mediaType === 'image'
+      ? getCanvasAiOutputThumbnailSource(output)
+      : getCanvasAiOutputDisplaySource(output);
     if (!source || output?.status === 'error') return null;
     return {
       source,
-      mediaType: output?.mediaType || getCanvasAiMediaType(canvasItem.ai),
+      mediaType,
     };
   };
 
@@ -10144,6 +10308,7 @@ function MainApp() {
   const loadCanvasItems = async (canvasId: string, options: { knownEmpty?: boolean } = {}) => {
     cancelCanvasImageSourceUpgradeQueue();
     canvasImageSourceCacheRef.current.clear();
+    canvasPreviewSourceIdsRef.current.clear();
     canvasImageUpgradeFailedRef.current.clear();
     const nodes = options.knownEmpty ? [] : await listCanvasNodes(canvasId);
     const restored = sanitizeCanvasPersistedState({ items: nodes });
@@ -10467,6 +10632,7 @@ function MainApp() {
 
   const beginCanvasZoomInteraction = () => {
     cancelCanvasImageSourceUpgradeQueue();
+    downgradeCanvasPreviewSources();
     isCanvasZoomingRef.current = true;
     if (canvasViewportFrameRef.current !== null) {
       window.cancelAnimationFrame(canvasViewportFrameRef.current);
@@ -10637,10 +10803,10 @@ function MainApp() {
       Math.max(...clean.map(item => item.y + item.height))
     );
     clean.forEach(item => {
-      if (item.item.type === 'image') {
+      if (item.item.type === 'image' && item.item.thumbnail) {
         canvasImageSourceCacheRef.current.set(item.id, {
           src: getCanvasInitialImageSource(item.item),
-          quality: item.item.thumbnail ? 'thumb' : 'full',
+          quality: 'thumb',
         });
       }
     });
@@ -10775,6 +10941,7 @@ function MainApp() {
     else pushCanvasUndoSnapshot(label);
     uniqueIds.forEach(id => {
       canvasImageSourceCacheRef.current.delete(id);
+      canvasPreviewSourceIdsRef.current.delete(id);
       canvasImageUpgradeFailedRef.current.delete(id);
       canvasImageUpgradeInFlightRef.current.delete(id);
     });
@@ -12616,6 +12783,67 @@ function MainApp() {
       console.warn('AI 生成媒体预缓存失败，暂用接口返回源:', err);
       return { url: trimmed, path: '' };
     }
+  };
+
+  const createCanvasImagePreviewThumbnail = async (source: string, path?: string) => {
+    const trimmedSource = source.trim();
+    const trimmedPath = (path || '').trim();
+    if (trimmedPath) {
+      try {
+        const result = await invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', { path: trimmedPath, size: 512 });
+        const thumbnail = result.url || (result.path ? convertFileSrc(result.path) : '');
+        if (thumbnail) return thumbnail;
+      } catch (err) {
+        console.warn('画布输出缩略图文件生成失败，尝试 WebView 兜底:', err);
+      }
+    }
+    return trimmedSource ? createImageThumbnailInWebview(trimmedSource) : '';
+  };
+
+  const runNextCanvasAiOutputThumbnailJob = () => {
+    if (canvasAiOutputThumbnailInFlightRef.current.size > 0) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
+    const job = canvasAiOutputThumbnailQueueRef.current.shift();
+    if (!job || canvasAiOutputThumbnailInFlightRef.current.has(job.key)) return;
+    canvasAiOutputThumbnailInFlightRef.current.add(job.key);
+    void createCanvasImagePreviewThumbnail(job.source, job.path)
+      .then((thumbnail) => {
+        if (!thumbnail) return;
+        let changed = false;
+        updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
+          if (canvasItem.id !== job.canvasItemId || !canvasItem.ai?.outputs?.length) return canvasItem;
+          const outputs = canvasItem.ai.outputs.map((output, index) => {
+            const isTarget = job.outputId
+              ? output.id === job.outputId
+              : index === job.outputIndex;
+            if (!isTarget || output.thumbnail) return output;
+            changed = true;
+            return { ...output, thumbnail };
+          });
+          return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
+        }));
+        if (changed) {
+          scheduleCanvasChangedNodesPatchSave([job.canvasItemId]);
+          scheduleCanvasStateSave({ syncNodes: false });
+        }
+      })
+      .catch((err) => console.warn('AI 输出预览缩略图补全失败:', err))
+      .finally(() => {
+        canvasAiOutputThumbnailInFlightRef.current.delete(job.key);
+        if (canvasAiOutputThumbnailQueueRef.current.length > 0) {
+          window.setTimeout(runNextCanvasAiOutputThumbnailJob, IMAGE_THUMBNAIL_UPDATE_BATCH_MS);
+        }
+      });
+  };
+
+  const enqueueCanvasAiOutputThumbnailJob = (job: CanvasAiOutputThumbnailJob) => {
+    if (canvasAiOutputThumbnailInFlightRef.current.has(job.key)) return;
+    if (canvasAiOutputThumbnailQueueRef.current.some(item => item.key === job.key)) return;
+    while (canvasAiOutputThumbnailQueueRef.current.length >= IMAGE_THUMBNAIL_QUEUE_LIMIT) {
+      canvasAiOutputThumbnailQueueRef.current.shift();
+    }
+    canvasAiOutputThumbnailQueueRef.current.push(job);
+    runNextCanvasAiOutputThumbnailJob();
   };
 
   const createCanvasAiOutputDrafts = (target: CanvasImageItem, prompt: string): CanvasAiGeneratedOutput[] => {
@@ -15476,6 +15704,9 @@ function MainApp() {
         const size = mediaType === 'video'
           ? getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO)
           : await readImageDisplaySize(displayUrl);
+        const thumbnail = mediaType === 'image'
+          ? await createCanvasImagePreviewThumbnail(displayUrl, cached.path || undefined)
+          : undefined;
         const generatedAt = Date.now();
         const output: CanvasAiGeneratedOutput = {
           ...(currentOutputs[index] || {
@@ -15485,6 +15716,7 @@ function MainApp() {
           mediaType,
           url: displayUrl,
           path: cached.path || undefined,
+          thumbnail,
           name: mediaType === 'video' ? `AI generated video #${index + 1}` : `AI generated #${index + 1}`,
           prompt,
           status: 'success',
@@ -16021,11 +16253,16 @@ function MainApp() {
       if (!outputPath) throw new Error(isQuickVideoEnhancement ? 'FFmpeg 没有返回增强视频路径' : 'Real-ESRGAN 没有返回输出文件路径');
       const finishedAt = Date.now();
       const sourceName = input.output?.name || input.item.item.name || input.item.item.content || (mediaType === 'video' ? '视频' : '图片');
+      const outputUrl = convertFileSrc(outputPath);
+      const thumbnail = mediaType === 'image'
+        ? await createCanvasImagePreviewThumbnail(outputUrl, outputPath)
+        : undefined;
       const output: CanvasAiGeneratedOutput = {
         ...draft,
         mediaType,
-        url: convertFileSrc(outputPath),
+        url: outputUrl,
         path: outputPath,
+        thumbnail,
         name: `${sourceName} · ${isQuickVideoEnhancement ? '快速增强' : '清晰度增强'} ${result.scale || scale}×`,
         prompt: isQuickVideoEnhancement
           ? `FFmpeg quick enhancement ${(result as QuickVideoEnhancementResult).encoder || 'high-quality encode'}`
@@ -23031,6 +23268,27 @@ useEffect(() => {
     canvasItems,
     canvasRenderViewport,
   ]);
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
+    canvasRenderableItems.forEach((canvasItem) => {
+      if (canvasItem.item.type === 'image' && !canvasItem.item.thumbnail) ensureImageThumbnail(canvasItem.item);
+      getCanvasAiOutputPreviewSlots(canvasItem).forEach((output, outputIndex) => {
+        const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
+        if (mediaType !== 'image' || output.thumbnail || output.status !== 'success') return;
+        const source = getCanvasAiOutputDisplaySource(output);
+        if (!source) return;
+        enqueueCanvasAiOutputThumbnailJob({
+          key: `${canvasItem.id}:${output.id || outputIndex}:${source}`,
+          canvasItemId: canvasItem.id,
+          outputIndex,
+          outputId: output.id,
+          source,
+          path: output.path,
+        });
+      });
+    });
+  }, [isCanvasMode, canvasRenderableItems]);
   const getCanvasItemNavPreview = (canvasItem: CanvasImageItem): CanvasNavPreview | null => {
     const directPreview = getCanvasBufferItemNavPreview(canvasItem.item);
     if (directPreview) return directPreview;
@@ -25761,9 +26019,10 @@ useEffect(() => {
                           const canvasImageSource = canvasItem.item.type === 'image'
                             ? getStableCanvasImageSource(canvasItem)
                             : getCanvasItemDisplaySource(canvasItem.item);
+                          const hasCanvasImageDisplaySource = canvasItem.item.type !== 'image' || !!canvasImageSource;
                           const isGeneratedMediaItem = isCanvasAiGeneratedType(canvasItem.ai?.type);
                           const isGeneratedVideoItem = canvasItem.ai?.type === 'generated-video';
-                          const isGeneratedMediaPending = isGeneratedMediaItem && (canvasItem.ai?.status === 'working' || !canvasImageSource);
+                          const isGeneratedMediaPending = isGeneratedMediaItem && (canvasItem.ai?.status === 'working' || !hasCanvasImageDisplaySource);
                           const isGeneratedMediaError = isGeneratedMediaItem && canvasItem.ai?.status === 'error';
                           const canvasInputPreviewItems = (canvasItem.inputs || [])
                             .map(inputId => canvasItemsById.get(inputId))
@@ -25880,6 +26139,17 @@ useEffect(() => {
                               touchAction: 'none',
                             }}
                             onPointerDown={(e) => startCanvasItemDrag(e, canvasItem.id)}
+                            onPointerEnter={() => {
+                              canvasHoveredItemIdRef.current = canvasItem.id;
+                              if (!isCanvasInteractingRef.current && !isCanvasZoomingRef.current && !canvasPanRef.current) {
+                                scheduleCanvasVisibleImageSourceUpgrades();
+                              }
+                            }}
+                            onPointerLeave={() => {
+                              if (canvasHoveredItemIdRef.current === canvasItem.id) {
+                                canvasHoveredItemIdRef.current = '';
+                              }
+                            }}
                             onDragStart={preventCanvasNativeDrag}
                             onContextMenu={(e) => {
                               if (!canvasSelectedIdsRef.current.includes(canvasItem.id)) updateCanvasSelection([canvasItem.id]);
@@ -25932,7 +26202,7 @@ useEffect(() => {
                                                 const generatorOutput = inputItem ? getCanvasAiSuccessfulOutputs(inputItem)[0] : null;
                                                 const generatorOutputSource = generatorOutput?.mediaType === 'video'
                                                   ? ''
-                                                  : getCanvasAiOutputDisplaySource(generatorOutput);
+                                                  : getCanvasAiOutputThumbnailSource(generatorOutput);
                                                 const inputPreviewSource = inputItem?.item.type === 'video'
                                                   ? inputItem.item.thumbnail || ''
                                                   : inputItem?.item.type === 'image'
@@ -26002,7 +26272,7 @@ useEffect(() => {
                                                 const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem)[0];
                                                 const generatorOutputSource = generatorOutput?.mediaType === 'video'
                                                   ? ''
-                                                  : getCanvasAiOutputDisplaySource(generatorOutput);
+                                                  : getCanvasAiOutputThumbnailSource(generatorOutput);
                                                 const inputPreviewSource = inputItem.item.type === 'image'
                                                   ? getCanvasItemNavSource(inputItem.item)
                                                   : generatorOutputSource;
@@ -26133,6 +26403,7 @@ useEffect(() => {
                                           >
                                             {canvasAiOutputs.map((output, outputIndex) => {
                                               const outputSource = getCanvasAiOutputDisplaySource(output);
+                                              const outputPreviewSource = getCanvasAiOutputThumbnailSource(output);
                                               const isOutputError = output.status === 'error';
                                               const isOutputWorking = output.status === 'working';
                                               const outputMediaType = output.mediaType || canvasAiMediaType;
@@ -26262,9 +26533,9 @@ useEffect(() => {
                                                       draggable={false}
                                                       onDragStart={preventCanvasNativeDrag}
                                                     />
-                                                  ) : outputSource && !isOutputError ? (
+                                                  ) : outputPreviewSource && !isOutputError ? (
                                                     <img
-                                                      src={outputSource}
+                                                      src={outputPreviewSource}
                                                       alt={outputLabel}
                                                       loading="lazy"
                                                       decoding="async"
@@ -27156,7 +27427,7 @@ useEffect(() => {
                                       draggable={false}
                                       onDragStart={preventCanvasNativeDrag}
                                     />
-                                  ) : (
+                                  ) : canvasImageSource ? (
                                     <img
                                       data-canvas-main-media="true"
                                       src={canvasImageSource}
@@ -27168,6 +27439,11 @@ useEffect(() => {
                                       draggable={false}
                                       onDragStart={preventCanvasNativeDrag}
                                     />
+                                  ) : (
+                                    <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-stone-100/75 px-4 text-center text-stone-400 dark:bg-stone-900/78 dark:text-white/36">
+                                      <ImageIcon className="h-6 w-6" />
+                                      <span className="text-[11px] font-bold">正在准备缩略图</span>
+                                    </div>
                                   )}
                                   {!isGeneratedMediaItem && (
                                     <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/52 to-transparent px-2 py-1.5 text-[10px] font-bold text-white opacity-0 transition-opacity group-hover/canvas-item:opacity-100">

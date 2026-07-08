@@ -32,6 +32,7 @@ export type CanvasAiGeneratedOutput = {
   mediaType?: CanvasAiMediaType;
   url?: string;
   path?: string;
+  thumbnail?: string;
   name?: string;
   prompt?: string;
   status?: 'working' | 'success' | 'error';

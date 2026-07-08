@@ -106,6 +106,7 @@ export const createCanvasAiOutputBufferItem = (
     name,
     url: rawUrl,
     path: rawPath || undefined,
+    thumbnail: output.thumbnail || undefined,
     sourceUrl: remoteSource || undefined,
     originalUrl: remoteSource || undefined,
     remark: output.prompt || canvasItem.ai?.prompt || canvasItem.item.content || '',
