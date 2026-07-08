@@ -42,6 +42,12 @@ import { repairLegacyAgentAction, validateLegacyAgentAction } from './appAgent/c
 import type { LegacyAgentAction } from './appAgent/commands/commandTypes';
 import { evaluateLegacyActionPermission } from './appAgent/commands/permissionGate';
 import { prepareAppAgentTurn } from './appAgent/runtime/useAppAgentRuntime';
+import {
+  bindPlanStepResult,
+  createPlanStepBindingState,
+  resolvePlanStepActionInputs,
+  withCreatedNodesInContext,
+} from './appAgent/runtime/planStepExecutor';
 import type { AppAgentTraceRecord } from './appAgent/trace/appAgentTrace';
 import { appendAppAgentTrace, upsertAppAgentTrace } from './appAgent/trace/traceStore';
 import {
@@ -113,6 +119,68 @@ type PendingCodexTurn = {
   noticeTimeoutId?: number;
   fallbackTimeoutId?: number;
   fallbackStarted?: boolean;
+};
+
+const createToolCallFromLegacyAction = (
+  action: LegacyAgentAction,
+  idPrefix: string,
+): AgentToolCall => ({
+  id: createAgentId(idPrefix),
+  name: action.tool,
+  arguments: action.arguments,
+  status: 'pending',
+  stepId: action.stepId,
+  createsNode: action.createsNode,
+  outputRef: action.outputRef,
+  sourceCommandId: action.sourceCommandId,
+});
+
+const toolCallToLegacyAction = (call: AgentToolCall): LegacyAgentAction => ({
+  tool: call.name,
+  arguments: call.arguments,
+  stepId: call.stepId,
+  createsNode: call.createsNode,
+  outputRef: call.outputRef,
+  sourceCommandId: call.sourceCommandId,
+});
+
+const collectWorkflowTraceFromCalls = (calls: AgentToolCall[]) => {
+  const imageNodeIds = new Set<string>();
+  const missingInputs = new Set<string>();
+  const connections = new Map<string, { sourceId: string; targetId: string }>();
+  calls.forEach(call => {
+    const result = call.result && typeof call.result === 'object' && !Array.isArray(call.result)
+      ? call.result as Record<string, unknown>
+      : {};
+    const addIds = (value: unknown) => {
+      if (!Array.isArray(value)) return;
+      value.map(String).filter(Boolean).forEach(id => imageNodeIds.add(id));
+    };
+    addIds(result.workflowResolvedImageNodeIds);
+    if (Array.isArray(result.workflowAutoConnections)) {
+      result.workflowAutoConnections.forEach(connection => {
+        const record = connection && typeof connection === 'object' && !Array.isArray(connection)
+          ? connection as Record<string, unknown>
+          : {};
+        const sourceId = String(record.sourceId || '');
+        const targetId = String(record.targetId || '');
+        if (!sourceId || !targetId) return;
+        connections.set(`${sourceId}->${targetId}`, { sourceId, targetId });
+        imageNodeIds.add(sourceId);
+      });
+    }
+    if (Array.isArray(result.workflowMissingRequiredInputs)) {
+      result.workflowMissingRequiredInputs.map(String).filter(Boolean).forEach(message => missingInputs.add(message));
+    }
+    if (Array.isArray(result.inputs) && Array.isArray(result.workflowAutoConnections)) {
+      addIds(result.inputs);
+    }
+  });
+  return {
+    workflowResolvedImageNodeIds: Array.from(imageNodeIds),
+    workflowAutoConnections: Array.from(connections.values()),
+    workflowMissingRequiredInputs: Array.from(missingInputs),
+  };
 };
 
 const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'software-agent-full-control-v5';
@@ -926,30 +994,41 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     run: PendingToolRun,
   ) => {
     const settingsNow = settingsRef.current;
-    const createdTextAgentNodeIds: string[] = [];
+    const stepBindingState = createPlanStepBindingState(run.calls.map(toolCallToLegacyAction));
     for (const call of run.calls) {
-      if (
-        run.deterministicActionsUsed
-        && call.name === 'canvas_create_generator'
-        && createdTextAgentNodeIds.length > 0
-      ) {
-        const currentInputIds = Array.isArray(call.arguments.inputIds)
-          ? call.arguments.inputIds.map(String).filter(Boolean)
-          : [];
-        call.arguments = {
-          ...call.arguments,
-          inputIds: Array.from(new Set([...currentInputIds, ...createdTextAgentNodeIds])),
-        };
+      const resolvedStepAction = resolvePlanStepActionInputs(
+        toolCallToLegacyAction(call),
+        stepBindingState,
+        { context: run.snapshot?.context },
+      );
+      if (JSON.stringify(resolvedStepAction.action.arguments) !== JSON.stringify(call.arguments)) {
+        call.arguments = resolvedStepAction.action.arguments;
       }
-      const originalAction: LegacyAgentAction = { tool: call.name, arguments: call.arguments };
+      if (
+        resolvedStepAction.unresolvedInputIds.length > 0
+        && !resolvedStepAction.fallbackUsed
+        && ['canvas_connect_nodes', 'canvas_update_prompt', 'canvas_run_text_agent', 'canvas_run_workflow'].includes(call.name)
+      ) {
+        call.status = 'error';
+        call.error = `无法解析输入引用：${resolvedStepAction.unresolvedInputIds.join('；')}`;
+        call.result = { error: call.error, unresolvedInputIds: resolvedStepAction.unresolvedInputIds };
+        upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+          title: `输入绑定失败：${getCanvasAgentToolLabel(call.name)}`,
+          detail: call.error,
+          status: 'error',
+        });
+        continue;
+      }
+      const validationContext = withCreatedNodesInContext(run.snapshot?.context, stepBindingState.createdNodeIds);
+      const originalAction: LegacyAgentAction = toolCallToLegacyAction(call);
       const repairedAction = repairLegacyAgentAction(originalAction, run.userRequest || run.snapshot?.userRequest || '');
       if (JSON.stringify(repairedAction.arguments) !== JSON.stringify(call.arguments)) {
         run.repaired = true;
         call.arguments = repairedAction.arguments;
       }
       const validation = validateLegacyAgentAction(
-        { tool: call.name, arguments: call.arguments },
-        run.snapshot?.context,
+        toolCallToLegacyAction(call),
+        validationContext,
         run.userRequest || run.snapshot?.userRequest || '',
       );
       if (!validation.valid) {
@@ -980,24 +1059,28 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         });
       } else {
         await executeToolCall(run, call);
-        if (call.status === 'completed' && call.name === 'canvas_create_text_agent') {
-          const resultRecord = call.result && typeof call.result === 'object' && !Array.isArray(call.result)
-            ? call.result as Record<string, unknown>
-            : {};
-          const nodeId = typeof resultRecord.nodeId === 'string' ? resultRecord.nodeId : '';
-          if (nodeId) createdTextAgentNodeIds.push(nodeId);
-        }
+        if (call.status === 'completed') bindPlanStepResult(stepBindingState, toolCallToLegacyAction(call), call.result);
       }
     }
     updateToolCalls(run);
     if (run.trace) {
-      const legacyActions = run.calls.map(call => ({ tool: call.name, arguments: call.arguments }));
+      const legacyActions = run.calls.map(toolCallToLegacyAction);
+      const workflowTrace = collectWorkflowTraceFromCalls(run.calls);
       upsertAppAgentTrace({
         ...run.trace,
         ...(run.deterministicActionsUsed
           ? { executedLegacyActions: legacyActions }
           : { llmGeneratedActions: legacyActions }),
         deterministicActionsUsed: run.deterministicActionsUsed === true,
+        plannedStepRefs: stepBindingState.plannedStepRefs,
+        resolvedStepRefs: stepBindingState.resolvedStepRefs,
+        createdNodeIds: stepBindingState.createdNodeIds,
+        unresolvedInputIds: stepBindingState.unresolvedInputIds,
+        fallbackUsed: stepBindingState.fallbackUsed,
+        fallbackReason: stepBindingState.fallbackReason,
+        workflowResolvedImageNodeIds: workflowTrace.workflowResolvedImageNodeIds,
+        workflowAutoConnections: workflowTrace.workflowAutoConnections,
+        workflowMissingRequiredInputs: workflowTrace.workflowMissingRequiredInputs,
         confirmationRequired: run.calls.some(call => call.status === 'awaiting-approval'),
         executionResults: run.calls.map(call => call.result).filter(Boolean),
         errors: run.calls.map(call => call.error).filter((error): error is string => !!error),
@@ -1578,12 +1661,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           } catch (_) {
             // The fallback can still execute locally even if the remote turn has already settled.
           }
-          const calls: AgentToolCall[] = fallbackTurn.deterministicLegacyActions.map(action => ({
-            id: createAgentId('app-agent-fallback-tool'),
-            name: action.tool,
-            arguments: action.arguments,
-            status: 'pending',
-          }));
+          const calls: AgentToolCall[] = fallbackTurn.deterministicLegacyActions
+            .map(action => createToolCallFromLegacyAction(action, 'app-agent-fallback-tool'));
           patchMessage(conversation.id, assistantMessageId, message => ({
             ...message,
             content: 'Codex 等待超时，已改用快速规划执行基础操作。',
@@ -1885,12 +1964,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         appAgentTrace: appAgentTurn.trace,
       };
       if (appAgentTurn.shouldUseDeterministicPlan && appAgentTurn.deterministicLegacyActions.length > 0) {
-        const calls: AgentToolCall[] = appAgentTurn.deterministicLegacyActions.map(action => ({
-          id: createAgentId('app-agent-deterministic-tool'),
-          name: action.tool,
-          arguments: action.arguments,
-          status: 'pending',
-        }));
+        const calls: AgentToolCall[] = appAgentTurn.deterministicLegacyActions
+          .map(action => createToolCallFromLegacyAction(action, 'app-agent-deterministic-tool'));
         patchMessage(conversation.id, assistantMessage.id, message => ({
           ...message,
           content: '已生成确定性执行计划，准备执行软件操作。',

@@ -1,6 +1,7 @@
 import { validateLegacyAgentAction, repairLegacyAgentAction } from './commands/commandValidator';
 import { adaptCommandToLegacyAction } from './commands/legacyToolAdapter';
 import { evaluateLegacyActionPermission } from './commands/permissionGate';
+import { resolveWorkflowInputs } from './commands/workflowInputResolver';
 import { buildAppAgentContext } from './context/appAgentContextBuilder';
 import { prepareAppAgentTurn } from './runtime/useAppAgentRuntime';
 import { selectAppAgentSkills } from './skills/skillRegistry';
@@ -64,12 +65,7 @@ export function runAppAgentSmokeTests() {
 
   const storyboardTurn = prepareAppAgentTurn({
     userText: '做一个16比9的视频分镜',
-    context: {
-      ...baseContext,
-      selectedIds: [],
-      selectedItems: [],
-      visualReferences: [],
-    },
+    context: baseContext,
   });
   assert(storyboardTurn.activeSkillIds.includes('creative-product-design-skill'), 'storyboard should match creative skill');
   assert(!storyboardTurn.contextScopes.includes('drawer'), 'storyboard context should not include drawer by default');
@@ -82,10 +78,25 @@ export function runAppAgentSmokeTests() {
   assert(storyboardPrompt.includes('Aspect ratio: 16:9'), 'storyboard text-agent prompt should carry aspectRatio 16:9');
   assert(storyboardPrompt.includes('Original request: "做一个16比9的视频分镜"'), 'storyboard prompt should inject Original request');
   const storyboardGenerator = storyboardTurn.deterministicLegacyActions.find(action => action.tool === 'canvas_create_generator');
-  if (storyboardGenerator) {
-    assert(storyboardGenerator.arguments.autoRun === false, 'storyboard video generator should default autoRun false');
-    assert(storyboardGenerator.arguments.aspectRatio === '16:9', 'storyboard video generator should carry aspectRatio');
-  }
+  assert(!!storyboardGenerator, 'storyboard should create an image generator for storyboard sheet');
+  assert(storyboardGenerator?.arguments.mediaType === 'image', 'plain storyboard should create image generator, not video');
+  assert(storyboardGenerator?.arguments.autoRun === false, 'storyboard image generator should default autoRun false');
+  assert(storyboardGenerator?.arguments.aspectRatio === '16:9', 'storyboard image generator should carry aspectRatio');
+  const storyboardInputIds = Array.isArray(storyboardGenerator?.arguments.inputIds)
+    ? storyboardGenerator.arguments.inputIds.map(String)
+    : [];
+  assert(storyboardInputIds.includes('$storyboardScript.nodeId'), 'storyboard generator should reference text-agent outputRef before runtime binding');
+  assert(storyboardInputIds.includes('node-1'), 'storyboard generator should include selected image nodeId');
+  assert(!storyboardInputIds.some(id => /^canvas_text_canvas-/i.test(id)), 'storyboard generator should not include predicted canvas text nodeId');
+  assert(!storyboardTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_generator' && action.arguments.mediaType === 'video'), 'plain storyboard should not create video generator');
+
+  const videoTurn = prepareAppAgentTurn({
+    userText: '根据这个分镜生成视频',
+    context: baseContext,
+  });
+  const videoGenerator = videoTurn.deterministicLegacyActions.find(action => action.tool === 'canvas_create_generator');
+  assert(videoGenerator?.arguments.mediaType === 'video', 'explicit video generation should create video generator');
+  assert(videoGenerator?.arguments.autoRun === false, 'video generator should default autoRun false');
 
   const repaired = repairLegacyAgentAction({
     tool: 'canvas_create_generator',
@@ -136,6 +147,50 @@ export function runAppAgentSmokeTests() {
   assert(((scopedContext.drawer as Record<string, unknown>).items as unknown[]).length === 0, 'drawer compact context should omit unselected and unsearched items');
   assert(!!scopedContext.nodes, 'scoped compact context should include canvas nodes');
   assert(!scopedContext.calendar, 'scoped compact context should omit unrequested calendar scope');
+
+  const commerceWorkflow = {
+    id: 'commerce-workflow',
+    label: 'Commerce hero',
+    nodes: [
+      {
+        id: 'product_refs',
+        item: { type: 'image', name: 'Product refs' },
+        acceptsExternalInputs: true,
+        externalInputTypes: ['image'],
+        outputType: 'image[]',
+      },
+      {
+        id: 'commerce-hero',
+        inputs: ['product_refs'],
+        item: { type: 'text', name: 'commerce hero' },
+        ai: {
+          type: 'image-generator',
+          presetPrompt: 'Create commerce-hero from connected product reference images.',
+        },
+      },
+    ],
+  };
+  const workflowCanvasResolution = resolveWorkflowInputs({
+    workflow: commerceWorkflow,
+    selectedNodeIds: ['product-image-node'],
+    canvasNodes: [{ id: 'product-image-node', type: 'image', name: 'product', inputs: [] }],
+  });
+  assert(workflowCanvasResolution.resolvedImageNodeIds.includes('product-image-node'), 'workflow resolver should use selected canvas product image');
+  assert(workflowCanvasResolution.autoConnections.some(connection => connection.sourceId === 'product-image-node' && connection.targetId === 'product_refs'), 'workflow resolver should connect selected image to external product refs');
+
+  const workflowDrawerResolution = resolveWorkflowInputs({
+    workflow: commerceWorkflow,
+    selectedDrawerItems: [{ id: 'drawer-image-1', type: 'image', name: 'drawer product' }],
+    canvasNodes: [],
+  });
+  assert(workflowDrawerResolution.nodesToCreateFromDrawerItems.includes('drawer-image-1'), 'workflow resolver should request canvas node creation for selected drawer image');
+
+  const workflowMissingResolution = resolveWorkflowInputs({
+    workflow: commerceWorkflow,
+    selectedNodeIds: [],
+    canvasNodes: [],
+  });
+  assert(workflowMissingResolution.missingRequiredInputs.length > 0, 'workflow resolver should block missing product/reference images');
 }
 
 export const APP_AGENT_SMOKE_TESTS = [
@@ -143,7 +198,9 @@ export const APP_AGENT_SMOKE_TESTS = [
   '移动素材 -> drawer-control-skill',
   'CMF 16:9 -> creative skill + aspectRatio + Original request',
   'CMF 16:9 -> generator schema allows aspectRatio/referenceRoles/skillMeta',
-  '视频分镜 16比9 -> creative skill + canvas-only context + deterministic text-agent',
+  '视频分镜 16比9 -> creative skill + canvas-only context + deterministic text-agent + image generator binding',
+  '根据分镜生成视频 -> video generator autoRun false',
+  'workflow resolver -> selected/drawer/missing product images',
   'edit background without BASE -> validator blocks',
   '清空画布 command -> canvas_manage clear_canvas',
   'app_get_context scopes canvas drawer -> compact scoped context',

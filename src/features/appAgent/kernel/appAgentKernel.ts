@@ -4,6 +4,7 @@ import type { AgentSkillId, ContextScope, RiskLevel } from '../skills/types';
 import {
   extractCreativeBrief,
   isDirectCreativeExecutionRequest,
+  isExplicitVideoGenerationRequest,
   type CreativeBrief,
 } from '../skills/creativeProductDesignSkill';
 
@@ -22,8 +23,10 @@ const command = (
   args: Record<string, unknown>,
   riskLevel: RiskLevel,
   sourceSkillId?: AgentSkillId,
+  meta: Pick<AppAgentCommand, 'stepId' | 'createsNode' | 'outputRef'> = {},
 ): AppAgentCommand => ({
   id: createId('app-agent-command'),
+  ...meta,
   domain,
   action,
   args,
@@ -45,6 +48,30 @@ const buildProductStrategyTextAgentPrompt = (brief: CreativeBrief) => [
   '请先产出产品外观/CMF 策略，覆盖产品类型、使用方式、造型重点、CMF 边界、结构可信度和主要设计风险。',
   brief.generatorPrompt,
 ].join('\n');
+
+const buildStoryboardSheetPrompt = (brief: CreativeBrief) => [
+  `${brief.dimensions.aspectRatio || '16:9'} 视频分镜图 / Storyboard Sheet`,
+  'Generate a 4-6 panel visual storyboard sheet from the connected storyboard script and selected references.',
+  'Keep shot order, duration cues, transitions, subject action, key frames, and visual style consistent.',
+  brief.generatorPrompt,
+].join('\n');
+
+const getSelectedImageNodeIds = (context?: AgentCanvasContext) => {
+  const selectedIds = new Set((context?.selectedIds || []).map(String));
+  const nodeById = new Map((context?.nodes || []).map(node => [node.id, node]));
+  const fromVisualReferences = (context?.visualReferences || [])
+    .filter(reference => reference.mediaType === 'image')
+    .map(reference => reference.nodeId);
+  const fromSelectedIds = Array.from(selectedIds).filter(id => {
+    const node = nodeById.get(id);
+    return !!node && /image|image-generator|generated-image/i.test(node.type || '');
+  });
+  return Array.from(new Set([...fromSelectedIds, ...fromVisualReferences].filter(Boolean)));
+};
+
+const shouldAutoRunVideoGenerator = (text: string) => (
+  /直接.*(?:生成|做成|输出|出).*视频|直接生成视频|直接出视频/i.test(text)
+);
 
 export function buildAppAgentPlan(input: {
   userText: string;
@@ -73,6 +100,9 @@ export function buildAppAgentPlan(input: {
       selectedItemCount: input.context?.selectedIds?.length || 0,
       hasCanvasContext: !!input.context?.nodes?.length,
     }, input.context?.visualReferences?.map(reference => reference.nodeId));
+    const selectedImageNodeIds = getSelectedImageNodeIds(input.context);
+    const textAgentStepId = brief.requiresStoryboardFirst ? 'storyboardScript' : 'productStrategy';
+    const textAgentOutputRef = `$${textAgentStepId}.nodeId`;
     if (brief.requiresStoryboardFirst || brief.requiresStrategyFirst) {
       commands.push(command('canvas', 'create_text_agent', {
         prompt: brief.requiresStoryboardFirst
@@ -80,14 +110,19 @@ export function buildAppAgentPlan(input: {
           : buildProductStrategyTextAgentPrompt(brief),
         inputIds: input.context?.selectedIds || [],
         autoRun: false,
-      }, 'safe_write', 'creative-product-design-skill'));
+      }, 'safe_write', 'creative-product-design-skill', {
+        stepId: textAgentStepId,
+        createsNode: true,
+        outputRef: textAgentOutputRef,
+      }));
     }
-    if (!brief.requiresStoryboardFirst || isDirectCreativeExecutionRequest(text)) {
+    if (brief.requiresStoryboardFirst && !isExplicitVideoGenerationRequest(text)) {
       commands.push(command('canvas', 'create_generator', {
-        mediaType: brief.mediaType,
-        prompt: brief.generatorPrompt,
-        inputIds: input.context?.selectedIds || [],
-        autoRun: brief.mediaType === 'image' && isDirectCreativeExecutionRequest(text),
+        mediaType: 'image',
+        prompt: buildStoryboardSheetPrompt(brief),
+        inputIds: [textAgentOutputRef, ...selectedImageNodeIds],
+        referenceImageNodeIds: selectedImageNodeIds,
+        autoRun: false,
         aspectRatio: brief.dimensions.aspectRatio || null,
         targetSize: brief.dimensions.targetSize || null,
         resolution: brief.dimensions.resolution || null,
@@ -96,11 +131,45 @@ export function buildAppAgentPlan(input: {
         skillMeta: {
           skillId: 'creative-product-design-skill',
           originalRequest: text,
+          taskKind: 'storyboard',
           fidelity: brief.fidelity,
           productCategory: brief.product.category,
           focus: brief.product.focus,
         },
-      }, brief.mediaType === 'video' ? 'costly' : 'safe_write', 'creative-product-design-skill'));
+      }, 'safe_write', 'creative-product-design-skill', {
+        stepId: 'storyboardSheet',
+        createsNode: true,
+        outputRef: '$storyboardSheet.nodeId',
+      }));
+    } else if (!brief.requiresStoryboardFirst || isDirectCreativeExecutionRequest(text)) {
+      commands.push(command('canvas', 'create_generator', {
+        mediaType: brief.mediaType,
+        prompt: brief.generatorPrompt,
+        inputIds: Array.from(new Set([
+          ...(input.context?.selectedIds || []),
+          ...(brief.requiresStrategyFirst ? [textAgentOutputRef] : []),
+        ])),
+        autoRun: brief.mediaType === 'video'
+          ? shouldAutoRunVideoGenerator(text)
+          : isDirectCreativeExecutionRequest(text),
+        aspectRatio: brief.dimensions.aspectRatio || null,
+        targetSize: brief.dimensions.targetSize || null,
+        resolution: brief.dimensions.resolution || null,
+        toolHint: brief.toolHint || null,
+        referenceRoles: brief.imageRoles.map(role => ({ nodeId: role.imageId, role: role.role })),
+        skillMeta: {
+          skillId: 'creative-product-design-skill',
+          originalRequest: text,
+          taskKind: brief.taskKind,
+          fidelity: brief.fidelity,
+          productCategory: brief.product.category,
+          focus: brief.product.focus,
+        },
+      }, brief.mediaType === 'video' ? 'costly' : 'safe_write', 'creative-product-design-skill', {
+        stepId: brief.mediaType === 'video' ? 'videoGenerator' : 'creativeGenerator',
+        createsNode: true,
+        outputRef: brief.mediaType === 'video' ? '$videoGenerator.nodeId' : '$creativeGenerator.nodeId',
+      }));
     }
   }
   const riskLevel = maxRisk(commands.map(item => item.riskLevel));

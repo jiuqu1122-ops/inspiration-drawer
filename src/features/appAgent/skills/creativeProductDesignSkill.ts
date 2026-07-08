@@ -112,8 +112,6 @@ const EDIT_KEYWORDS = [
   'remove',
 ] as const;
 
-const VIDEO_KEYWORDS = ['视频', '动画', '分镜', '故事板', '镜头', 'video', 'animation', 'storyboard'] as const;
-
 const PRODUCT_KEYWORDS = [
   '产品',
   '工业设计',
@@ -264,6 +262,12 @@ export const isCreativeEditRequest = (userText: string) => (
 export const isDirectCreativeExecutionRequest = (userText: string) => (
   findKeywordHits(userText, DIRECT_EXECUTION_KEYWORDS).length > 0
   || /(?:生成|出图|渲染|运行|执行|run|generate)/i.test(userText)
+);
+
+export const isExplicitVideoGenerationRequest = (userText: string) => (
+  /(?:生成|做成|输出|制作|直接生成)\s*(?:一段|这个|该)?\s*视频/i.test(userText)
+  || /(?:出视频|成片|根据.*分镜.*生成视频)/i.test(userText)
+  || /(?:generate|make|render)\s+(?:a\s+)?video/i.test(userText)
 );
 
 export function parseCreativeDimensions(userText: string): CreativeDimensions {
@@ -512,12 +516,13 @@ export function buildCreativeGeneratorPrompt(brief: Omit<CreativeBrief, 'generat
 
 export function extractCreativeBrief(input: SkillMatchInput, imageIds?: string[]): CreativeBrief {
   const originalRequest = input.userText.trim();
-  const mediaType: 'image' | 'video' = findKeywordHits(originalRequest, VIDEO_KEYWORDS).length > 0 ? 'video' : 'image';
+  const explicitVideoGeneration = isExplicitVideoGenerationRequest(originalRequest);
+  const mediaType: 'image' | 'video' = explicitVideoGeneration ? 'video' : 'image';
   const isEdit = isCreativeEditRequest(originalRequest);
   const product = inferProductDesignContext(originalRequest);
   const taskKind: CreativeTaskKind = /分镜|故事板|storyboard/i.test(originalRequest)
     ? 'storyboard'
-    : mediaType === 'video'
+    : explicitVideoGeneration
       ? 'video'
       : /cmf|材质|配色/i.test(originalRequest)
         ? 'cmf'

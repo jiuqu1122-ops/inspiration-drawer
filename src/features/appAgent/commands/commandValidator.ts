@@ -6,6 +6,7 @@ import {
   parseCreativeDimensions,
   validateCreativeGeneratorAction,
 } from '../skills/creativeProductDesignSkill';
+import { resolveWorkflowInputsFromContext, type WorkflowLike } from './workflowInputResolver';
 
 export interface CommandValidationResult {
   valid: boolean;
@@ -103,6 +104,17 @@ export function validateLegacyAgentAction(
   if (action.tool === 'canvas_create_workflow') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
     if (steps.length === 0) errors.push('workflow steps cannot be empty.');
+  }
+
+  if (['canvas_create_workflow', 'canvas_apply_workflow', 'canvas_run_workflow'].includes(action.tool)) {
+    const workflowArg = args.workflow || args.workflowTemplate;
+    if (workflowArg && typeof workflowArg === 'object' && !Array.isArray(workflowArg)) {
+      const workflowResolution = resolveWorkflowInputsFromContext({
+        workflow: workflowArg as WorkflowLike,
+        context,
+      });
+      errors.push(...workflowResolution.missingRequiredInputs);
+    }
   }
 
   if (action.tool === 'canvas_create_generator') {

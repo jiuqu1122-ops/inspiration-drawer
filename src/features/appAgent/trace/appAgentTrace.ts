@@ -12,6 +12,15 @@ export interface AppAgentTraceRecord {
   executedLegacyActions?: LegacyAgentAction[];
   llmGeneratedActions?: LegacyAgentAction[];
   deterministicActionsUsed?: boolean;
+  plannedStepRefs?: string[];
+  resolvedStepRefs?: Record<string, string>;
+  createdNodeIds?: string[];
+  unresolvedInputIds?: string[];
+  fallbackUsed?: boolean;
+  fallbackReason?: string;
+  workflowResolvedImageNodeIds?: string[];
+  workflowAutoConnections?: Array<{ sourceId: string; targetId: string }>;
+  workflowMissingRequiredInputs?: string[];
   confirmationRequired?: boolean;
   executionResults?: unknown[];
   errors?: string[];

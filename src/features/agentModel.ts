@@ -107,6 +107,10 @@ export type AgentToolCall = {
   name: string;
   arguments: Record<string, unknown>;
   status: AgentToolCallStatus;
+  stepId?: string;
+  createsNode?: boolean;
+  outputRef?: string;
+  sourceCommandId?: string;
   result?: unknown;
   error?: string;
 };

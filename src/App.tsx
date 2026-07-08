@@ -59,6 +59,7 @@ import { clamp } from './features/common';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
 import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference } from './features/agentModel';
+import { resolveWorkflowInputs } from './features/appAgent/commands/workflowInputResolver';
 import {
   flattenDrawerFolderTree,
   getDrawerFolderDeletionPlan,
@@ -1596,7 +1597,9 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
     if (!node.ai.aspectRatio) errors.push(`Image-generator node "${node.id}" is missing aspectRatio.`);
     if (!node.ai.outputFormat) errors.push(`Image-generator node "${node.id}" is missing outputFormat.`);
     if (!Number.isFinite(Number(node.ai.count)) || Number(node.ai.count) <= 0) errors.push(`Image-generator node "${node.id}" is missing valid count.`);
-    if (doesWorkflowTextRequireImageReference(prompt) && !hasUpstreamImageInput(node)) {
+    const acceptsExternalImageInput = node.acceptsExternalInputs === true
+      && ((node.externalInputTypes || []).includes('image') || node.outputType === 'image' || node.outputType === 'image[]');
+    if (doesWorkflowTextRequireImageReference(prompt) && !hasUpstreamImageInput(node) && !acceptsExternalImageInput) {
       errors.push(`Image-generator node "${node.id}" requires product/reference images but has no connected image input.`);
     }
   });
@@ -17160,9 +17163,17 @@ function MainApp() {
     else if (mediaItems.length !== mediaPaths.length) showToast(`已添加 ${mediaItems.length} 个媒体，${mediaPaths.length - mediaItems.length} 个文件暂未显示`);
   };
 
-  const addDrawerImageItemToCanvas = async (itemId: string, client?: { x: number; y: number }) => {
-    const source = items.find(item => item.id === itemId);
-    if (!source || source.type !== 'image') return false;
+  const createDrawerImageCanvasNode = async (
+    itemId: string,
+    client?: { x: number; y: number },
+    options: { reuseExisting?: boolean; select?: boolean; toast?: boolean; label?: string } = {},
+  ) => {
+    const source = itemsRef.current.find(item => item.id === itemId);
+    if (!source || source.type !== 'image') return '';
+    if (options.reuseExisting) {
+      const existing = canvasItemsRef.current.find(item => item.item.type === 'image' && item.item.sourceItemId === source.id);
+      if (existing) return existing.id;
+    }
 
     const item: BufferItem = {
       ...source,
@@ -17182,9 +17193,14 @@ function MainApp() {
       width: size.width,
       height: size.height,
     };
-    if (appendCanvasItems([canvasItem], '添加图片到画布') === 0) return false;
-    showToast('已添加到无限画布');
-    return true;
+    if (appendCanvasItems([canvasItem], options.label || '添加图片到画布', options.select !== false) === 0) return '';
+    if (options.toast !== false) showToast('已添加到无限画布');
+    return canvasId;
+  };
+
+  const addDrawerImageItemToCanvas = async (itemId: string, client?: { x: number; y: number }) => {
+    const nodeId = await createDrawerImageCanvasNode(itemId, client, { toast: true });
+    return !!nodeId;
   };
 
   const getFolderImageItemsForCanvas = (folderId?: string) => {
@@ -22416,6 +22432,103 @@ useEffect(() => {
         if (Number.isFinite(native)) return startOfLocalDay(native);
         throw new Error(`无法识别日期：${text}`);
       };
+      const uniqueAgentIds = (ids: string[]) => Array.from(new Set(ids.map(String).filter(Boolean)));
+      const getExistingCanvasIds = (ids: string[]) => {
+        const existingIds = new Set(canvasItemsRef.current.map(item => item.id));
+        return uniqueAgentIds(ids).filter(id => existingIds.has(id));
+      };
+      const getAgentWorkflowCanvasNodes = () => canvasItemsRef.current.map(item => ({
+        id: item.id,
+        sourceItemId: item.item.sourceItemId,
+        type: item.ai?.type || item.item.type,
+        name: item.item.name || getCanvasAiNodeTitle(item.ai),
+        inputs: [...(item.inputs || [])],
+        createdAt: item.item.createdAt,
+        item: {
+          type: item.item.type,
+          sourceItemId: item.item.sourceItemId,
+          createdAt: item.item.createdAt,
+        },
+        ai: item.ai ? { type: item.ai.type } : undefined,
+      }));
+      const getAgentWorkflowSelectedDrawerItems = () => {
+        const drawerIds = uniqueAgentIds([
+          ...(snapshotSurface === 'drawer' ? snapshotSelectedIds : []),
+          ...(snapshotSurface === 'drawer' ? selectedIds : []),
+          ...(snapshot?.selectedItems || []).flatMap(item => [item.id, item.sourceItemId || '']),
+          ...(snapshot?.visualReferences || []).map(reference => reference.sourceItemId || ''),
+          ...(snapshot?.drawer?.items || []).map(item => item.id),
+        ]);
+        const drawerItemById = new Map(itemsRef.current.map(item => [item.id, item]));
+        return drawerIds
+          .map(id => drawerItemById.get(id))
+          .filter((item): item is BufferItem => !!item && item.type === 'image');
+      };
+      const resolveAgentWorkflowInputIds = async (
+        workflow: CanvasWorkflowTemplate,
+        requestedInputIds: string[] = [],
+      ) => {
+        const requestedInputs = getExistingCanvasIds(requestedInputIds);
+        const snapshotCanvasInputIds = snapshotSurface === 'canvas'
+          ? getExistingCanvasIds(snapshotSelectedIds)
+          : [];
+        const fallbackInputIds = requestedInputs.length > 0
+          ? requestedInputs
+          : (snapshotCanvasInputIds.length > 0 ? snapshotCanvasInputIds : getSelectedCanvasAiInputIds());
+        const visualReferences = snapshot?.visualReferences || [];
+        const selectedDrawerItems = getAgentWorkflowSelectedDrawerItems();
+        const runResolver = (extraSelectedNodeIds: string[] = []) => resolveWorkflowInputs({
+          workflow,
+          selectedNodeIds: uniqueAgentIds([
+            ...fallbackInputIds,
+            ...snapshotCanvasInputIds,
+            ...extraSelectedNodeIds,
+            ...visualReferences.map(reference => reference.nodeId),
+          ]),
+          visualReferences,
+          currentMessageAttachments: visualReferences,
+          selectedDrawerItems,
+          canvasNodes: getAgentWorkflowCanvasNodes(),
+          drawerItems: itemsRef.current,
+        });
+        let resolution = runResolver();
+        const createdNodeIds: string[] = [];
+        if (resolution.nodesToCreateFromDrawerItems.length > 0) {
+          if (!isCanvasModeRef.current) enterCanvasMode();
+          for (const drawerItemId of resolution.nodesToCreateFromDrawerItems) {
+            const nodeId = await createDrawerImageCanvasNode(drawerItemId, undefined, {
+              reuseExisting: true,
+              select: false,
+              toast: false,
+              label: 'Agent 添加 workflow 输入图片',
+            });
+            if (nodeId) createdNodeIds.push(nodeId);
+          }
+          resolution = runResolver(createdNodeIds);
+        }
+        if (resolution.requiresImageTargetNodeIds.length > 0 && resolution.resolvedImageNodeIds.length === 0) {
+          throw new Error(resolution.missingRequiredInputs[0] || '这个工作流需要产品/参考图，请先选择或拖入一张图片。');
+        }
+        return {
+          inputIds: getExistingCanvasIds([...fallbackInputIds, ...resolution.resolvedImageNodeIds]),
+          resolution,
+          createdNodeIds,
+        };
+      };
+      const attachAgentWorkflowInputsToModule = async (nodeId: string) => {
+        const moduleNode = canvasItemsRef.current.find(item => item.id === nodeId);
+        const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
+        if (!moduleNode || !workflow) return null;
+        const preflight = await resolveAgentWorkflowInputIds(workflow, moduleNode.inputs || []);
+        if (preflight.inputIds.length > 0) {
+          updateCanvasItemsImmediate(prev => prev.map(item => (
+            item.id === nodeId
+              ? { ...item, inputs: uniqueAgentIds([...(item.inputs || []), ...preflight.inputIds]) }
+              : item
+          )));
+        }
+        return preflight;
+      };
       if (name === 'app_get_context') {
         const requestedScopes = Array.isArray(args.scopes)
           ? args.scopes.map(String).filter(Boolean)
@@ -23455,10 +23568,26 @@ useEffect(() => {
           || canvasWorkflowTemplates.find(item => item.label.toLowerCase() === workflowName)
           || canvasWorkflowTemplates.find(item => workflowName && item.label.toLowerCase().includes(workflowName));
         if (!workflow) throw new Error('没有找到指定工作流');
-        const beforeIds = new Set(canvasItemsRef.current.map(item => item.id));
-        if (addCanvasWorkflowTemplate(workflow) <= 0) throw new Error('添加工作流失败');
-        const node = canvasItemsRef.current.find(item => !beforeIds.has(item.id));
-        return { workflowId: workflow.id, nodeId: node?.id };
+        const requestedInputs = Array.isArray(args.inputIds)
+          ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
+          : [];
+        const preflight = await resolveAgentWorkflowInputIds(workflow, requestedInputs);
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        const inputBounds = preflight.inputIds.length > 0 ? getCanvasItemsBounds(preflight.inputIds) : null;
+        const base = inputBounds
+          ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
+          : getCanvasDropPosition(0);
+        const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, preflight.inputIds);
+        if (!moduleNode) throw new Error('添加工作流失败');
+        if (appendCanvasItems([moduleNode], 'Agent 添加工作流') <= 0) throw new Error('添加工作流失败');
+        updateCanvasSelection([moduleNode.id]);
+        return {
+          workflowId: workflow.id,
+          nodeId: moduleNode.id,
+          inputs: preflight.inputIds,
+          workflowAutoConnections: preflight.resolution.autoConnections,
+          createdInputNodeIds: preflight.createdNodeIds,
+        };
       }
 
       if (name === 'canvas_create_workflow') {
@@ -23485,11 +23614,13 @@ useEffect(() => {
           const validation = validateCanvasWorkflowTemplate(workflow);
           if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
           if (validation.warnings.length > 0) console.warn('Product details workflow validation warnings:', validation.warnings, workflow);
-          const inputBounds = selectedInputIds.length > 0 ? getCanvasItemsBounds(selectedInputIds) : null;
+          const preflight = await resolveAgentWorkflowInputIds(workflow, selectedInputIds);
+          if (!isCanvasModeRef.current) enterCanvasMode();
+          const inputBounds = preflight.inputIds.length > 0 ? getCanvasItemsBounds(preflight.inputIds) : null;
           const base = inputBounds
             ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
             : getCanvasDropPosition(0);
-          const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, selectedInputIds);
+          const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, preflight.inputIds);
           if (!moduleNode) throw new Error('详情页五图 workflow 模块创建失败');
           setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
           if (appendCanvasItems([moduleNode], 'Agent 创建详情页五图 workflow') <= 0) throw new Error('添加详情页五图 workflow 模块失败');
@@ -23500,7 +23631,9 @@ useEffect(() => {
             nodeId: moduleNode.id,
             templateId: 'product_details_five_images',
             stages: [['product_refs'], ['product_strategy'], [...CANVAS_PRODUCT_DETAILS_NODE_IDS]],
-            inputs: selectedInputIds,
+            inputs: preflight.inputIds,
+            workflowAutoConnections: preflight.resolution.autoConnections,
+            createdInputNodeIds: preflight.createdNodeIds,
             autoRun: args.autoRun === true,
           };
         }
@@ -23715,11 +23848,13 @@ useEffect(() => {
         const validation = validateCanvasWorkflowTemplate(workflow);
         if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
         if (validation.warnings.length > 0) console.warn('Agent workflow validation warnings:', validation.warnings, workflow);
-        const inputBounds = selectedInputIds.length > 0 ? getCanvasItemsBounds(selectedInputIds) : null;
+        const preflight = await resolveAgentWorkflowInputIds(workflow, selectedInputIds);
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        const inputBounds = preflight.inputIds.length > 0 ? getCanvasItemsBounds(preflight.inputIds) : null;
         const base = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
           : getCanvasDropPosition(0);
-        const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, selectedInputIds);
+        const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, preflight.inputIds);
         if (!moduleNode) throw new Error('工作流模块创建失败');
         setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
         if (appendCanvasItems([moduleNode], 'Agent 创建工作流') <= 0) throw new Error('添加工作流模块失败');
@@ -23731,7 +23866,9 @@ useEffect(() => {
           workflowId: workflow.id,
           nodeId: moduleNode.id,
           stepCount: workflowNodes.length,
-          inputs: selectedInputIds,
+          inputs: preflight.inputIds,
+          workflowAutoConnections: preflight.resolution.autoConnections,
+          createdInputNodeIds: preflight.createdNodeIds,
           autoRun: args.autoRun === true,
         };
       }
@@ -23771,8 +23908,19 @@ useEffect(() => {
         const nodeIds = Array.isArray(args.nodeIds)
           ? args.nodeIds.map(String)
           : [...canvasSelectedIdsRef.current];
+        const workflowNodeIds = nodeIds.filter(id => canvasItemsRef.current.find(item => item.id === id)?.ai?.type === 'workflow');
+        const preflights = [];
+        for (const nodeId of workflowNodeIds) {
+          const preflight = await attachAgentWorkflowInputsToModule(nodeId);
+          if (preflight) preflights.push({ nodeId, ...preflight });
+        }
         await runSelectedCanvasWorkflowModules(nodeIds);
-        return { requestedNodeIds: nodeIds };
+        return {
+          requestedNodeIds: nodeIds,
+          workflowResolvedImageNodeIds: Array.from(new Set(preflights.flatMap(item => item.resolution.resolvedImageNodeIds))),
+          workflowAutoConnections: preflights.flatMap(item => item.resolution.autoConnections),
+          workflowMissingRequiredInputs: preflights.flatMap(item => item.resolution.missingRequiredInputs),
+        };
       }
 
       throw new Error(`不支持的画布工具：${name}`);
