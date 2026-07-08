@@ -8,8 +8,10 @@ export interface AppAgentTraceRecord {
   activeSkillIds: AgentSkillId[];
   contextScopes: ContextScope[];
   plan?: AppAgentPlan;
-  commands?: AppAgentPlan['commands'];
-  legacyActions?: LegacyAgentAction[];
+  plannedCommands?: AppAgentPlan['commands'];
+  executedLegacyActions?: LegacyAgentAction[];
+  llmGeneratedActions?: LegacyAgentAction[];
+  deterministicActionsUsed?: boolean;
   confirmationRequired?: boolean;
   executionResults?: unknown[];
   errors?: string[];

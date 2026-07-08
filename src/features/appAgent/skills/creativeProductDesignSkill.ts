@@ -280,7 +280,7 @@ export function parseCreativeDimensions(userText: string): CreativeDimensions {
     dimensions.sources.push(pixelSize[0].trim());
   }
 
-  const ratio = /(?:^|[^\d])([1-9]\d?)\s*:\s*([1-9]\d?)(?:[^\d]|$)/.exec(text);
+  const ratio = /(?:^|[^\d])([1-9]\d?)\s*(?::|：|比)\s*([1-9]\d?)(?:[^\d]|$)/.exec(text);
   if (ratio) {
     dimensions.aspectRatio = `${ratio[1]}:${ratio[2]}`;
     dimensions.sources.push(ratio[0].trim());
@@ -471,6 +471,11 @@ export function parseCreativeToolHint(userText: string, mediaType: 'image' | 'vi
   return type === 'image' ? undefined : undefined;
 }
 
+export const mentionsDrawerMaterialContext = (userText: string) => (
+  /(抽屉|素材库|文件夹|今天收集|今日收集|整理素材|drawer|material library|asset library|folder|today'?s? collected|organize materials)/i
+    .test(normalizeSkillText(userText))
+);
+
 export const buildOriginalRequestLine = (originalRequest: string) => {
   const escaped = originalRequest.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `Original request: "${escaped}"`;
@@ -633,7 +638,7 @@ export const creativeProductDesignSkill: AppAgentSkill = {
   },
   getRequiredContext: (input): ContextScope[] => {
     const scopes: ContextScope[] = ['canvas'];
-    if (input.selectedItemCount || input.hasSelectedImages) scopes.push('drawer');
+    if (mentionsDrawerMaterialContext(input.userText)) scopes.push('drawer');
     return scopes;
   },
   buildPromptPatch: input => {

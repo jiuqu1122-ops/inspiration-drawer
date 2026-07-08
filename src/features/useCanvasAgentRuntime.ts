@@ -95,6 +95,7 @@ type PendingToolRun = {
   userRequest?: string;
   trace?: AppAgentTraceRecord;
   repaired?: boolean;
+  deterministicActionsUsed?: boolean;
 };
 
 type PendingCodexTurn = {
@@ -109,6 +110,9 @@ type PendingCodexTurn = {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   timeoutId: number;
+  noticeTimeoutId?: number;
+  fallbackTimeoutId?: number;
+  fallbackStarted?: boolean;
 };
 
 const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'software-agent-full-control-v5';
@@ -119,6 +123,12 @@ const AGENT_THINKING_TERMINAL_STATUSES = new Set<AgentThinkingStepStatus>([
   'cancelled',
   'error',
 ]);
+
+const clearPendingCodexTimers = (pending: PendingCodexTurn) => {
+  window.clearTimeout(pending.timeoutId);
+  if (pending.noticeTimeoutId !== undefined) window.clearTimeout(pending.noticeTimeoutId);
+  if (pending.fallbackTimeoutId !== undefined) window.clearTimeout(pending.fallbackTimeoutId);
+};
 
 const buildThinkingStepId = (messageId: string, key: string) => (
   `${messageId}:thinking:${key}`
@@ -725,7 +735,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           const pending = pendingCodexTurnsRef.current.get(threadId);
           if (!pending) return;
           pendingCodexTurnsRef.current.delete(threadId);
-          window.clearTimeout(pending.timeoutId);
+          clearPendingCodexTimers(pending);
           const turn = params.turn && typeof params.turn === 'object'
             ? params.turn as Record<string, unknown>
             : {};
@@ -916,7 +926,21 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     run: PendingToolRun,
   ) => {
     const settingsNow = settingsRef.current;
+    const createdTextAgentNodeIds: string[] = [];
     for (const call of run.calls) {
+      if (
+        run.deterministicActionsUsed
+        && call.name === 'canvas_create_generator'
+        && createdTextAgentNodeIds.length > 0
+      ) {
+        const currentInputIds = Array.isArray(call.arguments.inputIds)
+          ? call.arguments.inputIds.map(String).filter(Boolean)
+          : [];
+        call.arguments = {
+          ...call.arguments,
+          inputIds: Array.from(new Set([...currentInputIds, ...createdTextAgentNodeIds])),
+        };
+      }
       const originalAction: LegacyAgentAction = { tool: call.name, arguments: call.arguments };
       const repairedAction = repairLegacyAgentAction(originalAction, run.userRequest || run.snapshot?.userRequest || '');
       if (JSON.stringify(repairedAction.arguments) !== JSON.stringify(call.arguments)) {
@@ -956,13 +980,24 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         });
       } else {
         await executeToolCall(run, call);
+        if (call.status === 'completed' && call.name === 'canvas_create_text_agent') {
+          const resultRecord = call.result && typeof call.result === 'object' && !Array.isArray(call.result)
+            ? call.result as Record<string, unknown>
+            : {};
+          const nodeId = typeof resultRecord.nodeId === 'string' ? resultRecord.nodeId : '';
+          if (nodeId) createdTextAgentNodeIds.push(nodeId);
+        }
       }
     }
     updateToolCalls(run);
     if (run.trace) {
+      const legacyActions = run.calls.map(call => ({ tool: call.name, arguments: call.arguments }));
       upsertAppAgentTrace({
         ...run.trace,
-        legacyActions: run.calls.map(call => ({ tool: call.name, arguments: call.arguments })),
+        ...(run.deterministicActionsUsed
+          ? { executedLegacyActions: legacyActions }
+          : { llmGeneratedActions: legacyActions }),
+        deterministicActionsUsed: run.deterministicActionsUsed === true,
         confirmationRequired: run.calls.some(call => call.status === 'awaiting-approval'),
         executionResults: run.calls.map(call => call.result).filter(Boolean),
         errors: run.calls.map(call => call.error).filter((error): error is string => !!error),
@@ -1249,11 +1284,46 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     conversationId: string,
     assistantMessageId: string,
     threadId: string,
+    options: {
+      onFallback?: () => void;
+    } = {},
   ) => new Promise<Record<string, unknown>>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
+      const pending = pendingCodexTurnsRef.current.get(threadId);
+      if (pending) clearPendingCodexTimers(pending);
       pendingCodexTurnsRef.current.delete(threadId);
       reject(new Error('Codex 会话等待超时'));
     }, 15 * 60 * 1000);
+    const noticeTimeoutId = window.setTimeout(() => {
+      const pending = pendingCodexTurnsRef.current.get(threadId);
+      if (!pending || pending.deltaReceived || pending.fallbackStarted) return;
+      upsertThinkingStep(conversationId, assistantMessageId, 'codex-slow-notice', {
+        title: '正在等待 Codex',
+        detail: '正在等待 Codex，可取消或改用快速规划',
+        status: 'waiting',
+      });
+      patchMessage(conversationId, assistantMessageId, message => ({
+        ...message,
+        content: message.content.trim() || '正在等待 Codex，可取消或改用快速规划',
+        status: 'streaming',
+      }));
+    }, 30 * 1000);
+    const fallbackTimeoutId = options.onFallback
+      ? window.setTimeout(() => {
+        const pending = pendingCodexTurnsRef.current.get(threadId);
+        if (!pending || pending.deltaReceived || pending.fallbackStarted) return;
+        pending.fallbackStarted = true;
+        upsertThinkingStep(conversationId, assistantMessageId, 'codex-fast-plan-fallback', {
+          title: '改用快速规划',
+          detail: 'Codex 60 秒内没有返回有效响应，正在执行确定性计划',
+          status: 'running',
+        });
+        options.onFallback?.();
+        pendingCodexTurnsRef.current.delete(threadId);
+        clearPendingCodexTimers(pending);
+        resolve({ fallbackStarted: true, raw: '' });
+      }, 60 * 1000)
+      : undefined;
     pendingCodexTurnsRef.current.set(threadId, {
       conversationId,
       assistantMessageId,
@@ -1265,8 +1335,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       resolve,
       reject,
       timeoutId,
+      noticeTimeoutId,
+      fallbackTimeoutId,
     });
-  }), []);
+  }), [patchMessage, upsertThinkingStep]);
 
   const runCodexContinuation = useCallback(async (
     run: PendingToolRun,
@@ -1482,13 +1554,64 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     try {
       const turnModel = getEffectiveCodexModel(settingsRef.current, forceDefaultCodexModel);
       const reasoningEffort = getEffectiveCodexReasoningEffort(settingsRef.current);
+      let deterministicFallbackStarted = false;
+      const runDeterministicFallback = () => {
+        const fallbackTurn = appAgentTurn;
+        if (
+          deterministicFallbackStarted
+          || !fallbackTurn
+          || fallbackTurn.deterministicLegacyActions.length === 0
+          || fallbackTurn.plan.riskLevel === 'destructive'
+          || fallbackTurn.plan.riskLevel === 'system_process'
+        ) return;
+        deterministicFallbackStarted = true;
+        void (async () => {
+          try {
+            const active = activeRequestRef.current;
+            const turnId = active?.turnId || pendingCodexTurnsRef.current.get(threadId)?.turnId || '';
+            if (active?.threadId && turnId) {
+              await invoke('agent_codex_request', {
+                method: 'turn/interrupt',
+                params: { threadId: active.threadId, turnId },
+              });
+            }
+          } catch (_) {
+            // The fallback can still execute locally even if the remote turn has already settled.
+          }
+          const calls: AgentToolCall[] = fallbackTurn.deterministicLegacyActions.map(action => ({
+            id: createAgentId('app-agent-fallback-tool'),
+            name: action.tool,
+            arguments: action.arguments,
+            status: 'pending',
+          }));
+          patchMessage(conversation.id, assistantMessageId, message => ({
+            ...message,
+            content: 'Codex 等待超时，已改用快速规划执行基础操作。',
+            status: 'streaming',
+            toolCalls: calls,
+          }));
+          await processToolCalls({
+            conversationId: conversation.id,
+            assistantMessageId,
+            provider: 'openai-compatible',
+            calls,
+            depth: 0,
+            snapshot,
+            userRequest: userText,
+            trace: fallbackTurn.trace || snapshot?.appAgentTrace,
+            deterministicActionsUsed: true,
+          });
+        })();
+      };
       const startTurn = async (text: string, withOutputSchema: boolean) => {
         upsertThinkingStep(conversation.id, assistantMessageId, 'codex-send', {
           title: withOutputSchema ? '正在发送请求给 Codex' : '正在发送重试请求给 Codex',
           detail: `上下文约 ${text.length} 个字符${visualReferences.length ? `，参考图 ${visualReferences.length} 张` : ''}`,
           status: 'running',
         });
-        const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId);
+        const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId, {
+          onFallback: appAgentTurn?.shouldUseDeterministicPlan ? runDeterministicFallback : undefined,
+        });
         const response = await invoke<Record<string, unknown>>('agent_codex_request', {
           method: 'turn/start',
           params: {
@@ -1524,6 +1647,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         + '\n\n应用提供的当前软件上下文：' + JSON.stringify(contextForPrompt)
         + '\n\n请只返回 reply 和 actions。reply 用简短中文说明结果或下一步；actions 使用应用工具。不要运行 shell、不要修改本地文件。';
       let completed = await startTurn(codexUserText, true);
+      if (completed.fallbackStarted === true) return;
       if (completed.interrupted === true) {
         finishThinkingSteps(conversation.id, assistantMessageId, 'cancelled');
         patchMessage(conversation.id, assistantMessageId, message => ({
@@ -1552,6 +1676,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           '上一轮没有生成可见结果。请以全局软件 Agent 身份重新完成用户刚才的软件操作请求，只输出一个 JSON 对象，包含字符串 reply 和数组 actions；每个 action 包含 tool 与 arguments。可以跨抽屉、日历、画布、设置和可见界面调用应用工具。不要运行 shell，不要修改本地文件。',
           false,
         );
+        if (completed.fallbackStarted === true) return;
         if (completed.interrupted === true) {
           finishThinkingSteps(conversation.id, assistantMessageId, 'cancelled');
           patchMessage(conversation.id, assistantMessageId, message => ({
@@ -1610,7 +1735,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     } catch (error) {
       const pending = pendingCodexTurnsRef.current.get(threadId);
       if (pending) {
-        window.clearTimeout(pending.timeoutId);
+        clearPendingCodexTimers(pending);
         pendingCodexTurnsRef.current.delete(threadId);
       }
       if (
@@ -1759,6 +1884,37 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         userRequest: text,
         appAgentTrace: appAgentTurn.trace,
       };
+      if (appAgentTurn.shouldUseDeterministicPlan && appAgentTurn.deterministicLegacyActions.length > 0) {
+        const calls: AgentToolCall[] = appAgentTurn.deterministicLegacyActions.map(action => ({
+          id: createAgentId('app-agent-deterministic-tool'),
+          name: action.tool,
+          arguments: action.arguments,
+          status: 'pending',
+        }));
+        patchMessage(conversation.id, assistantMessage.id, message => ({
+          ...message,
+          content: '已生成确定性执行计划，准备执行软件操作。',
+          status: 'streaming',
+          toolCalls: calls,
+        }));
+        upsertThinkingStep(conversation.id, assistantMessage.id, 'deterministic-plan', {
+          title: '正在执行确定性计划',
+          detail: `准备执行 ${calls.length} 个软件操作`,
+          status: 'running',
+        });
+        await processToolCalls({
+          conversationId: conversation.id,
+          assistantMessageId: assistantMessage.id,
+          provider: 'openai-compatible',
+          calls,
+          depth: 0,
+          snapshot,
+          userRequest: text,
+          trace: appAgentTurn.trace,
+          deterministicActionsUsed: true,
+        });
+        return true;
+      }
       if (provider === 'codex' || provider === 'openai-compatible') {
         await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot, appAgentTurn);
       } else {
@@ -1831,11 +1987,23 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     try {
       if (active.provider === 'openai-compatible' && active.requestId) {
         await invoke('agent_cancel_openai', { requestId: active.requestId });
-      } else if (active.threadId && active.turnId) {
-        await invoke('agent_codex_request', {
-          method: 'turn/interrupt',
-          params: { threadId: active.threadId, turnId: active.turnId },
-        });
+      } else if (active.threadId) {
+        const pending = pendingCodexTurnsRef.current.get(active.threadId);
+        const turnId = active.turnId || pending?.turnId || '';
+        try {
+          if (turnId) {
+            await invoke('agent_codex_request', {
+              method: 'turn/interrupt',
+              params: { threadId: active.threadId, turnId },
+            });
+          }
+        } finally {
+          if (pending) {
+            pendingCodexTurnsRef.current.delete(active.threadId);
+            clearPendingCodexTimers(pending);
+            pending.resolve({ interrupted: true, raw: '' });
+          }
+        }
       }
     } catch (_) {
       // The completion event or request error below will still settle the UI.

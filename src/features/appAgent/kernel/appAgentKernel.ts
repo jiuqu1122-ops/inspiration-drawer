@@ -1,7 +1,11 @@
 import type { AgentCanvasContext } from '../../agentModel';
 import type { AppAgentPlan, AppAgentCommand } from '../commands/commandTypes';
 import type { AgentSkillId, ContextScope, RiskLevel } from '../skills/types';
-import { extractCreativeBrief, isDirectCreativeExecutionRequest } from '../skills/creativeProductDesignSkill';
+import {
+  extractCreativeBrief,
+  isDirectCreativeExecutionRequest,
+  type CreativeBrief,
+} from '../skills/creativeProductDesignSkill';
 
 const createId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -27,6 +31,20 @@ const command = (
   sourceSkillId,
   requiresConfirmation: ['costly', 'destructive', 'system_process'].includes(riskLevel),
 });
+
+const buildStoryboardTextAgentPrompt = (brief: CreativeBrief) => [
+  '视频分镜脚本',
+  brief.dimensions.aspectRatio ? `Aspect ratio: ${brief.dimensions.aspectRatio}` : 'Aspect ratio: follow the user request or selected platform.',
+  '请先产出可执行的视频分镜脚本，覆盖镜头顺序、单镜头时长、转场方式、主体动作、关键帧和风格一致性。',
+  '不要默认直接运行视频生成；如果后续需要创建 video generator，autoRun 必须默认为 false。',
+  brief.generatorPrompt,
+].join('\n');
+
+const buildProductStrategyTextAgentPrompt = (brief: CreativeBrief) => [
+  '产品设计策略',
+  '请先产出产品外观/CMF 策略，覆盖产品类型、使用方式、造型重点、CMF 边界、结构可信度和主要设计风险。',
+  brief.generatorPrompt,
+].join('\n');
 
 export function buildAppAgentPlan(input: {
   userText: string;
@@ -57,7 +75,9 @@ export function buildAppAgentPlan(input: {
     }, input.context?.visualReferences?.map(reference => reference.nodeId));
     if (brief.requiresStoryboardFirst || brief.requiresStrategyFirst) {
       commands.push(command('canvas', 'create_text_agent', {
-        prompt: brief.requiresStoryboardFirst ? `生成视频/分镜策略：\n${brief.generatorPrompt}` : `生成产品设计策略：\n${brief.generatorPrompt}`,
+        prompt: brief.requiresStoryboardFirst
+          ? buildStoryboardTextAgentPrompt(brief)
+          : buildProductStrategyTextAgentPrompt(brief),
         inputIds: input.context?.selectedIds || [],
         autoRun: false,
       }, 'safe_write', 'creative-product-design-skill'));

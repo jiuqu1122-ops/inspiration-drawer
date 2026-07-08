@@ -22317,6 +22317,26 @@ useEffect(() => {
         ? buildCanvasAgentSelectedItems()
         : drawerAgentSelectedItems;
       const selectedVisualReferences = selectedItems.flatMap(item => item.references || []);
+      const drawerSearch = String(searchQuery || '').trim().toLowerCase();
+      const selectedDrawerIds = new Set([
+        ...selectedIds,
+        ...selectedItems.map(item => item.id),
+        ...selectedItems.map(item => item.sourceItemId || '').filter(Boolean),
+        ...selectedVisualReferences.map(reference => reference.sourceItemId || '').filter(Boolean),
+      ]);
+      const drawerItemsForAgentContext = itemsRef.current
+        .filter(item => {
+          if (selectedDrawerIds.has(item.id)) return true;
+          if (!drawerSearch) return false;
+          return [
+            item.id,
+            item.name,
+            item.content,
+            item.folderId,
+            ...(item.remarks || []),
+          ].filter(Boolean).join(' ').toLowerCase().includes(drawerSearch);
+        })
+        .slice(0, 40);
       return {
         surface,
         selectedIds: surface === 'canvas' ? [...canvasSelectedIdsRef.current] : [...selectedIds],
@@ -22357,7 +22377,7 @@ useEffect(() => {
             name: folder.name,
             parentId: folder.parentId,
           })),
-          items: itemsRef.current.slice(0, 180).map(item => ({
+          items: drawerItemsForAgentContext.map(item => ({
             id: item.id,
             type: item.type,
             name: item.name || item.content || '未命名素材',
@@ -22415,14 +22435,35 @@ useEffect(() => {
           };
         }
         if (hasScope('drawer')) {
+          const drawerSearch = String(searchQuery || '').trim().toLowerCase();
+          const selectedDrawerIds = new Set([
+            ...selectedIds,
+            ...(snapshot?.selectedItems || []).map(item => item.id),
+            ...(snapshot?.selectedItems || []).map(item => item.sourceItemId || '').filter(Boolean),
+            ...(snapshot?.visualReferences || []).map(reference => reference.sourceItemId || '').filter(Boolean),
+          ]);
+          const drawerItemsForContext = itemsRef.current
+            .filter(item => {
+              if (selectedDrawerIds.has(item.id)) return true;
+              if (!drawerSearch) return false;
+              return [
+                item.id,
+                item.name,
+                item.content,
+                item.folderId,
+                ...(item.remarks || []),
+              ].filter(Boolean).join(' ').toLowerCase().includes(drawerSearch);
+            })
+            .slice(0, 40);
           response.drawer = {
             activeTab: activeTabRef.current,
             activeFolderId: activeFolderIdStateRef.current,
             searchQuery,
             selectedIds: [...selectedIds],
             itemCount: itemsRef.current.length,
+            returnedItemCount: drawerItemsForContext.length,
             folderCount: foldersRef.current.length,
-            items: itemsRef.current.slice(0, 180).map(item => ({
+            items: drawerItemsForContext.map(item => ({
               id: item.id,
               type: item.type,
               name: item.name || item.content || '未命名素材',

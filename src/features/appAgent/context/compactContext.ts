@@ -24,6 +24,32 @@ const compactReference = (reference: AgentCanvasVisualReference) => ({
   hasLocalPath: !!reference.path,
 });
 
+const getCompactDrawerItems = (context: AgentCanvasContext) => {
+  const drawer = context.drawer;
+  if (!drawer) return [];
+  const selectedIds = new Set([
+    ...(context.selectedIds || []),
+    ...(context.selectedItems || []).map(item => item.id),
+    ...(context.selectedItems || []).map(item => item.sourceItemId || '').filter(Boolean),
+    ...(context.visualReferences || []).map(reference => reference.sourceItemId || '').filter(Boolean),
+  ]);
+  const query = String(drawer.searchQuery || '').trim().toLowerCase();
+  return drawer.items
+    .filter(item => {
+      if (selectedIds.has(item.id)) return true;
+      if (!query) return false;
+      const searchable = [
+        item.id,
+        item.name,
+        item.content,
+        item.folderId,
+        ...(item.remarks || []),
+      ].filter(Boolean).join(' ').toLowerCase();
+      return searchable.includes(query);
+    })
+    .slice(0, 40);
+};
+
 export function compactAgentCanvasContext(
   context: AgentCanvasContext,
   scopes: ContextScope[] = ['minimal'],
@@ -56,6 +82,7 @@ export function compactAgentCanvasContext(
     })),
     visualReferences: (context.visualReferences || []).map(compactReference),
   };
+  const compactDrawerItems = getCompactDrawerItems(context);
   return {
     ...base,
     ...(scopeSet.has('app') || scopeSet.has('minimal') ? {
@@ -75,7 +102,9 @@ export function compactAgentCanvasContext(
           name: folder.name,
           parentId: folder.parentId,
         })),
-        items: context.drawer.items.slice(0, 120).map(item => ({
+        itemCount: context.drawer.items.length,
+        returnedItemCount: compactDrawerItems.length,
+        items: compactDrawerItems.map(item => ({
           id: item.id,
           type: item.type,
           name: item.name,

@@ -197,7 +197,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'app_get_context',
-      description: '按 scopes 读取精简软件上下文。',
+      description: '读取指定 scopes 的 compact 软件上下文。',
       parameters: objectSchema({
         scopes: { type: 'array', items: { type: 'string', enum: CONTEXT_SCOPES } },
         detail: { type: ['string', 'null'], enum: ['compact', 'full', null] },

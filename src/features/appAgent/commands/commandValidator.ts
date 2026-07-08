@@ -116,6 +116,12 @@ export function validateLegacyAgentAction(
     if (isCreativeLikeRequest(userText)) errors.push(...creativeErrors);
     validateIds(asStringArray(args.inputIds), nodeIds, 'input nodeId', errors);
     validateIds(asStringArray(args.referenceImageNodeIds), nodeIds, 'referenceImageNodeId', errors);
+    const referenceRoleNodeIds = Array.isArray(args.referenceRoles)
+      ? args.referenceRoles
+        .map(role => role && typeof role === 'object' && !Array.isArray(role) ? String((role as Record<string, unknown>).nodeId || '') : '')
+        .filter(Boolean)
+      : [];
+    validateIds(referenceRoleNodeIds, nodeIds, 'referenceRoles nodeId', errors);
     const sourceImageNodeId = String(args.sourceImageNodeId || '');
     if (sourceImageNodeId && nodeIds.size > 0 && !nodeIds.has(sourceImageNodeId)) {
       errors.push(`sourceImageNodeId does not exist: ${sourceImageNodeId}`);
