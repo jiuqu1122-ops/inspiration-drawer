@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use crate::repositories::asset_repository::{AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, ViewportOptions};
+use crate::repositories::asset_repository::{
+    AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
+};
 
 #[tauri::command]
 pub fn list_assets(
@@ -87,6 +89,14 @@ pub fn list_folders(
     library_id: Option<String>,
 ) -> Result<Vec<Value>, String> {
     crate::services::asset_service::list_folders(app_handle, library_id)
+}
+
+#[tauri::command]
+pub fn move_folders(
+    app_handle: tauri::AppHandle,
+    options: MoveFoldersOptions,
+) -> Result<Vec<Value>, String> {
+    crate::services::asset_service::move_folders(app_handle, options)
 }
 
 #[tauri::command]

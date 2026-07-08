@@ -14230,6 +14230,7 @@ fn main() {
             commands::assets::debug_get_all_canvas_nodes,
             commands::assets::upsert_canvas_nodes,
             commands::assets::list_folders,
+            commands::assets::move_folders,
             commands::assets::list_tags,
             commands::assets::get_asset_thumbnails,
             commands::canvas::list_canvases,

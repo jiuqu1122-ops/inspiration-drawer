@@ -13,5 +13,25 @@ export type LibraryTag = {
 export const listFolders = (libraryId?: string) =>
   invoke<Folder[]>('list_folders', { libraryId, library_id: libraryId });
 
+export type MoveFoldersOptions = {
+  folderIds: string[];
+  newParentId?: string | null;
+  libraryId?: string;
+  insertPosition?: number;
+  sortOrder?: number;
+};
+
+export const moveFolders = (options: MoveFoldersOptions) =>
+  invoke<Folder[]>('move_folders', {
+    options: {
+      ...options,
+      folder_ids: options.folderIds,
+      new_parent_id: options.newParentId,
+      library_id: options.libraryId,
+      insert_position: options.insertPosition,
+      sort_order: options.sortOrder,
+    },
+  });
+
 export const listTags = (libraryId?: string) =>
   invoke<LibraryTag[]>('list_tags', { libraryId, library_id: libraryId });

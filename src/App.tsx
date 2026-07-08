@@ -60,11 +60,14 @@ import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentS
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
 import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference } from './features/agentModel';
 import {
+  flattenDrawerFolderTree,
   getDrawerFolderDeletionPlan,
   getDrawerFolderPathName,
   getDrawerFolderScopeIds,
+  isDrawerFolderDescendant,
   normalizeDrawerFolders,
 } from './features/folderModel';
+import { listFolders, moveFolders } from './services/libraryApi';
 import {
   CANVAS_BASE_HEIGHT,
   CANVAS_BASE_WIDTH,
@@ -344,6 +347,7 @@ const EAGLE_API_V2_BASE_URL = 'http://127.0.0.1:41595/api/v2';
 const EAGLE_API_V1_BASE_URL = 'http://127.0.0.1:41595/api';
 const EAGLE_IMPORT_PAGE_LIMIT = 200;
 const EAGLE_IMPORT_CACHE_CONCURRENCY = 2;
+const FOLDER_DRAG_MIME = 'application/x-inspiration-drawer-folder-ids';
 type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
 type DrawerSidebarLayout = 'icons' | 'folders';
 type EagleImportStatus = {
@@ -2712,6 +2716,11 @@ type CanvasContextMenuState = {
   sourceIds?: string[];
   targetId?: string;
 };
+type FolderContextMenuState = {
+  x: number;
+  y: number;
+  folderId: string;
+};
 
 const acquireTimedLocalLock = (key: string, ttlMs: number) => {
   const now = Date.now();
@@ -3310,6 +3319,16 @@ function MainApp() {
   useEffect(() => { foldersRef.current = folders; }, [folders]);
   useEffect(() => { activeFolderIdStateRef.current = activeFolderId; }, [activeFolderId]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  useEffect(() => {
+    setSelectedFolderIds(prev => {
+      const existingIds = new Set(folders.map(folder => folder.id));
+      const next = prev.filter(id => existingIds.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+    if (lastSelectedFolderIdRef.current && !folders.some(folder => folder.id === lastSelectedFolderIdRef.current)) {
+      lastSelectedFolderIdRef.current = null;
+    }
+  }, [folders]);
   const [isCanvasMode, setIsCanvasMode] = useState(false);
   const [isCanvasWorkbenchMode, setIsCanvasWorkbenchMode] = useState(() => localStorage.getItem(CANVAS_WORKBENCH_MODE_STORAGE_KEY) === 'true');
   const isCanvasWorkbenchActive = isCanvasMode && isCanvasWorkbenchMode;
@@ -3868,6 +3887,8 @@ function MainApp() {
     setShowSettings(false);
     setShowFolderModal(false);
     setShowMoveFolderModal(false);
+    setShowMoveExistingFolderModal(false);
+    setFolderContextMenu(null);
     setSelectedImage(null);
     setSelectedVideo(null);
     invoke('set_anti_touch_lock', { locked: true }).catch(() => {});
@@ -4803,6 +4824,18 @@ function MainApp() {
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const draggingItemIdRef = useRef<string | null>(null);
   useEffect(() => { draggingItemIdRef.current = draggingItemId; }, [draggingItemId]);
+  const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
+  const selectedFolderIdsRef = useRef<string[]>([]);
+  useEffect(() => { selectedFolderIdsRef.current = selectedFolderIds; }, [selectedFolderIds]);
+  const lastSelectedFolderIdRef = useRef<string | null>(null);
+  const [draggingFolderIds, setDraggingFolderIds] = useState<string[]>([]);
+  const draggingFolderIdsRef = useRef<string[]>([]);
+  useEffect(() => { draggingFolderIdsRef.current = draggingFolderIds; }, [draggingFolderIds]);
+  const [folderMoveDragOverId, setFolderMoveDragOverId] = useState<string | null>(null);
+  const [folderContextMenu, setFolderContextMenu] = useState<FolderContextMenuState | null>(null);
+  const [showMoveExistingFolderModal, setShowMoveExistingFolderModal] = useState(false);
+  const [folderMoveTargetId, setFolderMoveTargetId] = useState<string | null>(null);
+  const [isMovingFolders, setIsMovingFolders] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({ isOpen: false, title: '', message: '', onConfirm: () => {} });
   const closeConfirmDialog = () => {
     setConfirmDialog(prev => ({ ...prev, isOpen: false }));
@@ -5941,10 +5974,12 @@ function MainApp() {
   };
 
   const handleOpenFolderModal = (parentId?: string) => {
-    const parent = parentId ? foldersRef.current.find(folder => folder.id === parentId && !folder.parentId) : null;
+    const parent = parentId ? foldersRef.current.find(folder => folder.id === parentId) : null;
     setNewFolderParentId(parent?.id || null);
     setNewFolderName('');
     setShowFolderModal(true);
+    setFolderContextMenu(null);
+    setShowMoveExistingFolderModal(false);
     setShowWebImageCollector(false);
     setIsSearchActive(false);
     setShowSettings(false);
@@ -5999,6 +6034,24 @@ function MainApp() {
       document.removeEventListener('pointerdown', closeSettingsOnOutsidePointer, true);
     };
   }, [showSettings]);
+
+  useEffect(() => {
+    if (!folderContextMenu) return;
+    const closeFolderContextMenu = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-folder-context-menu="true"]')) return;
+      setFolderContextMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFolderContextMenu(null);
+    };
+    window.addEventListener('pointerdown', closeFolderContextMenu, true);
+    window.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      window.removeEventListener('pointerdown', closeFolderContextMenu, true);
+      window.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [folderContextMenu]);
 
   const toggleTriggerMode = () => {
     const current = triggerModeRef.current;
@@ -6645,7 +6698,6 @@ function MainApp() {
     };
   }, [triggerMode]);
 
-  const rootFolders = useMemo(() => folders.filter(folder => !folder.parentId), [folders]);
   const folderChildrenByParent = useMemo(() => {
     const grouped = new Map<string, Folder[]>();
     folders.forEach(folder => {
@@ -6654,14 +6706,12 @@ function MainApp() {
     });
     return grouped;
   }, [folders]);
-  const orderedFolders = useMemo(() => (
-    rootFolders.flatMap(folder => [folder, ...(folderChildrenByParent.get(folder.id) || [])])
-  ), [rootFolders, folderChildrenByParent]);
+  const visibleFolderEntries = useMemo(() => flattenDrawerFolderTree(folders, collapsedFolderIds), [folders, collapsedFolderIds]);
+  const orderedFolderEntries = useMemo(() => flattenDrawerFolderTree(folders, []), [folders]);
+  const orderedFolders = useMemo(() => orderedFolderEntries.map(entry => entry.folder), [orderedFolderEntries]);
   const visibleFolderRailEntryCount = useMemo(() => (
-    rootFolders.reduce((count, folder) => (
-      count + 1 + (collapsedFolderIds.includes(folder.id) ? 0 : (folderChildrenByParent.get(folder.id)?.length || 0))
-    ), 0)
-  ), [rootFolders, folderChildrenByParent, collapsedFolderIds]);
+    visibleFolderEntries.length
+  ), [visibleFolderEntries]);
   const activeCanvas = useMemo(() => (
     canvases.find(canvas => canvas.id === activeCanvasId) || canvases.find(canvas => canvas.isActive) || null
   ), [canvases, activeCanvasId]);
@@ -6680,6 +6730,16 @@ function MainApp() {
     });
     return counts;
   }, [folders, items]);
+  const visibleFolderIds = useMemo(() => visibleFolderEntries.map(entry => entry.folder.id), [visibleFolderEntries]);
+  const folderMoveSelectionIds = useMemo(() => (
+    selectedFolderIds.filter(id => folders.some(folder => folder.id === id))
+  ), [folders, selectedFolderIds]);
+  const folderMoveTargetEntries = orderedFolderEntries;
+  const isInvalidFolderMoveTarget = useCallback((targetId: string | null, movingIds = folderMoveSelectionIds) => {
+    if (!targetId) return false;
+    if (movingIds.includes(targetId)) return true;
+    return movingIds.some(id => isDrawerFolderDescendant(folders, targetId, id));
+  }, [folderMoveSelectionIds, folders]);
   const mainDrawerItemCount = useMemo(() => items.filter(item => !item.folderId).length, [items]);
   const displayItems = useMemo(() => {
     let result = items as AlchemyBufferItem[];
@@ -8061,6 +8121,7 @@ function MainApp() {
       setShowSettings(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false);
       setShowHelp(false); setShowQR(false); setIsSelectMode(false); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null;
       setConfirmDialog(prev => ({...prev, isOpen: false})); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
+      setFolderContextMenu(null); setShowMoveExistingFolderModal(false);
       setIsSearchActive(false); setSearchQuery(''); setEditingFolderId(null); setShowUpdateLog(false);
     }
   }, [isOpen, isPinned]);
@@ -8135,13 +8196,27 @@ function MainApp() {
       }
     };
     void restoreActiveCanvas();
-    invoke('load_folders').then((savedFolders: any) => {
-      if (savedFolders && savedFolders.length > 0) {
-        const normalizedFolders = normalizeDrawerFolders(savedFolders);
-        setFolders(normalizedFolders);
-        localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
+    const restoreFolders = async () => {
+      try {
+        const backendFolders = await listFolders(DEFAULT_LIBRARY_ID);
+        if (backendFolders && backendFolders.length > 0) {
+          const normalizedFolders = normalizeDrawerFolders(backendFolders);
+          setFolders(normalizedFolders);
+          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
+          return;
+        }
+      } catch (err) {
+        console.warn('恢复后端文件夹失败，尝试旧文件夹状态:', err);
       }
-    }).catch(()=>{});
+      invoke('load_folders').then((savedFolders: any) => {
+        if (savedFolders && savedFolders.length > 0) {
+          const normalizedFolders = normalizeDrawerFolders(savedFolders);
+          setFolders(normalizedFolders);
+          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
+        }
+      }).catch(()=>{});
+    };
+    void restoreFolders();
   }, []);
 
   const saveDrawerItemsNow = () => {
@@ -18691,7 +18766,7 @@ function MainApp() {
     const name = newFolderName.trim();
     if (!name) return;
     const parent = newFolderParentId
-      ? folders.find(folder => folder.id === newFolderParentId && !folder.parentId)
+      ? folders.find(folder => folder.id === newFolderParentId)
       : null;
     const parentId = parent?.id;
     const hasDuplicate = folders.some(folder => (
@@ -18732,6 +18807,141 @@ function MainApp() {
         : '文件夹已删除，内容已移回主抽屉');
   };
 
+  const getFolderActionIds = (folderId?: string | null) => {
+    const selection = selectedFolderIdsRef.current.filter(id => foldersRef.current.some(folder => folder.id === id));
+    if (folderId && selection.includes(folderId)) return selection;
+    return folderId && foldersRef.current.some(folder => folder.id === folderId) ? [folderId] : selection;
+  };
+
+  const handleDrawerFolderSelectionClick = (folderId: string, event: React.MouseEvent) => {
+    const isRangeSelect = event.shiftKey;
+    const isToggleSelect = event.ctrlKey || event.metaKey;
+    if (isRangeSelect) {
+      const lastId = lastSelectedFolderIdRef.current;
+      if (lastId && visibleFolderIds.includes(lastId) && visibleFolderIds.includes(folderId)) {
+        const start = visibleFolderIds.indexOf(lastId);
+        const end = visibleFolderIds.indexOf(folderId);
+        const rangeIds = visibleFolderIds.slice(Math.min(start, end), Math.max(start, end) + 1);
+        setSelectedFolderIds(rangeIds);
+      } else {
+        setSelectedFolderIds([folderId]);
+      }
+      lastSelectedFolderIdRef.current = folderId;
+      return false;
+    }
+    if (isToggleSelect) {
+      setSelectedFolderIds(prev => (
+        prev.includes(folderId) ? prev.filter(id => id !== folderId) : [...prev, folderId]
+      ));
+      lastSelectedFolderIdRef.current = folderId;
+      return false;
+    }
+    setSelectedFolderIds([folderId]);
+    lastSelectedFolderIdRef.current = folderId;
+    return true;
+  };
+
+  const openMoveExistingFolderModal = (folderIds: string[]) => {
+    const cleanIds = Array.from(new Set(folderIds.filter(id => foldersRef.current.some(folder => folder.id === id))));
+    if (cleanIds.length === 0) return;
+    setSelectedFolderIds(cleanIds);
+    lastSelectedFolderIdRef.current = cleanIds[cleanIds.length - 1] || null;
+    setFolderMoveTargetId(null);
+    setShowMoveExistingFolderModal(true);
+    setShowMoveFolderModal(false);
+    setShowFolderModal(false);
+    setFolderContextMenu(null);
+  };
+
+  const moveDrawerFoldersToParent = async (folderIds: string[], targetParentId?: string | null) => {
+    const cleanIds = Array.from(new Set(folderIds.filter(id => foldersRef.current.some(folder => folder.id === id))));
+    const normalizedTargetId = targetParentId || null;
+    if (cleanIds.length === 0) return;
+    if (isInvalidFolderMoveTarget(normalizedTargetId, cleanIds)) {
+      showToast('不能移动到自身或子文件夹中');
+      return;
+    }
+    setIsMovingFolders(true);
+    try {
+      const updatedFolders = await moveFolders({
+        folderIds: cleanIds,
+        newParentId: normalizedTargetId,
+        libraryId: DEFAULT_LIBRARY_ID,
+      });
+      const normalizedFolders = normalizeDrawerFolders(updatedFolders);
+      const existingIds = new Set(normalizedFolders.map(folder => folder.id));
+      setFolders(normalizedFolders);
+      setSelectedFolderIds(cleanIds.filter(id => existingIds.has(id)));
+      if (normalizedTargetId) {
+        setCollapsedFolderIds(prev => prev.filter(id => id !== normalizedTargetId));
+      }
+      setFolderMoveTargetId(null);
+      setShowMoveExistingFolderModal(false);
+      setFolderContextMenu(null);
+      showToast(normalizedTargetId
+        ? `已移动 ${cleanIds.length} 个文件夹`
+        : `已移动 ${cleanIds.length} 个文件夹到主抽屉`);
+    } catch (err) {
+      console.warn('移动文件夹失败:', err);
+      showToast(`移动文件夹失败：${String(err || '未知错误')}`);
+    } finally {
+      setIsMovingFolders(false);
+    }
+  };
+
+  const handleFolderContextMenu = (event: React.MouseEvent, folderId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-folder-control="true"], input, textarea, select')) {
+      return;
+    }
+    const actionIds = getFolderActionIds(folderId);
+    if (!actionIds.includes(folderId) || actionIds.length === 0) {
+      setSelectedFolderIds([folderId]);
+      lastSelectedFolderIdRef.current = folderId;
+    }
+    setFolderContextMenu({ x: event.clientX, y: event.clientY, folderId });
+  };
+
+  const deleteDrawerFolders = (folderIds: string[]) => {
+    const cleanIds = Array.from(new Set(folderIds.filter(id => foldersRef.current.some(folder => folder.id === id))));
+    if (cleanIds.length === 0) return;
+    const currentFolders = foldersRef.current;
+    const removedIds = new Set<string>();
+    cleanIds.forEach(id => {
+      if (removedIds.has(id)) return;
+      const plan = getDrawerFolderDeletionPlan(currentFolders, id);
+      plan?.removedIds.forEach(removedId => removedIds.add(removedId));
+    });
+    if (removedIds.size === 0) return;
+    const getDestinationId = (folderId: string) => {
+      let cursor = currentFolders.find(folder => folder.id === folderId);
+      const seen = new Set<string>();
+      while (cursor?.parentId && !seen.has(cursor.parentId)) {
+        seen.add(cursor.parentId);
+        if (!removedIds.has(cursor.parentId)) return cursor.parentId;
+        cursor = currentFolders.find(folder => folder.id === cursor?.parentId);
+      }
+      return undefined;
+    };
+    pushDrawerUndoSnapshot(cleanIds.length > 1 ? '删除多个文件夹' : '删除文件夹');
+    setFolders(prev => prev.filter(folder => !removedIds.has(folder.id)));
+    setItems(prev => prev.map(item => (
+      item.folderId && removedIds.has(item.folderId)
+        ? { ...item, folderId: getDestinationId(item.folderId) }
+        : item
+    )));
+    setCollapsedFolderIds(prev => prev.filter(folderId => !removedIds.has(folderId)));
+    setSelectedFolderIds([]);
+    lastSelectedFolderIdRef.current = null;
+    setFolderContextMenu(null);
+    if (removedIds.has(activeFolderIdStateRef.current)) {
+      setActiveFolderId(getDestinationId(activeFolderIdStateRef.current) || 'all');
+    }
+    showToast(cleanIds.length > 1 ? `已删除 ${cleanIds.length} 个文件夹` : '文件夹已删除');
+  };
+
   const getDraggedDrawerItemId = (dt?: DataTransfer | null) => {
     if (!dt) return draggingItemIdRef.current || '';
     return (
@@ -18741,6 +18951,47 @@ function MainApp() {
       draggingItemIdRef.current ||
       ''
     );
+  };
+
+  const getDraggedDrawerFolderIds = (dt?: DataTransfer | null) => {
+    const activeIds = draggingFolderIdsRef.current;
+    if (activeIds.length > 0) return activeIds;
+    if (!dt) return [];
+    const types = Array.from(dt.types || []);
+    if (!types.includes(FOLDER_DRAG_MIME)) return [];
+    try {
+      const parsed = JSON.parse(dt.getData(FOLDER_DRAG_MIME) || '[]');
+      return Array.isArray(parsed)
+        ? parsed.map(String).filter(id => foldersRef.current.some(folder => folder.id === id))
+        : [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const clearDrawerFolderDragState = () => {
+    setDraggingFolderIds([]);
+    setFolderMoveDragOverId(null);
+    setDragOverFolderId(null);
+  };
+
+  const handleDrawerFolderDragStart = (event: React.DragEvent, folderId: string) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-folder-control="true"], input, textarea, select')) {
+      event.preventDefault();
+      return;
+    }
+    const actionIds = getFolderActionIds(folderId);
+    const dragIds = actionIds.length > 0 ? actionIds : [folderId];
+    setSelectedFolderIds(dragIds);
+    lastSelectedFolderIdRef.current = folderId;
+    setDraggingFolderIds(dragIds);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData(FOLDER_DRAG_MIME, JSON.stringify(dragIds));
+  };
+
+  const handleDrawerFolderDragEnd = () => {
+    clearDrawerFolderDragState();
   };
 
   const moveDrawerItemToFolder = (itemId: string, folderId?: string, folderName?: string) => {
@@ -18958,9 +19209,7 @@ function MainApp() {
     const name = moveFolderName.trim();
     if (!name || selectedIds.length === 0) return;
     const activeFolder = folders.find(folder => folder.id === activeFolderId);
-    const parentFolder = activeFolder?.parentId
-      ? folders.find(folder => folder.id === activeFolder.parentId && !folder.parentId)
-      : activeFolder;
+    const parentFolder = activeFolder || null;
     const parentId = parentFolder?.id;
     const hasDuplicate = folders.some(folder => (
       (folder.parentId || undefined) === parentId && folder.name.toLocaleLowerCase() === name.toLocaleLowerCase()
@@ -19002,12 +19251,35 @@ function MainApp() {
     e.preventDefault();
     e.stopPropagation();
 
+    const folderIds = getDraggedDrawerFolderIds(e.dataTransfer);
+    if (folderIds.length > 0) {
+      const targetId = folderId === 'all' ? null : folderId || null;
+      if (isInvalidFolderMoveTarget(targetId, folderIds)) {
+        showToast('不能移动到自身或子文件夹中');
+      } else {
+        void moveDrawerFoldersToParent(folderIds, targetId);
+      }
+      clearDrawerFolderDragState();
+      return;
+    }
+
     const itemId = getDraggedDrawerItemId(e.dataTransfer);
     moveDrawerItemToFolder(itemId, folderId, folderName);
     clearDrawerItemDragState();
   };
 
   const handleDrawerItemDragOverFolder = (e: React.DragEvent, folderId: string) => {
+    const folderIds = getDraggedDrawerFolderIds(e.dataTransfer);
+    if (folderIds.length > 0) {
+      const targetId = folderId === 'all' ? null : folderId;
+      const invalid = isInvalidFolderMoveTarget(targetId, folderIds);
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = invalid ? 'none' : 'move';
+      setDragOverFolderId(folderId);
+      setFolderMoveDragOverId(invalid ? folderId : null);
+      return;
+    }
     const itemId = getDraggedDrawerItemId(e.dataTransfer);
     if (!itemId || !items.some(i => i.id === itemId)) return;
     e.preventDefault();
@@ -19019,6 +19291,7 @@ function MainApp() {
   const handleDrawerItemDragLeaveFolder = (e: React.DragEvent, folderId: string) => {
     if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
     setDragOverFolderId(prev => prev === folderId ? null : prev);
+    setFolderMoveDragOverId(prev => prev === folderId ? null : prev);
   };
 
   const handleDrawerFolderPointerEnter = (folderId: string) => {
@@ -20680,6 +20953,7 @@ useEffect(() => {
         showWebImageCollector ||
         showFolderModal ||
         showMoveFolderModal ||
+        showMoveExistingFolderModal ||
         isSearchActive ||
         confirmDialog.isOpen ||
         !!selectedImage ||
@@ -20709,6 +20983,7 @@ useEffect(() => {
     showWebImageCollector,
     showFolderModal,
     showMoveFolderModal,
+    showMoveExistingFolderModal,
     isSearchActive,
     confirmDialog.isOpen,
     selectedImage,
@@ -20748,6 +21023,9 @@ useEffect(() => {
     showTextInput ||
     showWebImageCollector ||
     showFolderModal ||
+    showMoveFolderModal ||
+    showMoveExistingFolderModal ||
+    !!folderContextMenu ||
     isSearchActive ||
     editingFolderId !== null ||
     confirmDialog.isOpen ||
@@ -20771,6 +21049,10 @@ useEffect(() => {
     isDrawerAgentOpen ||
     showTextInput ||
     showWebImageCollector ||
+    showFolderModal ||
+    showMoveFolderModal ||
+    showMoveExistingFolderModal ||
+    !!folderContextMenu ||
     editingFolderId !== null ||
     confirmDialog.isOpen ||
     showLaunchIntro ||
@@ -21946,8 +22228,8 @@ useEffect(() => {
           const folderName = String(args.name || '').trim();
           if (!folderName) throw new Error('文件夹名称不能为空');
           const parentId = String(args.folderId || '').trim() || undefined;
-          const parent = parentId ? foldersRef.current.find(folder => folder.id === parentId && !folder.parentId) : undefined;
-          if (parentId && !parent) throw new Error('父文件夹不存在或不能继续嵌套');
+          const parent = parentId ? foldersRef.current.find(folder => folder.id === parentId) : undefined;
+          if (parentId && !parent) throw new Error('父文件夹不存在');
           if (foldersRef.current.some(folder => (folder.parentId || undefined) === parentId && folder.name.toLowerCase() === folderName.toLowerCase())) {
             throw new Error('已有同名文件夹');
           }
@@ -23563,26 +23845,35 @@ useEffect(() => {
   }, [isLicenseGateActive]);
 
   const newFolderParent = newFolderParentId
-    ? folders.find(folder => folder.id === newFolderParentId && !folder.parentId) || null
+    ? folders.find(folder => folder.id === newFolderParentId) || null
     : null;
   const activeFolderForMove = folders.find(folder => folder.id === activeFolderId);
   const moveFolderParent = activeFolderForMove?.parentId
-    ? folders.find(folder => folder.id === activeFolderForMove.parentId && !folder.parentId) || null
+    ? folders.find(folder => folder.id === activeFolderForMove.parentId) || null
     : activeFolderForMove || null;
-  const renderDrawerFolderRailItem = (folder: Folder, folderIndex: number, isChild = false) => {
+  const renderDrawerFolderRailItem = (folder: Folder, folderIndex: number, depth = 0) => {
     const folderTone = DRAWER_FOLDER_TONES[folderIndex % DRAWER_FOLDER_TONES.length];
     const isFolderActive = activeFolderId === folder.id;
     const isFolderDragOver = dragOverFolderId === folder.id;
+    const isFolderSelected = selectedFolderIds.includes(folder.id);
+    const isInvalidDropTarget = folderMoveDragOverId === folder.id;
     const folderPathName = getDrawerFolderPathName(folders, folder.id) || folder.name;
     const folderItemCount = folderItemCounts.get(folder.id) || 0;
-    const childFolders = isChild ? [] : (folderChildrenByParent.get(folder.id) || []);
+    const childFolders = folderChildrenByParent.get(folder.id) || [];
     const isCollapsed = collapsedFolderIds.includes(folder.id);
+    const isNested = depth > 0;
+    const nestedOffset = Math.min(depth, 3) * 5;
     return (
       <div
         key={folder.id}
-        className={`relative shrink-0 flex flex-col items-center w-full group/folder ${isChild ? 'translate-x-1' : ''}`}
+        className="relative shrink-0 flex flex-col items-center w-full group/folder"
+        style={isNested ? { paddingLeft: nestedOffset } : undefined}
         data-folder-drop-id={folder.id}
         data-folder-drop-name={folderPathName}
+        draggable={!editingFolderId}
+        onDragStart={(event) => handleDrawerFolderDragStart(event, folder.id)}
+        onDragEnd={handleDrawerFolderDragEnd}
+        onContextMenu={(event) => handleFolderContextMenu(event, folder.id)}
         onPointerEnter={() => handleDrawerFolderPointerEnter(folder.id)}
         onPointerLeave={() => handleDrawerFolderPointerLeave(folder.id)}
         onPointerUp={() => handleDrawerFolderPointerUp(folder.id, folderPathName)}
@@ -23598,32 +23889,35 @@ useEffect(() => {
               requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
               return;
             }
-            setActiveFolderId(folder.id);
+            if (handleDrawerFolderSelectionClick(folder.id, event)) {
+              setActiveFolderId(folder.id);
+            }
           }}
-          className={`relative mb-1 flex items-center justify-center cursor-pointer transition-all shadow-sm ${isChild ? 'h-8 w-8 rounded-[12px]' : 'h-10 w-10 rounded-[16px]'} ${isFolderDragOver ? `${folderTone.drag} scale-105` : isFolderActive ? `${folderTone.active} scale-105` : `bg-white/70 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 dark:text-stone-400 ${folderTone.soft} hover:scale-105`}`}
+          className={`relative mb-1 flex items-center justify-center cursor-pointer transition-all shadow-sm ${isNested ? 'h-8 w-8 rounded-[12px]' : 'h-10 w-10 rounded-[16px]'} ${isInvalidDropTarget ? 'bg-red-50 text-red-600 ring-2 ring-red-300 dark:bg-red-500/15 dark:text-red-200 dark:ring-red-400/35' : isFolderDragOver ? `${folderTone.drag} scale-105` : isFolderActive ? `${folderTone.active} scale-105` : isFolderSelected ? 'bg-emerald-50 text-emerald-700 ring-2 ring-emerald-300 dark:bg-emerald-400/15 dark:text-emerald-100 dark:ring-emerald-300/35' : `bg-white/70 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 dark:text-stone-400 ${folderTone.soft} hover:scale-105`}`}
           title={isCanvasMode ? `${folderPathName}：点击把图片加入画布` : folderPathName}
         >
-          <FolderOpen className={`${isChild ? 'h-4 w-4' : 'h-5 w-5'} ${isFolderActive ? 'opacity-100' : 'opacity-85'}`} />
+          <FolderOpen className={`${isNested ? 'h-4 w-4' : 'h-5 w-5'} ${isFolderActive || isFolderSelected ? 'opacity-100' : 'opacity-85'}`} />
           <span className={`absolute -right-1.5 -top-1.5 ${folderTone.badge} min-w-[16px] rounded-full px-1 text-center text-[9px] font-bold text-white shadow-sm ring-2 ring-white/80 pointer-events-none dark:ring-stone-900/70`}>
             {folderItemCount}
           </span>
           <button
             type="button"
-            onClick={(event) => { event.stopPropagation(); handleDeleteFolder(folder.id); }}
+            data-folder-control="true"
+            onClick={(event) => { event.stopPropagation(); deleteDrawerFolders(getFolderActionIds(folder.id)); }}
             className="absolute -left-1.5 -top-1.5 z-10 rounded-full bg-red-500 p-0.5 text-white opacity-0 shadow-sm transition-opacity hover:scale-110 group-hover/folder:opacity-100"
-            title={isChild ? '删除子目录（内容移回项目）' : childFolders.length > 0 ? '删除项目及子目录（不删内容）' : '删除文件夹（不删内容）'}
+            title={childFolders.length > 0 ? '删除文件夹及子目录（不删内容）' : '删除文件夹（不删内容）'}
           ><X className="h-2.5 w-2.5" /></button>
-          {!isChild && (
+          <button
+            type="button"
+            data-folder-control="true"
+            onClick={(event) => { event.stopPropagation(); handleOpenFolderModal(folder.id); }}
+            className="absolute -bottom-1.5 -left-1.5 z-10 rounded-full bg-emerald-500 p-0.5 text-white opacity-0 shadow-sm transition-opacity hover:scale-110 group-hover/folder:opacity-100"
+            title={`在「${folder.name}」中新建子目录`}
+          ><Plus className="h-2.5 w-2.5" /></button>
+          {childFolders.length > 0 && (
             <button
               type="button"
-              onClick={(event) => { event.stopPropagation(); handleOpenFolderModal(folder.id); }}
-              className="absolute -bottom-1.5 -left-1.5 z-10 rounded-full bg-emerald-500 p-0.5 text-white opacity-0 shadow-sm transition-opacity hover:scale-110 group-hover/folder:opacity-100"
-              title={`在「${folder.name}」中新建子目录`}
-            ><Plus className="h-2.5 w-2.5" /></button>
-          )}
-          {!isChild && childFolders.length > 0 && (
-            <button
-              type="button"
+              data-folder-control="true"
               onClick={(event) => {
                 event.stopPropagation();
                 setCollapsedFolderIds(prev => (
@@ -23647,16 +23941,16 @@ useEffect(() => {
               if (event.key === 'Escape') setEditingFolderId(null);
             }}
             onClick={event => event.stopPropagation()}
-            className={`${isChild ? 'w-12' : 'w-14'} rounded bg-stone-200 pb-0.5 text-center text-[10px] text-stone-800 outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-stone-700 dark:text-stone-200`}
+            data-folder-control="true"
+            className={`${isNested ? 'w-12' : 'w-14'} rounded bg-stone-200 pb-0.5 text-center text-[10px] text-stone-800 outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-stone-700 dark:text-stone-200`}
           />
         ) : (
           <span
             onDoubleClick={(event) => { event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
-            onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
-            className={`${isChild ? 'flex w-14 items-center justify-start gap-0.5 px-0.5' : 'w-14 truncate px-0.5 text-center'} pb-1 text-[10px] cursor-text ${isFolderActive ? `${folderTone.label} font-bold` : isChild ? 'text-sky-600 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200' : 'text-stone-500 hover:text-blue-500 dark:text-stone-400 dark:hover:text-blue-300'}`}
-            title={`${folderPathName}；双击或右键改名`}
+            className={`${isNested ? 'flex w-14 items-center justify-start gap-0.5 px-0.5' : 'w-14 truncate px-0.5 text-center'} pb-1 text-[10px] cursor-default ${isFolderActive ? `${folderTone.label} font-bold` : isFolderSelected ? 'font-bold text-emerald-700 dark:text-emerald-200' : isNested ? 'text-sky-600 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200' : 'text-stone-500 hover:text-blue-500 dark:text-stone-400 dark:hover:text-blue-300'}`}
+            title={`${folderPathName}；双击重命名，右键更多操作`}
           >
-            {isChild ? (
+            {isNested ? (
               <>
                 <span aria-hidden="true" className="w-2.5 shrink-0 text-right leading-none">↳</span>
                 <span className="min-w-0 flex-1 truncate text-left">{folder.name}</span>
@@ -23668,17 +23962,24 @@ useEffect(() => {
     );
   };
 
-  const renderDrawerFolderListItem = (folder: Folder, _folderIndex: number, isChild = false) => {
+  const renderDrawerFolderListItem = (folder: Folder, _folderIndex: number, depth = 0) => {
     const isFolderActive = activeFolderId === folder.id;
     const isFolderDragOver = dragOverFolderId === folder.id;
+    const isFolderSelected = selectedFolderIds.includes(folder.id);
+    const isInvalidDropTarget = folderMoveDragOverId === folder.id;
     const folderPathName = getDrawerFolderPathName(folders, folder.id) || folder.name;
     const folderItemCount = folderItemCounts.get(folder.id) || 0;
-    const childFolders = isChild ? [] : (folderChildrenByParent.get(folder.id) || []);
+    const childFolders = folderChildrenByParent.get(folder.id) || [];
     const isCollapsed = collapsedFolderIds.includes(folder.id);
+    const rowPaddingLeft = 8 + Math.min(depth, 6) * 16;
     const rowClassName = isFolderDragOver
-      ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25'
+      ? isInvalidDropTarget
+        ? 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-400/14 dark:text-red-100 dark:ring-red-300/25'
+        : 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25'
       : isFolderActive
         ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white'
+        : isFolderSelected
+          ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200 dark:bg-emerald-400/14 dark:text-emerald-100 dark:ring-emerald-300/25'
         : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white';
 
     return (
@@ -23687,6 +23988,10 @@ useEffect(() => {
         className="group/folder-list relative w-full shrink-0"
         data-folder-drop-id={folder.id}
         data-folder-drop-name={folderPathName}
+        draggable={!editingFolderId}
+        onDragStart={(event) => handleDrawerFolderDragStart(event, folder.id)}
+        onDragEnd={handleDrawerFolderDragEnd}
+        onContextMenu={(event) => handleFolderContextMenu(event, folder.id)}
         onPointerEnter={() => handleDrawerFolderPointerEnter(folder.id)}
         onPointerLeave={() => handleDrawerFolderPointerLeave(folder.id)}
         onPointerUp={() => handleDrawerFolderPointerUp(folder.id, folderPathName)}
@@ -23703,13 +24008,17 @@ useEffect(() => {
               requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
               return;
             }
-            setActiveFolderId(folder.id);
+            if (handleDrawerFolderSelectionClick(folder.id, event)) {
+              setActiveFolderId(folder.id);
+            }
           }}
-          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 text-left text-[13px] font-semibold transition-all ${rowClassName} ${isChild ? 'pl-6' : ''}`}
+          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] pr-2 text-left text-[13px] font-semibold transition-all ${rowClassName}`}
+          style={{ paddingLeft: rowPaddingLeft }}
           title={isCanvasMode ? `${folderPathName}：点击把图片加入画布` : folderPathName}
         >
-          {!isChild && childFolders.length > 0 ? (
+          {childFolders.length > 0 ? (
             <span
+              data-folder-control="true"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -23723,9 +24032,9 @@ useEffect(() => {
               {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
             </span>
           ) : (
-            <span className={`h-5 w-5 shrink-0 ${isChild ? 'hidden' : ''}`} />
+            <span className="h-5 w-5 shrink-0" />
           )}
-          {isChild && <span aria-hidden="true" className="h-px w-3 shrink-0 bg-stone-300 dark:bg-stone-700" />}
+          {depth > 0 && <span aria-hidden="true" className="h-px w-3 shrink-0 bg-stone-300 dark:bg-stone-700" />}
           <FolderOpen className={`h-4 w-4 shrink-0 ${isFolderActive ? 'text-amber-300' : 'fill-amber-300/35 text-amber-500 dark:fill-amber-300/18 dark:text-amber-300'}`} />
           {editingFolderId === folder.id ? (
             <input
@@ -23738,14 +24047,14 @@ useEffect(() => {
                 if (event.key === 'Escape') setEditingFolderId(null);
               }}
               onClick={event => event.stopPropagation()}
+              data-folder-control="true"
               className="min-w-0 flex-1 rounded bg-white/90 px-1.5 py-0.5 text-[12px] text-stone-800 outline-none ring-1 ring-emerald-400 dark:bg-stone-800 dark:text-stone-100"
             />
           ) : (
             <span
               onDoubleClick={(event) => { event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
-              onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEditingFolderId(folder.id); setRenameValue(folder.name); }}
               className="min-w-0 flex-1 truncate"
-              title={`${folderPathName}；双击或右键改名`}
+              title={`${folderPathName}；双击重命名，右键更多操作`}
             >
               {folder.name}
             </span>
@@ -23757,22 +24066,22 @@ useEffect(() => {
 
         <button
           type="button"
-          onClick={(event) => { event.stopPropagation(); handleDeleteFolder(folder.id); }}
+          data-folder-control="true"
+          onClick={(event) => { event.stopPropagation(); deleteDrawerFolders(getFolderActionIds(folder.id)); }}
           className="absolute right-1 top-1/2 z-10 hidden -translate-y-1/2 rounded-full bg-red-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/folder-list:block"
-          title={isChild ? '删除子目录（内容移回项目）' : childFolders.length > 0 ? '删除项目及子目录（不删内容）' : '删除文件夹（不删内容）'}
+          title={childFolders.length > 0 ? '删除文件夹及子目录（不删内容）' : '删除文件夹（不删内容）'}
         >
           <X className="h-2.5 w-2.5" />
         </button>
-        {!isChild && (
-          <button
-            type="button"
-            onClick={(event) => { event.stopPropagation(); handleOpenFolderModal(folder.id); }}
-            className="absolute right-7 top-1/2 z-10 hidden -translate-y-1/2 rounded-full bg-emerald-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/folder-list:block"
-            title={`在「${folder.name}」中新建子目录`}
-          >
-            <Plus className="h-2.5 w-2.5" />
-          </button>
-        )}
+        <button
+          type="button"
+          data-folder-control="true"
+          onClick={(event) => { event.stopPropagation(); handleOpenFolderModal(folder.id); }}
+          className="absolute right-7 top-1/2 z-10 hidden -translate-y-1/2 rounded-full bg-emerald-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/folder-list:block"
+          title={`在「${folder.name}」中新建子目录`}
+        >
+          <Plus className="h-2.5 w-2.5" />
+        </button>
       </div>
     );
   };
@@ -23881,6 +24190,81 @@ useEffect(() => {
         {toast.show && (
           <motion.div initial={{ opacity: 0, y: -20, scale: 0.9 }} animate={{ opacity: 1, y: 16, scale: 1 }} exit={{ opacity: 0, y: -20, scale: 0.9 }} className="absolute top-0 right-1/2 translate-x-1/2 z-[999999] bg-stone-800/90 dark:bg-white/90 backdrop-blur-md text-white dark:text-stone-800 px-4 py-2 rounded-full shadow-2xl border border-white/10 dark:border-stone-800/10 text-[11px] font-bold flex items-center gap-2 pointer-events-none will-change-transform">{toast.msg}</motion.div>
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {folderContextMenu && (() => {
+          const actionIds = getFolderActionIds(folderContextMenu.folderId);
+          const targetFolder = folders.find(folder => folder.id === folderContextMenu.folderId);
+          const isBatch = actionIds.length > 1;
+          if (!targetFolder || actionIds.length === 0) return null;
+          return (
+            <motion.div
+              data-folder-context-menu="true"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              transition={{ type: 'tween', duration: 0.12, ease: 'easeOut' }}
+              className="fixed z-[100070] w-44 overflow-hidden rounded-[14px] border border-stone-200 bg-white py-1 text-[11px] font-bold text-stone-700 shadow-xl dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 pointer-events-auto"
+              style={{
+                left: Math.min(folderContextMenu.x, Math.max(12, window.innerWidth - 188)),
+                top: Math.min(folderContextMenu.y, Math.max(12, window.innerHeight - 190)),
+              }}
+              onClick={event => event.stopPropagation()}
+              onMouseDown={event => event.stopPropagation()}
+              onContextMenu={event => event.preventDefault()}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveFolderId(folderContextMenu.folderId);
+                  setFolderContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800"
+              >
+                <FolderOpen className="h-3.5 w-3.5 text-amber-500" />
+                打开
+              </button>
+              <button
+                type="button"
+                onClick={() => handleOpenFolderModal(folderContextMenu.folderId)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800"
+              >
+                <FolderPlus className="h-3.5 w-3.5 text-emerald-500" />
+                新建子文件夹
+              </button>
+              <button
+                type="button"
+                disabled={isBatch}
+                onClick={() => {
+                  setEditingFolderId(folderContextMenu.folderId);
+                  setRenameValue(targetFolder.name);
+                  setFolderContextMenu(null);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 disabled:cursor-not-allowed disabled:text-stone-400 disabled:hover:bg-transparent dark:hover:bg-stone-800 dark:disabled:text-stone-600"
+              >
+                <Edit3 className="h-3.5 w-3.5 text-blue-500" />
+                重命名
+              </button>
+              <button
+                type="button"
+                onClick={() => openMoveExistingFolderModal(actionIds)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800"
+              >
+                <Move className="h-3.5 w-3.5 text-emerald-500" />
+                {isBatch ? `移动 ${actionIds.length} 个文件夹到…` : '移动到…'}
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteDrawerFolders(actionIds)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {isBatch ? `删除 ${actionIds.length} 个文件夹` : '删除'}
+              </button>
+            </motion.div>
+          );
+        })()}
       </AnimatePresence>
 
       <AnimatePresence>
@@ -24206,18 +24590,11 @@ useEffect(() => {
                         <span className="min-w-0 flex-1 truncate">新建文件夹</span>
                       </button>
 
-                      {rootFolders.map((folder, folderIndex) => {
-                        const childFolders = folderChildrenByParent.get(folder.id) || [];
-                        const isCollapsed = collapsedFolderIds.includes(folder.id);
-                        return (
-                          <div key={folder.id} className="flex w-full shrink-0 flex-col gap-1">
-                            {renderDrawerFolderListItem(folder, folderIndex)}
-                            {!isCollapsed && childFolders.map(childFolder => (
-                              renderDrawerFolderListItem(childFolder, folderIndex, true)
-                            ))}
-                          </div>
-                        );
-                      })}
+                      {visibleFolderEntries.map((entry, index) => (
+                        <div key={entry.folder.id} className="flex w-full shrink-0 flex-col gap-1">
+                          {renderDrawerFolderListItem(entry.folder, index, entry.depth)}
+                        </div>
+                      ))}
                     </div>
 
                     {visibleFolderRailEntryCount > 7 && (
@@ -24567,18 +24944,11 @@ useEffect(() => {
                     <span className="text-[10px] w-14 text-center truncate px-0.5 cursor-default pb-1 text-stone-400 dark:text-stone-500">新增</span>
                   </div>
 
-                  {rootFolders.map((folder, folderIndex) => {
-                    const childFolders = folderChildrenByParent.get(folder.id) || [];
-                    const isCollapsed = collapsedFolderIds.includes(folder.id);
-                    return (
-                      <div key={folder.id} className="relative flex w-full shrink-0 flex-col items-center gap-2">
-                        {renderDrawerFolderRailItem(folder, folderIndex)}
-                        {!isCollapsed && childFolders.map(childFolder => (
-                          renderDrawerFolderRailItem(childFolder, folderIndex, true)
-                        ))}
-                      </div>
-                    );
-                  })}
+                  {visibleFolderEntries.map((entry, index) => (
+                    <div key={entry.folder.id} className="relative flex w-full shrink-0 flex-col items-center gap-2">
+                      {renderDrawerFolderRailItem(entry.folder, index, entry.depth)}
+                    </div>
+                  ))}
                 </div>
 
                 {visibleFolderRailEntryCount > 4 && (
@@ -29933,13 +30303,14 @@ useEffect(() => {
                           onClick={() => moveSelectedItemsToFolder(undefined)}
                           className="rounded-[16px] border border-stone-200/70 dark:border-stone-700/70 bg-stone-50/80 dark:bg-stone-900/40 px-3 py-2 text-left text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 transition-colors"
                         >主抽屉</button>
-                        {orderedFolders.map(folder => (
+                        {orderedFolderEntries.map(({ folder, depth }) => (
                           <button
                             key={folder.id}
                             onClick={() => moveSelectedItemsToFolder(folder.id, getDrawerFolderPathName(folders, folder.id))}
-                            className={`rounded-[16px] border px-3 py-2 text-left text-xs font-medium transition-colors truncate ${folder.parentId ? 'ml-2 border-sky-100/80 bg-sky-50/70 text-sky-700 hover:bg-sky-100 dark:border-sky-800/45 dark:bg-sky-900/20 dark:text-sky-300 dark:hover:bg-sky-900/35' : 'border-emerald-100/80 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800/45 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/35'}`}
+                            className={`rounded-[16px] border px-3 py-2 text-left text-xs font-medium transition-colors truncate ${depth > 0 ? 'border-sky-100/80 bg-sky-50/70 text-sky-700 hover:bg-sky-100 dark:border-sky-800/45 dark:bg-sky-900/20 dark:text-sky-300 dark:hover:bg-sky-900/35' : 'border-emerald-100/80 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800/45 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/35'}`}
+                            style={{ marginLeft: Math.min(depth, 5) * 8 }}
                             title={getDrawerFolderPathName(folders, folder.id)}
-                          >{folder.parentId ? `↳ ${folder.name}` : folder.name}</button>
+                          >{depth > 0 ? `↳ ${folder.name}` : folder.name}</button>
                         ))}
                       </div>
                       <div className="rounded-[18px] bg-stone-50/70 dark:bg-stone-900/35 border border-stone-200/60 dark:border-stone-700/60 p-2.5">
@@ -29961,6 +30332,63 @@ useEffect(() => {
                             className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[14px] transition-colors shadow-sm disabled:shadow-none"
                           ><FolderPlus className="w-3.5 h-3.5" /> {moveFolderParent ? '新建子目录' : '新建并移动'}</button>
                         </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {showMoveExistingFolderModal && (
+                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onMouseDown={e => e.stopPropagation()}>
+                      <div className="flex items-center justify-between gap-3 px-1">
+                        <span className="min-w-0 truncate text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5">
+                          <Move className="w-4 h-4 text-emerald-500" />
+                          移动 {folderMoveSelectionIds.length} 个文件夹到…
+                        </span>
+                        <button onClick={() => setShowMoveExistingFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                      </div>
+                      <div className="grid max-h-56 grid-cols-1 gap-2 overflow-y-auto pr-1">
+                        <button
+                          type="button"
+                          onClick={() => setFolderMoveTargetId(null)}
+                          className={`rounded-[16px] border px-3 py-2 text-left text-xs font-bold transition-colors ${folderMoveTargetId === null ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-300/30 dark:bg-blue-400/16 dark:text-blue-100' : 'border-stone-200/70 bg-stone-50/80 text-stone-600 hover:bg-stone-100 dark:border-stone-700/70 dark:bg-stone-900/40 dark:text-stone-300 dark:hover:bg-stone-700'}`}
+                        >
+                          主抽屉 / 根目录
+                        </button>
+                        {folderMoveTargetEntries.map(({ folder, depth }) => {
+                          const disabled = isInvalidFolderMoveTarget(folder.id, folderMoveSelectionIds);
+                          return (
+                            <button
+                              key={folder.id}
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => setFolderMoveTargetId(folder.id)}
+                              className={`rounded-[16px] border px-3 py-2 text-left text-xs font-medium transition-colors truncate disabled:cursor-not-allowed disabled:opacity-45 ${folderMoveTargetId === folder.id ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-300/30 dark:bg-blue-400/16 dark:text-blue-100' : 'border-emerald-100/80 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800/45 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/35'}`}
+                              style={{ marginLeft: Math.min(depth, 5) * 10 }}
+                              title={disabled ? '不能移动到自身或子文件夹中' : getDrawerFolderPathName(folders, folder.id)}
+                            >
+                              {depth > 0 ? `↳ ${folder.name}` : folder.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex justify-end gap-2 px-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowMoveExistingFolderModal(false)}
+                          className="rounded-[14px] bg-stone-100 px-3 py-2 text-xs font-bold text-stone-500 transition-colors hover:bg-stone-200 dark:bg-stone-900/60 dark:text-stone-300 dark:hover:bg-stone-700"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void moveDrawerFoldersToParent(folderMoveSelectionIds, folderMoveTargetId)}
+                          disabled={isMovingFolders || folderMoveSelectionIds.length === 0 || isInvalidFolderMoveTarget(folderMoveTargetId, folderMoveSelectionIds)}
+                          className="flex items-center gap-1.5 rounded-[14px] bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 dark:disabled:bg-stone-700"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          {isMovingFolders ? '移动中' : '确认移动'}
+                        </button>
                       </div>
                     </motion.div>
                   )}

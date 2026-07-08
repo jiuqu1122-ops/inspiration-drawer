@@ -54,6 +54,21 @@ pub struct AssetUpdatePatch {
     pub metadata: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveFoldersOptions {
+    #[serde(default, alias = "folder_ids")]
+    pub folder_ids: Vec<String>,
+    #[serde(default, alias = "new_parent_id")]
+    pub new_parent_id: Option<String>,
+    #[serde(default, alias = "library_id")]
+    pub library_id: Option<String>,
+    #[serde(default, alias = "insert_position")]
+    pub insert_position: Option<i64>,
+    #[serde(default, alias = "sort_order")]
+    pub sort_order: Option<i64>,
+}
+
 pub trait AssetRepository {
     fn list_assets(&self, options: AssetListOptions) -> Result<Vec<Value>, String>;
     fn get_asset_by_id(&self, id: &str) -> Result<Option<Value>, String>;
@@ -66,6 +81,7 @@ pub trait AssetRepository {
     fn debug_get_all_canvas_nodes(&self, options: DebugCanvasNodesOptions) -> Result<Value, String>;
     fn upsert_canvas_nodes(&self, canvas_id: String, nodes: Vec<Value>) -> Result<usize, String>;
     fn list_folders(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
+    fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String>;
     fn list_tags(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
     fn get_asset_thumbnails(&self, asset_id: &str) -> Result<Vec<Value>, String>;
 }

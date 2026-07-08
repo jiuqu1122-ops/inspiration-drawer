@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::db::connection::{open_connection, should_use_sqlite};
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, ViewportOptions,
+    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
 };
 use crate::repositories::json_asset_repository::JsonAssetRepository;
 use crate::repositories::sqlite_asset_repository::SqliteAssetRepository;
@@ -57,6 +57,10 @@ pub fn upsert_canvas_nodes(app_handle: tauri::AppHandle, canvas_id: String, node
 
 pub fn list_folders(app_handle: tauri::AppHandle, library_id: Option<String>) -> Result<Vec<Value>, String> {
     repository(&app_handle)?.list_folders(library_id)
+}
+
+pub fn move_folders(app_handle: tauri::AppHandle, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
+    repository(&app_handle)?.move_folders(options)
 }
 
 pub fn list_tags(app_handle: tauri::AppHandle, library_id: Option<String>) -> Result<Vec<Value>, String> {

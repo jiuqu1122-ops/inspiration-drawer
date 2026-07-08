@@ -1,9 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use serde_json::{json, Value};
 
+use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, ViewportOptions,
+    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
 };
 
 pub struct JsonAssetRepository {
@@ -122,6 +124,126 @@ impl AssetRepository for JsonAssetRepository {
         self.read_folders()
     }
 
+    fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
+        let folder_ids = normalize_json_folder_ids(options.folder_ids);
+        if folder_ids.is_empty() {
+            return Err("folder_ids cannot be empty".to_string());
+        }
+        let library_id = normalize_json_library_id(options.library_id);
+        let new_parent_id = normalize_json_parent_id(options.new_parent_id);
+        let selected_ids = folder_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut folders = self.read_folders()?;
+        let folder_index_by_id = folders
+            .iter()
+            .enumerate()
+            .filter_map(|(index, folder)| json_value_string(folder, "id").map(|id| (id, index)))
+            .collect::<HashMap<_, _>>();
+
+        for folder_id in &folder_ids {
+            let index = folder_index_by_id
+                .get(folder_id)
+                .copied()
+                .ok_or_else(|| format!("folder not found: {}", folder_id))?;
+            let folder = &folders[index];
+            if json_folder_deleted(folder) {
+                return Err(format!("folder has been deleted: {}", json_value_string(folder, "name").unwrap_or_else(|| folder_id.clone())));
+            }
+            if json_folder_library_id(folder) != library_id {
+                return Err("folders must belong to the same library".to_string());
+            }
+        }
+
+        let parent_by_id = folders
+            .iter()
+            .filter_map(|folder| {
+                let id = json_value_string(folder, "id")?;
+                Some((id, normalize_json_parent_id(json_value_string(folder, "parentId"))))
+            })
+            .collect::<HashMap<_, _>>();
+
+        if let Some(parent_id) = new_parent_id.as_deref() {
+            if selected_ids.contains(parent_id) {
+                return Err("cannot move a folder into itself".to_string());
+            }
+            let target_index = folder_index_by_id
+                .get(parent_id)
+                .copied()
+                .ok_or_else(|| "target folder not found".to_string())?;
+            let target = &folders[target_index];
+            if json_folder_deleted(target) {
+                return Err("target folder has been deleted".to_string());
+            }
+            if json_folder_library_id(target) != library_id {
+                return Err("target folder belongs to a different library".to_string());
+            }
+            for folder_id in &folder_ids {
+                if is_json_descendant_of(&parent_by_id, parent_id, folder_id) {
+                    return Err("cannot move a folder into its own descendant".to_string());
+                }
+            }
+        }
+
+        let max_sibling_sort = folders
+            .iter()
+            .filter(|folder| {
+                json_folder_library_id(folder) == library_id
+                    && !json_folder_deleted(folder)
+                    && json_value_string(folder, "id").map(|id| !selected_ids.contains(&id)).unwrap_or(false)
+                    && normalize_json_parent_id(json_value_string(folder, "parentId")) == new_parent_id
+            })
+            .filter_map(|folder| json_value_i64(folder, "sortOrder"))
+            .max();
+        let start_sort_order = options
+            .sort_order
+            .or(options.insert_position)
+            .unwrap_or_else(|| max_sibling_sort.map(|value| value + 1).unwrap_or(0))
+            .max(0);
+        let now = crate::current_time_millis();
+
+        for (offset, folder_id) in folder_ids.iter().enumerate() {
+            let index = folder_index_by_id
+                .get(folder_id)
+                .copied()
+                .ok_or_else(|| format!("folder not found: {}", folder_id))?;
+            let sort_order = start_sort_order + offset as i64;
+            let folder = folders
+                .get_mut(index)
+                .ok_or_else(|| format!("folder not found: {}", folder_id))?;
+            let object = folder
+                .as_object_mut()
+                .ok_or_else(|| format!("invalid folder payload: {}", folder_id))?;
+            object.insert("libraryId".to_string(), Value::String(library_id.clone()));
+            object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
+            object.insert("updatedAt".to_string(), Value::Number(now.into()));
+            if let Some(parent_id) = new_parent_id.as_deref() {
+                object.insert("parentId".to_string(), Value::String(parent_id.to_string()));
+            } else {
+                object.remove("parentId");
+            }
+        }
+
+        folders.sort_by(|left, right| {
+            let left_sort = json_value_i64(left, "sortOrder").unwrap_or(i64::MAX);
+            let right_sort = json_value_i64(right, "sortOrder").unwrap_or(i64::MAX);
+            left_sort
+                .cmp(&right_sort)
+                .then_with(|| json_value_string(left, "name").unwrap_or_default().cmp(&json_value_string(right, "name").unwrap_or_default()))
+        });
+
+        let path = self.folders_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+        let content = serde_json::to_string(&folders).map_err(|err| err.to_string())?;
+        let temp_path = path.with_extension(format!("json.tmp.{}", now));
+        fs::write(&temp_path, content).map_err(|err| err.to_string())?;
+        if path.exists() {
+            fs::remove_file(&path).map_err(|err| err.to_string())?;
+        }
+        fs::rename(&temp_path, &path).map_err(|err| err.to_string())?;
+        Ok(folders.into_iter().filter(|folder| !json_folder_deleted(folder)).collect())
+    }
+
     fn list_tags(&self, _library_id: Option<String>) -> Result<Vec<Value>, String> {
         Ok(Vec::new())
     }
@@ -133,6 +255,71 @@ impl AssetRepository for JsonAssetRepository {
             })
         }).unwrap_or_default())
     }
+}
+
+fn normalize_json_library_id(library_id: Option<String>) -> String {
+    library_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_LIBRARY_ID)
+        .to_string()
+}
+
+fn normalize_json_parent_id(parent_id: Option<String>) -> Option<String> {
+    parent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "all")
+        .map(ToOwned::to_owned)
+}
+
+fn normalize_json_folder_ids(folder_ids: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    folder_ids
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && seen.insert(value.clone()))
+        .collect()
+}
+
+fn json_value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn json_value_i64(value: &Value, key: &str) -> Option<i64> {
+    value.get(key).and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|item| item as i64)))
+}
+
+fn json_folder_library_id(folder: &Value) -> String {
+    json_value_string(folder, "libraryId").unwrap_or_else(|| DEFAULT_LIBRARY_ID.to_string())
+}
+
+fn json_folder_deleted(folder: &Value) -> bool {
+    json_value_i64(folder, "deletedAt")
+        .or_else(|| json_value_i64(folder, "deleted_at"))
+        .map(|value| value > 0)
+        .unwrap_or(false)
+}
+
+fn is_json_descendant_of(parent_by_id: &HashMap<String, Option<String>>, candidate_parent_id: &str, folder_id: &str) -> bool {
+    let mut cursor = Some(candidate_parent_id.to_string());
+    let mut seen = HashSet::new();
+    while let Some(current_id) = cursor {
+        if current_id == folder_id {
+            return true;
+        }
+        if !seen.insert(current_id.clone()) {
+            return true;
+        }
+        cursor = parent_by_id.get(&current_id).cloned().flatten();
+    }
+    false
 }
 
 fn apply_json_filters(items: &mut Vec<Value>, options: &AssetListOptions) {

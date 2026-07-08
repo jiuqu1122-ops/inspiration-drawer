@@ -1,13 +1,26 @@
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, ViewportOptions,
+    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
 };
 
 pub struct SqliteAssetRepository {
     conn: Connection,
+}
+
+#[derive(Debug, Clone)]
+struct FolderRow {
+    id: String,
+    library_id: String,
+    parent_id: Option<String>,
+    name: String,
+    sort_order: i64,
+    metadata: Value,
+    deleted_at: Option<i64>,
 }
 
 impl SqliteAssetRepository {
@@ -74,6 +87,148 @@ impl SqliteAssetRepository {
         }
 
         format!("WHERE {}", clauses.join(" AND "))
+    }
+
+    fn normalize_library_id(library_id: Option<String>) -> String {
+        library_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_LIBRARY_ID)
+            .to_string()
+    }
+
+    fn normalize_parent_id(parent_id: Option<String>) -> Option<String> {
+        parent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "all")
+            .map(ToOwned::to_owned)
+    }
+
+    fn normalize_folder_ids(folder_ids: Vec<String>) -> Vec<String> {
+        let mut seen = HashSet::new();
+        folder_ids
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty() && seen.insert(value.clone()))
+            .collect()
+    }
+
+    fn fetch_folder_rows(conn: &Connection, library_id: &str) -> Result<Vec<FolderRow>, String> {
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT id, COALESCE(library_id, ?1), parent_id, name, COALESCE(sort_order, 0), metadata_json, deleted_at
+                FROM folders
+                WHERE library_id = ?1
+                ORDER BY sort_order ASC, created_at ASC, name COLLATE NOCASE ASC
+                "#,
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![library_id], |row| {
+                let id: String = row.get(0)?;
+                let row_library_id: String = row.get(1)?;
+                let parent_id: Option<String> = row
+                    .get::<_, Option<String>>(2)?
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty());
+                let name: String = row.get(3)?;
+                let sort_order: i64 = row.get(4)?;
+                let metadata_json: Option<String> = row.get(5)?;
+                let deleted_at: Option<i64> = row.get(6)?;
+                let mut metadata = metadata_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                    .unwrap_or_else(|| json!({ "id": id.clone(), "name": name.clone(), "color": "#10b981" }));
+                if !metadata.is_object() {
+                    metadata = json!({ "id": id.clone(), "name": name.clone(), "color": "#10b981" });
+                }
+                if let Some(object) = metadata.as_object_mut() {
+                    object.insert("id".to_string(), Value::String(id.clone()));
+                    object.insert("name".to_string(), Value::String(name.clone()));
+                    object.insert("libraryId".to_string(), Value::String(row_library_id.clone()));
+                    object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
+                    if let Some(parent_id) = parent_id.as_deref() {
+                        if parent_id.trim().is_empty() {
+                            object.remove("parentId");
+                        } else {
+                            object.insert("parentId".to_string(), Value::String(parent_id.to_string()));
+                        }
+                    } else {
+                        object.remove("parentId");
+                    }
+                    if let Some(deleted_at) = deleted_at {
+                        object.insert("deletedAt".to_string(), Value::Number(deleted_at.into()));
+                    } else {
+                        object.remove("deletedAt");
+                    }
+                }
+                Ok(FolderRow {
+                    id,
+                    library_id: row_library_id,
+                    parent_id,
+                    name,
+                    sort_order,
+                    metadata,
+                    deleted_at,
+                })
+            })
+            .map_err(|err| err.to_string())?;
+        rows.map(|row| row.map_err(|err| err.to_string())).collect()
+    }
+
+    fn list_folders_from_conn(conn: &Connection, library_id: &str) -> Result<Vec<Value>, String> {
+        Self::fetch_folder_rows(conn, library_id).map(|rows| {
+            rows.into_iter()
+                .filter(|row| row.deleted_at.is_none())
+                .map(|row| row.metadata)
+                .collect()
+        })
+    }
+
+    fn is_descendant_of(
+        rows_by_id: &HashMap<String, FolderRow>,
+        candidate_parent_id: &str,
+        folder_id: &str,
+    ) -> bool {
+        let mut cursor = Some(candidate_parent_id.to_string());
+        let mut seen = HashSet::new();
+        while let Some(current_id) = cursor {
+            if current_id == folder_id {
+                return true;
+            }
+            if !seen.insert(current_id.clone()) {
+                return true;
+            }
+            cursor = rows_by_id.get(&current_id).and_then(|row| row.parent_id.clone());
+        }
+        false
+    }
+
+    fn folder_metadata_for_update(row: &FolderRow, library_id: &str, new_parent_id: Option<&str>, sort_order: i64, now: i64) -> Value {
+        let mut metadata = row.metadata.clone();
+        if !metadata.is_object() {
+            metadata = json!({
+                "id": row.id,
+                "name": row.name,
+                "color": "#10b981",
+            });
+        }
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("id".to_string(), Value::String(row.id.clone()));
+            object.insert("name".to_string(), Value::String(row.name.clone()));
+            object.insert("libraryId".to_string(), Value::String(library_id.to_string()));
+            object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
+            object.insert("updatedAt".to_string(), Value::Number(now.into()));
+            if let Some(parent_id) = new_parent_id {
+                object.insert("parentId".to_string(), Value::String(parent_id.to_string()));
+            } else {
+                object.remove("parentId");
+            }
+        }
+        metadata
     }
 
     fn sort_sql(sort: Option<&str>) -> &'static str {
@@ -327,18 +482,100 @@ impl AssetRepository for SqliteAssetRepository {
     }
 
     fn list_folders(&self, library_id: Option<String>) -> Result<Vec<Value>, String> {
-        let library_id = library_id.unwrap_or_else(|| DEFAULT_LIBRARY_ID.to_string());
-        let mut stmt = self.conn.prepare(
-            "SELECT metadata_json FROM folders WHERE library_id = ?1 ORDER BY sort_order ASC, created_at ASC",
-        ).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params![library_id], |row| {
-            let metadata: String = row.get(0)?;
-            Ok(metadata)
-        }).map_err(|err| err.to_string())?;
-        rows.map(|row| {
-            let metadata = row.map_err(|err| err.to_string())?;
-            serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())
-        }).collect()
+        let library_id = Self::normalize_library_id(library_id);
+        Self::list_folders_from_conn(&self.conn, &library_id)
+    }
+
+    fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
+        let folder_ids = Self::normalize_folder_ids(options.folder_ids);
+        if folder_ids.is_empty() {
+            return Err("folder_ids cannot be empty".to_string());
+        }
+        let library_id = Self::normalize_library_id(options.library_id);
+        let new_parent_id = Self::normalize_parent_id(options.new_parent_id);
+        let selected_ids = folder_ids.iter().cloned().collect::<HashSet<_>>();
+        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let rows = Self::fetch_folder_rows(&tx, &library_id)?;
+        let rows_by_id = rows
+            .iter()
+            .cloned()
+            .map(|row| (row.id.clone(), row))
+            .collect::<HashMap<_, _>>();
+
+        for folder_id in &folder_ids {
+            let row = rows_by_id
+                .get(folder_id)
+                .ok_or_else(|| format!("folder not found: {}", folder_id))?;
+            if row.deleted_at.is_some() {
+                return Err(format!("folder has been deleted: {}", row.name));
+            }
+            if row.library_id != library_id {
+                return Err("folders must belong to the same library".to_string());
+            }
+        }
+
+        if let Some(parent_id) = new_parent_id.as_deref() {
+            if selected_ids.contains(parent_id) {
+                return Err("cannot move a folder into itself".to_string());
+            }
+            let target = rows_by_id
+                .get(parent_id)
+                .ok_or_else(|| "target folder not found".to_string())?;
+            if target.deleted_at.is_some() {
+                return Err("target folder has been deleted".to_string());
+            }
+            if target.library_id != library_id {
+                return Err("target folder belongs to a different library".to_string());
+            }
+            for folder_id in &folder_ids {
+                if Self::is_descendant_of(&rows_by_id, parent_id, folder_id) {
+                    return Err("cannot move a folder into its own descendant".to_string());
+                }
+            }
+        }
+
+        let max_sibling_sort = rows
+            .iter()
+            .filter(|row| {
+                row.deleted_at.is_none()
+                    && !selected_ids.contains(&row.id)
+                    && match new_parent_id.as_deref() {
+                        Some(parent_id) => row.parent_id.as_deref() == Some(parent_id),
+                        None => row.parent_id.as_deref().unwrap_or("").trim().is_empty(),
+                    }
+            })
+            .map(|row| row.sort_order)
+            .max();
+        let start_sort_order = options
+            .sort_order
+            .or(options.insert_position)
+            .unwrap_or_else(|| max_sibling_sort.map(|value| value + 1).unwrap_or(0))
+            .max(0);
+        let now = crate::current_time_millis();
+
+        for (index, folder_id) in folder_ids.iter().enumerate() {
+            let row = rows_by_id
+                .get(folder_id)
+                .ok_or_else(|| format!("folder not found: {}", folder_id))?;
+            let sort_order = start_sort_order + index as i64;
+            let metadata = Self::folder_metadata_for_update(row, &library_id, new_parent_id.as_deref(), sort_order, now);
+            let metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
+            let changed = tx
+                .execute(
+                    r#"
+                    UPDATE folders
+                    SET parent_id = ?2, sort_order = ?3, updated_at = ?4, metadata_json = ?5
+                    WHERE id = ?1 AND library_id = ?6 AND deleted_at IS NULL
+                    "#,
+                    params![folder_id, new_parent_id.as_deref(), sort_order, now, metadata_json, &library_id],
+                )
+                .map_err(|err| err.to_string())?;
+            if changed != 1 {
+                return Err(format!("failed to move folder: {}", row.name));
+            }
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+        Self::list_folders_from_conn(&self.conn, &library_id)
     }
 
     fn list_tags(&self, library_id: Option<String>) -> Result<Vec<Value>, String> {

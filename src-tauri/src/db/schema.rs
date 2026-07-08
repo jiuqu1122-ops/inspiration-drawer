@@ -3,7 +3,7 @@ use rusqlite::Connection;
 pub const DEFAULT_LIBRARY_ID: &str = "default";
 pub const DEFAULT_PROJECT_ID: &str = "default";
 pub const DEFAULT_CANVAS_ID: &str = "default";
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -49,6 +49,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             sort_order INTEGER,
             created_at INTEGER,
             updated_at INTEGER,
+            deleted_at INTEGER,
             metadata_json TEXT
         );
 
@@ -179,7 +180,21 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     .map_err(|err| err.to_string())?;
 
     ensure_canvas_schema_migrations(conn)?;
+    ensure_folder_schema_migrations(conn)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn ensure_folder_schema_migrations(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "folders", "deleted_at", "INTEGER")?;
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_folders_library_id ON folders(library_id);
+        CREATE INDEX IF NOT EXISTS idx_folders_parent_id ON folders(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_folders_deleted_at ON folders(deleted_at);
+        "#,
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
