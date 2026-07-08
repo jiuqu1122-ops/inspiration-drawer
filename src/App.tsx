@@ -15922,43 +15922,56 @@ function MainApp() {
         return output;
       };
 
-      while (generatedOutputs.length < requestedCount) {
-        const index = generatedOutputs.length;
-        setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
-          ? { ...output, status: 'working' as const, error: undefined }
-          : output
-        ), { status: 'working', error: undefined });
+      const slotErrors: unknown[] = [];
+      const runOutputSlot = async (index: number) => {
+        while (true) {
+          setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
+            ? { ...output, status: 'working' as const, error: undefined }
+            : output
+          ), { status: 'working', error: undefined });
 
-        try {
-          const batch = mediaType === 'video'
-            ? await generateCanvasAiProviderVideos(generateOptions)
-            : await generateCanvasAiProviderImages(generateOptions);
-          const freshUrls = batch
-            .map(url => url.trim())
-            .filter(url => url && !seenGeneratedUrls.has(url));
-          if (freshUrls.length === 0) {
-            throw new Error(mediaType === 'video' ? '接口没有返回新的视频数据' : '接口没有返回新的图片数据');
+          try {
+            const requestOptions = { ...generateOptions, count: 1 };
+            const batch = mediaType === 'video'
+              ? await generateCanvasAiProviderVideos(requestOptions)
+              : await generateCanvasAiProviderImages(requestOptions);
+            const freshUrl = batch
+              .map(url => url.trim())
+              .find(url => url && !seenGeneratedUrls.has(url));
+            if (!freshUrl) {
+              throw new Error(mediaType === 'video' ? '接口没有返回新的视频数据' : '接口没有返回新的图片数据');
+            }
+            seenGeneratedUrls.add(freshUrl);
+            await placeGeneratedMedia(freshUrl, index);
+            return;
+          } catch (error) {
+            lastPartialError = error;
+            slotErrors[index] = error;
+            if (await retryWithFreshRemoteInputs(error)) {
+              continue;
+            }
+            if (await retryWithStableInputs(error)) {
+              continue;
+            }
+            const failedAt = Date.now();
+            const errorSummary = getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error));
+            setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => (
+              outputIndex === index && output.status !== 'success'
+                ? { ...output, status: 'error' as const, error: errorSummary, generatedAt: output.generatedAt || failedAt }
+                : output
+            )), { status: 'working', error: undefined, generatedAt: failedAt });
+            return;
           }
-          for (const url of freshUrls) {
-            if (generatedOutputs.length >= requestedCount) break;
-            seenGeneratedUrls.add(url);
-            await placeGeneratedMedia(url, generatedOutputs.length);
-          }
-        } catch (error) {
-          lastPartialError = error;
-          if (await retryWithFreshRemoteInputs(error)) {
-            continue;
-          }
-          if (await retryWithStableInputs(error)) {
-            continue;
-          }
-          if (generatedOutputs.length === 0) throw error;
-          break;
         }
-      }
+      };
+
+      await Promise.all(
+        Array.from({ length: requestedCount }, (_, index) => runOutputSlot(index))
+      );
 
       if (generatedOutputs.length === 0) {
-        throw new Error(mediaType === 'video' ? '接口没有返回可用视频' : '接口没有返回可用图片');
+        const firstError = slotErrors.find(Boolean);
+        throw firstError || new Error(mediaType === 'video' ? '接口没有返回可用视频' : '接口没有返回可用图片');
       }
       const finishedAt = Date.now();
       const unit = mediaType === 'video' ? '条视频' : '张图片';
