@@ -8,6 +8,7 @@ import { selectAppAgentSkills } from '../skills/skillRegistry';
 import type { AgentSkillId, ContextScope, SkillMatchInput } from '../skills/types';
 import { uniqueStrings } from '../skills/skillUtils';
 import { extractCreativeBrief } from '../skills/creativeProductDesignSkill';
+import { parseWorkflowBuilderIntent, type WorkflowOutputType } from '../skills/workflowBuilderSkill';
 import { createAppAgentTraceId, type AppAgentTraceRecord } from '../trace/appAgentTrace';
 
 export interface PreparedAppAgentTurn {
@@ -56,6 +57,42 @@ function shouldUseDeterministicPlanForTurn(input: {
   return input.plan.commands.every(command => command.riskLevel !== 'destructive' && command.riskLevel !== 'system_process');
 }
 
+const getIndustrialReviewTraceFields = (actions: LegacyAgentAction[]) => {
+  const validOutputTypes = new Set<WorkflowOutputType>([
+    'hero_view',
+    'storyboard_or_video_keyframe',
+    'detail_view',
+    'cmf_board',
+    'usage_scene',
+    'premium_mood',
+  ]);
+  const generatorActions = actions.filter(action => {
+    if (action.tool !== 'canvas_create_generator') return false;
+    const meta = action.arguments.skillMeta && typeof action.arguments.skillMeta === 'object' && !Array.isArray(action.arguments.skillMeta)
+      ? action.arguments.skillMeta as Record<string, unknown>
+      : {};
+    return meta.workflowTemplateId === 'industrial-design-review';
+  });
+  const outputTypes = uniqueStrings(generatorActions
+    .map(action => {
+      const meta = action.arguments.skillMeta && typeof action.arguments.skillMeta === 'object' && !Array.isArray(action.arguments.skillMeta)
+        ? action.arguments.skillMeta as Record<string, unknown>
+        : {};
+      return String(meta.workflowOutputType || '');
+    })
+    .filter((value): value is WorkflowOutputType => validOutputTypes.has(value as WorkflowOutputType)));
+  const connectedReferenceImageNodeIds = uniqueStrings(generatorActions.flatMap(action => (
+    Array.isArray(action.arguments.referenceImageNodeIds)
+      ? action.arguments.referenceImageNodeIds.map(String)
+      : []
+  )));
+  return {
+    generatorActions,
+    outputTypes,
+    connectedReferenceImageNodeIds,
+  };
+};
+
 export function prepareAppAgentTurn(input: {
   userText: string;
   context: AgentCanvasContext;
@@ -96,6 +133,8 @@ export function prepareAppAgentTurn(input: {
     plan,
     deterministicLegacyActions,
   });
+  const workflowIntent = parseWorkflowBuilderIntent(input.userText);
+  const industrialReviewTrace = getIndustrialReviewTraceFields(deterministicLegacyActions);
   const trace: AppAgentTraceRecord = {
     id: createAppAgentTraceId(),
     createdAt: Date.now(),
@@ -108,6 +147,14 @@ export function prepareAppAgentTurn(input: {
     llmGeneratedActions: [],
     deterministicActionsUsed: shouldUseDeterministicPlan,
     confirmationRequired: plan.requiresConfirmation,
+    workflowIntentDetected: workflowIntent.workflowIntentDetected,
+    outputTypes: industrialReviewTrace.outputTypes.length > 0
+      ? industrialReviewTrace.outputTypes
+      : workflowIntent.outputTypes,
+    workflowTemplateId: workflowIntent.workflowTemplateId,
+    fallbackMode: workflowIntent.workflowTemplateId === 'industrial-design-review' ? 'multi-node' : undefined,
+    createdGeneratorCount: industrialReviewTrace.generatorActions.length || undefined,
+    connectedReferenceImageNodeIds: industrialReviewTrace.connectedReferenceImageNodeIds,
   };
   return {
     matchInput,

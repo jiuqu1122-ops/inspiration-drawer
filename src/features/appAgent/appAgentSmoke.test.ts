@@ -98,6 +98,69 @@ export function runAppAgentSmokeTests() {
   assert(videoGenerator?.arguments.mediaType === 'video', 'explicit video generation should create video generator');
   assert(videoGenerator?.arguments.autoRun === false, 'video generator should default autoRun false');
 
+  const industrialReviewRequest = '帮我设计一个工作流，可以根据参考产品图，自动生成一套工业设计评审图：包括视频图、细节图、CMF图、场景图、高级氛围图等';
+  const industrialReviewContext: AgentCanvasContext = {
+    ...baseContext,
+    selectedIds: ['product-image-node'],
+    visualReferences: [
+      { id: 'product-ref', nodeId: 'product-image-node', name: 'product reference', mediaType: 'image' },
+    ],
+    nodes: [
+      { id: 'product-image-node', type: 'image', name: 'product reference', inputs: [] },
+    ],
+  };
+  const industrialReviewTurn = prepareAppAgentTurn({
+    userText: industrialReviewRequest,
+    context: industrialReviewContext,
+  });
+  assert(industrialReviewTurn.activeSkillIds.includes('workflow-builder-skill'), 'industrial review workflow should match workflow-builder-skill');
+  assert(industrialReviewTurn.activeSkillIds.includes('creative-product-design-skill'), 'industrial review workflow should also match creative-product-design-skill');
+  assert(industrialReviewTurn.shouldUseDeterministicPlan, 'industrial review workflow should use deterministic plan');
+  assert(industrialReviewTurn.trace.deterministicActionsUsed === true, 'industrial review workflow trace should mark deterministic actions used');
+  const industrialCreateActions = industrialReviewTurn.deterministicLegacyActions
+    .filter(action => action.tool === 'canvas_create_text_agent' || action.tool === 'canvas_create_generator');
+  assert(industrialCreateActions.length >= 6, 'industrial review workflow should create at least 6 nodes');
+  const industrialStrategy = industrialReviewTurn.deterministicLegacyActions
+    .find(action => action.tool === 'canvas_create_text_agent');
+  assert(!!industrialStrategy, 'industrial review workflow should create a strategy text-agent');
+  assert(String(industrialStrategy?.arguments.prompt || '').includes('工业设计评审策略'), 'strategy text-agent should be titled as industrial review strategy');
+  const industrialGenerators = industrialReviewTurn.deterministicLegacyActions
+    .filter(action => action.tool === 'canvas_create_generator');
+  assert(industrialGenerators.length >= 5, 'industrial review workflow should create multiple image generators');
+  assert(industrialGenerators.every(action => action.arguments.mediaType === 'image'), 'industrial review workflow should create image generators');
+  assert(!industrialGenerators.some(action => action.arguments.mediaType === 'video'), 'video key visual should not create video generator by default');
+  const industrialPromptText = industrialGenerators.map(action => String(action.arguments.prompt || '')).join('\n');
+  assert(/Hero|主视觉|产品评审/.test(industrialPromptText), 'industrial review workflow should include hero/product review generator');
+  assert(/Detail|细节图/.test(industrialPromptText), 'industrial review workflow should include detail generator');
+  assert(/CMF/.test(industrialPromptText), 'industrial review workflow should include CMF generator');
+  assert(/Usage Scene|场景图/.test(industrialPromptText), 'industrial review workflow should include scene generator');
+  assert(/Premium Mood|高级氛围图/.test(industrialPromptText), 'industrial review workflow should include premium mood generator');
+  assert(/Storyboard|视频分镜图|video key visual/.test(industrialPromptText), 'industrial review workflow should include storyboard/key visual image generator');
+  industrialGenerators.forEach(action => {
+    const inputIds = Array.isArray(action.arguments.inputIds) ? action.arguments.inputIds.map(String) : [];
+    const referenceImageNodeIds = Array.isArray(action.arguments.referenceImageNodeIds)
+      ? action.arguments.referenceImageNodeIds.map(String)
+      : [];
+    assert(inputIds.includes('product-image-node'), 'each industrial review generator inputIds should include selected product image');
+    assert(referenceImageNodeIds.includes('product-image-node'), 'each industrial review generator referenceImageNodeIds should include selected product image');
+    assert(String(action.arguments.prompt || '').includes(`Original request: "${industrialReviewRequest}"`), 'each industrial review generator prompt should include Original request');
+    const meta = action.arguments.skillMeta && typeof action.arguments.skillMeta === 'object' && !Array.isArray(action.arguments.skillMeta)
+      ? action.arguments.skillMeta as Record<string, unknown>
+      : {};
+    assert(String(meta.skillId || '').includes('creative-product-design-skill') || String(meta.skillId || '').includes('workflow-builder-skill'), 'generator skillMeta should include app skill id');
+  });
+  assert(
+    industrialReviewTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_organize'),
+    'industrial review workflow should end with canvas_organize',
+  );
+  assert(industrialReviewTurn.trace.workflowIntentDetected === true, 'trace should record workflowIntentDetected');
+  assert(industrialReviewTurn.trace.workflowTemplateId === 'industrial-design-review', 'trace should record workflowTemplateId');
+  assert(industrialReviewTurn.trace.fallbackMode === 'multi-node', 'trace should record multi-node fallback mode');
+  assert(industrialReviewTurn.trace.createdGeneratorCount === industrialGenerators.length, 'trace should record created generator count');
+  assert(industrialReviewTurn.trace.connectedReferenceImageNodeIds?.includes('product-image-node') === true, 'trace should record connected reference image node ids');
+  assert(industrialReviewTurn.trace.outputTypes?.includes('cmf_board') === true, 'trace should include CMF output type');
+  assert(industrialReviewTurn.trace.outputTypes?.includes('storyboard_or_video_keyframe') === true, 'trace should include storyboard/key visual output type');
+
   const repaired = repairLegacyAgentAction({
     tool: 'canvas_create_generator',
     arguments: { mediaType: 'image', prompt: '做一个手持控制器 CMF 方案', inputIds: ['node-1'], autoRun: false },
@@ -200,6 +263,7 @@ export const APP_AGENT_SMOKE_TESTS = [
   'CMF 16:9 -> generator schema allows aspectRatio/referenceRoles/skillMeta',
   '视频分镜 16比9 -> creative skill + canvas-only context + deterministic text-agent + image generator binding',
   '根据分镜生成视频 -> video generator autoRun false',
+  '工业设计评审工作流 -> workflow + creative skills + multi-node image generator plan',
   'workflow resolver -> selected/drawer/missing product images',
   'edit background without BASE -> validator blocks',
   '清空画布 command -> canvas_manage clear_canvas',

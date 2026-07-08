@@ -2,11 +2,17 @@ import type { AgentCanvasContext } from '../../agentModel';
 import type { AppAgentPlan, AppAgentCommand } from '../commands/commandTypes';
 import type { AgentSkillId, ContextScope, RiskLevel } from '../skills/types';
 import {
+  buildOriginalRequestLine,
   extractCreativeBrief,
   isDirectCreativeExecutionRequest,
   isExplicitVideoGenerationRequest,
   type CreativeBrief,
 } from '../skills/creativeProductDesignSkill';
+import {
+  getIndustrialDesignReviewOutputTypes,
+  parseWorkflowBuilderIntent,
+  type WorkflowOutputType,
+} from '../skills/workflowBuilderSkill';
 
 const createId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -49,6 +55,162 @@ const buildProductStrategyTextAgentPrompt = (brief: CreativeBrief) => [
   brief.generatorPrompt,
 ].join('\n');
 
+const buildWorkflowCreativeContext = (brief: CreativeBrief) => [
+  'Task: industrial_design_review_workflow image suite.',
+  brief.product.isProductTask
+    ? `Product judgement: ${brief.product.category}; usage: ${brief.product.usageMode}; goal: ${brief.product.goal}; stage: ${brief.product.iterationStage}.`
+    : '',
+  brief.product.isProductTask && brief.product.focus.length
+    ? `Design focus: ${brief.product.focus.join(', ')}.`
+    : '',
+  'Industrial design priorities: silhouette and proportion before decoration; structural credibility before visual tricks; CMF must serve product positioning.',
+  'Avoid unrequested generic tech styling, glow lines, carbon fiber, exposed mechanics, excessive cut lines, and decorative noise.',
+  brief.imageRoles.length
+    ? `Image roles: ${brief.imageRoles.map(role => `${role.imageId}=${role.role}`).join(', ')}.`
+    : '',
+  `Fidelity level: ${brief.fidelity}. Preserve explicit constraints, spatial relations, camera angle, structure, materials, text and negative prompts.`,
+  brief.dimensions.targetSize ? `Target size: ${brief.dimensions.targetSize}.` : '',
+  brief.dimensions.aspectRatio ? `Aspect ratio: ${brief.dimensions.aspectRatio}.` : 'Aspect ratio: 16:9.',
+  brief.dimensions.resolution ? `Resolution: ${brief.dimensions.resolution}.` : '',
+  buildOriginalRequestLine(brief.originalRequest),
+].filter(Boolean).join('\n');
+
+const buildIndustrialReviewStrategyPrompt = (brief: CreativeBrief, outputTypes: WorkflowOutputType[]) => [
+  '工业设计评审策略',
+  'Create the upstream strategy for an Industrial Design Review Workflow.',
+  'Cover: product type judgement, usage mode, design risks, CMF boundaries, structural credibility, and unified visual language.',
+  `Planned outputs: ${outputTypes.join(', ')}.`,
+  'Every downstream generator must keep product identity, proportions, key structures, function layout, material logic, and camera language consistent.',
+  buildWorkflowCreativeContext(brief),
+].join('\n');
+
+const INDUSTRIAL_REVIEW_GENERATOR_SPECS: Array<{
+  outputType: WorkflowOutputType;
+  stepId: string;
+  title: string;
+  outputLabel: string;
+  focus: string;
+}> = [
+  {
+    outputType: 'hero_view',
+    stepId: 'heroViewGenerator',
+    title: '产品主视觉 / Hero Render',
+    outputLabel: '产品主视觉 / hero render',
+    focus: 'Create a premium industrial design hero render with clear silhouette, credible structure, controlled lighting, and review-ready composition.',
+  },
+  {
+    outputType: 'detail_view',
+    stepId: 'detailViewGenerator',
+    title: '细节图 / Detail View',
+    outputLabel: '局部细节图 / button / interface / material / structure detail',
+    focus: 'Create macro detail views for buttons, interface, seams, material transitions, structure details, ports, vents, or grip texture.',
+  },
+  {
+    outputType: 'cmf_board',
+    stepId: 'cmfBoardGenerator',
+    title: 'CMF 图 / CMF Board',
+    outputLabel: 'CMF 图 / material color finish board',
+    focus: 'Create a disciplined CMF board showing material, color, finish, texture, accent hierarchy, and product-positioning logic.',
+  },
+  {
+    outputType: 'usage_scene',
+    stepId: 'usageSceneGenerator',
+    title: '场景图 / Usage Scene',
+    outputLabel: '使用场景图 / real usage context',
+    focus: 'Create a realistic usage context image with scale cues, ergonomic interaction, and believable environment while keeping the product design consistent.',
+  },
+  {
+    outputType: 'premium_mood',
+    stepId: 'premiumMoodGenerator',
+    title: '高级氛围图 / Premium Mood',
+    outputLabel: '高级氛围图 / premium brand mood render',
+    focus: 'Create a premium brand mood render with refined lighting, restrained atmosphere, and high-end presentation without hiding product design.',
+  },
+  {
+    outputType: 'storyboard_or_video_keyframe',
+    stepId: 'storyboardSheetGenerator',
+    title: '视频分镜图 / Storyboard Sheet',
+    outputLabel: '16:9 视频分镜图 / storyboard sheet / video key visual',
+    focus: 'Create a 16:9 storyboard or video keyframe sheet as image output; show shot order, key frames, subject action, transitions, and visual continuity.',
+  },
+];
+
+const buildIndustrialReviewGeneratorPrompt = (
+  brief: CreativeBrief,
+  spec: typeof INDUSTRIAL_REVIEW_GENERATOR_SPECS[number],
+) => [
+  spec.title,
+  `Output: ${spec.outputLabel}.`,
+  spec.focus,
+  'Use the selected product reference image(s) as the identity anchor.',
+  '保持产品身份一致、比例一致、关键结构一致；keep product identity, proportions, key structures, functional layout, CMF boundaries, and material logic consistent across the full review workflow.',
+  'Use the connected industrial_design_review_strategy text-agent output as strategy guidance, not as a replacement for the product reference image.',
+  'This is one node inside a multi-output workflow, not a standalone CMF-only task.',
+  buildWorkflowCreativeContext(brief),
+].join('\n');
+
+const buildIndustrialReviewWorkflowCommands = (
+  brief: CreativeBrief,
+  outputTypes: WorkflowOutputType[],
+  selectedImageNodeIds: string[],
+  originalText: string,
+) => {
+  const commands: AppAgentCommand[] = [];
+  const strategyStepId = 'industrialDesignReviewStrategy';
+  const strategyOutputRef = `$${strategyStepId}.nodeId`;
+  const plannedNodeRefs = [`$${strategyStepId}.nodeId`];
+  const aspectRatio = brief.dimensions.aspectRatio || '16:9';
+  const referenceRoles = selectedImageNodeIds.map(nodeId => ({ nodeId, role: 'SUBJECT_REF' as const }));
+  commands.push(command('canvas', 'create_text_agent', {
+    prompt: buildIndustrialReviewStrategyPrompt(brief, outputTypes),
+    inputIds: selectedImageNodeIds,
+    autoRun: false,
+  }, 'safe_write', 'workflow-builder-skill', {
+    stepId: strategyStepId,
+    createsNode: true,
+    outputRef: strategyOutputRef,
+  }));
+
+  const specs = INDUSTRIAL_REVIEW_GENERATOR_SPECS.filter(spec => outputTypes.includes(spec.outputType));
+  specs.forEach(spec => {
+    const outputRef = `$${spec.stepId}.nodeId`;
+    plannedNodeRefs.push(outputRef);
+    commands.push(command('canvas', 'create_generator', {
+      mediaType: 'image',
+      prompt: buildIndustrialReviewGeneratorPrompt(brief, spec),
+      inputIds: Array.from(new Set([strategyOutputRef, ...selectedImageNodeIds])),
+      referenceImageNodeIds: selectedImageNodeIds,
+      referenceRoles,
+      autoRun: false,
+      aspectRatio,
+      targetSize: brief.dimensions.targetSize || null,
+      resolution: brief.dimensions.resolution || null,
+      toolHint: brief.toolHint || null,
+      skillMeta: {
+        skillId: 'creative-product-design-skill,workflow-builder-skill',
+        skillIds: ['creative-product-design-skill', 'workflow-builder-skill'],
+        workflowTemplateId: 'industrial-design-review',
+        workflowOutputType: spec.outputType,
+        originalRequest: originalText,
+        taskKind: 'industrial_design_review_workflow',
+        fidelity: brief.fidelity,
+        productCategory: brief.product.category,
+        focus: brief.product.focus,
+      },
+    }, 'safe_write', 'workflow-builder-skill', {
+      stepId: spec.stepId,
+      createsNode: true,
+      outputRef,
+    }));
+  });
+
+  commands.push(command('canvas', 'organize', {
+    nodeIds: plannedNodeRefs,
+  }, 'safe_write', 'workflow-builder-skill'));
+
+  return commands;
+};
+
 const buildStoryboardSheetPrompt = (brief: CreativeBrief) => [
   `${brief.dimensions.aspectRatio || '16:9'} 视频分镜图 / Storyboard Sheet`,
   'Generate a 4-6 panel visual storyboard sheet from the connected storyboard script and selected references.',
@@ -81,6 +243,7 @@ export function buildAppAgentPlan(input: {
 }): AppAgentPlan {
   const text = input.userText;
   const commands: AppAgentCommand[] = [];
+  const workflowIntent = parseWorkflowBuilderIntent(text);
   if (input.activeSkillIds.includes('app-navigation-skill')) {
     if (/打开抽屉|open drawer/i.test(text)) commands.push(command('app', 'open_drawer', {}, 'safe_write', 'app-navigation-skill'));
     if (/关闭抽屉|close drawer/i.test(text)) commands.push(command('app', 'close_drawer', {}, 'safe_write', 'app-navigation-skill'));
@@ -93,7 +256,32 @@ export function buildAppAgentPlan(input: {
   if (input.activeSkillIds.includes('workflow-builder-skill') && /运行.*workflow|运行.*工作流/i.test(text)) {
     commands.push(command('workflow', 'run', { nodeIds: input.context?.selectedIds || [] }, 'costly', 'workflow-builder-skill'));
   }
-  if (input.activeSkillIds.includes('creative-product-design-skill')) {
+  if (
+    input.activeSkillIds.includes('workflow-builder-skill')
+    && workflowIntent.runWorkflow
+    && !commands.some(item => item.domain === 'workflow' && item.action === 'run')
+  ) {
+    commands.push(command('workflow', 'run', { nodeIds: input.context?.selectedIds || [] }, 'costly', 'workflow-builder-skill'));
+  }
+  const handledWorkflowCreation = input.activeSkillIds.includes('workflow-builder-skill')
+    && workflowIntent.createWorkflow
+    && workflowIntent.workflowTemplateId === 'industrial-design-review';
+  if (handledWorkflowCreation) {
+    const brief = extractCreativeBrief({
+      userText: text,
+      hasSelectedImages: !!input.context?.visualReferences?.length,
+      selectedItemCount: input.context?.selectedIds?.length || 0,
+      hasCanvasContext: !!input.context?.nodes?.length,
+    }, input.context?.visualReferences?.map(reference => reference.nodeId));
+    const selectedImageNodeIds = getSelectedImageNodeIds(input.context);
+    commands.push(...buildIndustrialReviewWorkflowCommands(
+      brief,
+      getIndustrialDesignReviewOutputTypes(workflowIntent),
+      selectedImageNodeIds,
+      text,
+    ));
+  }
+  if (!handledWorkflowCreation && input.activeSkillIds.includes('creative-product-design-skill')) {
     const brief = extractCreativeBrief({
       userText: text,
       hasSelectedImages: !!input.context?.visualReferences?.length,

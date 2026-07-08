@@ -1,5 +1,6 @@
 import type { AgentSkillId, ContextScope } from '../skills/types';
 import type { AppAgentPlan, LegacyAgentAction } from '../commands/commandTypes';
+import type { WorkflowFallbackMode, WorkflowOutputType } from '../skills/workflowBuilderSkill';
 
 export interface AppAgentTraceRecord {
   id: string;
@@ -18,6 +19,12 @@ export interface AppAgentTraceRecord {
   unresolvedInputIds?: string[];
   fallbackUsed?: boolean;
   fallbackReason?: string;
+  workflowIntentDetected?: boolean;
+  outputTypes?: WorkflowOutputType[];
+  workflowTemplateId?: string;
+  fallbackMode?: WorkflowFallbackMode;
+  createdGeneratorCount?: number;
+  connectedReferenceImageNodeIds?: string[];
   workflowResolvedImageNodeIds?: string[];
   workflowAutoConnections?: Array<{ sourceId: string; targetId: string }>;
   workflowMissingRequiredInputs?: string[];

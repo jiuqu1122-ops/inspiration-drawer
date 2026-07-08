@@ -1,6 +1,7 @@
 import type { AppAgentSkill, ContextScope, SkillMatchInput } from './types';
 import { createSkillMatch, noSkillMatch } from './types';
 import { findKeywordHits, normalizeSkillText, uniqueStrings } from './skillUtils';
+import { parseWorkflowBuilderIntent } from './workflowBuilderSkill';
 
 export type CreativeImageRole = 'BASE' | 'STYLE_REF' | 'LAYOUT_REF' | 'SUBJECT_REF' | 'NONE';
 
@@ -520,7 +521,10 @@ export function extractCreativeBrief(input: SkillMatchInput, imageIds?: string[]
   const mediaType: 'image' | 'video' = explicitVideoGeneration ? 'video' : 'image';
   const isEdit = isCreativeEditRequest(originalRequest);
   const product = inferProductDesignContext(originalRequest);
-  const taskKind: CreativeTaskKind = /分镜|故事板|storyboard/i.test(originalRequest)
+  const workflowIntent = parseWorkflowBuilderIntent(originalRequest);
+  const taskKind: CreativeTaskKind = workflowIntent.createWorkflow
+    ? 'product_design'
+    : /分镜|故事板|storyboard/i.test(originalRequest)
     ? 'storyboard'
     : explicitVideoGeneration
       ? 'video'
@@ -663,6 +667,7 @@ export const creativeProductDesignSkill: AppAgentSkill = {
         toolHint: brief.toolHint,
       })}`,
       'Rules:',
+      '- If workflow-builder-skill detects workflow creation or multi-output intent, treat CMF/detail/scene/storyboard terms as separate workflow nodes, not as one global CMF task.',
       '- For every image/video generator or edit prompt, include `Original request: "用户原话"` exactly with the user request.',
       '- Assign image roles before tool calls: BASE -> sourceImageNodeId/source_image_url; STYLE_REF/LAYOUT_REF/SUBJECT_REF -> referenceImageNodeIds/reference_image_urls; NONE is not passed.',
       '- Edit tasks require BASE. If multiple images are ambiguous and direct edit is requested, ask one necessary clarification instead of guessing.',
