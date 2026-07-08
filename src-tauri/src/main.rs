@@ -7171,18 +7171,226 @@ fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Res
 fn load_folders(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
     if path.exists() {
-        let content = fs::read_to_string(path).unwrap_or_else(|_| "[]".to_string());
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string());
+        let value = serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!([]));
+        if folder_payload_count(&value) > 0 || is_folder_empty_state_confirmed(&app_handle, Some(&path)) {
+            return Ok(value);
+        }
+        if let Some(recovered) = recover_folders_from_latest_backup(&app_handle)? {
+            write_folders_payload(&path, &recovered)?;
+            let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
+            return Ok(recovered);
+        }
+        Ok(value)
     } else {
+        if !is_folder_empty_state_confirmed(&app_handle, None) {
+            if let Some(recovered) = recover_folders_from_latest_backup(&app_handle)? {
+                write_folders_payload(&path, &recovered)?;
+                let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
+                return Ok(recovered);
+            }
+        }
         Ok(serde_json::json!([]))
     }
 }
 
 #[tauri::command]
-fn save_folders(app_handle: tauri::AppHandle, folders: serde_json::Value) -> Result<(), String> {
+fn save_folders(
+    app_handle: tauri::AppHandle,
+    folders: serde_json::Value,
+    allow_empty: Option<bool>,
+) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
-    let content = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    let next_count = folder_payload_count(&folders);
+    if next_count == 0 && !allow_empty.unwrap_or(false) && has_recoverable_folder_payloads(&app_handle)? {
+        let backup_path = path.with_file_name(format!(
+            "drawer_folders.empty-save-blocked.{}.json",
+            current_time_millis()
+        ));
+        let content = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
+        let _ = fs::write(backup_path, content);
+        return Ok(());
+    }
+    if next_count == 0 {
+        let _ = fs::write(folder_empty_marker_path(&app_handle), current_time_millis().to_string());
+    } else {
+        let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
+    }
+    write_folders_payload(&path, &folders)
+}
+
+fn folder_empty_marker_path(app_handle: &tauri::AppHandle) -> PathBuf {
+    get_user_data_dir(app_handle).join("drawer_folders.empty_confirmed.txt")
+}
+
+fn is_folder_empty_state_confirmed(app_handle: &tauri::AppHandle, folders_path: Option<&Path>) -> bool {
+    let marker_path = folder_empty_marker_path(app_handle);
+    if !marker_path.is_file() {
+        return false;
+    }
+    let marker_modified = modified_time_millis(&marker_path);
+    let folders_modified = folders_path.map(modified_time_millis).unwrap_or(0);
+    marker_modified >= folders_modified
+}
+
+fn folder_payload_count(value: &serde_json::Value) -> usize {
+    value
+        .as_array()
+        .map(|folders| {
+            folders
+                .iter()
+                .filter(|folder| {
+                    json_value_string(folder, "id").is_some()
+                        && json_value_string(folder, "name").is_some()
+                        && !json_folder_deleted(folder)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn has_recoverable_folder_payloads(app_handle: &tauri::AppHandle) -> Result<bool, String> {
+    let path = get_user_data_dir(app_handle).join("drawer_folders.json");
+    if folder_payload_from_path(&path)?.is_some() {
+        return Ok(true);
+    }
+    Ok(recover_folders_from_latest_backup(app_handle)?.is_some())
+}
+
+fn recover_folders_from_latest_backup(app_handle: &tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let data_dir = get_user_data_dir(app_handle);
+    let mut candidates = Vec::new();
+    collect_folder_backup_candidates(&data_dir.join("json_backups"), &mut candidates)?;
+    collect_folder_backup_candidates(&data_dir.join("canvas_schema_backups"), &mut candidates)?;
+    for entry in fs::read_dir(&data_dir).map_err(|err| err.to_string())?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if path.is_file() && name.starts_with("drawer_folders.empty-save-blocked.") && name.ends_with(".json") {
+            if let Some(candidate) = folder_payload_candidate_from_path(&path)? {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| right.modified_at.cmp(&left.modified_at))
+    });
+    Ok(candidates.into_iter().next().map(|candidate| candidate.payload))
+}
+
+struct FolderPayloadCandidate {
+    payload: serde_json::Value,
+    count: usize,
+    modified_at: i64,
+}
+
+fn collect_folder_backup_candidates(
+    root: &Path,
+    candidates: &mut Vec<FolderPayloadCandidate>,
+) -> Result<(), String> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root).map_err(|err| err.to_string())?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_folder_backup_candidates(&path, candidates)?;
+            continue;
+        }
+        if path.file_name().and_then(|value| value.to_str()) != Some("drawer_folders.json") {
+            continue;
+        }
+        if let Some(candidate) = folder_payload_candidate_from_path(&path)? {
+            candidates.push(candidate);
+        }
+    }
+    Ok(())
+}
+
+fn folder_payload_from_path(path: &Path) -> Result<Option<serde_json::Value>, String> {
+    Ok(folder_payload_candidate_from_path(path)?.map(|candidate| candidate.payload))
+}
+
+fn folder_payload_candidate_from_path(path: &Path) -> Result<Option<FolderPayloadCandidate>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Ok(None);
+    };
+    let Some(folders) = value.as_array() else {
+        return Ok(None);
+    };
+    let payload = serde_json::Value::Array(
+        folders
+            .iter()
+            .filter(|folder| {
+                json_value_string(folder, "id").is_some()
+                    && json_value_string(folder, "name").is_some()
+                    && !json_folder_deleted(folder)
+            })
+            .cloned()
+            .collect(),
+    );
+    let count = folder_payload_count(&payload);
+    if count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(FolderPayloadCandidate {
+        payload,
+        count,
+        modified_at: modified_time_millis(&path),
+    }))
+}
+
+fn write_folders_payload(path: &Path, folders: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let content = serde_json::to_string(folders).map_err(|e| e.to_string())?;
+    let temp_path = path.with_extension(format!("json.tmp.{}", current_time_millis()));
+    fs::write(&temp_path, content).map_err(|e| e.to_string())?;
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+    fs::rename(&temp_path, path).map_err(|e| e.to_string())
+}
+
+fn modified_time_millis(path: &Path) -> i64 {
+    path
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+fn json_value_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn json_value_i64(value: &serde_json::Value, key: &str) -> Option<i64> {
+    value
+        .get(key)
+        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|item| item as i64)))
+}
+
+fn json_folder_deleted(folder: &serde_json::Value) -> bool {
+    json_value_i64(folder, "deletedAt")
+        .or_else(|| json_value_i64(folder, "deleted_at"))
+        .map(|value| value > 0)
+        .unwrap_or(false)
 }
 
 #[tauri::command]

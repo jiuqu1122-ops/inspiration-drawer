@@ -1000,6 +1000,14 @@ const DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY = 'drawer_collapsed_folder_ids';
 const normalizeDrawerSidebarLayout = (value: string | null): DrawerSidebarLayout => (
   value === 'icons' ? 'icons' : 'folders'
 );
+const readFoldersFromCache = (): Folder[] => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDERS_CACHE_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+};
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
 const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
@@ -3971,6 +3979,7 @@ function MainApp() {
     }
   }, [isAntiTouchMode]);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [isFoldersLoaded, setIsFoldersLoaded] = useState(false);
 
   const [showLaunchIntro, setShowLaunchIntro] = useState(shouldShowInitialLaunchIntro);
   const showLaunchIntroRef = useRef(showLaunchIntro);
@@ -8197,24 +8206,38 @@ function MainApp() {
     };
     void restoreActiveCanvas();
     const restoreFolders = async () => {
+      let restored = false;
+      try {
+        const savedFolders = await invoke('load_folders');
+        if (Array.isArray(savedFolders) && savedFolders.length > 0) {
+          const normalizedFolders = normalizeDrawerFolders(savedFolders);
+          setFolders(normalizedFolders);
+          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
+          restored = true;
+          return;
+        }
+      } catch (err) {
+        console.warn('恢复旧文件夹状态失败，尝试后端文件夹:', err);
+      }
       try {
         const backendFolders = await listFolders(DEFAULT_LIBRARY_ID);
         if (backendFolders && backendFolders.length > 0) {
           const normalizedFolders = normalizeDrawerFolders(backendFolders);
           setFolders(normalizedFolders);
           localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
-          return;
+          restored = true;
         }
       } catch (err) {
-        console.warn('恢复后端文件夹失败，尝试旧文件夹状态:', err);
-      }
-      invoke('load_folders').then((savedFolders: any) => {
-        if (savedFolders && savedFolders.length > 0) {
-          const normalizedFolders = normalizeDrawerFolders(savedFolders);
-          setFolders(normalizedFolders);
-          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
+        console.warn('恢复后端文件夹失败:', err);
+      } finally {
+        if (!restored) {
+          const cachedFolders = normalizeDrawerFolders(readFoldersFromCache());
+          if (cachedFolders.length > 0) {
+            setFolders(cachedFolders);
+          }
         }
-      }).catch(()=>{});
+        setIsFoldersLoaded(true);
+      }
     };
     void restoreFolders();
   }, []);
@@ -8261,8 +8284,8 @@ function MainApp() {
   }, []);
   useEffect(() => {
     localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(folders));
-    if (isDataLoaded) invoke('save_folders', { folders }).catch(()=>{});
-  }, [folders, isDataLoaded]);
+    if (isFoldersLoaded) invoke('save_folders', { folders, allowEmpty: true, allow_empty: true }).catch(()=>{});
+  }, [folders, isFoldersLoaded]);
   const broadcastFloatingNoteTextUpdate = (itemId: string, content?: string, name?: string, sourceLabel?: string) => {
     const labels = readOpenFloatingNoteLabels();
 
@@ -18863,15 +18886,19 @@ function MainApp() {
     }
     setIsMovingFolders(true);
     try {
-      const updatedFolders = await moveFolders({
+      const normalizedFolders = normalizeDrawerFolders(foldersRef.current.map(folder => (
+        cleanIds.includes(folder.id)
+          ? { ...folder, parentId: normalizedTargetId || undefined }
+          : folder
+      )));
+      const existingIds = new Set(normalizedFolders.map(folder => folder.id));
+      setFolders(normalizedFolders);
+      setSelectedFolderIds(cleanIds.filter(id => existingIds.has(id)));
+      await moveFolders({
         folderIds: cleanIds,
         newParentId: normalizedTargetId,
         libraryId: DEFAULT_LIBRARY_ID,
       });
-      const normalizedFolders = normalizeDrawerFolders(updatedFolders);
-      const existingIds = new Set(normalizedFolders.map(folder => folder.id));
-      setFolders(normalizedFolders);
-      setSelectedFolderIds(cleanIds.filter(id => existingIds.has(id)));
       if (normalizedTargetId) {
         setCollapsedFolderIds(prev => prev.filter(id => id !== normalizedTargetId));
       }
