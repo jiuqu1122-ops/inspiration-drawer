@@ -81,6 +81,7 @@ pub trait AssetRepository {
     fn debug_get_all_canvas_nodes(&self, options: DebugCanvasNodesOptions) -> Result<Value, String>;
     fn upsert_canvas_nodes(&self, canvas_id: String, nodes: Vec<Value>) -> Result<usize, String>;
     fn list_folders(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
+    fn replace_folders(&self, library_id: Option<String>, folders: Vec<Value>) -> Result<Vec<Value>, String>;
     fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String>;
     fn list_tags(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
     fn get_asset_thumbnails(&self, asset_id: &str) -> Result<Vec<Value>, String>;

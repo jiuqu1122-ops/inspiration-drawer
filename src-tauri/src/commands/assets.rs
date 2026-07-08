@@ -92,6 +92,15 @@ pub fn list_folders(
 }
 
 #[tauri::command]
+pub fn replace_folders(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+    folders: Vec<Value>,
+) -> Result<Vec<Value>, String> {
+    crate::services::asset_service::replace_folders(app_handle, library_id, folders)
+}
+
+#[tauri::command]
 pub fn move_folders(
     app_handle: tauri::AppHandle,
     options: MoveFoldersOptions,

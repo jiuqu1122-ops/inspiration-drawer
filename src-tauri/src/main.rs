@@ -7216,7 +7216,17 @@ fn save_folders(
     } else {
         let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
     }
-    write_folders_payload(&path, &folders)
+    write_folders_payload(&path, &folders)?;
+    if let Some(folder_array) = folders.as_array() {
+        crate::services::asset_service::replace_folders(
+            app_handle,
+            Some(crate::db::schema::DEFAULT_LIBRARY_ID.to_string()),
+            folder_array.clone(),
+        )
+        .map(|_| ())
+    } else {
+        Ok(())
+    }
 }
 
 fn folder_empty_marker_path(app_handle: &tauri::AppHandle) -> PathBuf {
@@ -14438,6 +14448,7 @@ fn main() {
             commands::assets::debug_get_all_canvas_nodes,
             commands::assets::upsert_canvas_nodes,
             commands::assets::list_folders,
+            commands::assets::replace_folders,
             commands::assets::move_folders,
             commands::assets::list_tags,
             commands::assets::get_asset_thumbnails,

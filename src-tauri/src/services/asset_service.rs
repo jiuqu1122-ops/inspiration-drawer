@@ -59,6 +59,10 @@ pub fn list_folders(app_handle: tauri::AppHandle, library_id: Option<String>) ->
     repository(&app_handle)?.list_folders(library_id)
 }
 
+pub fn replace_folders(app_handle: tauri::AppHandle, library_id: Option<String>, folders: Vec<Value>) -> Result<Vec<Value>, String> {
+    repository(&app_handle)?.replace_folders(library_id, folders)
+}
+
 pub fn move_folders(app_handle: tauri::AppHandle, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
     repository(&app_handle)?.move_folders(options)
 }

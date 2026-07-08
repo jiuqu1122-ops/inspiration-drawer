@@ -67,7 +67,7 @@ import {
   isDrawerFolderDescendant,
   normalizeDrawerFolders,
 } from './features/folderModel';
-import { listFolders, moveFolders } from './services/libraryApi';
+import { listFolders, moveFolders, replaceFolders } from './services/libraryApi';
 import {
   CANVAS_BASE_HEIGHT,
   CANVAS_BASE_WIDTH,
@@ -1007,6 +1007,23 @@ const readFoldersFromCache = (): Folder[] => {
   } catch (_) {
     return [];
   }
+};
+const scoreRestoredFolders = (folders: Folder[]) => {
+  const ids = new Set(folders.map(folder => folder.id));
+  const childLinks = folders.filter(folder => folder.parentId && ids.has(folder.parentId)).length;
+  return folders.length * 100 + childLinks * 1000;
+};
+const mergeRestoredFolderCandidates = (primary: Folder[], candidates: Folder[][]) => {
+  const seen = new Set(primary.map(folder => folder.id));
+  const merged = [...primary];
+  candidates.forEach(candidate => {
+    candidate.forEach(folder => {
+      if (seen.has(folder.id)) return;
+      seen.add(folder.id);
+      merged.push(folder);
+    });
+  });
+  return normalizeDrawerFolders(merged);
 };
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
@@ -3310,6 +3327,7 @@ function MainApp() {
   const [activeTab, setActiveTab] = useState<DrawerTabType>('all');
   const itemsRef = useRef<BufferItem[]>([]);
   const foldersRef = useRef<Folder[]>([]);
+  const hasRestoredNonEmptyFoldersRef = useRef(false);
   const activeFolderIdStateRef = useRef<string>('all');
   const activeTabRef = useRef<DrawerTabType>('all');
   const drawerUndoStackRef = useRef<DrawerUndoSnapshot[]>([]);
@@ -8213,15 +8231,11 @@ function MainApp() {
     };
     void restoreActiveCanvas();
     const restoreFolders = async () => {
-      let restored = false;
+      const candidates: Folder[][] = [];
       try {
         const savedFolders = await invoke('load_folders');
         if (Array.isArray(savedFolders) && savedFolders.length > 0) {
-          const normalizedFolders = normalizeDrawerFolders(savedFolders);
-          setFolders(normalizedFolders);
-          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
-          restored = true;
-          return;
+          candidates.push(normalizeDrawerFolders(savedFolders));
         }
       } catch (err) {
         console.warn('恢复旧文件夹状态失败，尝试后端文件夹:', err);
@@ -8229,19 +8243,26 @@ function MainApp() {
       try {
         const backendFolders = await listFolders(DEFAULT_LIBRARY_ID);
         if (backendFolders && backendFolders.length > 0) {
-          const normalizedFolders = normalizeDrawerFolders(backendFolders);
-          setFolders(normalizedFolders);
-          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(normalizedFolders));
-          restored = true;
+          candidates.push(normalizeDrawerFolders(backendFolders));
         }
       } catch (err) {
         console.warn('恢复后端文件夹失败:', err);
       } finally {
-        if (!restored) {
-          const cachedFolders = normalizeDrawerFolders(readFoldersFromCache());
-          if (cachedFolders.length > 0) {
-            setFolders(cachedFolders);
-          }
+        const cachedFolders = normalizeDrawerFolders(readFoldersFromCache());
+        if (cachedFolders.length > 0) {
+          candidates.push(cachedFolders);
+        }
+        const bestFolders = candidates
+          .filter(candidate => candidate.length > 0)
+          .sort((left, right) => scoreRestoredFolders(right) - scoreRestoredFolders(left))[0];
+        if (bestFolders && bestFolders.length > 0) {
+          const mergedFolders = mergeRestoredFolderCandidates(bestFolders, candidates);
+          hasRestoredNonEmptyFoldersRef.current = true;
+          setFolders(mergedFolders);
+          localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(mergedFolders));
+          replaceFolders(mergedFolders, DEFAULT_LIBRARY_ID).catch(err => {
+            console.warn('同步文件夹树到后端失败:', err);
+          });
         }
         setIsFoldersLoaded(true);
       }
@@ -8291,7 +8312,15 @@ function MainApp() {
   }, []);
   useEffect(() => {
     localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(folders));
-    if (isFoldersLoaded) invoke('save_folders', { folders, allowEmpty: true, allow_empty: true }).catch(()=>{});
+    if (folders.length > 0) {
+      hasRestoredNonEmptyFoldersRef.current = true;
+    }
+    if (isFoldersLoaded && (folders.length > 0 || hasRestoredNonEmptyFoldersRef.current)) {
+      invoke('save_folders', { folders, allowEmpty: true, allow_empty: true }).catch(()=>{});
+      replaceFolders(folders, DEFAULT_LIBRARY_ID).catch(err => {
+        console.warn('同步文件夹树到后端失败:', err);
+      });
+    }
   }, [folders, isFoldersLoaded]);
   const broadcastFloatingNoteTextUpdate = (itemId: string, content?: string, name?: string, sourceLabel?: string) => {
     const labels = readOpenFloatingNoteLabels();

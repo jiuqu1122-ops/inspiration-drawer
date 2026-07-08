@@ -13,6 +13,9 @@ export type LibraryTag = {
 export const listFolders = (libraryId?: string) =>
   invoke<Folder[]>('list_folders', { libraryId, library_id: libraryId });
 
+export const replaceFolders = (folders: Folder[], libraryId?: string) =>
+  invoke<Folder[]>('replace_folders', { folders, libraryId, library_id: libraryId });
+
 export type MoveFoldersOptions = {
   folderIds: string[];
   newParentId?: string | null;

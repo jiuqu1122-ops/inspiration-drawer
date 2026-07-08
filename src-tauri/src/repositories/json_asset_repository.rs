@@ -124,6 +124,22 @@ impl AssetRepository for JsonAssetRepository {
         self.read_folders()
     }
 
+    fn replace_folders(&self, _library_id: Option<String>, folders: Vec<Value>) -> Result<Vec<Value>, String> {
+        let now = crate::current_time_millis();
+        let path = self.folders_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+        let content = serde_json::to_string(&folders).map_err(|err| err.to_string())?;
+        let temp_path = path.with_extension(format!("json.tmp.{}", now));
+        fs::write(&temp_path, content).map_err(|err| err.to_string())?;
+        if path.exists() {
+            fs::remove_file(&path).map_err(|err| err.to_string())?;
+        }
+        fs::rename(&temp_path, &path).map_err(|err| err.to_string())?;
+        Ok(folders.into_iter().filter(|folder| !json_folder_deleted(folder)).collect())
+    }
+
     fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
         let folder_ids = normalize_json_folder_ids(options.folder_ids);
         if folder_ids.is_empty() {

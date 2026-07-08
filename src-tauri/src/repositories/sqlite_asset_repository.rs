@@ -115,16 +115,39 @@ impl SqliteAssetRepository {
             .collect()
     }
 
+    fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+        let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1", table.replace('\'', "''"));
+        let count: i64 = conn
+            .query_row(&sql, params![column], |row| row.get(0))
+            .map_err(|err| err.to_string())?;
+        Ok(count > 0)
+    }
+
+    fn ensure_folder_deleted_at_column(conn: &Connection) -> Result<(), String> {
+        if !Self::has_column(conn, "folders", "deleted_at")? {
+            conn.execute("ALTER TABLE folders ADD COLUMN deleted_at INTEGER", [])
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
     fn fetch_folder_rows(conn: &Connection, library_id: &str) -> Result<Vec<FolderRow>, String> {
+        let deleted_at_sql = if Self::has_column(conn, "folders", "deleted_at")? {
+            "deleted_at"
+        } else {
+            "NULL AS deleted_at"
+        };
+        let sql = format!(
+            r#"
+            SELECT id, COALESCE(library_id, ?1), parent_id, name, COALESCE(sort_order, 0), metadata_json, {}
+            FROM folders
+            WHERE library_id = ?1
+            ORDER BY sort_order ASC, created_at ASC, name COLLATE NOCASE ASC
+            "#,
+            deleted_at_sql
+        );
         let mut stmt = conn
-            .prepare(
-                r#"
-                SELECT id, COALESCE(library_id, ?1), parent_id, name, COALESCE(sort_order, 0), metadata_json, deleted_at
-                FROM folders
-                WHERE library_id = ?1
-                ORDER BY sort_order ASC, created_at ASC, name COLLATE NOCASE ASC
-                "#,
-            )
+            .prepare(&sql)
             .map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map(params![library_id], |row| {
@@ -177,6 +200,56 @@ impl SqliteAssetRepository {
             })
             .map_err(|err| err.to_string())?;
         rows.map(|row| row.map_err(|err| err.to_string())).collect()
+    }
+
+    fn normalize_folder_payload(folder: &Value, library_id: &str, sort_order: i64, now: i64) -> Result<Option<(String, Option<String>, String, i64, i64, i64, String)>, String> {
+        let Some(object) = folder.as_object() else {
+            return Ok(None);
+        };
+        let Some(id) = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+        else {
+            return Ok(None);
+        };
+        let Some(name) = object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+        else {
+            return Ok(None);
+        };
+        let parent_id = object
+            .get("parentId")
+            .or_else(|| object.get("parent_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "all")
+            .map(ToOwned::to_owned);
+        let created_at = object.get("createdAt").or_else(|| object.get("created_at")).and_then(Value::as_i64).unwrap_or(now);
+        let updated_at = object.get("updatedAt").or_else(|| object.get("updated_at")).and_then(Value::as_i64).unwrap_or(now);
+        let mut metadata = folder.clone();
+        if let Some(metadata_object) = metadata.as_object_mut() {
+            metadata_object.insert("id".to_string(), Value::String(id.clone()));
+            metadata_object.insert("libraryId".to_string(), Value::String(library_id.to_string()));
+            metadata_object.insert("name".to_string(), Value::String(name.clone()));
+            metadata_object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
+            metadata_object.insert("updatedAt".to_string(), Value::Number(updated_at.into()));
+            if let Some(parent_id) = parent_id.as_deref() {
+                metadata_object.insert("parentId".to_string(), Value::String(parent_id.to_string()));
+            } else {
+                metadata_object.remove("parentId");
+            }
+            metadata_object.remove("deletedAt");
+            metadata_object.remove("deleted_at");
+        }
+        let metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
+        Ok(Some((id, parent_id, name, sort_order, created_at, updated_at, metadata_json)))
     }
 
     fn list_folders_from_conn(conn: &Connection, library_id: &str) -> Result<Vec<Value>, String> {
@@ -486,11 +559,69 @@ impl AssetRepository for SqliteAssetRepository {
         Self::list_folders_from_conn(&self.conn, &library_id)
     }
 
+    fn replace_folders(&self, library_id: Option<String>, folders: Vec<Value>) -> Result<Vec<Value>, String> {
+        let library_id = Self::normalize_library_id(library_id);
+        Self::ensure_folder_deleted_at_column(&self.conn)?;
+        let now = crate::current_time_millis();
+        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let mut active_ids = HashSet::new();
+        for (index, folder) in folders.iter().enumerate() {
+            let Some((id, parent_id, name, sort_order, created_at, updated_at, metadata_json)) =
+                Self::normalize_folder_payload(folder, &library_id, index as i64, now)?
+            else {
+                continue;
+            };
+            active_ids.insert(id.clone());
+            tx.execute(
+                r#"
+                INSERT INTO folders (id, library_id, parent_id, name, sort_order, created_at, updated_at, deleted_at, metadata_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    library_id = excluded.library_id,
+                    parent_id = excluded.parent_id,
+                    name = excluded.name,
+                    sort_order = excluded.sort_order,
+                    created_at = COALESCE(folders.created_at, excluded.created_at),
+                    updated_at = excluded.updated_at,
+                    deleted_at = NULL,
+                    metadata_json = excluded.metadata_json
+                "#,
+                params![id, &library_id, parent_id, name, sort_order, created_at, updated_at, metadata_json],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+
+        if active_ids.is_empty() {
+            tx.execute(
+                "UPDATE folders SET deleted_at = ?2, updated_at = ?2 WHERE library_id = ?1 AND deleted_at IS NULL",
+                params![&library_id, now],
+            )
+            .map_err(|err| err.to_string())?;
+        } else {
+            let placeholders = active_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "UPDATE folders SET deleted_at = ?, updated_at = ? WHERE library_id = ? AND deleted_at IS NULL AND id NOT IN ({})",
+                placeholders
+            );
+            let mut values = vec![
+                SqlValue::Integer(now),
+                SqlValue::Integer(now),
+                SqlValue::Text(library_id.clone()),
+            ];
+            values.extend(active_ids.into_iter().map(SqlValue::Text));
+            tx.execute(&sql, params_from_iter(values)).map_err(|err| err.to_string())?;
+        }
+
+        tx.commit().map_err(|err| err.to_string())?;
+        Self::list_folders_from_conn(&self.conn, &library_id)
+    }
+
     fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
         let folder_ids = Self::normalize_folder_ids(options.folder_ids);
         if folder_ids.is_empty() {
             return Err("folder_ids cannot be empty".to_string());
         }
+        Self::ensure_folder_deleted_at_column(&self.conn)?;
         let library_id = Self::normalize_library_id(options.library_id);
         let new_parent_id = Self::normalize_parent_id(options.new_parent_id);
         let selected_ids = folder_ids.iter().cloned().collect::<HashSet<_>>();
