@@ -78,7 +78,23 @@ export type CanvasAiItemData = {
   presetLabel?: string;
   presetPrompt?: string;
   aspectRatio?: string;
+  targetSize?: string;
   resolution?: string;
+  sourceImageNodeId?: string | null;
+  referenceImageNodeIds?: string[];
+  referenceRoles?: Array<{
+    nodeId: string;
+    role: 'BASE' | 'STYLE_REF' | 'LAYOUT_REF' | 'SUBJECT_REF' | 'NONE';
+  }>;
+  toolHint?: string | null;
+  skillMeta?: {
+    skillId?: string;
+    originalRequest?: string;
+    fidelity?: 'L1' | 'L2' | 'L3' | 'L4';
+    productCategory?: string;
+    focus?: string[];
+    [key: string]: unknown;
+  };
   outputFormat?: string;
   count?: number;
   duration?: number;

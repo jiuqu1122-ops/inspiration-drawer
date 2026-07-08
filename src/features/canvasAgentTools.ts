@@ -1,4 +1,5 @@
 import type { AgentCanvasContext } from './agentModel';
+import { buildAppAgentSystemPrompt } from './appAgent/kernel/appAgentPrompt';
 
 type ToolDefinition = {
   type: 'function';
@@ -141,20 +142,73 @@ const APP_UI_INTERACT_PROPERTIES = {
   key: { type: ['string', 'null'] },
 };
 
+const CONTEXT_SCOPES = [
+  'minimal',
+  'app',
+  'drawer',
+  'canvas',
+  'calendar',
+  'settings',
+  'server',
+  'ui',
+  'full',
+] as const;
+
+const IMAGE_REFERENCE_ROLES = ['BASE', 'STYLE_REF', 'LAYOUT_REF', 'SUBJECT_REF', 'NONE'] as const;
+
+const GENERATOR_REFERENCE_ROLE_SCHEMA = objectSchema({
+  nodeId: { type: 'string' },
+  role: { type: 'string', enum: IMAGE_REFERENCE_ROLES },
+}, ['nodeId', 'role']);
+
+const GENERATOR_SKILL_META_SCHEMA = {
+  type: 'object',
+  properties: {
+    skillId: { type: ['string', 'null'] },
+    originalRequest: { type: ['string', 'null'] },
+    fidelity: { type: ['string', 'null'], enum: ['L1', 'L2', 'L3', 'L4', null] },
+    productCategory: { type: ['string', 'null'] },
+    focus: { type: 'array', items: { type: 'string' } },
+  },
+  additionalProperties: true,
+};
+
+const CANVAS_CREATE_GENERATOR_PROPERTIES = {
+  mediaType: { type: 'string', enum: ['image', 'video'] },
+  prompt: { type: ['string', 'null'] },
+  presetId: { type: ['string', 'null'] },
+  inputIds: { type: 'array', items: { type: 'string' } },
+  autoRun: { type: 'boolean' },
+  sourceImageNodeId: { type: ['string', 'null'] },
+  referenceImageNodeIds: { type: 'array', items: { type: 'string' } },
+  referenceRoles: {
+    type: 'array',
+    items: GENERATOR_REFERENCE_ROLE_SCHEMA,
+  },
+  aspectRatio: { type: ['string', 'null'] },
+  targetSize: { type: ['string', 'null'] },
+  resolution: { type: ['string', 'null'] },
+  toolHint: { type: ['string', 'null'] },
+  skillMeta: GENERATOR_SKILL_META_SCHEMA,
+};
+
 export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
       name: 'app_get_context',
-      description: '读取整个软件当前状态，包括所在界面、抽屉素材/文件夹、选中项、日历日程、画布节点、预设和工作流。执行软件操作前优先读取。',
-      parameters: objectSchema({}),
+      description: '按 scopes 读取精简软件上下文。',
+      parameters: objectSchema({
+        scopes: { type: 'array', items: { type: 'string', enum: CONTEXT_SCOPES } },
+        detail: { type: ['string', 'null'], enum: ['compact', 'full', null] },
+      }),
     },
   },
   {
     type: 'function',
     function: {
       name: 'app_get_ui_snapshot',
-      description: '读取当前屏幕上可见的按钮、输入框、选择器和链接，返回可交互 elementId。仅当语义工具没有覆盖某个新功能时使用。密码值永远不会返回。',
+      description: '读取当前可见 UI 控件快照，返回可交互 elementId。',
       parameters: objectSchema({}),
     },
   },
@@ -162,7 +216,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'app_ui_interact',
-      description: '按 app_get_ui_snapshot 返回的 elementId 复刻一次用户点击、输入或按键。此回退操作始终需要用户确认。',
+      description: '按 elementId 复刻一次点击、输入或按键。',
       parameters: objectSchema(APP_UI_INTERACT_PROPERTIES, ['action', 'elementId']),
     },
   },
@@ -170,7 +224,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'app_navigate',
-      description: '复刻用户的界面导航操作：开关抽屉、钉住、进入/退出画布、切换分类/文件夹、搜索、打开设置/记录灵感/网络收图/便签/日历、撤销或控制窗口。',
+      description: '执行全局界面导航、搜索、入口和窗口操作。',
       parameters: objectSchema(APP_NAVIGATION_PROPERTIES, ['action']),
     },
   },
@@ -178,7 +232,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'drawer_manage',
-      description: '操作抽屉中的素材、文字、网址、文件夹和桌面便签；targetIds 使用 app_get_context 返回的抽屉 item ID。',
+      description: '操作抽屉素材、文件夹、选择和便签。',
       parameters: objectSchema(DRAWER_MANAGE_PROPERTIES, ['action']),
     },
   },
@@ -186,7 +240,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_manage',
-      description: '复刻画布节点的选择、删除、清空、复制、移动、缩放、断线、聚焦、运行和参数更新；也可把抽屉图片加入画布。',
+      description: '操作已有画布节点和画布视图。',
       parameters: objectSchema(CANVAS_MANAGE_PROPERTIES, ['action']),
     },
   },
@@ -194,7 +248,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'calendar_manage',
-      description: '操作日历和日程便签：打开日历、选择日期、新增/更新/删除日程、把抽屉里的文字便签转换为日程便签。日期使用 YYYY-MM-DD、今天、明天或后天；targetIds 使用抽屉文字素材 ID；scheduleId/noteLabel 使用 app_get_context 返回的 calendar.events。',
+      description: '操作日历、日程和文字便签转日程。',
       parameters: objectSchema(CALENDAR_MANAGE_PROPERTIES, ['action']),
     },
   },
@@ -211,20 +265,14 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     function: {
       name: 'canvas_create_generator',
       description: '创建图片或视频生成节点，可连接已有输入节点。',
-      parameters: objectSchema({
-        mediaType: { type: 'string', enum: ['image', 'video'] },
-        prompt: { type: 'string' },
-        presetId: { type: 'string' },
-        inputIds: { type: 'array', items: { type: 'string' } },
-        autoRun: { type: 'boolean' },
-      }, ['mediaType']),
+      parameters: objectSchema(CANVAS_CREATE_GENERATOR_PROPERTIES, ['mediaType']),
     },
   },
   {
     type: 'function',
     function: {
       name: 'canvas_create_media_tool',
-      description: '创建本地媒体处理节点：补帧(frame-interpolation)、图片清晰度增强(image-enhancement)、视频清晰度增强(video-enhancement)。用于用户说“补帧/插帧/图增强/图片增强/视增强/视频增强/清晰度增强”等操作。',
+      description: '创建本地媒体处理节点。',
       parameters: objectSchema({
         toolType: { type: 'string', enum: ['frame-interpolation', 'image-enhancement', 'video-enhancement'] },
         inputIds: { type: 'array', items: { type: 'string' } },
@@ -236,7 +284,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_create_preset',
-      description: '创建或更新可复用的画布节点预设（Prompt 预设）。当用户要做“节点预设/保存预设/修改预设”时使用，不要改用文字节点保存预设文案。',
+      description: '创建或更新可复用的画布 Prompt 预设。',
       parameters: objectSchema({
         presetId: { type: 'string' },
         label: { type: 'string' },
@@ -255,7 +303,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_add_text',
-      description: '在画布添加一个文字说明节点。用于保存参考图分析、产品卖点、视频脚本、分镜脚本、提示词拆解、执行说明等文本结果。',
+      description: '在画布添加一个静态文字说明节点。',
       parameters: objectSchema({ content: { type: 'string' } }, ['content']),
     },
   },
@@ -263,7 +311,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_create_text_agent',
-      description: '创建一个可运行的 Agent 文字节点。用于让节点根据需求和连接的参考图/视频生成脚本、分析、文案等文本结果；可自动连接当前选中素材并可自动运行。',
+      description: '创建一个可运行的 Agent 文字节点。',
       parameters: objectSchema({
         prompt: { type: 'string' },
         inputIds: { type: 'array', items: { type: 'string' } },
@@ -296,7 +344,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     type: 'function',
     function: {
       name: 'canvas_create_workflow',
-      description: '创建并插入一个新的可复用工作流模块。仅当用户明确要求“封装/复用/多阶段工作流/自动化流程”时使用；如果是详情页五图/产品一致性 workflow，只传 compact steps 和 inputIds，应用会本地编译真实 product_refs -> product_strategy -> 五图 DAG。',
+      description: '创建并插入一个新的可复用工作流模块。',
       parameters: objectSchema({
         label: { type: 'string' },
         hint: { type: 'string' },
@@ -374,7 +422,10 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
             type: 'object',
             properties: {
               tool: { type: 'string', enum: ['app_get_context'] },
-              arguments: objectSchema({}),
+              arguments: objectSchema({
+                scopes: { type: 'array', items: { type: 'string', enum: CONTEXT_SCOPES } },
+                detail: { type: ['string', 'null'], enum: ['compact', 'full', null] },
+              }),
             },
             required: ['tool', 'arguments'],
             additionalProperties: false,
@@ -475,13 +526,13 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
             type: 'object',
             properties: {
               tool: { type: 'string', enum: ['canvas_create_generator'] },
-              arguments: objectSchema({
-                mediaType: { type: 'string', enum: ['image', 'video'] },
-                prompt: { type: ['string', 'null'] },
-                presetId: { type: ['string', 'null'] },
-                inputIds: { type: 'array', items: { type: 'string' } },
-                autoRun: { type: 'boolean' },
-              }, ['mediaType', 'prompt', 'presetId', 'inputIds', 'autoRun']),
+              arguments: objectSchema(CANVAS_CREATE_GENERATOR_PROPERTIES, [
+                'mediaType',
+                'prompt',
+                'presetId',
+                'inputIds',
+                'autoRun',
+              ]),
             },
             required: ['tool', 'arguments'],
             additionalProperties: false,
@@ -748,40 +799,10 @@ export const parseCodexCanvasEnvelope = (raw: string) => {
 
 export const buildCanvasAgentSystemPrompt = (
   basePrompt: string,
-  context: AgentCanvasContext,
-) => `${basePrompt.trim()}
-
-Agent 执行补充：
-- 你是整个“灵感抽屉”软件的全局操作 Agent，不是画布里的聊天助手，也不受当前 surface 限制。
-- 你的工作循环：理解目标 → 读取/使用上下文 → 选择工具 → 执行可验证动作 → 用简短中文汇报结果；能执行就不要只给步骤。
-- 需要跨模块时可以主动导航：抽屉/素材/文件夹/便签用 app_navigate 或 drawer_manage；日历/日程/待办用 calendar_manage；画布节点/工作流/生成链路用 canvas_* 或 canvas_manage；设置、搜索、窗口、撤销等用 app_navigate；语义工具覆盖不了的可见控件先 app_get_ui_snapshot 再 app_ui_interact。
-- 如果缺少 ID 或可见控件信息，先调用 app_get_context / app_get_ui_snapshot；如果当前上下文已经包含所需 ID，就直接执行。
-- 所有 ID 必须来自当前软件上下文：抽屉素材和文件夹来自 drawer.items / drawer.folders，日程来自 calendar.events，画布节点来自 nodes，工作流来自 workflows。不要虚构 ID。
-- 如果要把画布里的图片整理/移动到抽屉文件夹，优先使用画布节点的 sourceItemId 作为 drawer_manage(action=move_items) 的 targetIds；没有 sourceItemId 时再使用节点 id，应用会尽力映射回原抽屉素材。
-- 可以一次返回多个 actions 来完成连续操作，例如先进入画布、再创建/连接/运行节点；不要因为当前界面在画布或抽屉就放弃其他模块。
-- 用户明确要求删除、清空、覆盖、运行可能产生费用的生成/工作流，或使用 app_ui_interact 复刻未知界面时，可以发起工具调用，应用会负责确认/审批；不要绕过确认。
-- selectedIds/selectedItems 是本轮消息的稳定快照；即使用户之后取消选择，也要继续使用这些 ID 完成操作，不要因为当前界面选择为空而放弃。
-- selectedItems 是用户当前明确选择的素材；回复时要说明你基于哪张/哪些选中素材处理。
-- 当用户提到“日历、日程、待办、安排、转日程、便签转日程、完成/勾选/删除日程”时，优先使用 calendar_manage。新增日程传 text/date/priority；修改现有日程使用 calendar.events 里的 noteLabel 与 scheduleId；用户说“把这个/选中的便签转日程”时使用 calendar_manage(action=convert_text_notes_to_schedule,targetIds=selectedIds)。
-- 用户说“打开/切换/搜索/钉住/记录灵感/网络收图/设置/便签/日历/撤销/最大化/最小化”时，优先使用 app_navigate。
-- 用户说“节点预设、Prompt 预设、保存成预设、创建预设、修改预设”时，必须使用 canvas_create_preset；不要把预设内容写进 canvas_add_text。
-- 用户说“识别/分析参考图、根据图片输出信息、写视频脚本、写分镜脚本、提炼卖点/风格/材质/镜头语言”时，先基于 visualReferences 中的参考图进行分析，然后必须使用 canvas_add_text 把结果落成文字节点；不要只在聊天里口头回复。
-- 如果 selectedItems 为空但 visualReferences 有图片，说明画布上已有可用参考图；用户说“参考图/这张图/这些图”时默认使用这些视觉参考。
-- 用户明确要求“封装/复用/多阶段工作流/自动化流程/套流程”时，才使用 canvas_create_workflow；如果是“详情页五图/产品一致性/电商详情页”类工作流，只返回 template 意图所需的 compact steps，不要输出完整 workflow JSON，应用会自动创建 product_refs 外部图片输入、product_strategy 可执行文字分析节点，并让五个生图节点同时依赖 product_refs 和 product_strategy。
-- 用户说“生成、制作、渲染、效果图、出图、做一张图/视频”时，使用 canvas_create_generator，并把 autoRun 设为 true，让应用创建节点后立即开始生成。
-- 用户只说“创建生成节点、放一个预设节点”但没有要求立刻出结果时，使用 canvas_create_generator 并把 autoRun 设为 false。
-- 如果用户要求最终产出视频/动画，默认链路是：先创建一个 canvas_create_text_agent 连接参考图生成脚本/分镜，再创建 mediaType=video 的 canvas_create_generator，并把 inputIds 显式连接到这个脚本/分镜节点；不要只创建图片节点或文字节点就结束。
-- 只有用户明确要求多个可编辑阶段产物时，才创建多个依赖节点；创建多个依赖节点时，后续节点的 inputIds 必须显式填写上一步返回的 nodeId，确保画布上有可见连线。
-- 只有用户明确要求便签、文字说明或静态文本节点时，才使用 canvas_add_text。
-- 用户要求“做一个生成脚本的节点 / 生成文案的节点 / 生成分析文本的节点 / 可运行的文字节点 / 基于参考图写脚本或分镜”时，使用一个 canvas_create_text_agent，并把参考图/视频节点作为 inputIds 接入；如果用户要求立刻生成结果，把 autoRun 设为 true。
-- 用户说“补帧/插帧/RIFE”时，使用 canvas_create_media_tool 且 toolType=frame-interpolation；说“图增强/图片增强/图片清晰度增强/放大修复”时，toolType=image-enhancement；说“视增强/视频增强/视频清晰度增强”时，toolType=video-enhancement。
-
-当前软件上下文如下。所有 ID 必须原样使用。创建复杂任务时优先使用已有 workflowId。
-${JSON.stringify(context)}
-
-返回格式：
-- 只输出一个 JSON 对象：{"reply":"给用户看的简短中文说明","actions":[...]}。
-- reply 面向用户，说明已经做什么、准备做什么或缺少什么；不要暴露长篇内部推理。
-- actions 使用上面可用工具；没有可安全执行的动作时返回空 actions。
-- 不要声称已经执行尚未调用的工具。
-- 涉及运行生成节点或工作流时明确说明可能产生 API 费用。`;
+  context: AgentCanvasContext | unknown,
+  activeSkillPrompt = '',
+) => buildAppAgentSystemPrompt({
+  basePrompt,
+  activeSkillPrompt,
+  compactContext: context,
+});

@@ -22397,9 +22397,25 @@ useEffect(() => {
         throw new Error(`无法识别日期：${text}`);
       };
       if (name === 'app_get_context') {
-        return {
+        const requestedScopes = Array.isArray(args.scopes)
+          ? args.scopes.map(String).filter(Boolean)
+          : ['minimal'];
+        const scopeSet = new Set(requestedScopes.length > 0 ? requestedScopes : ['minimal']);
+        const hasScope = (scope: string) => scopeSet.has('full') || scopeSet.has(scope);
+        const response: Record<string, unknown> = {
+          scopes: Array.from(scopeSet),
           surface: isCanvasModeRef.current ? 'canvas' : 'drawer',
-          drawer: {
+          selectedIds: isCanvasModeRef.current ? [...canvasSelectedIdsRef.current] : [...selectedIds],
+        };
+        if (hasScope('app') || hasScope('minimal')) {
+          response.app = {
+            surface: isCanvasModeRef.current ? 'canvas' : 'drawer',
+            drawerPinned: isPinnedRef.current,
+            drawerOpen: stateRef.current.isOpen,
+          };
+        }
+        if (hasScope('drawer')) {
+          response.drawer = {
             activeTab: activeTabRef.current,
             activeFolderId: activeFolderIdStateRef.current,
             searchQuery,
@@ -22418,8 +22434,10 @@ useEffect(() => {
               name: folder.name,
               parentId: folder.parentId,
             })),
-          },
-          canvas: {
+          };
+        }
+        if (hasScope('canvas')) {
+          response.canvas = {
             selectedIds: [...canvasSelectedIdsRef.current],
             nodeCount: canvasItemsRef.current.length,
             nodes: canvasItemsRef.current.slice(0, 180).map(item => ({
@@ -22430,14 +22448,17 @@ useEffect(() => {
               inputs: item.inputs || [],
               status: item.ai?.status,
             })),
-          },
-          calendar: {
+          };
+        }
+        if (hasScope('calendar')) {
+          response.calendar = {
             activeDate: calendarSelectedDate,
             activeMonth: calendarMonth,
             tagFilter: calendarTagFilter,
             events: buildAgentCalendarEvents(120),
-          },
-        };
+          };
+        }
+        return response;
       }
 
       if (name === 'app_get_ui_snapshot') {
@@ -23078,15 +23099,47 @@ useEffect(() => {
         const autoRun = args.autoRun === true;
         const presetId = typeof args.presetId === 'string' ? args.presetId : '';
         const preset = canvasAiPromptPresets.find(item => item.id === presetId);
+        const sourceImageNodeId = typeof args.sourceImageNodeId === 'string'
+          && canvasItemsRef.current.some(item => item.id === args.sourceImageNodeId)
+          ? args.sourceImageNodeId
+          : null;
+        const referenceImageNodeIds = Array.isArray(args.referenceImageNodeIds)
+          ? args.referenceImageNodeIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
+          : [];
+        const referenceRoles = Array.isArray(args.referenceRoles)
+          ? args.referenceRoles
+            .map(role => {
+              const record = role && typeof role === 'object' ? role as Record<string, unknown> : {};
+              const nodeId = typeof record.nodeId === 'string' && canvasItemsRef.current.some(item => item.id === record.nodeId)
+                ? record.nodeId
+                : '';
+              const roleValue = String(record.role || '');
+              if (!nodeId || !['BASE', 'STYLE_REF', 'LAYOUT_REF', 'SUBJECT_REF', 'NONE'].includes(roleValue)) return null;
+              return {
+                nodeId,
+                role: roleValue as 'BASE' | 'STYLE_REF' | 'LAYOUT_REF' | 'SUBJECT_REF' | 'NONE',
+              };
+            })
+            .filter((role): role is NonNullable<typeof role> => !!role)
+          : [];
+        const roleInputIds = referenceRoles
+          .filter(role => role.role !== 'NONE')
+          .map(role => role.nodeId);
         const requestedInputs = Array.isArray(args.inputIds)
           ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
           : [];
+        const explicitInputIds = Array.from(new Set([
+          ...requestedInputs,
+          ...(sourceImageNodeId ? [sourceImageNodeId] : []),
+          ...referenceImageNodeIds,
+          ...roleInputIds,
+        ]));
         const hasCanvasSelectionSnapshot = hasSelectionSnapshot && snapshotSurface === 'canvas';
         const snapshotInputIds = hasCanvasSelectionSnapshot
           ? snapshotSelectedIds.filter(id => canvasItemsRef.current.some(item => item.id === id))
           : [];
-        const inputIds = requestedInputs.length > 0
-          ? requestedInputs
+        const inputIds = explicitInputIds.length > 0
+          ? explicitInputIds
           : (hasCanvasSelectionSnapshot ? snapshotInputIds : getSelectedCanvasAiInputIds());
         const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
         const pos = inputBounds
@@ -23094,6 +23147,27 @@ useEffect(() => {
           : getCanvasDropPosition(0);
         const node = buildCanvasAiGeneratorNode(pos, preset, inputIds, mediaType);
         const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+        const requestedAspectRatio = typeof args.aspectRatio === 'string' ? args.aspectRatio.trim() : '';
+        const requestedTargetSize = typeof args.targetSize === 'string' ? args.targetSize.trim() : '';
+        const requestedResolution = typeof args.resolution === 'string' ? args.resolution.trim() : '';
+        const requestedToolHint = typeof args.toolHint === 'string' ? args.toolHint.trim() : '';
+        const requestedSkillMeta = args.skillMeta && typeof args.skillMeta === 'object' && !Array.isArray(args.skillMeta)
+          ? args.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
+          : undefined;
+        const nextAiPatch: Partial<NonNullable<CanvasImageItem['ai']>> = {
+          ...(sourceImageNodeId ? { sourceImageNodeId } : {}),
+          ...(referenceImageNodeIds.length > 0 ? { referenceImageNodeIds } : {}),
+          ...(referenceRoles.length > 0 ? { referenceRoles } : {}),
+          ...(requestedTargetSize ? { targetSize: requestedTargetSize } : {}),
+          ...(requestedToolHint ? { toolHint: requestedToolHint } : {}),
+          ...(requestedSkillMeta ? { skillMeta: requestedSkillMeta } : {}),
+          ...(requestedResolution ? { resolution: requestedResolution } : {}),
+        };
+        const aspectSource = requestedAspectRatio || requestedTargetSize;
+        if (aspectSource) {
+          nextAiPatch.aspectRatio = normalizeCanvasAiAspectRatioForModel(node.ai?.model, aspectSource);
+        }
+        node.ai = { ...node.ai!, ...nextAiPatch };
         if (prompt) {
           node.item = {
             ...node.item,

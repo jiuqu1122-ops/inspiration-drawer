@@ -35,10 +35,15 @@ import {
   buildCanvasAgentSystemPrompt,
   getCanvasAgentToolLabel,
   isCanvasAgentToolReadOnly,
-  isCanvasAgentToolSensitive,
   parseAgentArguments,
   parseCodexCanvasEnvelope,
 } from './canvasAgentTools';
+import { repairLegacyAgentAction, validateLegacyAgentAction } from './appAgent/commands/commandValidator';
+import type { LegacyAgentAction } from './appAgent/commands/commandTypes';
+import { evaluateLegacyActionPermission } from './appAgent/commands/permissionGate';
+import { prepareAppAgentTurn } from './appAgent/runtime/useAppAgentRuntime';
+import type { AppAgentTraceRecord } from './appAgent/trace/appAgentTrace';
+import { appendAppAgentTrace, upsertAppAgentTrace } from './appAgent/trace/traceStore';
 import {
   clearStoredAgentConversations,
   readActiveAgentConversationId,
@@ -62,6 +67,8 @@ type AgentSendSnapshot = {
   selectedItems: AgentCanvasSelectionItem[];
   selectedIds: string[];
   visualReferences: AgentCanvasVisualReference[];
+  userRequest?: string;
+  appAgentTrace?: AppAgentTraceRecord;
 };
 
 type OpenAiToolCallResult = {
@@ -85,6 +92,9 @@ type PendingToolRun = {
   providerMessages?: Array<Record<string, unknown>>;
   calls: AgentToolCall[];
   depth: number;
+  userRequest?: string;
+  trace?: AppAgentTraceRecord;
+  repaired?: boolean;
 };
 
 type PendingCodexTurn = {
@@ -109,25 +119,6 @@ const AGENT_THINKING_TERMINAL_STATUSES = new Set<AgentThinkingStepStatus>([
   'cancelled',
   'error',
 ]);
-
-const ALWAYS_CONFIRM_TOOLS = new Set([
-  'app_ui_interact',
-]);
-
-const ALWAYS_CONFIRM_TOOL_ACTIONS: Record<string, Set<string>> = {
-  drawer_manage: new Set(['delete_items', 'delete_folder']),
-  canvas_manage: new Set(['delete_nodes', 'clear_canvas', 'run_nodes']),
-};
-
-const shouldAlwaysConfirmToolCall = (call: AgentToolCall) => (
-  ALWAYS_CONFIRM_TOOLS.has(call.name)
-  || ALWAYS_CONFIRM_TOOL_ACTIONS[call.name]?.has(String(call.arguments.action || '')) === true
-  || (
-    call.name === 'canvas_create_generator'
-    && call.arguments.mediaType === 'video'
-    && call.arguments.autoRun === true
-  )
-);
 
 const buildThinkingStepId = (messageId: string, key: string) => (
   `${messageId}:thinking:${key}`
@@ -926,15 +917,41 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   ) => {
     const settingsNow = settingsRef.current;
     for (const call of run.calls) {
-      const alwaysConfirm = shouldAlwaysConfirmToolCall(call);
-      const requiresApproval = !isCanvasAgentToolReadOnly(call.name)
-        && isCanvasAgentToolSensitive(call.name, call.arguments)
-        && (settingsNow.approvalMode === 'ask' || alwaysConfirm);
+      const originalAction: LegacyAgentAction = { tool: call.name, arguments: call.arguments };
+      const repairedAction = repairLegacyAgentAction(originalAction, run.userRequest || run.snapshot?.userRequest || '');
+      if (JSON.stringify(repairedAction.arguments) !== JSON.stringify(call.arguments)) {
+        run.repaired = true;
+        call.arguments = repairedAction.arguments;
+      }
+      const validation = validateLegacyAgentAction(
+        { tool: call.name, arguments: call.arguments },
+        run.snapshot?.context,
+        run.userRequest || run.snapshot?.userRequest || '',
+      );
+      if (!validation.valid) {
+        call.status = 'error';
+        call.error = validation.errors.join('；');
+        call.result = { error: call.error, validationErrors: validation.errors };
+        upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
+          title: `校验失败：${getCanvasAgentToolLabel(call.name)}`,
+          detail: call.error,
+          status: 'error',
+        });
+        continue;
+      }
+      const permission = evaluateLegacyActionPermission(
+        { tool: call.name, arguments: call.arguments },
+        {
+          userText: run.userRequest || run.snapshot?.userRequest || '',
+          approvalMode: settingsNow.approvalMode,
+        },
+      );
+      const requiresApproval = !isCanvasAgentToolReadOnly(call.name) && permission.requiresConfirmation;
       if (requiresApproval) {
         call.status = 'awaiting-approval';
         upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
           title: `等待确认：${getCanvasAgentToolLabel(call.name)}`,
-          detail: JSON.stringify(call.arguments),
+          detail: JSON.stringify({ riskLevel: permission.riskLevel, reasons: permission.reasons, arguments: call.arguments }),
           status: 'waiting',
         });
       } else {
@@ -942,6 +959,16 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       }
     }
     updateToolCalls(run);
+    if (run.trace) {
+      upsertAppAgentTrace({
+        ...run.trace,
+        legacyActions: run.calls.map(call => ({ tool: call.name, arguments: call.arguments })),
+        confirmationRequired: run.calls.some(call => call.status === 'awaiting-approval'),
+        executionResults: run.calls.map(call => call.result).filter(Boolean),
+        errors: run.calls.map(call => call.error).filter((error): error is string => !!error),
+        repaired: run.repaired === true,
+      });
+    }
     if (run.calls.some(call => call.status === 'awaiting-approval')) {
       pendingToolRunsRef.current.set(run.conversationId, run);
       setBusy(false);
@@ -1029,6 +1056,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
               status: 'pending' as const,
             })),
             depth,
+            userRequest: snapshot.userRequest,
+            trace: snapshot.appAgentTrace,
           });
           return;
         }
@@ -1067,6 +1096,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       providerMessages: [...providerMessages, assistantProviderMessage],
       calls,
       depth,
+      userRequest: snapshot.userRequest,
+      trace: snapshot.appAgentTrace,
     });
   }, [finishThinkingSteps, patchMessage, processToolCalls, upsertThinkingStep]);
   runOpenAiLoopRef.current = runOpenAiLoop;
@@ -1360,6 +1391,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         calls,
         depth: nextDepth,
         snapshot: run.snapshot,
+        userRequest: run.userRequest || run.snapshot?.userRequest,
+        trace: run.trace || run.snapshot?.appAgentTrace,
       });
       return;
     }
@@ -1376,9 +1409,14 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     visualReferences: AgentCanvasVisualReference[],
     forceDefaultCodexModel = false,
     snapshot?: AgentSendSnapshot,
+    appAgentTurn?: ReturnType<typeof prepareAppAgentTurn>,
   ) => {
-    const contextForPrompt = sanitizeCanvasContextForPrompt(context);
-    const systemPrompt = buildCanvasAgentSystemPrompt(settingsRef.current.systemPrompt, contextForPrompt);
+    const contextForPrompt = appAgentTurn?.compactContext || sanitizeCanvasContextForPrompt(context);
+    const systemPrompt = buildCanvasAgentSystemPrompt(
+      settingsRef.current.systemPrompt,
+      contextForPrompt,
+      appAgentTurn?.activeSkillPrompt || '',
+    );
     let threadId = '';
     upsertThinkingStep(conversation.id, assistantMessageId, 'codex-prepare', {
       title: '正在整理软件上下文',
@@ -1425,6 +1463,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           visualReferences,
           true,
           snapshot,
+          appAgentTurn,
         );
       }
       throw error;
@@ -1479,6 +1518,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       const codexUserText = (localHistoryPrompt ? localHistoryPrompt + '\n\n' : '')
         + userText
         + (codexNotice ? '\n\n' + codexNotice : '')
+        + (appAgentTurn?.activeSkillIds.length ? '\n\nActive skill ids: ' + appAgentTurn.activeSkillIds.join(', ') : '')
+        + (appAgentTurn?.activeSkillPrompt ? '\n\nActive skill prompt:\n' + appAgentTurn.activeSkillPrompt : '')
         + '\n\n你现在是全局软件 Agent。请自己判断要操作抽屉、日历、画布、设置还是可见界面；可以一次返回多个 actions 连续完成任务。能执行就执行，不要只给步骤。'
         + '\n\n应用提供的当前软件上下文：' + JSON.stringify(contextForPrompt)
         + '\n\n请只返回 reply 和 actions。reply 用简短中文说明结果或下一步；actions 使用应用工具。不要运行 shell、不要修改本地文件。';
@@ -1558,6 +1599,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           calls,
           depth: 0,
           snapshot,
+          userRequest: userText,
+          trace: appAgentTurn?.trace || snapshot?.appAgentTrace,
         });
       } else {
         setBusy(false);
@@ -1596,6 +1639,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           visualReferences,
           true,
           snapshot,
+          appAgentTurn,
         );
       }
       finishThinkingSteps(conversation.id, assistantMessageId, 'error', String(error));
@@ -1695,19 +1739,34 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         selectedItems,
         visualReferences,
       };
+      const appAgentTurn = prepareAppAgentTurn({
+        userText: text,
+        context: contextWithVisualReferences,
+      });
+      appendAppAgentTrace(appAgentTurn.trace);
+      upsertThinkingStep(conversation.id, assistantMessage.id, 'skills', {
+        title: appAgentTurn.activeSkillIds.length > 0 ? '已匹配 App Agent Skill' : '使用基础 App Agent',
+        detail: appAgentTurn.activeSkillIds.length > 0
+          ? `${appAgentTurn.activeSkillIds.join(', ')}；context scopes: ${appAgentTurn.contextScopes.join(', ')}`
+          : `context scopes: ${appAgentTurn.contextScopes.join(', ')}`,
+        status: 'completed',
+      });
       const snapshot: AgentSendSnapshot = {
         context: contextWithVisualReferences,
         selectedItems,
         selectedIds,
         visualReferences,
+        userRequest: text,
+        appAgentTrace: appAgentTurn.trace,
       };
       if (provider === 'codex' || provider === 'openai-compatible') {
-        await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot);
+        await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot, appAgentTurn);
       } else {
         const systemPrompt = [
           buildCanvasAgentSystemPrompt(
             settingsRef.current.systemPrompt,
-            sanitizeCanvasContextForPrompt(contextWithVisualReferences),
+            appAgentTurn.compactContext,
+            appAgentTurn.activeSkillPrompt,
           ),
           'OpenAI-compatible 兼容提示：优先使用 tools/function calling。若当前 API 或模型不返回 tool_calls，请只输出一个 JSON 对象：{"reply":"给用户看的简短说明","actions":[{"tool":"app_get_context","arguments":{}}]}。actions 可使用 app_navigate、drawer_manage、calendar_manage、canvas_manage、canvas_create_text_agent、canvas_create_generator、canvas_apply_workflow 等已列工具；tool 与 arguments 必须对应可用软件工具。',
         ].join('\n\n');
