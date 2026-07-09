@@ -3,6 +3,7 @@ import { appNavigationSkill } from './appNavigationSkill';
 import { drawerControlSkill } from './drawerControlSkill';
 import { canvasControlSkill } from './canvasControlSkill';
 import { creativeProductDesignSkill } from './creativeProductDesignSkill';
+import { ecommerceDetailPageSkill } from './ecommerceDetailPageSkill';
 import { mediaToolSkill } from './mediaToolSkill';
 import { workflowBuilderSkill } from './workflowBuilderSkill';
 import { calendarControlSkill } from './calendarControlSkill';
@@ -12,6 +13,7 @@ export const APP_AGENT_SKILLS: AppAgentSkill[] = [
   appNavigationSkill,
   drawerControlSkill,
   canvasControlSkill,
+  ecommerceDetailPageSkill,
   creativeProductDesignSkill,
   mediaToolSkill,
   workflowBuilderSkill,

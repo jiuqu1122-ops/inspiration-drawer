@@ -1,4 +1,4 @@
-import type { BufferItem } from '../types';
+﻿import type { BufferItem } from '../types';
 import type {
   CanvasAiProvider,
   CanvasImageItem,
@@ -71,12 +71,26 @@ export type CanvasAiPromptPreset = {
   outputFormat?: string;
   count?: number;
 };
-const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量：
-- 4k resolution, highly detailed, photorealistic, industrial design render
-- Precision parting lines, physically credible 0.5mm micro-bevels
-- Three-point studio lighting, controlled anisotropic highlights, realistic subsurface scattering
-- 85mm prime lens, F/2.8 macro lens, natural depth of field
-- 关键结构、材质边界和功能细节保持清晰，景深不得遮蔽重要设计信息`;
+const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性：
+- Treat connected image(s) as SUBJECT_REF: preserve silhouette, proportions, key parts, functional layout, CMF boundaries and material logic
+- 4k resolution, highly detailed, photorealistic, premium industrial design render
+- Physically credible geometry: clean parting lines, realistic wall thickness, subtle micro-bevels, no melted or warped edges
+- Controlled studio lighting: coherent key/fill/rim light, natural contact shadows, readable dark areas, no blown highlights
+- Accurate materials: correct roughness, reflection, texture scale, translucency or soft-touch finish when applicable
+- Camera discipline: natural product photography perspective, 70-100mm lens feel, clear subject hierarchy, important design details not hidden by depth of field
+- 输出前自检：同一产品身份一致、结构不漂移、材质可信、边缘干净、背景不抢主体、无乱文字/水印/伪 logo`;
+
+const BUILT_IN_WORKFLOW_QUALITY_FOOTER = `通用工作流质量约束：
+- 上游连接图是最高优先级参考。只在当前节点职责内变化，不重设计主体，不随意增删结构、角色、场景或零件。
+- 多节点 workflow 必须保持同一主体身份、比例、材质、色彩体系、光线方向和版式节奏；后续节点继承前序节点已经确认的信息。
+- 画面要有清晰主次、干净边缘、稳定曝光和可信接触阴影；避免低清、脏噪、过度锐化、塑料蜡感、随机装饰和无意义特效。
+- 除非节点明确要求文字或说明栏，不生成可读文字、品牌 logo、水印、虚假参数、认证章、乱码或空白文本框。
+- 输出前自检：数量/版式正确，主体一致，关键结构没有漂移，细节真实，构图服务当前节点目标。`;
+
+const appendBuiltInWorkflowQualityPrompt = (prompt: string) => [
+  prompt.trim(),
+  BUILT_IN_WORKFLOW_QUALITY_FOOTER,
+].filter(Boolean).join('\n\n');
 export const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
   {
     id: 'product-render',
@@ -84,9 +98,12 @@ export const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     hint: '自动选择深浅场景',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品生成一张高级工业设计产品渲染图。
+    prompt: `基于连接的参考图，为图中产品生成一张可直接用于评审、提案或展示的高级工业设计渲染图。
 
-先分析参考图里的产品形态、主色、材质、价格感和情绪气质，只在「浅色场景」和「深色场景」两种方向中选择一个更适合产品的渲染环境。不要把所有产品都默认放进深色棚拍。
+执行顺序：
+1. 先读取 SUBJECT_REF：锁定产品外轮廓、比例、关键零件、按键/接口/开孔、分件线、主色、材质和功能关系。
+2. 判断产品类型、价格感、使用环境和情绪气质，再选择浅色或深色渲染场景。
+3. 只提升光影、材质、背景层次和摄影质感，不重新设计产品，不添加参考图不存在的功能。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
@@ -94,21 +111,22 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 - 浅色场景：白色、浅灰、米色或柔和自然光背景；适合浅色产品、生活方式产品、家居小物、医疗/清洁感产品、柔和材质、温暖亲和或清爽高级的产品
 - 深色场景：深灰、黑色或暗调渐变背景；适合黑色/深色产品、金属质感、性能感、专业设备、电竞/科技感、力量感或奢华冷峻的产品
 - 如果产品没有明显暗调气质，优先使用浅色场景；只有产品本身适合深色氛围时才选择深色场景
-- 场景只做简洁背景和台面/地面暗示，不要扩展成复杂生活空间，不要加入无关道具
+- 场景只做简洁背景、台面、地面或柔和空间暗示，不扩展成复杂生活空间，不加入无关道具
 
 视觉要求：
 - 产品是绝对主角，场景服务于产品，不喧宾夺主
-- 背景应在深色或浅色中二选一，并与产品主色、材质和价格带匹配
+- 产品占画面约 55%-75%，主体完整清晰，不被裁切，不被景深遮挡关键结构
+- 背景在深色或浅色中二选一，并与产品主色、材质和价格带匹配
 - 浅色场景使用柔和棚光或自然窗光；深色场景使用克制轮廓光和受控高光
 - 保留产品原有主色和材质气质，不要强行改成黑色科技风
-- 轻微虚焦背景，真实材质表现，干净、克制、有质感
+- 轻微虚焦背景，真实材质表现，干净、克制、有质感；暗部仍能看清产品结构
 - 禁止默认深色背景；也不要为了浅色而把深色产品洗白，必须根据产品适配
 
 产品要求：
-- 保持原产品结构、比例、按键、接口、分件线不变
-- 不改变产品功能布局
-- 表面干净，不要脏污、油腻、划痕
-- 不要文字、不要 logo 乱生成、不要说明标签`,
+- 保持原产品结构、比例、按键、接口、分件线、屏幕/灯带/孔位位置不变
+- 不改变产品功能布局，不新增配件，不凭空添加品牌 logo
+- 表面干净，不要脏污、油腻、划痕、错误反射或塑料蜡感
+- 不要文字、不要说明标签、不要水印、不要虚假参数`,
   },
   {
     id: 'cmf-exploration',
@@ -116,16 +134,18 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     hint: '材质与配色方向',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品做一张 CMF 设计探索图。
+    prompt: `基于连接的参考图，为图中产品生成一张高质量 CMF 设计探索板。
+
+目标：在不改变产品结构的前提下，探索 3 个可信的颜色、材料、表面工艺方向，并保持同一产品身份。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 保持产品结构、比例、按键、接口、分件线不变
-- 展示 3 个克制且高级的配色/材质方向
-- 强调真实材质：金属、磨砂塑料、玻璃、织物或软触涂层
-- 光线柔和，背景干净，构图像设计评审板
-- 不要添加品牌 logo、文字标签或说明箭头`,
+- 三个方案使用同一外轮廓、同一比例、同一按键/接口/分件线和同一功能布局
+- 每个方案只改变颜色、材质、粗糙度、纹理或表面工艺，不改变造型和零件数量
+- 方案之间差异清楚但克制：例如哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层
+- 排版像高级设计评审板：三栏或三组等宽视图，背景干净，光线统一，材质样本可辅助但不抢主体
+- 不生成品牌 logo、虚假参数、复杂说明箭头；除非用户要求，不生成可读文字标签`,
   },
   {
     id: 'lifestyle-scene',
@@ -133,19 +153,23 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     hint: '真实使用场景',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品生成一张真实生活方式场景图。
+    prompt: `基于连接的参考图，为图中产品生成一张真实、可信、有高级感的生活方式场景图。
+
+先判断产品最自然的使用环境，再把产品放入场景中；场景只服务于使用价值和尺度感，不改造产品。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 场景方向：
-- 现代、干净、有审美的居家或办公环境
-- 产品是画面主角，构图自然，不要像广告硬广
-- 光线柔和，有轻微景深，材质真实
+- 根据产品类型选择现代居家、办公桌面、厨房浴室、户外、运动、宠物、母婴或专业工作环境
+- 环境干净、有真实生活痕迹但不杂乱；道具数量克制，不能抢产品主体
+- 产品占据清晰视觉中心，人物或手只作为辅助尺度参考，不遮挡核心结构
+- 光线柔和自然，产品与桌面/地面/手部接触可信，有真实阴影和正确透视
+- 构图自然但有商业品质，不要硬广促销感，不要夸张特效
 
 产品约束：
-- 保持原产品结构和功能布局不变
-- 不增加不存在的屏幕内容、按钮、接口或品牌标识
-- 不要文字、不要说明标签、不要夸张特效`,
+- 保持原产品结构、比例、颜色、材质、功能布局不变
+- 不增加不存在的屏幕内容、按钮、接口、配件或品牌标识
+- 不要文字、不要说明标签、不要促销元素、不要水印`,
   },
   {
     id: 'detail-hero',
@@ -153,20 +177,23 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     hint: '边缘高光与材质',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品生成一张高级产品细节特写图。
+    prompt: `基于连接的参考图，为图中产品生成一张高级产品细节特写图。
+
+先从参考图里选择一个真实存在、最能体现品质或功能的细节，再做微距渲染；不要凭空创造看不见的结构。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 画面要求：
-- 聚焦关键边缘、倒角、按键、接口或分件线
-- 微距产品摄影质感，浅景深，背景干净
-- 边缘有精致高光，材质真实可信
+- 聚焦真实可见的关键边缘、倒角、按键、接口、分件线、纹理、转轴、握持区或材质交界
+- 画面只讲一个细节，主体区域清晰锐利，背景和非关键区域轻微虚化
+- 微距产品摄影质感，边缘高光干净，材质粗糙度、反射和纹理尺度可信
+- 特写与原产品整体结构保持可追溯关系，不把局部渲染成另一种产品
 - 画面克制，不要过度锐化或赛博风
 
 产品约束：
 - 不改变原结构、比例、功能布局
 - 表面干净，不要划痕、污渍、指纹
-- 不要文字、不要 logo 乱生成、不要说明标签`,
+- 不要文字、不要 logo 乱生成、不要说明标签、不要虚构参数`,
   },
 ];
 const makeCanvasWorkflowAiNode = (
@@ -206,7 +233,7 @@ const makeCanvasWorkflowAiNode = (
       type: 'image-generator',
       presetId: options.presetId || `workflow-${id}`,
       presetLabel: label,
-      presetPrompt: prompt,
+      presetPrompt: appendBuiltInWorkflowQualityPrompt(prompt),
       aspectRatio,
       outputFormat: 'jpg',
       count: options.count || 1,
@@ -260,7 +287,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         0,
         [],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-cast-scene-master-v2' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-cast-scene-master-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_episode_storyboard_02',
@@ -293,7 +320,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         220,
         ['canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-storyboard-v2' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-storyboard-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_performance_blocking_03',
@@ -318,7 +345,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         440,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-performance-v2' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-performance-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_edit_plan_04',
@@ -343,7 +370,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         660,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-camera-edit-v2' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-camera-edit-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_episode_draft_05',
@@ -368,7 +395,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         880,
         ['canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_camera_edit_plan_04'],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-draft-2k-v2' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-draft-2k-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_continuity_fix_06',
@@ -407,7 +434,7 @@ Original request: "一开始我会把场景设定和角色设定一起输入，�
         1100,
         ['canvas_ai_episode_draft_05', 'canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02'],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-continuity-fix-2k-v2' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-continuity-fix-2k-v2' }
       ),
     ],
   },
@@ -450,7 +477,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         0,
         [],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-product-master-2x2-v9' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-product-master-2x2-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_storyboard_02',
@@ -486,7 +513,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         220,
         ['canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-narrative-storyboard-4x3-v9' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-narrative-storyboard-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_plan_03',
@@ -522,7 +549,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         440,
         ['canvas_ai_storyboard_02', 'canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-camera-tech-previz-4x3-v9' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-camera-tech-previz-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_final_storyboard_04',
@@ -569,7 +596,7 @@ Original request: "最终分镜还是2k就好"。`,
         660,
         ['canvas_ai_product_master_01', 'canvas_ai_storyboard_02', 'canvas_ai_camera_plan_03'],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-final-commercial-storyboard-2k-v10' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-final-commercial-storyboard-2k-v10' }
       ),
     ],
   },
@@ -583,16 +610,20 @@ Original request: "最终分镜还是2k就好"。`,
         'industrial-render',
         '线稿转效果图',
         '从线稿生成效果图',
-        `基于连接的线稿、草图或产品参考图，生成一张可信的工业设计效果图。
+        `基于连接的线稿、草图或产品参考图，生成一张可信、可评审的工业设计主效果图。
+
+输入理解：
+- 如果连接的是线稿/草图：保留原始轮廓、比例、透视、结构分区和功能暗示，将其转译为真实产品渲染。
+- 如果连接的是产品参考图：以参考图为 SUBJECT_REF，锁定结构、CMF、按键/接口/开孔和材质边界。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 保留原始产品比例、结构、功能布局和关键轮廓
-- 将线稿转成真实可评审的产品渲染
-- 材质、倒角、分件线、按键、接口表现清晰
-- 构图干净，像工业设计评审里的主效果图
-- 不要文字、不要 logo 乱生成、不要说明标签`,
+- 只提升完成度，不重新发明产品；模糊区域保持克制，不凭空增加复杂机构
+- 主体完整展示，三分之二或正侧结合视角，关键比例和轮廓清楚
+- 材质、倒角、分件线、按键、接口、支撑/握持/开合关系表现清晰
+- 背景简洁高级，产品与地面/台面接触可信，光影服务结构可读性
+- 不要文字、不要 logo 乱生成、不要说明标签、不要装饰性 HUD`,
         0,
         0,
         [],
@@ -604,13 +635,16 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         '从效果图生成细节特写',
         `基于连接的产品效果图，生成一张高级产品细节特写图。
 
+目标：从上游主效果图中选择一个真实存在的关键细节，放大展示其结构、材质或工艺价值。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 聚焦关键边缘、倒角、按键、接口、分件线或材质交界
-- 微距产品摄影质感，浅景深，边缘有精致高光
-- 保持产品结构与功能布局一致
-- 不要文字、不要 logo 乱生成、不要说明箭头`,
+- 聚焦关键边缘、倒角、按键、接口、分件线、纹理、转轴或材质交界
+- 细节必须能从上游产品追溯回来，不生成上游没有的按钮、传感器、接口或内部结构
+- 微距产品摄影质感，关键区域清晰，非关键区域轻微虚化，边缘高光干净
+- 保持产品结构、颜色、材质和功能布局一致
+- 不要文字、不要 logo 乱生成、不要说明箭头、不要虚构参数`,
         480,
         -120,
         ['industrial-render'],
@@ -620,15 +654,18 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         'industrial-multiview',
         '多角度设计图',
         '从效果图生成多角度设计图',
-        `基于连接的产品效果图，生成同一产品的多角度设计图。
+        `基于连接的产品效果图，生成同一产品的多角度设计评审图。
+
+目标：用多个视角说明同一产品的体块、轮廓、比例和关键结构，方便设计评审。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 展示正面、侧面、背面、3/4 角度等多个视角
-- 所有视角保持同一产品结构、比例、CMF 和细节一致
-- 像工业设计评审板，排版干净，背景简洁
-- 不要文字标签、不要说明箭头、不要品牌 logo 乱生成`,
+- 展示正面、侧面、背面、俯视或 3/4 角度中的 3-4 个互补视角
+- 所有视角必须是同一产品：结构、比例、CMF、分件线、按键/接口数量和位置一致
+- 视角之间等距排列，尺度统一，背景简洁，像干净的工业设计评审板
+- 不做爆炸图，不新增内部结构，不使用夸张透视
+- 不要文字标签、不要说明箭头、不要品牌 logo 乱生成、不要虚假参数`,
         480,
         420,
         ['industrial-render'],
@@ -640,13 +677,16 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         '从效果图生成使用场景',
         `基于连接的产品效果图，生成真实生活方式或办公使用场景图。
 
+目标：把同一产品放入可信使用环境，展示尺度、使用关系和情绪价值，而不是重新设计产品。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 产品是画面主角，环境现代、干净、有审美
-- 光线柔和，有轻微景深，材质真实可信
-- 保持产品结构、比例、按键、接口和分件线一致
-- 不要文字、不要 logo 乱生成、不要夸张特效`,
+- 根据产品类型选择居家、办公、桌面、厨房、浴室、户外或专业工作环境
+- 产品是画面主角，环境现代、干净、有审美，人物/手/道具只作为辅助尺度参考
+- 产品与环境接触可信，有真实阴影、正确透视和合理景深
+- 保持产品结构、比例、颜色、材质、按键、接口和分件线一致
+- 不要文字、不要 logo 乱生成、不要促销元素、不要夸张特效`,
         960,
         150,
         ['industrial-render'],
@@ -674,15 +714,17 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         'cmf-detail',
         'CMF 细节特写',
         '生成材质细节图',
-        `基于连接的 CMF 方向图，生成一张产品材质细节特写。
+        `基于连接的 CMF 方向图，生成一张高质量产品材质细节特写。
+
+目标：从已选 CMF 方向里提取一个最有代表性的材质/工艺细节，做可信微距展示。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 强调材质纹理、表面工艺、倒角高光和颜色过渡
-- 保持产品结构一致
-- 画面像设计评审中的材质细节页
-- 不要文字、不要品牌标识、不要说明箭头`,
+- 强调材质纹理、表面工艺、倒角高光、颜色过渡、粗糙度和真实反射
+- 保持产品结构、比例、CMF 方向和材质边界一致
+- 画面像设计评审中的材质细节页：干净、聚焦、可判断工艺
+- 不要文字、不要品牌标识、不要说明箭头、不要虚构材料标签`,
         480,
         0,
         ['cmf-board'],
@@ -702,13 +744,15 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         '生成产品主视觉',
         `基于连接的产品参考图，生成一张干净高级的电商产品主图。
 
+目标：输出适合商品展示的主视觉底图，主体明确、品质感强、结构准确；这不是详情页长图，不生成促销文案。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 产品居中，轮廓清晰，材质真实
-- 背景简洁但不空洞，适合商品展示
-- 保持产品结构和功能布局一致
-- 不要促销文字、不要 logo 乱生成、不要水印`,
+- 产品居中或轻微偏中，完整展示，轮廓清晰，材质真实，关键卖点区域可读
+- 背景简洁但不空洞，可使用柔和渐变、台面、阴影或轻量图形层次
+- 保持产品结构、比例、颜色、材质和功能布局一致，不新增配件或虚假功能
+- 不要促销文字、不要价格、不要 logo 乱生成、不要水印、不要虚假认证`,
         0,
         0,
         [],

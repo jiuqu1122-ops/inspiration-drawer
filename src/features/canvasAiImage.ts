@@ -5,8 +5,8 @@ export const OPENAI_COMPATIBLE_ENDPOINT_DEFAULT = 'https://api.openai.com/v1';
 export const NEW_API_IMAGE_MODEL_DEFAULT = OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT;
 export const NEW_API_ENDPOINT_DEFAULT = '';
 export const NEW_API_ENDPOINT_PLACEHOLDER = 'https://your-new-api.example.com/v1';
-export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://sg2.dchai.cn';
-export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Nano_Banana_Pro_2K_0';
+export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://xais.dchai.cn';
+export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Xais Nano Pro_2K';
 export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
 export const AODUO_AI_ENDPOINT_DEFAULT = 'https://api.lk888.ai';
 export const AODUO_AI_IMAGE_MODEL_DEFAULT = 'nanobanana-pro';
@@ -27,16 +27,17 @@ export const NEW_API_IMAGE_MODEL_OPTIONS = [
 
 export const XAIS_CHAT_IMAGE_MODEL_OPTIONS = [
   { value: XAIS_CHAT_IMAGE_MODEL_DEFAULT, label: 'Nano Banana Pro 2K' },
-  { value: 'Nano_Banana_Pro_4K_0', label: 'Nano Banana Pro 4K' },
-  { value: 'Nano_Banana_2_2K_0', label: 'Nano Banana 2 2K' },
-  { value: 'Nano_Banana_2_4K_0', label: 'Nano Banana 2 4K' },
-  { value: 'Image2_1K', label: 'Xais img2 1K' },
-  { value: 'Image2_2K', label: 'Xais Img2 2K' },
-  { value: 'Image2_4K', label: 'Xais Img2 4K' },
-  { value: 'Xais Img2_4K_H', label: 'Xais Img2 4K 高画质' },
-  { value: 'Nano_Banana_Pro_2K_5', label: 'Nano Banana Pro 2K 5' },
-  { value: 'Nano_Banana_Pro_4K_5', label: 'Nano Banana Pro 4K 5' },
-  { value: 'c3f', label: 'c3f' },
+  { value: 'Xais Nano Pro_4K', label: 'Nano Banana Pro 4K' },
+  { value: 'Xais Nano2_2K', label: 'Nano Banana 2 2K' },
+  { value: 'Xais Nano2_4K', label: 'Nano Banana 2 4K' },
+  { value: 'Xais Nano_Lite_1K', label: 'Nano Banana Lite 1K' },
+  { value: 'Xais Nano Pro_4K_png', label: 'Nano Banana Pro 4K png' },
+  { value: 'Xais Nano2_4K_png', label: 'Nano Banana 2 4K png' },
+  { value: 'Xais img2_1k', label: 'Image2 1K' },
+  { value: 'Xais Img2_2K', label: 'Image2 2K' },
+  { value: 'Xais Img2_4K', label: 'Image2 4K' },
+  { value: 'Xais Img2_2K(高画质)', label: 'Img2 2K H' },
+  { value: 'Xais Img2_4K(高画质)', label: 'Img2 4K H' },
 ];
 
 export const XAIS_CHAT_VIDEO_MODEL_OPTIONS = [
@@ -337,8 +338,8 @@ const newApiImageRequestParams = (
 };
 
 export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
-  Image2_1K: ['1:1', '9:16', '4:3', '3:4', '5:4'],
-  Image2_2K: [
+  'Xais img2_1k': ['1:1', '9:16', '4:3', '3:4', '5:4'],
+  'Xais Img2_2K': [
     '2048x2048',
     '2048x1152',
     '1152x2048',
@@ -353,7 +354,7 @@ export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
     '2048x1024',
     '2064x688',
   ],
-  Image2_4K: [
+  'Xais Img2_4K': [
     '2880x2880',
     '3840x2160',
     '2160x3840',
@@ -369,7 +370,22 @@ export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
     '3840x1280',
     '1280x3840',
   ],
-  'Xais Img2_4K_H': [
+  'Xais Img2_2K(高画质)': [
+    '2048x2048',
+    '2048x1152',
+    '1152x2048',
+    '2064x1376',
+    '1376x2064',
+    '2048x1536',
+    '1536x2048',
+    '2016x864',
+    '864x2016',
+    '2080x1664',
+    '1664x2080',
+    '2048x1024',
+    '2064x688',
+  ],
+  'Xais Img2_4K(高画质)': [
     '2880x2880',
     '3840x2160',
     '2160x3840',
@@ -389,13 +405,55 @@ export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
 
 export const normalizeXaisImage2Model = (model?: string | null) => {
   const trimmed = String(model || '').trim();
-  if (/^image2_4k_hq$/i.test(trimmed) || /^image2_4k_h$/i.test(trimmed) || /^xais\s+img2_4k_h$/i.test(trimmed)) {
-    return 'Xais Img2_4K_H';
+  const compact = trimmed.replace(/[\s_]+/g, '_');
+  if (/^c3f$/i.test(trimmed)) return XAIS_CHAT_IMAGE_MODEL_DEFAULT;
+  if (/^nano_banana_pro_4k_5$/i.test(trimmed) || /^xais_nano_pro_4k_png$/i.test(compact)) return 'Xais Nano Pro_4K_png';
+  if (/^nano_banana_2_4k_5$/i.test(trimmed) || /^xais_nano2_4k_png$/i.test(compact)) return 'Xais Nano2_4K_png';
+  if (/^nano_banana_pro_2k_/i.test(trimmed) || /^xais_nano_pro_2k$/i.test(compact)) return 'Xais Nano Pro_2K';
+  if (/^nano_banana_pro_4k_/i.test(trimmed) || /^xais_nano_pro_4k$/i.test(compact)) return 'Xais Nano Pro_4K';
+  if (/^nano_banana_2_2k_/i.test(trimmed) || /^xais_nano2_2k$/i.test(compact)) return 'Xais Nano2_2K';
+  if (/^nano_banana_2_4k_/i.test(trimmed) || /^xais_nano2_4k$/i.test(compact)) return 'Xais Nano2_4K';
+  if (/^nano_banana_lite_1k_/i.test(trimmed) || /^xais_nano_lite_1k$/i.test(compact)) return 'Xais Nano_Lite_1K';
+  if (/^image2_4k_hq$/i.test(trimmed) || /^image2_4k_h$/i.test(trimmed) || /^xais_img2_4k_h$/i.test(compact) || /^xais_img2_4k\s*\(高画质\)$/i.test(compact)) {
+    return 'Xais Img2_4K(高画质)';
   }
-  if (/^image2_4k$/i.test(trimmed)) return 'Image2_4K';
-  if (/^image2_2k$/i.test(trimmed)) return 'Image2_2K';
-  if (/^image2_1k$/i.test(trimmed)) return 'Image2_1K';
+  if (/^image2_2k_hq$/i.test(trimmed) || /^image2_2k_h$/i.test(trimmed) || /^xais_img2_2k_h$/i.test(compact) || /^xais_img2_2k\s*\(高画质\)$/i.test(compact)) {
+    return 'Xais Img2_2K(高画质)';
+  }
+  if (/^image2_4k$/i.test(trimmed) || /^xais_img2_4k$/i.test(compact)) return 'Xais Img2_4K';
+  if (/^image2_2k$/i.test(trimmed) || /^xais_img2_2k$/i.test(compact)) return 'Xais Img2_2K';
+  if (/^image2_1k$/i.test(trimmed) || /^xais_img2_1k$/i.test(compact)) return 'Xais img2_1k';
   return trimmed;
+};
+
+export const XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL: Record<string, string> = {
+  'Xais Nano Pro_2K': 'Nano_Banana_Pro_2K_0',
+  'Xais Nano Pro_4K': 'Nano_Banana_Pro_4K_0',
+  'Xais Nano2_2K': 'Nano_Banana_2_2K_0',
+  'Xais Nano2_4K': 'Nano_Banana_2_4K_0',
+  'Xais Nano_Lite_1K': 'Nano_Banana_Lite_1K_0',
+  'Xais Nano Pro_4K_png': 'Nano_Banana_Pro_4K_5',
+  'Xais Nano2_4K_png': 'Nano_Banana_2_4K_5',
+  'Xais img2_1k': 'Image2_1K',
+  'Xais Img2_2K': 'Image2_2K',
+  'Xais Img2_4K': 'Image2_4K',
+  'Xais Img2_2K(高画质)': 'Xais_Img2_2K_H',
+  'Xais Img2_4K(高画质)': 'Xais_Img2_4K_H',
+};
+
+export const resolveXaisImageRequestModel = (model?: string | null) => {
+  const normalized = normalizeXaisImage2Model(model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
+  return XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL[normalized] || normalized || XAIS_CHAT_IMAGE_MODEL_DEFAULT;
+};
+
+export const getXaisImageModelDisplayName = (model?: string | null) => {
+  const normalized = normalizeXaisImage2Model(model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
+  const optionLabel = XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => option.value === normalized)?.label;
+  if (optionLabel) return optionLabel;
+  return resolveXaisImageRequestModel(normalized)
+    .replace(/_/g, ' ')
+    .replace(/\s+0$/g, '')
+    .trim();
 };
 
 export const isXaisImage2Model = (model?: string | null) => (
@@ -452,8 +510,15 @@ export const resolveXaisImage2Ratio = (model?: string | null, aspectRatio?: stri
 };
 
 const xaisImage2QualityFromModel = (model?: string | null) => (
-  normalizeXaisImage2Model(model) === 'Xais Img2_4K_H' ? 'high' : 'medium'
+  /高画质/.test(normalizeXaisImage2Model(model)) ? 'high' : 'medium'
 );
+
+const isXaisNanoImageModel = (model?: string | null) => (
+  /^Xais Nano/i.test(normalizeXaisImage2Model(model))
+);
+
+const XAIS_IMAGE_TASK_MAX_WAIT_MS = 90 * 1000;
+const XAIS_IMAGE_TASK_POLL_INTERVAL_MS = 2200;
 
 const collectImageStrings = (value: unknown, output: string[] = []): string[] => {
   if (!value) return output;
@@ -653,9 +718,8 @@ const getTextViaTauriWithRetry = async (
 };
 
 const isXaisWorkerTaskModel = (model?: string | null) => {
-  const normalized = String(model || '').trim();
-  return /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
+  const normalized = normalizeXaisImage2Model(model);
+  return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized);
 };
 
 const collectXaisAttachmentIds = (value: unknown, output: string[] = [], trusted = false): string[] => {
@@ -794,29 +858,35 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
   if (!prompt) throw new Error('请输入生图提示词');
 
   const model = normalizeXaisImage2Model(options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
+  const requestModel = resolveXaisImageRequestModel(model);
   const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
   const requestCount = Math.max(1, Math.min(4, count));
   const inputImages = (options.inputImages || [])
     .map(image => String(image || '').trim())
     .filter(image => isRemoteHttpImageSource(image) || isXaisAttachmentImageRef(image))
     .slice(0, 8);
+  const isNanoModel = isXaisNanoImageModel(model);
   const image2Ratio = resolveXaisImage2Ratio(model, options.aspectRatio);
   const promptText = prompt;
   const output: string[] = [];
 
   const runOneTask = async () => {
     const customField: Record<string, unknown> = {
-      quality: xaisImage2QualityFromModel(model),
       outputFormat: outputMimeFromFormat(options.outputFormat),
     };
+    if (!isNanoModel) {
+      customField.quality = xaisImage2QualityFromModel(model);
+    }
 
     const taskBody: Record<string, unknown> = {
       prompt: promptText,
-      model,
+      model: requestModel,
       custom_field: customField,
-      ratio: image2Ratio,
-      client: 'XAIS',
     };
+    if (!isNanoModel) {
+      taskBody.ratio = image2Ratio;
+      taskBody.client = 'XAIS';
+    }
     if (inputImages.length > 0) {
       taskBody.ref = inputImages;
     }
@@ -824,16 +894,45 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     debugXaisImage2('workerTaskStart request', {
       endpoint,
       model,
+      requestModel,
       ratio: image2Ratio,
       refCount: inputImages.length,
       refs: inputImages.map(image => isXaisAttachmentImageRef(image) ? image : '[remote-url]'),
       custom_field: customField,
     });
-    const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
-    debugXaisImage2('workerTaskStart response', trimDebugText(startedRaw));
-    const started = parseAiResponseText(startedRaw);
-    const startFailure = getXaisWorkerTaskFailureMessage(started);
-    if (startFailure) throw new Error(`Xais ${model} 任务启动失败：${startFailure}`);
+    let startedRaw = '';
+    let started: unknown = null;
+    let startFailure = '';
+    let startError: unknown = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        if (attempt > 0) await delay(1800 * attempt);
+        startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
+        debugXaisImage2('workerTaskStart response', {
+          attempt: attempt + 1,
+          raw: trimDebugText(startedRaw),
+        });
+        started = parseAiResponseText(startedRaw);
+        startFailure = getXaisWorkerTaskFailureMessage(started);
+        if (!startFailure || !isXaisWorkerTaskOverloadMessage(startFailure) || attempt >= 3) break;
+      } catch (error) {
+        startError = error;
+        const message = getErrorMessage(error);
+        debugXaisImage2('workerTaskStart error', {
+          attempt: attempt + 1,
+          message: trimDebugText(message),
+        });
+        if (!isXaisWorkerTaskOverloadMessage(message) || attempt >= 3) {
+          throw new Error(isXaisWorkerTaskOverloadMessage(message)
+            ? `Xais ${model} 当前模型繁忙，请稍后再试或切换模型：${message}`
+            : message);
+        }
+      }
+    }
+    if (startFailure) throw new Error(isXaisWorkerTaskOverloadMessage(startFailure)
+      ? `Xais ${model} 当前模型繁忙，请稍后再试或切换模型：${startFailure}`
+      : `Xais ${model} 任务启动失败：${startFailure}`);
+    if (!started && startError) throw new Error(getErrorMessage(startError));
     const immediateImages = collectImageStrings(started);
     if (immediateImages.length > 0) return immediateImages;
 
@@ -843,8 +942,9 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     }
 
     let lastWait: unknown = null;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      if (attempt > 0) await delay(1800);
+    const waitStartedAt = Date.now();
+    for (let attempt = 0; Date.now() - waitStartedAt < XAIS_IMAGE_TASK_MAX_WAIT_MS; attempt += 1) {
+      if (attempt > 0) await delay(XAIS_IMAGE_TASK_POLL_INTERVAL_MS);
       const waitedRaw = await getTextViaTauriWithRetry(
         `${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}`,
         apiKey,
@@ -962,6 +1062,10 @@ const debugXaisVideo = (label: string, value?: unknown) => {
 
 const isXaisWorkerTaskPendingMessage = (message: string) => (
   /(?:pending|queued|queue|running|processing|in[_\s-]?progress|progress|waiting|not\s+ready|not\s+finished|unfinished|no\s+result|no\s+output|empty\s+result|result\s+empty|暂无|无结果|没有结果|未返回|进行中|生成中|排队|处理中|等待|未完成)/i.test(message)
+);
+
+const isXaisWorkerTaskOverloadMessage = (message: string) => (
+  /TASK_MODEL_OVERLOAD|model[_\s-]?overload|overload|模型.*(?:繁忙|过载|拥挤|排队)/i.test(message)
 );
 
 const getXaisWorkerTaskFailureMessage = (value: unknown): string => {
@@ -1358,7 +1462,8 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   if (!apiKey) throw new Error('请先填写 Xais API Key');
   if (!prompt) throw new Error('请输入生图提示词');
 
-  const model = (options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT).trim() || XAIS_CHAT_IMAGE_MODEL_DEFAULT;
+  const model = normalizeXaisImage2Model(options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
+  const requestModel = resolveXaisImageRequestModel(model);
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   if (isXaisWorkerTaskModel(model)) {
     return generateXaisWorkerTaskImages({ ...options, model }, count);
@@ -1393,7 +1498,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   if (inputImages.length === 0) {
     try {
       return await requestImages('Xais Images 接口', imageEndpoint, {
-        model,
+        model: requestModel,
         prompt: promptText,
         n: count,
         size: imageSizeFromAspectRatio(options.aspectRatio),
@@ -1424,7 +1529,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
     {
       label: 'Xais Chat 接口',
       body: {
-        model,
+        model: requestModel,
         messages: [
           {
             role: 'user',
@@ -1438,7 +1543,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
     ...(urlTextImages.length > 0 ? [{
       label: 'Xais Chat URL 文本接口',
       body: {
-        model,
+        model: requestModel,
         messages: [
           {
             role: 'user',

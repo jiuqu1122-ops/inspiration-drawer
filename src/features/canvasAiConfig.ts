@@ -21,6 +21,7 @@ import {
   isOpenAiLikeCanvasAiProvider,
   isXaisImage2Model,
   normalizeNewApiBaseEndpoint,
+  normalizeXaisImage2Model,
   resolveXaisImage2Ratio,
 } from './canvasAiImage';
 import { parseCanvasAspectRatioValue } from './canvasAiNodeLayout';
@@ -332,12 +333,8 @@ export const formatCanvasAiXaisBalance = (balance?: number) => (
 );
 
 export const isCanvasAiXaisImageModel = (model: string) => {
-  const normalized = model.trim();
-  return /nano[_-]?banana/i.test(normalized)
-    || /^xais[\s_-]?nano/i.test(normalized)
-    || /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || normalized.toLowerCase() === 'c3f';
+  const normalized = normalizeXaisImage2Model(model);
+  return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized);
 };
 
 export const isCanvasAiLikelyOpenAiImageModel = (model: string) => {
@@ -349,9 +346,8 @@ export const isCanvasAiLikelyOpenAiImageModel = (model: string) => {
 };
 
 export const isCanvasAiXaisWorkerModel = (model?: string | null) => {
-  const normalized = String(model || '').trim();
-  return /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
+  const normalized = normalizeXaisImage2Model(model);
+  return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized);
 };
 
 export const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (

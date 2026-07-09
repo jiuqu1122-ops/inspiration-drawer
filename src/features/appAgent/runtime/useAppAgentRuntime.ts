@@ -67,6 +67,18 @@ function shouldUseDeterministicPlanForTurn(input: {
 }) {
   if (input.plan.commands.length === 0 || input.deterministicLegacyActions.length === 0) return false;
   if (isDirectExecutionBlockedRisk(input.plan.riskLevel)) return false;
+
+  // Draft update/save/run commands must always use deterministic plan —
+  // bypass skill score gate so LLM never re-interprets a patch intent.
+  const isDraftPlan = input.plan.commands.every(cmd =>
+    cmd.domain === 'workflow' && (
+      cmd.action === 'update_draft' ||
+      cmd.action === 'save_draft' ||
+      cmd.action === 'run_draft'
+    )
+  );
+  if (isDraftPlan) return true;
+
   if (input.selectedSkillScore < HIGH_CONFIDENCE_SKILL_SCORE) return false;
   if (isHighConfidenceCreativePlan(input.matchInput, input.activeSkillIds)) return true;
   return input.plan.commands.every(command => command.riskLevel !== 'destructive' && command.riskLevel !== 'system_process');
@@ -175,6 +187,80 @@ const getIndustrialReviewTraceFields = (actions: LegacyAgentAction[]) => {
       },
     };
   }
+  const workflowDraftAction = actions.find(action => {
+    if (action.tool !== 'canvas_create_workflow_draft') return false;
+    const workflowDraft = action.arguments.workflowDraft && typeof action.arguments.workflowDraft === 'object' && !Array.isArray(action.arguments.workflowDraft)
+      ? action.arguments.workflowDraft as Record<string, unknown>
+      : {};
+    return workflowDraft.templateId === 'industrial-design-review'
+      || workflowDraft.templateId === 'ecommerce-detail-page'
+      || workflowDraft.templateId === 'product-detail-page';
+  });
+  if (workflowDraftAction) {
+    const workflowDraft = workflowDraftAction.arguments.workflowDraft as Record<string, unknown>;
+    const templateId = String(workflowDraft.templateId || 'industrial-design-review');
+    const outputs = Array.isArray(workflowDraft.outputs)
+      ? workflowDraft.outputs
+        .map(output => output && typeof output === 'object' && !Array.isArray(output) ? output as Record<string, unknown> : null)
+        .filter((output): output is Record<string, unknown> => !!output && output.enabled !== false)
+      : [];
+    const outputTypes = uniqueStrings(outputs
+      .map(output => String(output.id || ''))
+      .map(outputId => outputId === 'storyboard_key_visual' ? 'storyboard_or_video_key_visual' : outputId)
+      .filter((value): value is WorkflowOutputType => validOutputTypes.has(value as WorkflowOutputType)));
+    const inputBindings = workflowDraftAction.arguments.inputBindings && typeof workflowDraftAction.arguments.inputBindings === 'object' && !Array.isArray(workflowDraftAction.arguments.inputBindings)
+      ? workflowDraftAction.arguments.inputBindings as Record<string, unknown>
+      : {};
+    const connectedReferenceImageNodeIds = uniqueStrings([
+      ...(Array.isArray(workflowDraftAction.arguments.selectedReferenceImageNodeIds)
+        ? workflowDraftAction.arguments.selectedReferenceImageNodeIds.map(String)
+        : []),
+      ...getBoundNodeIds(inputBindings.product_reference_image),
+    ]);
+    const workflowInputBindings = {
+      ...Object.fromEntries(Object.entries(inputBindings).map(([key, value]) => [
+        key,
+        getBoundNodeIds(value),
+      ])),
+      ...(connectedReferenceImageNodeIds.length > 0 && getBoundNodeIds(inputBindings.product_reference_image).length === 0
+        ? { product_reference_image: connectedReferenceImageNodeIds }
+        : {}),
+    };
+    const strategy = workflowDraft.strategy && typeof workflowDraft.strategy === 'object' && !Array.isArray(workflowDraft.strategy)
+      ? workflowDraft.strategy as Record<string, unknown>
+      : {};
+    const strategyEnabled = strategy.enabled === true;
+    return {
+      generatorActions: [],
+      outputTypes,
+      connectedReferenceImageNodeIds,
+      workflowCreationMode: 'workflow_module' as const,
+      strategyStepMode: strategyEnabled ? 'enabled' as const : 'disabled' as const,
+      workflowTemplateId: templateId,
+      fallbackMode: 'workflow' as const,
+      createdGeneratorCount: outputs.length,
+      workflowInputBindings,
+      workflowVisualFanout: outputs.map(output => ({
+        inputId: 'product_reference_image',
+        targetStepId: String(output.id || output.title || ''),
+        sourceNodeIds: connectedReferenceImageNodeIds,
+      })),
+      workflowTextDependencies: strategyEnabled
+        ? outputs.map(output => ({
+          sourceStepId: 'industrial_design_review_strategy',
+          targetStepId: String(output.id || output.title || ''),
+        }))
+        : [],
+      workflowInputResolution: {
+        selectedCanvasImageNodeIds: connectedReferenceImageNodeIds,
+        reusedExistingImageNodes: connectedReferenceImageNodeIds,
+        createdImageNodes: [],
+        duplicateImageNodesPrevented: 0,
+        thumbnailPlaceholdersCreated: 0,
+        unresolvedThumbnailNodes: [],
+      },
+    };
+  }
   const generatorActions = actions.filter(action => {
     if (action.tool !== 'canvas_create_generator') return false;
     const meta = action.arguments.skillMeta && typeof action.arguments.skillMeta === 'object' && !Array.isArray(action.arguments.skillMeta)
@@ -211,9 +297,12 @@ const getIndustrialReviewTraceFields = (actions: LegacyAgentAction[]) => {
   };
 };
 
+import type { WorkflowRecipeDraft } from '../workflows/workflowRecipeTypes';
+
 export function prepareAppAgentTurn(input: {
   userText: string;
   context: AgentCanvasContext;
+  activeDraft?: WorkflowRecipeDraft | null;
 }): PreparedAppAgentTurn {
   const context = input.context;
   const matchInput: SkillMatchInput = {
@@ -242,6 +331,7 @@ export function prepareAppAgentTurn(input: {
     activeSkillIds,
     contextScopes: scopes,
     context,
+    activeDraft: input.activeDraft ?? undefined,
   });
   const deterministicLegacyActions = adaptPlanToLegacyActions(plan);
   const shouldUseDeterministicPlan = shouldUseDeterministicPlanForTurn({

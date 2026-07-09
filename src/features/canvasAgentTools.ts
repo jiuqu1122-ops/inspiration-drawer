@@ -430,6 +430,31 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'canvas_create_workflow_draft',
+      description: '创建可编辑工作流草稿，展示给用户确认后再保存为正式工作流。',
+      parameters: objectSchema({
+        workflowDraft: { type: 'object', additionalProperties: true },
+        languagePolicy: { type: 'object', additionalProperties: true },
+      }),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'canvas_update_workflow_draft',
+      description: '更新当前工作流草稿的输出节点、语言策略或strategy 开关。',
+      parameters: objectSchema({
+        action: { type: 'string', enum: ['add_output', 'remove_output', 'update_output_prompt', 'set_language', 'toggle_strategy', 'save_draft_as_workflow'] },
+        outputId: { type: ['string', 'null'] },
+        outputSpec: { type: 'object', additionalProperties: true },
+        languagePolicy: { type: 'object', additionalProperties: true },
+        strategyEnabled: { type: ['boolean', 'null'] },
+      }, ['action']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'canvas_update_prompt',
       description: '修改指定生成节点的 Prompt。',
       parameters: objectSchema({
@@ -699,6 +724,33 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['canvas_create_workflow_draft'] },
+              arguments: objectSchema({
+                workflowDraft: { type: 'object', additionalProperties: true },
+                languagePolicy: { type: 'object', additionalProperties: true },
+              }),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['canvas_update_workflow_draft'] },
+              arguments: objectSchema({
+                action: { type: 'string', enum: ['add_output', 'remove_output', 'update_output_prompt', 'set_language', 'toggle_strategy', 'save_draft_as_workflow'] },
+                outputId: { type: ['string', 'null'] },
+                outputSpec: { type: 'object', additionalProperties: true },
+                languagePolicy: { type: 'object', additionalProperties: true },
+                strategyEnabled: { type: ['boolean', 'null'] },
+              }, ['action']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_update_prompt'] },
               arguments: objectSchema({
                 nodeId: { type: 'string' },
@@ -785,6 +837,8 @@ export const getCanvasAgentToolLabel = (name: string) => ({
   canvas_run_text_agent: '运行 Agent 文字节点',
   canvas_apply_workflow: '应用工作流',
   canvas_create_workflow: '创建工作流',
+  canvas_create_workflow_draft: '创建工作流草稿',
+  canvas_update_workflow_draft: '更新工作流草稿',
   canvas_update_prompt: '修改 Prompt',
   canvas_connect_nodes: '连接节点',
   canvas_organize: '整理画布',

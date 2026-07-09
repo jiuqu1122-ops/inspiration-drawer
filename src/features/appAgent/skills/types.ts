@@ -3,6 +3,7 @@ export type AgentSkillId =
   | 'drawer-control-skill'
   | 'canvas-control-skill'
   | 'creative-product-design-skill'
+  | 'ecommerce-detail-page-skill'
   | 'media-tool-skill'
   | 'workflow-builder-skill'
   | 'calendar-control-skill'

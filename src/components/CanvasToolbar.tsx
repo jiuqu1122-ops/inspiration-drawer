@@ -16,6 +16,7 @@ const CANVAS_SIDE_TOOL_CLASS = 'flex h-10 w-[68px] shrink-0 items-center justify
 const CANVAS_SIDE_SELECT_CLASS = 'relative h-10 w-[68px] shrink-0 items-center justify-start gap-1.5 overflow-hidden rounded-full border bg-white/88 px-2 text-[10px] font-black text-stone-700 shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[width,transform,background-color,border-color] duration-200 hover:w-[118px] hover:-translate-y-px dark:border-white/10 dark:bg-stone-950/70 dark:text-stone-100 dark:hover:bg-stone-900/90';
 const CANVAS_SIDE_CHEVRON_FLOAT_CLASS = 'pointer-events-none absolute right-2.5 top-1/2 z-10 h-3 w-3 -translate-y-1/2 rounded-full bg-white/90 opacity-0 shadow-sm ring-2 ring-white/80 transition-opacity group-hover/rounded-select:opacity-100 dark:bg-stone-950/90 dark:ring-stone-950/70';
 const CANVAS_SIDE_EXPAND_TOOL_CLASS = `group/canvas-tool ${CANVAS_SIDE_TOOL_CLASS} transition-[width,transform,background-color,border-color] hover:w-[118px] disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45`;
+const CANVAS_SIDE_PRESET_MENU_WIDTH = 360;
 
 type CanvasToolbarProps = {
   toolbarRef: React.RefObject<HTMLDivElement | null>;
@@ -132,11 +133,12 @@ export function CanvasToolbar({
         collapsedLabel="节点预设"
         expandedLabel="节点预设"
         className={`${CANVAS_SIDE_SELECT_CLASS} border-sky-200/80 hover:border-sky-300 hover:bg-sky-50/90 dark:hover:border-sky-400/30`}
-        menuClassName="!z-[100080] !min-w-[230px] !rounded-[18px] !border-sky-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-sky-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
-        optionClassName="!rounded-[12px] !px-3 !py-2 hover:!bg-sky-50 hover:!text-sky-800 dark:hover:!bg-white/10 dark:hover:!text-white"
+        menuClassName="!z-[100080] !min-w-0 !overflow-x-hidden !rounded-[18px] !border-sky-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-sky-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
+        optionClassName="!min-w-0 !rounded-[12px] !px-3 !py-2 hover:!bg-sky-50 hover:!text-sky-800 dark:hover:!bg-white/10 dark:hover:!text-white"
         selectedOptionClassName="!bg-sky-50 !text-sky-800 dark:!bg-sky-400/12 dark:!text-sky-100"
         title="选择节点预设"
-        menuMinWidth={230}
+        menuMinWidth={CANVAS_SIDE_PRESET_MENU_WIDTH}
+        menuPlacement="left"
       />
       <RoundedSelect
         data-no-drag="true"
@@ -150,11 +152,12 @@ export function CanvasToolbar({
         collapsedLabel="工作流"
         expandedLabel="工作流"
         className={`${CANVAS_SIDE_SELECT_CLASS} border-teal-200/80 hover:border-teal-300 hover:bg-teal-50/90 dark:hover:border-teal-400/30`}
-        menuClassName="!z-[100080] !min-w-[250px] !rounded-[18px] !border-teal-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-teal-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
-        optionClassName="!rounded-[12px] !px-3 !py-2 hover:!bg-teal-50 hover:!text-teal-800 dark:hover:!bg-white/10 dark:hover:!text-white"
+        menuClassName="!z-[100080] !min-w-0 !overflow-x-hidden !rounded-[18px] !border-teal-100/80 !bg-white/97 !p-1.5 !text-[12px] !font-bold !text-stone-700 shadow-2xl shadow-black/16 dark:!border-teal-400/20 dark:!bg-stone-950/97 dark:!text-stone-100"
+        optionClassName="!min-w-0 !rounded-[12px] !px-3 !py-2 hover:!bg-teal-50 hover:!text-teal-800 dark:hover:!bg-white/10 dark:hover:!text-white"
         selectedOptionClassName="!bg-teal-50 !text-teal-800 dark:!bg-teal-400/12 dark:!text-teal-100"
         title="选择或保存工作流"
-        menuMinWidth={250}
+        menuMinWidth={CANVAS_SIDE_PRESET_MENU_WIDTH}
+        menuPlacement="left"
       />
       <button
         type="button"

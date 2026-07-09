@@ -9,7 +9,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore
+  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
@@ -60,6 +60,9 @@ import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentS
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
 import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference } from './features/agentModel';
 import { resolveWorkflowInputs } from './features/appAgent/commands/workflowInputResolver';
+import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/appAgentKernel';
+import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
+import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
   flattenDrawerFolderTree,
   getDrawerFolderDeletionPlan,
@@ -200,6 +203,7 @@ import {
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
   getXaisImage2RatioOptions,
+  getXaisImageModelDisplayName,
   isOpenAiLikeCanvasAiProvider,
   isXaisImage2Model,
   normalizeNewApiBaseEndpoint,
@@ -810,6 +814,7 @@ const CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY = 'drawer_calendar_notification
 const SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY = 'drawer_screenshot_auto_pin_note';
 const CALENDAR_NOTIFICATION_SENT_STORAGE_PREFIX = 'drawer_calendar_notification_sent_';
 const CALENDAR_NOTIFICATION_HOURS = [10, 15];
+const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown_date';
 const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
 const SNIP_RESTORE_DRAWER_STORAGE_KEY = 'drawer_snip_restore_drawer';
 const CANVAS_FALLBACK_IMAGE_WIDTH = 360;
@@ -1213,12 +1218,26 @@ type CanvasAiPromptPreset = {
   outputFormat?: string;
   count?: number;
 };
-const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量：
-- 4k resolution, highly detailed, photorealistic, industrial design render
-- Precision parting lines, physically credible 0.5mm micro-bevels
-- Three-point studio lighting, controlled anisotropic highlights, realistic subsurface scattering
-- 85mm prime lens, F/2.8 macro lens, natural depth of field
-- 关键结构、材质边界和功能细节保持清晰，景深不得遮蔽重要设计信息`;
+const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性：
+- Treat connected image(s) as SUBJECT_REF: preserve silhouette, proportions, key parts, functional layout, CMF boundaries and material logic
+- 4k resolution, highly detailed, photorealistic, premium industrial design render
+- Physically credible geometry: clean parting lines, realistic wall thickness, subtle micro-bevels, no melted or warped edges
+- Controlled studio lighting: coherent key/fill/rim light, natural contact shadows, readable dark areas, no blown highlights
+- Accurate materials: correct roughness, reflection, texture scale, translucency or soft-touch finish when applicable
+- Camera discipline: natural product photography perspective, 70-100mm lens feel, clear subject hierarchy, important design details not hidden by depth of field
+- 输出前自检：同一产品身份一致、结构不漂移、材质可信、边缘干净、背景不抢主体、无乱文字/水印/伪 logo`;
+
+const BUILT_IN_WORKFLOW_QUALITY_FOOTER = `通用工作流质量约束：
+- 上游连接图是最高优先级参考。只在当前节点职责内变化，不重设计主体，不随意增删结构、角色、场景或零件。
+- 多节点 workflow 必须保持同一主体身份、比例、材质、色彩体系、光线方向和版式节奏；后续节点继承前序节点已经确认的信息。
+- 画面要有清晰主次、干净边缘、稳定曝光和可信接触阴影；避免低清、脏噪、过度锐化、塑料蜡感、随机装饰和无意义特效。
+- 除非节点明确要求文字或说明栏，不生成可读文字、品牌 logo、水印、虚假参数、认证章、乱码或空白文本框。
+- 输出前自检：数量/版式正确，主体一致，关键结构没有漂移，细节真实，构图服务当前节点目标。`;
+
+const appendBuiltInWorkflowQualityPrompt = (prompt: string) => [
+  prompt.trim(),
+  BUILT_IN_WORKFLOW_QUALITY_FOOTER,
+].filter(Boolean).join('\n\n');
 const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
   {
     id: 'product-render',
@@ -1226,9 +1245,12 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
     hint: '自动选择深浅场景',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品生成一张高级工业设计产品渲染图。
+    prompt: `基于连接的参考图，为图中产品生成一张可直接用于评审、提案或展示的高级工业设计渲染图。
 
-先分析参考图里的产品形态、主色、材质、价格感和情绪气质，只在「浅色场景」和「深色场景」两种方向中选择一个更适合产品的渲染环境。不要把所有产品都默认放进深色棚拍。
+执行顺序：
+1. 先读取 SUBJECT_REF：锁定产品外轮廓、比例、关键零件、按键/接口/开孔、分件线、主色、材质和功能关系。
+2. 判断产品类型、价格感、使用环境和情绪气质，再选择浅色或深色渲染场景。
+3. 只提升光影、材质、背景层次和摄影质感，不重新设计产品，不添加参考图不存在的功能。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
@@ -1236,21 +1258,22 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 - 浅色场景：白色、浅灰、米色或柔和自然光背景；适合浅色产品、生活方式产品、家居小物、医疗/清洁感产品、柔和材质、温暖亲和或清爽高级的产品
 - 深色场景：深灰、黑色或暗调渐变背景；适合黑色/深色产品、金属质感、性能感、专业设备、电竞/科技感、力量感或奢华冷峻的产品
 - 如果产品没有明显暗调气质，优先使用浅色场景；只有产品本身适合深色氛围时才选择深色场景
-- 场景只做简洁背景和台面/地面暗示，不要扩展成复杂生活空间，不要加入无关道具
+- 场景只做简洁背景、台面、地面或柔和空间暗示，不扩展成复杂生活空间，不加入无关道具
 
 视觉要求：
 - 产品是绝对主角，场景服务于产品，不喧宾夺主
-- 背景应在深色或浅色中二选一，并与产品主色、材质和价格带匹配
+- 产品占画面约 55%-75%，主体完整清晰，不被裁切，不被景深遮挡关键结构
+- 背景在深色或浅色中二选一，并与产品主色、材质和价格带匹配
 - 浅色场景使用柔和棚光或自然窗光；深色场景使用克制轮廓光和受控高光
 - 保留产品原有主色和材质气质，不要强行改成黑色科技风
-- 轻微虚焦背景，真实材质表现，干净、克制、有质感
+- 轻微虚焦背景，真实材质表现，干净、克制、有质感；暗部仍能看清产品结构
 - 禁止默认深色背景；也不要为了浅色而把深色产品洗白，必须根据产品适配
 
 产品要求：
-- 保持原产品结构、比例、按键、接口、分件线不变
-- 不改变产品功能布局
-- 表面干净，不要脏污、油腻、划痕
-- 不要文字、不要 logo 乱生成、不要说明标签`,
+- 保持原产品结构、比例、按键、接口、分件线、屏幕/灯带/孔位位置不变
+- 不改变产品功能布局，不新增配件，不凭空添加品牌 logo
+- 表面干净，不要脏污、油腻、划痕、错误反射或塑料蜡感
+- 不要文字、不要说明标签、不要水印、不要虚假参数`,
   },
   {
     id: 'cmf-exploration',
@@ -1258,16 +1281,18 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     hint: '材质与配色方向',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品做一张 CMF 设计探索图。
+    prompt: `基于连接的参考图，为图中产品生成一张高质量 CMF 设计探索板。
+
+目标：在不改变产品结构的前提下，探索 3 个可信的颜色、材料、表面工艺方向，并保持同一产品身份。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 保持产品结构、比例、按键、接口、分件线不变
-- 展示 3 个克制且高级的配色/材质方向
-- 强调真实材质：金属、磨砂塑料、玻璃、织物或软触涂层
-- 光线柔和，背景干净，构图像设计评审板
-- 不要添加品牌 logo、文字标签或说明箭头`,
+- 三个方案使用同一外轮廓、同一比例、同一按键/接口/分件线和同一功能布局
+- 每个方案只改变颜色、材质、粗糙度、纹理或表面工艺，不改变造型和零件数量
+- 方案之间差异清楚但克制：例如哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层
+- 排版像高级设计评审板：三栏或三组等宽视图，背景干净，光线统一，材质样本可辅助但不抢主体
+- 不生成品牌 logo、虚假参数、复杂说明箭头；除非用户要求，不生成可读文字标签`,
   },
   {
     id: 'lifestyle-scene',
@@ -1275,19 +1300,23 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     hint: '真实使用场景',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品生成一张真实生活方式场景图。
+    prompt: `基于连接的参考图，为图中产品生成一张真实、可信、有高级感的生活方式场景图。
+
+先判断产品最自然的使用环境，再把产品放入场景中；场景只服务于使用价值和尺度感，不改造产品。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 场景方向：
-- 现代、干净、有审美的居家或办公环境
-- 产品是画面主角，构图自然，不要像广告硬广
-- 光线柔和，有轻微景深，材质真实
+- 根据产品类型选择现代居家、办公桌面、厨房浴室、户外、运动、宠物、母婴或专业工作环境
+- 环境干净、有真实生活痕迹但不杂乱；道具数量克制，不能抢产品主体
+- 产品占据清晰视觉中心，人物或手只作为辅助尺度参考，不遮挡核心结构
+- 光线柔和自然，产品与桌面/地面/手部接触可信，有真实阴影和正确透视
+- 构图自然但有商业品质，不要硬广促销感，不要夸张特效
 
 产品约束：
-- 保持原产品结构和功能布局不变
-- 不增加不存在的屏幕内容、按钮、接口或品牌标识
-- 不要文字、不要说明标签、不要夸张特效`,
+- 保持原产品结构、比例、颜色、材质、功能布局不变
+- 不增加不存在的屏幕内容、按钮、接口、配件或品牌标识
+- 不要文字、不要说明标签、不要促销元素、不要水印`,
   },
   {
     id: 'detail-hero',
@@ -1295,20 +1324,23 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     hint: '边缘高光与材质',
     aspectRatio: '16:9',
     outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中的产品生成一张高级产品细节特写图。
+    prompt: `基于连接的参考图，为图中产品生成一张高级产品细节特写图。
+
+先从参考图里选择一个真实存在、最能体现品质或功能的细节，再做微距渲染；不要凭空创造看不见的结构。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 画面要求：
-- 聚焦关键边缘、倒角、按键、接口或分件线
-- 微距产品摄影质感，浅景深，背景干净
-- 边缘有精致高光，材质真实可信
+- 聚焦真实可见的关键边缘、倒角、按键、接口、分件线、纹理、转轴、握持区或材质交界
+- 画面只讲一个细节，主体区域清晰锐利，背景和非关键区域轻微虚化
+- 微距产品摄影质感，边缘高光干净，材质粗糙度、反射和纹理尺度可信
+- 特写与原产品整体结构保持可追溯关系，不把局部渲染成另一种产品
 - 画面克制，不要过度锐化或赛博风
 
 产品约束：
 - 不改变原结构、比例、功能布局
 - 表面干净，不要划痕、污渍、指纹
-- 不要文字、不要 logo 乱生成、不要说明标签`,
+- 不要文字、不要 logo 乱生成、不要说明标签、不要虚构参数`,
   },
 ];
 const makeCanvasWorkflowAiNode = (
@@ -1351,7 +1383,7 @@ const makeCanvasWorkflowAiNode = (
       type: 'image-generator',
       presetId: options.presetId || `workflow-${id}`,
       presetLabel: label,
-      presetPrompt: prompt,
+      presetPrompt: appendBuiltInWorkflowQualityPrompt(prompt),
       aspectRatio,
       outputFormat: 'jpg',
       count: options.count || 1,
@@ -1439,18 +1471,19 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
     || null
   );
   const specs = [
-    ['hero_main', 'Hero main', '主视觉首图', 'Create the first product detail page hero image: clear product silhouette, premium commercial composition, strong first-screen selling point, no extra logo/text.'],
-    ['lifestyle_scene', 'Lifestyle scene', '真实使用氛围图', 'Create a realistic lifestyle scene for the same product: credible usage context, product remains the visual subject, materials and proportions unchanged.'],
-    ['detail_macro', 'Detail macro', '材质/结构细节特写', 'Create a macro detail image: focus on key edge, material, button, port, texture or construction detail from the reference product.'],
-    ['exploded_view', 'Exploded view', '结构拆解/卖点说明图', 'Create a clean exploded or layered structure view: show components and functional selling points while preserving real product geometry.'],
-    ['usage_instruction', 'Usage instruction', '使用方式/步骤图', 'Create a usage instruction image: show how the product is used or installed with simple visual steps, no unreadable text blocks.'],
+    ['hero_main', 'Hero main', '主视觉首图', 'Create a premium ecommerce hero image for the same product: complete silhouette, clear subject hierarchy, product occupies the visual center, background supports the product without clutter, no fake logo or random text.'],
+    ['lifestyle_scene', 'Lifestyle scene', '真实使用氛围图', 'Create a realistic lifestyle scene for the same product: choose a credible environment based on product type, keep product scale/contact/shadow believable, product remains the main subject, materials and proportions unchanged.'],
+    ['detail_macro', 'Detail macro', '材质/结构细节特写', 'Create a macro detail image from a real visible part of PRODUCT_REF: focus on one key edge, material transition, button, port, texture, hinge, grip or construction detail; do not invent hidden mechanisms.'],
+    ['exploded_view', 'Exploded view', '结构拆解/卖点说明图', 'Create a clean layered structure or selling-point explanation image: show only plausible visible components and functional relationships, preserve real product geometry, avoid fake internal structures and unsupported technical claims.'],
+    ['usage_instruction', 'Usage instruction', '使用方式/步骤图', 'Create a usage or installation instruction image: 2-3 simple visual steps, product structure remains consistent, hand/contact positions believable, no unreadable text blocks, no invented folding/removal method.'],
   ] as const;
   const commonReferenceInstruction = [
     'Use the connected product reference images as SUBJECT_REF / PRODUCT_REF.',
     ...(includeStrategy ? ['Use the upstream product_strategy text as the CMF, structure, proportion, and visual strategy constraint.'] : []),
-    'Do not invent a different product. Preserve silhouette, proportions, materials, buttons, ports, parting lines, color logic, and functional layout from PRODUCT_REF.',
+    'Do not invent a different product. Preserve silhouette, proportions, materials, buttons, ports, holes, screens, parting lines, color logic, accessories, and functional layout from PRODUCT_REF.',
     'If multiple product reference images are connected, reconcile them as the same product and prioritize the clearest structure.',
-    'No random logo, no malformed text, no unrelated props that hide product details.',
+    'Across all five outputs, keep the same product identity, CMF, lighting direction, background language and premium ecommerce quality.',
+    'No random logo, malformed text, fake certification, unsupported numerical claims, unrelated props that hide product details, or extra components not visible in PRODUCT_REF.',
   ].join('\n');
   return {
     id: 'product-details-workflow-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
@@ -1500,9 +1533,12 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
       ...specs.map(([id, specLabel, specHint, fallbackPrompt], index) => {
         const step = findStep(id, specLabel);
         const prompt = typeof step?.prompt === 'string' && step.prompt.trim() ? step.prompt.trim() : fallbackPrompt;
+        const stepModel = typeof step?.model === 'string' && step.model.trim()
+          ? normalizeXaisImage2Model(step.model.trim())
+          : normalizeXaisImage2Model(options.model || 'Xais img2_1k');
         const requestedAspectRatio = typeof step?.aspectRatio === 'string' ? step.aspectRatio.trim() : '';
         const aspectRatio = requestedAspectRatio
-          ? normalizeCanvasAiAspectRatioForModel(options.model, requestedAspectRatio)
+          ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
           : CANVAS_AI_DEFAULT_ASPECT_RATIO;
         const requestedOutputFormat = typeof step?.outputFormat === 'string' ? step.outputFormat.trim().toLowerCase() : '';
         const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
@@ -1523,11 +1559,13 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
           ai: {
             type: 'image-generator' as const,
             provider: options.provider,
-            model: options.model,
+            model: stepModel,
             presetId: `workflow-product-details-${id}`,
             presetLabel: specLabel,
             presetPrompt: [commonReferenceInstruction, '', `Task: ${prompt}`].join('\n'),
             aspectRatio,
+            targetSize: typeof step?.targetSize === 'string' ? step.targetSize : undefined,
+            resolution: typeof step?.resolution === 'string' ? step.resolution : undefined,
             outputFormat,
             count,
             status: 'idle' as const,
@@ -1545,8 +1583,10 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
   model?: string;
 }): CanvasWorkflowTemplate | null => {
   const definition = options.definition;
-  const label = String(definition.name || definition.label || '工业设计评审工作流').trim().slice(0, 32);
-  const hint = String(definition.description || definition.hint || '根据参考产品图自动生成工业设计评审图组').trim().slice(0, 80);
+  const templateId = String(definition.templateId || 'industrial-design-review');
+  const isDetailPageWorkflow = templateId === 'ecommerce-detail-page' || templateId === 'product-detail-page';
+  const label = String(definition.name || definition.label || (isDetailPageWorkflow ? '产品详情页图片工作流' : '工业设计评审工作流')).trim().slice(0, 32);
+  const hint = String(definition.description || definition.hint || (isDetailPageWorkflow ? '根据产品参考图生成电商产品详情页图片' : '根据参考产品图自动生成工业设计评审图组')).trim().slice(0, 80);
   const metadata = definition.metadata && typeof definition.metadata === 'object' && !Array.isArray(definition.metadata)
     ? definition.metadata as Record<string, unknown>
     : {};
@@ -1657,8 +1697,23 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
       ...textInputIds,
     ]));
     const requestedAspectRatio = String(step.aspectRatio || metadata.aspectRatio || '').trim();
+    const stepProvider = normalizeCanvasAiProvider(
+      typeof step.provider === 'string' && step.provider.trim()
+        ? step.provider
+        : typeof metadata.provider === 'string' && metadata.provider.trim()
+        ? metadata.provider
+        : options.provider
+    );
+    const rawStepModel = typeof step.model === 'string' && step.model.trim()
+      ? step.model.trim()
+      : typeof metadata.model === 'string' && metadata.model.trim()
+      ? metadata.model.trim()
+      : options.model || '';
+    const stepModel = stepProvider === 'xais-chat'
+      ? normalizeXaisImage2Model(rawStepModel || getCanvasAiDefaultModel(stepProvider))
+      : rawStepModel || getCanvasAiDefaultModel(stepProvider);
     const aspectRatio = requestedAspectRatio
-      ? normalizeCanvasAiAspectRatioForModel(options.model, requestedAspectRatio)
+      ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
       : CANVAS_AI_DEFAULT_ASPECT_RATIO;
     const requestedOutputFormat = String(step.outputFormat || '').trim().toLowerCase();
     const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
@@ -1693,9 +1748,9 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
       outputType: count > 1 ? 'image[]' : 'image',
       ai: {
         type: 'image-generator',
-        provider: options.provider,
-        model: options.model,
-        presetId: `workflow-industrial-review-${String(step.id || index + 1)}`,
+        provider: stepProvider,
+        model: stepModel,
+        presetId: `workflow-${templateId}-${String(step.id || index + 1)}`,
         presetLabel: title,
         presetPrompt: prompt,
         aspectRatio,
@@ -1714,7 +1769,7 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
   });
 
   return {
-    id: 'industrial-design-review-workflow-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+    id: `${templateId}-workflow-` + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
     label,
     hint,
     createdAt: Date.now(),
@@ -1883,7 +1938,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         0,
         [],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-cast-scene-master-v2' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-cast-scene-master-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_episode_storyboard_02',
@@ -1916,7 +1971,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         220,
         ['canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-storyboard-v2' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-storyboard-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_performance_blocking_03',
@@ -1941,7 +1996,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         440,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-performance-v2' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-performance-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_edit_plan_04',
@@ -1966,7 +2021,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         660,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-fixed-scene-camera-edit-v2' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-camera-edit-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_episode_draft_05',
@@ -1991,7 +2046,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         880,
         ['canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_camera_edit_plan_04'],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-draft-2k-v2' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-draft-2k-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_continuity_fix_06',
@@ -2030,7 +2085,7 @@ Original request: "一开始我会把场景设定和角色设定一起输入，�
         1100,
         ['canvas_ai_episode_draft_05', 'canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02'],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-episodic-continuity-fix-2k-v2' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-continuity-fix-2k-v2' }
       ),
     ],
   },
@@ -2073,7 +2128,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         0,
         [],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-product-master-2x2-v9' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-product-master-2x2-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_storyboard_02',
@@ -2109,7 +2164,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         220,
         ['canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-narrative-storyboard-4x3-v9' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-narrative-storyboard-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_plan_03',
@@ -2145,7 +2200,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         440,
         ['canvas_ai_storyboard_02', 'canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Image2_1K', presetId: 'workflow-camera-tech-previz-4x3-v9' }
+        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-camera-tech-previz-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_final_storyboard_04',
@@ -2192,7 +2247,7 @@ Original request: "最终分镜还是2k就好"。`,
         660,
         ['canvas_ai_product_master_01', 'canvas_ai_storyboard_02', 'canvas_ai_camera_plan_03'],
         '16:9',
-        { provider: 'xais-chat', model: 'Nano_Banana_Pro_2K_0', presetId: 'workflow-final-commercial-storyboard-2k-v10' }
+        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-final-commercial-storyboard-2k-v10' }
       ),
     ],
   },
@@ -2206,16 +2261,20 @@ Original request: "最终分镜还是2k就好"。`,
         'industrial-render',
         '线稿转效果图',
         '从线稿生成效果图',
-        `基于连接的线稿、草图或产品参考图，生成一张可信的工业设计效果图。
+        `基于连接的线稿、草图或产品参考图，生成一张可信、可评审的工业设计主效果图。
+
+输入理解：
+- 如果连接的是线稿/草图：保留原始轮廓、比例、透视、结构分区和功能暗示，将其转译为真实产品渲染。
+- 如果连接的是产品参考图：以参考图为 SUBJECT_REF，锁定结构、CMF、按键/接口/开孔和材质边界。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 保留原始产品比例、结构、功能布局和关键轮廓
-- 将线稿转成真实可评审的产品渲染
-- 材质、倒角、分件线、按键、接口表现清晰
-- 构图干净，像工业设计评审里的主效果图
-- 不要文字、不要 logo 乱生成、不要说明标签`,
+- 只提升完成度，不重新发明产品；模糊区域保持克制，不凭空增加复杂机构
+- 主体完整展示，三分之二或正侧结合视角，关键比例和轮廓清楚
+- 材质、倒角、分件线、按键、接口、支撑/握持/开合关系表现清晰
+- 背景简洁高级，产品与地面/台面接触可信，光影服务结构可读性
+- 不要文字、不要 logo 乱生成、不要说明标签、不要装饰性 HUD`,
         0,
         0,
         [],
@@ -2227,13 +2286,16 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         '从效果图生成细节特写',
         `基于连接的产品效果图，生成一张高级产品细节特写图。
 
+目标：从上游主效果图中选择一个真实存在的关键细节，放大展示其结构、材质或工艺价值。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 聚焦关键边缘、倒角、按键、接口、分件线或材质交界
-- 微距产品摄影质感，浅景深，边缘有精致高光
-- 保持产品结构与功能布局一致
-- 不要文字、不要 logo 乱生成、不要说明箭头`,
+- 聚焦关键边缘、倒角、按键、接口、分件线、纹理、转轴或材质交界
+- 细节必须能从上游产品追溯回来，不生成上游没有的按钮、传感器、接口或内部结构
+- 微距产品摄影质感，关键区域清晰，非关键区域轻微虚化，边缘高光干净
+- 保持产品结构、颜色、材质和功能布局一致
+- 不要文字、不要 logo 乱生成、不要说明箭头、不要虚构参数`,
         480,
         -120,
         ['industrial-render'],
@@ -2243,15 +2305,18 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         'industrial-multiview',
         '多角度设计图',
         '从效果图生成多角度设计图',
-        `基于连接的产品效果图，生成同一产品的多角度设计图。
+        `基于连接的产品效果图，生成同一产品的多角度设计评审图。
+
+目标：用多个视角说明同一产品的体块、轮廓、比例和关键结构，方便设计评审。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 展示正面、侧面、背面、3/4 角度等多个视角
-- 所有视角保持同一产品结构、比例、CMF 和细节一致
-- 像工业设计评审板，排版干净，背景简洁
-- 不要文字标签、不要说明箭头、不要品牌 logo 乱生成`,
+- 展示正面、侧面、背面、俯视或 3/4 角度中的 3-4 个互补视角
+- 所有视角必须是同一产品：结构、比例、CMF、分件线、按键/接口数量和位置一致
+- 视角之间等距排列，尺度统一，背景简洁，像干净的工业设计评审板
+- 不做爆炸图，不新增内部结构，不使用夸张透视
+- 不要文字标签、不要说明箭头、不要品牌 logo 乱生成、不要虚假参数`,
         480,
         420,
         ['industrial-render'],
@@ -2263,13 +2328,16 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         '从效果图生成使用场景',
         `基于连接的产品效果图，生成真实生活方式或办公使用场景图。
 
+目标：把同一产品放入可信使用环境，展示尺度、使用关系和情绪价值，而不是重新设计产品。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 产品是画面主角，环境现代、干净、有审美
-- 光线柔和，有轻微景深，材质真实可信
-- 保持产品结构、比例、按键、接口和分件线一致
-- 不要文字、不要 logo 乱生成、不要夸张特效`,
+- 根据产品类型选择居家、办公、桌面、厨房、浴室、户外或专业工作环境
+- 产品是画面主角，环境现代、干净、有审美，人物/手/道具只作为辅助尺度参考
+- 产品与环境接触可信，有真实阴影、正确透视和合理景深
+- 保持产品结构、比例、颜色、材质、按键、接口和分件线一致
+- 不要文字、不要 logo 乱生成、不要促销元素、不要夸张特效`,
         960,
         150,
         ['industrial-render'],
@@ -2297,15 +2365,17 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         'cmf-detail',
         'CMF 细节特写',
         '生成材质细节图',
-        `基于连接的 CMF 方向图，生成一张产品材质细节特写。
+        `基于连接的 CMF 方向图，生成一张高质量产品材质细节特写。
+
+目标：从已选 CMF 方向里提取一个最有代表性的材质/工艺细节，做可信微距展示。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 强调材质纹理、表面工艺、倒角高光和颜色过渡
-- 保持产品结构一致
-- 画面像设计评审中的材质细节页
-- 不要文字、不要品牌标识、不要说明箭头`,
+- 强调材质纹理、表面工艺、倒角高光、颜色过渡、粗糙度和真实反射
+- 保持产品结构、比例、CMF 方向和材质边界一致
+- 画面像设计评审中的材质细节页：干净、聚焦、可判断工艺
+- 不要文字、不要品牌标识、不要说明箭头、不要虚构材料标签`,
         480,
         0,
         ['cmf-board'],
@@ -2325,13 +2395,15 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
         '生成产品主视觉',
         `基于连接的产品参考图，生成一张干净高级的电商产品主图。
 
+目标：输出适合商品展示的主视觉底图，主体明确、品质感强、结构准确；这不是详情页长图，不生成促销文案。
+
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
-- 产品居中，轮廓清晰，材质真实
-- 背景简洁但不空洞，适合商品展示
-- 保持产品结构和功能布局一致
-- 不要促销文字、不要 logo 乱生成、不要水印`,
+- 产品居中或轻微偏中，完整展示，轮廓清晰，材质真实，关键卖点区域可读
+- 背景简洁但不空洞，可使用柔和渐变、台面、阴影或轻量图形层次
+- 保持产品结构、比例、颜色、材质和功能布局一致，不新增配件或虚假功能
+- 不要促销文字、不要价格、不要 logo 乱生成、不要水印、不要虚假认证`,
         0,
         0,
         [],
@@ -2672,14 +2744,6 @@ const formatCanvasAiXaisBalance = (balance?: number) => (
     }).format((balance as number) / CANVAS_AI_XAIS_BALANCE_SCALE)
     : '未知'
 );
-const isCanvasAiXaisImageModel = (model: string) => {
-  const normalized = model.trim();
-  return /nano[_-]?banana/i.test(normalized)
-    || /^xais[\s_-]?nano/i.test(normalized)
-    || /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || normalized.toLowerCase() === 'c3f';
-};
 const isCanvasAiLikelyOpenAiImageModel = (model: string) => {
   const normalized = model.trim().toLowerCase();
   return /^gpt-image-\d/.test(normalized)
@@ -2688,9 +2752,8 @@ const isCanvasAiLikelyOpenAiImageModel = (model: string) => {
     || /(?:image|img|picture|photo|vision|visual|flux|sdxl|stable.?diffusion|imagen|ideogram|recraft|seedream|jimeng|kolors|hidream|nano.?banana)/i.test(model);
 };
 const isCanvasAiXaisWorkerModel = (model?: string | null) => {
-  const normalized = String(model || '').trim();
-  return /^(?:image2|img2)(?:[\s_-]|$)/i.test(normalized)
-    || /^xais[\s_-]?(?:image2|img2)(?:[\s_-]|$)/i.test(normalized);
+  const normalized = normalizeXaisImage2Model(model);
+  return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized);
 };
 const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (
   provider === 'xais-chat'
@@ -3572,6 +3635,13 @@ const CanvasTrashListItem = React.memo(function CanvasTrashListItem({
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
+  const shouldShowDailyAppUpdatePrompt = () => {
+    if (!isMainDrawerWindow) return false;
+    const todayKey = getLocalDateKey(Date.now());
+    if (localStorage.getItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY) === todayKey) return false;
+    localStorage.setItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY, todayKey);
+    return true;
+  };
 
   const [items, setItems] = useState<BufferItem[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -3687,6 +3757,10 @@ function MainApp() {
   const [selectedCanvasPresetDeleteIds, setSelectedCanvasPresetDeleteIds] = useState<string[]>([]);
   const [selectedCanvasWorkflowDeleteIds, setSelectedCanvasWorkflowDeleteIds] = useState<string[]>([]);
   const [canvasWorkflowSaveDraft, setCanvasWorkflowSaveDraft] = useState<CanvasWorkflowSaveDraft | null>(null);
+  const activeWorkflowDraftRef = useRef<WorkflowRecipeDraft | null>(null);
+  const [activeWorkflowDraftId, setActiveWorkflowDraftId] = useState<string | null>(null);
+  const [activeDraftForDisplay, setActiveDraftForDisplay] = useState<WorkflowRecipeDraft | null>(null);
+  const [showWorkflowDraftPanel, setShowWorkflowDraftPanel] = useState(false);
   const [isCanvasWorkflowManagerOpen, setIsCanvasWorkflowManagerOpen] = useState(false);
   const [canvasWorkflowEditingId, setCanvasWorkflowEditingId] = useState('');
   const [canvasWorkflowNameDraft, setCanvasWorkflowNameDraft] = useState('');
@@ -4289,6 +4363,7 @@ function MainApp() {
   const toastTimerRef = useRef<any | null>(null);
   const [appVersion, setAppVersion] = useState('');
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
+  const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
   const [isMobileConnected, setIsMobileConnected] = useState(false);
   const disconnectTimerRef = useRef<any | null>(null);
   const recentMobilePayloadsRef = useRef<Record<string, number>>({});
@@ -4377,7 +4452,7 @@ function MainApp() {
     return `检查更新失败：${raw}`;
   };
 
-  const checkAndInstallAppUpdate = async (options: { silent?: boolean } = {}) => {
+  const checkAndInstallAppUpdate = async (options: { silent?: boolean; hidePromptWhenUpToDate?: boolean } = {}) => {
     if (!isMainDrawerWindow) return;
     if (isCheckingAppUpdate) {
       if (!options.silent) showToast('正在检查更新...');
@@ -4486,11 +4561,13 @@ function MainApp() {
       });
 
       if (!result.available) {
+        if (options.hidePromptWhenUpToDate) setShowAppUpdatePromptArrow(false);
         if (!options.silent) showToast('当前已是最新版本');
         return;
       }
 
       if (!result.installed) return;
+      setShowAppUpdatePromptArrow(false);
       showToast('更新已安装，准备重启');
 
       window.setTimeout(() => {
@@ -4508,24 +4585,18 @@ function MainApp() {
     }
   };
 
-  useEffect(() => {
-    if (!isMainDrawerWindow) return;
-
-    const autoUpdateCheckKey = 'drawer_auto_update_checked_at';
-    const autoUpdateCheckIntervalMs = 5 * 60 * 60 * 1000;
-    const lastCheckedAt = Number(localStorage.getItem(autoUpdateCheckKey) || 0);
-    const now = Date.now();
-    if (Number.isFinite(lastCheckedAt) && lastCheckedAt > 0 && now - lastCheckedAt < autoUpdateCheckIntervalMs) {
+  const handleAppUpdatePromptClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isCheckingAppUpdate) {
+      showToast('正在检查更新...');
       return;
     }
+    void checkAndInstallAppUpdate({ hidePromptWhenUpToDate: true });
+  };
 
-    const startupDelayMs = 20_000 + Math.round(Math.random() * 10_000);
-    const timer = window.setTimeout(() => {
-      localStorage.setItem(autoUpdateCheckKey, String(Date.now()));
-      void checkAndInstallAppUpdate({ silent: true });
-    }, startupDelayMs);
-
-    return () => window.clearTimeout(timer);
+  useEffect(() => {
+    if (!isMainDrawerWindow) setShowAppUpdatePromptArrow(false);
   }, []);
 
   useEffect(() => {
@@ -5336,14 +5407,16 @@ function MainApp() {
 
   const canvasAiXaisModelOptions = useMemo(() => {
     const merged = new Set<string>();
+    const allowedModels = new Set(XAIS_CHAT_IMAGE_MODEL_OPTIONS.map(option => option.value));
     canvasAiXaisModels.forEach(model => {
       const trimmed = normalizeXaisImage2Model(model.trim());
-      if (trimmed && isCanvasAiXaisImageModel(trimmed)) merged.add(trimmed);
+      if (trimmed && allowedModels.has(trimmed)) merged.add(trimmed);
     });
     XAIS_CHAT_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
     canvasItemsRef.current.forEach(item => {
       if (item.ai?.type === 'image-generator' && normalizeCanvasAiProvider(item.ai?.provider || '') === 'xais-chat' && item.ai?.model?.trim()) {
-        merged.add(normalizeXaisImage2Model(item.ai.model.trim()));
+        const normalizedModel = normalizeXaisImage2Model(item.ai.model.trim());
+        if (allowedModels.has(normalizedModel)) merged.add(normalizedModel);
       }
     });
     return sortCanvasAiModelsForProvider('xais-chat', Array.from(merged)).map(value => ({
@@ -5365,6 +5438,12 @@ function MainApp() {
   );
   const getCanvasAiResolvedModel = (provider: CanvasAiProvider, model?: string | null, mediaType: 'image' | 'video' = 'image') => {
     const trimmed = String(model || '').trim();
+    if (provider === 'xais-chat' && mediaType === 'image') {
+      const normalized = normalizeXaisImage2Model(trimmed || getCanvasAiDefaultModel(provider, mediaType));
+      return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized)
+        ? normalized
+        : XAIS_CHAT_IMAGE_MODEL_DEFAULT;
+    }
     if (provider === 'new-api' && mediaType === 'image') {
       const remoteModels = canvasAiNewApiModels.map(value => value.trim()).filter(Boolean);
       if (remoteModels.length > 0 && (!trimmed || !remoteModels.includes(trimmed))) return remoteModels[0];
@@ -5510,9 +5589,12 @@ function MainApp() {
         endpoint,
         apiKey,
       });
-      const normalized = sortCanvasAiModelsForProvider(provider, Array.from(new Set((models || [])
-        .map(model => model.trim())
-        .filter(model => model && (provider !== 'xais-chat' || isCanvasAiXaisImageModel(model))))));
+      const rawModels = (models || []).map(model => model.trim()).filter(Boolean);
+      const normalized = provider === 'xais-chat'
+        ? sortCanvasAiModelsForProvider(provider, Array.from(new Set(rawModels
+            .map(model => normalizeXaisImage2Model(model))
+            .filter(model => XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === model)))))
+        : sortCanvasAiModelsForProvider(provider, Array.from(new Set(rawModels)));
       if (provider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
       } else if (provider === 'new-api') {
@@ -7278,6 +7360,31 @@ function MainApp() {
       if (!options.silent) showToast('Windows 通知发送失败');
       return false;
     }
+  };
+
+  const notifyCanvasAiGenerationResult = (options: {
+    status: 'success' | 'partial' | 'error';
+    label: string;
+    mediaType: 'image' | 'video';
+    generatedCount?: number;
+    requestedCount?: number;
+    error?: string;
+  }) => {
+    const label = (options.label || 'AI 节点').trim();
+    const unit = options.mediaType === 'video' ? '条视频' : '张图片';
+    const generatedCount = Math.max(0, Math.round(Number(options.generatedCount || 0)));
+    const requestedCount = Math.max(0, Math.round(Number(options.requestedCount || 0)));
+    const title = options.status === 'success'
+      ? `${label}生成完成`
+      : options.status === 'partial'
+        ? `${label}部分完成`
+        : `${label}生成失败`;
+    const body = options.status === 'success'
+      ? `已生成 ${generatedCount} ${unit}，结果已保存到抽屉。`
+      : options.status === 'partial'
+        ? `已生成 ${generatedCount}/${requestedCount || generatedCount} ${unit}，部分输出失败。`
+        : (options.error || '生成失败，请打开灵感抽屉查看详情。');
+    void sendSystemNotification(title, body, { silent: true });
   };
 
   useEffect(() => {
@@ -16040,6 +16147,7 @@ function MainApp() {
     const apiKey = (provider === canvasAiProvider ? canvasAiApiKey : getStoredCanvasAiApiKey(provider)).trim();
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
+    const resultLabel = options.toastLabel || 'AI 节点';
     const promptParts = [
       ...getCanvasTextInputsForNode(target, getSourceItems()),
       target.ai.presetPrompt || '',
@@ -16047,11 +16155,21 @@ function MainApp() {
     ].map(text => text.trim()).filter(Boolean);
     const prompt = promptParts.join('\n\n');
     if (!prompt) {
-      (options.forceUpdateAi || options.updateAi)({ status: 'error', error: mediaType === 'video' ? '请输入视频提示词，或连接一个文字节点' : '请输入提示词，或连接一个文字节点' });
+      const errorSummary = mediaType === 'video' ? '请输入视频提示词，或连接一个文字节点' : '请输入提示词，或连接一个文字节点';
+      (options.forceUpdateAi || options.updateAi)({ status: 'error', error: errorSummary });
+      if (options.showResultToast !== false) {
+        showToast(`${resultLabel}生成失败：${errorSummary}`);
+        notifyCanvasAiGenerationResult({ status: 'error', label: resultLabel, mediaType, error: errorSummary });
+      }
       return [] as CanvasAiGeneratedOutput[];
     }
     if (!apiKey) {
-      (options.forceUpdateAi || options.updateAi)({ status: 'error', error: '请先在 AI 设置里填写 API Key' });
+      const errorSummary = '请先在 AI 设置里填写 API Key';
+      (options.forceUpdateAi || options.updateAi)({ status: 'error', error: errorSummary });
+      if (options.showResultToast !== false) {
+        showToast(`${resultLabel}生成失败：${errorSummary}`);
+        notifyCanvasAiGenerationResult({ status: 'error', label: resultLabel, mediaType, error: errorSummary });
+      }
       return [] as CanvasAiGeneratedOutput[];
     }
 
@@ -16333,10 +16451,17 @@ function MainApp() {
       }
       options.selectTarget?.();
       if (options.showResultToast !== false) {
-        const label = options.toastLabel || 'AI 节点';
         showToast(generatedOutputs.length >= requestedCount
-          ? `${label}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : AI_GENERATED_FOLDER_NAME}」`
-          : `${label}生成 ${generatedOutputs.length}/${requestedCount} ${unit}`);
+          ? `${resultLabel}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : AI_GENERATED_FOLDER_NAME}」`
+          : `${resultLabel}生成 ${generatedOutputs.length}/${requestedCount} ${unit}`);
+        notifyCanvasAiGenerationResult({
+          status: generatedOutputs.length >= requestedCount ? 'success' : 'partial',
+          label: resultLabel,
+          mediaType,
+          generatedCount: generatedOutputs.length,
+          requestedCount,
+          error: lastPartialError ? getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError)) : undefined,
+        });
       }
       return generatedOutputs;
     } catch (err) {
@@ -16355,7 +16480,8 @@ function MainApp() {
         }, 0);
       }
       if (options.showResultToast !== false) {
-        showToast(`${options.toastLabel || 'AI 节点'}生成失败：${errorSummary.slice(0, 80)}`);
+        showToast(`${resultLabel}生成失败：${errorSummary.slice(0, 80)}`);
+        notifyCanvasAiGenerationResult({ status: 'error', label: resultLabel, mediaType, error: errorSummary });
       }
       return [] as CanvasAiGeneratedOutput[];
     } finally {
@@ -17076,6 +17202,14 @@ function MainApp() {
     showToast(failedIds.size > 0
       ? `展开工作流已部分更新：成功 ${successCount} 个，失败/跳过 ${failedIds.size} 个`
       : `展开工作流已更新 ${successCount} 个节点`);
+    notifyCanvasAiGenerationResult({
+      status: failedIds.size > 0 ? 'partial' : 'success',
+      label: '展开工作流',
+      mediaType: 'image',
+      generatedCount: successCount,
+      requestedCount: runIds.length,
+      error: failedIds.size > 0 ? `失败/跳过 ${failedIds.size} 个节点` : undefined,
+    });
     return true;
   };
 
@@ -17347,6 +17481,14 @@ function MainApp() {
       showToast(failedIds.size > 0
         ? `工作流「${workflow.label}」部分完成：成功 ${completedCount} 个，失败/中断 ${failedIds.size} 个`
         : `工作流「${workflow.label}」部分输出缺失`);
+      notifyCanvasAiGenerationResult({
+        status: 'partial',
+        label: `工作流「${workflow.label}」`,
+        mediaType: 'image',
+        generatedCount: finalSuccessCount,
+        requestedCount: outputSlots.length,
+        error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败/跳过` : '部分终端输出没有生成',
+      });
       return;
     }
     updateCanvasAiGeneratorData(targetId, {
@@ -17357,6 +17499,13 @@ function MainApp() {
       generatedAt: Date.now(),
     });
     showToast(`工作流「${workflow.label}」完成：生成 ${finalOutputs.filter(output => getCanvasAiOutputDisplaySource(output)).length} 张结果`);
+    notifyCanvasAiGenerationResult({
+      status: 'success',
+      label: `工作流「${workflow.label}」`,
+      mediaType: 'image',
+      generatedCount: finalSuccessCount,
+      requestedCount: outputSlots.length,
+    });
   };
 
   const generateCanvasWorkflowModuleNode = async (targetId: string) => {
@@ -22728,6 +22877,7 @@ useEffect(() => {
         },
       };
     },
+    getActiveDraft: () => activeWorkflowDraftRef.current,
     prepareVisualReferences: (context, provider) => (
       prepareCanvasAgentVisualReferences(context.visualReferences || [], provider)
     ),
@@ -23961,6 +24111,247 @@ useEffect(() => {
         };
       }
 
+      if (name === 'canvas_create_workflow_draft') {
+        const workflowDraftArg = args.workflowDraft && typeof args.workflowDraft === 'object' && !Array.isArray(args.workflowDraft)
+          ? args.workflowDraft as WorkflowRecipeDraft
+          : null;
+        if (!workflowDraftArg) throw new Error('canvas_create_workflow_draft requires workflowDraft argument');
+        const draftId = 'draft-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
+        const draft: WorkflowRecipeDraft = { ...workflowDraftArg, id: draftId };
+        if (args.languagePolicy && typeof args.languagePolicy === 'object') {
+          draft.languagePolicy = { ...draft.languagePolicy, ...(args.languagePolicy as WorkflowTextPolicy) };
+        }
+        activeWorkflowDraftRef.current = draft;
+        setActiveWorkflowDraftId(draftId);
+        setActiveDraftForDisplay(draft);
+        setShowWorkflowDraftPanel(true);
+        return {
+          draftId,
+          workflowDraft: draft,
+          createdAt: Date.now(),
+          outputCount: draft.outputs.filter(o => o.enabled !== false).length,
+          languagePolicy: draft.languagePolicy,
+        };
+      }
+
+      if (name === 'canvas_update_workflow_draft') {
+        const action = typeof args.action === 'string' ? args.action : '';
+        const currentDraft = activeWorkflowDraftRef.current;
+        if (!currentDraft) throw new Error('没有激活的工作流草稿，请先创建草稿 (canvas_create_workflow_draft)');
+        if (activeWorkflowDraftId !== currentDraft.id) {
+          setActiveWorkflowDraftId(currentDraft.id);
+        }
+        let updatedDraft: WorkflowRecipeDraft = { ...currentDraft, outputs: [...currentDraft.outputs] };
+
+        if (action === 'add_output') {
+          const outputSpec = args.outputSpec && typeof args.outputSpec === 'object' && !Array.isArray(args.outputSpec)
+            ? args.outputSpec as WorkflowOutputSpec
+            : null;
+          if (!outputSpec) throw new Error('add_output requires outputSpec');
+          updatedDraft.outputs = [...updatedDraft.outputs.filter(o => o.id !== outputSpec.id), outputSpec];
+        } else if (action === 'remove_output') {
+          const outputId = typeof args.outputId === 'string' ? args.outputId : '';
+          updatedDraft.outputs = updatedDraft.outputs.map(o =>
+            o.id === outputId ? { ...o, enabled: false } : o
+          );
+        } else if (action === 'update_output_prompt') {
+          const outputId = typeof args.outputId === 'string' ? args.outputId : '';
+          const outputSpec = args.outputSpec && typeof args.outputSpec === 'object' && !Array.isArray(args.outputSpec)
+            ? args.outputSpec as Partial<WorkflowOutputSpec>
+            : {};
+          // Support __APPEND__:<text> prefix to append to existing prompt
+          const specWithResolvedPrompt = outputSpec.prompt && typeof outputSpec.prompt === 'string' && outputSpec.prompt.startsWith('__APPEND__:')
+            ? {
+                ...outputSpec,
+                prompt: undefined, // handled below
+              }
+            : outputSpec;
+          const appendText = outputSpec.prompt && typeof outputSpec.prompt === 'string' && outputSpec.prompt.startsWith('__APPEND__:')
+            ? outputSpec.prompt.slice('__APPEND__:'.length)
+            : null;
+          updatedDraft.outputs = updatedDraft.outputs.map(o => {
+            if (o.id !== outputId) return o;
+            const base = { ...o, ...specWithResolvedPrompt };
+            return appendText ? { ...base, prompt: o.prompt.includes(appendText) ? o.prompt : o.prompt + appendText } : base;
+          });
+        } else if (action === 'set_language') {
+          const languagePolicy = args.languagePolicy && typeof args.languagePolicy === 'object' && !Array.isArray(args.languagePolicy)
+            ? args.languagePolicy as Partial<WorkflowTextPolicy>
+            : null;
+          if (!languagePolicy) throw new Error('set_language requires languagePolicy');
+          updatedDraft.languagePolicy = { ...updatedDraft.languagePolicy, ...languagePolicy };
+        } else if (action === 'set_aspect_ratio') {
+          const aspectRatioSpec = args.outputSpec && typeof args.outputSpec === 'object' && !Array.isArray(args.outputSpec)
+            ? args.outputSpec as Partial<WorkflowOutputSpec>
+            : {};
+          const newRatio = typeof aspectRatioSpec.aspectRatio === 'string' ? aspectRatioSpec.aspectRatio : '';
+          if (newRatio) {
+            updatedDraft.outputs = updatedDraft.outputs.map(o => ({
+              ...o,
+              aspectRatio: newRatio,
+              pageSpec: o.pageSpec
+                ? { ...o.pageSpec, layout: { ...o.pageSpec.layout, aspectRatio: newRatio } }
+                : o.pageSpec,
+            }));
+            updatedDraft.metadata = { ...updatedDraft.metadata, aspectRatio: newRatio };
+          }
+        } else if (action === 'set_generation_settings') {
+          const generationSpec = args.outputSpec && typeof args.outputSpec === 'object' && !Array.isArray(args.outputSpec)
+            ? args.outputSpec as Partial<WorkflowOutputSpec>
+            : {};
+          const generationSettings = args.generationSettings && typeof args.generationSettings === 'object' && !Array.isArray(args.generationSettings)
+            ? args.generationSettings as Record<string, unknown>
+            : {};
+          updatedDraft.outputs = updatedDraft.outputs.map(o => {
+            const aspectRatio = typeof generationSpec.aspectRatio === 'string' && generationSpec.aspectRatio.trim()
+              ? generationSpec.aspectRatio.trim()
+              : o.aspectRatio;
+            return {
+              ...o,
+              ...(aspectRatio ? { aspectRatio } : {}),
+              ...(typeof generationSpec.targetSize === 'string' ? { targetSize: generationSpec.targetSize } : {}),
+              ...(typeof generationSpec.resolution === 'string' ? { resolution: generationSpec.resolution } : {}),
+              ...(typeof generationSpec.provider === 'string' ? { provider: generationSpec.provider } : {}),
+              ...(typeof generationSpec.model === 'string' ? { model: generationSpec.model } : {}),
+              pageSpec: o.pageSpec && aspectRatio
+                ? { ...o.pageSpec, layout: { ...o.pageSpec.layout, aspectRatio } }
+                : o.pageSpec,
+            };
+          });
+          updatedDraft.metadata = {
+            ...updatedDraft.metadata,
+            workflowGenerationSettings: generationSettings,
+            ...(typeof generationSpec.aspectRatio === 'string' ? { aspectRatio: generationSpec.aspectRatio } : {}),
+            ...(typeof generationSpec.targetSize === 'string' ? { targetSize: generationSpec.targetSize } : {}),
+            ...(typeof generationSpec.resolution === 'string' ? { resolution: generationSpec.resolution } : {}),
+            ...(typeof generationSpec.provider === 'string' ? { provider: generationSpec.provider } : {}),
+            ...(typeof generationSpec.model === 'string' ? { model: generationSpec.model } : {}),
+            ...(typeof generationSettings.modelFamily === 'string' ? { modelFamily: generationSettings.modelFamily } : {}),
+            ...(typeof generationSettings.explicitModel === 'boolean' ? { explicitModel: generationSettings.explicitModel } : {}),
+          };
+        } else if (action === 'set_page_count') {
+          const pageCount = Number(args.pageCount);
+          if (Number.isFinite(pageCount) && pageCount > 0) {
+            updatedDraft.outputs = updatedDraft.outputs.map(o => {
+              const pageIndex = o.pageSpec?.pageIndex || o.order || 0;
+              return { ...o, enabled: pageIndex <= pageCount };
+            });
+            updatedDraft.metadata = { ...updatedDraft.metadata, pageCount };
+          }
+        } else if (action === 'set_render_mode') {
+          type DetailRenderMode = NonNullable<WorkflowOutputSpec['renderMode']>;
+          const rawRenderMode = String(args.renderMode || '');
+          const renderMode: DetailRenderMode | null =
+            rawRenderMode === 'composited_final_page' || rawRenderMode === 'model_text_baked' || rawRenderMode === 'visual_background_only'
+              ? rawRenderMode
+              : null;
+          if (renderMode) {
+            updatedDraft.outputs = updatedDraft.outputs.map(o => {
+              const nextPageSpec = o.pageSpec
+                ? {
+                    ...o.pageSpec,
+                    renderMode,
+                    copy: renderMode === 'visual_background_only'
+                      ? { pageNo: o.pageSpec.copy.pageNo, title: '', subtitle: '', tags: [], localNotes: [] }
+                      : o.pageSpec.copy,
+                  }
+                : o.pageSpec;
+              return { ...o, renderMode, pageSpec: nextPageSpec };
+            });
+            updatedDraft.metadata = { ...updatedDraft.metadata, renderMode };
+          }
+        } else if (action === 'ecommerce_patch_pages') {
+          const removeOutputIds = Array.isArray(args.removeOutputIds) ? args.removeOutputIds.map(String).filter(Boolean) : [];
+          const outputSpecs = Array.isArray(args.outputSpecs)
+            ? args.outputSpecs.filter((spec): spec is WorkflowOutputSpec => !!spec && typeof spec === 'object' && !Array.isArray(spec) && typeof (spec as WorkflowOutputSpec).id === 'string') as WorkflowOutputSpec[]
+            : [];
+          if (removeOutputIds.length > 0) {
+            const removeSet = new Set(removeOutputIds);
+            updatedDraft.outputs = updatedDraft.outputs.map(o => removeSet.has(o.id) ? { ...o, enabled: false } : o);
+          }
+          outputSpecs.forEach(spec => {
+            updatedDraft.outputs = [
+              ...updatedDraft.outputs.filter(o => o.id !== spec.id),
+              spec,
+            ].sort((a, b) => (a.order || 0) - (b.order || 0));
+          });
+        } else if (action === 'approve_master_and_generate') {
+          const nextPageCount = Math.max(1, Math.min(7, Number(args.nextPageCount) || 3));
+          let readied = 0;
+          updatedDraft.outputs = updatedDraft.outputs.map(o => {
+            const pageIndex = o.pageSpec?.pageIndex || o.order || 0;
+            if (pageIndex === 1 || o.id === 'master_page_image') return { ...o, status: 'approved' };
+            if (o.enabled !== false && o.status === 'waiting_for_master' && readied < nextPageCount) {
+              readied += 1;
+              return { ...o, status: 'ready' };
+            }
+            return o;
+          });
+          updatedDraft.metadata = { ...updatedDraft.metadata, masterApproved: true, readyPageCount: readied };
+        } else if (action === 'toggle_strategy') {
+          const strategyEnabled = args.strategyEnabled === true;
+          updatedDraft.strategy = updatedDraft.strategy
+            ? { ...updatedDraft.strategy, enabled: strategyEnabled, mode: strategyEnabled ? 'enabled' as const : 'disabled' as const }
+            : { enabled: strategyEnabled, mode: strategyEnabled ? 'enabled' as const : 'disabled' as const, title: '', prompt: '' };
+        } else if (action === 'save_draft_as_workflow') {
+          const selectedImageNodeIds = getSelectedCanvasAiInputIds();
+          const originalRequest = updatedDraft.metadata.originalRequest || '';
+          const workflowDefinitionArg = convertWorkflowDraftToDefinition(
+            updatedDraft,
+            selectedImageNodeIds,
+            originalRequest,
+            'workflow_module'
+          ) as unknown as Record<string, unknown>;
+          const referenceWorkflowAi = getReferenceImageWorkflowAiConfig();
+          const workflow = normalizeCanvasWorkflowTemplate(buildIndustrialDesignReviewWorkflowTemplateFromDefinition({
+            definition: workflowDefinitionArg,
+            provider: referenceWorkflowAi.provider,
+            model: referenceWorkflowAi.model,
+          }));
+          if (!workflow) throw new Error('工作流草稿转换失败');
+          const validation = validateCanvasWorkflowTemplate(workflow);
+          if (validation.errors.length > 0) throw new Error('Workflow校验失败：' + validation.errors[0]);
+          const preflight = await resolveAgentWorkflowInputIds(workflow, selectedImageNodeIds, {
+            allowMissingRequired: true,
+            useImplicitInputs: false,
+          });
+          if (!isCanvasModeRef.current) enterCanvasMode();
+          const inputBounds = preflight.inputIds.length > 0 ? getCanvasItemsBounds(preflight.inputIds) : null;
+          const base = inputBounds
+            ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
+            : getCanvasDropPosition(0);
+          const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, preflight.inputIds);
+          if (!moduleNode) throw new Error('工作流模块创建失败');
+          setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
+          if (appendCanvasItems([moduleNode], 'Agent保存工作流草稿') <= 0) throw new Error('添加工作流模块失败');
+          updateCanvasSelection([moduleNode.id]);
+          activeWorkflowDraftRef.current = null;
+          setActiveWorkflowDraftId(null);
+          setActiveDraftForDisplay(null);
+          showToast('工作流已保存：' + workflow.label);
+          return {
+            workflowId: workflow.id,
+            nodeId: moduleNode.id,
+            templateId: workflowDefinitionArg.templateId,
+            draftId: currentDraft.id,
+            stepCount: workflow.nodes.length,
+            inputs: preflight.inputIds,
+          };
+        }
+
+        activeWorkflowDraftRef.current = updatedDraft;
+        setActiveDraftForDisplay(updatedDraft);
+        showToast('工作流草稿已更新');
+        setShowWorkflowDraftPanel(true);
+        return {
+          draftId: currentDraft.id,
+          workflowDraft: updatedDraft,
+          action,
+          updatedAt: Date.now(),
+          outputCount: updatedDraft.outputs.filter(o => o.enabled !== false).length,
+        };
+      }
+
       if (name === 'canvas_create_workflow') {
         const rawLabel = typeof args.label === 'string' ? args.label.trim() : '';
         const label = (rawLabel || 'Agent 工作流').slice(0, 32);
@@ -24002,15 +24393,16 @@ useEffect(() => {
 
         if (
           workflowDefinitionArg
-          && String(workflowDefinitionArg.templateId || args.templateId || '') === 'industrial-design-review'
+          && ['industrial-design-review', 'ecommerce-detail-page', 'product-detail-page'].includes(String(workflowDefinitionArg.templateId || args.templateId || ''))
         ) {
+          const workflowTemplateId = String(workflowDefinitionArg.templateId || args.templateId || 'industrial-design-review');
           const referenceWorkflowAi = getReferenceImageWorkflowAiConfig();
           const workflow = normalizeCanvasWorkflowTemplate(buildIndustrialDesignReviewWorkflowTemplateFromDefinition({
             definition: workflowDefinitionArg,
             provider: referenceWorkflowAi.provider,
             model: referenceWorkflowAi.model,
           }));
-          if (!workflow) throw new Error('工业设计评审 workflow 编译失败');
+          if (!workflow) throw new Error('工作流编译失败');
           const validation = validateCanvasWorkflowTemplate(workflow);
           if (validation.errors.length > 0) throw new Error(`Workflow 校验失败：${validation.errors[0]}`);
           if (validation.warnings.length > 0) console.warn('Industrial review workflow validation warnings:', validation.warnings, workflow);
@@ -24024,15 +24416,28 @@ useEffect(() => {
             ? { x: inputBounds.x + inputBounds.width + 96, y: inputBounds.y }
             : getCanvasDropPosition(0);
           const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, preflight.inputIds);
-          if (!moduleNode) throw new Error('工业设计评审 workflow 模块创建失败');
+          if (!moduleNode) throw new Error('workflow 模块创建失败');
           setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
-          if (appendCanvasItems([moduleNode], 'Agent 创建工业设计评审 workflow') <= 0) throw new Error('添加工业设计评审 workflow 模块失败');
+          if (appendCanvasItems([moduleNode], 'Agent 创建 workflow') <= 0) throw new Error('添加 workflow 模块失败');
           updateCanvasSelection([moduleNode.id]);
           if (args.autoRun === true) await generateCanvasWorkflowModuleNode(moduleNode.id);
+          // ── 保存 workflowDraft ref 供后续对话 update，不自动弹出面板 ──────
+          const meta = workflowDefinitionArg.metadata;
+          const embeddedDraft = meta && typeof meta === 'object' && !Array.isArray(meta)
+            ? (meta as Record<string, unknown>).workflowDraft
+            : null;
+          if (embeddedDraft && typeof embeddedDraft === 'object' && !Array.isArray(embeddedDraft)) {
+            const d = embeddedDraft as WorkflowRecipeDraft;
+            activeWorkflowDraftRef.current = d;
+            setActiveWorkflowDraftId(d.id);
+            setActiveDraftForDisplay(d);
+            setShowWorkflowDraftPanel(true);
+          }
+          // ─────────────────────────────────────────────────────────────────
           return {
             workflowId: workflow.id,
             nodeId: moduleNode.id,
-            templateId: 'industrial-design-review',
+            templateId: workflowTemplateId,
             workflowCreationMode: workflowDefinitionArg.creationMode,
             strategyStepMode: workflowDefinitionArg.strategyStepMode,
             stepCount: workflow.nodes.length,
@@ -24052,6 +24457,9 @@ useEffect(() => {
           const workflowMetadataArg = workflowDefinitionArg?.metadata && typeof workflowDefinitionArg.metadata === 'object' && !Array.isArray(workflowDefinitionArg.metadata)
             ? workflowDefinitionArg.metadata as Record<string, unknown>
             : {};
+          const productDetailsModel = typeof workflowMetadataArg.model === 'string' && workflowMetadataArg.model.trim()
+            ? workflowMetadataArg.model.trim()
+            : 'Xais img2_1k';
           const includeStrategy = args.strategyStepMode === 'enabled'
             || workflowDefinitionArg?.strategyStepMode === 'enabled'
             || doesWorkflowExplicitlyRequestProductAnalysis(
@@ -24069,7 +24477,7 @@ useEffect(() => {
             hint,
             steps: rawSteps,
             provider: referenceWorkflowAi.provider,
-            model: referenceWorkflowAi.model,
+            model: productDetailsModel,
             includeStrategy,
           }));
           if (!workflow) throw new Error('详情页五图 workflow 编译失败');
@@ -26447,6 +26855,27 @@ useEffect(() => {
                         isMobileConnected ? "bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.6)] animate-pulse" : "bg-amber-400 shadow-[0_0_2px_rgba(251,191,36,0.6)]"
                       }`} />
                     </div>
+                    <AnimatePresence initial={false}>
+                      {showAppUpdatePromptArrow && (
+                        <motion.button
+                          key="app-update-prompt-arrow"
+                          type="button"
+                          initial={{ opacity: 0, y: 3, scale: 0.9 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -3, scale: 0.9 }}
+                          transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                          onPointerDown={e => e.stopPropagation()}
+                          onClick={handleAppUpdatePromptClick}
+                          disabled={isCheckingAppUpdate}
+                          title={isCheckingAppUpdate ? '正在检查更新' : '检查更新'}
+                          className="pointer-events-auto ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-blue-500 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:cursor-wait disabled:opacity-75 dark:text-blue-300 dark:hover:bg-blue-400/12 dark:hover:text-blue-200"
+                        >
+                          {isCheckingAppUpdate
+                            ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            : <ArrowUp className="h-3.5 w-3.5 stroke-[2.6]" />}
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
                   </h2>
 
                   {/* 右侧按钮组：按钮本身不拖动，按钮之间的空白仍可拖动 */}
@@ -28564,7 +28993,7 @@ useEffect(() => {
                                             }}
                                             labelClassName={`${canvasAiMediaType === 'video' ? 'max-w-[104px]' : 'max-w-[150px]'} truncate text-center leading-none`}
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`模型：${normalizeXaisImage2Model(getCanvasAiResolvedModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasItem.ai?.model, canvasAiMediaType))}`}
+                                            title={`模型：${getXaisImageModelDisplayName(getCanvasAiResolvedModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasItem.ai?.model, canvasAiMediaType))}`}
                                             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -29511,10 +29940,14 @@ useEffect(() => {
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-template-panel="true"
-                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="absolute left-1/2 top-14 z-[100070] w-[460px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
+                      initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
+                      animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
+                      exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
+                      style={{
+                        top: canvasToolbarTop,
+                        right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
+                      }}
+                      className="absolute z-[100070] w-[500px] rounded-[16px] border border-stone-200/85 bg-white/96 p-3 text-stone-700 shadow-[0_18px_48px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-stone-700/80 dark:bg-stone-950/96 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
@@ -29568,9 +30001,9 @@ useEffect(() => {
                       </div>
                       <div className="grid gap-2">
                         {canvasPresetEditorMode === 'manage' && (
-                          <div className="grid gap-1.5 rounded-[16px] border border-cyan-100/80 bg-cyan-50/58 p-2 dark:border-cyan-400/16 dark:bg-cyan-400/10">
+                          <div className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">节点预设列表</span>
+                              <span className="text-[10px] font-black uppercase tracking-wide text-stone-500 dark:text-stone-400">节点预设列表</span>
                               <div className="flex items-center gap-1">
                                 <button
                                   type="button"
@@ -29590,9 +30023,9 @@ useEffect(() => {
                                 </button>
                               </div>
                             </div>
-                            <div className="grid max-h-44 gap-1 overflow-y-auto pr-1">
+                            <div className="grid max-h-52 gap-1 overflow-y-auto pr-1">
                               {canvasAiPromptPresets.length === 0 ? (
-                                <div className="rounded-[12px] border border-dashed border-cyan-200/80 bg-white/50 px-3 py-4 text-center text-[11px] font-bold text-cyan-700/70 dark:border-cyan-400/20 dark:bg-white/5 dark:text-cyan-100/70">
+                                <div className="rounded-[10px] border border-dashed border-stone-300/80 bg-white/70 px-3 py-4 text-center text-[11px] font-bold text-stone-400 dark:border-stone-700 dark:bg-white/5 dark:text-stone-500">
                                   暂无节点预设
                                 </div>
                               ) : canvasAiPromptPresets.map(preset => {
@@ -29612,10 +30045,10 @@ useEffect(() => {
                                         selectCanvasPresetForEdit(preset.id);
                                       }
                                     }}
-                                    className={`grid cursor-pointer grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-[12px] border px-2 py-2 text-left transition-colors ${
+                                    className={`grid cursor-pointer grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-[10px] border px-2.5 py-2 text-left transition-colors ${
                                       isEditing
-                                        ? 'border-cyan-300 bg-white text-stone-800 shadow-sm dark:border-cyan-500/50 dark:bg-cyan-400/12 dark:text-stone-100'
-                                        : 'border-white/60 bg-white/58 text-stone-700 hover:bg-white/82 dark:border-white/10 dark:bg-stone-950/24 dark:text-stone-200 dark:hover:bg-white/8'
+                                        ? 'border-stone-900 bg-white text-stone-900 shadow-sm dark:border-stone-100 dark:bg-white/10 dark:text-stone-50'
+                                        : 'border-stone-200/70 bg-white/72 text-stone-700 hover:border-stone-300 hover:bg-white dark:border-white/10 dark:bg-stone-950/30 dark:text-stone-200 dark:hover:bg-white/8'
                                     }`}
                                   >
                                     <button
@@ -29632,7 +30065,7 @@ useEffect(() => {
                                       className={`flex h-5 w-5 items-center justify-center rounded-[7px] border transition-colors ${
                                         isSelectedForDelete
                                           ? 'border-red-400 bg-red-500 text-white'
-                                          : 'border-cyan-200 bg-white/80 text-transparent hover:border-red-300 dark:border-cyan-400/20 dark:bg-stone-950/40'
+                                          : 'border-stone-300 bg-white/80 text-transparent hover:border-red-300 dark:border-stone-700 dark:bg-stone-950/40'
                                       }`}
                                       title={`选择删除「${preset.label}」`}
                                     >
@@ -29644,7 +30077,7 @@ useEffect(() => {
                                         {preset.hint || preset.aspectRatio || '节点预设'}
                                       </div>
                                     </div>
-                                    <span className="rounded-full bg-cyan-50 px-2 py-0.5 text-[9px] font-black text-cyan-700 dark:bg-cyan-400/10 dark:text-cyan-100">
+                                    <span className="rounded-[7px] bg-stone-100 px-2 py-0.5 text-[9px] font-black text-stone-500 dark:bg-white/8 dark:text-stone-400">
                                       {isBuiltIn && isCustom ? '已修改' : isBuiltIn ? '内置' : '自定义'}
                                     </span>
                                   </div>
@@ -29659,7 +30092,7 @@ useEffect(() => {
                           onChange={(event) => setCanvasPresetNameDraft(event.target.value)}
                           placeholder="预设名称"
                           maxLength={24}
-                          className="h-9 rounded-[15px] border border-stone-200/80 bg-white/76 px-3 text-xs font-bold text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
+                          className="h-9 rounded-[10px] border border-stone-200/80 bg-white px-3 text-xs font-bold text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                         />
                         <textarea
                           data-no-drag="true"
@@ -29667,7 +30100,7 @@ useEffect(() => {
                           onChange={(event) => setCanvasPresetPromptDraft(event.target.value)}
                           onWheel={(event) => event.stopPropagation()}
                           placeholder="写入这个预设的隐藏 Prompt。创建预设卡片时，节点输入框会保持空白。"
-                          className="h-36 resize-y rounded-[16px] border border-stone-200/80 bg-white/76 px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
+                          className="h-36 resize-y rounded-[10px] border border-stone-200/80 bg-white px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                         />
                         <div className="flex items-center justify-between gap-2">
                           <div>
@@ -29706,10 +30139,14 @@ useEffect(() => {
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-template-panel="true"
-                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="absolute left-1/2 top-14 z-[100070] w-[480px] -translate-x-1/2 rounded-[22px] border border-white/70 bg-white/90 p-3 text-stone-700 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/90 dark:text-stone-200"
+                      initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
+                      animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
+                      exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
+                      style={{
+                        top: canvasToolbarTop,
+                        right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
+                      }}
+                      className="absolute z-[100070] w-[520px] rounded-[16px] border border-stone-200/85 bg-white/96 p-3 text-stone-700 shadow-[0_18px_48px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-stone-700/80 dark:bg-stone-950/96 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
@@ -29760,9 +30197,9 @@ useEffect(() => {
                         </button>
                       </div>
                       <div className="grid gap-2">
-                        <div className="grid gap-1.5 rounded-[16px] border border-emerald-100/80 bg-emerald-50/58 p-2 dark:border-emerald-400/16 dark:bg-emerald-400/10">
+                        <div className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-[10px] font-black text-emerald-700 dark:text-emerald-200">工作流列表</span>
+                            <span className="text-[10px] font-black uppercase tracking-wide text-stone-500 dark:text-stone-400">工作流列表</span>
                             <div className="flex items-center gap-1">
                               <button
                                 type="button"
@@ -29782,9 +30219,9 @@ useEffect(() => {
                               </button>
                             </div>
                           </div>
-                          <div className="grid max-h-44 gap-1 overflow-y-auto pr-1">
+                          <div className="grid max-h-52 gap-1 overflow-y-auto pr-1">
                             {canvasWorkflowTemplates.length === 0 ? (
-                              <div className="rounded-[12px] border border-dashed border-emerald-200/80 bg-white/50 px-3 py-4 text-center text-[11px] font-bold text-emerald-700/70 dark:border-emerald-400/20 dark:bg-white/5 dark:text-emerald-100/70">
+                              <div className="rounded-[10px] border border-dashed border-stone-300/80 bg-white/70 px-3 py-4 text-center text-[11px] font-bold text-stone-400 dark:border-stone-700 dark:bg-white/5 dark:text-stone-500">
                                 暂无工作流
                               </div>
                             ) : canvasWorkflowTemplates.map(workflow => {
@@ -29805,10 +30242,10 @@ useEffect(() => {
                                       selectCanvasWorkflowForEdit(workflow.id);
                                     }
                                   }}
-                                  className={`grid cursor-pointer grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-[12px] border px-2 py-2 text-left transition-colors ${
+                                  className={`grid cursor-pointer grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 rounded-[10px] border px-2.5 py-2 text-left transition-colors ${
                                     isEditing
-                                      ? 'border-emerald-300 bg-white text-stone-800 shadow-sm dark:border-emerald-500/50 dark:bg-emerald-400/12 dark:text-stone-100'
-                                      : 'border-white/60 bg-white/58 text-stone-700 hover:bg-white/82 dark:border-white/10 dark:bg-stone-950/24 dark:text-stone-200 dark:hover:bg-white/8'
+                                      ? 'border-stone-900 bg-white text-stone-900 shadow-sm dark:border-stone-100 dark:bg-white/10 dark:text-stone-50'
+                                      : 'border-stone-200/70 bg-white/72 text-stone-700 hover:border-stone-300 hover:bg-white dark:border-white/10 dark:bg-stone-950/30 dark:text-stone-200 dark:hover:bg-white/8'
                                   }`}
                                 >
                                   <button
@@ -29825,7 +30262,7 @@ useEffect(() => {
                                     className={`flex h-5 w-5 items-center justify-center rounded-[7px] border transition-colors ${
                                       isSelectedForDelete
                                         ? 'border-red-400 bg-red-500 text-white'
-                                        : 'border-emerald-200 bg-white/80 text-transparent hover:border-red-300 dark:border-emerald-400/20 dark:bg-stone-950/40'
+                                        : 'border-stone-300 bg-white/80 text-transparent hover:border-red-300 dark:border-stone-700 dark:bg-stone-950/40'
                                     }`}
                                     title={`选择删除「${workflow.label}」`}
                                   >
@@ -29837,7 +30274,7 @@ useEffect(() => {
                                       {workflow.nodes.length} 个节点 / {aiNodeCount} 个生图节点
                                     </div>
                                   </div>
-                                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-black text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-100">
+                                  <span className="rounded-[7px] bg-stone-100 px-2 py-0.5 text-[9px] font-black text-stone-500 dark:bg-white/8 dark:text-stone-400">
                                     {isBuiltIn && isCustom ? '已修改' : isBuiltIn ? '内置' : '自定义'}
                                   </span>
                                 </div>
@@ -29851,7 +30288,7 @@ useEffect(() => {
                           onChange={(event) => setCanvasWorkflowNameDraft(event.target.value)}
                           placeholder="工作流名称"
                           maxLength={32}
-                          className="h-9 rounded-[15px] border border-stone-200/80 bg-white/76 px-3 text-xs font-bold text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
+                          className="h-9 rounded-[10px] border border-stone-200/80 bg-white px-3 text-xs font-bold text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
                         />
                         <textarea
                           data-no-drag="true"
@@ -29860,7 +30297,7 @@ useEffect(() => {
                           onWheel={(event) => event.stopPropagation()}
                           placeholder="工作流说明"
                           maxLength={80}
-                          className="h-20 resize-y rounded-[16px] border border-stone-200/80 bg-white/76 px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/48 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
+                          className="h-20 resize-y rounded-[10px] border border-stone-200/80 bg-white px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
                         />
                         <div className="flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
                           <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingNodeCount} 个节点</span>
@@ -32272,24 +32709,49 @@ useEffect(() => {
         )}
       </AnimatePresence>
 
+      {/* Workflow Draft Panel */}
+      {showWorkflowDraftPanel && (activeDraftForDisplay ?? activeWorkflowDraftRef.current) && (
+        <WorkflowDraftPanel
+          draft={(activeDraftForDisplay ?? activeWorkflowDraftRef.current)!}
+          onUpdate={(patch) => {
+            if (!activeWorkflowDraftRef.current) return;
+            const updated = { ...activeWorkflowDraftRef.current, ...patch };
+            activeWorkflowDraftRef.current = updated;
+            setActiveDraftForDisplay(updated);  // 触发 re-render，panel 立即响应
+          }}
+          onSave={() => {
+            void canvasAgent.sendMessage('保存这个工作流');
+            setShowWorkflowDraftPanel(false);
+          }}
+          onDiscard={() => {
+            setShowWorkflowDraftPanel(false);
+          }}
+        />
+      )}
+
       <AnimatePresence>
         {canvasWorkflowSaveDraft && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto"
+            className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/15 backdrop-blur-[2px] pointer-events-auto"
             onPointerEnter={keepDrawerOpenByPointer}
             onPointerMove={keepDrawerOpenByPointer}
             onPointerLeave={handleFloatingLayerPointerLeave}
             onMouseDown={(event) => { if (event.button === 0) closeCanvasWorkflowSaveDialog(); }}
           >
             <motion.form
-              initial={{ scale: 0.95, y: 10 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.95, y: 10 }}
+              initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
+              animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
+              exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
               data-canvas-template-panel="true"
-              className="w-full max-w-[360px] rounded-[28px] bg-white p-4 shadow-2xl border border-stone-200 dark:border-stone-700 dark:bg-stone-900"
+              style={{
+                position: 'absolute',
+                top: canvasToolbarTop,
+                right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
+              }}
+              className="w-[360px] rounded-[16px] bg-white p-4 shadow-[0_18px_48px_rgba(15,23,42,0.16)] border border-stone-200 dark:border-stone-700 dark:bg-stone-900"
               onMouseDown={(event) => event.stopPropagation()}
               onSubmit={(event) => {
                 event.preventDefault();
@@ -32354,7 +32816,7 @@ useEffect(() => {
 
       <AnimatePresence>
         {confirmDialog.isOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} data-canvas-floating-layer="true" className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
             <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
               <h3 className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
               <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">{confirmDialog.message || '确定继续吗？'}</p>

@@ -43,6 +43,8 @@ export function adaptCommandToLegacyAction(command: AppAgentCommand): LegacyAgen
   if (command.domain === 'workflow') {
     if (command.action === 'apply') return withCommandMeta({ tool: 'canvas_apply_workflow', arguments: command.args }, command);
     if (command.action === 'create') return withCommandMeta({ tool: 'canvas_create_workflow', arguments: adaptWorkflowCreateArgs(command.args) }, command);
+    if (command.action === 'create_draft') return withCommandMeta({ tool: 'canvas_create_workflow_draft', arguments: command.args }, command);
+    if (command.action === 'update_draft') return withCommandMeta({ tool: 'canvas_update_workflow_draft', arguments: command.args }, command);
     if (command.action === 'run') return withCommandMeta({ tool: 'canvas_run_workflow', arguments: command.args }, command);
   }
   if (command.domain === 'canvas') {

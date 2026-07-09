@@ -3,6 +3,7 @@ import type { AppAgentCommand, LegacyAgentAction } from './commandTypes';
 import {
   applyCreativeGeneratorDefaults,
   isCreativeLikeRequest,
+  isCreativeEditRequest,
   parseCreativeDimensions,
   validateCreativeGeneratorAction,
 } from '../skills/creativeProductDesignSkill';
@@ -97,6 +98,7 @@ const validateWorkflowDefinition = (
   errors: string[],
 ) => {
   const templateId = String(workflowDefinition.templateId || args.templateId || '');
+  const requiresProductReferenceTemplate = templateId === 'industrial-design-review' || templateId === 'ecommerce-detail-page' || templateId === 'product-detail-page';
   const inputs = Array.isArray(workflowDefinition.inputs) ? workflowDefinition.inputs : [];
   const steps = Array.isArray(workflowDefinition.steps) ? workflowDefinition.steps : [];
   if (steps.length === 0) errors.push('workflowDefinition steps cannot be empty.');
@@ -104,8 +106,8 @@ const validateWorkflowDefinition = (
     const record = asRecord(input);
     return record?.id === 'product_reference_image' && String(record.type || '').toLowerCase() === 'image';
   });
-  if (templateId === 'industrial-design-review' && !hasProductReferenceInput) {
-    errors.push('industrial-design-review workflowDefinition must include required image input product_reference_image.');
+  if (requiresProductReferenceTemplate && !hasProductReferenceInput) {
+    errors.push(`${templateId} workflowDefinition must include required image input product_reference_image.`);
   }
   steps
     .map(asRecord)
@@ -113,7 +115,7 @@ const validateWorkflowDefinition = (
     .forEach(step => {
       const stepType = getWorkflowStepType(step);
       if (!/image[-_]?generator/.test(stepType)) return;
-      const requiresReferenceImages = step.requiresReferenceImages === true || templateId === 'industrial-design-review';
+      const requiresReferenceImages = step.requiresReferenceImages === true || requiresProductReferenceTemplate;
       const visualInputIds = getVisualStepInputIds(step);
       const textInputIds = getTextStrategyInputIds(step);
       if (requiresReferenceImages && visualInputIds.length === 0) {
@@ -122,7 +124,7 @@ const validateWorkflowDefinition = (
       if (
         requiresReferenceImages
         && visualInputIds.length > 0
-        && templateId === 'industrial-design-review'
+        && requiresProductReferenceTemplate
         && !visualInputIds.includes('product_reference_image')
       ) {
         errors.push(`workflow generator "${String(step.id || step.title || 'unknown')}" must directly include product_reference_image as a visual input; strategy text cannot replace it.`);
@@ -259,7 +261,7 @@ export function validateLegacyAgentAction(
       userText,
       hasReferenceImages,
     });
-    if (isCreativeLikeRequest(userText)) errors.push(...creativeErrors);
+    if (isCreativeLikeRequest(userText) || isCreativeEditRequest(userText)) errors.push(...creativeErrors);
     validateIds(asStringArray(args.inputIds), nodeIds, 'input nodeId', errors);
     validateIds(asStringArray(args.referenceImageNodeIds), nodeIds, 'referenceImageNodeId', errors);
     const referenceRoleNodeIds = Array.isArray(args.referenceRoles)

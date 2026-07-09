@@ -60,6 +60,7 @@ import {
 
 type RuntimeOptions = {
   getContext: () => AgentCanvasContext;
+  getActiveDraft?: () => import('./appAgent/workflows/workflowRecipeTypes').WorkflowRecipeDraft | null;
   prepareVisualReferences?: (
     context: AgentCanvasContext,
     provider: AgentProvider,
@@ -1980,6 +1981,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       const appAgentTurn = prepareAppAgentTurn({
         userText: text,
         context: contextWithVisualReferences,
+        activeDraft: optionsRef.current.getActiveDraft?.() ?? null,
       });
       appendAppAgentTrace(appAgentTurn.trace);
       upsertThinkingStep(conversation.id, assistantMessage.id, 'skills', {

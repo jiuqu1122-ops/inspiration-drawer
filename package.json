@@ -1,7 +1,7 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "4.5.1",
+  "version": "4.5.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,7 +15,9 @@
     "updater:prepare": "node scripts/prepare-github-release.mjs",
     "updater:sync:gitee": "node scripts/sync-gitee-release.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:smoke": "vitest run src/features/appAgent/appAgentSmoke.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
@@ -43,6 +45,7 @@
     "postcss": "^8.5.8",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.10"
   }
 }
