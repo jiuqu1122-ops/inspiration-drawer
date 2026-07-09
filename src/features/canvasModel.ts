@@ -11,6 +11,12 @@ export type CanvasImageItem = {
   textMode?: 'agent' | 'plain';
   ai?: CanvasAiItemData;
   workflowGroup?: unknown;
+  workflowBridge?: {
+    type: 'reference-image';
+    label?: string;
+    externalInputTypes?: Array<'image' | 'text' | 'video'>;
+    outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
+  };
 };
 
 export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'aoduo-ai';

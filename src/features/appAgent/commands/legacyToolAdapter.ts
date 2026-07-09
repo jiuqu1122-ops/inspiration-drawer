@@ -16,6 +16,24 @@ const withCommandMeta = (
   sourceCommandId: command.id,
 });
 
+const adaptWorkflowCreateArgs = (args: Record<string, unknown>) => {
+  const workflowDefinition = args.workflowDefinition && typeof args.workflowDefinition === 'object' && !Array.isArray(args.workflowDefinition)
+    ? args.workflowDefinition as Record<string, unknown>
+    : null;
+  if (!workflowDefinition) return args;
+  return {
+    ...args,
+    name: args.name || workflowDefinition.name,
+    label: args.label || workflowDefinition.name,
+    description: args.description || workflowDefinition.description,
+    hint: args.hint || workflowDefinition.description,
+    templateId: args.templateId || workflowDefinition.templateId,
+    inputs: args.inputs || workflowDefinition.inputs,
+    steps: args.steps || workflowDefinition.steps,
+    metadata: args.metadata || workflowDefinition.metadata,
+  };
+};
+
 export function adaptCommandToLegacyAction(command: AppAgentCommand): LegacyAgentAction {
   if (command.domain === 'app') return withCommandMeta({ tool: 'app_navigate', arguments: commandArgs(command) }, command);
   if (command.domain === 'drawer') return withCommandMeta({ tool: 'drawer_manage', arguments: commandArgs(command) }, command);
@@ -24,7 +42,7 @@ export function adaptCommandToLegacyAction(command: AppAgentCommand): LegacyAgen
   if (command.domain === 'media') return withCommandMeta({ tool: 'canvas_create_media_tool', arguments: command.args }, command);
   if (command.domain === 'workflow') {
     if (command.action === 'apply') return withCommandMeta({ tool: 'canvas_apply_workflow', arguments: command.args }, command);
-    if (command.action === 'create') return withCommandMeta({ tool: 'canvas_create_workflow', arguments: command.args }, command);
+    if (command.action === 'create') return withCommandMeta({ tool: 'canvas_create_workflow', arguments: adaptWorkflowCreateArgs(command.args) }, command);
     if (command.action === 'run') return withCommandMeta({ tool: 'canvas_run_workflow', arguments: command.args }, command);
   }
   if (command.domain === 'canvas') {

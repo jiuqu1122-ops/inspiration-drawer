@@ -11,6 +11,8 @@ import {
 import {
   getIndustrialDesignReviewOutputTypes,
   parseWorkflowBuilderIntent,
+  type StrategyStepMode,
+  type WorkflowCreationMode,
   type WorkflowOutputType,
 } from '../skills/workflowBuilderSkill';
 
@@ -93,44 +95,44 @@ const INDUSTRIAL_REVIEW_GENERATOR_SPECS: Array<{
 }> = [
   {
     outputType: 'hero_view',
-    stepId: 'heroViewGenerator',
+    stepId: 'hero_view',
     title: '产品主视觉 / Hero Render',
     outputLabel: '产品主视觉 / hero render',
     focus: 'Create a premium industrial design hero render with clear silhouette, credible structure, controlled lighting, and review-ready composition.',
   },
   {
     outputType: 'detail_view',
-    stepId: 'detailViewGenerator',
+    stepId: 'detail_view',
     title: '细节图 / Detail View',
     outputLabel: '局部细节图 / button / interface / material / structure detail',
     focus: 'Create macro detail views for buttons, interface, seams, material transitions, structure details, ports, vents, or grip texture.',
   },
   {
     outputType: 'cmf_board',
-    stepId: 'cmfBoardGenerator',
+    stepId: 'cmf_board',
     title: 'CMF 图 / CMF Board',
     outputLabel: 'CMF 图 / material color finish board',
     focus: 'Create a disciplined CMF board showing material, color, finish, texture, accent hierarchy, and product-positioning logic.',
   },
   {
     outputType: 'usage_scene',
-    stepId: 'usageSceneGenerator',
+    stepId: 'usage_scene',
     title: '场景图 / Usage Scene',
     outputLabel: '使用场景图 / real usage context',
     focus: 'Create a realistic usage context image with scale cues, ergonomic interaction, and believable environment while keeping the product design consistent.',
   },
   {
     outputType: 'premium_mood',
-    stepId: 'premiumMoodGenerator',
+    stepId: 'premium_mood',
     title: '高级氛围图 / Premium Mood',
     outputLabel: '高级氛围图 / premium brand mood render',
     focus: 'Create a premium brand mood render with refined lighting, restrained atmosphere, and high-end presentation without hiding product design.',
   },
   {
-    outputType: 'storyboard_or_video_keyframe',
-    stepId: 'storyboardSheetGenerator',
-    title: '视频分镜图 / Storyboard Sheet',
-    outputLabel: '16:9 视频分镜图 / storyboard sheet / video key visual',
+    outputType: 'storyboard_or_video_key_visual',
+    stepId: 'storyboard_key_visual',
+    title: '视频图 / Storyboard Key Visual',
+    outputLabel: '16:9 视频图 / storyboard sheet / video key visual',
     focus: 'Create a 16:9 storyboard or video keyframe sheet as image output; show shot order, key frames, subject action, transitions, and visual continuity.',
   },
 ];
@@ -149,27 +151,199 @@ const buildIndustrialReviewGeneratorPrompt = (
   buildWorkflowCreativeContext(brief),
 ].join('\n');
 
-const buildIndustrialReviewWorkflowCommands = (
+type IndustrialReviewWorkflowStep =
+  | {
+    id: 'product_reference_image';
+    type: 'reference_image_bridge';
+    title: string;
+    outputRole: 'visual_reference';
+    inputStepIds: [];
+    acceptsExternalInputs: true;
+    externalInputTypes: ['image'];
+    outputType: 'image[]';
+    bridgeType: 'reference_image';
+    required: true;
+  }
+  | {
+    id: string;
+    type: 'text_agent';
+    title: string;
+    optional?: boolean;
+    inputStepIds: string[];
+    outputRole: 'text_strategy';
+    prompt: string;
+  }
+  | {
+    id: string;
+    type: 'image_generator';
+    mediaType: 'image';
+    title: string;
+    outputRole: WorkflowOutputType;
+    visualInputStepIds: string[];
+    textInputStepIds: string[];
+    inputStepIds: string[];
+    inputRoles: Record<string, 'visual_reference' | 'text_strategy'>;
+    requiresReferenceImages: true;
+    optional?: boolean;
+    prompt: string;
+    aspectRatio: string;
+    targetSize: string | null;
+    resolution: string | null;
+    toolHint: string | null;
+    skillMeta: Record<string, unknown>;
+  };
+
+export interface IndustrialReviewWorkflowDefinition {
+  id: string;
+  name: string;
+  description: string;
+  templateId: 'industrial-design-review';
+  creationMode: WorkflowCreationMode;
+  strategyStepMode: StrategyStepMode;
+  inputs: Array<{
+    id: 'product_reference_image';
+    type: 'image';
+    required: true;
+    label: string;
+    bindingState: 'bound' | 'unbound';
+  }>;
+  steps: IndustrialReviewWorkflowStep[];
+  metadata: Record<string, unknown>;
+  executionOrder: string[][];
+}
+
+export const buildIndustrialReviewWorkflowDefinition = (
   brief: CreativeBrief,
   outputTypes: WorkflowOutputType[],
   selectedImageNodeIds: string[],
   originalText: string,
+  creationMode: WorkflowCreationMode,
+  strategyStepMode: StrategyStepMode,
+): IndustrialReviewWorkflowDefinition => {
+  const strategyEnabled = strategyStepMode === 'enabled';
+  const aspectRatio = brief.dimensions.aspectRatio || '16:9';
+  const strategyStepId = 'industrial_design_review_strategy';
+  const referenceBridgeStep: IndustrialReviewWorkflowStep = {
+    id: 'product_reference_image',
+    type: 'reference_image_bridge',
+    title: '参考产品图桥接',
+    outputRole: 'visual_reference',
+    inputStepIds: [],
+    acceptsExternalInputs: true,
+    externalInputTypes: ['image'],
+    outputType: 'image[]',
+    bridgeType: 'reference_image',
+    required: true,
+  };
+  const specs = INDUSTRIAL_REVIEW_GENERATOR_SPECS.filter(spec => outputTypes.includes(spec.outputType));
+  const generatorSteps = specs.map((spec): Extract<IndustrialReviewWorkflowStep, { type: 'image_generator' }> => {
+    const inputRoles: Record<string, 'visual_reference' | 'text_strategy'> = {
+      product_reference_image: 'visual_reference',
+    };
+    if (strategyEnabled) inputRoles[strategyStepId] = 'text_strategy';
+    return {
+      id: spec.stepId,
+      type: 'image_generator',
+      mediaType: 'image',
+      title: spec.title,
+      outputRole: spec.outputType,
+      visualInputStepIds: ['product_reference_image'],
+      textInputStepIds: strategyEnabled ? [strategyStepId] : [],
+      inputStepIds: strategyEnabled ? ['product_reference_image', strategyStepId] : ['product_reference_image'],
+      inputRoles,
+      requiresReferenceImages: true,
+      optional: spec.outputType === 'storyboard_or_video_key_visual',
+      prompt: buildIndustrialReviewGeneratorPrompt(brief, spec),
+      aspectRatio,
+      targetSize: brief.dimensions.targetSize || null,
+      resolution: brief.dimensions.resolution || null,
+      toolHint: brief.toolHint || null,
+      skillMeta: {
+        skillId: 'creative-product-design-skill,workflow-builder-skill',
+        skillIds: ['creative-product-design-skill', 'workflow-builder-skill'],
+        workflowTemplateId: 'industrial-design-review',
+        workflowOutputType: spec.outputType,
+        originalRequest: originalText,
+        taskKind: 'industrial_design_review_workflow',
+        fidelity: brief.fidelity,
+        productCategory: brief.product.category,
+        focus: brief.product.focus,
+      },
+    };
+  });
+  const strategyStep: IndustrialReviewWorkflowStep | null = strategyEnabled
+    ? {
+      id: strategyStepId,
+      type: 'text_agent',
+      title: '工业设计评审策略',
+      optional: false,
+      inputStepIds: ['product_reference_image'],
+      outputRole: 'text_strategy',
+      prompt: buildIndustrialReviewStrategyPrompt(brief, outputTypes),
+    }
+    : null;
+
+  return {
+    id: createId('industrial-design-review-workflow'),
+    name: '工业设计评审工作流',
+    description: '根据参考产品图自动生成工业设计评审图组',
+    templateId: 'industrial-design-review',
+    creationMode,
+    strategyStepMode,
+    inputs: [{
+      id: 'product_reference_image',
+      type: 'image',
+      required: true,
+      label: '参考产品图',
+      bindingState: selectedImageNodeIds.length > 0 ? 'bound' : 'unbound',
+    }],
+    steps: [
+      referenceBridgeStep,
+      ...(strategyStep ? [strategyStep] : []),
+      ...generatorSteps,
+    ],
+    metadata: {
+      skillId: 'workflow-builder-skill,creative-product-design-skill',
+      skillIds: ['workflow-builder-skill', 'creative-product-design-skill'],
+      originalRequest: originalText,
+      productCategory: brief.product.category,
+      outputTypes,
+      aspectRatio,
+      selectedReferenceImageNodeIds: selectedImageNodeIds,
+      workflowCreationMode: creationMode,
+      strategyStepMode,
+    },
+    executionOrder: strategyEnabled
+      ? [['product_reference_image'], [strategyStepId], generatorSteps.map(step => step.id)]
+      : [['product_reference_image'], generatorSteps.map(step => step.id)],
+  };
+};
+
+const buildIndustrialReviewCanvasNodeFallbackCommands = (
+  brief: CreativeBrief,
+  outputTypes: WorkflowOutputType[],
+  selectedImageNodeIds: string[],
+  originalText: string,
+  strategyStepMode: StrategyStepMode,
 ) => {
   const commands: AppAgentCommand[] = [];
   const strategyStepId = 'industrialDesignReviewStrategy';
   const strategyOutputRef = `$${strategyStepId}.nodeId`;
-  const plannedNodeRefs = [`$${strategyStepId}.nodeId`];
+  const strategyEnabled = strategyStepMode === 'enabled';
+  const plannedNodeRefs = strategyEnabled ? [`$${strategyStepId}.nodeId`] : [];
   const aspectRatio = brief.dimensions.aspectRatio || '16:9';
   const referenceRoles = selectedImageNodeIds.map(nodeId => ({ nodeId, role: 'SUBJECT_REF' as const }));
-  commands.push(command('canvas', 'create_text_agent', {
-    prompt: buildIndustrialReviewStrategyPrompt(brief, outputTypes),
-    inputIds: selectedImageNodeIds,
-    autoRun: false,
-  }, 'safe_write', 'workflow-builder-skill', {
-    stepId: strategyStepId,
-    createsNode: true,
-    outputRef: strategyOutputRef,
-  }));
+  if (strategyEnabled) {
+    commands.push(command('canvas', 'create_text_agent', {
+      prompt: buildIndustrialReviewStrategyPrompt(brief, outputTypes),
+      inputIds: selectedImageNodeIds,
+      autoRun: false,
+    }, 'safe_write', 'workflow-builder-skill', {
+      stepId: strategyStepId,
+      createsNode: true,
+      outputRef: strategyOutputRef,
+    }));
+  }
 
   const specs = INDUSTRIAL_REVIEW_GENERATOR_SPECS.filter(spec => outputTypes.includes(spec.outputType));
   specs.forEach(spec => {
@@ -178,7 +352,7 @@ const buildIndustrialReviewWorkflowCommands = (
     commands.push(command('canvas', 'create_generator', {
       mediaType: 'image',
       prompt: buildIndustrialReviewGeneratorPrompt(brief, spec),
-      inputIds: Array.from(new Set([strategyOutputRef, ...selectedImageNodeIds])),
+      inputIds: Array.from(new Set([...(strategyEnabled ? [strategyOutputRef] : []), ...selectedImageNodeIds])),
       referenceImageNodeIds: selectedImageNodeIds,
       referenceRoles,
       autoRun: false,
@@ -221,14 +395,11 @@ const buildStoryboardSheetPrompt = (brief: CreativeBrief) => [
 const getSelectedImageNodeIds = (context?: AgentCanvasContext) => {
   const selectedIds = new Set((context?.selectedIds || []).map(String));
   const nodeById = new Map((context?.nodes || []).map(node => [node.id, node]));
-  const fromVisualReferences = (context?.visualReferences || [])
-    .filter(reference => reference.mediaType === 'image')
-    .map(reference => reference.nodeId);
   const fromSelectedIds = Array.from(selectedIds).filter(id => {
     const node = nodeById.get(id);
     return !!node && /image|image-generator|generated-image/i.test(node.type || '');
   });
-  return Array.from(new Set([...fromSelectedIds, ...fromVisualReferences].filter(Boolean)));
+  return Array.from(new Set(fromSelectedIds.filter(Boolean)));
 };
 
 const shouldAutoRunVideoGenerator = (text: string) => (
@@ -274,12 +445,39 @@ export function buildAppAgentPlan(input: {
       hasCanvasContext: !!input.context?.nodes?.length,
     }, input.context?.visualReferences?.map(reference => reference.nodeId));
     const selectedImageNodeIds = getSelectedImageNodeIds(input.context);
-    commands.push(...buildIndustrialReviewWorkflowCommands(
-      brief,
-      getIndustrialDesignReviewOutputTypes(workflowIntent),
-      selectedImageNodeIds,
-      text,
-    ));
+    const outputTypes = getIndustrialDesignReviewOutputTypes(workflowIntent);
+    if (workflowIntent.workflowCreationMode === 'workflow_module') {
+      const workflowDefinition = buildIndustrialReviewWorkflowDefinition(
+        brief,
+        outputTypes,
+        selectedImageNodeIds,
+        text,
+        workflowIntent.workflowCreationMode,
+        workflowIntent.strategyStepMode,
+      );
+      commands.push(command('workflow', 'create', {
+        workflowDefinition,
+        selectedReferenceImageNodeIds: selectedImageNodeIds,
+        inputIds: selectedImageNodeIds,
+        inputBindings: selectedImageNodeIds.length > 0
+          ? {
+            product_reference_image: selectedImageNodeIds.length === 1
+              ? { kind: 'canvas_node', nodeId: selectedImageNodeIds[0] }
+              : { kind: 'canvas_nodes', nodeIds: selectedImageNodeIds },
+          }
+          : { product_reference_image: { kind: 'unbound', nodeId: null } },
+        autoApplyToCanvas: true,
+        autoRun: false,
+      }, 'safe_write', 'workflow-builder-skill'));
+    } else {
+      commands.push(...buildIndustrialReviewCanvasNodeFallbackCommands(
+        brief,
+        outputTypes,
+        selectedImageNodeIds,
+        text,
+        workflowIntent.strategyStepMode,
+      ));
+    }
   }
   if (!handledWorkflowCreation && input.activeSkillIds.includes('creative-product-design-skill')) {
     const brief = extractCreativeBrief({

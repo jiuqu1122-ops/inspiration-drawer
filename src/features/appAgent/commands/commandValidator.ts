@@ -6,7 +6,7 @@ import {
   parseCreativeDimensions,
   validateCreativeGeneratorAction,
 } from '../skills/creativeProductDesignSkill';
-import { resolveWorkflowInputsFromContext, type WorkflowLike } from './workflowInputResolver';
+import { isCanvasImageNodeWithSourceAsset, resolveWorkflowInputsFromContext, type WorkflowLike } from './workflowInputResolver';
 
 export interface CommandValidationResult {
   valid: boolean;
@@ -32,6 +32,133 @@ const validateIds = (
   if (validIds.size === 0 || ids.length === 0) return;
   ids.forEach(id => {
     if (!validIds.has(id)) errors.push(`${label} does not exist: ${id}`);
+  });
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null => (
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+);
+
+const asWorkflowDefinition = (args: Record<string, unknown>) => {
+  const definition = asRecord(args.workflowDefinition);
+  if (definition) return definition;
+  if (Array.isArray(args.inputs) || Array.isArray(args.steps) || typeof args.templateId === 'string') {
+    return {
+      templateId: args.templateId,
+      inputs: args.inputs,
+      steps: args.steps,
+      metadata: args.metadata,
+    };
+  }
+  return null;
+};
+
+const getWorkflowStepType = (step: Record<string, unknown>) => String(step.type || step.kind || '').toLowerCase();
+
+const getWorkflowStepIds = (value: unknown): string[] => (
+  Array.isArray(value) ? value.map(String).filter(Boolean) : []
+);
+
+const getBoundNodeIds = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (!value || typeof value !== 'object') return [];
+  const record = value as Record<string, unknown>;
+  return [
+    typeof record.nodeId === 'string' ? record.nodeId : '',
+    ...(Array.isArray(record.nodeIds) ? record.nodeIds.map(String) : []),
+  ].filter(Boolean);
+};
+
+const getVisualStepInputIds = (step: Record<string, unknown>) => {
+  const visualInputStepIds = getWorkflowStepIds(step.visualInputStepIds);
+  if (visualInputStepIds.length > 0) return visualInputStepIds;
+  const roles = asRecord(step.inputRoles) || {};
+  const roleVisualInputs = Object.entries(roles)
+    .filter(([, role]) => String(role) === 'visual_reference')
+    .map(([inputId]) => inputId);
+  if (roleVisualInputs.length > 0) return roleVisualInputs;
+  return getWorkflowStepIds(step.inputStepIds)
+    .filter(inputId => /product_reference_image|product_refs|image|reference/i.test(inputId));
+};
+
+const getTextStrategyInputIds = (step: Record<string, unknown>) => {
+  const textInputStepIds = getWorkflowStepIds(step.textInputStepIds);
+  if (textInputStepIds.length > 0) return textInputStepIds;
+  const roles = asRecord(step.inputRoles) || {};
+  return Object.entries(roles)
+    .filter(([, role]) => String(role) === 'text_strategy')
+    .map(([inputId]) => inputId);
+};
+
+const validateWorkflowDefinition = (
+  workflowDefinition: Record<string, unknown>,
+  args: Record<string, unknown>,
+  context: AgentCanvasContext | undefined,
+  errors: string[],
+) => {
+  const templateId = String(workflowDefinition.templateId || args.templateId || '');
+  const inputs = Array.isArray(workflowDefinition.inputs) ? workflowDefinition.inputs : [];
+  const steps = Array.isArray(workflowDefinition.steps) ? workflowDefinition.steps : [];
+  if (steps.length === 0) errors.push('workflowDefinition steps cannot be empty.');
+  const hasProductReferenceInput = inputs.some(input => {
+    const record = asRecord(input);
+    return record?.id === 'product_reference_image' && String(record.type || '').toLowerCase() === 'image';
+  });
+  if (templateId === 'industrial-design-review' && !hasProductReferenceInput) {
+    errors.push('industrial-design-review workflowDefinition must include required image input product_reference_image.');
+  }
+  steps
+    .map(asRecord)
+    .filter((step): step is Record<string, unknown> => !!step)
+    .forEach(step => {
+      const stepType = getWorkflowStepType(step);
+      if (!/image[-_]?generator/.test(stepType)) return;
+      const requiresReferenceImages = step.requiresReferenceImages === true || templateId === 'industrial-design-review';
+      const visualInputIds = getVisualStepInputIds(step);
+      const textInputIds = getTextStrategyInputIds(step);
+      if (requiresReferenceImages && visualInputIds.length === 0) {
+        errors.push(`workflow generator "${String(step.id || step.title || 'unknown')}" requires a visual reference input; text strategy cannot replace product_reference_image.`);
+      }
+      if (
+        requiresReferenceImages
+        && visualInputIds.length > 0
+        && templateId === 'industrial-design-review'
+        && !visualInputIds.includes('product_reference_image')
+      ) {
+        errors.push(`workflow generator "${String(step.id || step.title || 'unknown')}" must directly include product_reference_image as a visual input; strategy text cannot replace it.`);
+      }
+      if (requiresReferenceImages && visualInputIds.length === 0 && textInputIds.some(inputId => /strategy/i.test(inputId))) {
+        errors.push(`workflow generator "${String(step.id || step.title || 'unknown')}" only has text strategy input; text strategy cannot replace visual reference input.`);
+      }
+    });
+  const selectedReferenceImageNodeIds = asStringArray(args.selectedReferenceImageNodeIds);
+  const inputBindings = asRecord(args.inputBindings) || {};
+  const boundProductReferenceIds = getBoundNodeIds(inputBindings.product_reference_image);
+  const selectedInputIds = asStringArray(args.inputIds);
+  const hasBoundProductReference = [
+    ...selectedReferenceImageNodeIds,
+    ...boundProductReferenceIds,
+    ...selectedInputIds,
+  ].length > 0;
+  if (args.autoRun === true && hasProductReferenceInput && !hasBoundProductReference) {
+    const workflowResolution = resolveWorkflowInputsFromContext({
+      workflow: workflowDefinition as WorkflowLike,
+      context,
+    });
+    if (workflowResolution.resolvedImageNodeIds.length === 0) {
+      errors.push('workflow run requires a selected product_reference_image before autoRun.');
+    }
+  }
+  const contextNodeById = new Map((context?.nodes || []).map(node => [node.id, node]));
+  [
+    ...selectedReferenceImageNodeIds,
+    ...boundProductReferenceIds,
+    ...selectedInputIds,
+  ].forEach(nodeId => {
+    const node = contextNodeById.get(nodeId);
+    if (node && /image/i.test(String(node.type || '')) && !isCanvasImageNodeWithSourceAsset(node)) {
+      errors.push(`workflow reference image "${nodeId}" is missing a real source asset; thumbnail placeholder cannot be used as product_reference_image.`);
+    }
   });
 };
 
@@ -102,18 +229,25 @@ export function validateLegacyAgentAction(
   }
 
   if (action.tool === 'canvas_create_workflow') {
-    const steps = Array.isArray(args.steps) ? args.steps : [];
-    if (steps.length === 0) errors.push('workflow steps cannot be empty.');
+    const workflowDefinition = asWorkflowDefinition(args);
+    if (!workflowDefinition) {
+      const steps = Array.isArray(args.steps) ? args.steps : [];
+      if (steps.length === 0) errors.push('workflow steps cannot be empty.');
+    } else {
+      validateWorkflowDefinition(workflowDefinition, args, context, errors);
+    }
   }
 
   if (['canvas_create_workflow', 'canvas_apply_workflow', 'canvas_run_workflow'].includes(action.tool)) {
-    const workflowArg = args.workflow || args.workflowTemplate;
+    const workflowArg = args.workflowDefinition || args.workflow || args.workflowTemplate;
     if (workflowArg && typeof workflowArg === 'object' && !Array.isArray(workflowArg)) {
       const workflowResolution = resolveWorkflowInputsFromContext({
         workflow: workflowArg as WorkflowLike,
         context,
       });
-      errors.push(...workflowResolution.missingRequiredInputs);
+      if (action.tool !== 'canvas_create_workflow' || args.autoRun === true) {
+        errors.push(...workflowResolution.missingRequiredInputs);
+      }
     }
   }
 
@@ -157,8 +291,12 @@ export function validateAppAgentCommand(
   if (!command.id.trim()) errors.push('command id is required.');
   if (!command.action.trim()) errors.push('command action is required.');
   if (command.domain === 'workflow' && command.action === 'create') {
-    const steps = Array.isArray(command.args.steps) ? command.args.steps : [];
-    if (steps.length === 0) errors.push('workflow steps cannot be empty.');
+    const workflowDefinition = asWorkflowDefinition(command.args);
+    if (workflowDefinition) validateWorkflowDefinition(workflowDefinition, command.args, context, errors);
+    else {
+      const steps = Array.isArray(command.args.steps) ? command.args.steps : [];
+      if (steps.length === 0) errors.push('workflow steps cannot be empty.');
+    }
   }
   if (command.domain === 'canvas') {
     validateIds(asStringArray(command.args.targetIds), getNodeIds(context), 'nodeId', errors);

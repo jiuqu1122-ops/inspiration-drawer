@@ -668,6 +668,7 @@ export const creativeProductDesignSkill: AppAgentSkill = {
       })}`,
       'Rules:',
       '- If workflow-builder-skill detects workflow creation or multi-output intent, treat CMF/detail/scene/storyboard terms as separate workflow nodes, not as one global CMF task.',
+      '- For industrial design review workflows, use product_reference_image as a reference_image_bridge that accepts external images and forwards the same visual reference to strategy and all generators.',
       '- For every image/video generator or edit prompt, include `Original request: "用户原话"` exactly with the user request.',
       '- Assign image roles before tool calls: BASE -> sourceImageNodeId/source_image_url; STYLE_REF/LAYOUT_REF/SUBJECT_REF -> referenceImageNodeIds/reference_image_urls; NONE is not passed.',
       '- Edit tasks require BASE. If multiple images are ambiguous and direct edit is requested, ask one necessary clarification instead of guessing.',

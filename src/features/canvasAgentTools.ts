@@ -192,6 +192,85 @@ const CANVAS_CREATE_GENERATOR_PROPERTIES = {
   skillMeta: GENERATOR_SKILL_META_SCHEMA,
 };
 
+const WORKFLOW_STEP_SCHEMA = {
+  type: 'object',
+  properties: {
+    id: { type: ['string', 'null'] },
+    type: { type: ['string', 'null'], enum: ['text_agent', 'image_generator', 'reference_image_bridge', null] },
+    kind: { type: ['string', 'null'], enum: ['text', 'image-generator', 'reference-image-bridge', null] },
+    mediaType: { type: ['string', 'null'], enum: ['image', 'video', null] },
+    title: { type: ['string', 'null'] },
+    label: { type: ['string', 'null'] },
+    prompt: { type: ['string', 'null'] },
+    outputRole: { type: ['string', 'null'] },
+    bridgeType: { type: ['string', 'null'], enum: ['reference_image', null] },
+    inputStepIds: { type: 'array', items: { type: 'string' } },
+    visualInputStepIds: { type: 'array', items: { type: 'string' } },
+    textInputStepIds: { type: 'array', items: { type: 'string' } },
+    inputRoles: { type: 'object', additionalProperties: true },
+    acceptsExternalInputs: { type: ['boolean', 'null'] },
+    externalInputTypes: { type: 'array', items: { type: 'string', enum: ['image', 'text', 'video'] } },
+    outputType: { type: ['string', 'null'], enum: ['image', 'image[]', 'text', 'video', 'video[]', null] },
+    required: { type: ['boolean', 'null'] },
+    requiresReferenceImages: { type: ['boolean', 'null'] },
+    optional: { type: ['boolean', 'null'] },
+    aspectRatio: { type: ['string', 'null'] },
+    targetSize: { type: ['string', 'null'] },
+    resolution: { type: ['string', 'null'] },
+    outputFormat: { type: ['string', 'null'] },
+    count: { type: ['number', 'null'] },
+    toolHint: { type: ['string', 'null'] },
+    skillMeta: { type: 'object', additionalProperties: true },
+  },
+  additionalProperties: true,
+};
+
+const WORKFLOW_INPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    type: { type: 'string' },
+    required: { type: ['boolean', 'null'] },
+    label: { type: ['string', 'null'] },
+    bindingState: { type: ['string', 'null'], enum: ['bound', 'unbound', null] },
+  },
+  additionalProperties: true,
+};
+
+const WORKFLOW_DEFINITION_SCHEMA = {
+  type: 'object',
+  properties: {
+    id: { type: ['string', 'null'] },
+    name: { type: ['string', 'null'] },
+    description: { type: ['string', 'null'] },
+    templateId: { type: ['string', 'null'] },
+    creationMode: { type: ['string', 'null'], enum: ['workflow_module', 'canvas_nodes_fallback', null] },
+    strategyStepMode: { type: ['string', 'null'], enum: ['auto', 'enabled', 'disabled', null] },
+    inputs: { type: 'array', items: WORKFLOW_INPUT_SCHEMA },
+    steps: { type: 'array', items: WORKFLOW_STEP_SCHEMA },
+    metadata: { type: 'object', additionalProperties: true },
+    executionOrder: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+  },
+  additionalProperties: true,
+};
+
+const CANVAS_CREATE_WORKFLOW_PROPERTIES = {
+  name: { type: ['string', 'null'] },
+  label: { type: ['string', 'null'] },
+  description: { type: ['string', 'null'] },
+  hint: { type: ['string', 'null'] },
+  templateId: { type: ['string', 'null'] },
+  inputIds: { type: 'array', items: { type: 'string' } },
+  selectedReferenceImageNodeIds: { type: 'array', items: { type: 'string' } },
+  inputBindings: { type: 'object', additionalProperties: true },
+  autoApplyToCanvas: { type: ['boolean', 'null'] },
+  autoRun: { type: 'boolean' },
+  inputs: { type: 'array', items: WORKFLOW_INPUT_SCHEMA },
+  steps: { type: 'array', items: WORKFLOW_STEP_SCHEMA },
+  metadata: { type: 'object', additionalProperties: true },
+  workflowDefinition: WORKFLOW_DEFINITION_SCHEMA,
+};
+
 export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
@@ -345,25 +424,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
     function: {
       name: 'canvas_create_workflow',
       description: '创建并插入一个新的可复用工作流模块。',
-      parameters: objectSchema({
-        label: { type: 'string' },
-        hint: { type: 'string' },
-        inputIds: { type: 'array', items: { type: 'string' } },
-        autoRun: { type: 'boolean' },
-        steps: {
-          type: 'array',
-          items: objectSchema({
-            id: { type: 'string' },
-            kind: { type: 'string', enum: ['text', 'image-generator'] },
-            label: { type: 'string' },
-            prompt: { type: 'string' },
-            inputStepIds: { type: 'array', items: { type: 'string' } },
-            aspectRatio: { type: 'string' },
-            outputFormat: { type: 'string' },
-            count: { type: 'number' },
-          }, ['kind', 'label', 'prompt']),
-        },
-      }, ['label', 'steps']),
+      parameters: objectSchema(CANVAS_CREATE_WORKFLOW_PROPERTIES),
     },
   },
   {
@@ -630,25 +691,7 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
             type: 'object',
             properties: {
               tool: { type: 'string', enum: ['canvas_create_workflow'] },
-              arguments: objectSchema({
-                label: { type: 'string' },
-                hint: { type: ['string', 'null'] },
-                inputIds: { type: 'array', items: { type: 'string' } },
-                autoRun: { type: 'boolean' },
-                steps: {
-                  type: 'array',
-                  items: objectSchema({
-                    id: { type: ['string', 'null'] },
-                    kind: { type: 'string', enum: ['text', 'image-generator'] },
-                    label: { type: 'string' },
-                    prompt: { type: 'string' },
-                    inputStepIds: { type: 'array', items: { type: 'string' } },
-                    aspectRatio: { type: ['string', 'null'] },
-                    outputFormat: { type: ['string', 'null'] },
-                    count: { type: ['number', 'null'] },
-                  }, ['id', 'kind', 'label', 'prompt', 'inputStepIds', 'aspectRatio', 'outputFormat', 'count']),
-                },
-              }, ['label', 'hint', 'inputIds', 'autoRun', 'steps']),
+              arguments: objectSchema(CANVAS_CREATE_WORKFLOW_PROPERTIES),
             },
             required: ['tool', 'arguments'],
             additionalProperties: false,

@@ -148,6 +148,12 @@ const collectWorkflowTraceFromCalls = (calls: AgentToolCall[]) => {
   const imageNodeIds = new Set<string>();
   const missingInputs = new Set<string>();
   const connections = new Map<string, { sourceId: string; targetId: string }>();
+  const selectedCanvasImageNodeIds = new Set<string>();
+  const reusedExistingImageNodes = new Set<string>();
+  const createdImageNodes = new Set<string>();
+  const unresolvedThumbnailNodes = new Set<string>();
+  let duplicateImageNodesPrevented = 0;
+  let thumbnailPlaceholdersCreated = 0;
   calls.forEach(call => {
     const result = call.result && typeof call.result === 'object' && !Array.isArray(call.result)
       ? call.result as Record<string, unknown>
@@ -175,11 +181,38 @@ const collectWorkflowTraceFromCalls = (calls: AgentToolCall[]) => {
     if (Array.isArray(result.inputs) && Array.isArray(result.workflowAutoConnections)) {
       addIds(result.inputs);
     }
+    const resolutions = Array.isArray(result.workflowInputResolution)
+      ? result.workflowInputResolution
+      : [result.workflowInputResolution];
+    resolutions
+      .map(value => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null)
+      .filter((value): value is Record<string, unknown> => !!value)
+      .forEach(resolution => {
+      [
+        [resolution.selectedCanvasImageNodeIds, selectedCanvasImageNodeIds],
+        [resolution.reusedExistingImageNodes, reusedExistingImageNodes],
+        [resolution.createdImageNodes, createdImageNodes],
+        [resolution.unresolvedThumbnailNodes, unresolvedThumbnailNodes],
+      ].forEach(([value, target]) => {
+        if (!Array.isArray(value)) return;
+        value.map(String).filter(Boolean).forEach(id => (target as Set<string>).add(id));
+      });
+      duplicateImageNodesPrevented += Number(resolution.duplicateImageNodesPrevented || 0);
+      thumbnailPlaceholdersCreated += Number(resolution.thumbnailPlaceholdersCreated || 0);
+    });
   });
   return {
     workflowResolvedImageNodeIds: Array.from(imageNodeIds),
     workflowAutoConnections: Array.from(connections.values()),
     workflowMissingRequiredInputs: Array.from(missingInputs),
+    workflowInputResolution: {
+      selectedCanvasImageNodeIds: Array.from(selectedCanvasImageNodeIds),
+      reusedExistingImageNodes: Array.from(reusedExistingImageNodes),
+      createdImageNodes: Array.from(createdImageNodes),
+      duplicateImageNodesPrevented,
+      thumbnailPlaceholdersCreated,
+      unresolvedThumbnailNodes: Array.from(unresolvedThumbnailNodes),
+    },
   };
 };
 
@@ -1081,6 +1114,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         workflowResolvedImageNodeIds: workflowTrace.workflowResolvedImageNodeIds,
         workflowAutoConnections: workflowTrace.workflowAutoConnections,
         workflowMissingRequiredInputs: workflowTrace.workflowMissingRequiredInputs,
+        workflowInputResolution: workflowTrace.workflowInputResolution,
         confirmationRequired: run.calls.some(call => call.status === 'awaiting-approval'),
         executionResults: run.calls.map(call => call.result).filter(Boolean),
         errors: run.calls.map(call => call.error).filter((error): error is string => !!error),

@@ -19,6 +19,7 @@ export type CanvasWorkflowNodeTemplate = {
   acceptsExternalInputs?: boolean;
   externalInputTypes?: Array<'image' | 'text' | 'video'>;
   outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
+  bridgeType?: 'reference_image';
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
 

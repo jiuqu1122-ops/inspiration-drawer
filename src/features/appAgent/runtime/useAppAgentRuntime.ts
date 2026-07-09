@@ -8,7 +8,12 @@ import { selectAppAgentSkills } from '../skills/skillRegistry';
 import type { AgentSkillId, ContextScope, SkillMatchInput } from '../skills/types';
 import { uniqueStrings } from '../skills/skillUtils';
 import { extractCreativeBrief } from '../skills/creativeProductDesignSkill';
-import { parseWorkflowBuilderIntent, type WorkflowOutputType } from '../skills/workflowBuilderSkill';
+import {
+  parseWorkflowBuilderIntent,
+  type StrategyStepMode,
+  type WorkflowCreationMode,
+  type WorkflowOutputType,
+} from '../skills/workflowBuilderSkill';
 import { createAppAgentTraceId, type AppAgentTraceRecord } from '../trace/appAgentTrace';
 
 export interface PreparedAppAgentTurn {
@@ -28,6 +33,16 @@ const HIGH_CONFIDENCE_SKILL_SCORE = 0.5;
 const isDirectExecutionBlockedRisk = (riskLevel: string) => (
   riskLevel === 'destructive' || riskLevel === 'system_process'
 );
+
+const getBoundNodeIds = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (!value || typeof value !== 'object') return [];
+  const record = value as Record<string, unknown>;
+  return [
+    typeof record.nodeId === 'string' ? record.nodeId : '',
+    ...(Array.isArray(record.nodeIds) ? record.nodeIds.map(String) : []),
+  ].filter(Boolean);
+};
 
 function isHighConfidenceCreativePlan(input: SkillMatchInput, activeSkillIds: AgentSkillId[]) {
   if (!activeSkillIds.includes('creative-product-design-skill')) return false;
@@ -60,12 +75,106 @@ function shouldUseDeterministicPlanForTurn(input: {
 const getIndustrialReviewTraceFields = (actions: LegacyAgentAction[]) => {
   const validOutputTypes = new Set<WorkflowOutputType>([
     'hero_view',
+    'storyboard_or_video_key_visual',
     'storyboard_or_video_keyframe',
     'detail_view',
     'cmf_board',
     'usage_scene',
     'premium_mood',
   ]);
+  const workflowAction = actions.find(action => {
+    if (action.tool !== 'canvas_create_workflow') return false;
+    const workflowDefinition = action.arguments.workflowDefinition && typeof action.arguments.workflowDefinition === 'object' && !Array.isArray(action.arguments.workflowDefinition)
+      ? action.arguments.workflowDefinition as Record<string, unknown>
+      : {};
+    return workflowDefinition.templateId === 'industrial-design-review'
+      || action.arguments.templateId === 'industrial-design-review';
+  });
+  if (workflowAction) {
+    const workflowDefinition = workflowAction.arguments.workflowDefinition && typeof workflowAction.arguments.workflowDefinition === 'object' && !Array.isArray(workflowAction.arguments.workflowDefinition)
+      ? workflowAction.arguments.workflowDefinition as Record<string, unknown>
+      : workflowAction.arguments;
+    const metadata = workflowDefinition.metadata && typeof workflowDefinition.metadata === 'object' && !Array.isArray(workflowDefinition.metadata)
+      ? workflowDefinition.metadata as Record<string, unknown>
+      : {};
+    const steps = Array.isArray(workflowDefinition.steps) ? workflowDefinition.steps : [];
+    const generatorSteps = steps
+      .map(step => step && typeof step === 'object' && !Array.isArray(step) ? step as Record<string, unknown> : null)
+      .filter((step): step is Record<string, unknown> => !!step && /image[-_]?generator/.test(String(step.type || step.kind || '').toLowerCase()));
+    const outputTypes = uniqueStrings([
+      ...(
+        Array.isArray(metadata.outputTypes)
+          ? metadata.outputTypes.map(String)
+          : []
+      ),
+      ...generatorSteps.map(step => String(step.outputRole || '')),
+    ].filter((value): value is WorkflowOutputType => validOutputTypes.has(value as WorkflowOutputType)));
+    const inputBindings = workflowAction.arguments.inputBindings && typeof workflowAction.arguments.inputBindings === 'object' && !Array.isArray(workflowAction.arguments.inputBindings)
+      ? workflowAction.arguments.inputBindings as Record<string, unknown>
+      : {};
+    const connectedReferenceImageNodeIds = uniqueStrings([
+      ...(Array.isArray(workflowAction.arguments.selectedReferenceImageNodeIds)
+        ? workflowAction.arguments.selectedReferenceImageNodeIds.map(String)
+        : []),
+      ...getBoundNodeIds(inputBindings.product_reference_image),
+    ]);
+    const workflowInputBindings = {
+      ...Object.fromEntries(Object.entries(inputBindings).map(([key, value]) => [
+        key,
+        getBoundNodeIds(value),
+      ])),
+      ...(connectedReferenceImageNodeIds.length > 0 && getBoundNodeIds(inputBindings.product_reference_image).length === 0
+        ? { product_reference_image: connectedReferenceImageNodeIds }
+        : {}),
+    };
+    const workflowVisualFanout = generatorSteps.flatMap(step => {
+      const visualInputStepIds = Array.isArray(step.visualInputStepIds)
+        ? step.visualInputStepIds.map(String)
+        : [];
+      return (visualInputStepIds.length > 0 ? visualInputStepIds : ['product_reference_image']).map(inputId => ({
+        inputId,
+        targetStepId: String(step.id || step.title || ''),
+        sourceNodeIds: connectedReferenceImageNodeIds,
+      }));
+    });
+    const workflowTextDependencies = generatorSteps.flatMap(step => (
+      Array.isArray(step.textInputStepIds)
+        ? step.textInputStepIds.map(String).filter(Boolean).map(sourceStepId => ({
+          sourceStepId,
+          targetStepId: String(step.id || step.title || ''),
+        }))
+        : []
+    ));
+    const workflowCreationModeValue = String(workflowDefinition.creationMode || metadata.workflowCreationMode || '');
+    const workflowCreationMode: WorkflowCreationMode | undefined = workflowCreationModeValue === 'workflow_module' || workflowCreationModeValue === 'canvas_nodes_fallback'
+      ? workflowCreationModeValue
+      : undefined;
+    const strategyStepModeValue = String(workflowDefinition.strategyStepMode || metadata.strategyStepMode || '');
+    const strategyStepMode: StrategyStepMode | undefined = strategyStepModeValue === 'auto' || strategyStepModeValue === 'enabled' || strategyStepModeValue === 'disabled'
+      ? strategyStepModeValue
+      : undefined;
+    return {
+      generatorActions: [],
+      outputTypes,
+      connectedReferenceImageNodeIds,
+      workflowCreationMode,
+      strategyStepMode,
+      workflowTemplateId: String(workflowDefinition.templateId || workflowAction.arguments.templateId || '') || undefined,
+      fallbackMode: 'workflow' as const,
+      createdGeneratorCount: generatorSteps.length,
+      workflowInputBindings,
+      workflowVisualFanout,
+      workflowTextDependencies,
+      workflowInputResolution: {
+        selectedCanvasImageNodeIds: connectedReferenceImageNodeIds,
+        reusedExistingImageNodes: connectedReferenceImageNodeIds,
+        createdImageNodes: [],
+        duplicateImageNodesPrevented: 0,
+        thumbnailPlaceholdersCreated: 0,
+        unresolvedThumbnailNodes: [],
+      },
+    };
+  }
   const generatorActions = actions.filter(action => {
     if (action.tool !== 'canvas_create_generator') return false;
     const meta = action.arguments.skillMeta && typeof action.arguments.skillMeta === 'object' && !Array.isArray(action.arguments.skillMeta)
@@ -90,6 +199,15 @@ const getIndustrialReviewTraceFields = (actions: LegacyAgentAction[]) => {
     generatorActions,
     outputTypes,
     connectedReferenceImageNodeIds,
+    workflowCreationMode: undefined,
+    strategyStepMode: undefined,
+    workflowTemplateId: undefined,
+    fallbackMode: generatorActions.length > 0 ? 'multi-node' as const : undefined,
+    createdGeneratorCount: generatorActions.length || undefined,
+    workflowInputBindings: undefined,
+    workflowVisualFanout: undefined,
+    workflowTextDependencies: undefined,
+    workflowInputResolution: undefined,
   };
 };
 
@@ -148,13 +266,19 @@ export function prepareAppAgentTurn(input: {
     deterministicActionsUsed: shouldUseDeterministicPlan,
     confirmationRequired: plan.requiresConfirmation,
     workflowIntentDetected: workflowIntent.workflowIntentDetected,
+    workflowCreationMode: industrialReviewTrace.workflowCreationMode || workflowIntent.workflowCreationMode,
+    strategyStepMode: industrialReviewTrace.strategyStepMode || workflowIntent.strategyStepMode,
     outputTypes: industrialReviewTrace.outputTypes.length > 0
       ? industrialReviewTrace.outputTypes
       : workflowIntent.outputTypes,
-    workflowTemplateId: workflowIntent.workflowTemplateId,
-    fallbackMode: workflowIntent.workflowTemplateId === 'industrial-design-review' ? 'multi-node' : undefined,
-    createdGeneratorCount: industrialReviewTrace.generatorActions.length || undefined,
+    workflowTemplateId: industrialReviewTrace.workflowTemplateId || workflowIntent.workflowTemplateId,
+    fallbackMode: industrialReviewTrace.fallbackMode || (workflowIntent.workflowTemplateId === 'industrial-design-review' ? 'multi-node' : undefined),
+    createdGeneratorCount: industrialReviewTrace.createdGeneratorCount,
     connectedReferenceImageNodeIds: industrialReviewTrace.connectedReferenceImageNodeIds,
+    workflowInputBindings: industrialReviewTrace.workflowInputBindings,
+    workflowVisualFanout: industrialReviewTrace.workflowVisualFanout,
+    workflowTextDependencies: industrialReviewTrace.workflowTextDependencies,
+    workflowInputResolution: industrialReviewTrace.workflowInputResolution,
   };
   return {
     matchInput,

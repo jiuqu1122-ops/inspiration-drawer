@@ -97,13 +97,29 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
     const rawItem = node.item && typeof node.item === 'object'
       ? node.item as Partial<BufferItem>
       : {};
-    const itemType = rawItem.type === 'text'
+    let itemType = rawItem.type === 'text'
       || rawItem.type === 'image'
       || rawItem.type === 'file'
       || rawItem.type === 'video'
       ? rawItem.type
       : 'text';
     const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
+    const externalInputTypes = Array.isArray(node.externalInputTypes)
+      ? node.externalInputTypes
+        .map(type => String(type || '').trim())
+        .filter((type): type is 'image' | 'text' | 'video' => type === 'image' || type === 'text' || type === 'video')
+      : undefined;
+    const isReferenceImageBridge = (
+      node.bridgeType === 'reference_image'
+      || id === 'product_reference_image'
+    )
+      && node.acceptsExternalInputs === true
+      && (
+        externalInputTypes?.includes('image')
+        || node.outputType === 'image'
+        || node.outputType === 'image[]'
+      );
+    if (isReferenceImageBridge) itemType = 'file';
     const rawAi = node.ai && typeof node.ai === 'object'
       ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
       : undefined;
@@ -126,8 +142,8 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       item: {
         id,
         type: itemType,
-        content: shouldCompactItemContent ? '' : itemContent,
-        name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : undefined,
+        content: isReferenceImageBridge ? (itemContent || '参考图桥接') : (shouldCompactItemContent ? '' : itemContent),
+        name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : (isReferenceImageBridge ? '参考图桥接' : undefined),
         path: typeof rawItem.path === 'string' ? rawItem.path : undefined,
         url: typeof rawItem.url === 'string' ? rawItem.url : undefined,
         thumbnail: typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined,
@@ -148,11 +164,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
       textMode: node.textMode === 'plain' ? 'plain' : node.textMode === 'agent' ? 'agent' : undefined,
       acceptsExternalInputs: node.acceptsExternalInputs === true,
-      externalInputTypes: Array.isArray(node.externalInputTypes)
-        ? node.externalInputTypes
-          .map(type => String(type || '').trim())
-          .filter((type): type is 'image' | 'text' | 'video' => type === 'image' || type === 'text' || type === 'video')
-        : undefined,
+      externalInputTypes,
       outputType: node.outputType === 'image'
         || node.outputType === 'image[]'
         || node.outputType === 'text'
@@ -160,6 +172,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         || node.outputType === 'video[]'
         ? node.outputType
         : undefined,
+      bridgeType: isReferenceImageBridge ? 'reference_image' as const : undefined,
       ai: rawAi
         ? {
           ...rawAi,

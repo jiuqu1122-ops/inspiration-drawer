@@ -1,6 +1,6 @@
 import type { AgentSkillId, ContextScope } from '../skills/types';
 import type { AppAgentPlan, LegacyAgentAction } from '../commands/commandTypes';
-import type { WorkflowFallbackMode, WorkflowOutputType } from '../skills/workflowBuilderSkill';
+import type { StrategyStepMode, WorkflowCreationMode, WorkflowFallbackMode, WorkflowOutputType } from '../skills/workflowBuilderSkill';
 
 export interface AppAgentTraceRecord {
   id: string;
@@ -20,11 +20,24 @@ export interface AppAgentTraceRecord {
   fallbackUsed?: boolean;
   fallbackReason?: string;
   workflowIntentDetected?: boolean;
+  workflowCreationMode?: WorkflowCreationMode;
+  strategyStepMode?: StrategyStepMode;
   outputTypes?: WorkflowOutputType[];
   workflowTemplateId?: string;
   fallbackMode?: WorkflowFallbackMode;
   createdGeneratorCount?: number;
   connectedReferenceImageNodeIds?: string[];
+  workflowInputBindings?: Record<string, string[]>;
+  workflowVisualFanout?: Array<{ inputId: string; targetStepId: string; sourceNodeIds: string[] }>;
+  workflowTextDependencies?: Array<{ sourceStepId: string; targetStepId: string }>;
+  workflowInputResolution?: {
+    selectedCanvasImageNodeIds: string[];
+    reusedExistingImageNodes: string[];
+    createdImageNodes: string[];
+    duplicateImageNodesPrevented: number;
+    thumbnailPlaceholdersCreated: number;
+    unresolvedThumbnailNodes: string[];
+  };
   workflowResolvedImageNodeIds?: string[];
   workflowAutoConnections?: Array<{ sourceId: string; targetId: string }>;
   workflowMissingRequiredInputs?: string[];
