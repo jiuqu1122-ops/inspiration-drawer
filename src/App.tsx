@@ -30,6 +30,7 @@ import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
 import { CanvasAgentSidebar } from './components/CanvasAgentSidebar';
 import { DrawerAgentPanel } from './components/DrawerAgentPanel';
+import { DoodleBrushCursor } from './components/DoodleBrushCursor';
 import { AgentSettingsSection } from './components/AgentSettingsSection';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
@@ -512,6 +513,7 @@ const formatLicenseCommandError = (err: unknown) => (
 type CanvasBrushEditorMode = 'brush' | 'crop' | 'eraser' | 'rectangle' | 'circle' | 'ellipse';
 type CanvasBrushShapeMode = Extract<CanvasBrushEditorMode, 'rectangle' | 'circle' | 'ellipse'>;
 type CanvasBrushPoint = { x: number; y: number };
+type ActiveShortcutScope = 'canvas' | 'doodle' | 'input' | 'agent' | 'none';
 
 type CanvasBrushCropRect = {
   x: number;
@@ -2962,6 +2964,12 @@ const formatRifeEstimateSeconds = (seconds?: number | null) => {
   const rest = minutes % 60;
   return rest > 0 ? `${hours}小时${rest}分钟` : `${hours}小时`;
 };
+const formatCanvasWorkingElapsed = (startedAt?: number | null, now = Date.now()) => {
+  const start = Number(startedAt) || 0;
+  if (!start) return '0秒';
+  const elapsed = Math.max(0, Math.floor((now - start) / 1000));
+  return `${elapsed}秒`;
+};
 const formatRifeEstimateRange = (estimate?: RifeFrameInterpolationEstimate | null) => {
   const min = Number(estimate?.estimatedSecondsMin);
   const max = Number(estimate?.estimatedSecondsMax);
@@ -3710,6 +3718,7 @@ function MainApp() {
     });
   }, [isCanvasWorkbenchActive]);
   const [canvasItems, setCanvasItems] = useState<CanvasImageItem[]>([]);
+  const [canvasWorkingTimerTick, setCanvasWorkingTimerTick] = useState(() => Date.now());
   const [canvasScale, setCanvasScale] = useState(1);
   const [canvasSize, setCanvasSize] = useState({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
   const [isCanvasSpacePressed, setIsCanvasSpacePressed] = useState(false);
@@ -3748,9 +3757,14 @@ function MainApp() {
   const [canvasBrushSize, setCanvasBrushSize] = useState(26);
   const [canvasBrushOpacity, setCanvasBrushOpacity] = useState(0.72);
   const [canvasBrushHistory, setCanvasBrushHistory] = useState<string[]>([]);
+  const [canvasBrushRedoHistory, setCanvasBrushRedoHistory] = useState<string[]>([]);
   const [canvasBrushCropRect, setCanvasBrushCropRect] = useState<CanvasBrushCropRect | null>(null);
+  const [canvasBrushCursor, setCanvasBrushCursor] = useState({ visible: false, x: 0, y: 0, scale: 1 });
   const canvasContextMenuRef = useRef<CanvasContextMenuState | null>(null);
   const canvasInputPickTargetIdRef = useRef<string | null>(null);
+  const activeShortcutScopeRef = useRef<ActiveShortcutScope>('canvas');
+  const canvasBrushEditorOpenRef = useRef(false);
+  const doodleRootRef = useRef<HTMLDivElement | null>(null);
   const canvasBrushCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasBrushBaseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasBrushDrawingRef = useRef(false);
@@ -3759,6 +3773,46 @@ function MainApp() {
   const canvasBrushShapeStartRef = useRef<CanvasBrushPoint | null>(null);
   const canvasBrushShapeSnapshotRef = useRef<ImageData | null>(null);
   const canvasBrushPendingMarksRef = useRef<string | null>(null);
+  const canvasBrushOpenRequestRef = useRef(0);
+  const canvasBrushPendingCursorRef = useRef<{ visible: boolean; x: number; y: number; scale: number } | null>(null);
+  const canvasBrushCursorFrameRef = useRef<number | null>(null);
+  const setActiveShortcutScope = useCallback((scope: ActiveShortcutScope) => {
+    activeShortcutScopeRef.current = scope;
+  }, []);
+  const isEventFromDoodleSurface = useCallback((event: Event) => {
+    const target = event.target;
+    return target instanceof Element && !!target.closest('[data-doodle-surface="true"]');
+  }, []);
+  const shouldRouteShortcutToDoodle = useCallback((event: Event) => {
+    if (!canvasBrushEditorOpenRef.current) {
+      if (activeShortcutScopeRef.current === 'doodle') setActiveShortcutScope('canvas');
+      return false;
+    }
+    return activeShortcutScopeRef.current === 'doodle' || isEventFromDoodleSurface(event);
+  }, [isEventFromDoodleSurface, setActiveShortcutScope]);
+  const activateDoodleShortcutScope = useCallback(() => {
+    setActiveShortcutScope('doodle');
+  }, [setActiveShortcutScope]);
+  const hideCanvasBrushCursor = useCallback(() => {
+    canvasBrushPendingCursorRef.current = { visible: false, x: 0, y: 0, scale: 1 };
+    if (canvasBrushCursorFrameRef.current != null) return;
+    canvasBrushCursorFrameRef.current = window.requestAnimationFrame(() => {
+      canvasBrushCursorFrameRef.current = null;
+      const nextCursor = canvasBrushPendingCursorRef.current;
+      canvasBrushPendingCursorRef.current = null;
+      if (nextCursor) setCanvasBrushCursor(nextCursor);
+    });
+  }, []);
+  const updateCanvasBrushCursor = useCallback((nextCursor: { visible: boolean; x: number; y: number; scale: number }) => {
+    canvasBrushPendingCursorRef.current = nextCursor;
+    if (canvasBrushCursorFrameRef.current != null) return;
+    canvasBrushCursorFrameRef.current = window.requestAnimationFrame(() => {
+      canvasBrushCursorFrameRef.current = null;
+      const pendingCursor = canvasBrushPendingCursorRef.current;
+      canvasBrushPendingCursorRef.current = null;
+      if (pendingCursor) setCanvasBrushCursor(pendingCursor);
+    });
+  }, []);
   const [isCanvasAiPanelOpen, setIsCanvasAiPanelOpen] = useState(false);
   const [canvasAiProvider, setCanvasAiProvider] = useState<CanvasAiProvider>(() => getStoredCanvasAiProvider());
   const [canvasAiApiKey, setCanvasAiApiKey] = useState(() => getStoredCanvasAiApiKey(getStoredCanvasAiProvider()));
@@ -4035,6 +4089,19 @@ function MainApp() {
     }
   }, [isCanvasMode]);
   useEffect(() => { canvasItemsRef.current = canvasItems; }, [canvasItems]);
+  useEffect(() => {
+    const hasWorkingCanvasAi = canvasItems.some(item => (
+      item.ai?.status === 'working'
+      || item.ai?.outputs?.some(output => output.status === 'working')
+      || normalizeCanvasWorkflowRuntimeSnapshots(item.ai?.workflowRuntime)
+        .some(snapshot => snapshot.ai?.status === 'working' || snapshot.ai?.outputs?.some(output => output.status === 'working'))
+    ));
+    if (!hasWorkingCanvasAi) return;
+
+    setCanvasWorkingTimerTick(Date.now());
+    const timer = window.setInterval(() => setCanvasWorkingTimerTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [canvasItems]);
   useEffect(() => { activeCanvasIdRef.current = activeCanvasId; }, [activeCanvasId]);
   useEffect(() => { isSwitchingCanvasRef.current = isSwitchingCanvas; }, [isSwitchingCanvas]);
   useEffect(() => { canvasSelectedIdsRef.current = canvasSelectedIds; }, [canvasSelectedIds]);
@@ -10294,7 +10361,7 @@ function MainApp() {
     const outputs = canvasItem.ai.outputs || [];
     const workflow = getCanvasWorkflowTemplateFromNode(canvasItem);
     if (workflow) {
-      if (canvasItem.ai.workflowOutputMode === 'all') {
+      if (canvasItem.ai.workflowOutputMode !== 'final') {
         return getCanvasWorkflowAllRuntimeOutputSlots(canvasItem, workflow);
       }
       const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow);
@@ -12791,6 +12858,7 @@ function MainApp() {
         }
       }
       setCanvasBrushHistory([canvas.toDataURL('image/png')]);
+      setCanvasBrushRedoHistory([]);
     } catch (err) {
       console.warn('画笔编辑器加载图片失败:', err);
       showToast('图片加载失败，无法编辑');
@@ -12803,45 +12871,100 @@ function MainApp() {
     void drawCanvasBrushEditorBase(canvasBrushEditor);
   }, [canvasBrushEditor?.targetId, canvasBrushEditor?.baseDataUrl]);
 
+  useEffect(() => {
+    canvasBrushEditorOpenRef.current = !!canvasBrushEditor;
+    if (!canvasBrushEditor) {
+      if (activeShortcutScopeRef.current === 'doodle') setActiveShortcutScope('canvas');
+      hideCanvasBrushCursor();
+      return;
+    }
+
+    setActiveShortcutScope('doodle');
+    const focusFrame = window.requestAnimationFrame(() => {
+      doodleRootRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [canvasBrushEditor, hideCanvasBrushCursor, setActiveShortcutScope]);
+
+  useEffect(() => () => {
+    if (canvasBrushCursorFrameRef.current != null) {
+      window.cancelAnimationFrame(canvasBrushCursorFrameRef.current);
+      canvasBrushCursorFrameRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (canvasBrushMode !== 'brush' && canvasBrushMode !== 'eraser') hideCanvasBrushCursor();
+  }, [canvasBrushMode, hideCanvasBrushCursor]);
+
   const openCanvasBrushEditorFromSource = async (options: CanvasBrushEditorOpenOptions) => {
     const { targetId, source, name, x, y, nodeWidth, nodeHeight } = options;
+    const requestId = canvasBrushOpenRequestRef.current + 1;
+    canvasBrushOpenRequestRef.current = requestId;
     setCanvasContextMenu(null);
     setCanvasInputMenuForId(null);
     if (canvasItemsRef.current.some(item => item.id === targetId)) {
       updateCanvasSelection([targetId]);
     }
+    const initialWidth = Math.max(1, Math.round(nodeWidth));
+    const initialHeight = Math.max(1, Math.round(nodeHeight));
+    const initialScale = Math.min(1, CANVAS_BRUSH_EDITOR_MAX_EDGE / Math.max(initialWidth, initialHeight));
+    const immediateWidth = Math.max(1, Math.round(initialWidth * initialScale));
+    const immediateHeight = Math.max(1, Math.round(initialHeight * initialScale));
+
+    setCanvasBrushEditor({
+      targetId,
+      source,
+      baseDataUrl: source,
+      name: name || '画布图片',
+      x,
+      y,
+      nodeWidth,
+      nodeHeight,
+      width: immediateWidth,
+      height: immediateHeight,
+    });
+    setCanvasBrushMode('brush');
+    setCanvasBrushHistory([]);
+    setCanvasBrushRedoHistory([]);
+    setCanvasBrushCropRect(null);
+    hideCanvasBrushCursor();
+    canvasBrushCropStartRef.current = null;
+    canvasBrushShapeStartRef.current = null;
+    canvasBrushShapeSnapshotRef.current = null;
+    canvasBrushPendingMarksRef.current = null;
+    keepDrawerOpenByPointer();
 
     try {
       const baseDataUrl = await imageSourceToDataUrl(source, false);
       const image = await loadCanvasBrushImage(baseDataUrl);
+      if (canvasBrushOpenRequestRef.current !== requestId) return;
       const naturalWidth = image.naturalWidth || image.width || Math.round(nodeWidth);
       const naturalHeight = image.naturalHeight || image.height || Math.round(nodeHeight);
       const scale = Math.min(1, CANVAS_BRUSH_EDITOR_MAX_EDGE / Math.max(naturalWidth, naturalHeight));
       const width = Math.max(1, Math.round(naturalWidth * scale));
       const height = Math.max(1, Math.round(naturalHeight * scale));
-      setCanvasBrushEditor({
-        targetId,
-        source,
-        baseDataUrl,
-        name: name || '画布图片',
-        x,
-        y,
-        nodeWidth,
-        nodeHeight,
-        width,
-        height,
+
+      const marksCanvas = canvasBrushCanvasRef.current;
+      if (marksCanvas) {
+        try {
+          canvasBrushPendingMarksRef.current = marksCanvas.toDataURL('image/png');
+        } catch (err) {
+          console.warn('暂存涂鸦标记失败:', err);
+        }
+      }
+
+      setCanvasBrushEditor(prev => {
+        if (!prev || prev.targetId !== targetId || prev.source !== source) return prev;
+        return {
+          ...prev,
+          baseDataUrl,
+          width,
+          height,
+        };
       });
-      setCanvasBrushMode('brush');
-      setCanvasBrushHistory([]);
-      setCanvasBrushCropRect(null);
-      canvasBrushCropStartRef.current = null;
-      canvasBrushShapeStartRef.current = null;
-      canvasBrushShapeSnapshotRef.current = null;
-      canvasBrushPendingMarksRef.current = null;
-      keepDrawerOpenByPointer();
     } catch (err) {
-      console.warn('打开画笔编辑器失败:', err);
-      showToast('这张图片暂时无法编辑');
+      console.warn('校准画笔编辑器图片失败，保留即时预览:', err);
     }
   };
 
@@ -12877,6 +13000,21 @@ function MainApp() {
       x: ((event.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width,
       y: ((event.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height,
     };
+  };
+
+  const updateCanvasBrushCursorFromEvent = (event: React.PointerEvent<Element>) => {
+    const canvas = canvasBrushCanvasRef.current;
+    if (!canvas || (canvasBrushMode !== 'brush' && canvasBrushMode !== 'eraser')) {
+      hideCanvasBrushCursor();
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    updateCanvasBrushCursor({
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      scale: rect.width / Math.max(1, canvas.width),
+    });
   };
 
   const paintCanvasBrushStroke = (from: CanvasBrushPoint, to: CanvasBrushPoint) => {
@@ -13022,6 +13160,7 @@ function MainApp() {
     const canvas = canvasBrushCanvasRef.current;
     if (!canvas) return;
     const snapshot = canvas.toDataURL('image/png');
+    setCanvasBrushRedoHistory([]);
     setCanvasBrushHistory(prev => {
       const last = prev[prev.length - 1];
       if (last === snapshot) return prev;
@@ -13074,6 +13213,7 @@ function MainApp() {
     setCanvasBrushMode('brush');
     clearCanvasBrushShapeDraft();
     setCanvasBrushHistory([canvas.toDataURL('image/png')]);
+    setCanvasBrushRedoHistory([]);
     showToast('已应用裁剪');
   };
 
@@ -13082,9 +13222,23 @@ function MainApp() {
     canvasBrushCropStartRef.current = null;
   };
 
+  const activateCanvasBrushTool = (mode: CanvasBrushEditorMode) => {
+    activateDoodleShortcutScope();
+    doodleRootRef.current?.focus({ preventScroll: true });
+    setCanvasBrushMode(mode);
+    if (mode !== 'crop') clearCanvasBrushCrop();
+    if (mode !== 'brush' && mode !== 'eraser') hideCanvasBrushCursor();
+    clearCanvasBrushShapeDraft();
+    canvasBrushDrawingRef.current = false;
+    canvasBrushLastPointRef.current = null;
+  };
+
   const handleCanvasBrushPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    activateDoodleShortcutScope();
+    doodleRootRef.current?.focus({ preventScroll: true });
+    updateCanvasBrushCursorFromEvent(event);
     const canvas = canvasBrushCanvasRef.current;
     if (!canvas) return;
     canvas.setPointerCapture?.(event.pointerId);
@@ -13106,6 +13260,7 @@ function MainApp() {
   };
 
   const handleCanvasBrushPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    updateCanvasBrushCursorFromEvent(event);
     if (!canvasBrushDrawingRef.current && canvasBrushMode !== 'crop') return;
     event.preventDefault();
     event.stopPropagation();
@@ -13133,6 +13288,13 @@ function MainApp() {
     if (event) {
       event.preventDefault();
       event.stopPropagation();
+      if (event.type === 'pointercancel') hideCanvasBrushCursor();
+      if (event.type === 'pointerleave') {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !doodleRootRef.current?.contains(nextTarget)) {
+          hideCanvasBrushCursor();
+        }
+      }
     }
     if (canvasBrushMode === 'crop') {
       canvasBrushCropStartRef.current = null;
@@ -13161,6 +13323,7 @@ function MainApp() {
     const canvas = canvasBrushCanvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx || canvasBrushHistory.length <= 1) return;
+    const current = canvasBrushHistory[canvasBrushHistory.length - 1];
     const nextHistory = canvasBrushHistory.slice(0, -1);
     const previous = nextHistory[nextHistory.length - 1];
     const image = new window.Image();
@@ -13168,13 +13331,57 @@ function MainApp() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
       setCanvasBrushHistory(nextHistory);
+      setCanvasBrushRedoHistory(prev => [current, ...prev].slice(0, 24));
     };
     image.src = previous;
+  };
+
+  const redoCanvasBrushStroke = () => {
+    const canvas = canvasBrushCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    const next = canvasBrushRedoHistory[0];
+    if (!canvas || !ctx || !next) return;
+    const image = new window.Image();
+    image.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      setCanvasBrushHistory(prev => [...prev, next].slice(-24));
+      setCanvasBrushRedoHistory(prev => prev.slice(1));
+    };
+    image.src = next;
+  };
+
+  const handleDoodleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const key = event.key.toLowerCase();
+    const isMod = event.ctrlKey || event.metaKey;
+    const isUndo = isMod && !event.shiftKey && !event.altKey && key === 'z';
+    const isRedo = (
+      (isMod && event.shiftKey && !event.altKey && key === 'z') ||
+      (isMod && !event.shiftKey && !event.altKey && key === 'y')
+    );
+
+    if (isUndo) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation?.();
+      activateDoodleShortcutScope();
+      undoCanvasBrushStroke();
+      return;
+    }
+
+    if (isRedo) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation?.();
+      activateDoodleShortcutScope();
+      redoCanvasBrushStroke();
+    }
   };
 
   const clearCanvasBrushMarks = () => {
     if (!canvasBrushEditor) return;
     clearCanvasBrushShapeDraft();
+    setCanvasBrushRedoHistory([]);
     void drawCanvasBrushEditorBase(canvasBrushEditor);
   };
 
@@ -14694,7 +14901,7 @@ function MainApp() {
       console.warn('Canvas workflow validation warnings:', validation.warnings, cleanWorkflow);
     }
     const itemId = Math.random().toString(36).substring(2, 9);
-    const outputSlots = getCanvasWorkflowOutputSlotTemplates(cleanWorkflow);
+    const outputSlots = getCanvasWorkflowOutputSlotTemplates(cleanWorkflow, 'all');
     const outputSlotCount = Math.max(1, outputSlots.length);
     const firstOutputAspectRatio = outputSlots[0]?.node.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
     const nodeSize = getCanvasAiNodeAutoSize({
@@ -14729,6 +14936,7 @@ function MainApp() {
         status: 'idle',
         outputs: [],
         workflow: cleanWorkflow,
+        workflowOutputMode: 'all',
       },
     };
   };
@@ -18793,6 +19001,7 @@ function MainApp() {
     };
 
     const handleCanvasKeysDown = (event: KeyboardEvent) => {
+      if (shouldRouteShortcutToDoodle(event)) return;
       if (isCanvasModeRef.current && !isTextEntryActive()) {
         const key = event.key.toLowerCase();
         const isMod = event.ctrlKey || event.metaKey;
@@ -18919,6 +19128,7 @@ function MainApp() {
       }
     };
     const handleCanvasKeysUp = (event: KeyboardEvent) => {
+      if (shouldRouteShortcutToDoodle(event)) return;
       if (event.code === 'Space') {
         if (canvasSpaceKeyCapturedRef.current || isCanvasSpacePressedRef.current) {
           event.preventDefault();
@@ -18945,6 +19155,7 @@ function MainApp() {
       setCanvasInteractionActive(false, 0);
     };
     const handleCanvasPaste = (event: ClipboardEvent) => {
+      if (shouldRouteShortcutToDoodle(event)) return;
       if (!isCanvasModeRef.current || isTextEntryActive()) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"], [data-canvas-edit-control="true"]')) return;
@@ -21765,6 +21976,7 @@ useEffect(() => {
 
   useEffect(() => {
     const handleDrawerUndoKeyDown = (event: KeyboardEvent) => {
+      if (shouldRouteShortcutToDoodle(event)) return;
       if (event.repeat || event.shiftKey || event.altKey) return;
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
       if (!isDrawerActive || isTextEntryActive()) return;
@@ -28016,7 +28228,7 @@ useEffect(() => {
                           const isCanvasReferenceBridgeItem = isCanvasWorkflowReferenceBridge(canvasItem);
                           const isCanvasAiNodeItem = isCanvasAiGeneratorItem || isCanvasWorkflowItem;
                           const canvasAiMediaType = getCanvasAiMediaType(canvasItem.ai);
-                          const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode === 'all';
+                          const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
                           const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
                           const canvasAiRealOutputs = isCanvasAiNodeItem ? canvasItem.ai?.outputs || [] : [];
@@ -28147,6 +28359,19 @@ useEffect(() => {
                             frameInterpolationProgress?.stage?.startsWith('benchmarking-')
                             || enhancementProgress?.stage?.startsWith('benchmarking-')
                           );
+                          const canvasAiWorkingElapsedText = canvasItem.ai?.status === 'working'
+                            ? formatCanvasWorkingElapsed(canvasItem.ai?.generatedAt, canvasWorkingTimerTick)
+                            : '';
+                          const canvasAiWorkingVerb = isCanvasWorkflowItem
+                            ? '运行中'
+                            : isCanvasFrameInterpolationItem
+                              ? '补帧中'
+                              : isCanvasEnhancementItem
+                                ? '增强中'
+                                : '生成中';
+                          const canvasAiWorkingStatusText = canvasAiWorkingElapsedText
+                            ? `${canvasAiWorkingVerb} ${canvasAiWorkingElapsedText}`
+                            : canvasAiWorkingVerb;
                           return (
                             <div
                             key={canvasItem.id}
@@ -28357,7 +28582,7 @@ useEffect(() => {
                                                   : 'bg-stone-900/[0.045] text-stone-400 dark:bg-white/[0.07] dark:text-white/42'
                                           }`}>
                                             {canvasItem.ai?.status === 'working'
-                                              ? (isCanvasWorkflowItem ? '运行中' : '生成中')
+                                              ? canvasAiWorkingStatusText
                                               : canvasItem.ai?.status === 'error'
                                                 ? '失败'
                                                 : canvasItem.ai?.status === 'success'
@@ -28383,6 +28608,11 @@ useEffect(() => {
                                             <span className="flex flex-col items-center gap-2">
                                               {isCanvasWorkflowItem ? <Link className="h-5 w-5" /> : canvasAiMediaType === 'video' ? <Film className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
                                               <span>{isCanvasWorkflowItem ? '工作流输出' : canvasAiMediaType === 'video' ? '生成视频' : '生成图'}</span>
+                                              {canvasItem.ai?.status === 'working' && (
+                                                <span className="font-mono text-[10px] text-stone-400 dark:text-white/42">
+                                                  {canvasAiWorkingElapsedText}
+                                                </span>
+                                              )}
                                             </span>
                                           </button>
                                         </div>
@@ -28424,6 +28654,9 @@ useEffect(() => {
                                               const isOutputWorking = output.status === 'working';
                                               const outputMediaType = output.mediaType || canvasAiMediaType;
                                               const outputLabel = output.nodeLabel || output.name || (isCanvasWorkflowItem ? '工作流输出' : canvasItem.ai?.presetLabel || canvasItem.item.name || `输出 ${outputIndex + 1}`);
+                                              const outputWorkingElapsedText = isOutputWorking
+                                                ? formatCanvasWorkingElapsed(output.generatedAt || canvasItem.ai?.generatedAt, canvasWorkingTimerTick)
+                                                : '';
                                               return (
                                                 <div
                                                   key={output.id || `${canvasItem.id}-output-${outputIndex}`}
@@ -28468,8 +28701,7 @@ useEffect(() => {
                                                           type="button"
                                                           className="flex h-7 w-7 items-center justify-center rounded-full bg-white/88 text-stone-500 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md transition-colors hover:bg-white hover:text-blue-700 dark:bg-stone-950/76 dark:text-white/70 dark:ring-white/[0.08] dark:hover:bg-stone-950 dark:hover:text-blue-200"
                                                           title="画笔标记"
-                                                          onPointerDown={(event) => event.stopPropagation()}
-                                                          onClick={(event) => {
+                                                          onPointerDown={(event) => {
                                                             event.preventDefault();
                                                             event.stopPropagation();
                                                             void openCanvasBrushEditorFromSource({
@@ -28481,6 +28713,10 @@ useEffect(() => {
                                                               nodeWidth: canvasAiOutputTileLayout.tileWidth * (canvasAiNodeScale || 1),
                                                               nodeHeight: canvasAiOutputTileLayout.tileHeight * (canvasAiNodeScale || 1),
                                                             });
+                                                          }}
+                                                          onClick={(event) => {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
                                                           }}
                                                         >
                                                           <Brush className="h-3.5 w-3.5" />
@@ -28563,7 +28799,7 @@ useEffect(() => {
                                                     <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2">
                                                       <Sparkles className={`h-4 w-4 ${isOutputWorking ? 'animate-pulse' : ''}`} />
                                                       <span className="line-clamp-2 px-2 pt-5 text-[9px] font-black leading-3">
-                                                        {isOutputError ? '生成失败' : isOutputWorking ? '生成中' : outputMediaType === 'video' ? '无视频' : '无图片'}
+                                                        {isOutputError ? '生成失败' : isOutputWorking ? `生成中 ${outputWorkingElapsedText}` : outputMediaType === 'video' ? '无视频' : '无图片'}
                                                       </span>
                                                     </span>
                                                   )}
@@ -29156,15 +29392,15 @@ useEffect(() => {
                                       >
                                         <Play className={`h-4 w-4 fill-current ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
                                         {isCanvasFrameInterpolationItem
-                                          ? (canvasItem.ai?.status === 'working' ? '补帧中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次补帧' : '补帧')
+                                          ? (canvasItem.ai?.status === 'working' ? `补帧中 ${canvasAiWorkingElapsedText}` : hasCanvasAiGeneratedResults(canvasItem) ? '再次补帧' : '补帧')
                                           : isCanvasEnhancementItem
                                             ? (isCanvasVideoEnhancementItem
                                               ? (canvasItem.ai?.status === 'working'
-                                                ? (isQuickVideoEnhancementItem ? '快速增强中' : '后台增强中')
+                                                ? `${isQuickVideoEnhancementItem ? '快速增强中' : '后台增强中'} ${canvasAiWorkingElapsedText}`
                                                 : (isQuickVideoEnhancementItem ? '快速增强' : '完整增强'))
-                                              : (canvasItem.ai?.status === 'working' ? '增强中' : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强'))
+                                              : (canvasItem.ai?.status === 'working' ? `增强中 ${canvasAiWorkingElapsedText}` : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强'))
                                           : canvasItem.ai?.status === 'working'
-                                          ? (isCanvasWorkflowItem ? '运行中' : '生成中')
+                                          ? canvasAiWorkingStatusText
                                           : isCanvasWorkflowItem
                                             ? (hasCanvasAiGeneratedResults(canvasItem) ? '再次运行' : '运行')
                                             : hasCanvasAiGeneratedResults(canvasItem)
@@ -29530,11 +29766,11 @@ useEffect(() => {
                                 onPointerDown={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
+                                  void openCanvasBrushEditor(canvasItem.id);
                                 }}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  void openCanvasBrushEditor(canvasItem.id);
                                 }}
                                 title="画笔标记"
                               >
@@ -30623,9 +30859,15 @@ useEffect(() => {
                                   <button
                                     type="button"
                                     className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
-                                    onClick={() => {
+                                    onPointerDown={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
                                       void openCanvasBrushEditor(target.id);
                                       setCanvasContextMenu(null);
+                                    }}
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
                                     }}
                                   >
                                     <Brush className="h-3.5 w-3.5 text-blue-300" />
@@ -30991,6 +31233,9 @@ useEffect(() => {
                               const isError = generatedItem.ai?.status === 'error';
                               const prompt = (generatedItem.ai?.prompt || generatedItem.item.remark || '').trim();
                               const generatedAt = generatedItem.ai?.generatedAt || generatedItem.item.createdAt || 0;
+                              const generatedElapsedText = generatedItem.ai?.status === 'working'
+                                ? formatCanvasWorkingElapsed(generatedItem.ai?.generatedAt, canvasWorkingTimerTick)
+                                : '';
                               return (
                                 <div
                                   key={`canvas-generated-list-${generatedItem.id}`}
@@ -31054,7 +31299,7 @@ useEffect(() => {
                                             ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-400/16 dark:text-cyan-200'
                                             : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/16 dark:text-emerald-200'
                                       }`}>
-                                        {isError ? '失败' : isPending ? '生成中' : '完成'}
+                                        {isError ? '失败' : isPending ? (generatedElapsedText ? `生成中 ${generatedElapsedText}` : '生成中') : '完成'}
                                       </span>
                                       <span className="truncate text-[10px] font-black text-stone-700 dark:text-stone-200">
                                         {generatedItem.item.name || (generatedItem.item.type === 'video' ? 'AI 视频' : 'AI 生图')}
@@ -31071,10 +31316,14 @@ useEffect(() => {
                                         {!isPending && !isError && generatedItem.item.type === 'image' && (
                                           <button
                                             type="button"
-                                            onClick={(event) => {
+                                            onPointerDown={(event) => {
                                               event.preventDefault();
                                               event.stopPropagation();
                                               void openCanvasBrushEditor(generatedItem.canvasItem.id);
+                                            }}
+                                            onClick={(event) => {
+                                              event.preventDefault();
+                                              event.stopPropagation();
                                             }}
                                             className="flex h-5 w-5 items-center justify-center rounded-[8px] text-stone-400 opacity-0 transition-all hover:bg-blue-100 hover:text-blue-700 group-hover/generated:opacity-100 dark:hover:bg-blue-400/14 dark:hover:text-blue-200"
                                             title="画笔标记"
@@ -32145,16 +32394,39 @@ useEffect(() => {
             }}
           >
             <motion.div
+              ref={doodleRootRef}
               initial={{ y: 18, scale: 0.98 }}
               animate={{ y: 0, scale: 1 }}
               exit={{ y: 14, scale: 0.98 }}
               transition={{ type: 'tween', duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
               data-no-drag="true"
-              className="flex max-h-[92vh] w-full max-w-[1180px] overflow-hidden rounded-[28px] border border-stone-200/80 bg-white/96 text-stone-900 shadow-[0_24px_80px_rgba(15,23,42,0.20)] dark:border-white/12 dark:bg-stone-950/94 dark:text-white dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
+              data-doodle-surface="true"
+              tabIndex={-1}
+              className="relative flex max-h-[92vh] w-full max-w-[1180px] overflow-hidden rounded-[28px] border border-stone-200/80 bg-white/96 text-stone-900 shadow-[0_24px_80px_rgba(15,23,42,0.20)] outline-none dark:border-white/12 dark:bg-stone-950/94 dark:text-white dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]"
               onPointerDown={(event) => {
                 keepDrawerOpenByPointer();
+                activateDoodleShortcutScope();
+                doodleRootRef.current?.focus({ preventScroll: true });
                 event.stopPropagation();
               }}
+              onPointerEnter={activateDoodleShortcutScope}
+              onPointerMove={updateCanvasBrushCursorFromEvent}
+              onPointerLeave={(event) => {
+                const nextTarget = event.relatedTarget;
+                if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+                  hideCanvasBrushCursor();
+                  if (event.currentTarget.contains(document.activeElement)) return;
+                  setActiveShortcutScope('canvas');
+                }
+              }}
+              onFocus={activateDoodleShortcutScope}
+              onBlur={(event) => {
+                const nextTarget = event.relatedTarget;
+                if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+                  setActiveShortcutScope('canvas');
+                }
+              }}
+              onKeyDown={handleDoodleKeyDown}
               onMouseDown={(event) => event.stopPropagation()}
               onWheel={(event) => event.stopPropagation()}
             >
@@ -32198,9 +32470,12 @@ useEffect(() => {
                       height={canvasBrushEditor.height}
                       className="absolute inset-0 h-full w-full touch-none"
                       style={{
-                        cursor: canvasBrushMode === 'crop' ? 'crosshair' : canvasBrushMode === 'eraser' ? 'cell' : 'crosshair',
+                        cursor: canvasBrushMode === 'brush' || canvasBrushMode === 'eraser'
+                          ? 'none'
+                          : canvasBrushMode === 'crop' ? 'crosshair' : 'crosshair',
                       }}
                       onPointerDown={handleCanvasBrushPointerDown}
+                      onPointerEnter={updateCanvasBrushCursorFromEvent}
                       onPointerMove={handleCanvasBrushPointerMove}
                       onPointerUp={finishCanvasBrushStroke}
                       onPointerCancel={finishCanvasBrushStroke}
@@ -32237,12 +32512,14 @@ useEffect(() => {
                       <button
                         key={option.mode}
                         type="button"
-                        onClick={() => {
-                          setCanvasBrushMode(option.mode);
-                          if (option.mode !== 'crop') clearCanvasBrushCrop();
-                          clearCanvasBrushShapeDraft();
-                          canvasBrushDrawingRef.current = false;
-                          canvasBrushLastPointRef.current = null;
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          activateCanvasBrushTool(option.mode);
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
                         }}
                         className={`flex h-16 flex-col items-center justify-center gap-1 rounded-[13px] text-[10px] font-black transition-colors ${
                           active ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/20 dark:bg-blue-500' : 'text-stone-500 hover:bg-white hover:text-stone-900 dark:text-white/56 dark:hover:bg-white/10 dark:hover:text-white'
@@ -32377,6 +32654,15 @@ useEffect(() => {
                 </div>
               </div>
             </motion.div>
+            <DoodleBrushCursor
+              visible={canvasBrushCursor.visible && (canvasBrushMode === 'brush' || canvasBrushMode === 'eraser')}
+              x={canvasBrushCursor.x}
+              y={canvasBrushCursor.y}
+              size={canvasBrushSize}
+              scale={canvasBrushCursor.scale}
+              color={canvasBrushColor}
+              tool={canvasBrushMode === 'eraser' ? 'eraser' : 'brush'}
+            />
           </motion.div>
         )}
       </AnimatePresence>
