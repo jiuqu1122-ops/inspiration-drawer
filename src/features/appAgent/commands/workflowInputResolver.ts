@@ -159,11 +159,14 @@ export const isImageCanvasNode = (node?: CanvasNodeLike | null) => {
     || type.includes('image');
 };
 
-const nodeLooksLikeImageReferenceInput = (node?: WorkflowNodeLike | null) => {
+const nodeLooksLikeImageReferenceInput = (node?: WorkflowNodeLike | null, workflowNeedsImageInput = false) => {
   if (!node || node.acceptsExternalInputs !== true) return false;
   const externalInputTypes = node.externalInputTypes || [];
   if (externalInputTypes.includes('image')) return true;
-  if (externalInputTypes.length > 0) return false;
+  if (externalInputTypes.length > 0) {
+    return workflowNeedsImageInput && !(externalInputTypes.length === 1 && externalInputTypes[0] === 'video');
+  }
+  if (workflowNeedsImageInput) return true;
   const nodeType = String(node.type || node.kind || node.ai?.type || '').toLowerCase();
   if (/image[-_]?generator/.test(nodeType)) return true;
   return /product_reference_image|subject_ref|product_ref|reference image|product image|connected image|external image|based on connected/i
@@ -220,6 +223,7 @@ export const getWorkflowImageInputTargetNodeIds = (workflow?: WorkflowLike | nul
   const nodesById = new Map(nodes.map(node => [node.id, node]));
   const definitionImageInputIds = getWorkflowImageInputIds(workflow);
   const requiredGenerators = nodes.filter(workflowNodeRequiresImageInput);
+  const workflowNeedsImageInput = definitionImageInputIds.length > 0 || requiredGenerators.length > 0;
   if (definitionImageInputIds.length > 0) {
     return uniqueStrings([
       ...definitionImageInputIds,
@@ -228,7 +232,7 @@ export const getWorkflowImageInputTargetNodeIds = (workflow?: WorkflowLike | nul
   }
   const explicitExternalTargets = nodes
     .filter(node => node.acceptsExternalInputs === true && (
-      nodeLooksLikeImageReferenceInput(node)
+      nodeLooksLikeImageReferenceInput(node, workflowNeedsImageInput)
       || node.item?.type === 'image'
       || node.outputType === 'image'
       || node.outputType === 'image[]'

@@ -1957,22 +1957,17 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
     };
     return (node.inputs || []).some(walk);
   };
-  const nodeAcceptsExternalImageInput = (node: CanvasWorkflowNodeTemplate) => (
-    node.acceptsExternalInputs === true
-    && (
-      (node.externalInputTypes || []).includes('image')
-      || (!node.externalInputTypes?.length && doesWorkflowTextRequireImageReference([
-        node.id,
-        node.item?.name,
-        node.item?.content,
-        node.item?.remark,
-        node.ai?.presetId,
-        node.ai?.presetLabel,
-        node.ai?.presetPrompt,
-        node.ai?.prompt,
-      ].filter(Boolean).join('\n').toLowerCase()))
-    )
-  );
+  const workflowText = getCanvasWorkflowTextBlob(workflow);
+  const workflowRequiresImageReference = doesWorkflowTextRequireImageReference(workflowText);
+  const nodeAcceptsExternalImageInput = (node: CanvasWorkflowNodeTemplate) => {
+    if (node.acceptsExternalInputs !== true) return false;
+    if ((node.externalInputTypes || []).includes('image')) return true;
+    if (!node.externalInputTypes?.length) return true;
+    return workflowRequiresImageReference && !(
+      node.externalInputTypes.length === 1
+      && node.externalInputTypes[0] === 'video'
+    );
+  };
   const hasExternalImageInputNode = workflow.nodes.some(node => (
     nodeAcceptsExternalImageInput(node)
     || (
@@ -1980,8 +1975,7 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
       && (node.item.type === 'image' || node.bridgeType === 'reference_image' || node.outputType === 'image[]' || node.outputType === 'image')
     )
   ));
-  const workflowText = getCanvasWorkflowTextBlob(workflow);
-  if (doesWorkflowTextRequireImageReference(workflowText) && !hasExternalImageInputNode) {
+  if (workflowRequiresImageReference && !hasExternalImageInputNode) {
     errors.push('Workflow prompt mentions external/reference product images but no acceptsExternalInputs=true image input node exists.');
   }
 
@@ -2672,26 +2666,7 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       ? (aiPresetPrompt || aiPrompt || itemContent.trim())
       : '';
     if (node.acceptsExternalInputs === true && (!externalInputTypes || externalInputTypes.length === 0)) {
-      const externalInputHint = [
-        id,
-        rawItem.name,
-        rawItem.content,
-        rawItem.remark,
-        node.outputType,
-        node.bridgeType,
-        rawAi?.type,
-        rawAi?.presetId,
-        rawAi?.presetLabel,
-        aiPresetPrompt,
-        aiPrompt,
-      ].filter(Boolean).join('\n').toLowerCase();
-      const shouldAcceptImageInput = rawAi?.type === 'image-generator'
-        || node.bridgeType === 'reference_image'
-        || id === 'product_reference_image'
-        || node.outputType === 'image'
-        || node.outputType === 'image[]'
-        || doesWorkflowTextRequireImageReference(externalInputHint);
-      externalInputTypes = shouldAcceptImageInput ? ['image', 'text'] : ['text'];
+      externalInputTypes = ['image', 'text'];
     }
     const isReferenceImageBridge = (
       node.bridgeType === 'reference_image'

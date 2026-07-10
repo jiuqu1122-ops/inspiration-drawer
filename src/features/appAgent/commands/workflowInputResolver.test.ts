@@ -57,4 +57,44 @@ describe('workflow input resolver', () => {
     expect(isWorkflowNodeImageInput(normalized?.nodes[0])).toBe(true);
     expect(getWorkflowImageInputTargetNodeIds(normalized)).toContain('product_strategy');
   });
+
+  it('uses acceptsExternalInputs text entries as image targets when downstream generators require reference images', () => {
+    const workflow = {
+      id: 'legacy-text-typed-reference-workflow',
+      label: 'Legacy text typed reference workflow',
+      hint: 'Uses selected product references',
+      nodes: [
+        {
+          id: 'external_brief',
+          item: {
+            id: 'external_brief',
+            type: 'text',
+            content: 'External input entry',
+          },
+          acceptsExternalInputs: true,
+          externalInputTypes: ['text'],
+          outputType: 'text',
+        },
+        {
+          id: 'hero',
+          item: {
+            id: 'hero',
+            type: 'text',
+            content: '',
+          },
+          inputs: ['external_brief'],
+          outputType: 'image',
+          ai: {
+            type: 'image-generator',
+            presetPrompt: 'Create the final image using the selected product image as SUBJECT_REF.',
+            aspectRatio: '16:9',
+            outputFormat: 'jpg',
+            count: 1,
+          },
+        },
+      ],
+    };
+
+    expect(getWorkflowImageInputTargetNodeIds(workflow)).toContain('external_brief');
+  });
 });

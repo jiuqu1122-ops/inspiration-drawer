@@ -22,11 +22,6 @@ const isCanvasWorkflowLongDuplicateText = (a?: string, b?: string) => {
   return left.length > 120 && left === right;
 };
 
-const doesCanvasWorkflowTextRequireImageReference = (text: string) => (
-  /product_reference_image|subject_ref|product_ref|reference image|product image|connected image|external image|based on connected/i
-    .test(text)
-);
-
 export const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
 
 export const isLegacyProductRenderPrompt = (prompt: string) => (
@@ -124,26 +119,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       ? (aiPresetPrompt || aiPrompt || itemContent.trim())
       : '';
     if (node.acceptsExternalInputs === true && (!externalInputTypes || externalInputTypes.length === 0)) {
-      const externalInputHint = [
-        id,
-        rawItem.name,
-        rawItem.content,
-        rawItem.remark,
-        node.outputType,
-        node.bridgeType,
-        rawAi?.type,
-        rawAi?.presetId,
-        rawAi?.presetLabel,
-        aiPresetPrompt,
-        aiPrompt,
-      ].filter(Boolean).join('\n').toLowerCase();
-      const shouldAcceptImageInput = rawAi?.type === 'image-generator'
-        || node.bridgeType === 'reference_image'
-        || id === 'product_reference_image'
-        || node.outputType === 'image'
-        || node.outputType === 'image[]'
-        || doesCanvasWorkflowTextRequireImageReference(externalInputHint);
-      externalInputTypes = shouldAcceptImageInput ? ['image', 'text'] : ['text'];
+      externalInputTypes = ['image', 'text'];
     }
     const isReferenceImageBridge = (
       node.bridgeType === 'reference_image'
