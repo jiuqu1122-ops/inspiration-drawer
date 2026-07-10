@@ -12,6 +12,7 @@ import { detectWorkflowTemplate, parseWorkflowBuilderIntent } from './skills/wor
 import type { WorkflowOutputSpec, WorkflowRecipeDraft } from './workflows/workflowRecipeTypes';
 import { buildProductDetailPageDraft } from './workflows/recipes/productDetailPageRecipe';
 import { validateEcommerceDetailPageDraft } from './workflows/validators/ecommerceDetailPageValidator';
+import { getXaisImage2RatioOptions, resolveXaisImage2Ratio } from '../canvasAiImage';
 import { CANVAS_AGENT_ACTION_SCHEMA } from '../canvasAgentTools';
 import type { AgentCanvasContext } from '../agentModel';
 
@@ -45,6 +46,24 @@ const getIndustrialReviewDraftDefinition = (
 };
 
 export function runAppAgentSmokeTests() {
+  const expectedXaisNanoRatios = ['1:1', '16:9', '9:16', '3:2', '2:3', '4:3', '21:9', '3:4', '1:4', '4:1', '1:8', '8:1'];
+  [
+    'Xais Nano Pro_2K',
+    'Xais Nano Pro_4K',
+    'Xais Nano2_2K',
+    'Xais Nano2_4K',
+    'Xais Nano_Lite_1K',
+    'Xais Nano Pro_4K_png',
+    'Xais Nano2_4K_png',
+  ].forEach(model => {
+    assert(
+      JSON.stringify(getXaisImage2RatioOptions(model)) === JSON.stringify(expectedXaisNanoRatios),
+      `${model} should expose the unified Nano ratio list`,
+    );
+  });
+  assert(resolveXaisImage2Ratio('Xais Nano_Lite_1K', '21:9') === '21:9', 'Nano Lite should keep 21:9 ratio');
+  assert(resolveXaisImage2Ratio('Xais Nano Pro_2K', '1:8') === '1:8', 'Nano Pro should keep 1:8 ratio');
+
   const baseContext: AgentCanvasContext = {
     surface: 'canvas',
     selectedIds: ['node-1', 'node-2'],
@@ -956,13 +975,19 @@ export function runEcommerceDetailPageSmokeTests() {
   assert(draftA.outputs[0]?.title.includes('主视觉母版页'), 'Ecommerce-A: Page 01 should be master page');
   assert(draftA.outputs.slice(1).every(output => output.status === 'waiting_for_master'), 'Ecommerce-A: Page 02-08 should wait for master');
   assert(draftA.outputs.every(output => output.imageTextLanguage === 'zh-CN'), 'Ecommerce-A: outputs should use zh-CN image text language');
-  assert(draftA.outputs.every(output => output.renderMode === 'composited_final_page'), 'Ecommerce-A: default renderMode should be composited_final_page');
+  assert(draftA.outputs.every(output => output.renderMode === 'model_text_baked'), 'Ecommerce-A: default renderMode should be model_text_baked');
+  assert(draftA.outputs.every(output => output.prompt.includes('产品锚点：') && output.prompt.includes('生成目标：')), 'Ecommerce-A: default prompt should use structured detail-page visual-director template');
+  const defaultLayoutLanguages = draftA.outputs.map(output => output.pageSpec?.styleAnchor.layoutLanguage || '');
+  assert(new Set(defaultLayoutLanguages).size >= 6, 'Ecommerce-A: default pages should have varied layout languages');
+  const defaultLabelAreas = new Set(draftA.outputs.map(output => output.pageSpec?.layout.labelArea || ''));
+  assert(defaultLabelAreas.has('left') && defaultLabelAreas.has('right') && defaultLabelAreas.has('bottom'), 'Ecommerce-A: default pages should vary label areas');
+  assert(draftA.outputs.slice(1).every(output => output.prompt.includes('不得复制母版的产品位置')), 'Ecommerce-A: later pages should not copy master composition');
   assert(validateEcommerceDetailPageDraft(draftA).valid, 'Ecommerce-A: default draft should validate');
 
   const draftB = buildProductDetailPageDraft({
     originalRequest: '生成一套详情页图片，直接带中文标题和卖点标签',
   });
-  assert(draftB.outputs.every(output => output.renderMode === 'composited_final_page'), 'Ecommerce-B: direct Chinese copy still uses composited_final_page');
+  assert(draftB.outputs.every(output => output.renderMode === 'model_text_baked'), 'Ecommerce-B: direct Chinese copy should use model_text_baked');
   draftB.outputs.forEach(output => {
     const spec = output.pageSpec;
     assert(!!spec, 'Ecommerce-B: each output should have pageSpec');

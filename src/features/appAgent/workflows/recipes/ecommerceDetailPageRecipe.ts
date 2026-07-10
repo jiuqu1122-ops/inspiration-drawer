@@ -45,7 +45,9 @@ const makeSpec = (input: {
   closeupCount: 0 | 1 | 2 | 3;
   productPosition?: DetailPageSpec['layout']['productPosition'];
   productAngle?: string;
+  labelArea?: DetailPageSpec['layout']['labelArea'];
   closeupPosition?: DetailPageSpec['layout']['closeupPosition'];
+  layoutLanguage?: string;
   renderMode: DetailPageRenderMode;
   aspectRatio?: string;
 }): DetailPageSpec => ({
@@ -66,14 +68,14 @@ const makeSpec = (input: {
     lighting: '柔和棚拍光，边缘清晰',
     iconStyle: '统一线性图标',
     closeupFrameStyle: '圆角描边局部特写框',
-    layoutLanguage: '顶部标题区 + 产品主体 + 三个卖点标签',
+    layoutLanguage: input.layoutLanguage || '顶部标题区 + 产品主体 + 三个卖点标签',
   },
   layout: {
     aspectRatio: input.aspectRatio || '3:4',
     productPosition: input.productPosition || 'center',
     productAngle: input.productAngle || '三分之二视角',
     titleArea: 'top',
-    labelArea: 'top',
+    labelArea: input.labelArea || 'top',
     closeupCount: input.closeupCount,
     closeupPosition: input.closeupPosition,
   },
@@ -102,6 +104,9 @@ export const buildDefaultEcommerceDetailPageSpecs = (
       { text: '卖点明确', icon: 'target' },
     ],
     closeupCount: 0,
+    productPosition: 'center',
+    labelArea: 'top',
+    layoutLanguage: '首屏英雄母版：产品居中大图，顶部标题区，顶部三标签，背景留白充足',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -118,7 +123,9 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     ],
     closeupCount: 2,
     productPosition: 'right',
+    labelArea: 'left',
     closeupPosition: 'left',
+    layoutLanguage: '左右分栏结构解析：右侧产品大图，左侧两个真实局部特写框和结构说明留白',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -134,6 +141,10 @@ export const buildDefaultEcommerceDetailPageSpecs = (
       { text: '体验高效', icon: 'speed' },
     ],
     closeupCount: 1,
+    productPosition: 'center',
+    labelArea: 'bottom',
+    closeupPosition: 'right',
+    layoutLanguage: '功能焦点页：中心产品，右侧单一功能放大特写，底部卖点标签区',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -150,7 +161,9 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     ],
     closeupCount: 2,
     productPosition: 'center',
+    labelArea: 'left',
     closeupPosition: 'right',
+    layoutLanguage: '稳定安全页：产品居中偏下，右侧支撑/防滑特写列，左侧安全卖点区',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -167,7 +180,9 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     ],
     closeupCount: 3,
     productPosition: 'left',
+    labelArea: 'right',
     closeupPosition: 'right',
+    layoutLanguage: '材质工艺页：左侧产品斜切大图，右侧三联材质/边缘特写矩阵',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -183,6 +198,10 @@ export const buildDefaultEcommerceDetailPageSpecs = (
       { text: '效率提升', icon: 'clock' },
     ],
     closeupCount: 1,
+    productPosition: 'center',
+    labelArea: 'bottom',
+    closeupPosition: 'bottom',
+    layoutLanguage: '操作流程页：三步动线横向展开，产品居中，底部步骤/效率信息区',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -199,6 +218,8 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     ],
     closeupCount: 0,
     productPosition: 'bottom-center',
+    labelArea: 'top',
+    layoutLanguage: '真实场景页：产品位于底部环境中，上方大面积场景氛围和标题留白，无局部特写框',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -215,7 +236,9 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     ],
     closeupCount: 2,
     productPosition: 'left',
+    labelArea: 'right',
     closeupPosition: 'right',
+    layoutLanguage: '参数总结页：左侧产品和局部细节拼图，右侧信息模块留白和购买安心标签',
     renderMode,
     aspectRatio: options.aspectRatio,
   }),
@@ -318,4 +341,4 @@ export function buildEcommerceDetailPageDraftFromRequest(
 }
 
 export const buildProductDetailPageDraft = buildEcommerceDetailPageDraftFromRequest;
-export const PRODUCT_DETAIL_PAGE_DEFAULT_OUTPUTS = buildDefaultEcommerceDetailPageSpecs('composited_final_page').map(specToOutput);
+export const PRODUCT_DETAIL_PAGE_DEFAULT_OUTPUTS = buildDefaultEcommerceDetailPageSpecs('model_text_baked').map(specToOutput);

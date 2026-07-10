@@ -337,7 +337,16 @@ const newApiImageRequestParams = (
   };
 };
 
+const XAIS_NANO_RATIO_OPTIONS = ['1:1', '16:9', '9:16', '3:2', '2:3', '4:3', '21:9', '3:4', '1:4', '4:1', '1:8', '8:1'];
+
 export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
+  'Xais Nano Pro_2K': XAIS_NANO_RATIO_OPTIONS,
+  'Xais Nano Pro_4K': XAIS_NANO_RATIO_OPTIONS,
+  'Xais Nano2_2K': XAIS_NANO_RATIO_OPTIONS,
+  'Xais Nano2_4K': XAIS_NANO_RATIO_OPTIONS,
+  'Xais Nano_Lite_1K': XAIS_NANO_RATIO_OPTIONS,
+  'Xais Nano Pro_4K_png': XAIS_NANO_RATIO_OPTIONS,
+  'Xais Nano2_4K_png': XAIS_NANO_RATIO_OPTIONS,
   'Xais img2_1k': ['1:1', '9:16', '4:3', '3:4', '5:4'],
   'Xais Img2_2K': [
     '2048x2048',
@@ -897,9 +906,9 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     .slice(0, 8);
   const isNanoModel = isXaisNanoImageModel(model);
   const isNanoLiteModel = isXaisNanoLiteImageModel(model);
-  const requestRatio = isNanoModel
-    ? normalizeImageAspectRatio(options.aspectRatio)
-    : resolveXaisImage2Ratio(model, options.aspectRatio);
+  const requestRatio = getXaisImage2RatioOptions(model).length > 0
+    ? resolveXaisImage2Ratio(model, options.aspectRatio)
+    : normalizeImageAspectRatio(options.aspectRatio);
   const promptText = prompt;
   const output: string[] = [];
 
@@ -916,7 +925,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       model: requestModel,
       custom_field: customField,
     };
-    if (!isNanoLiteModel) taskBody.ratio = requestRatio;
+    taskBody.ratio = requestRatio;
     if (!isNanoModel) taskBody.client = 'XAIS';
     if (inputImages.length > 0) {
       taskBody.ref = inputImages;
@@ -926,7 +935,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       endpoint,
       model,
       requestModel,
-      ratio: isNanoLiteModel ? undefined : requestRatio,
+      ratio: requestRatio,
       refCount: inputImages.length,
       refs: inputImages.map(image => isXaisAttachmentImageRef(image) ? image : '[remote-url]'),
       custom_field: customField,

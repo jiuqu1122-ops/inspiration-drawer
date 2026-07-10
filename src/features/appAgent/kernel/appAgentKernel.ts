@@ -811,7 +811,7 @@ const buildInstallationDetailPageOutput = (
   const enabledOutputs = draft.outputs.filter(output => output.enabled !== false);
   const nextIndex = Math.max(2, ...enabledOutputs.map(output => output.pageSpec?.pageIndex || output.order || 1)) + 1;
   const anchorOutput = draft.outputs.find(output => output.pageSpec) || draft.outputs[0];
-  const renderMode = anchorOutput?.pageSpec?.renderMode || 'composited_final_page';
+  const renderMode = anchorOutput?.pageSpec?.renderMode || 'model_text_baked';
   const aspectRatio = anchorOutput?.pageSpec?.layout.aspectRatio || anchorOutput?.aspectRatio || '3:4';
   const spec: DetailPageSpec = {
     pageIndex: nextIndex,

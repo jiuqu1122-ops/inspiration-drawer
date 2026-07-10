@@ -43,9 +43,14 @@ export const validateEcommerceDetailPageDraft = (
       errors.push(`${output.id} must have pageSpec.`);
       return;
     }
-    if (output.renderMode === 'composited_final_page' || spec.renderMode === 'composited_final_page') {
+    if (
+      output.renderMode === 'composited_final_page'
+      || spec.renderMode === 'composited_final_page'
+      || output.renderMode === 'model_text_baked'
+      || spec.renderMode === 'model_text_baked'
+    ) {
       if (!spec.copy.title.trim() || !spec.copy.subtitle.trim()) {
-        errors.push(`${output.id} composited_final_page requires title and subtitle.`);
+        errors.push(`${output.id} detail-page layout requires title and subtitle.`);
       }
       if (spec.copy.tags.length !== 3) {
         errors.push(`${output.id} must have exactly 3 tags by default.`);

@@ -1082,6 +1082,10 @@ const formatCanvasAiResolutionOptionLabel = (value: string) => {
   if (!/^\d+\s*[x×]\s*\d+$/i.test(trimmed)) return trimmed;
   return `${trimmed} (${getCanvasAspectRatioLabel(trimmed)})`;
 };
+const isCanvasAiResolutionOptionValue = (value: string) => /^\d+\s*x\s*\d+$/i.test(String(value || '').trim());
+const isCanvasAiResolutionOptionModel = (model?: string | null) => (
+  isXaisImage2Model(model) && getXaisImage2RatioOptions(model).some(isCanvasAiResolutionOptionValue)
+);
 const getClosestCanvasAiStandardAspectRatio = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
   const target = parseCanvasAspectRatioValue(aspectRatio);
   return CANVAS_AI_ASPECT_RATIOS.reduce((best, option) => (
@@ -29013,15 +29017,15 @@ useEffect(() => {
                                             onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
                                             labelClassName="text-center leading-none"
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`${isXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? '分辨率' : '比例'}：${normalizeCanvasAiAspectRatioForModel(
+                                            title={`${isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? '分辨率' : '比例'}：${normalizeCanvasAiAspectRatioForModel(
                                               normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
                                               canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
                                             )}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${isXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 'w-[156px]' : 'w-[62px]'}`}
+                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 'w-[156px]' : 'w-[62px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={isXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 188 : 86}
+                                            menuMinWidth={isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 188 : 86}
                                             menuScale={canvasAiNodeScale || 1}
                                           />
                                           {canvasAiMediaType !== 'video' ? (
