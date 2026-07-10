@@ -1,4 +1,5 @@
 import type { DetailPageRenderMode, DetailPageSpec, DetailPageStatus } from '../pageLayout/detailPageLayoutTypes';
+import type { ImagePolicy } from '../imageQuality/imageRuleCapsules';
 
 export type WorkflowLanguage = 'follow_user' | 'zh-CN' | 'en' | 'bilingual';
 
@@ -29,6 +30,7 @@ export interface WorkflowOutputSpec {
   status?: DetailPageStatus;
   imageTextLanguage?: WorkflowLanguage;
   renderMode?: DetailPageRenderMode;
+  imagePolicy?: ImagePolicy;
 }
 
 export interface WorkflowRecipeDraft {

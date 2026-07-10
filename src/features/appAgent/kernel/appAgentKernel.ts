@@ -30,8 +30,32 @@ import {
 import type { DetailPageRenderMode, DetailPageSpec } from '../pageLayout/detailPageLayoutTypes';
 import { buildDetailPagePrompt } from '../pageLayout/detailPagePromptBuilder';
 import type { WorkflowOutputSpec, WorkflowRecipeDraft } from '../workflows/workflowRecipeTypes';
+import type { ImagePolicy } from '../imageQuality/imageRuleCapsules';
+import { getDefaultImageRuleState } from '../imageQuality/imageRuleDefaults';
 
 const createId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const buildWorkflowOutputImagePolicy = (
+  output: Pick<WorkflowOutputSpec, 'id' | 'title' | 'prompt' | 'imagePolicy'>,
+  context: {
+    hasReferenceImage?: boolean;
+    workflowTemplateId?: string;
+    qualityProfileId?: string | null;
+  } = {},
+): ImagePolicy => ({
+  ...(output.imagePolicy || {}),
+  rules: {
+    ...getDefaultImageRuleState({
+      hasReferenceImage: context.hasReferenceImage,
+      outputRole: output.id,
+      presetLabel: output.title,
+      workflowTemplateId: context.workflowTemplateId,
+      qualityProfileId: context.qualityProfileId,
+      prompt: output.prompt,
+    }),
+    ...(output.imagePolicy?.rules || {}),
+  },
+});
 
 const maxRisk = (risks: RiskLevel[]): RiskLevel => {
   const order: RiskLevel[] = ['read', 'safe_write', 'external_network', 'costly', 'destructive', 'system_process'];
@@ -293,6 +317,10 @@ export function convertWorkflowDraftToDefinition(
       provider: output.provider || null,
       model: output.model || null,
       toolHint: null,
+      imagePolicy: buildWorkflowOutputImagePolicy(output, {
+        hasReferenceImage: true,
+        workflowTemplateId: 'industrial-design-review',
+      }),
       skillMeta: {
         skillId: 'creative-product-design-skill,workflow-builder-skill',
         skillIds: ['creative-product-design-skill', 'workflow-builder-skill'],
@@ -397,6 +425,7 @@ type EcommerceDetailPageWorkflowStep =
     renderMode?: string;
     pageSpec?: DetailPageSpec;
     skillMeta: Record<string, unknown>;
+    imagePolicy?: ImagePolicy;
   };
 
 export interface EcommerceDetailPageWorkflowDefinition {
@@ -468,6 +497,11 @@ const buildEcommerceDetailPageWorkflowDefinition = (
       status: output.status,
       renderMode: output.renderMode || spec?.renderMode,
       pageSpec: spec,
+      imagePolicy: buildWorkflowOutputImagePolicy(output, {
+        hasReferenceImage: true,
+        workflowTemplateId: 'ecommerce-detail-page',
+        qualityProfileId: 'ecommerce_detail_page',
+      }),
       skillMeta: {
         skillId: 'ecommerce-detail-page-skill,workflow-builder-skill',
         skillIds: ['ecommerce-detail-page-skill', 'workflow-builder-skill'],
@@ -565,6 +599,7 @@ type IndustrialReviewWorkflowStep =
     model?: string | null;
     toolHint: string | null;
     skillMeta: Record<string, unknown>;
+    imagePolicy?: ImagePolicy;
   };
 
 export interface IndustrialReviewWorkflowDefinition {

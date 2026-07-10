@@ -3,6 +3,17 @@ import { clamp } from './common';
 const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
 const CANVAS_AI_DEFAULT_COUNT = 1;
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
+const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
+const CANVAS_IMAGE_RULE_COLLAPSED_WIDTH = 34;
+const CANVAS_IMAGE_RULE_PANEL_GAP = 12;
+const CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+  + CANVAS_IMAGE_RULE_PANEL_WIDTH
+  + CANVAS_IMAGE_RULE_PANEL_GAP
+  + 32;
+const CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+  + CANVAS_IMAGE_RULE_COLLAPSED_WIDTH
+  + CANVAS_IMAGE_RULE_PANEL_GAP
+  + 32;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
 const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
 const CANVAS_AI_NODE_GRID_GAP = 8;
@@ -80,6 +91,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
   showOutputPreview?: boolean;
   localMediaTool?: boolean;
   showLocalMediaProgress?: boolean;
+  imageRulePanelExpanded?: boolean;
 }) => {
   const isWorkflow = options?.type === 'workflow';
   const isVideo = options?.type === 'video-generator';
@@ -87,7 +99,9 @@ export const getCanvasAiNodeAutoSize = (options?: {
     ? CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH
     : isVideo
       ? CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH
-      : CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
+      : options?.imageRulePanelExpanded
+        ? CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH
+        : CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH;
   const outputCount = clamp(
     Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
     1,
@@ -95,7 +109,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
   );
   const outputLayout = options?.showOutputPreview
     ? getCanvasAiOutputTileLayout({
-      width,
+      width: !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
       aspectRatio: options?.aspectRatio,
       outputCount,
       isWorkflow,
@@ -110,7 +124,11 @@ export const getCanvasAiNodeAutoSize = (options?: {
       ? options?.showLocalMediaProgress
         ? CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT
         : CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT
-      : getCanvasAiPromptAutoHeight(options?.promptText, width, !!options?.promptExpanded);
+      : getCanvasAiPromptAutoHeight(
+        options?.promptText,
+        !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
+        !!options?.promptExpanded
+      );
   const inputHeight = 52;
   const errorHeight = options?.hasError ? 48 : 0;
   const bodyGapCount = [

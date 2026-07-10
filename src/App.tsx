@@ -35,6 +35,7 @@ import { AgentSettingsSection } from './components/AgentSettingsSection';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
 import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSelect';
+import { ImageRuleSwitchPanel } from './features/canvas/components/ImageRuleSwitchPanel';
 import {
   DEFAULT_CANVAS_ID,
   DEFAULT_LIBRARY_ID,
@@ -64,6 +65,18 @@ import { resolveWorkflowInputs } from './features/appAgent/commands/workflowInpu
 import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/appAgentKernel';
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
+import {
+  type ImageRuleKey,
+  type ImageRuleState,
+  mergeImageRuleStates,
+  normalizeImageRuleState,
+} from './features/appAgent/imageQuality/imageRuleCapsules';
+import {
+  getDefaultImageRuleState,
+  resolveImageRuleState,
+  type ImageRuleDefaultContext,
+} from './features/appAgent/imageQuality/imageRuleDefaults';
+import { buildFinalImagePrompt } from './features/appAgent/imageQuality/imageRulePromptBuilder';
 import {
   flattenDrawerFolderTree,
   getDrawerFolderDeletionPlan,
@@ -1055,6 +1068,17 @@ const mergeRestoredFolderCandidates = (primary: Folder[], candidates: Folder[][]
   return normalizeDrawerFolders(orderedIds.map(id => mergedById.get(id)!.folder));
 };
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
+const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
+const CANVAS_IMAGE_RULE_COLLAPSED_WIDTH = 34;
+const CANVAS_IMAGE_RULE_PANEL_GAP = 12;
+const CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+  + CANVAS_IMAGE_RULE_PANEL_WIDTH
+  + CANVAS_IMAGE_RULE_PANEL_GAP
+  + 32;
+const CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+  + CANVAS_IMAGE_RULE_COLLAPSED_WIDTH
+  + CANVAS_IMAGE_RULE_PANEL_GAP
+  + 32;
 const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
 const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
 const CANVAS_AI_NODE_GRID_GAP = 8;
@@ -1160,6 +1184,7 @@ const getCanvasAiNodeAutoSize = (options?: {
   showOutputPreview?: boolean;
   localMediaTool?: boolean;
   showLocalMediaProgress?: boolean;
+  imageRulePanelExpanded?: boolean;
 }) => {
   const isWorkflow = options?.type === 'workflow';
   const isVideo = options?.type === 'video-generator';
@@ -1167,7 +1192,9 @@ const getCanvasAiNodeAutoSize = (options?: {
     ? CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH
     : isVideo
       ? CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH
-      : CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
+      : options?.imageRulePanelExpanded
+        ? CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH
+        : CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH;
   const outputCount = clamp(
     Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
     1,
@@ -1175,7 +1202,7 @@ const getCanvasAiNodeAutoSize = (options?: {
   );
   const outputLayout = options?.showOutputPreview
     ? getCanvasAiOutputTileLayout({
-      width,
+      width: !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
       aspectRatio: options?.aspectRatio,
       outputCount,
       isWorkflow,
@@ -1190,7 +1217,11 @@ const getCanvasAiNodeAutoSize = (options?: {
       ? options?.showLocalMediaProgress
         ? CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT
         : CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT
-      : getCanvasAiPromptAutoHeight(options?.promptText, width, !!options?.promptExpanded);
+      : getCanvasAiPromptAutoHeight(
+        options?.promptText,
+        !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
+        !!options?.promptExpanded
+      );
   const inputHeight = 52;
   const errorHeight = options?.hasError ? 48 : 0;
   const bodyGapCount = [
@@ -1353,6 +1384,51 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 - 不要文字、不要 logo 乱生成、不要说明标签、不要虚构参数`,
   },
 ];
+const getCanvasImageRuleDefaultContext = (
+  item: Pick<CanvasImageItem, 'inputs' | 'item'> & { ai?: CanvasImageItem['ai'] | null },
+  hasReferenceImage = (item.inputs || []).length > 0
+): ImageRuleDefaultContext => ({
+  hasReferenceImage,
+  presetId: item.ai?.presetId,
+  presetLabel: item.ai?.presetLabel,
+  outputRole: typeof item.ai?.skillMeta?.workflowOutputType === 'string'
+    ? item.ai.skillMeta.workflowOutputType
+    : item.item.remark,
+  workflowTemplateId: typeof item.ai?.skillMeta?.workflowTemplateId === 'string'
+    ? item.ai.skillMeta.workflowTemplateId
+    : undefined,
+  qualityProfileId: typeof item.ai?.skillMeta?.qualityProfileId === 'string'
+    ? item.ai.skillMeta.qualityProfileId
+    : undefined,
+  prompt: [
+    item.ai?.presetPrompt,
+    item.ai?.prompt,
+    item.item.content,
+    item.item.name,
+  ].filter(Boolean).join('\n'),
+});
+
+const getCanvasImageRuleState = (
+  item: Pick<CanvasImageItem, 'inputs' | 'item'> & { ai?: CanvasImageItem['ai'] | null },
+  hasReferenceImage?: boolean
+): ImageRuleState => resolveImageRuleState(
+  item.ai?.imagePolicy?.rules,
+  getCanvasImageRuleDefaultContext(item, hasReferenceImage),
+);
+
+const createCanvasImagePolicy = (
+  context: ImageRuleDefaultContext,
+  explicitRules?: ImageRuleState | null
+) => ({
+  rules: mergeImageRuleStates(getDefaultImageRuleState(context), normalizeImageRuleState(explicitRules)),
+  defaultPreset: context.workflowTemplateId || context.qualityProfileId || context.outputRole || 'product_image_generator',
+});
+const getImagePolicyRulesFromRecord = (value: unknown): ImageRuleState => {
+  const record = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as { rules?: unknown }
+    : {};
+  return normalizeImageRuleState(record.rules);
+};
 const makeCanvasWorkflowAiNode = (
   id: string,
   label: string,
@@ -1399,6 +1475,13 @@ const makeCanvasWorkflowAiNode = (
       count: options.count || 1,
       provider: options.provider,
       model: options.model,
+      imagePolicy: createCanvasImagePolicy({
+        hasReferenceImage: inputs.length > 0,
+        presetId: options.presetId || `workflow-${id}`,
+        presetLabel: label,
+        outputRole: id,
+        prompt,
+      }),
       status: 'idle',
     },
   };
@@ -1581,6 +1664,14 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
             resolution: typeof step?.resolution === 'string' ? step.resolution : undefined,
             outputFormat,
             count,
+            imagePolicy: createCanvasImagePolicy({
+              hasReferenceImage: true,
+              presetId: `workflow-product-details-${id}`,
+              presetLabel: specLabel,
+              outputRole: id,
+              workflowTemplateId: 'product-detail-page',
+              prompt,
+            }, getImagePolicyRulesFromRecord(step?.imagePolicy)),
             status: 'idle' as const,
             outputs: [],
           },
@@ -1773,6 +1864,15 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
         skillMeta: step.skillMeta && typeof step.skillMeta === 'object' && !Array.isArray(step.skillMeta)
           ? step.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
           : undefined,
+        imagePolicy: createCanvasImagePolicy({
+          hasReferenceImage: inputs.length > 0,
+          presetId: `workflow-${templateId}-${String(step.id || index + 1)}`,
+          presetLabel: title,
+          outputRole: String(step.outputRole || step.id || ''),
+          workflowTemplateId: templateId,
+          qualityProfileId: typeof metadata.qualityProfileId === 'string' ? metadata.qualityProfileId : undefined,
+          prompt,
+        }, getImagePolicyRulesFromRecord(step.imagePolicy)),
         outputFormat,
         count,
         status: 'idle',
@@ -10415,6 +10515,7 @@ function MainApp() {
       showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
       localMediaTool: isCanvasAiLocalMediaToolType(canvasItem.ai?.type),
       showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
+      imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded === true,
     });
   };
 
@@ -14367,6 +14468,12 @@ function MainApp() {
     const name = preset ? `AI ${preset.label}` : (isVideo ? 'AI 视频节点' : 'AI 生图节点');
     const aspectRatio = preset?.aspectRatio || (isVideo ? '9:16' : CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const count = preset?.count || CANVAS_AI_DEFAULT_COUNT;
+    const imagePolicy = isVideo ? undefined : createCanvasImagePolicy({
+      hasReferenceImage: inputIds.length > 0,
+      presetId: preset?.id,
+      presetLabel: preset?.label,
+      prompt: presetPrompt,
+    });
     const nodeSize = getCanvasAiNodeAutoSize({
       type: isVideo ? 'video-generator' : 'image-generator',
       aspectRatio,
@@ -14404,6 +14511,7 @@ function MainApp() {
         duration: isVideo ? CANVAS_AI_DEFAULT_VIDEO_DURATION : undefined,
         videoInputMode: isVideo ? 'REF' : undefined,
         videoCfrMode: isVideo ? 'auto' : undefined,
+        imagePolicy,
         status: 'idle',
       },
     };
@@ -14873,6 +14981,18 @@ function MainApp() {
             type: 'image-generator' as const,
             provider,
             model: node.ai?.model || getCanvasAiDefaultModel(provider),
+            imagePolicy: createCanvasImagePolicy({
+              hasReferenceImage: Array.from(new Set([
+                ...internalInputs,
+                ...(shouldAttachExternalInputs ? externalInputIds : []),
+              ])).length > 0,
+              presetId: node.ai?.presetId,
+              presetLabel: node.ai?.presetLabel,
+              outputRole: node.item.remark || node.id,
+              workflowTemplateId: cleanWorkflow.id,
+              qualityProfileId: typeof node.ai?.skillMeta?.qualityProfileId === 'string' ? node.ai.skillMeta.qualityProfileId : undefined,
+              prompt: [node.ai?.presetPrompt, node.ai?.prompt, node.item.content].filter(Boolean).join('\n'),
+            }, node.ai?.imagePolicy?.rules),
             status: 'idle' as const,
             error: undefined,
             generatedAt: undefined,
@@ -15734,6 +15854,59 @@ function MainApp() {
     )));
   };
 
+  const toggleCanvasImageRule = (canvasId: string, key: ImageRuleKey) => {
+    const target = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (target?.ai?.type !== 'image-generator') return;
+    const resolvedRules = getCanvasImageRuleState(target);
+    const explicitRules = normalizeImageRuleState(target.ai.imagePolicy?.rules);
+    const nextRules = {
+      ...explicitRules,
+      [key]: resolvedRules[key] !== true,
+    };
+    pushDrawerUndoSnapshot('修改图像规则');
+    updateCanvasItemsImmediate(prev => prev.map(item => (
+      item.id === canvasId && item.ai?.type === 'image-generator'
+        ? {
+          ...item,
+          ai: {
+            ...item.ai,
+            imagePolicy: {
+              ...(item.ai.imagePolicy || {}),
+              rules: nextRules,
+              updatedAt: Date.now(),
+            },
+          },
+        }
+        : item
+    )));
+  };
+
+  const toggleCanvasImageRulePanel = (canvasId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (target?.ai?.type !== 'image-generator') return;
+    const nextExpanded = target.ai.imagePolicy?.panelExpanded !== true;
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== canvasId || item.ai?.type !== 'image-generator') return item;
+      const nextItem: CanvasImageItem = {
+        ...item,
+        ai: {
+          ...item.ai,
+          imagePolicy: {
+            ...(item.ai.imagePolicy || {}),
+            panelExpanded: nextExpanded,
+          },
+        },
+      };
+      const promptExpanded = canvasAiPromptEditingId === item.id;
+      const nextSize = getCanvasAiNodeDesignSizeForItem(nextItem, promptExpanded);
+      return {
+        ...nextItem,
+        width: nextSize.width,
+        height: nextSize.height,
+      };
+    }));
+  };
+
   const commitCanvasAiPromptDraft = (canvasId: string, content?: string, sync = false) => {
     const nextContent = content ?? canvasAiPromptDraftValuesRef.current[canvasId];
     if (nextContent === undefined) return;
@@ -16375,12 +16548,13 @@ function MainApp() {
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
+    const textInputPrompts = getCanvasTextInputsForNode(target, getSourceItems());
     const promptParts = [
-      ...getCanvasTextInputsForNode(target, getSourceItems()),
+      ...textInputPrompts,
       target.ai.presetPrompt || '',
       manualPrompt,
     ].map(text => text.trim()).filter(Boolean);
-    const prompt = promptParts.join('\n\n');
+    let prompt = promptParts.join('\n\n');
     if (!prompt) {
       const errorSummary = mediaType === 'video' ? '请输入视频提示词，或连接一个文字节点' : '请输入提示词，或连接一个文字节点';
       (options.forceUpdateAi || options.updateAi)({ status: 'error', error: errorSummary });
@@ -16447,6 +16621,22 @@ function MainApp() {
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
       if (inputImages.length > 0 && isCanvasAiReferenceImageUnsupportedModel(provider, requestModel)) {
         throw new Error('GPT Image 2 当前仅按文生图接入，不能使用参考图。请切换到 Xais Image2 / Nano Banana，或移除参考图。');
+      }
+      if (mediaType === 'image') {
+        const hasReferenceImage = inputImages.length > 0 || (target.inputs || []).length > 0;
+        prompt = buildFinalImagePrompt({
+          textInputs: textInputPrompts,
+          presetPrompt: target.ai.presetPrompt || '',
+          userPrompt: manualPrompt,
+          rules: getCanvasImageRuleState(target, hasReferenceImage),
+          nodeType: {
+            mediaType: 'image',
+            hasReferenceImage,
+            nodeRole: typeof target.ai.skillMeta?.workflowOutputType === 'string'
+              ? target.ai.skillMeta.workflowOutputType
+              : target.ai.presetLabel || target.item.name,
+          },
+        }).prompt || prompt;
       }
       const requestedCount = currentOutputs.length || clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
       let generateOptions = {
@@ -18776,8 +18966,11 @@ function MainApp() {
   const getCanvasNestedWheelScroller = (surface: HTMLDivElement, targetValue: EventTarget | null, deltaY: number) => {
     const target = targetValue instanceof Element ? targetValue : null;
     if (!target || !surface.contains(target)) return null;
-    if (!target.closest('textarea, input, [contenteditable="true"]')) return null;
-    let current: HTMLElement | null = target instanceof HTMLElement ? target : target.parentElement;
+    const markedScroller = target.closest('[data-canvas-wheel-scroll="true"]');
+    if (!markedScroller && !target.closest('textarea, input, [contenteditable="true"]')) return null;
+    let current: HTMLElement | null = markedScroller instanceof HTMLElement
+      ? markedScroller
+      : target instanceof HTMLElement ? target : target.parentElement;
     while (current && current !== surface) {
       const style = window.getComputedStyle(current);
       const canScrollY = /(auto|scroll|overlay)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 1;
@@ -18794,7 +18987,7 @@ function MainApp() {
   const shouldBlockCanvasWheelZoomTarget = (targetValue: EventTarget | null) => {
     const target = targetValue instanceof Element ? targetValue : null;
     if (!target) return false;
-    return !!target.closest('textarea, input, [contenteditable="true"]');
+    return !!target.closest('textarea, input, [contenteditable="true"], [data-canvas-wheel-scroll="true"]');
   };
 
   useEffect(() => {
@@ -28256,9 +28449,14 @@ useEffect(() => {
                           const canvasAiNodeDesignSize = isCanvasAiNodeItem
                             ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded)
                             : null;
+                          const canvasAiMainColumnLayoutWidth = canvasItem.ai?.type === 'image-generator'
+                            ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+                            : canvasAiNodeDesignSize?.width || canvasItem.width;
+                          const isImageRulePanelExpanded = canvasItem.ai?.type === 'image-generator'
+                            && canvasItem.ai.imagePolicy?.panelExpanded === true;
                           const canvasAiOutputTileLayout = isCanvasAiNodeItem && canvasAiNodeDesignSize && showCanvasAiOutputPreview
                             ? getCanvasAiOutputTileLayout({
-                              width: canvasAiNodeDesignSize.width,
+                              width: canvasAiMainColumnLayoutWidth,
                               aspectRatio: canvasAiOutputAspectRatio,
                               outputCount: canvasAiOutputs.length || undefined,
                               count: canvasItem.ai?.count,
@@ -28272,7 +28470,7 @@ useEffect(() => {
                             ? canvasAiNodeDesignSize.width * (canvasAiNodeScale || 1)
                             : canvasItem.width;
                           const canvasAiPromptHeight = isCanvasAiGeneratorItem && canvasAiNodeDesignSize
-                            ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiNodeDesignSize.width, isCanvasAiPromptExpanded)
+                            ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiMainColumnLayoutWidth, isCanvasAiPromptExpanded)
                             : 0;
                           const canvasVideoInputMode = canvasItem.ai?.videoInputMode === 'FLF' ? 'FLF' : 'REF';
                           const isCanvasVideoReferenceItem = (inputItem: CanvasImageItem) => {
@@ -28409,6 +28607,7 @@ useEffect(() => {
                             }}
                             >
                               {isCanvasAiNodeItem ? (
+                                <>
                                 <div
                                   className="relative h-full w-full overflow-hidden"
                                   style={{ borderRadius: canvasScaledNodeRadius }}
@@ -28425,7 +28624,8 @@ useEffect(() => {
                                       transformOrigin: 'left top',
                                     }}
                                   >
-                                    <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-3 pt-4">
+                                    <div className={`${canvasItem.ai?.type === 'image-generator' ? 'flex-row' : 'flex-col'} flex min-h-0 flex-1 gap-3 px-4 pb-3 pt-4`}>
+                                      <div className="flex min-w-0 flex-1 flex-col gap-3">
                                       <div className="flex items-start justify-between gap-3">
                                         <button
                                           data-no-drag="true"
@@ -28944,6 +29144,20 @@ useEffect(() => {
                                           {getCanvasAiErrorSummary(canvasItem.ai.error)}
                                         </div>
                                       )}
+                                      </div>
+                                      {canvasItem.ai?.type === 'image-generator' && (
+                                        <div
+                                          className="min-h-0 shrink-0 self-stretch"
+                                          style={{ width: isImageRulePanelExpanded ? 190 : 34 }}
+                                        >
+                                          <ImageRuleSwitchPanel
+                                            rules={getCanvasImageRuleState(canvasItem)}
+                                            expanded={isImageRulePanelExpanded}
+                                            onToggle={(key) => toggleCanvasImageRule(canvasItem.id, key)}
+                                            onToggleExpanded={() => toggleCanvasImageRulePanel(canvasItem.id)}
+                                          />
+                                        </div>
+                                      )}
                                     </div>
                                     <div className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}>
                                       {!isCanvasWorkflowItem && (
@@ -29410,6 +29624,7 @@ useEffect(() => {
                                     </div>
                                   </div>
                                 </div>
+                                </>
                               ) : isTextCanvasItem ? (
                                 isCanvasTextPlainMode ? (
                                   <div

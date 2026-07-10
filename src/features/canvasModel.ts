@@ -1,4 +1,5 @@
 import { BufferItem } from '../types';
+import type { ImagePolicy } from './appAgent/imageQuality/imageRuleCapsules';
 
 export type CanvasImageItem = {
   id: string;
@@ -101,6 +102,7 @@ export type CanvasAiItemData = {
     focus?: string[];
     [key: string]: unknown;
   };
+  imagePolicy?: ImagePolicy;
   outputFormat?: string;
   count?: number;
   duration?: number;
