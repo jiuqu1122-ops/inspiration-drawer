@@ -107,6 +107,10 @@ const isImage2DefaultWorkflowTemplate = (templateId?: string) => (
   || templateId === 'video-storyboard-suite'
 );
 
+const toWorkflowModelToken = (value?: string | null) => (
+  String(value || '').trim().replace(/[^a-z0-9]+/gi, '').toLowerCase()
+);
+
 export const resolveWorkflowModel = (input: {
   modelFamily: WorkflowModelFamily;
   resolution?: WorkflowGenerationSettings['resolution'];
@@ -115,14 +119,17 @@ export const resolveWorkflowModel = (input: {
 }) => {
   const resolution = input.resolution || (input.modelFamily === 'image2' ? '1K' : '2K');
   const text = input.text || '';
+  const modelToken = toWorkflowModelToken(text);
   if (input.modelFamily === 'image2') {
-    if (resolution === '4K') return input.highQuality ? 'Xais Img2_4K(高画质)' : 'Xais Img2_4K';
-    if (resolution === '2K') return input.highQuality ? 'Xais Img2_2K(高画质)' : 'Xais Img2_2K';
+    const wantsHighQuality = input.highQuality || /(?:img2|image2)(?:2k|4k)(?:h|hq|high|highquality)/i.test(modelToken);
+    if (resolution === '4K') return wantsHighQuality ? 'Xais Img2_4K(高画质)' : 'Xais Img2_4K';
+    if (resolution === '2K') return wantsHighQuality ? 'Xais Img2_2K(高画质)' : 'Xais Img2_2K';
     return 'Xais img2_1k';
   }
 
-  if (/lite|轻量|极速/i.test(text) || resolution === '1K') return 'Xais Nano_Lite_1K';
-  const useNano2 = /nano\s*2|nano2|banana\s*2|香蕉\s*2/i.test(text);
+  if (/lite|轻量|极速/i.test(text) || /nanobananalite|nanolite|nanolite1k/i.test(modelToken) || resolution === '1K') return 'Xais Nano_Lite_1K';
+  const useNano2 = /nano\s*2|nano2|banana\s*2|香蕉\s*2/i.test(text)
+    || /nanobanana2|nano2|xaisnano2/i.test(modelToken);
   if (useNano2) return resolution === '4K' ? 'Xais Nano2_4K' : 'Xais Nano2_2K';
   return resolution === '4K' ? 'Xais Nano Pro_4K' : 'Xais Nano Pro_2K';
 };
@@ -179,7 +186,7 @@ export function parseWorkflowGenerationSettings(
   }
 
   const modelMentions: Array<{ index: number; family: WorkflowModelFamily; reason: string }> = [];
-  const image2Match = /image\s*2|img\s*2|image2|img2|图像\s*2/i.exec(text);
+  const image2Match = /image[\s_-]*2|img[\s_-]*2|image2|img2|图像\s*2/i.exec(text);
   if (image2Match?.index !== undefined) {
     modelMentions.push({ index: image2Match.index, family: 'image2', reason: 'explicit:image2' });
   }

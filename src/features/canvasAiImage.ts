@@ -403,26 +403,52 @@ export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
   ],
 };
 
+const toXaisModelToken = (value?: string | null) => (
+  String(value || '').trim().replace(/[^a-z0-9]+/gi, '').toLowerCase()
+);
+
+const findXaisImageModelOption = (model?: string | null) => {
+  const trimmed = String(model || '').trim();
+  if (!trimmed) return null;
+  const exactOption = XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => (
+    option.value === trimmed || option.label === trimmed
+  ));
+  if (exactOption) return exactOption;
+  const token = toXaisModelToken(trimmed);
+  return XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => (
+    toXaisModelToken(option.value) === token
+    || toXaisModelToken(option.label) === token
+  )) || null;
+};
+
+const getXaisImageModelValueByLabelToken = (token: string) => (
+  XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => toXaisModelToken(option.label) === token)?.value || ''
+);
+
 export const normalizeXaisImage2Model = (model?: string | null) => {
   const trimmed = String(model || '').trim();
-  const compact = trimmed.replace(/[\s_]+/g, '_');
+  if (!trimmed) return trimmed;
+  const compact = trimmed.replace(/[\s_-]+/g, '_');
+  const token = toXaisModelToken(trimmed);
+  const option = findXaisImageModelOption(trimmed);
+  if (option) return option.value;
   if (/^c3f$/i.test(trimmed)) return XAIS_CHAT_IMAGE_MODEL_DEFAULT;
-  if (/^nano_banana_pro_4k_5$/i.test(trimmed) || /^xais_nano_pro_4k_png$/i.test(compact)) return 'Xais Nano Pro_4K_png';
-  if (/^nano_banana_2_4k_5$/i.test(trimmed) || /^xais_nano2_4k_png$/i.test(compact)) return 'Xais Nano2_4K_png';
-  if (/^nano_banana_pro_2k_/i.test(trimmed) || /^xais_nano_pro_2k$/i.test(compact)) return 'Xais Nano Pro_2K';
-  if (/^nano_banana_pro_4k_/i.test(trimmed) || /^xais_nano_pro_4k$/i.test(compact)) return 'Xais Nano Pro_4K';
-  if (/^nano_banana_2_2k_/i.test(trimmed) || /^xais_nano2_2k$/i.test(compact)) return 'Xais Nano2_2K';
-  if (/^nano_banana_2_4k_/i.test(trimmed) || /^xais_nano2_4k$/i.test(compact)) return 'Xais Nano2_4K';
-  if (/^nano_banana_lite_1k_/i.test(trimmed) || /^xais_nano_lite_1k$/i.test(compact)) return 'Xais Nano_Lite_1K';
-  if (/^image2_4k_hq$/i.test(trimmed) || /^image2_4k_h$/i.test(trimmed) || /^xais_img2_4k_h$/i.test(compact) || /^xais_img2_4k\s*\(高画质\)$/i.test(compact)) {
-    return 'Xais Img2_4K(高画质)';
+  if (/^(?:xais)?nanobananapro4k(?:png|5)$/i.test(token) || /^xaisnanopro4kpng$/i.test(token) || /^nano_banana_pro_4k_5$/i.test(compact)) return 'Xais Nano Pro_4K_png';
+  if (/^(?:xais)?nanobanana24k(?:png|5)$/i.test(token) || /^xaisnano24kpng$/i.test(token) || /^nano_banana_2_4k_5$/i.test(compact)) return 'Xais Nano2_4K_png';
+  if (/^(?:xais)?nanobananapro2k0?$/i.test(token) || /^xaisnanopro2k$/i.test(token) || /^nano_banana_pro_2k(?:_0)?$/i.test(compact)) return 'Xais Nano Pro_2K';
+  if (/^(?:xais)?nanobananapro4k0?$/i.test(token) || /^xaisnanopro4k$/i.test(token) || /^nano_banana_pro_4k(?:_0)?$/i.test(compact)) return 'Xais Nano Pro_4K';
+  if (/^(?:xais)?nanobanana22k0?$/i.test(token) || /^xaisnano22k$/i.test(token) || /^nano_banana_2_2k(?:_0)?$/i.test(compact)) return 'Xais Nano2_2K';
+  if (/^(?:xais)?nanobanana24k0?$/i.test(token) || /^xaisnano24k$/i.test(token) || /^nano_banana_2_4k(?:_0)?$/i.test(compact)) return 'Xais Nano2_4K';
+  if (/^(?:xais)?nanobananalite(?:1k)?0?$/i.test(token) || /^xaisnanolite1k$/i.test(token) || /^nano_banana_lite_1k(?:_0)?$/i.test(compact)) return 'Xais Nano_Lite_1K';
+  if (/^(?:xais)?(?:img2|image2)4k(?:h|hq|high|highquality)$/i.test(token) || /^xais_img2_4k_h$/i.test(compact)) {
+    return getXaisImageModelValueByLabelToken('img24kh') || trimmed;
   }
-  if (/^image2_2k_hq$/i.test(trimmed) || /^image2_2k_h$/i.test(trimmed) || /^xais_img2_2k_h$/i.test(compact) || /^xais_img2_2k\s*\(高画质\)$/i.test(compact)) {
-    return 'Xais Img2_2K(高画质)';
+  if (/^(?:xais)?(?:img2|image2)2k(?:h|hq|high|highquality)$/i.test(token) || /^xais_img2_2k_h$/i.test(compact)) {
+    return getXaisImageModelValueByLabelToken('img22kh') || trimmed;
   }
-  if (/^image2_4k$/i.test(trimmed) || /^xais_img2_4k$/i.test(compact)) return 'Xais Img2_4K';
-  if (/^image2_2k$/i.test(trimmed) || /^xais_img2_2k$/i.test(compact)) return 'Xais Img2_2K';
-  if (/^image2_1k$/i.test(trimmed) || /^xais_img2_1k$/i.test(compact)) return 'Xais img2_1k';
+  if (/^(?:xais)?(?:img2|image2)4k$/i.test(token) || /^xais_img2_4k$/i.test(compact)) return 'Xais Img2_4K';
+  if (/^(?:xais)?(?:img2|image2)2k$/i.test(token) || /^xais_img2_2k$/i.test(compact)) return 'Xais Img2_2K';
+  if (/^(?:xais)?(?:img2|image2)1k$/i.test(token) || /^xais_img2_1k$/i.test(compact)) return 'Xais img2_1k';
   return trimmed;
 };
 
@@ -866,7 +892,9 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     .filter(image => isRemoteHttpImageSource(image) || isXaisAttachmentImageRef(image))
     .slice(0, 8);
   const isNanoModel = isXaisNanoImageModel(model);
-  const image2Ratio = resolveXaisImage2Ratio(model, options.aspectRatio);
+  const requestRatio = isNanoModel
+    ? normalizeImageAspectRatio(options.aspectRatio)
+    : resolveXaisImage2Ratio(model, options.aspectRatio);
   const promptText = prompt;
   const output: string[] = [];
 
@@ -883,10 +911,8 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       model: requestModel,
       custom_field: customField,
     };
-    if (!isNanoModel) {
-      taskBody.ratio = image2Ratio;
-      taskBody.client = 'XAIS';
-    }
+    taskBody.ratio = requestRatio;
+    if (!isNanoModel) taskBody.client = 'XAIS';
     if (inputImages.length > 0) {
       taskBody.ref = inputImages;
     }
@@ -895,7 +921,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       endpoint,
       model,
       requestModel,
-      ratio: image2Ratio,
+      ratio: requestRatio,
       refCount: inputImages.length,
       refs: inputImages.map(image => isXaisAttachmentImageRef(image) ? image : '[remote-url]'),
       custom_field: customField,
