@@ -159,6 +159,17 @@ export const isImageCanvasNode = (node?: CanvasNodeLike | null) => {
     || type.includes('image');
 };
 
+const nodeLooksLikeImageReferenceInput = (node?: WorkflowNodeLike | null) => {
+  if (!node || node.acceptsExternalInputs !== true) return false;
+  const externalInputTypes = node.externalInputTypes || [];
+  if (externalInputTypes.includes('image')) return true;
+  if (externalInputTypes.length > 0) return false;
+  const nodeType = String(node.type || node.kind || node.ai?.type || '').toLowerCase();
+  if (/image[-_]?generator/.test(nodeType)) return true;
+  return /product_reference_image|subject_ref|product_ref|reference image|product image|connected image|external image|based on connected/i
+    .test(nodeText(node));
+};
+
 export const isWorkflowNodeImageInput = (node?: WorkflowNodeLike | null) => (
   !!node && (
     String(node.type || '').toLowerCase() === 'reference_image_bridge'
@@ -167,7 +178,7 @@ export const isWorkflowNodeImageInput = (node?: WorkflowNodeLike | null) => (
     || node.item?.type === 'image'
     || node.outputType === 'image'
     || node.outputType === 'image[]'
-    || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('image'))
+    || nodeLooksLikeImageReferenceInput(node)
   )
 );
 
@@ -217,7 +228,7 @@ export const getWorkflowImageInputTargetNodeIds = (workflow?: WorkflowLike | nul
   }
   const explicitExternalTargets = nodes
     .filter(node => node.acceptsExternalInputs === true && (
-      (node.externalInputTypes || []).includes('image')
+      nodeLooksLikeImageReferenceInput(node)
       || node.item?.type === 'image'
       || node.outputType === 'image'
       || node.outputType === 'image[]'

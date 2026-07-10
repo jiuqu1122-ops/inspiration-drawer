@@ -1957,9 +1957,28 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
     };
     return (node.inputs || []).some(walk);
   };
-  const hasExternalImageInputNode = workflow.nodes.some(node => (
+  const nodeAcceptsExternalImageInput = (node: CanvasWorkflowNodeTemplate) => (
     node.acceptsExternalInputs === true
-    && (node.item.type === 'image' || node.bridgeType === 'reference_image' || node.outputType === 'image[]' || node.outputType === 'image' || (node.externalInputTypes || []).includes('image'))
+    && (
+      (node.externalInputTypes || []).includes('image')
+      || (!node.externalInputTypes?.length && doesWorkflowTextRequireImageReference([
+        node.id,
+        node.item?.name,
+        node.item?.content,
+        node.item?.remark,
+        node.ai?.presetId,
+        node.ai?.presetLabel,
+        node.ai?.presetPrompt,
+        node.ai?.prompt,
+      ].filter(Boolean).join('\n').toLowerCase()))
+    )
+  );
+  const hasExternalImageInputNode = workflow.nodes.some(node => (
+    nodeAcceptsExternalImageInput(node)
+    || (
+      node.acceptsExternalInputs === true
+      && (node.item.type === 'image' || node.bridgeType === 'reference_image' || node.outputType === 'image[]' || node.outputType === 'image')
+    )
   ));
   const workflowText = getCanvasWorkflowTextBlob(workflow);
   if (doesWorkflowTextRequireImageReference(workflowText) && !hasExternalImageInputNode) {
@@ -1973,8 +1992,8 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
     if (!node.ai.aspectRatio) errors.push(`Image-generator node "${node.id}" is missing aspectRatio.`);
     if (!node.ai.outputFormat) errors.push(`Image-generator node "${node.id}" is missing outputFormat.`);
     if (!Number.isFinite(Number(node.ai.count)) || Number(node.ai.count) <= 0) errors.push(`Image-generator node "${node.id}" is missing valid count.`);
-    const acceptsExternalImageInput = node.acceptsExternalInputs === true
-      && ((node.externalInputTypes || []).includes('image') || node.outputType === 'image' || node.outputType === 'image[]');
+    const acceptsExternalImageInput = nodeAcceptsExternalImageInput(node)
+      || (node.acceptsExternalInputs === true && (node.outputType === 'image' || node.outputType === 'image[]'));
     if (doesWorkflowTextRequireImageReference(prompt) && !hasUpstreamImageInput(node) && !acceptsExternalImageInput) {
       errors.push(`Image-generator node "${node.id}" requires product/reference images but has no connected image input.`);
     }
@@ -2638,11 +2657,42 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       ? rawItem.type
       : 'text';
     const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
-    const externalInputTypes = Array.isArray(node.externalInputTypes)
+    let externalInputTypes = Array.isArray(node.externalInputTypes)
       ? node.externalInputTypes
         .map(type => String(type || '').trim())
         .filter((type): type is 'image' | 'text' | 'video' => type === 'image' || type === 'text' || type === 'video')
       : undefined;
+    const rawAi = node.ai && typeof node.ai === 'object'
+      ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
+      : undefined;
+    const aiPrompt = String(rawAi?.prompt || '').trim();
+    const aiPresetPrompt = String(rawAi?.presetPrompt || '').trim();
+    const itemContent = String(rawItem.content || '');
+    const executablePrompt = rawAi?.type === 'image-generator'
+      ? (aiPresetPrompt || aiPrompt || itemContent.trim())
+      : '';
+    if (node.acceptsExternalInputs === true && (!externalInputTypes || externalInputTypes.length === 0)) {
+      const externalInputHint = [
+        id,
+        rawItem.name,
+        rawItem.content,
+        rawItem.remark,
+        node.outputType,
+        node.bridgeType,
+        rawAi?.type,
+        rawAi?.presetId,
+        rawAi?.presetLabel,
+        aiPresetPrompt,
+        aiPrompt,
+      ].filter(Boolean).join('\n').toLowerCase();
+      const shouldAcceptImageInput = rawAi?.type === 'image-generator'
+        || node.bridgeType === 'reference_image'
+        || id === 'product_reference_image'
+        || node.outputType === 'image'
+        || node.outputType === 'image[]'
+        || doesWorkflowTextRequireImageReference(externalInputHint);
+      externalInputTypes = shouldAcceptImageInput ? ['image', 'text'] : ['text'];
+    }
     const isReferenceImageBridge = (
       node.bridgeType === 'reference_image'
       || id === 'product_reference_image'
@@ -2654,15 +2704,6 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         || node.outputType === 'image[]'
       );
     if (isReferenceImageBridge) itemType = 'file';
-    const rawAi = node.ai && typeof node.ai === 'object'
-      ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
-      : undefined;
-    const aiPrompt = String(rawAi?.prompt || '').trim();
-    const aiPresetPrompt = String(rawAi?.presetPrompt || '').trim();
-    const itemContent = String(rawItem.content || '');
-    const executablePrompt = rawAi?.type === 'image-generator'
-      ? (aiPresetPrompt || aiPrompt || itemContent.trim())
-      : '';
     const shouldCompactItemContent = rawAi?.type === 'image-generator'
       && isCanvasWorkflowLongDuplicateText(itemContent, executablePrompt);
     return {
