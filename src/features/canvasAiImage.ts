@@ -457,7 +457,7 @@ export const XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL: Record<string, string> = {
   'Xais Nano Pro_4K': 'Nano_Banana_Pro_4K_0',
   'Xais Nano2_2K': 'Nano_Banana_2_2K_0',
   'Xais Nano2_4K': 'Nano_Banana_2_4K_0',
-  'Xais Nano_Lite_1K': 'Nano_Banana_Lite_1K_0',
+  'Xais Nano_Lite_1K': 'Xais_Nano_Lite_1K',
   'Xais Nano Pro_4K_png': 'Nano_Banana_Pro_4K_5',
   'Xais Nano2_4K_png': 'Nano_Banana_2_4K_5',
   'Xais img2_1k': 'Image2_1K',
@@ -541,6 +541,10 @@ const xaisImage2QualityFromModel = (model?: string | null) => (
 
 const isXaisNanoImageModel = (model?: string | null) => (
   /^Xais Nano/i.test(normalizeXaisImage2Model(model))
+);
+
+const isXaisNanoLiteImageModel = (model?: string | null) => (
+  normalizeXaisImage2Model(model) === 'Xais Nano_Lite_1K'
 );
 
 const XAIS_IMAGE_TASK_MAX_WAIT_MS = 90 * 1000;
@@ -892,6 +896,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     .filter(image => isRemoteHttpImageSource(image) || isXaisAttachmentImageRef(image))
     .slice(0, 8);
   const isNanoModel = isXaisNanoImageModel(model);
+  const isNanoLiteModel = isXaisNanoLiteImageModel(model);
   const requestRatio = isNanoModel
     ? normalizeImageAspectRatio(options.aspectRatio)
     : resolveXaisImage2Ratio(model, options.aspectRatio);
@@ -902,7 +907,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     const customField: Record<string, unknown> = {
       outputFormat: outputMimeFromFormat(options.outputFormat),
     };
-    if (!isNanoModel) {
+    if (!isNanoModel || isNanoLiteModel) {
       customField.quality = xaisImage2QualityFromModel(model);
     }
 
@@ -911,7 +916,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       model: requestModel,
       custom_field: customField,
     };
-    taskBody.ratio = requestRatio;
+    if (!isNanoLiteModel) taskBody.ratio = requestRatio;
     if (!isNanoModel) taskBody.client = 'XAIS';
     if (inputImages.length > 0) {
       taskBody.ref = inputImages;
@@ -921,7 +926,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       endpoint,
       model,
       requestModel,
-      ratio: requestRatio,
+      ratio: isNanoLiteModel ? undefined : requestRatio,
       refCount: inputImages.length,
       refs: inputImages.map(image => isXaisAttachmentImageRef(image) ? image : '[remote-url]'),
       custom_field: customField,
