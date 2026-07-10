@@ -15,8 +15,9 @@ export const buildDetailPageVisualBackgroundPrompt = (spec: DetailPageSpec) => [
   `Page ${String(spec.pageIndex).padStart(2, '0')} ${spec.pageName}`,
   `Core selling point: ${spec.uniqueSellingPoint}.`,
   buildEcommerceDetailPageQualityNotes(spec),
-  `Page-specific layout contract: ${spec.styleAnchor.layoutLanguage}.`,
-  `Composition: ${spec.layout.aspectRatio} ecommerce detail-page background, product position ${spec.layout.productPosition}, product angle ${spec.layout.productAngle}, title area at ${spec.layout.titleArea}, label area at ${spec.layout.labelArea}, closeup frames ${spec.layout.closeupCount}${spec.layout.closeupPosition ? ` at ${spec.layout.closeupPosition}` : ''}.`,
+  buildAdaptiveVisualStyleInstructions(spec),
+  `Page-specific layout contract: ${spec.styleAnchor.layoutLanguage}. Treat this as a semantic layout goal; adapt exact alignment, scale, spacing, typography mood, tag shape and frame geometry to the product visual system.`,
+  `Composition: ${spec.layout.aspectRatio} ecommerce detail-page background, suggested product position ${spec.layout.productPosition}, product angle ${spec.layout.productAngle}, title area around ${spec.layout.titleArea}, label area around ${spec.layout.labelArea}, closeup frames ${spec.layout.closeupCount}${spec.layout.closeupPosition ? ` around ${spec.layout.closeupPosition}` : ''}. Adjust exact placement when product shape/category needs a better layout while preserving the page goal.`,
   `Visual system: ${spec.styleAnchor.backgroundStyle}; main color ${spec.styleAnchor.mainColor}; auxiliary colors ${spec.styleAnchor.auxiliaryColors.join(', ')}; accent color ${spec.styleAnchor.accentColor}; lighting ${spec.styleAnchor.lighting}; closeup frame style ${spec.styleAnchor.closeupFrameStyle}.`,
   'Generate the product visual background, product rendering, lighting, scene depth, clean negative space, and optional closeup frames with premium ecommerce quality.',
   'Strictly reference product_reference_image for product structure, proportion, material, color, key part positions and functional relationships.',
@@ -32,16 +33,27 @@ export const buildDetailPageVisualBackgroundPrompt = (spec: DetailPageSpec) => [
   'Final self-check before output: same product identity, no invented parts, clean background hierarchy, page-specific layout is clearly different, readable reserved layout zones, no fake text.',
 ].join('\n');
 
+const buildAdaptiveVisualStyleInstructions = (spec: DetailPageSpec) => [
+  '视觉风格自适应任务：在生成前先根据 product_reference_image 内部判断产品品类、CMF、主色、材质硬软、使用场景、目标用户和价格带，然后为这套详情页建立专属视觉系统。',
+  spec.copy.sourceBrief ? `用户原始需求（内部参考，不要原样写进画面）：${spec.copy.sourceBrief}` : '',
+  '配色必须从产品本身和使用场景推导：提取产品主色/强调色/材质色作为页面色彩基础，可使用深色、暖色、冷色、高对比或低饱和系统，但必须贴合产品。不要所有产品都使用同一套浅灰背景、蓝色标签、灰蓝卡片。',
+  '版式语言必须跟产品气质匹配：游戏/科技产品可以更锐利、暗色、高对比、发光细节或 HUD 感；家居/生活产品可以更温暖、柔和、留白自然；美妆/精品产品可以更精致、杂志化、高级光影；工具/户外产品可以更坚实、场景化、结构标注更直接。',
+  '图形和卡片样式也要自适应：局部特写框、信息标签、图标线条、背景几何、分隔线、阴影和圆角半径都应由产品风格决定，不要复用固定圆角浅色卡片模板。',
+  '整套图必须保持同一产品的品牌视觉系统，但不同产品之间必须看起来像不同品牌/不同品类的详情页；同一套内每页构图也要根据页面主题变化，不能只是替换图片和标题。',
+  `当前页面风格方向：${spec.styleAnchor.backgroundStyle}；主背景策略：${spec.styleAnchor.mainColor}；辅助色策略：${spec.styleAnchor.auxiliaryColors.join('、')}；强调色策略：${spec.styleAnchor.accentColor}；光影策略：${spec.styleAnchor.lighting}；局部框策略：${spec.styleAnchor.closeupFrameStyle}。`,
+  '禁止风格偷懒：不要默认白底浅灰蓝，不要每页都顶部标题+同款标签+同款卡片，不要让两个不同产品生成同一套配色和版式。',
+].filter(Boolean).join('\n');
+
 const buildAdaptiveCopyInstructions = (spec: DetailPageSpec) => {
   const tagDirections = spec.copy.tags.map((tag, index) => (
-    `卖点标签 ${index + 1} 方向：围绕“${tag.text}”生成一个与真实产品相关的 2-6 字短标签，配统一线性图标（图标方向：${tag.icon}）。`
+    `卖点标签 ${index + 1} 方向：围绕“${tag.text}”生成一个与真实产品相关的 2-6 字短标签，图标风格跟随产品视觉系统（图标语义：${tag.icon}）。`
   ));
   const localNoteDirections = spec.copy.localNotes?.length
     ? [
         `局部特写短注释方向：${spec.copy.localNotes.join('、')}。`,
-        '每个局部特写卡片都要根据产品真实局部改写成 4-8 个字的短卖点，例如材质、结构、触点、连接、收纳或使用细节；不要照抄无法对应产品的通用词。',
+        '每个局部特写模块都要根据产品真实局部改写成 4-8 个字的短卖点，例如材质、结构、触点、连接、收纳或使用细节；不要照抄无法对应产品的通用词。',
       ]
-    : ['局部特写卡片如需文字，只使用 4-8 个字的商品卖点短语，不要使用规则语气或说明语气。'];
+    : ['局部特写模块如需文字，只使用 4-8 个字的商品卖点短语，不要使用规则语气或说明语气。'];
 
   return [
     '画面可见文案生成任务：根据 product_reference_image 中真实可见的产品品类、结构、材质、颜色、使用方式和用户原始需求，自动写出适合当前产品的简体中文电商文案。',
@@ -67,9 +79,9 @@ const buildFixedCopyInstructions = (spec: DetailPageSpec) => [
   ...(spec.copy.localNotes?.length
     ? [
         `允许的局部特写短注释：${spec.copy.localNotes.join('、')}`,
-        '局部特写卡片只能从这些短注释中选择文字，不要自行把生成要求改写成说明文案。',
+        '局部特写模块只能从这些短注释中选择文字，不要自行把生成要求改写成说明文案。',
       ]
-    : ['局部特写卡片如需文字，只使用 4-8 个字的商品卖点短语，不要使用规则语气或说明语气。']),
+    : ['局部特写模块如需文字，只使用 4-8 个字的商品卖点短语，不要使用规则语气或说明语气。']),
 ].join('\n');
 
 export const buildDetailPageModelTextPrompt = (spec: DetailPageSpec) => [
@@ -84,28 +96,29 @@ export const buildDetailPageModelTextPrompt = (spec: DetailPageSpec) => [
   buildEcommerceDetailPageQualityNotes(spec),
   '产品锚点：严格参考 product_reference_image，保持产品整体轮廓、长宽比例、颜色、材质、零件位置、功能结构和主体尺寸感一致。不得增加原图不存在的按钮、孔位、接口、配件、装饰或功能模块，不得改变产品主色、材质关系和主体比例。',
   spec.pageIndex > 1
-    ? '风格锚点：同时参考 master_page_image，仅延续第 1 页主视觉母版的背景色体系、光影方向、图形装饰语言、局部特写框样式、强调色、留白比例和整体高级感。不得复制母版的产品位置、裁切、镜头角度、标题/标签位置或整体构图。'
-    : '风格锚点：建立第 1 页主视觉母版，确定整套详情页的背景、光影、配色、图形装饰、标题区、标签区、局部特写框和整体高级感。',
+    ? '风格锚点：同时参考 master_page_image，仅延续第 1 页主视觉母版的产品专属背景色体系、光影方向、图形装饰语言、局部特写模块样式、强调色、留白比例和品牌气质。不得复制母版的产品位置、裁切、镜头角度、标题/标签位置或整体构图。'
+    : '风格锚点：建立第 1 页主视觉母版，确定整套详情页的产品专属背景、光影、配色、图形装饰、标题区、标签区、局部特写模块和品牌气质。',
   `画面比例：${spec.layout.aspectRatio}`,
-  `产品位置：${spec.layout.productPosition}`,
+  `建议产品位置：${spec.layout.productPosition}。这是页面语义锚点，不是死板模板；可根据产品长宽比例、拍摄角度和品类气质微调。`,
   `产品展示角度：${spec.layout.productAngle}`,
-  '标题留白区域：顶部约 25%，页面编号、一级标题、副标题和卖点标签必须形成清晰层级。',
-  `构图锚点：${spec.styleAnchor.layoutLanguage}`,
+  `标题留白区域：围绕 ${spec.layout.titleArea} 建立清晰文字层级，面积、对齐、字体气质和信息密度随产品视觉系统自适应。`,
+  `构图锚点：${spec.styleAnchor.layoutLanguage}。这是页面功能骨架，具体网格、模块形态、留白比例和视觉节奏必须按产品自适应。`,
   `局部特写数量：${spec.layout.closeupCount} 个`,
   `局部特写位置：${spec.layout.closeupPosition || '无'}`,
   `标签/信息模块位置：${spec.layout.labelArea}`,
+  buildAdaptiveVisualStyleInstructions(spec),
   `场景与背景：${spec.styleAnchor.backgroundStyle}；主背景 ${spec.styleAnchor.mainColor}；辅助色 ${spec.styleAnchor.auxiliaryColors.join('、')}；强调色 ${spec.styleAnchor.accentColor}。背景干净、有层次，不抢夺产品主体。`,
   `光影与材质：${spec.styleAnchor.lighting}；产品边缘清晰，材质真实，细节清楚，避免错误反射、透视错误、悬浮感、过曝和塑料感过强。`,
   '成品文字与图标要求：当前页面必须生成完整电商详情页成图，不是无文字底图，也不是普通产品渲染图。',
   spec.copy.adaptive ? buildAdaptiveCopyInstructions(spec) : buildFixedCopyInstructions(spec),
   '文字必须使用简体中文，必须清晰可读，不得省略文字，不得使用英文替代中文，不得使用乱码、伪文字、无意义符号或空白占位框。',
-  '排版规则：页面编号置于顶部中央的小型强调色标签中；一级标题置于上方主标题区，使用大号粗黑中文字体；副标题置于标题下方，使用中号深灰中文字体；三个卖点标签使用圆角描边信息框并搭配统一线性图标；标题和标签不能遮挡产品；产品仍然是画面最大、最重要的视觉主体；页面文字层级必须像高端电商详情页。',
+  '排版规则：页面编号、一级标题、副标题和三个卖点标签必须形成清晰电商层级，但具体位置、对齐方式、字体气质、标签外形、图标风格、描边/填充、圆角半径和颜色都跟随产品视觉系统；不要固定顶部居中编号、粗黑标题、深灰副标题、蓝色圆角标签或同款信息卡。标题和标签不能遮挡产品；产品仍然是画面最大、最重要的视觉主体。',
   spec.layout.closeupCount > 0
-    ? '局部特写规则：生成真实圆角局部特写卡片，特写必须对应产品真实位置，可用细线连接产品与特写；每个特写卡片包含短中文卖点，不超过 8 个汉字。'
-    : '场景/主图规则：不需要局部特写卡片时，生成完整场景或英雄主图构图，顶部文字和卖点图标完整，产品主体清晰且比例正确。',
+    ? '局部特写规则：生成真实局部特写模块，特写必须对应产品真实位置；模块可以是卡片、切片、悬浮玻璃层、硬朗分割框、杂志式标注或场景贴片，连接线/分隔线样式跟随产品气质；每个特写模块包含短中文卖点，不超过 8 个汉字。'
+    : '场景/主图规则：不需要局部特写模块时，生成完整场景或英雄主图构图，标题、卖点图标和产品主体都清晰完整，比例正确。',
   '禁止内容：不要品牌 logo、水印、虚假认证、虚构具体参数、错误结构、无关配件、复杂背景、大段文字、乱码、空白文本框、模糊小字、人物遮挡产品核心结构、产品漂浮、错误透视或夸张无意义特效。',
   '禁止把以下内部词语或类似语气写进画面：prompt、提示词、生成目标、产品锚点、风格锚点、构图锚点、参考 product_reference_image、参考 master_page_image、禁止、不得、避免、不要、只呈现、未知参数、保守表达、不制造、不虚构、self-check。',
-  '生成目标：生成一张带完整中文标题、卖点标签、图标、产品主体、局部结构展示或场景模块、统一版式的高端电商详情页成图。画面必须与其他页面保持同一产品、同一视觉系统、同一品牌调性。',
+  '生成目标：生成一张带完整中文标题、卖点标签、图标、产品主体、局部结构展示或场景模块的高端电商详情页成图。画面必须与其他页面保持同一产品、同一视觉系统、同一品牌调性，但当前页版式节奏要服务自己的卖点，不能机械复用母版。',
   'Final self-check: complete ecommerce detail-page layout, same product identity, one selling point, readable Simplified Chinese copy, page-specific composition, no invented structure, no fake certification.',
 ].join('\n');
 

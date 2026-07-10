@@ -22,6 +22,7 @@ const CHINESE_IMAGE_TEXT_NOTE = '可见文字、标题、标注、CMF 标签默�
 const INDUSTRIAL_REVIEW_REFERENCE_LOCK_NOTE = `参考一致性：
 - product_reference_image 是最高优先级 SUBJECT_REF，必须保持产品外轮廓、比例、关键结构、按键/接口/开孔、分件线、主色、材质和功能布局一致。
 - 只执行当前节点目标，不重新设计产品，不新增参考图不存在的结构、配件、屏幕、按钮、接口、品牌 logo、认证章或具体参数。
+- 视觉系统必须产品自适应：先判断产品品类、CMF、主色、材质、使用场景、目标用户和价格带，再决定背景、光影、版式密度、图形语言和标注样式；不要套用固定浅灰蓝、固定黑科技、固定圆角卡片或同一套高级感模板。
 - 输出前自检：主体清晰，结构不漂移，材质可信，光影稳定，背景不抢主体。`;
 
 const buildIndustrialReviewOutputPrompt = (...sections: string[]) => [
@@ -40,7 +41,7 @@ export const INDUSTRIAL_REVIEW_DEFAULT_OUTPUTS: WorkflowOutputSpec[] = [
     aspectRatio: '16:9',
     prompt: buildIndustrialReviewOutputPrompt(
       '生成产品主视觉图，作为整套工业设计评审图组的视觉基准。',
-      '画面要求：产品完整展示，轮廓清晰，构图稳重，材质和结构可读；背景干净高级，可使用浅色或深色棚拍环境，但必须与产品气质匹配。',
+      '画面要求：产品完整展示，轮廓清晰，构图稳重，材质和结构可读；背景、台面/空间、色温、光比和图形语言必须从产品气质推导，可深可浅可暖可冷。',
       '质量目标：像设计评审中的主效果图，而不是普通商品图；主体占比合理，关键结构不被裁切、不被景深遮挡。',
     ),
     inputRoles: ['product_reference_image'],
@@ -72,7 +73,7 @@ export const INDUSTRIAL_REVIEW_DEFAULT_OUTPUTS: WorkflowOutputSpec[] = [
     aspectRatio: '16:9',
     prompt: buildIndustrialReviewOutputPrompt(
       '生成一张中文标注的 CMF 分析图，说明材料、颜色、表面工艺、触感、功能分区和结构关系。',
-      '版式要求：像设计评审板，主体产品清晰，旁边可放 3-5 个克制的材质/颜色/工艺信息模块；文字短句中文为主，标签清晰可读。',
+      '版式要求：像为该产品定制的设计评审板，主体产品清晰，旁边可放 3-5 个克制的材质/颜色/工艺信息模块；模块形态、底色、分隔方式和图标风格跟随产品视觉系统。',
       '内容边界：不要虚构具体认证、检测数据、承重、功率、防水等级或品牌授权；未知信息用保守表达。',
     ),
     inputRoles: ['product_reference_image'],
@@ -104,8 +105,8 @@ export const INDUSTRIAL_REVIEW_DEFAULT_OUTPUTS: WorkflowOutputSpec[] = [
     aspectRatio: '16:9',
     prompt: buildIndustrialReviewOutputPrompt(
       '生成高级品牌氛围图，用精致光线、克制背景和统一色彩气质提升产品价值感。',
-      '视觉要求：产品仍是最大主体；可以使用柔和渐变、台面、轮廓光、空间阴影或少量抽象图形，但不能遮盖产品结构。',
-      '质量目标：高级、安静、有品牌感；避免随机装饰、过强科技线、廉价光效和背景喧宾夺主。',
+      '视觉要求：产品仍是最大主体；氛围、配色、空间、台面、轮廓光、阴影或抽象图形必须来自产品品类和 CMF 逻辑，不能遮盖产品结构。',
+      '质量目标：有该产品自己的品牌感；避免随机装饰、过强科技线、廉价光效、固定浅灰蓝模板和背景喧宾夺主。',
     ),
     inputRoles: ['product_reference_image'],
     requiresReferenceImages: true,

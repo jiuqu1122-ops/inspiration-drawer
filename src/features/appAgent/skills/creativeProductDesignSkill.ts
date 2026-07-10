@@ -499,7 +499,10 @@ export function buildCreativeGeneratorPrompt(brief: Omit<CreativeBrief, 'generat
       ? 'Industrial design priorities: silhouette and proportion before decoration; structural credibility before visual tricks; CMF must serve product positioning.'
       : '',
     brief.product.isProductTask
-      ? 'Avoid unrequested generic tech styling, glow lines, carbon fiber, exposed mechanics, excessive cut lines, and decorative noise.'
+      ? 'Product-adaptive visual direction: infer category, usage scene, target user, CMF, material, main colors and price tier before choosing background, palette, lighting, composition density and graphic language.'
+      : '',
+    brief.product.isProductTask
+      ? 'Avoid unrequested generic tech styling, fixed pale gray/blue templates, forced dark tech mood, glow lines, carbon fiber, exposed mechanics, excessive cut lines, and decorative noise.'
       : '',
     brief.imageRoles.length
       ? `Image roles: ${brief.imageRoles.map(role => `${role.imageId}=${role.role}`).join(', ')}.`
@@ -674,6 +677,7 @@ export const creativeProductDesignSkill: AppAgentSkill = {
       '- Edit tasks require BASE. If multiple images are ambiguous and direct edit is requested, ask one necessary clarification instead of guessing.',
       '- Extract targetSize/aspectRatio/resolution from user wording and pass them as action arguments.',
       '- Product tasks must include product category, usage mode, target, iteration stage and design risks in the generator prompt.',
+      '- Product visual style must adapt to category, CMF, material, main color, scene and target user; never default to one fixed gray/blue, dark-tech or generic premium template.',
       '- Do not default to tech styling, glow lines, carbon fiber, exposed mechanics or complex cut lines unless requested or visible in references.',
       '- For video/storyboard/multi-scene tasks, create a text-agent storyboard first; video generator autoRun defaults false unless the user explicitly asks to directly generate/run.',
       '- For complex product design, create a text-agent strategy node before the generator node.',

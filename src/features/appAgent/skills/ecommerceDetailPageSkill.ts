@@ -47,6 +47,7 @@ export const ecommerceDetailPageSkill: AppAgentSkill = {
     'Use only for explicit ecommerce/product detail-page tasks such as 详情页, 商品详情页, 主图卖点图, 功能图, 参数图, 长图, listing images.',
     'Route to ecommerce-detail-page/product-detail-page workflow draft, not industrial-design-review.',
     'Default renderMode is model_text_baked: image model generates a complete ecommerce detail-page layout with readable Simplified Chinese page number, product-adaptive title/subtitle, selling-point chips/icons, detail cards and product imagery.',
+    'Visual style must adapt to the product category, CMF, material, main colors, usage scene and target audience. Do not reuse one pale gray/blue rounded-card template across different products.',
     'Visible copy must be generated from the actual product/reference image and user request; never render prompt rules, anchors, constraints or internal notes as page copy.',
     'Use composited_final_page only when the user explicitly asks for programmatic post-composition/overlay.',
     'Use visual_background_only only when the user says they will add text later or asks for no copy/icons.',

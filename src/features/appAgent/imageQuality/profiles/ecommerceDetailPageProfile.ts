@@ -10,8 +10,10 @@ export const ecommerceDetailPageQualityProfile = {
     '当文字描述和产品图冲突时，以产品图为准。',
   ],
   styleAnchorRules: [
-    'Page 01 建立视觉母版；后续页面只延续母版的背景、光影、配色、图形语言、留白和局部特写框样式，不复制母版构图。',
+    'Page 01 必须先根据产品品类、CMF、主色、材质、使用场景和目标用户建立自适应视觉母版，不能套用固定浅灰蓝模板。',
+    'Page 01 建立视觉母版；后续页面只延续母版的产品专属背景、光影、配色、图形语言、留白和局部特写框样式，不复制母版构图。',
     'Page 02-08 同时参考 product_reference_image 与 master_page_image。',
+    '不同产品之间应呈现不同品牌/不同品类的视觉气质；同一产品内保持一致系统但每页构图必须变化。',
   ],
   copyRules: [
     '默认使用简体中文标题、副标题和三个卖点标签，但可见文案必须根据 product_reference_image 和用户需求自动改写成具体产品文案。',
@@ -22,6 +24,7 @@ export const ecommerceDetailPageQualityProfile = {
   layoutRules: [
     '每页只表达一个 uniqueSellingPoint。',
     '每页必须执行自己的 layoutLanguage，避免整套图都变成同一个首屏母版构图。',
+    '局部特写框、标签、图标、背景几何、阴影和圆角应随产品风格自适应，不固定同款卡片样式。',
     '保留标题区、标签区和局部说明区，文字不得遮挡产品主体。',
     '局部特写框最多三个，必须对应真实产品结构。',
   ],

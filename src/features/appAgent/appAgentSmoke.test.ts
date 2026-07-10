@@ -977,6 +977,24 @@ export function runEcommerceDetailPageSmokeTests() {
   assert(draftA.outputs.every(output => output.imageTextLanguage === 'zh-CN'), 'Ecommerce-A: outputs should use zh-CN image text language');
   assert(draftA.outputs.every(output => output.renderMode === 'model_text_baked'), 'Ecommerce-A: default renderMode should be model_text_baked');
   assert(draftA.outputs.every(output => output.prompt.includes('产品锚点：') && output.prompt.includes('生成目标：')), 'Ecommerce-A: default prompt should use structured detail-page visual-director template');
+  assert(draftA.outputs.every(output => (
+    output.prompt.includes('视觉风格自适应任务')
+    && output.prompt.includes('不要所有产品都使用同一套浅灰背景、蓝色标签、灰蓝卡片')
+    && output.prompt.includes('不同产品之间必须看起来像不同品牌/不同品类的详情页')
+  )), 'Ecommerce-A: prompt should require product-adaptive visual style');
+  assert(draftA.outputs.every(output => (
+    output.prompt.includes('具体位置、对齐方式、字体气质、标签外形、图标风格')
+    && (
+      (output.pageSpec?.layout.closeupCount || 0) === 0
+      || output.prompt.includes('模块可以是卡片、切片、悬浮玻璃层、硬朗分割框、杂志式标注或场景贴片')
+    )
+    && !/顶部约 25%|粗黑中文字体|深灰中文字体|圆角描边信息框|真实圆角局部特写卡片/.test(output.prompt)
+  )), 'Ecommerce-A: prompt should not hard-code the old detail-page typography/card template');
+  assert(draftA.outputs.every(output => (
+    output.pageSpec?.styleAnchor.mainColor.includes('产品')
+    && output.pageSpec?.styleAnchor.accentColor.includes('不固定蓝色')
+    && !/中性浅色背景|低饱和蓝色/.test(output.pageSpec?.styleAnchor.mainColor || '')
+  )), 'Ecommerce-A: style anchor should not hard-code the old light gray/blue template');
   assert(draftA.outputs.every(output => output.pageSpec?.copy.adaptive === true), 'Ecommerce-A: default model_text_baked pages should use adaptive product copy');
   assert(draftA.outputs.every(output => output.pageSpec?.copy.sourceBrief === requestA), 'Ecommerce-A: adaptive copy should keep original request as internal brief');
   assert(draftA.outputs.every(output => (

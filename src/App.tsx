@@ -1224,6 +1224,8 @@ type CanvasAiPromptPreset = {
 };
 const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性：
 - Treat connected image(s) as SUBJECT_REF: preserve silhouette, proportions, key parts, functional layout, CMF boundaries and material logic
+- Product-adaptive visual direction: before rendering, infer product category, CMF, main colors, material hardness/softness, use scene, target user and price tier; choose background, lighting, composition density, graphic language and color palette from that product logic
+- Do not reuse one default style across products: no fixed pale gray/blue rounded-card template, no forced dark tech mood, no generic glow lines, no unrelated premium props, no same layout for every category
 - 4k resolution, highly detailed, photorealistic, premium industrial design render
 - Physically credible geometry: clean parting lines, realistic wall thickness, subtle micro-bevels, no melted or warped edges
 - Controlled studio lighting: coherent key/fill/rim light, natural contact shadows, readable dark areas, no blown highlights
@@ -1234,6 +1236,7 @@ const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性�
 const BUILT_IN_WORKFLOW_QUALITY_FOOTER = `通用工作流质量约束：
 - 上游连接图是最高优先级参考。只在当前节点职责内变化，不重设计主体，不随意增删结构、角色、场景或零件。
 - 多节点 workflow 必须保持同一主体身份、比例、材质、色彩体系、光线方向和版式节奏；后续节点继承前序节点已经确认的信息。
+- 如果节点处理产品/商品/CMF/工业设计/电商图，必须先根据产品品类、CMF、主色、材质、使用场景和目标用户建立自适应视觉系统；不要复用固定浅灰蓝、固定暗科技、固定圆角卡片或同一套版式。
 - 画面要有清晰主次、干净边缘、稳定曝光和可信接触阴影；避免低清、脏噪、过度锐化、塑料蜡感、随机装饰和无意义特效。
 - 除非节点明确要求文字或说明栏，不生成可读文字、品牌 logo、水印、虚假参数、认证章、乱码或空白文本框。
 - 输出前自检：数量/版式正确，主体一致，关键结构没有漂移，细节真实，构图服务当前节点目标。`;
@@ -1253,25 +1256,24 @@ const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
 
 执行顺序：
 1. 先读取 SUBJECT_REF：锁定产品外轮廓、比例、关键零件、按键/接口/开孔、分件线、主色、材质和功能关系。
-2. 判断产品类型、价格感、使用环境和情绪气质，再选择浅色或深色渲染场景。
+2. 判断产品类型、价格感、使用环境和情绪气质，再为该产品选择专属场景、背景色、光影强度、道具密度和视觉语言。
 3. 只提升光影、材质、背景层次和摄影质感，不重新设计产品，不添加参考图不存在的功能。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
-场景选择规则：
-- 浅色场景：白色、浅灰、米色或柔和自然光背景；适合浅色产品、生活方式产品、家居小物、医疗/清洁感产品、柔和材质、温暖亲和或清爽高级的产品
-- 深色场景：深灰、黑色或暗调渐变背景；适合黑色/深色产品、金属质感、性能感、专业设备、电竞/科技感、力量感或奢华冷峻的产品
-- 如果产品没有明显暗调气质，优先使用浅色场景；只有产品本身适合深色氛围时才选择深色场景
-- 场景只做简洁背景、台面、地面或柔和空间暗示，不扩展成复杂生活空间，不加入无关道具
+自适应场景规则：
+- 从产品主色、材质、品类和使用场景推导背景：可以是浅色、深色、暖色、冷色、材质台面、真实空间或克制抽象背景，但必须服务产品气质
+- 游戏/性能/专业设备可使用更强对比、暗调、锐利轮廓光或功能氛围；家居/生活/母婴/清洁类更适合温和自然光、亲和材质和生活空间；美妆/精品可更精致、杂志化、低噪高质感；工具/户外可更坚实、场景化和结构清晰
+- 场景只做产品价值的语境，不扩展成复杂生活空间，不加入无关道具，不让背景抢主体
+- 禁止固定二选一模板：不要所有产品都浅灰白底，也不要所有产品都黑色科技风
 
 视觉要求：
 - 产品是绝对主角，场景服务于产品，不喧宾夺主
 - 产品占画面约 55%-75%，主体完整清晰，不被裁切，不被景深遮挡关键结构
-- 背景在深色或浅色中二选一，并与产品主色、材质和价格带匹配
-- 浅色场景使用柔和棚光或自然窗光；深色场景使用克制轮廓光和受控高光
+- 背景、光影、构图密度、阴影和道具由产品品类自适应决定，并与产品主色、材质和价格带匹配
 - 保留产品原有主色和材质气质，不要强行改成黑色科技风
 - 轻微虚焦背景，真实材质表现，干净、克制、有质感；暗部仍能看清产品结构
-- 禁止默认深色背景；也不要为了浅色而把深色产品洗白，必须根据产品适配
+- 禁止默认深色背景、默认浅灰背景、默认蓝色强调色；必须根据产品适配
 
 产品要求：
 - 保持原产品结构、比例、按键、接口、分件线、屏幕/灯带/孔位位置不变
@@ -1294,8 +1296,9 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 要求：
 - 三个方案使用同一外轮廓、同一比例、同一按键/接口/分件线和同一功能布局
 - 每个方案只改变颜色、材质、粗糙度、纹理或表面工艺，不改变造型和零件数量
-- 方案之间差异清楚但克制：例如哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层
-- 排版像高级设计评审板：三栏或三组等宽视图，背景干净，光线统一，材质样本可辅助但不抢主体
+- 先判断产品品类、目标用户、价格带和使用场景，再设计 3 个 CMF 方向；不要把所有产品都套成同一组黑白灰/金属/蓝色科技感
+- 方案之间差异清楚但克制，可来自品类逻辑：哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层、木纹、皮革、陶瓷、橡胶、防滑纹理等，但必须适合该产品
+- 排版像高级设计评审板，但版式、背景色、样本形态和图形语言要随产品风格自适应；材质样本可辅助但不抢主体
 - 不生成品牌 logo、虚假参数、复杂说明箭头；除非用户要求，不生成可读文字标签`,
   },
   {
@@ -1312,6 +1315,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 场景方向：
 - 根据产品类型选择现代居家、办公桌面、厨房浴室、户外、运动、宠物、母婴或专业工作环境
+- 根据产品 CMF 和目标用户决定场景气质、配色、道具、光线和空间密度；不要所有产品都使用同一套干净桌面或浅灰背景
 - 环境干净、有真实生活痕迹但不杂乱；道具数量克制，不能抢产品主体
 - 产品占据清晰视觉中心，人物或手只作为辅助尺度参考，不遮挡核心结构
 - 光线柔和自然，产品与桌面/地面/手部接触可信，有真实阴影和正确透视
@@ -1337,9 +1341,9 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 画面要求：
 - 聚焦真实可见的关键边缘、倒角、按键、接口、分件线、纹理、转轴、握持区或材质交界
 - 画面只讲一个细节，主体区域清晰锐利，背景和非关键区域轻微虚化
-- 微距产品摄影质感，边缘高光干净，材质粗糙度、反射和纹理尺度可信
+- 微距产品摄影质感，边缘高光、背景色、光比和景深根据产品材质自适应；材质粗糙度、反射和纹理尺度可信
 - 特写与原产品整体结构保持可追溯关系，不把局部渲染成另一种产品
-- 画面克制，不要过度锐化或赛博风
+- 画面克制，不要过度锐化；除非产品确实属于电竞/科技/性能品类，不要套赛博风
 
 产品约束：
 - 不改变原结构、比例、功能布局
@@ -1486,7 +1490,9 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
     ...(includeStrategy ? ['Use the upstream product_strategy text as the CMF, structure, proportion, and visual strategy constraint.'] : []),
     'Do not invent a different product. Preserve silhouette, proportions, materials, buttons, ports, holes, screens, parting lines, color logic, accessories, and functional layout from PRODUCT_REF.',
     'If multiple product reference images are connected, reconcile them as the same product and prioritize the clearest structure.',
-    'Across all five outputs, keep the same product identity, CMF, lighting direction, background language and premium ecommerce quality.',
+    'Before generating, infer product category, CMF, main colors, material, usage scene, target user and price tier; establish a product-adaptive ecommerce visual system.',
+    'Across all five outputs, keep the same product identity, CMF, lighting direction, product-adaptive background language and premium ecommerce quality.',
+    'Do not reuse a fixed pale gray/blue rounded-card template, fixed dark tech style, fixed white hero layout, or the same composition for unrelated product categories.',
     'No random logo, malformed text, fake certification, unsupported numerical claims, unrelated props that hide product details, or extra components not visible in PRODUCT_REF.',
   ].join('\n');
   return {
@@ -1520,7 +1526,8 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
           type: 'text',
           content: [
             'Analyze the connected PRODUCT_REF images and write a compact product detail-page strategy.',
-            'Must include: product identity, silhouette/proportion locks, CMF/material constraints, key structural details, functional selling points, and visual direction for the five downstream images.',
+            'Must include: product identity, silhouette/proportion locks, CMF/material constraints, key structural details, functional selling points, product category, target user, usage scene, and product-adaptive visual direction for the five downstream images.',
+            'The visual direction must specify product-derived palette, background mood, lighting, card/label style and layout rhythm. Do not default to pale gray/blue, dark tech, or generic premium minimalism.',
             'Return only the strategy text. Do not generate JSON.',
           ].join('\n'),
           name: 'Product strategy',
@@ -2110,6 +2117,11 @@ Original request: "一开始我会把场景设定和角色设定一起输入，�
 - 文字脚本只用于确认核心卖点、必要功能状态、使用情境、广告气质与光线方向，不得借脚本重新设计产品
 - 多图是同一产品的多角度依据；冲突时以最清晰、结构最完整的参考为准，不融合矛盾特征
 
+产品自适应视觉系统：
+- 先判断产品品类、CMF、主色、材质、使用场景、目标用户和价格带，再确定母版的背景、色温、台面/空间、光比、道具密度和图形语言
+- 游戏/性能产品可更高对比和更锐利；家居/生活产品可更温暖自然；美妆/精品可更精致杂志化；工具/户外产品可更坚实场景化
+- 不要把所有产品都放进中性浅灰背景，也不要强行套黑色科技风、蓝色标签、HUD 或同款圆角卡片
+
 严格2×2版式：
 - 输出一张 16:9 横版画布，严格 2 行 × 2 列，共 4 个完全等大的 16:9 画面
 - 左上：最准确的三分之四主视角，完整展示外轮廓与主要体块
@@ -2123,7 +2135,7 @@ Original request: "一开始我会把场景设定和角色设定一起输入，�
 - 四格必须是同一产品、同一结构、同一比例、同一 CMF、同一功能布局
 - 不重新设计、不镜像、不增减按键、接口、屏幕、灯带、开孔、分件线或部件，不添加新 Logo 和不存在的功能
 - 看不清的局部保持简洁，不凭空补造；脚本未要求时不添加人物、手和复杂道具
-- 统一色温、光线方向、中性高级背景、自然产品摄影透视、真实材质、清楚边缘和可信接地
+- 统一产品自适应色温和光线方向；背景、台面和空间语言来自产品气质，不固定中性高级背景；自然产品摄影透视、真实材质、清楚边缘和可信接地
 
 输出是无字的 2×2 产品身份母版，作为后续所有节点的 SUBJECT_REF。
 
@@ -2177,7 +2189,8 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         `将第一张连接图作为 CONTENT_REF：继承八镜头故事内容、顺序和主体关系。将第二张连接图作为 SUBJECT_REF：校准产品结构。把故事板转换成明显不同的技术运镜预演板，不要只替换说明文字。
 
 阶段视觉语言：
-- 使用蓝灰色或深灰色技术预演风格、简化场景、清楚轮廓、半透明起止位置、相机图标、运动路径和方向箭头
+- 使用与产品母版气质兼容的技术预演风格；可用蓝灰、深灰、暖灰、纸面草图或品牌强调色作为技术标注系统，但必须来自产品视觉系统，不固定蓝灰模板
+- 简化场景、清楚轮廓、半透明起止位置、相机图标、运动路径和方向箭头
 - 每个 16:9 图解至少出现一种可见技术信息：相机位置与朝向、起点与终点残影、运动路径、焦点平面或转场方向
 - 不是最终商业渲染；不要原样复制故事板图片，应保留同一镜头含义但转换成技术图解
 
@@ -2215,14 +2228,15 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
 镜头与版式：
 - 上游两张 2×4 板均按上排镜头1-4、下排镜头5-8读取，最终必须逐格一一对应，不交换、遗漏、重复、合并或新增镜头
 - 输出一张 16:9 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 每卡上方是严格 16:9 全彩关键帧，下方是同宽浅色说明栏
+- 每卡上方是严格 16:9 全彩关键帧，下方是同宽说明栏；说明栏底色、分隔线和文字颜色跟随产品母版视觉系统保持清晰可读，不强制浅色
 - 四列等宽、两行等高；禁止英雄大格、跨格、合并、重叠、自由拼贴、缺格、重复格或第九格
 
 2K高质量商业渲染：
 - 八个关键帧必须清晰、锐利、细节充足，具备高端产品广告成片质感，不使用草图、低清贴图、过度降噪、塑料蜡感或模糊材质
 - 材质必须可辨：金属、哑光塑料、橡胶、玻璃、织物、皮革或涂层要有正确的粗糙度、反射、纹理尺度与边缘高光
 - 保持自然产品摄影透视、真实接地阴影、合理景深、干净轮廓、克制高光和稳定曝光；暗部仍要看清结构
-- 使用统一世界观、色温和光线逻辑，但每格应有明确景别与机位变化，不能反复使用同一正视产品图
+- 使用从产品母版继承的产品自适应世界观、色温、背景和光线逻辑，但每格应有明确景别与机位变化，不能反复使用同一正视产品图
+- 最终商业分镜必须延续该产品自己的视觉气质；不要回落到固定浅灰蓝、固定黑科技或普通白底产品图
 - 使用 MOTION_REF 确定相机角度、主体位置、空间方向与运动趋势，但最终画面不保留相机图标、箭头、残影、蓝图线或技术界面
 - 不继承故事板的草图质感，也不继承运镜板的蓝灰技术图风格
 
@@ -2277,7 +2291,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 - 只提升完成度，不重新发明产品；模糊区域保持克制，不凭空增加复杂机构
 - 主体完整展示，三分之二或正侧结合视角，关键比例和轮廓清楚
 - 材质、倒角、分件线、按键、接口、支撑/握持/开合关系表现清晰
-- 背景简洁高级，产品与地面/台面接触可信，光影服务结构可读性
+- 背景、台面、空间和光影根据产品品类、CMF、主色、使用场景和目标用户自适应；产品与地面/台面接触可信，光影服务结构可读性
 - 不要文字、不要 logo 乱生成、不要说明标签、不要装饰性 HUD`,
         0,
         0,
@@ -2318,7 +2332,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 要求：
 - 展示正面、侧面、背面、俯视或 3/4 角度中的 3-4 个互补视角
 - 所有视角必须是同一产品：结构、比例、CMF、分件线、按键/接口数量和位置一致
-- 视角之间等距排列，尺度统一，背景简洁，像干净的工业设计评审板
+- 视角之间尺度统一，版式密度、背景色、分隔方式和材质样本样式根据产品气质自适应，像为该产品定制的工业设计评审板
 - 不做爆炸图，不新增内部结构，不使用夸张透视
 - 不要文字标签、不要说明箭头、不要品牌 logo 乱生成、不要虚假参数`,
         480,
@@ -2338,6 +2352,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 根据产品类型选择居家、办公、桌面、厨房、浴室、户外或专业工作环境
+- 根据产品 CMF、主色、材质和目标用户决定空间色彩、道具密度和光线气质，不固定同一套桌面/浅灰背景
 - 产品是画面主角，环境现代、干净、有审美，人物/手/道具只作为辅助尺度参考
 - 产品与环境接触可信，有真实阴影、正确透视和合理景深
 - 保持产品结构、比例、颜色、材质、按键、接口和分件线一致
@@ -2378,7 +2393,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 要求：
 - 强调材质纹理、表面工艺、倒角高光、颜色过渡、粗糙度和真实反射
 - 保持产品结构、比例、CMF 方向和材质边界一致
-- 画面像设计评审中的材质细节页：干净、聚焦、可判断工艺
+- 画面像设计评审中的材质细节页：背景、光比、样本/局部框和构图根据该 CMF 方向自适应，干净、聚焦、可判断工艺
 - 不要文字、不要品牌标识、不要说明箭头、不要虚构材料标签`,
         480,
         0,
@@ -2405,7 +2420,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 产品居中或轻微偏中，完整展示，轮廓清晰，材质真实，关键卖点区域可读
-- 背景简洁但不空洞，可使用柔和渐变、台面、阴影或轻量图形层次
+- 背景、配色、台面/空间、阴影和轻量图形层次根据产品品类、CMF、主色、使用场景和价格带自适应；不要所有商品都使用同一套浅灰蓝主图
 - 保持产品结构、比例、颜色、材质和功能布局一致，不新增配件或虚假功能
 - 不要促销文字、不要价格、不要 logo 乱生成、不要水印、不要虚假认证`,
         0,
