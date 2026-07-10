@@ -14,8 +14,8 @@ export const ecommerceDetailPageQualityProfile = {
     'Page 02-08 同时参考 product_reference_image 与 master_page_image。',
   ],
   copyRules: [
-    '默认使用简体中文标题、副标题和三个卖点标签。',
-    'model_text_baked 默认直接生成完整详情页排版：页面编号、大标题、副标题、卖点图标/标签、局部信息卡片必须在图内可见。',
+    '默认使用简体中文标题、副标题和三个卖点标签，但可见文案必须根据 product_reference_image 和用户需求自动改写成具体产品文案。',
+    'model_text_baked 默认直接生成完整详情页排版：页面编号、大标题、副标题、卖点图标/标签、局部信息卡片必须在图内可见，且不得把 prompt 规则或内部约束当成文案。',
     'composited_final_page 仅用于用户明确要求后期程序合成文字的场景。',
     '禁止乱码、英文替代中文、伪文字、空白文本框和模糊小字。',
   ],

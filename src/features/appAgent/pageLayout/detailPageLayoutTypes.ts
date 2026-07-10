@@ -49,6 +49,8 @@ export interface DetailPageSpec {
       icon: string;
     }>;
     localNotes?: string[];
+    adaptive?: boolean;
+    sourceBrief?: string;
   };
   renderMode: DetailPageRenderMode;
 }

@@ -42,6 +42,9 @@ const makeSpec = (input: {
   title: string;
   subtitle: string;
   tags: Array<{ text: string; icon: string }>;
+  localNotes?: string[];
+  adaptiveCopy?: boolean;
+  sourceBrief?: string;
   closeupCount: 0 | 1 | 2 | 3;
   productPosition?: DetailPageSpec['layout']['productPosition'];
   productAngle?: string;
@@ -84,20 +87,23 @@ const makeSpec = (input: {
     title: input.title,
     subtitle: input.subtitle,
     tags: input.tags,
+    localNotes: input.localNotes,
+    adaptive: input.adaptiveCopy,
+    sourceBrief: input.sourceBrief,
   }),
   renderMode: input.renderMode,
 });
 
 export const buildDefaultEcommerceDetailPageSpecs = (
   renderMode: DetailPageRenderMode,
-  options: { aspectRatio?: string } = {},
+  options: { aspectRatio?: string; sourceBrief?: string } = {},
 ): DetailPageSpec[] => [
   makeSpec({
     pageIndex: 1,
     pageName: '主视觉母版页',
     uniqueSellingPoint: '建立统一视觉系统并展示产品核心价值',
     title: '一眼看懂产品优势',
-    subtitle: '统一视觉母版，锁定产品结构与高级质感',
+    subtitle: '清爽版式呈现核心卖点，产品质感一目了然',
     tags: [
       { text: '结构清晰', icon: 'focus' },
       { text: '质感统一', icon: 'sparkle' },
@@ -109,18 +115,21 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '首屏英雄母版：产品居中大图，顶部标题区，顶部三标签，背景留白充足',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 2,
     pageName: '核心结构页',
     uniqueSellingPoint: '展示产品关键结构和真实比例',
     title: '核心结构清晰可见',
-    subtitle: '关键部位一目了然，比例与形态严格参考实物',
+    subtitle: '关键部位清楚展示，细节层次更直观',
     tags: [
       { text: '轮廓准确', icon: 'outline' },
       { text: '结构稳定', icon: 'shield' },
       { text: '细节真实', icon: 'zoom' },
     ],
+    localNotes: ['结构清楚', '细节放大'],
     closeupCount: 2,
     productPosition: 'right',
     labelArea: 'left',
@@ -128,18 +137,21 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '左右分栏结构解析：右侧产品大图，左侧两个真实局部特写框和结构说明留白',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 3,
     pageName: '核心功能页',
     uniqueSellingPoint: '说明产品最重要的使用功能',
     title: '核心功能直观呈现',
-    subtitle: '用简洁图形强调真实功能，不虚构额外结构',
+    subtitle: '把常用功能讲清楚，操作体验更直观',
     tags: [
       { text: '功能明确', icon: 'bolt' },
       { text: '操作直观', icon: 'hand' },
       { text: '体验高效', icon: 'speed' },
     ],
+    localNotes: ['功能聚焦'],
     closeupCount: 1,
     productPosition: 'center',
     labelArea: 'bottom',
@@ -147,18 +159,21 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '功能焦点页：中心产品，右侧单一功能放大特写，底部卖点标签区',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 4,
     pageName: '稳定 / 安全页',
     uniqueSellingPoint: '强调支撑、连接、防滑或安全感',
     title: '稳定支撑更安心',
-    subtitle: '聚焦真实受力与连接区域，避免夸大承诺',
+    subtitle: '稳固承托日常使用，关键连接更可靠',
     tags: [
       { text: '支撑稳固', icon: 'shield' },
       { text: '防滑安心', icon: 'grip' },
       { text: '圆润安全', icon: 'lock' },
     ],
+    localNotes: ['连接稳固', '防滑触面'],
     closeupCount: 2,
     productPosition: 'center',
     labelArea: 'left',
@@ -166,6 +181,8 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '稳定安全页：产品居中偏下，右侧支撑/防滑特写列，左侧安全卖点区',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 5,
@@ -178,6 +195,7 @@ export const buildDefaultEcommerceDetailPageSpecs = (
       { text: '触感舒适', icon: 'palm' },
       { text: '做工精致', icon: 'gem' },
     ],
+    localNotes: ['表面纹理', '圆角细节', '边缘处理'],
     closeupCount: 3,
     productPosition: 'left',
     labelArea: 'right',
@@ -185,18 +203,21 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '材质工艺页：左侧产品斜切大图，右侧三联材质/边缘特写矩阵',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 6,
     pageName: '操作 / 收纳 / 效率页',
     uniqueSellingPoint: '说明使用步骤、收纳方式或效率提升',
     title: '使用流程简单高效',
-    subtitle: '用三步式视觉表达真实操作，不制造不存在的功能',
+    subtitle: '从上手到收纳更顺畅，桌面使用更省心',
     tags: [
       { text: '上手简单', icon: 'steps' },
       { text: '收纳省心', icon: 'box' },
       { text: '效率提升', icon: 'clock' },
     ],
+    localNotes: ['操作顺畅'],
     closeupCount: 1,
     productPosition: 'center',
     labelArea: 'bottom',
@@ -204,13 +225,15 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '操作流程页：三步动线横向展开，产品居中，底部步骤/效率信息区',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 7,
     pageName: '真实使用场景页',
     uniqueSellingPoint: '把产品放入可信使用环境，建立购买联想',
     title: '真实场景自然融入',
-    subtitle: '环境服务于产品，主体清晰不被人物或道具遮挡',
+    subtitle: '融入桌面使用环境，产品状态清楚自然',
     tags: [
       { text: '场景真实', icon: 'home' },
       { text: '比例自然', icon: 'scale' },
@@ -222,18 +245,21 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '真实场景页：产品位于底部环境中，上方大面积场景氛围和标题留白，无局部特写框',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
   makeSpec({
     pageIndex: 8,
     pageName: '产品细节 / 参数总结页',
     uniqueSellingPoint: '总结产品细节和可确认的信息模块',
     title: '细节信息完整收束',
-    subtitle: '只呈现已知信息，未知参数使用保守表达',
+    subtitle: '重点细节集中呈现，购买前看得更清楚',
     tags: [
       { text: '细节汇总', icon: 'list' },
       { text: '信息清楚', icon: 'info' },
       { text: '购买安心', icon: 'check' },
     ],
+    localNotes: ['重点细节', '边角工艺'],
     closeupCount: 2,
     productPosition: 'left',
     labelArea: 'right',
@@ -241,6 +267,8 @@ export const buildDefaultEcommerceDetailPageSpecs = (
     layoutLanguage: '参数总结页：左侧产品和局部细节拼图，右侧信息模块留白和购买安心标签',
     renderMode,
     aspectRatio: options.aspectRatio,
+    adaptiveCopy: renderMode === 'model_text_baked',
+    sourceBrief: options.sourceBrief,
   }),
 ];
 
@@ -291,7 +319,10 @@ export function buildEcommerceDetailPageDraftFromRequest(
 ): WorkflowRecipeDraft {
   const languagePolicy = input.languagePolicy ?? detectUserLanguagePolicyForDetail(input.originalRequest);
   const renderMode = input.renderMode ?? inferDetailPageRenderMode(input.originalRequest);
-  const specs = buildDefaultEcommerceDetailPageSpecs(renderMode, { aspectRatio: input.aspectRatio });
+  const specs = buildDefaultEcommerceDetailPageSpecs(renderMode, {
+    aspectRatio: input.aspectRatio,
+    sourceBrief: input.originalRequest,
+  });
   const enabledIds = input.outputIds?.length ? new Set(input.outputIds) : null;
   const outputs = specs.map(specToOutput).map(output => ({
     ...output,

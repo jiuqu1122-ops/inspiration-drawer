@@ -847,12 +847,15 @@ const buildInstallationDetailPageOutput = (
       : {
         pageNo: `PAGE ${String(nextIndex).padStart(2, '0')}`,
         title: '安装步骤简单清晰',
-        subtitle: '用真实结构说明上手流程，避免虚构安装方式',
+        subtitle: '三步上手更省心，安装过程一目了然',
         tags: [
           { text: '步骤清楚', icon: 'steps' },
           { text: '上手省心', icon: 'hand' },
           { text: '结构真实', icon: 'check' },
         ],
+        localNotes: ['第一步', '第二步', '完成安装'],
+        adaptive: renderMode === 'model_text_baked',
+        sourceBrief: String(draft.metadata.originalRequest || ''),
       },
     renderMode,
   };

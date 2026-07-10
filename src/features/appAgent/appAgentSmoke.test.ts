@@ -977,6 +977,25 @@ export function runEcommerceDetailPageSmokeTests() {
   assert(draftA.outputs.every(output => output.imageTextLanguage === 'zh-CN'), 'Ecommerce-A: outputs should use zh-CN image text language');
   assert(draftA.outputs.every(output => output.renderMode === 'model_text_baked'), 'Ecommerce-A: default renderMode should be model_text_baked');
   assert(draftA.outputs.every(output => output.prompt.includes('产品锚点：') && output.prompt.includes('生成目标：')), 'Ecommerce-A: default prompt should use structured detail-page visual-director template');
+  assert(draftA.outputs.every(output => output.pageSpec?.copy.adaptive === true), 'Ecommerce-A: default model_text_baked pages should use adaptive product copy');
+  assert(draftA.outputs.every(output => output.pageSpec?.copy.sourceBrief === requestA), 'Ecommerce-A: adaptive copy should keep original request as internal brief');
+  assert(draftA.outputs.every(output => (
+    output.prompt.includes('画面可见文案生成任务')
+    && output.prompt.includes('自动写出适合当前产品')
+    && output.prompt.includes('绝对不能作为画面文字出现')
+  )), 'Ecommerce-A: prompt should separate internal instructions while asking for product-adaptive visible copy');
+  assert(draftA.outputs.every(output => !output.prompt.includes('以下文字必须直接、清晰、准确地出现在画面中')), 'Ecommerce-A: adaptive copy prompt should not force fixed template copy');
+  const internalInstructionCopyPattern = /prompt|提示词|生成目标|产品锚点|风格锚点|构图锚点|禁止|不得|避免|不要|只呈现|未知参数|保守表达|不制造|不虚构|self-check/i;
+  assert(draftA.outputs.every(output => {
+    const copy = output.pageSpec?.copy;
+    const visibleCopy = [
+      copy?.title || '',
+      copy?.subtitle || '',
+      ...(copy?.tags || []).map(tag => tag.text),
+      ...(copy?.localNotes || []),
+    ].join(' ');
+    return !internalInstructionCopyPattern.test(visibleCopy);
+  }), 'Ecommerce-A: visible copy should not contain prompt instructions');
   const defaultLayoutLanguages = draftA.outputs.map(output => output.pageSpec?.styleAnchor.layoutLanguage || '');
   assert(new Set(defaultLayoutLanguages).size >= 6, 'Ecommerce-A: default pages should have varied layout languages');
   const defaultLabelAreas = new Set(draftA.outputs.map(output => output.pageSpec?.layout.labelArea || ''));
@@ -991,6 +1010,7 @@ export function runEcommerceDetailPageSmokeTests() {
   draftB.outputs.forEach(output => {
     const spec = output.pageSpec;
     assert(!!spec, 'Ecommerce-B: each output should have pageSpec');
+    assert(spec.copy.adaptive === true, 'Ecommerce-B: each page should let image model adapt copy to product');
     assert(!!spec?.copy.title && !!spec.copy.subtitle, 'Ecommerce-B: each page should have title/subtitle');
     assert(spec.copy.tags.length === 3, 'Ecommerce-B: each page should have 3 tags');
     assert(spec.copy.tags.every(tag => !!tag.icon), 'Ecommerce-B: each tag should have icon');
