@@ -12896,6 +12896,7 @@ function MainApp() {
 
   const copyImageSourceToSystemClipboard = async (source: string) => {
     let directError: unknown = null;
+    let dataUrlError: unknown = null;
 
     try {
       await writeImageSourceToClipboard(source);
@@ -12903,6 +12904,15 @@ function MainApp() {
     } catch (err) {
       directError = err;
       console.warn('fast clipboard image copy failed:', err);
+    }
+
+    try {
+      const dataUrl = await imageSourceToDataUrl(source, false);
+      await copyImageDataUrlToSystemClipboard(dataUrl);
+      return;
+    } catch (err) {
+      dataUrlError = err;
+      console.warn('copy canvas image source via data url failed:', err);
     }
 
     if (shouldTryBackendImageCopyDirectly(source)) {
@@ -12915,14 +12925,7 @@ function MainApp() {
       }
     }
 
-    try {
-      const dataUrl = await imageSourceToDataUrl(source, false);
-      await copyImageDataUrlToSystemClipboard(dataUrl);
-      return;
-    } catch (err) {
-      console.warn('copy canvas image source via data url failed:', err);
-      throw err || directError;
-    }
+    throw dataUrlError || directError || new Error('copy image source failed');
   };
 
   const copySelectedImagePreviewToClipboard = async () => {

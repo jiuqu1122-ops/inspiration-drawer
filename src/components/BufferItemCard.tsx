@@ -6,8 +6,6 @@ import {
   Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, StickyNote, Search
 } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
-import { Image as TauriImage } from '@tauri-apps/api/image';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeImageSourceToClipboard } from '../features/imageClipboard';
 import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
@@ -235,23 +233,6 @@ function BufferItemCard({
     if (openUrlTimerRef.current) window.clearTimeout(openUrlTimerRef.current);
   }, []);
 
-  const normalizeImageToPng = (url: string, callback: (pngUrl: string) => void) => {
-    const img = new Image(); img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        callback(canvas.toDataURL('image/png'));
-      } else {
-        callback(url);
-      }
-    };
-    img.onerror = () => callback(url); img.src = url;
-  };
-
   const handleOpenFile = (e: React.MouseEvent | any) => {
     e.preventDefault(); e.stopPropagation();
     if (item.path) {
@@ -359,73 +340,6 @@ function BufferItemCard({
     showToast(msg);
   };
 
-  const dataUrlToBlob = async (dataUrl: string) => {
-    const res = await fetch(dataUrl);
-    return await res.blob();
-  };
-
-  const copyPngDataUrl = async (pngUrl: string) => {
-    const blob = await dataUrlToBlob(pngUrl);
-
-    // 首选浏览器原生 ClipboardItem：这是“复制图片本体”，不是复制路径。
-    const ClipboardItemCtor = (window as any).ClipboardItem;
-    if (navigator.clipboard && ClipboardItemCtor) {
-      try {
-        await navigator.clipboard.write([
-          new ClipboardItemCtor({ 'image/png': blob })
-        ]);
-        return;
-      } catch (err) {
-        console.warn('navigator.clipboard.write image failed:', err);
-      }
-    }
-
-    // 再走 Tauri clipboard-manager。Tauri v2 下先转成 Image 对象更稳。
-    try {
-      const buffer = await blob.arrayBuffer();
-      const image = await TauriImage.fromBytes(new Uint8Array(buffer));
-      await writeImage(image);
-      return;
-    } catch (err) {
-      console.warn('tauri writeImage failed:', err);
-    }
-
-    // 最后走 Rust 后端。后端负责把 data:image 写入系统图片剪贴板。
-    await invoke('copy_image', { dataUrl: pngUrl });
-  };
-
-  const copyImageSource = async (source: string) => {
-    if (!source) throw new Error('empty image source');
-
-    try {
-      await writeImageSourceToClipboard(source);
-      return;
-    } catch (err) {
-      console.warn('fast card image copy failed:', err);
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      normalizeImageToPng(source, async (pngUrl) => {
-        try {
-          if (pngUrl.startsWith('data:image/')) {
-            await copyPngDataUrl(pngUrl);
-          } else {
-            // canvas 受跨域限制时会回退到原始 URL/path，此时交给 Rust 处理下载/本地读取。
-            await invoke('copy_image', { dataUrl: source });
-          }
-          resolve();
-        } catch (err) {
-          try {
-            await invoke('copy_image', { dataUrl: source });
-            resolve();
-          } catch (backendErr) {
-            reject(backendErr || err);
-          }
-        }
-      });
-    });
-  };
-
   const handleCopy = async (e: React.MouseEvent | any) => {
     e.preventDefault();
     e.stopPropagation();
@@ -441,7 +355,12 @@ function BufferItemCard({
         const source = item.url || item.path || item.content || '';
         if (!source) throw new Error('没有可复制的图片');
 
-        await copyImageSource(source);
+        try {
+          await writeImageSourceToClipboard(source);
+        } catch (err) {
+          console.warn('fast card image copy failed:', err);
+          await invoke('copy_image', { dataUrl: source });
+        }
         markCopied('📋 图片已复制');
         return;
       }
