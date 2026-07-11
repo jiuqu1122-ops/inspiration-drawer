@@ -103,6 +103,7 @@ import {
   type CanvasItemBox,
   type CanvasResizeCorner,
 } from './features/canvasModel';
+import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './features/canvasTemplates';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -2017,6 +2018,7 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
   return { errors: Array.from(new Set(errors)), warnings: Array.from(new Set(warnings)) };
 };
 const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+  PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
     id: 'imported-workflow-mqxvzmig-0-epcv',
     label: '单元剧｜固定场景与角色一致性增强版',

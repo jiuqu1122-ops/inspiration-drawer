@@ -5,6 +5,13 @@ import type {
   CanvasItemBox,
 } from './canvasModel';
 import { getCanvasAiNodeAutoSize } from './canvasAiNodeLayout';
+import {
+  PRODUCT_DETAILS_FIVE_IMAGES_OUTPUT_SPECS,
+  PRODUCT_DETAILS_FIVE_IMAGES_STRATEGY_PROMPT,
+  PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_HINT,
+  PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_ID,
+  PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_LABEL,
+} from './productDetailsFiveImagesWorkflow';
 
 export type CanvasWorkflowNodeTemplate = {
   id: string;
@@ -243,7 +250,92 @@ const makeCanvasWorkflowAiNode = (
     },
   };
 };
+
+export const PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW: CanvasWorkflowTemplate = {
+  id: PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_ID,
+  label: PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_LABEL,
+  hint: PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_HINT,
+  builtin: true,
+  createdAt: 0,
+  nodes: [
+    {
+      id: 'product_refs',
+      x: 0,
+      y: 0,
+      width: 320,
+      height: 220,
+      item: {
+        id: 'product_refs',
+        type: 'image',
+        content: '',
+        name: '产品参考图',
+        remark: '连接一张或多张同款产品参考图',
+        createdAt: 0,
+        isQuickAccess: false,
+      },
+      inputs: [],
+      fixedInput: true,
+      acceptsExternalInputs: true,
+      externalInputTypes: ['image'],
+      outputType: 'image[]',
+      bridgeType: 'reference_image',
+    },
+    {
+      id: 'product_strategy',
+      x: 420,
+      y: 0,
+      width: 460,
+      height: 320,
+      item: {
+        id: 'product_strategy',
+        type: 'text',
+        content: PRODUCT_DETAILS_FIVE_IMAGES_STRATEGY_PROMPT,
+        name: '产品识别与详情页视觉策略',
+        remark: '先锁定产品身份、视觉系统和五图排版策略',
+        createdAt: 0,
+        isQuickAccess: false,
+      },
+      inputs: ['product_refs'],
+      fixedInput: false,
+      textMode: 'agent',
+      acceptsExternalInputs: false,
+      outputType: 'text',
+    },
+    ...PRODUCT_DETAILS_FIVE_IMAGES_OUTPUT_SPECS.map((spec, index) => {
+      const node = makeCanvasWorkflowAiNode(
+        spec.id,
+        spec.label,
+        spec.hint,
+        spec.prompt,
+        980,
+        index * 560,
+        ['product_refs', 'product_strategy'],
+        spec.aspectRatio,
+        {
+          provider: 'xais-chat',
+          model: 'Xais Nano Pro_2K',
+          presetId: `workflow-product-details-${spec.id}`,
+        },
+      );
+      return {
+        ...node,
+        acceptsExternalInputs: false,
+        outputType: 'image' as const,
+        ai: {
+          ...node.ai,
+          skillMeta: {
+            workflowTemplateId: 'ecommerce-detail-page',
+            workflowOutputType: spec.id,
+            qualityProfileId: 'ecommerce_detail_page',
+          },
+        },
+      };
+    }),
+  ],
+};
+
 export const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+  PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
     id: 'imported-workflow-mqxvzmig-0-epcv',
     label: '单元剧｜固定场景与角色一致性增强版',
