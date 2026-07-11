@@ -2640,6 +2640,39 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     return null;
   }
 
+  const rawWorkflowText = [
+    label,
+    record.hint,
+    ...rawNodes.flatMap(nodeValue => {
+      const node = nodeValue && typeof nodeValue === 'object'
+        ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
+        : {};
+      const rawItem = node.item && typeof node.item === 'object'
+        ? node.item as Partial<BufferItem>
+        : {};
+      const rawAi = node.ai && typeof node.ai === 'object'
+        ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
+        : {};
+      return [
+        node.id,
+        rawItem.name,
+        rawItem.content,
+        rawItem.remark,
+        rawAi.presetId,
+        rawAi.presetLabel,
+        rawAi.presetPrompt,
+        rawAi.prompt,
+      ];
+    }),
+  ].filter(Boolean).join('\n').toLowerCase();
+  const shouldInferExternalImageInputs = doesWorkflowTextRequireImageReference(rawWorkflowText)
+    && !rawNodes.some(nodeValue => {
+      const node = nodeValue && typeof nodeValue === 'object'
+        ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
+        : {};
+      return node.acceptsExternalInputs === true;
+    });
+
   const nodes = rawNodes.map((nodeValue, index) => {
     const node = nodeValue && typeof nodeValue === 'object'
       ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
@@ -2665,14 +2698,26 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     const executablePrompt = rawAi?.type === 'image-generator'
       ? (aiPresetPrompt || aiPrompt || itemContent.trim())
       : '';
-    if (node.acceptsExternalInputs === true && (!externalInputTypes || externalInputTypes.length === 0)) {
+    const inputIds = Array.isArray(node.inputs)
+      ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
+      : [];
+    const inferredExternalImageInput = shouldInferExternalImageInputs
+      && inputIds.length === 0
+      && (
+        rawAi?.type === 'image-generator'
+        || itemType === 'text'
+        || itemType === 'image'
+        || itemType === 'file'
+      );
+    const acceptsExternalInputs = node.acceptsExternalInputs === true || inferredExternalImageInput;
+    if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
       externalInputTypes = ['image', 'text'];
     }
     const isReferenceImageBridge = (
       node.bridgeType === 'reference_image'
       || id === 'product_reference_image'
     )
-      && node.acceptsExternalInputs === true
+      && acceptsExternalInputs
       && (
         externalInputTypes?.includes('image')
         || node.outputType === 'image'
@@ -2704,14 +2749,16 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         createdAt: 0,
         isQuickAccess: false,
       },
-      inputs: Array.isArray(node.inputs)
-        ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
-        : [],
+      inputs: inputIds,
       fixedInput: typeof node.fixedInput === 'boolean'
-        ? node.fixedInput
+        ? (inferredExternalImageInput ? false : node.fixedInput)
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
-      textMode: node.textMode === 'plain' ? 'plain' : node.textMode === 'agent' ? 'agent' : undefined,
-      acceptsExternalInputs: node.acceptsExternalInputs === true,
+      textMode: node.textMode === 'plain'
+        ? 'plain'
+        : node.textMode === 'agent' || (inferredExternalImageInput && itemType === 'text' && !rawAi)
+          ? 'agent'
+          : undefined,
+      acceptsExternalInputs,
       externalInputTypes,
       outputType: node.outputType === 'image'
         || node.outputType === 'image[]'
@@ -14934,12 +14981,15 @@ function MainApp() {
       .map(node => node.id));
     const hasExplicitExternalInputTargets = cleanWorkflow.nodes.some(node => node.acceptsExternalInputs);
     const idMap = new Map<string, string>();
-    const isWorkflowExternalInputPort = (node: CanvasWorkflowNodeTemplate) => (
+  const isWorkflowExternalInputPort = (node: CanvasWorkflowNodeTemplate) => (
       node.acceptsExternalInputs === true
       && !node.ai
       && (
         node.bridgeType === 'reference_image'
-        || (node.externalInputTypes || []).length > 0
+        || node.item.type === 'file'
+        || node.item.type === 'image'
+        || node.outputType === 'image'
+        || node.outputType === 'image[]'
       )
     );
 

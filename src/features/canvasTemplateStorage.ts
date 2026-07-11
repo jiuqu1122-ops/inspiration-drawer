@@ -22,6 +22,11 @@ const isCanvasWorkflowLongDuplicateText = (a?: string, b?: string) => {
   return left.length > 120 && left === right;
 };
 
+const doesCanvasWorkflowTextRequireImageReference = (text: string) => (
+  /浜у搧涓€鑷存€鍙傝€冨浘|澶栭儴杩炴帴|浜у搧鍥緗product\s*(reference|refs?)|image\s*(reference|refs?)|subject_ref|based on connected|product_reference_image|product_ref|reference image|product image|connected image|external image/i
+    .test(text)
+);
+
 export const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
 
 export const isLegacyProductRenderPrompt = (prompt: string) => (
@@ -90,6 +95,39 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
     return null;
   }
 
+  const rawWorkflowText = [
+    label,
+    record.hint,
+    ...rawNodes.flatMap(nodeValue => {
+      const node = nodeValue && typeof nodeValue === 'object'
+        ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
+        : {};
+      const rawItem = node.item && typeof node.item === 'object'
+        ? node.item as Partial<BufferItem>
+        : {};
+      const rawAi = node.ai && typeof node.ai === 'object'
+        ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
+        : {};
+      return [
+        node.id,
+        rawItem.name,
+        rawItem.content,
+        rawItem.remark,
+        rawAi.presetId,
+        rawAi.presetLabel,
+        rawAi.presetPrompt,
+        rawAi.prompt,
+      ];
+    }),
+  ].filter(Boolean).join('\n').toLowerCase();
+  const shouldInferExternalImageInputs = doesCanvasWorkflowTextRequireImageReference(rawWorkflowText)
+    && !rawNodes.some(nodeValue => {
+      const node = nodeValue && typeof nodeValue === 'object'
+        ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
+        : {};
+      return node.acceptsExternalInputs === true;
+    });
+
   const nodes = rawNodes.map((nodeValue, index) => {
     const node = nodeValue && typeof nodeValue === 'object'
       ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
@@ -118,14 +156,26 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
     const executablePrompt = rawAi?.type === 'image-generator'
       ? (aiPresetPrompt || aiPrompt || itemContent.trim())
       : '';
-    if (node.acceptsExternalInputs === true && (!externalInputTypes || externalInputTypes.length === 0)) {
+    const inputIds = Array.isArray(node.inputs)
+      ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
+      : [];
+    const inferredExternalImageInput = shouldInferExternalImageInputs
+      && inputIds.length === 0
+      && (
+        rawAi?.type === 'image-generator'
+        || itemType === 'text'
+        || itemType === 'image'
+        || itemType === 'file'
+      );
+    const acceptsExternalInputs = node.acceptsExternalInputs === true || inferredExternalImageInput;
+    if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
       externalInputTypes = ['image', 'text'];
     }
     const isReferenceImageBridge = (
       node.bridgeType === 'reference_image'
       || id === 'product_reference_image'
     )
-      && node.acceptsExternalInputs === true
+      && acceptsExternalInputs
       && (
         externalInputTypes?.includes('image')
         || node.outputType === 'image'
@@ -159,14 +209,16 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         createdAt: 0,
         isQuickAccess: false,
       },
-      inputs: Array.isArray(node.inputs)
-        ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
-        : [],
+      inputs: inputIds,
       fixedInput: typeof node.fixedInput === 'boolean'
-        ? node.fixedInput
+        ? (inferredExternalImageInput ? false : node.fixedInput)
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
-      textMode: node.textMode === 'plain' ? 'plain' : node.textMode === 'agent' ? 'agent' : undefined,
-      acceptsExternalInputs: node.acceptsExternalInputs === true,
+      textMode: node.textMode === 'plain'
+        ? 'plain'
+        : node.textMode === 'agent' || (inferredExternalImageInput && itemType === 'text' && !rawAi)
+          ? 'agent'
+          : undefined,
+      acceptsExternalInputs,
       externalInputTypes,
       outputType: node.outputType === 'image'
         || node.outputType === 'image[]'

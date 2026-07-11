@@ -97,4 +97,105 @@ describe('workflow input resolver', () => {
 
     expect(getWorkflowImageInputTargetNodeIds(workflow)).toContain('external_brief');
   });
+
+  it('infers a root image generator as the external image input target for legacy exports without declarations', () => {
+    const workflow = {
+      id: 'legacy-root-generator-workflow',
+      label: 'Product render workflow',
+      hint: 'External product references to render outputs',
+      nodes: [
+        {
+          id: 'render_master',
+          item: {
+            id: 'render_master',
+            type: 'text',
+            content: '',
+          },
+          inputs: [],
+          acceptsExternalInputs: false,
+          outputType: 'image',
+          ai: {
+            type: 'image-generator',
+            presetPrompt: 'Based on connected product image references, create a product render master.',
+            aspectRatio: '16:9',
+            outputFormat: 'jpg',
+            count: 1,
+          },
+        },
+        {
+          id: 'detail',
+          item: {
+            id: 'detail',
+            type: 'text',
+            content: '',
+          },
+          inputs: ['render_master'],
+          acceptsExternalInputs: false,
+          outputType: 'image',
+          ai: {
+            type: 'image-generator',
+            presetPrompt: 'Create detail renders based on upstream product render.',
+            aspectRatio: '16:9',
+            outputFormat: 'jpg',
+            count: 1,
+          },
+        },
+      ],
+    };
+
+    const normalized = normalizeCanvasWorkflowTemplate(workflow);
+
+    expect(normalized?.nodes[0]?.acceptsExternalInputs).toBe(true);
+    expect(normalized?.nodes[0]?.externalInputTypes).toContain('image');
+    expect(getWorkflowImageInputTargetNodeIds(normalized)).toContain('render_master');
+  });
+
+  it('infers a root strategy text-agent as the external image input target for legacy detail workflows', () => {
+    const workflow = {
+      id: 'legacy-detail-workflow',
+      label: 'Detail page workflow',
+      hint: 'External product reference images drive all pages',
+      nodes: [
+        {
+          id: 'product_strategy',
+          item: {
+            id: 'product_strategy',
+            type: 'text',
+            content: 'Analyze all externally connected product reference images first.',
+          },
+          inputs: [],
+          fixedInput: true,
+          acceptsExternalInputs: false,
+          outputType: 'text',
+        },
+        {
+          id: 'hero_main',
+          item: {
+            id: 'hero_main',
+            type: 'text',
+            content: '',
+          },
+          inputs: ['product_strategy'],
+          acceptsExternalInputs: false,
+          outputType: 'image',
+          ai: {
+            type: 'image-generator',
+            presetPrompt: 'Create a hero image based on external product references and product_strategy.',
+            aspectRatio: '3:4',
+            outputFormat: 'jpg',
+            count: 1,
+          },
+        },
+      ],
+    };
+
+    const normalized = normalizeCanvasWorkflowTemplate(workflow);
+    const strategy = normalized?.nodes.find(node => node.id === 'product_strategy');
+
+    expect(strategy?.acceptsExternalInputs).toBe(true);
+    expect(strategy?.externalInputTypes).toContain('image');
+    expect(strategy?.fixedInput).toBe(false);
+    expect(strategy?.textMode).toBe('agent');
+    expect(getWorkflowImageInputTargetNodeIds(normalized)).toContain('product_strategy');
+  });
 });
