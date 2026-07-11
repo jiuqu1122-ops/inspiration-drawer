@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { convertWorkflowDraftToDefinition } from '../kernel/appAgentKernel';
 import type { WorkflowRecipeDraft } from '../workflows/workflowRecipeTypes';
 import { ImageRuleSwitchPanel } from '../../canvas/components/ImageRuleSwitchPanel';
+import { CANVAS_AGENT_ACTION_SCHEMA, CANVAS_AGENT_TOOL_DEFINITIONS } from '../../canvasAgentTools';
 import { getDefaultImageRuleState, getRecommendedImageRuleState } from './imageRuleDefaults';
 import { buildFinalImagePrompt } from './imageRulePromptBuilder';
 
@@ -43,6 +44,9 @@ describe('image rule quality', () => {
     expect(finalPrompt.prompt).toContain('Negative constraints:');
     expect(finalPrompt.negativeConstraints.some(item => item.includes('未请求的标题'))).toBe(true);
     expect(finalPrompt.negativeConstraints.some(item => item.includes('未提供的尺寸'))).toBe(true);
+    expect(finalPrompt.positivePrompt).toContain('增强空间氛围');
+    expect(finalPrompt.positivePrompt).not.toContain('Negative constraints:');
+    expect(finalPrompt.positivePrompt).not.toContain('未请求的标题');
   });
 
   it('omits disabled default rules from final image prompt', () => {
@@ -75,6 +79,20 @@ describe('image rule quality', () => {
     expect(html).toContain('role="switch"');
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain('图像规则');
+  });
+
+  it('exposes imagePolicy in canvas_create_generator tool schemas', () => {
+    const tool = CANVAS_AGENT_TOOL_DEFINITIONS.find(item => item.function.name === 'canvas_create_generator');
+    const schemaText = JSON.stringify({
+      tool: tool?.function.parameters,
+      action: CANVAS_AGENT_ACTION_SCHEMA,
+    });
+
+    expect(schemaText).toContain('imagePolicy');
+    expect(schemaText).toContain('rules');
+    expect(schemaText).toContain('atmosphere');
+    expect(schemaText).toContain('no_random_text');
+    expect(schemaText).toContain('no_fake_specs');
   });
 
   it('preserves workflow draft imagePolicy rules in image generator definitions', () => {

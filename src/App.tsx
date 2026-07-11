@@ -24371,6 +24371,7 @@ useEffect(() => {
         const requestedSkillMeta = args.skillMeta && typeof args.skillMeta === 'object' && !Array.isArray(args.skillMeta)
           ? args.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
           : undefined;
+        const requestedImagePolicy = mediaType === 'image' ? getImagePolicyFromRecord(args.imagePolicy) : null;
         const nextAiPatch: Partial<NonNullable<CanvasImageItem['ai']>> = {
           ...(sourceImageNodeId ? { sourceImageNodeId } : {}),
           ...(referenceImageNodeIds.length > 0 ? { referenceImageNodeIds } : {}),
@@ -24392,6 +24393,30 @@ useEffect(() => {
             name: prompt.split(/\r?\n/)[0]?.slice(0, 24) || node.item.name,
           };
           node.ai = { ...node.ai!, prompt };
+        }
+        if (requestedImagePolicy) {
+          node.ai = {
+            ...node.ai!,
+            imagePolicy: createCanvasImagePolicy({
+              hasReferenceImage: inputIds.length > 0,
+              presetId: node.ai?.presetId,
+              presetLabel: node.ai?.presetLabel,
+              outputRole: typeof node.ai?.skillMeta?.workflowOutputType === 'string'
+                ? node.ai.skillMeta.workflowOutputType
+                : undefined,
+              workflowTemplateId: typeof node.ai?.skillMeta?.workflowTemplateId === 'string'
+                ? node.ai.skillMeta.workflowTemplateId
+                : undefined,
+              qualityProfileId: typeof node.ai?.skillMeta?.qualityProfileId === 'string'
+                ? node.ai.skillMeta.qualityProfileId
+                : undefined,
+              prompt: [
+                node.ai?.presetPrompt,
+                node.ai?.prompt,
+                node.item.content,
+              ].filter(Boolean).join('\n'),
+            }, requestedImagePolicy),
+          };
         }
         if (appendCanvasItems([node], mediaType === 'video' ? 'Agent 创建视频节点' : 'Agent 创建生图节点') <= 0) {
           throw new Error('创建节点失败');

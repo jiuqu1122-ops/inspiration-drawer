@@ -723,6 +723,7 @@ const buildIndustrialReviewCanvasNodeFallbackCommands = (
       targetSize: brief.dimensions.targetSize || null,
       resolution: brief.dimensions.resolution || null,
       toolHint: brief.toolHint || null,
+      imagePolicy: output.imagePolicy,
       skillMeta: {
         skillId: 'creative-product-design-skill,workflow-builder-skill',
         skillIds: ['creative-product-design-skill', 'workflow-builder-skill'],

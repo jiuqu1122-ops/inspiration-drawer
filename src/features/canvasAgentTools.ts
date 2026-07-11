@@ -1,5 +1,6 @@
 import type { AgentCanvasContext } from './agentModel';
 import { buildAppAgentSystemPrompt } from './appAgent/kernel/appAgentPrompt';
+import { IMAGE_RULE_KEYS } from './appAgent/imageQuality/imageRuleCapsules';
 
 type ToolDefinition = {
   type: 'function';
@@ -173,6 +174,23 @@ const GENERATOR_SKILL_META_SCHEMA = {
   additionalProperties: true,
 };
 
+const IMAGE_RULE_STATE_SCHEMA = {
+  type: 'object',
+  properties: Object.fromEntries(IMAGE_RULE_KEYS.map(key => [key, { type: ['boolean', 'null'] }])),
+  additionalProperties: false,
+};
+
+const IMAGE_POLICY_SCHEMA = {
+  type: 'object',
+  properties: {
+    rules: IMAGE_RULE_STATE_SCHEMA,
+    defaultPreset: { type: ['string', 'null'] },
+    panelExpanded: { type: ['boolean', 'null'] },
+    updatedAt: { type: ['number', 'null'] },
+  },
+  additionalProperties: false,
+};
+
 const CANVAS_CREATE_GENERATOR_PROPERTIES = {
   mediaType: { type: 'string', enum: ['image', 'video'] },
   prompt: { type: ['string', 'null'] },
@@ -190,6 +208,7 @@ const CANVAS_CREATE_GENERATOR_PROPERTIES = {
   resolution: { type: ['string', 'null'] },
   toolHint: { type: ['string', 'null'] },
   skillMeta: GENERATOR_SKILL_META_SCHEMA,
+  imagePolicy: IMAGE_POLICY_SCHEMA,
 };
 
 const WORKFLOW_STEP_SCHEMA = {
@@ -221,6 +240,7 @@ const WORKFLOW_STEP_SCHEMA = {
     count: { type: ['number', 'null'] },
     toolHint: { type: ['string', 'null'] },
     skillMeta: { type: 'object', additionalProperties: true },
+    imagePolicy: IMAGE_POLICY_SCHEMA,
   },
   additionalProperties: true,
 };
