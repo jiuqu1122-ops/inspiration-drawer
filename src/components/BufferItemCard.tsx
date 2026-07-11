@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Tag, Star, FolderMinus, FolderOpen, Download, Copy,
-  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, Sparkles, StickyNote, Search
+  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, StickyNote, Search
 } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
@@ -97,7 +97,7 @@ function BufferItemCard({
   onRemove, onRemoveFromFolder, onTogglePin,
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
-  showAlchemy = false, onAlchemy, onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote,
+  onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote,
   onTextEditStart, onTextEditEnd, preferFullImageSource = false,
   optimizeLargeList = false
 }: any) {
@@ -513,15 +513,11 @@ function BufferItemCard({
   const iconClass = isSmallCard ? 'w-3 h-3' : 'w-3.5 h-3.5';
   const alchemyState = item.alchemy?.state || 'raw';
   const alchemyResult = item.alchemy?.result;
-  const isAlchemyDone = alchemyState === 'alchemy' && !!alchemyResult;
   const isAlchemyLoading = alchemyState === 'analyzing';
-  const canShowAlchemy = !!showAlchemy && item.type === 'image' && !isSelectMode;
   const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
   const alchemyColors = Array.isArray(alchemyResult?.colors) ? alchemyResult.colors.slice(0, 4) : [];
   const alchemyKeywords = Array.isArray(alchemyResult?.keywords) ? alchemyResult.keywords.slice(0, 3) : [];
-  const isPaletteOnlyAlchemy = alchemyResult?.analysisMode === 'palette';
   const hasCompactPalette = item.type === 'image' && (isAlchemyLoading || alchemyColors.length > 0);
-  const hasAiAlchemyDone = isAlchemyDone && !isPaletteOnlyAlchemy;
   const imageCardSource = getImageListSource(item, { allowOriginalFallback: !!preferFullImageSource });
   const imagePreviewSource = getPreviewOriginalSource(item);
   const imagePreviewPlaceholderSource = getPreviewPlaceholderSource(item);
@@ -554,13 +550,6 @@ function BufferItemCard({
     const timer = window.setTimeout(() => onEnsureThumbnail?.(item), optimizeLargeList ? 120 : 0);
     return () => window.clearTimeout(timer);
   }, [imageCardSource, item?.id, item?.thumbnail, item?.type, optimizeLargeList, onEnsureThumbnail]);
-
-  const handleAlchemyClick = (e: React.MouseEvent | any) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (isAlchemyLoading) return;
-    if (typeof onAlchemy === 'function') onAlchemy(item);
-  };
 
   const handleCollectSimilarImagesClick = (e: React.MouseEvent | any) => {
     e.preventDefault();
@@ -670,17 +659,6 @@ return (
               title="固定为桌面便签"
               className={`${btnClass} hover:text-amber-600`}
             ><StickyNote className={iconClass} /></button>
-          )}
-
-          {canShowAlchemy && (
-            <button
-              type="button"
-              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onClick={handleAlchemyClick}
-              title={isAlchemyLoading ? 'AI 炼金中' : hasAiAlchemyDone ? '重新 AI 炼金' : 'AI 炼金'}
-              className={`${btnClass} ${hasAiAlchemyDone ? 'text-amber-500' : ''}`}
-            ><Sparkles className={`${iconClass} ${hasAiAlchemyDone ? 'fill-amber-300/60 text-amber-500' : ''}`} /></button>
           )}
 
           {canCollectSimilarImages && (
@@ -1017,7 +995,6 @@ const areBufferItemCardPropsEqual = (previous: any, next: any) => (
   && previous.isResizing === next.isResizing
   && previous.isSelectMode === next.isSelectMode
   && previous.isSelected === next.isSelected
-  && previous.showAlchemy === next.showAlchemy
   && previous.preferFullImageSource === next.preferFullImageSource
   && previous.optimizeLargeList === next.optimizeLargeList
   && previous.selectionScopeKey === next.selectionScopeKey

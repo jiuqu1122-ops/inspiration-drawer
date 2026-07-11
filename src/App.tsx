@@ -123,8 +123,6 @@ import {
   type SchedulePriority,
 } from './features/calendarModel';
 import {
-  ALCHEMY_CARD_WIDTH,
-  AlchemyDrawerCard,
   SILICONFLOW_DEFAULT_ENDPOINT,
   SILICONFLOW_DEFAULT_MODEL,
   SILICONFLOW_VISION_MODEL_FALLBACKS,
@@ -132,7 +130,6 @@ import {
   buildLocalAlchemyResult,
   buildLocalPaletteOnlyResult,
   getAlchemySearchText,
-  getAlchemyState,
   isAlchemyCandidate,
   isSiliconFlowProvider,
   isSiliconFlowVisionModel,
@@ -821,7 +818,6 @@ const TABS: { id: DrawerTabType; label: string; icon: any }[] = [
   { id: 'text', label: '文本', icon: Type },
   { id: 'video', label: '视频', icon: Film },
   { id: 'file', label: '文件', icon: FileIcon },
-  { id: 'alchemy', label: '炼金', icon: Sparkles },
   { id: 'calendar', label: '日历', icon: CalendarDays },
 ];
 
@@ -3851,6 +3847,7 @@ function MainApp() {
   const drawerTextEditUndoIdsRef = useRef<Set<string>>(new Set());
   const floatingTextUndoTimersRef = useRef<Record<string, number>>({});
   const localCmfRecoveryIdsRef = useRef<Set<string>>(new Set());
+  const paletteAnalysisRequestedIdsRef = useRef<Set<string>>(new Set());
   const blankFloatingNoteCreateLockRef = useRef(false);
   const lastBlankFloatingNoteCreatedAtRef = useRef(0);
   useEffect(() => { itemsRef.current = items; }, [items]);
@@ -4406,7 +4403,7 @@ function MainApp() {
   const [calendarDraftText, setCalendarDraftText] = useState('');
   const [calendarDraftPriority, setCalendarDraftPriority] = useState<SchedulePriority>('B');
   const [calendarTargetNoteLabel, setCalendarTargetNoteLabel] = useState(CALENDAR_NEW_NOTE_TARGET);
-  const [selectedAlchemyItemId, setSelectedAlchemyItemId] = useState<string | null>(null);
+  const [, setSelectedAlchemyItemId] = useState<string | null>(null);
 
   const [isOpen, setIsOpen] = useState(shouldShowInitialLaunchIntro);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -4533,7 +4530,7 @@ function MainApp() {
   useEffect(() => { localStorage.setItem('drawer_media_height', cardMediaHeight.toString()); }, [cardMediaHeight]);
 
   const handleDrawerCardWheel = (event: React.WheelEvent) => {
-    if (!event.ctrlKey || activeTab === 'alchemy') return;
+    if (!event.ctrlKey) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
 
@@ -7382,27 +7379,15 @@ function MainApp() {
     if (activeTab === 'notes' || activeTab === 'calendar') {
       return [];
     }
-    if (activeTab === 'alchemy') {
-      return result.filter(item => isAlchemyCandidate(item));
-    }
     return result.filter(item => activeTab === 'all' || item.type === activeTab);
   }, [items, folders, activeTab, searchQuery, activeFolderId]);
 
-  const alchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => isAlchemyCandidate(item)).length, [items]);
-  const finishedAlchemyCount = useMemo(() => (items as AlchemyBufferItem[]).filter(item => getAlchemyState(item) === 'alchemy').length, [items]);
-
   const quickAccessItems = useMemo(() => items.filter(item => item.isQuickAccess), [items]);
-  const drawerCardActionContext = useMemo(() => ({}), [
-    hasAiAnalysis,
-    aiApiProvider,
-    aiApiEndpoint,
-    aiApiKey,
-    aiApiModel,
-  ]);
+  const drawerCardActionContext = useMemo(() => ({}), []);
   const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
   const [drawerScrollTop, setDrawerScrollTop] = useState(0);
   const [drawerViewportHeight, setDrawerViewportHeight] = useState(1);
-  const canVirtualizeDrawerGrid = !isUtilityActiveTab && displayItems.length >= DRAWER_VIRTUALIZATION_THRESHOLD && activeTab !== 'alchemy';
+  const canVirtualizeDrawerGrid = !isUtilityActiveTab && displayItems.length >= DRAWER_VIRTUALIZATION_THRESHOLD;
   const drawerGridColumnCount = useMemo(() => {
     const width = drawerScrollRef.current?.clientWidth || 1;
     const gap = 10;
@@ -8158,6 +8143,10 @@ function MainApp() {
     incomingItems
       .filter(item => isAlchemyCandidate(item as AlchemyBufferItem))
       .forEach((item, index) => {
+        const result = (item as AlchemyBufferItem).alchemy?.result;
+        if (Array.isArray(result?.colors) && result.colors.length > 0) return;
+        if (paletteAnalysisRequestedIdsRef.current.has(item.id)) return;
+        paletteAnalysisRequestedIdsRef.current.add(item.id);
         window.setTimeout(() => {
           void runLocalPaletteAnalysis(item as AlchemyBufferItem, { silent: true, note: '已自动提取配色。' });
         }, index * 20);
@@ -9177,11 +9166,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'alchemy') return;
-    const pending = (items as AlchemyBufferItem[]).filter(item => isAlchemyCandidate(item) && (!item.alchemy || item.alchemy.state === 'raw'));
-    if (pending.length === 0) return;
-    triggerAutoPaletteForItems(pending as BufferItem[]);
-  }, [activeTab, items]);
+    triggerAutoPaletteForItems(items);
+  }, [items]);
+
 // 🌟 1. 用 Ref 缓存 activeFolderId，防止在监听器内部拿到旧的数据
   const activeFolderIdRef = useRef(activeFolderId);
   useEffect(() => { activeFolderIdRef.current = activeFolderId; }, [activeFolderId]);
@@ -10581,6 +10568,8 @@ function MainApp() {
       imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded === true,
     });
   };
+  void runAiAlchemyFromCard;
+  void deleteAlchemyOnly;
 
   const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
     !!canvasItem
@@ -23671,7 +23660,7 @@ useEffect(() => {
           setIsDrawerAgentOpen(true);
         } else if (action === 'switch_tab') {
           const requestedTab = String(args.tab || 'all') as DrawerTabType;
-          const tabs: DrawerTabType[] = ['all', 'image', 'text', 'video', 'file', 'alchemy', 'notes', 'calendar'];
+          const tabs: DrawerTabType[] = ['all', 'image', 'text', 'video', 'file', 'notes', 'calendar'];
           if (!tabs.includes(requestedTab)) throw new Error('未知抽屉分类');
           if (isCanvasModeRef.current) leaveCanvasToDrawer();
           setActiveTab(requestedTab);
@@ -27742,6 +27731,7 @@ useEffect(() => {
                                       </div>
                                     )}
                                   </div>
+                                  {false && (
                                   <div className="flex flex-col gap-2.5 rounded-[18px] border border-amber-100 bg-amber-50/45 px-3 py-2.5 dark:border-amber-800/40 dark:bg-amber-950/12">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="flex items-center gap-1.5 text-[11px] font-black text-amber-800 dark:text-amber-200">
@@ -27809,6 +27799,23 @@ useEffect(() => {
                                     <button onClick={() => { setAiApiEndpoint(isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_ENDPOINT : ''); setAiApiKey(''); setAiApiModel(isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_MODEL : ''); }} className="rounded-full bg-stone-100 dark:bg-stone-700 px-3 py-1 text-[10px] font-bold text-stone-500 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-600">清空</button>
                                   </div>
                                   </div>
+                                  )}
+                                  <AgentSettingsSection
+                                    embedded
+                                    expanded
+                                    settings={canvasAgent.settings}
+                                    loading={canvasAgent.settingsLoading}
+                                    codexStatus={canvasAgent.codexStatus}
+                                    codexInstallProgress={canvasAgent.codexInstallProgress}
+                                    codexLoginInfo={canvasAgent.codexLoginInfo}
+                                    onSave={canvasAgent.saveSettings}
+                                    onListModels={canvasAgent.listOpenAiModels}
+                                    onRefreshCodexStatus={canvasAgent.refreshCodexStatus}
+                                    onInstallCodex={canvasAgent.installCodex}
+                                    onStartCodexLogin={canvasAgent.startCodexLogin}
+                                    onOpenCodexLoginUrl={canvasAgent.openCodexLoginUrl}
+                                    onLogoutCodex={canvasAgent.logoutCodex}
+                                  />
                                   <div className="flex flex-col gap-2 rounded-[18px] border border-sky-100 bg-sky-50/50 px-3 py-2.5 dark:border-sky-400/20 dark:bg-sky-400/10">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="flex items-center gap-1.5 text-[11px] font-black text-sky-800 dark:text-sky-100">
@@ -27891,23 +27898,6 @@ useEffect(() => {
                             )}
                           </AnimatePresence>
                         </div>
-
-                        <AgentSettingsSection
-                          expanded={activeSettingCategory === 'agent'}
-                          settings={canvasAgent.settings}
-                          loading={canvasAgent.settingsLoading}
-                          codexStatus={canvasAgent.codexStatus}
-                          codexInstallProgress={canvasAgent.codexInstallProgress}
-                          codexLoginInfo={canvasAgent.codexLoginInfo}
-                          onToggle={() => setActiveSettingCategory(prev => prev === 'agent' ? '' : 'agent')}
-                          onSave={canvasAgent.saveSettings}
-                          onListModels={canvasAgent.listOpenAiModels}
-                          onRefreshCodexStatus={canvasAgent.refreshCodexStatus}
-                          onInstallCodex={canvasAgent.installCodex}
-                          onStartCodexLogin={canvasAgent.startCodexLogin}
-                          onOpenCodexLoginUrl={canvasAgent.openCodexLoginUrl}
-                          onLogoutCodex={canvasAgent.logoutCodex}
-                        />
 
                         <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
                           <button onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
@@ -32034,7 +32024,7 @@ useEffect(() => {
                       </div>
                     </div>
                   )}
-                  {!isUtilityActiveTab && items.length > 0 && displayItems.length === 0 && activeTab !== 'alchemy' && (
+                  {!isUtilityActiveTab && items.length > 0 && displayItems.length === 0 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-80 px-6">
                       <Search className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
@@ -32047,17 +32037,6 @@ useEffect(() => {
                       </div>
                     </div>
                   )}
-                  {items.length > 0 && activeTab === 'alchemy' && displayItems.length === 0 && (
-                    <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-70">
-                      <Sparkles className="w-7 h-7" />
-                      <p className="text-xs text-center px-5 leading-5">还没有可炼金的图片灵感。拖入参考图、截图或粘贴图片后，就可以在这里生成 CMF 炼金卡。</p>
-                    </div>
-                  )}
-                  {activeTab === 'alchemy' && displayItems.length > 0 && (
-                    <div className="mb-3 rounded-[24px] bg-emerald-50/70 dark:bg-emerald-900/15 border border-emerald-100 dark:border-emerald-800/40 px-4 py-3 text-xs leading-5 text-emerald-800 dark:text-emerald-200">
-                      炼金台：共 {alchemyCount} 张图片灵感，已分析 {finishedAlchemyCount} 张。未配置 AI 时使用本地大模型生成 CMF、造型语言、材料建议和可借鉴判断；模型不可用时才回退到本地配色。
-                    </div>
-                  )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
                     <>
                     {canVirtualizeDrawerGrid && drawerVirtualWindow.top > 0 && (
@@ -32066,20 +32045,16 @@ useEffect(() => {
                     <div
                       className="grid shrink-0 gap-2.5 items-start"
                       onWheel={handleDrawerCardWheel}
-                      style={activeTab === 'alchemy'
-                        ? { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${ALCHEMY_CARD_WIDTH}px), 1fr))` }
-                        : { gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))` }}
+                      style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))` }}
                     >
-                      <AnimatePresence mode={activeTab === 'alchemy' || optimizeLargeDrawerList ? 'sync' : 'popLayout'}>
+                      <AnimatePresence mode={optimizeLargeDrawerList ? 'sync' : 'popLayout'}>
                         {renderedDisplayItems.map(item => (
                           <div
                             key={item.id}
-                            data-alchemy-card-id={item.id}
-                            className={activeTab === 'alchemy' ? 'transition-opacity' : `${draggingItemId === item.id ? 'opacity-50 scale-[0.99]' : ''} transition-opacity`}
+                            className={`${draggingItemId === item.id ? 'opacity-50 scale-[0.99]' : ''} transition-opacity`}
                             draggable={false}
                             onDragStart={(e) => e.preventDefault()}
                             onPointerDown={(e) => {
-                              if (activeTab === 'alchemy') return;
                               if (e.shiftKey && !isSelectMode) {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -32090,27 +32065,7 @@ useEffect(() => {
                               startDrawerItemPointerDrag(e, item.id);
                             }}
                           >
-                            {activeTab === 'alchemy' ? (
-                              <AlchemyDrawerCard
-                                item={item as AlchemyBufferItem}
-                                active={selectedAlchemyItemId === item.id}
-                                onSelect={() => setSelectedAlchemyItemId(prev => prev === item.id ? null : item.id)}
-                                onAlchemy={() => runAlchemyAnalysis(item as AlchemyBufferItem)}
-                                onPreview={() => {
-                                  const source = item.url || (item.path ? convertFileSrc(item.path) : '');
-                                  if (source) openSelectedImagePreview(source);
-                                }}
-                                onRemove={() => {
-                                  pushDrawerUndoSnapshot('删除炼金卡片');
-                                  setItems(prev => prev.filter(i => i.id !== item.id));
-                                }}
-                                onDeleteAlchemy={() => deleteAlchemyOnly(item.id)}
-                                showToast={showToast}
-                                hasAiAnalysis={hasAiAnalysis}
-                              />
-                            ) : (
-                              <>
-                                <BufferItemCard
+                            <BufferItemCard
                                   item={item} cardWidth={cardWidth} mediaHeight={cardMediaHeight} isResizing={isResizingCards}
                                   onResizeStart={() => setIsResizingCards(true)} onResizeEnd={() => setIsResizingCards(false)}
                                   onResize={(w: number, h: number) => { setCardWidth(w); setCardMediaHeight(h); }}
@@ -32185,14 +32140,10 @@ useEffect(() => {
                                   showToast={showToast}
                                   onEnsureThumbnail={ensureMediaThumbnail}
                                   onCreateFloatingNote={createFloatingNote}
-                                  showAlchemy={isAlchemyCandidate(item as AlchemyBufferItem)}
-                                  onAlchemy={() => runAiAlchemyFromCard(item as AlchemyBufferItem)}
                                   onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
                                   selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}`}
                                   actionContext={drawerCardActionContext}
-                                />
-                              </>
-                            )}
+                            />
                           </div>
                         ))}
                       </AnimatePresence>

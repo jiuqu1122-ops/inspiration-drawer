@@ -22,12 +22,13 @@ import type {
 
 type AgentSettingsSectionProps = {
   expanded: boolean;
+  embedded?: boolean;
   settings: AgentSettings;
   loading: boolean;
   codexStatus: CodexRuntimeStatus | null;
   codexInstallProgress: CodexInstallProgress | null;
   codexLoginInfo: CodexLoginInfo | null;
-  onToggle: () => void;
+  onToggle?: () => void;
   onSave: (settings: AgentSettings & { apiKey?: string; clearApiKey?: boolean }) => Promise<AgentSettings>;
   onListModels: () => Promise<string[]>;
   onRefreshCodexStatus: () => Promise<CodexRuntimeStatus>;
@@ -39,6 +40,7 @@ type AgentSettingsSectionProps = {
 
 export function AgentSettingsSection({
   expanded,
+  embedded = false,
   settings,
   loading,
   codexStatus,
@@ -141,18 +143,29 @@ export function AgentSettingsSection({
   };
 
   return (
-    <div className="overflow-hidden rounded-[22px] border border-white/60 bg-white/75 shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl dark:border-stone-700/60 dark:bg-stone-800/75">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between p-3 transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50"
-      >
-        <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200">
-          <Bot className="h-4 w-4 text-blue-500" />
-          AGENT 设置
-        </span>
-        <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-      </button>
+    <div className={embedded
+      ? "overflow-hidden rounded-[18px] border border-blue-100 bg-blue-50/35 dark:border-blue-400/20 dark:bg-blue-400/5"
+      : "overflow-hidden rounded-[22px] border border-white/60 bg-white/75 shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl dark:border-stone-700/60 dark:bg-stone-800/75"}
+    >
+      {!embedded && (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex w-full items-center justify-between p-3 transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50"
+        >
+          <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200">
+            <Bot className="h-4 w-4 text-blue-500" />
+            AGENT 设置
+          </span>
+          <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        </button>
+      )}
+      {embedded && (
+        <div className="flex items-center gap-2 px-3 pt-3 text-[11px] font-black text-blue-800 dark:text-blue-100">
+          <Bot className="h-3.5 w-3.5" />
+          Agent 设置
+        </div>
+      )}
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -162,7 +175,7 @@ export function AgentSettingsSection({
             transition={{ duration: 0.16, ease: 'easeOut' }}
             className="overflow-hidden"
           >
-            <div className="flex flex-col gap-3 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
+            <div className={`flex flex-col gap-3 px-3 pb-3 pt-2 ${embedded ? '' : 'border-t border-stone-100 dark:border-stone-700/50'}`}>
               <label className="flex flex-col gap-1">
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">Agent 引擎</span>
                 <select
