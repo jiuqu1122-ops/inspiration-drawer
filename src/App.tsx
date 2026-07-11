@@ -12890,13 +12890,23 @@ function MainApp() {
       return /^data:image\/(?:png|jpe?g|bmp|gif);base64,/i.test(value);
     }
     if (/^blob:/i.test(value)) return false;
-    if (/\.webp(?:[?#].*)?$/i.test(value)) return false;
     return true;
   };
 
   const copyImageSourceToSystemClipboard = async (source: string) => {
+    let backendError: unknown = null;
     let directError: unknown = null;
     let dataUrlError: unknown = null;
+
+    if (shouldTryBackendImageCopyDirectly(source)) {
+      try {
+        await invoke('copy_image', { dataUrl: source });
+        return;
+      } catch (err) {
+        backendError = err;
+        console.warn('backend copy canvas image source failed:', err);
+      }
+    }
 
     try {
       await writeImageSourceToClipboard(source);
@@ -12915,17 +12925,7 @@ function MainApp() {
       console.warn('copy canvas image source via data url failed:', err);
     }
 
-    if (shouldTryBackendImageCopyDirectly(source)) {
-      try {
-        await invoke('copy_image', { dataUrl: source });
-        return;
-      } catch (err) {
-        directError ||= err;
-        console.warn('backend copy canvas image source failed:', err);
-      }
-    }
-
-    throw dataUrlError || directError || new Error('copy image source failed');
+    throw dataUrlError || directError || backendError || new Error('copy image source failed');
   };
 
   const copySelectedImagePreviewToClipboard = async () => {
@@ -20947,11 +20947,18 @@ function MainApp() {
     if (!source) throw new Error('empty screenshot path');
 
     const copyOnce = async () => {
+      let backendError: unknown = null;
       let pluginError: unknown = null;
       let browserError: unknown = null;
-      let backendError: unknown = null;
 
-      // 首选 Tauri clipboard-manager，避免每次复制都启动 PowerShell 进程。
+      try {
+        await invoke('copy_image', { dataUrl: source });
+        return;
+      } catch (err) {
+        backendError = err;
+        console.warn('backend copy_image failed:', err);
+      }
+
       try {
         await writeImageSourceToClipboard(source);
         return;
@@ -20975,15 +20982,6 @@ function MainApp() {
       } catch (err) {
         browserError = err;
         console.warn('browser clipboard image copy failed:', err);
-      }
-
-      // 最后才走兼容后端；旧系统会为此启动 PowerShell，可靠但明显更慢。
-      try {
-        await invoke('copy_image', { dataUrl: source });
-        return;
-      } catch (err) {
-        backendError = err;
-        console.warn('backend copy_image failed:', err);
       }
 
       throw backendError || browserError || pluginError || new Error('copy image failed');
@@ -21464,6 +21462,10 @@ useEffect(() => {
         unlistenCaptured = undefined;
       }
 
+      void copyLocalImageToClipboard(savedPath).catch((err) => {
+        console.warn('early screenshot clipboard copy failed:', err);
+      });
+
       await restoreDrawerOnce();
 
       const assetUrl = convertFileSrc(savedPath);
@@ -21474,7 +21476,7 @@ useEffect(() => {
         url: assetUrl,
         path: savedPath,
       } as BufferItem;
-      const clipboardPromise = copyLocalImageToClipboard(savedPath)
+      const clipboardResultPromise = copyLocalImageToClipboard(savedPath)
         .then(() => ({ copied: true, error: null as unknown }))
         .catch((err) => {
           console.warn('截图复制到剪贴板失败:', err);
@@ -21489,7 +21491,7 @@ useEffect(() => {
       await updateSnipNote(target, finalItem);
       await revealDrawerAfterSnipCopy();
 
-      const clipboardResult = await clipboardPromise;
+      const clipboardResult = await clipboardResultPromise;
       if (clipboardResult.copied) {
         showToast(shouldAutoPinNote ? '截图成功，已复制并置顶为便签' : '截图成功，已复制并保存到抽屉');
       } else {
@@ -21711,9 +21713,15 @@ useEffect(() => {
         viewportWidth: Number(payload?.viewportWidth) || 1,
         viewportHeight: Number(payload?.viewportHeight) || 1,
       });
+      const clipboardResultPromise = copyLocalImageToClipboard(savedPath)
+        .then(() => ({ copied: true, error: null as unknown }))
+        .catch((err) => {
+          console.warn('截图复制到剪贴板失败:', err);
+          return { copied: false, error: err as unknown };
+        });
       await recoverSnipWindowFromMain(restoreDrawer);
       snipCaptureInFlightRef.current = false;
-      await handleSnipWindowCaptured({ ...payload, path: savedPath });
+      await handleSnipWindowCaptured({ ...payload, path: savedPath, clipboardResultPromise });
     } catch (err) {
       console.error('snip selection capture failed:', err);
       await recoverSnipWindowFromMain(restoreDrawer);

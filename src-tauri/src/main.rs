@@ -12306,7 +12306,7 @@ fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
     None
 }
 
-fn write_data_image_to_temp(data_url: &str) -> Result<PathBuf, String> {
+fn decode_data_image_bytes(data_url: &str) -> Result<(String, Vec<u8>), String> {
     let comma_index = data_url
         .find(',')
         .ok_or_else(|| "invalid data url".to_string())?;
@@ -12318,125 +12318,137 @@ fn write_data_image_to_temp(data_url: &str) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?;
 
     let meta = data_url[..comma_index].to_lowercase();
-    let ext = if meta.contains("image/jpeg") || meta.contains("image/jpg") {
-        "jpg"
-    } else if meta.contains("image/bmp") {
-        "bmp"
-    } else if meta.contains("image/gif") {
-        "gif"
-    } else {
-        "png"
-    };
-
-    let file_name = format!(
-        "drawer_clip_{}.{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_millis(),
-        ext
-    );
-    let out_path = std::env::temp_dir().join(file_name);
-    fs::write(&out_path, bytes).map_err(|e| e.to_string())?;
-    Ok(out_path)
+    Ok((meta, bytes))
 }
 
 #[cfg(target_os = "windows")]
 fn set_clipboard_image_from_file(path: &str) -> Result<(), String> {
-    let script = r#"
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$path = $args[0]
-$last = $null
-for ($i = 0; $i -lt 12; $i++) {
-  try {
-    $img = [System.Drawing.Image]::FromFile($path)
-    $bmp = New-Object System.Drawing.Bitmap($img)
-    $img.Dispose()
-    [System.Windows.Forms.Clipboard]::SetDataObject($bmp, $true)
-    Start-Sleep -Milliseconds 120
-    $bmp.Dispose()
-    exit 0
-  } catch {
-    $last = $_
-    Start-Sleep -Milliseconds 90
-  }
-}
-throw $last
-"#;
-    let mut ps_cmd = SysCommand::new("powershell.exe");
-    hide_console_window(&mut ps_cmd);
-    let output = ps_cmd
-        .args([
-            "-NoProfile",
-            "-STA",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-            path,
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+    let image = screenshots::image::open(path).map_err(|e| e.to_string())?;
+    set_clipboard_dynamic_image(image)
 }
 
 #[cfg(target_os = "windows")]
 fn set_clipboard_image_from_url(url: &str) -> Result<(), String> {
-    let script = r#"
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
-$uri = $args[0]
-$wc = New-Object System.Net.WebClient
-$wc.Headers.Add('User-Agent', 'inspiration-drawer')
-$bytes = $wc.DownloadData($uri)
-$ms = New-Object System.IO.MemoryStream(,$bytes)
-$img = [System.Drawing.Image]::FromStream($ms)
-$bmp = New-Object System.Drawing.Bitmap($img)
-$img.Dispose()
-$ms.Dispose()
-$wc.Dispose()
-$last = $null
-for ($i = 0; $i -lt 12; $i++) {
-  try {
-    [System.Windows.Forms.Clipboard]::SetDataObject($bmp, $true)
-    Start-Sleep -Milliseconds 120
-    $bmp.Dispose()
-    exit 0
-  } catch {
-    $last = $_
-    Start-Sleep -Milliseconds 90
-  }
-}
-$bmp.Dispose()
-throw $last
-"#;
-    let mut ps_cmd = SysCommand::new("powershell.exe");
-    hide_console_window(&mut ps_cmd);
-    let output = ps_cmd
-        .args([
-            "-NoProfile",
-            "-STA",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-            url,
-        ])
-        .output()
+    let bytes = Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(url)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|e| e.to_string())?
+        .bytes()
         .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    set_clipboard_image_from_bytes(&bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn set_clipboard_image_from_bytes(bytes: &[u8]) -> Result<(), String> {
+    let image = screenshots::image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    set_clipboard_dynamic_image(image)
+}
+
+#[cfg(target_os = "windows")]
+fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Result<(), String> {
+    use std::mem::size_of;
+    use std::ptr::{copy_nonoverlapping, null_mut};
+    use winapi::ctypes::c_void;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::winbase::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use winapi::um::wingdi::{BITMAPINFOHEADER, BI_RGB};
+    use winapi::um::winuser::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_DIB};
+
+    let rgba = image.to_rgba8();
+    let width = rgba.width();
+    let height = rgba.height();
+    if width == 0 || height == 0 {
+        return Err("empty image".to_string());
     }
+
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let header_size = size_of::<BITMAPINFOHEADER>();
+    let pixel_size = width_usize
+        .checked_mul(height_usize)
+        .and_then(|value| value.checked_mul(4))
+        .ok_or_else(|| "image is too large for clipboard".to_string())?;
+    let total_size = header_size
+        .checked_add(pixel_size)
+        .ok_or_else(|| "image is too large for clipboard".to_string())?;
+
+    let mut dib = vec![0u8; total_size];
+    let header = BITMAPINFOHEADER {
+        biSize: header_size as DWORD,
+        biWidth: width as i32,
+        biHeight: -(height as i32),
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        biSizeImage: pixel_size as DWORD,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+    };
+
+    unsafe {
+        copy_nonoverlapping(
+            &header as *const BITMAPINFOHEADER as *const u8,
+            dib.as_mut_ptr(),
+            header_size,
+        );
+    }
+
+    for (index, pixel) in rgba.as_raw().chunks_exact(4).enumerate() {
+        let out = header_size + index * 4;
+        dib[out] = pixel[2];
+        dib[out + 1] = pixel[1];
+        dib[out + 2] = pixel[0];
+        dib[out + 3] = pixel[3];
+    }
+
+    unsafe {
+        let handle = GlobalAlloc(GMEM_MOVEABLE, dib.len());
+        if handle.is_null() {
+            return Err("GlobalAlloc failed".to_string());
+        }
+        let target = GlobalLock(handle) as *mut u8;
+        if target.is_null() {
+            GlobalFree(handle);
+            return Err("GlobalLock failed".to_string());
+        }
+        copy_nonoverlapping(dib.as_ptr(), target, dib.len());
+        GlobalUnlock(handle);
+
+        let mut open = false;
+        for _ in 0..8 {
+            if OpenClipboard(null_mut()) != 0 {
+                open = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !open {
+            GlobalFree(handle);
+            return Err("OpenClipboard failed".to_string());
+        }
+
+        if EmptyClipboard() == 0 {
+            CloseClipboard();
+            GlobalFree(handle);
+            return Err("EmptyClipboard failed".to_string());
+        }
+
+        if SetClipboardData(CF_DIB, handle as *mut c_void).is_null() {
+            CloseClipboard();
+            GlobalFree(handle);
+            return Err("SetClipboardData failed".to_string());
+        }
+
+        CloseClipboard();
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -12455,10 +12467,8 @@ fn copy_image_impl(data_url: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         if input.starts_with("data:image/") {
-            let temp_path = write_data_image_to_temp(input)?;
-            let result = set_clipboard_image_from_file(&temp_path.to_string_lossy());
-            let _ = fs::remove_file(temp_path);
-            return result;
+            let (_meta, bytes) = decode_data_image_bytes(input)?;
+            return set_clipboard_image_from_bytes(&bytes);
         }
 
         if let Some(path) = local_path_from_url_like(input) {

@@ -356,10 +356,10 @@ function BufferItemCard({
         if (!source) throw new Error('没有可复制的图片');
 
         try {
-          await writeImageSourceToClipboard(source);
-        } catch (err) {
-          console.warn('fast card image copy failed:', err);
           await invoke('copy_image', { dataUrl: source });
+        } catch (err) {
+          console.warn('native card image copy failed:', err);
+          await writeImageSourceToClipboard(source);
         }
         markCopied('📋 图片已复制');
         return;
