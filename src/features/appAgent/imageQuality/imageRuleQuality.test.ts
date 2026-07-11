@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { convertWorkflowDraftToDefinition } from '../kernel/appAgentKernel';
 import type { WorkflowRecipeDraft } from '../workflows/workflowRecipeTypes';
-import { getDefaultImageRuleState } from './imageRuleDefaults';
+import { ImageRuleSwitchPanel } from '../../canvas/components/ImageRuleSwitchPanel';
+import { getDefaultImageRuleState, getRecommendedImageRuleState } from './imageRuleDefaults';
 import { buildFinalImagePrompt } from './imageRulePromptBuilder';
 
 describe('image rule quality', () => {
@@ -12,6 +15,13 @@ describe('image rule quality', () => {
     expect(rules.structure_credibility).toBe(true);
     expect(rules.no_random_text).toBe(true);
     expect(rules.no_structure_drift).toBe(true);
+    expect(rules.atmosphere).toBeUndefined();
+    expect(rules.brand_feel).toBeUndefined();
+    expect(rules.premium_lighting).toBeUndefined();
+
+    const recommended = getRecommendedImageRuleState({ outputRole: 'hero_main' });
+    expect(recommended.atmosphere).toBe(true);
+    expect(recommended.brand_feel).toBe(true);
   });
 
   it('injects enabled rules and keeps negative constraints separate', () => {
@@ -33,6 +43,38 @@ describe('image rule quality', () => {
     expect(finalPrompt.prompt).toContain('Negative constraints:');
     expect(finalPrompt.negativeConstraints.some(item => item.includes('未请求的标题'))).toBe(true);
     expect(finalPrompt.negativeConstraints.some(item => item.includes('未提供的尺寸'))).toBe(true);
+  });
+
+  it('omits disabled default rules from final image prompt', () => {
+    const finalPrompt = buildFinalImagePrompt({
+      userPrompt: 'Create a product render.',
+      rules: {
+        product_consistency: true,
+        structure_credibility: true,
+        no_random_text: false,
+      },
+      nodeType: { mediaType: 'image', hasReferenceImage: true, nodeRole: 'hero_main' },
+    });
+
+    expect(finalPrompt.prompt).toContain('Image quality rules:');
+    expect(finalPrompt.negativeConstraints.some(item => item.includes('未请求的标题'))).toBe(false);
+    expect(finalPrompt.prompt).not.toContain('未请求的标题');
+  });
+
+  it('renders the image rule switch panel with enabled rule switches', () => {
+    const html = renderToStaticMarkup(React.createElement(ImageRuleSwitchPanel, {
+      rules: {
+        atmosphere: true,
+        no_random_text: true,
+      },
+      expanded: true,
+      onToggle: () => undefined,
+      onToggleExpanded: () => undefined,
+    }));
+
+    expect(html).toContain('role="switch"');
+    expect(html).toContain('aria-checked="true"');
+    expect(html).toContain('图像规则');
   });
 
   it('preserves workflow draft imagePolicy rules in image generator definitions', () => {

@@ -68,6 +68,7 @@ export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
 export type CanvasAiBaseImageOptions = {
   apiKey: string;
   prompt: string;
+  negativePrompt?: string;
   model?: string;
   inputImages?: string[];
   aspectRatio?: string;
@@ -138,6 +139,8 @@ const buildPromptWithOptions = (prompt: string, aspectRatio?: string, resolution
   if (constraints.length === 0) return prompt.trim();
   return `${prompt.trim()}\n\nStrict image constraints: ${constraints.join(', ')}. Do not crop or pad to a different aspect ratio.`;
 };
+
+const normalizeNegativePrompt = (value?: string | null) => String(value || '').trim();
 
 const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, resolution?: string) => {
   const constraints = [
@@ -910,6 +913,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     ? resolveXaisImage2Ratio(model, options.aspectRatio)
     : normalizeImageAspectRatio(options.aspectRatio);
   const promptText = prompt;
+  const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
   const output: string[] = [];
 
   const runOneTask = async () => {
@@ -925,6 +929,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       model: requestModel,
       custom_field: customField,
     };
+    if (negativePrompt) taskBody.negative_prompt = negativePrompt;
     taskBody.ratio = requestRatio;
     if (!isNanoModel) taskBody.client = 'XAIS';
     if (inputImages.length > 0) {
@@ -1414,6 +1419,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution);
   const promptText = buildPromptWithOptions(prompt, options.aspectRatio, options.resolution);
+  const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
 
   const requestChatImages = async () => {
     const content = inputImages.length > 0
@@ -1428,6 +1434,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
     const body = {
       model,
       ...imageParams,
+      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
       messages: [
         {
           role: 'user',
@@ -1464,6 +1471,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
         const data = await postImageEditViaTauri(normalizeNewApiEndpoint(endpoint, 'images/edits'), apiKey, {
           model,
           prompt: promptText,
+          ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
           n: imageParams.n,
           size: imageParams.size,
           images: inputImages,
@@ -1481,6 +1489,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
     const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'images/generations'), apiKey, {
       model,
       prompt: promptText,
+      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
       ...imageParams,
       response_format: 'b64_json',
     });
@@ -1510,6 +1519,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   }
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
   const promptText = buildChinesePromptWithOptions(prompt, options.aspectRatio, options.resolution);
+  const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
   const imageEndpoint = normalizeImageGenerationsEndpoint(options.endpoint || '');
   const chatEndpoint = normalizeChatCompletionsEndpoint(options.endpoint || '');
   const requestImages = async (label: string, url: string, body: unknown, repeatCount: number) => {
@@ -1540,6 +1550,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
       return await requestImages('Xais Images 接口', imageEndpoint, {
         model: requestModel,
         prompt: promptText,
+        ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
         n: count,
         size: imageSizeFromAspectRatio(options.aspectRatio),
         response_format: 'url',
@@ -1570,6 +1581,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
       label: 'Xais Chat 接口',
       body: {
         model: requestModel,
+        ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
         messages: [
           {
             role: 'user',
@@ -1584,6 +1596,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
       label: 'Xais Chat URL 文本接口',
       body: {
         model: requestModel,
+        ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
         messages: [
           {
             role: 'user',

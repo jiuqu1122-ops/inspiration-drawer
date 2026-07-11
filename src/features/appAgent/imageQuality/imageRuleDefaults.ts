@@ -65,6 +65,17 @@ export const ECOMMERCE_DETAIL_PAGE_RECOMMENDED_RULES = stateFromKeys([
   'no_random_text',
 ]);
 
+export const DEFAULT_ENABLED_IMAGE_RULES = mergeImageRuleStates(
+  PRODUCT_IMAGE_GENERATOR_DEFAULT_RULES,
+);
+
+export const getDefaultEnabledImageRules = (context: ImageRuleDefaultContext = {}): ImageRuleState => (
+  mergeImageRuleStates(
+    DEFAULT_ENABLED_IMAGE_RULES,
+    context.hasReferenceImage ? REFERENCE_IMAGE_DEFAULT_RULES : undefined,
+  )
+);
+
 const contextText = (context: ImageRuleDefaultContext) => [
   context.presetId,
   context.presetLabel,
@@ -87,8 +98,12 @@ export const inferImageRulePresetId = (context: ImageRuleDefaultContext = {}) =>
 };
 
 export const getDefaultImageRuleState = (context: ImageRuleDefaultContext = {}): ImageRuleState => {
+  return getDefaultEnabledImageRules(context);
+};
+
+export const getRecommendedImageRuleState = (context: ImageRuleDefaultContext = {}): ImageRuleState => {
   const presetId = inferImageRulePresetId(context);
-  const roleRules = presetId === 'ecommerce_detail_page'
+  return presetId === 'ecommerce_detail_page'
     ? ECOMMERCE_DETAIL_PAGE_RECOMMENDED_RULES
     : presetId === 'cmf_board'
       ? CMF_BOARD_RECOMMENDED_RULES
@@ -99,12 +114,6 @@ export const getDefaultImageRuleState = (context: ImageRuleDefaultContext = {}):
           : presetId === 'hero_main_visual'
             ? HERO_MAIN_VISUAL_RECOMMENDED_RULES
             : {};
-
-  return mergeImageRuleStates(
-    PRODUCT_IMAGE_GENERATOR_DEFAULT_RULES,
-    context.hasReferenceImage ? REFERENCE_IMAGE_DEFAULT_RULES : undefined,
-    roleRules,
-  );
 };
 
 export const resolveImageRuleState = (

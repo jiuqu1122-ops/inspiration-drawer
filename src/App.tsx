@@ -66,6 +66,7 @@ import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/app
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
+  type ImagePolicy,
   type ImageRuleKey,
   type ImageRuleState,
   mergeImageRuleStates,
@@ -1413,18 +1414,50 @@ const getCanvasImageRuleState = (
   getCanvasImageRuleDefaultContext(item, hasReferenceImage),
 );
 
+const canvasAiProviderSupportsNegativePrompt = (provider: CanvasAiProvider) => (
+  provider === 'xais-chat' || provider === 'new-api'
+);
+
 const createCanvasImagePolicy = (
   context: ImageRuleDefaultContext,
-  explicitRules?: ImageRuleState | null
+  explicitRulesOrPolicy?: ImageRuleState | ImagePolicy | null
 ) => ({
-  rules: mergeImageRuleStates(getDefaultImageRuleState(context), normalizeImageRuleState(explicitRules)),
-  defaultPreset: context.workflowTemplateId || context.qualityProfileId || context.outputRole || 'product_image_generator',
+  ...(
+    explicitRulesOrPolicy
+    && typeof explicitRulesOrPolicy === 'object'
+    && !Array.isArray(explicitRulesOrPolicy)
+    && 'rules' in explicitRulesOrPolicy
+      ? explicitRulesOrPolicy as ImagePolicy
+      : {}
+  ),
+  rules: mergeImageRuleStates(
+    getDefaultImageRuleState(context),
+    normalizeImageRuleState(
+      explicitRulesOrPolicy
+      && typeof explicitRulesOrPolicy === 'object'
+      && !Array.isArray(explicitRulesOrPolicy)
+      && 'rules' in explicitRulesOrPolicy
+        ? (explicitRulesOrPolicy as ImagePolicy).rules
+        : explicitRulesOrPolicy
+    )
+  ),
+  defaultPreset: (
+    explicitRulesOrPolicy
+    && typeof explicitRulesOrPolicy === 'object'
+    && !Array.isArray(explicitRulesOrPolicy)
+    && 'rules' in explicitRulesOrPolicy
+    && typeof (explicitRulesOrPolicy as ImagePolicy).defaultPreset === 'string'
+      ? (explicitRulesOrPolicy as ImagePolicy).defaultPreset
+      : context.workflowTemplateId || context.qualityProfileId || context.outputRole || 'product_image_generator'
+  ),
 });
-const getImagePolicyRulesFromRecord = (value: unknown): ImageRuleState => {
-  const record = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as { rules?: unknown }
-    : {};
-  return normalizeImageRuleState(record.rules);
+const getImagePolicyFromRecord = (value: unknown): ImagePolicy | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as ImagePolicy;
+  return {
+    ...record,
+    rules: normalizeImageRuleState(record.rules),
+  };
 };
 const makeCanvasWorkflowAiNode = (
   id: string,
@@ -1668,7 +1701,7 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
               outputRole: id,
               workflowTemplateId: 'product-detail-page',
               prompt,
-            }, getImagePolicyRulesFromRecord(step?.imagePolicy)),
+            }, getImagePolicyFromRecord(step?.imagePolicy)),
             status: 'idle' as const,
             outputs: [],
           },
@@ -1869,7 +1902,7 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
           workflowTemplateId: templateId,
           qualityProfileId: typeof metadata.qualityProfileId === 'string' ? metadata.qualityProfileId : undefined,
           prompt,
-        }, getImagePolicyRulesFromRecord(step.imagePolicy)),
+        }, getImagePolicyFromRecord(step.imagePolicy)),
         outputFormat,
         count,
         status: 'idle',
@@ -15052,7 +15085,7 @@ function MainApp() {
               workflowTemplateId: cleanWorkflow.id,
               qualityProfileId: typeof node.ai?.skillMeta?.qualityProfileId === 'string' ? node.ai.skillMeta.qualityProfileId : undefined,
               prompt: [node.ai?.presetPrompt, node.ai?.prompt, node.item.content].filter(Boolean).join('\n'),
-            }, node.ai?.imagePolicy?.rules),
+            }, node.ai?.imagePolicy || null),
             status: 'idle' as const,
             error: undefined,
             generatedAt: undefined,
@@ -15914,14 +15947,13 @@ function MainApp() {
     )));
   };
 
-  const toggleCanvasImageRule = (canvasId: string, key: ImageRuleKey) => {
+  const updateCanvasImageRule = (canvasId: string, key: ImageRuleKey, enabled: boolean) => {
     const target = canvasItemsRef.current.find(item => item.id === canvasId);
     if (target?.ai?.type !== 'image-generator') return;
-    const resolvedRules = getCanvasImageRuleState(target);
     const explicitRules = normalizeImageRuleState(target.ai.imagePolicy?.rules);
     const nextRules = {
       ...explicitRules,
-      [key]: resolvedRules[key] !== true,
+      [key]: enabled,
     };
     pushDrawerUndoSnapshot('修改图像规则');
     updateCanvasItemsImmediate(prev => prev.map(item => (
@@ -15941,6 +15973,13 @@ function MainApp() {
     )));
   };
 
+  const toggleCanvasImageRule = (canvasId: string, key: ImageRuleKey) => {
+    const target = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (target?.ai?.type !== 'image-generator') return;
+    const resolvedRules = getCanvasImageRuleState(target);
+    updateCanvasImageRule(canvasId, key, resolvedRules[key] !== true);
+  };
+
   const toggleCanvasImageRulePanel = (canvasId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === canvasId);
     if (target?.ai?.type !== 'image-generator') return;
@@ -15954,6 +15993,7 @@ function MainApp() {
           imagePolicy: {
             ...(item.ai.imagePolicy || {}),
             panelExpanded: nextExpanded,
+            updatedAt: Date.now(),
           },
         },
       };
@@ -16678,16 +16718,20 @@ function MainApp() {
         xaisReferenceFormat
       );
       let inputImages = preparedInputs.images;
+      let negativePrompt: string | undefined;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
       if (inputImages.length > 0 && isCanvasAiReferenceImageUnsupportedModel(provider, requestModel)) {
         throw new Error('GPT Image 2 当前仅按文生图接入，不能使用参考图。请切换到 Xais Image2 / Nano Banana，或移除参考图。');
       }
       if (mediaType === 'image') {
         const hasReferenceImage = inputImages.length > 0 || (target.inputs || []).length > 0;
-        prompt = buildFinalImagePrompt({
+        const finalPrompt = buildFinalImagePrompt({
           textInputs: textInputPrompts,
           presetPrompt: target.ai.presetPrompt || '',
           userPrompt: manualPrompt,
+          qualityProfile: typeof target.ai.skillMeta?.qualityProfileId === 'string'
+            ? target.ai.skillMeta.qualityProfileId
+            : '',
           rules: getCanvasImageRuleState(target, hasReferenceImage),
           nodeType: {
             mediaType: 'image',
@@ -16696,7 +16740,13 @@ function MainApp() {
               ? target.ai.skillMeta.workflowOutputType
               : target.ai.presetLabel || target.item.name,
           },
-        }).prompt || prompt;
+        });
+        if (canvasAiProviderSupportsNegativePrompt(provider) && finalPrompt.negativeConstraints.length > 0) {
+          prompt = finalPrompt.positivePrompt || finalPrompt.prompt || prompt;
+          negativePrompt = finalPrompt.negativeConstraints.join('\n');
+        } else {
+          prompt = finalPrompt.prompt || prompt;
+        }
       }
       const requestedCount = currentOutputs.length || clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
       let generateOptions = {
@@ -16707,6 +16757,7 @@ function MainApp() {
           provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
         ),
         prompt,
+        negativePrompt,
         model: requestModel,
         inputImages,
         aspectRatio: target.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
