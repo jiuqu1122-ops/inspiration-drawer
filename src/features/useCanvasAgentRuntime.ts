@@ -2142,7 +2142,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         title: '请求已进入队列',
         detail: provider === 'codex'
           ? '准备连接 ChatGPT Codex App Server'
-          : '准备连接自定义 API Codex App Server',
+          : '准备连接自定义 API Chat Completions',
         status: 'running',
         timestamp: Date.now() + 1,
       }],
@@ -2290,7 +2290,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       if (workflowDesignIntent && workflowPlanningRoute === 'local_deterministic') {
         throw new Error('本地快速规划没有生成可执行的 Workflow Draft');
       }
-      if (provider === 'codex' || provider === 'openai-compatible') {
+      if (provider === 'codex') {
         await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot, appAgentTurn);
       } else {
         const systemPrompt = [
