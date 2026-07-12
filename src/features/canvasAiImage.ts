@@ -140,7 +140,7 @@ const buildPromptWithOptions = (prompt: string, aspectRatio?: string, resolution
   return `${prompt.trim()}\n\nStrict image constraints: ${constraints.join(', ')}. Do not crop or pad to a different aspect ratio.`;
 };
 
-const normalizeNegativePrompt = (value?: string | null) => String(value || '').trim();
+const normalizeNegativePrompt = (_value?: string | null) => '';
 
 const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, resolution?: string) => {
   const constraints = [

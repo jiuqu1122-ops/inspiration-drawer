@@ -1414,8 +1414,10 @@ const getCanvasImageRuleState = (
   getCanvasImageRuleDefaultContext(item, hasReferenceImage),
 );
 
-const canvasAiProviderSupportsNegativePrompt = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat' || provider === 'new-api'
+const canvasAiProviderSupportsNegativePrompt = (_provider: CanvasAiProvider) => (
+  // Xais / DCHAI and many New API deployments reject `negative_prompt`
+  // with backend schema errors. Keep negative constraints inline in prompt.
+  false
 );
 
 const createCanvasImagePolicy = (
