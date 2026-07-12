@@ -786,6 +786,29 @@ const extractUserSpecifiedDetailOutputIds = (userText: string): string[] => {
   return [...new Set(ids)];
 };
 
+const CUSTOM_WORKFLOW_OUTPUT_TITLES: Record<string, string> = {
+  portfolio_cover: '作品集封面',
+  portfolio_overview: '项目总览',
+  case_study_detail: '案例细节页',
+  final_presentation: '最终展示页',
+  brand_key_visual: '品牌主视觉',
+  brand_usage_scene: '品牌场景图',
+  brand_detail_system: '视觉系统细节',
+  concept_overview: '概念总览',
+  key_visual: '关键视觉',
+  detail_variation: '细节变化',
+};
+
+const getDefaultCustomWorkflowOutputIds = (userText: string): string[] => {
+  if (/作品集|portfolio/i.test(userText)) {
+    return ['portfolio_cover', 'portfolio_overview', 'case_study_detail', 'final_presentation'];
+  }
+  if (/品牌|brand/i.test(userText)) {
+    return ['brand_key_visual', 'brand_usage_scene', 'brand_detail_system', 'final_presentation'];
+  }
+  return ['concept_overview', 'key_visual', 'detail_variation', 'final_presentation'];
+};
+
 // ─── Workflow draft update intent detection ────────────────────────────────
 
 const DRAFT_SAVE_PATTERN = /保存.*工作流|保存草稿|save.*workflow|save.*draft/i;
@@ -1315,6 +1338,9 @@ export function buildAppAgentPlan(input: {
       const customOutputIds = userOutputIds.length > 0
         ? userOutputIds
         : workflowIntent.outputTypes.map(mapOutputTypeToRecipeId);
+      const plannedOutputIds = customOutputIds.length > 0
+        ? customOutputIds
+        : getDefaultCustomWorkflowOutputIds(text);
       const languagePolicy = detectUserLanguagePolicy(text);
       const draft: WorkflowRecipeDraft = {
         id: `custom-draft-${Date.now().toString(36)}`,
@@ -1326,10 +1352,10 @@ export function buildAppAgentPlan(input: {
           { id: 'product_reference_image', label: '参考图', type: 'image' as const, required: true },
         ],
         strategy: { enabled: false, mode: 'disabled' as const, title: '', prompt: '' },
-        outputs: customOutputIds.length > 0
-          ? customOutputIds.map((id, i) => ({
+        outputs: plannedOutputIds.length > 0
+          ? plannedOutputIds.map((id, i) => ({
             id,
-            title: id.replace(/_/g, ' '),
+            title: CUSTOM_WORKFLOW_OUTPUT_TITLES[id] || id.replace(/_/g, ' '),
             type: 'image_generator' as const,
             enabled: true,
             order: i + 1,
@@ -1338,7 +1364,7 @@ export function buildAppAgentPlan(input: {
             resolution: generationSettings.resolution || null,
             provider: generationSettings.provider || null,
             model: generationSettings.model || null,
-            prompt: `生成${id.replace(/_/g, ' ')}图片。`,
+            prompt: `生成${CUSTOM_WORKFLOW_OUTPUT_TITLES[id] || id.replace(/_/g, ' ')}图片。\n${buildOriginalRequestLine(text)}`,
             inputRoles: ['product_reference_image'],
             requiresReferenceImages: true,
             editable: true,

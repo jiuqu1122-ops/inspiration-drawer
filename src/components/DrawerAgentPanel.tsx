@@ -10,12 +10,14 @@ import {
   Square,
   Trash2,
   X,
+  Zap,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type {
   AgentCanvasSelectionItem,
   AgentChatMessage,
   AgentConversation,
+  AgentSendOptions,
   AgentSettings,
   CodexRuntimeStatus,
 } from '../features/agentModel';
@@ -31,7 +33,7 @@ type DrawerAgentPanelProps = {
   activeConversationId: string;
   selectedItems: AgentCanvasSelectionItem[];
   onInputChange: (value: string) => void;
-  onSendMessage: (content: string) => void;
+  onSendMessage: (content: string, options?: AgentSendOptions) => void;
   onCancel: () => void;
   onClose: () => void;
   onNewConversation: () => void;
@@ -89,7 +91,7 @@ export function DrawerAgentPanel({
 
   const send = () => {
     const content = inputValue.trim();
-    if (content && ready && !busy) onSendMessage(content);
+    if (content && !busy) onSendMessage(content);
   };
 
   const stopAgentKeyboardEvent = (event: React.KeyboardEvent) => {
@@ -204,6 +206,26 @@ export function DrawerAgentPanel({
                 </div>
               )}
               {message.error && <div className="mt-1 rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] text-red-600 dark:bg-red-400/10 dark:text-red-200">{message.error}</div>}
+              {message.role !== 'user' && message.workflowPlanningFailure && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onSendMessage(message.workflowPlanningFailure?.userText || '', { forceWorkflowPlanningRoute: 'remote_ai' })}
+                    disabled={busy}
+                    className="rounded-[9px] bg-blue-500 px-2.5 py-1 text-[8px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    重试 AI 规划
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSendMessage(message.workflowPlanningFailure?.userText || '', { quickPlanRequested: true })}
+                    disabled={busy}
+                    className="flex items-center gap-1 rounded-[9px] bg-amber-50 px-2.5 py-1 text-[8px] font-bold text-amber-700 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-amber-400/10 dark:text-amber-100"
+                  >
+                    <Zap className="h-3 w-3" /> 使用快速规划
+                  </button>
+                </div>
+              )}
               {(message.toolCalls || []).map(call => (
                 <div key={call.id} className="mt-2 rounded-[14px] border border-blue-100/80 bg-white/75 px-2.5 py-2 text-stone-600 shadow-sm dark:border-white/9 dark:bg-white/5 dark:text-stone-300">
                   <div className="flex items-center justify-between gap-2">
@@ -261,13 +283,24 @@ export function DrawerAgentPanel({
             placeholder="让 Agent 操作抽屉或画布…"
             className="max-h-24 min-h-12 w-full resize-none bg-transparent px-1.5 py-1 text-[11px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
           />
-          <div className="flex items-center justify-between px-1">
-            <span className="text-[8px] text-stone-400">{ready ? '高风险操作会请求确认' : '请先在设置中配置 Agent'}</span>
-            {busy ? (
-              <button type="button" onClick={onCancel} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
-            ) : (
-              <button type="button" onClick={send} disabled={!inputValue.trim() || !ready} className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-30" title="发送"><ArrowUp className="h-4 w-4" /></button>
-            )}
+          <div className="flex items-center justify-between gap-2 px-1">
+            <span className="min-w-0 flex-1 truncate text-[8px] text-stone-400">{ready ? '高风险操作会请求确认' : '未配置 API 时，工作流使用快速规划'}</span>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => inputValue.trim() && onSendMessage(inputValue.trim(), { quickPlanRequested: true })}
+                disabled={!inputValue.trim() || busy}
+                className="flex h-8 items-center gap-1 rounded-[9px] bg-amber-50 px-2 text-[8px] font-bold text-amber-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-30 dark:bg-amber-400/10 dark:text-amber-100"
+                title="不调用大模型，使用本地规则快速生成可编辑工作流草案"
+              >
+                <Zap className="h-3 w-3" /> 快速规划
+              </button>
+              {busy ? (
+                <button type="button" onClick={onCancel} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
+              ) : (
+                <button type="button" onClick={send} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-30" title="使用当前 Agent API 深度分析并设计工作流"><ArrowUp className="h-4 w-4" /></button>
+              )}
+            </div>
           </div>
         </div>
       </footer>

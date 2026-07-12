@@ -12,6 +12,12 @@ import { detectWorkflowTemplate, parseWorkflowBuilderIntent } from './skills/wor
 import type { WorkflowOutputSpec, WorkflowRecipeDraft } from './workflows/workflowRecipeTypes';
 import { buildProductDetailPageDraft } from './workflows/recipes/productDetailPageRecipe';
 import { validateEcommerceDetailPageDraft } from './workflows/validators/ecommerceDetailPageValidator';
+import {
+  detectWorkflowDesignIntent,
+  parseWorkflowDraftProposal,
+  resolveWorkflowPlanningRoute,
+  workflowDraftProposalToRecipeDraft,
+} from './workflows/workflowPlanning';
 import { getXaisImage2RatioOptions, resolveXaisImage2Ratio } from '../canvasAiImage';
 import { CANVAS_AGENT_ACTION_SCHEMA } from '../canvasAgentTools';
 import type { AgentCanvasContext } from '../agentModel';
@@ -1084,6 +1090,107 @@ export function runEcommerceDetailPageSmokeTests() {
   });
 }
 
+export function runWorkflowPlanningRouteSmokeTests() {
+  assert(
+    resolveWorkflowPlanningRoute({
+      quickPlanRequested: false,
+      aiAvailability: { canPlanWorkflow: true },
+    }) === 'remote_ai',
+    'Workflow route: API available + normal send should use remote_ai',
+  );
+  assert(
+    resolveWorkflowPlanningRoute({
+      quickPlanRequested: true,
+      aiAvailability: { canPlanWorkflow: true },
+    }) === 'local_deterministic',
+    'Workflow route: quick plan should force local deterministic planner',
+  );
+  assert(
+    resolveWorkflowPlanningRoute({
+      quickPlanRequested: false,
+      aiAvailability: { canPlanWorkflow: false },
+    }) === 'local_deterministic',
+    'Workflow route: API unavailable should use local deterministic planner',
+  );
+
+  const activeDraft = buildProductDetailPageDraft({ originalRequest: 'make a detail page workflow' });
+  assert(
+    detectWorkflowDesignIntent({ userText: 'design a portfolio workflow' }) === true,
+    'Workflow route: new workflow design request should be detected',
+  );
+  assert(
+    detectWorkflowDesignIntent({ userText: 'change to 6 pages', activeWorkflowDraft: activeDraft }) === false,
+    'Workflow route: simple active draft edit should not trigger remote planner',
+  );
+  assert(
+    detectWorkflowDesignIntent({ userText: 'redesign this workflow deeply', activeWorkflowDraft: activeDraft }) === true,
+    'Workflow route: redesign request on active draft should trigger remote planner',
+  );
+
+  const updateTurn = prepareAppAgentTurn({ userText: '改成6页', context: {
+    surface: 'canvas',
+    selectedIds: [],
+    selectedItems: [],
+    visualReferences: [],
+    nodes: [],
+    presets: [],
+    workflows: [],
+    drawer: { activeTab: 'all', activeFolderId: '', searchQuery: '', pinned: false, folders: [], items: [] },
+  }, activeDraft });
+  assert(
+    updateTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_update_workflow_draft'),
+    'Workflow route: page count edit should update same draft locally',
+  );
+  assert(
+    !updateTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_workflow_draft'),
+    'Workflow route: page count edit should not create a new draft',
+  );
+
+  const proposal = parseWorkflowDraftProposal(JSON.stringify({
+    name: 'Portfolio Workflow',
+    description: 'Build a concise portfolio image sequence.',
+    inputs: [{ id: 'product_reference_image', label: 'Reference', type: 'image', required: true }],
+    outputs: [
+      {
+        id: 'cover',
+        title: 'Cover',
+        type: 'image_generator',
+        enabled: true,
+        order: 1,
+        prompt: 'Create a cover image.',
+        inputRoles: ['product_reference_image'],
+      },
+      {
+        id: 'cover',
+        title: 'Case Study',
+        type: 'image_generator',
+        enabled: true,
+        order: 2,
+        prompt: 'Create a case study page.',
+        inputRoles: ['missing_input'],
+      },
+    ],
+    strategy: { enabled: false, title: '', prompt: '' },
+    executionOrder: [['product_reference_image'], ['cover', 'cover_2']],
+    languagePolicy: {
+      promptLanguage: 'en',
+      visibleTextLanguage: 'en',
+      imageTextLanguage: 'en',
+      allowEnglishTechnicalTerms: true,
+    },
+    assumptions: ['No brand assets were provided.'],
+    imagePolicy: {},
+  }));
+  const draft = workflowDraftProposalToRecipeDraft({
+    proposal,
+    userText: 'design a portfolio workflow',
+  });
+  assert(draft.outputs.length === 2, 'Workflow proposal: should create two outputs');
+  assert(new Set(draft.outputs.map(output => output.id)).size === 2, 'Workflow proposal: output ids should be unique');
+  assert(draft.outputs.every(output => output.prompt.includes('Original request:')), 'Workflow proposal: prompts should include Original request');
+  assert(draft.outputs[1]?.inputRoles.includes('product_reference_image'), 'Workflow proposal: invalid input reference should fall back to product reference');
+}
+
 describe('App Agent Smoke Tests', () => {
   it('should pass all smoke tests', () => {
     runAppAgentSmokeTests();
@@ -1096,5 +1203,8 @@ describe('App Agent Smoke Tests', () => {
   });
   it('should pass ecommerce detail page smoke tests (A-G)', () => {
     runEcommerceDetailPageSmokeTests();
+  });
+  it('should pass workflow planning route smoke tests', () => {
+    runWorkflowPlanningRouteSmokeTests();
   });
 });

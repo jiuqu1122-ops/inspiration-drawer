@@ -60,7 +60,7 @@ import {
 import { clamp } from './features/common';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
-import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference } from './features/agentModel';
+import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference, type AgentSendOptions } from './features/agentModel';
 import { resolveWorkflowInputs } from './features/appAgent/commands/workflowInputResolver';
 import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/appAgentKernel';
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
@@ -25531,22 +25531,41 @@ useEffect(() => {
     }
   };
 
-  const sendCanvasAgentMessage = async (content: string) => {
+  const sendCanvasAgentMessage = async (content: string, options?: AgentSendOptions) => {
     const text = content.trim();
     if (!text) return;
     setCanvasAgentInput('');
-    if (!await canvasAgent.sendMessage(text)) {
+    if (!await canvasAgent.sendMessage(text, options)) {
       setCanvasAgentInput(current => current || content);
     }
   };
 
-  const sendDrawerAgentMessage = async (content: string) => {
+  const sendDrawerAgentMessage = async (content: string, options?: AgentSendOptions) => {
     const text = content.trim();
     if (!text) return;
     setDrawerAgentInput('');
-    if (!await canvasAgent.sendMessage(text)) {
+    if (!await canvasAgent.sendMessage(text, options)) {
       setDrawerAgentInput(current => current || content);
     }
+  };
+
+  const requestCanvasAgentCodexLogin = () => {
+    setConfirmDialog({
+      isOpen: true,
+      title: '登录 ChatGPT',
+      message: '已切换到 ChatGPT 登录模式。需要完成官方登录后才能使用 GPT 登录规划和 Agent 能力，是否现在打开官方登录页？',
+      onConfirm: () => {},
+      actions: [
+        {
+          label: '打开官方登录页',
+          onClick: async () => {
+            closeConfirmDialog();
+            await canvasAgent.startCodexLogin('chatgpt');
+          },
+          className: 'rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-blue-600',
+        },
+      ],
+    });
   };
 
   const clearCanvasAgentChat = () => {
@@ -31767,12 +31786,13 @@ useEffect(() => {
                       onClose={() => setIsAgentChatOpen(false)}
                       onFocusCanvasItem={id => centerCanvasItemInView(canvasItemsRef.current.find(item => item.id === id), { select: true })}
                       onInputChange={setCanvasAgentInput}
-                      onSendMessage={content => void sendCanvasAgentMessage(content)}
+                      onSendMessage={(content, options) => void sendCanvasAgentMessage(content, options)}
                       onCancel={() => void canvasAgent.cancelCurrent()}
                       onRetry={() => void canvasAgent.retryLast()}
                       onRefreshCodexRateLimits={canvasAgent.refreshCodexRateLimits}
                       onRefreshCodexModels={canvasAgent.refreshCodexModels}
                       onSaveSettings={canvasAgent.saveSettings}
+                      onRequestCodexLogin={requestCanvasAgentCodexLogin}
                       onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
                       onResolveCodexApproval={(approval, approved) => void canvasAgent.resolveCodexApproval(approval, approved)}
                       onNewConversation={canvasAgent.newConversation}
@@ -32271,7 +32291,7 @@ useEffect(() => {
                     activeConversationId={canvasAgent.activeConversationId}
                     selectedItems={drawerAgentSelectedItems}
                     onInputChange={setDrawerAgentInput}
-                    onSendMessage={content => void sendDrawerAgentMessage(content)}
+                    onSendMessage={(content, options) => void sendDrawerAgentMessage(content, options)}
                     onCancel={() => void canvasAgent.cancelCurrent()}
                     onClose={() => setIsDrawerAgentOpen(false)}
                     onNewConversation={() => {

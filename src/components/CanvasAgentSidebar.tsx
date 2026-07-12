@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Square,
   Trash2,
+  Zap,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
@@ -26,6 +27,7 @@ import type {
   AgentCanvasSelectionItem,
   AgentCodexApproval,
   AgentConversation,
+  AgentSendOptions,
   AgentSettings,
   CodexModelOption,
   CodexRateLimits,
@@ -55,12 +57,13 @@ type CanvasAgentSidebarProps = {
   onClose: () => void;
   onFocusCanvasItem: (id: string) => void;
   onInputChange: (value: string) => void;
-  onSendMessage: (content: string) => void;
+  onSendMessage: (content: string, options?: AgentSendOptions) => void;
   onCancel: () => void;
   onRetry: () => void;
   onRefreshCodexRateLimits: () => Promise<unknown>;
   onRefreshCodexModels: () => Promise<CodexModelOption[]>;
   onSaveSettings: (settings: AgentSettings) => Promise<AgentSettings>;
+  onRequestCodexLogin: () => void;
   onResolveToolCall: (id: string, approved: boolean) => void;
   onResolveCodexApproval: (approval: AgentCodexApproval, approved: boolean) => void;
   onNewConversation: () => void;
@@ -119,6 +122,23 @@ const CODEX_SANDBOX_OPTIONS: Array<{
     value: 'danger-full-access',
     label: '完全访问',
     description: '允许访问本机文件；只在你明确需要时开启。',
+  },
+];
+
+const AGENT_PROVIDER_OPTIONS: Array<{
+  value: AgentSettings['provider'];
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'openai-compatible',
+    label: 'API 模式',
+    description: '使用自定义 OpenAI 兼容 API。',
+  },
+  {
+    value: 'codex',
+    label: 'ChatGPT 登录',
+    description: '使用 GPT 登录的 Codex App Server。',
   },
 ];
 
@@ -196,6 +216,7 @@ export function CanvasAgentSidebar({
   onRefreshCodexRateLimits,
   onRefreshCodexModels,
   onSaveSettings,
+  onRequestCodexLogin,
   onResolveToolCall,
   onResolveCodexApproval,
   onNewConversation,
@@ -320,7 +341,7 @@ export function CanvasAgentSidebar({
     event.stopPropagation();
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (inputValue.trim() && !busy && providerReady) onSendMessage(inputValue.trim());
+    if (inputValue.trim() && !busy) onSendMessage(inputValue.trim());
   };
 
   const copyMessageText = async (message: AgentChatMessage) => {
@@ -362,6 +383,25 @@ export function CanvasAgentSidebar({
     try {
       await onSaveSettings({ ...settings, codexSandbox });
       setShowAccessMenu(false);
+    } finally {
+      setSavingAccess(false);
+    }
+  };
+
+  const updateAgentProvider = async (provider: AgentSettings['provider']) => {
+    if (provider === settings.provider || savingAccess || busy) {
+      setShowAccessMenu(false);
+      return;
+    }
+    setSavingAccess(true);
+    try {
+      const shouldRequestLogin = provider === 'codex' && codexStatus?.authenticated !== true;
+      await onSaveSettings({ ...settings, provider });
+      setShowAccessMenu(false);
+      setShowUsage(false);
+      setShowModelMenu(false);
+      setShowHistory(false);
+      if (shouldRequestLogin) onRequestCodexLogin();
     } finally {
       setSavingAccess(false);
     }
@@ -653,6 +693,26 @@ export function CanvasAgentSidebar({
                     )}
 
                     {message.error && <div className="mt-2.5 select-text rounded-[12px] border border-red-100 bg-red-50/80 px-2.5 py-2 text-[9px] leading-4 text-red-600 dark:border-red-400/15 dark:bg-red-400/8 dark:text-red-200">{message.error}</div>}
+                    {message.workflowPlanningFailure && !isUser && (
+                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => onSendMessage(message.workflowPlanningFailure?.userText || '', { forceWorkflowPlanningRoute: 'remote_ai' })}
+                          disabled={busy}
+                          className="rounded-[10px] bg-blue-500 px-2.5 py-1.5 text-[9px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          重试 AI 规划
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSendMessage(message.workflowPlanningFailure?.userText || '', { quickPlanRequested: true })}
+                          disabled={busy}
+                          className="flex items-center gap-1 rounded-[10px] border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[9px] font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-45 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100"
+                        >
+                          <Zap className="h-3 w-3" /> 使用快速规划
+                        </button>
+                      </div>
+                    )}
                     <div className={`mt-1.5 flex items-center gap-1.5 text-[8px] ${isUser ? 'justify-end text-white/65' : 'text-stone-300 dark:text-stone-600'}`}>
                       <button
                         type="button"
@@ -688,7 +748,7 @@ export function CanvasAgentSidebar({
 
       <footer className="relative z-20 shrink-0 px-3 pb-2.5 pt-1">
         {!providerReady && (
-          <div className="mb-2 rounded-[12px] border border-amber-200/80 bg-amber-50/90 px-2.5 py-2 text-[9px] leading-4 text-amber-700 dark:border-amber-400/15 dark:bg-amber-400/8 dark:text-amber-100">请先在设置 → AGENT 中完成{settings.provider === 'codex' ? ' ChatGPT 登录' : ' API 配置'}。</div>
+          <div className="mb-2 rounded-[12px] border border-amber-200/80 bg-amber-50/90 px-2.5 py-2 text-[9px] leading-4 text-amber-700 dark:border-amber-400/15 dark:bg-amber-400/8 dark:text-amber-100">未配置可用 API；工作流设计会使用本地快速规划。</div>
         )}
 
         {showUsage && settings.provider === 'codex' && (
@@ -723,7 +783,7 @@ export function CanvasAgentSidebar({
           </div>
         )}
 
-        <div className="relative rounded-[24px] border border-blue-100/90 bg-white/82 p-2 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
+        <div className="relative rounded-[22px] border border-blue-100/90 bg-white/82 p-1.5 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
           {visibleSelectedItems.length > 0 && (
             <div className="mb-1.5 flex max-h-[58px] flex-wrap gap-1.5 overflow-y-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {visibleSelectedItems.map((item, index) => (
@@ -752,16 +812,17 @@ export function CanvasAgentSidebar({
               )}
             </div>
           )}
-          {showAccessMenu && settings.provider === 'codex' && (
-            <div data-agent-access-menu="true" className="absolute bottom-12 left-2 z-40 w-[236px] overflow-hidden rounded-[16px] border border-amber-100/90 bg-white/96 p-1.5 shadow-[0_18px_50px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
-              {CODEX_SANDBOX_OPTIONS.map(option => {
-                const active = option.value === settings.codexSandbox;
+          {showAccessMenu && (
+            <div data-agent-access-menu="true" className="absolute bottom-12 left-2 z-40 max-h-[320px] w-[236px] overflow-y-auto rounded-[16px] border border-amber-100/90 bg-white/96 p-1.5 shadow-[0_18px_50px_rgba(30,64,104,0.18)] backdrop-blur-2xl [scrollbar-width:thin] dark:border-white/10 dark:bg-stone-900/96">
+              <div className="px-2 pb-1 pt-1 text-[9px] font-semibold text-stone-400 dark:text-stone-500">Agent 模式</div>
+              {AGENT_PROVIDER_OPTIONS.map(option => {
+                const active = option.value === settings.provider;
                 return (
                   <button
                     key={option.value}
                     type="button"
-                    onClick={() => void updateCodexSandbox(option.value)}
-                    disabled={savingAccess}
+                    onClick={() => void updateAgentProvider(option.value)}
+                    disabled={savingAccess || busy}
                     className={`flex w-full items-start gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors disabled:cursor-wait disabled:opacity-70 ${active ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-600 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-white/6'}`}
                   >
                     <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${active ? 'border-amber-400 bg-amber-400 text-white' : 'border-stone-200 text-transparent dark:border-white/15'}`}>
@@ -774,6 +835,32 @@ export function CanvasAgentSidebar({
                   </button>
                 );
               })}
+              {settings.provider === 'codex' && (
+                <>
+                  <div className="mx-2 my-1 border-t border-stone-100 dark:border-white/8" />
+                  <div className="px-2 pb-1 pt-1 text-[9px] font-semibold text-stone-400 dark:text-stone-500">Codex 权限</div>
+                  {CODEX_SANDBOX_OPTIONS.map(option => {
+                    const active = option.value === settings.codexSandbox;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => void updateCodexSandbox(option.value)}
+                        disabled={savingAccess}
+                        className={`flex w-full items-start gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors disabled:cursor-wait disabled:opacity-70 ${active ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-600 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-white/6'}`}
+                      >
+                        <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${active ? 'border-amber-400 bg-amber-400 text-white' : 'border-stone-200 text-transparent dark:border-white/15'}`}>
+                          <Check className="h-2.5 w-2.5" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-[10px] font-black">{option.label}</span>
+                          <span className="mt-0.5 block text-[8px] leading-3.5 opacity-70">{option.description}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </>
+              )}
             </div>
           )}
           {showModelMenu && settings.provider === 'codex' && (
@@ -848,37 +935,33 @@ export function CanvasAgentSidebar({
             </div>
           )}
 
-          <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} onKeyUp={event => event.stopPropagation()} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-36 min-h-[66px] w-full resize-none bg-transparent px-2.5 py-2 text-[12px] leading-5 text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
-          <div className="flex items-center justify-between gap-2 px-0.5 pb-0.5">
+          <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} onKeyUp={event => event.stopPropagation()} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-32 min-h-[58px] w-full resize-none bg-transparent px-2 py-1.5 text-[11px] leading-[18px] text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
+          <div className="flex items-center justify-between gap-1.5 px-0.5 pb-0.5">
             <div className="flex min-w-0 items-center gap-1">
-              <button type="button" onClick={() => inputRef.current?.focus()} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="当前选中的画布节点会自动作为上下文"><Plus className="h-4 w-4" /></button>
+              <button type="button" onClick={() => inputRef.current?.focus()} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="当前选中的画布节点会自动作为上下文"><Plus className="h-3.5 w-3.5" /></button>
               <button
                 type="button"
                 data-agent-access-toggle="true"
                 onClick={() => {
-                  if (settings.provider !== 'codex') {
-                    inputRef.current?.focus();
-                    return;
-                  }
                   setShowAccessMenu(value => !value);
                   setShowHistory(false);
                   setShowUsage(false);
                   setShowModelMenu(false);
                 }}
-                disabled={savingAccess}
-                className={`flex h-8 max-w-[124px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors disabled:cursor-wait disabled:opacity-70 ${showAccessMenu ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-500 hover:bg-amber-50 hover:text-amber-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-amber-100'}`}
-                title={settings.provider === 'codex' ? '修改 Codex 访问权限' : 'API 模式不使用 Codex 权限'}
+                disabled={savingAccess || busy}
+                className={`flex h-7 max-w-[88px] items-center gap-0.5 rounded-[9px] px-1 text-[8px] font-medium transition-colors disabled:cursor-wait disabled:opacity-70 ${showAccessMenu ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-500 hover:bg-amber-50 hover:text-amber-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-amber-100'}`}
+                title="切换 API / ChatGPT 登录模式"
               >
-                <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <ShieldCheck className="h-3 w-3 shrink-0 text-amber-500" />
                 <span className="truncate">{settings.provider === 'codex' ? accessLabel : 'API 模式'}</span>
-                {savingAccess ? <LoaderCircle className="h-3 w-3 shrink-0 animate-spin opacity-70" /> : <ChevronDown className={`h-3 w-3 shrink-0 opacity-45 transition-transform ${showAccessMenu ? 'rotate-180' : ''}`} />}
+                {savingAccess ? <LoaderCircle className="h-2.5 w-2.5 shrink-0 animate-spin opacity-70" /> : <ChevronDown className={`h-2.5 w-2.5 shrink-0 opacity-45 transition-transform ${showAccessMenu ? 'rotate-180' : ''}`} />}
               </button>
             </div>
 
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="flex min-w-0 shrink-0 items-center justify-end gap-1">
               {settings.provider === 'codex' && (
-                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-8 items-center gap-1.5 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
-                  <span className="relative flex h-4 w-4 items-center justify-center rounded-full" style={{ background: `conic-gradient(rgb(59 130 246) ${Math.max(0, primaryRemaining || 0)}%, rgba(148,163,184,.22) 0)` }}><span className="h-2.5 w-2.5 rounded-full bg-white dark:bg-stone-900" /></span>
+                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-7 items-center gap-1 rounded-[9px] px-1 text-[8px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
+                  <span className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full" style={{ background: `conic-gradient(rgb(59 130 246) ${Math.max(0, primaryRemaining || 0)}%, rgba(148,163,184,.22) 0)` }}><span className="h-2 w-2 rounded-full bg-white dark:bg-stone-900" /></span>
                   <span>{primaryRemaining == null ? '用量' : `${primaryRemaining}%`}</span>
                 </button>
               )}
@@ -896,20 +979,30 @@ export function CanvasAgentSidebar({
                     }
                   }}
                   disabled={savingModel || busy || !providerReady}
-                  className={`flex h-8 max-w-[128px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium transition-colors disabled:opacity-45 ${showModelMenu ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`}
+                  className={`flex h-7 max-w-[104px] items-center gap-0.5 rounded-[9px] px-1 text-[8px] font-medium transition-colors disabled:opacity-45 ${showModelMenu ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`}
                   title={`模型：${modelLabel}；推理：${CODEX_REASONING_LABELS[selectedReasoningEffort]}`}
                 >
-                  {savingModel ? <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Gauge className="h-3.5 w-3.5 shrink-0" />}
+                  {savingModel ? <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" /> : <Gauge className="h-3 w-3 shrink-0" />}
                   <span className="truncate">{modelControlLabel}</span>
-                  <ChevronDown className={`h-3 w-3 shrink-0 opacity-45 transition-transform ${showModelMenu ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`h-2.5 w-2.5 shrink-0 opacity-45 transition-transform ${showModelMenu ? 'rotate-180' : ''}`} />
                 </button>
               ) : (
-                <div className="flex h-8 max-w-[92px] items-center gap-1 rounded-[10px] px-1.5 text-[9px] font-medium text-stone-500 dark:text-stone-400" title={modelLabel}><Gauge className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{modelLabel}</span></div>
+                <div className="flex h-7 max-w-[74px] items-center gap-0.5 rounded-[9px] px-1 text-[8px] font-medium text-stone-500 dark:text-stone-400" title={modelLabel}><Gauge className="h-3 w-3 shrink-0" /><span className="truncate">{modelLabel}</span></div>
               )}
+              <button
+                type="button"
+                onClick={() => inputValue.trim() && onSendMessage(inputValue.trim(), { quickPlanRequested: true })}
+                disabled={!inputValue.trim() || busy}
+                className="flex h-7 items-center gap-0.5 rounded-[9px] border border-amber-200/80 bg-amber-50 px-1.5 text-[8px] font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-35 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100 dark:hover:bg-amber-400/15"
+                title="不调用大模型，使用本地规则快速生成可编辑工作流草案"
+              >
+                <Zap className="h-3 w-3 shrink-0" />
+                <span>快速规划</span>
+              </button>
               {busy ? (
-                <button type="button" onClick={onCancel} className="flex h-9 w-9 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-transform hover:scale-105 dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
+                <button type="button" onClick={onCancel} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-transform hover:scale-105 dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-2.5 w-2.5 fill-current" /></button>
               ) : (
-                <button type="button" onClick={() => inputValue.trim() && onSendMessage(inputValue.trim())} disabled={!inputValue.trim() || !providerReady} className="flex h-9 w-9 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-all hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 dark:bg-stone-100 dark:text-stone-900" title="发送"><ArrowUp className="h-4 w-4" /></button>
+                <button type="button" onClick={() => inputValue.trim() && onSendMessage(inputValue.trim())} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-all hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 dark:bg-stone-100 dark:text-stone-900" title="使用当前 Agent API 深度分析并设计工作流"><ArrowUp className="h-3.5 w-3.5" /></button>
               )}
             </div>
           </div>

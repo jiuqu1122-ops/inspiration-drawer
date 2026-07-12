@@ -1,5 +1,10 @@
 export type AgentProvider = 'openai-compatible' | 'codex';
 
+export type AgentSendOptions = {
+  quickPlanRequested?: boolean;
+  forceWorkflowPlanningRoute?: 'remote_ai' | 'local_deterministic';
+};
+
 export type CodexReasoningEffort = '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export type CodexReasoningEffortOption = {
@@ -142,6 +147,9 @@ export type AgentChatMessage = {
   selectionSnapshot?: AgentCanvasSelectionItem[];
   thinkingSteps?: AgentThinkingStep[];
   toolCalls?: AgentToolCall[];
+  workflowPlanningFailure?: {
+    userText: string;
+  };
 };
 
 export type AgentConversation = {

@@ -18,6 +18,7 @@ import {
   type AgentCodexApproval,
   type AgentConversation,
   type AgentProvider,
+  type AgentSendOptions,
   type AgentSettings,
   type AgentThinkingStep,
   type AgentThinkingStepStatus,
@@ -42,6 +43,15 @@ import { repairLegacyAgentAction, validateLegacyAgentAction } from './appAgent/c
 import type { LegacyAgentAction } from './appAgent/commands/commandTypes';
 import { evaluateLegacyActionPermission } from './appAgent/commands/permissionGate';
 import { prepareAppAgentTurn } from './appAgent/runtime/useAppAgentRuntime';
+import {
+  buildWorkflowDraftProposalMessages,
+  detectWorkflowDesignIntent,
+  parseWorkflowDraftProposal,
+  resolveWorkflowPlanningRoute,
+  workflowDraftProposalToRecipeDraft,
+  type WorkflowPlanningAvailability,
+  type WorkflowPlanningRoute,
+} from './appAgent/workflows/workflowPlanning';
 import {
   bindPlanStepResult,
   createPlanStepBindingState,
@@ -258,9 +268,41 @@ const getEffectiveCodexApprovalPolicy = (settings: AgentSettings) => (
   settings.provider === 'openai-compatible' ? 'on-request' : settings.codexApprovalPolicy
 );
 
+const resolveAgentPlanningAvailability = (
+  settings: AgentSettings,
+  codexStatus: CodexRuntimeStatus | null,
+): WorkflowPlanningAvailability => {
+  if (settings.provider === 'codex') {
+    const modelLabel = getEffectiveCodexModel(settings) || 'Codex 默认模型';
+    return {
+      provider: settings.provider,
+      modelLabel,
+      canPlanWorkflow: codexStatus?.authenticated === true,
+      reason: codexStatus?.authenticated === true ? undefined : '未登录 ChatGPT / Codex',
+    };
+  }
+
+  const hasBaseUrl = !!settings.apiBaseUrl.trim();
+  const hasModel = !!settings.apiModel.trim();
+  const canPlanWorkflow = settings.hasApiKey && hasBaseUrl && hasModel;
+  return {
+    provider: settings.provider,
+    modelLabel: settings.apiModel.trim() || 'API 模型',
+    canPlanWorkflow,
+    reason: canPlanWorkflow
+      ? undefined
+      : !settings.hasApiKey
+        ? '未配置 Agent API Key'
+        : !hasBaseUrl
+          ? '未配置 Agent API Base URL'
+          : '未配置 Agent API 模型',
+  };
+};
+
 const buildCodexThreadKey = (
   settings: AgentSettings,
   forceDefaultModel = false,
+  systemPrompt = settings.systemPrompt,
 ) => JSON.stringify({
   protocol: CANVAS_AGENT_CODEX_THREAD_PROTOCOL,
   provider: settings.provider,
@@ -272,7 +314,7 @@ const buildCodexThreadKey = (
     apiBaseUrl: settings.apiBaseUrl,
     apiHeaders: settings.apiHeaders,
   } : {}),
-  systemPrompt: settings.systemPrompt,
+  systemPrompt,
 });
 
 const normalizeAgentSettings = (value: unknown): AgentSettings => {
@@ -1356,7 +1398,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   ) => {
     await ensureCodexStarted();
     const current = settingsRef.current;
-    const threadKey = buildCodexThreadKey(current, options.forceDefaultModel === true);
+    const threadKey = buildCodexThreadKey(current, options.forceDefaultModel === true, systemPrompt);
     const canResumeThread = !options.forceNew
       && conversation.codexThreadId
       && conversation.codexThreadKey === threadKey;
@@ -1457,6 +1499,178 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       fallbackTimeoutId,
     });
   }), [patchMessage, upsertThinkingStep]);
+
+  const markWorkflowPlanningFailure = useCallback((
+    conversationId: string,
+    assistantMessageId: string,
+    userText: string,
+    error: unknown,
+  ) => {
+    finishThinkingSteps(conversationId, assistantMessageId, 'error', String(error));
+    patchMessage(conversationId, assistantMessageId, message => ({
+      ...message,
+      content: 'AI 规划失败',
+      status: 'error',
+      error: String(error),
+      workflowPlanningFailure: { userText },
+    }));
+    setBusy(false);
+    activeRequestRef.current = null;
+    optionsRef.current.onNotice?.(`AI 规划失败：${String(error)}`);
+  }, [finishThinkingSteps, patchMessage]);
+
+  const runWorkflowRemotePlanning = useCallback(async (input: {
+    conversation: AgentConversation;
+    assistantMessageId: string;
+    userText: string;
+    snapshot: AgentSendSnapshot;
+    availability: WorkflowPlanningAvailability;
+  }) => {
+    const { conversation, assistantMessageId, userText, snapshot, availability } = input;
+    upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-planning-route', {
+      title: '规划方式：AI 深度设计',
+      detail: `使用模型：${availability.modelLabel}`,
+      status: 'running',
+    });
+
+    const plannerMessages = buildWorkflowDraftProposalMessages({
+      userText,
+      context: snapshot.context,
+      activeWorkflowDraft: optionsRef.current.getActiveDraft?.() ?? null,
+    });
+
+    let raw = '';
+    if (availability.provider === 'codex') {
+      const systemPrompt = String(plannerMessages[0]?.content || '');
+      const userPrompt = String(plannerMessages[1]?.content || userText);
+      upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-codex-thread', {
+        title: '正在连接 AI 规划器',
+        detail: availability.modelLabel,
+        status: 'running',
+      });
+      const threadId = await startOrResumeCodexThread(conversation, systemPrompt, { forceNew: true });
+      activeRequestRef.current = {
+        provider: 'codex',
+        conversationId: conversation.id,
+        threadId,
+        assistantMessageId,
+      };
+      upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-codex-thread', {
+        title: 'AI 规划器已连接',
+        detail: `threadId: ${threadId}`,
+        status: 'completed',
+      });
+      upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-ai-request', {
+        title: '正在请求 AI 生成 Workflow Draft Proposal',
+        detail: '模型只返回结构化 proposal，不直接操作画布',
+        status: 'running',
+      });
+      const completion = waitForCodexTurn(conversation.id, assistantMessageId, threadId);
+      const response = await invoke<Record<string, unknown>>('agent_codex_request', {
+        method: 'turn/start',
+        params: {
+          threadId,
+          input: buildCodexUserInput(userPrompt, snapshot.visualReferences),
+          approvalPolicy: 'never',
+          ...(getEffectiveCodexModel(settingsRef.current) ? { model: getEffectiveCodexModel(settingsRef.current) } : {}),
+          ...(getEffectiveCodexReasoningEffort(settingsRef.current) ? { effort: getEffectiveCodexReasoningEffort(settingsRef.current) } : {}),
+        },
+      });
+      const turn = asRecord(response.turn);
+      const turnId = String(turn.id || '');
+      const pending = pendingCodexTurnsRef.current.get(threadId);
+      if (pending && turnId) pending.turnId = turnId;
+      if (activeRequestRef.current) activeRequestRef.current.turnId = turnId;
+      const completed = await completion;
+      if (completed.interrupted === true) throw new Error('AI 规划已取消');
+      raw = String(completed.raw || '').trim();
+    } else {
+      const requestId = createAgentId('workflow-planner-api');
+      activeRequestRef.current = {
+        provider: 'openai-compatible',
+        conversationId: conversation.id,
+        requestId,
+        assistantMessageId,
+      };
+      upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-ai-request', {
+        title: '正在请求 AI 生成 Workflow Draft Proposal',
+        detail: '模型只返回结构化 proposal，不直接操作画布',
+        status: 'running',
+      });
+      const result = await invoke<OpenAiChatResult>('agent_openai_chat', {
+        request: {
+          requestId,
+          messages: plannerMessages,
+          tools: [],
+        },
+      });
+      raw = String(result.content || '').trim();
+    }
+
+    if (!raw) throw new Error('AI 规划没有返回内容');
+    upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-ai-request', {
+      title: 'AI Draft Proposal 已返回',
+      detail: `共 ${raw.length} 个字符`,
+      status: 'completed',
+    });
+    upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-proposal-validate', {
+      title: '正在校验 Workflow Draft Proposal',
+      detail: '校验 schema、ID、输入引用和 prompt 原始请求',
+      status: 'running',
+    });
+    const proposal = parseWorkflowDraftProposal(raw);
+    const draft = workflowDraftProposalToRecipeDraft({ proposal, userText });
+    const selectedReferenceImageNodeIds = Array.from(new Set(
+      snapshot.visualReferences
+        .filter(reference => reference.mediaType === 'image')
+        .map(reference => reference.nodeId)
+        .filter(Boolean),
+    ));
+    const inputBindings = selectedReferenceImageNodeIds.length > 0
+      ? {
+        product_reference_image: selectedReferenceImageNodeIds.length === 1
+          ? { kind: 'canvas_node', nodeId: selectedReferenceImageNodeIds[0] }
+          : { kind: 'canvas_nodes', nodeIds: selectedReferenceImageNodeIds },
+      }
+      : { product_reference_image: { kind: 'unbound', nodeId: null } };
+    const calls: AgentToolCall[] = [{
+      id: createAgentId('workflow-planner-tool'),
+      name: 'canvas_create_workflow_draft',
+      arguments: {
+        workflowDraft: draft,
+        languagePolicy: draft.languagePolicy,
+        selectedReferenceImageNodeIds,
+        inputBindings,
+      },
+      status: 'pending',
+    }];
+    upsertThinkingStep(conversation.id, assistantMessageId, 'workflow-proposal-validate', {
+      title: 'Workflow Draft Proposal 校验完成',
+      detail: `准备创建 ${draft.outputs.filter(output => output.enabled !== false).length} 个输出的草案`,
+      status: 'completed',
+    });
+    patchMessage(conversation.id, assistantMessageId, message => ({
+      ...message,
+      content: [
+        '规划方式：AI 深度设计',
+        `使用模型：${availability.modelLabel}`,
+        '已生成结构化 Workflow Draft，正在创建可编辑草案。',
+      ].join('\n'),
+      status: 'streaming',
+      toolCalls: calls,
+    }));
+    await processToolCalls({
+      conversationId: conversation.id,
+      assistantMessageId,
+      provider: 'openai-compatible',
+      calls,
+      depth: 0,
+      snapshot,
+      userRequest: userText,
+      trace: snapshot.appAgentTrace,
+      deterministicActionsUsed: false,
+    });
+  }, [finishThinkingSteps, patchMessage, processToolCalls, startOrResumeCodexThread, upsertThinkingStep, waitForCodexTurn]);
 
   const runCodexContinuation = useCallback(async (
     run: PendingToolRun,
@@ -1886,7 +2100,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     }
   }, [finishThinkingSteps, patchConversation, patchMessage, processToolCalls, startOrResumeCodexThread, upsertThinkingStep, waitForCodexTurn]);
 
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, sendOptions: AgentSendOptions = {}) => {
     const text = content.trim();
     if (!text || busy) return false;
     if (pendingToolRunsRef.current.has(activeConversationIdRef.current)) {
@@ -1978,11 +2192,27 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         selectedItems,
         visualReferences,
       };
+      const activeDraft = optionsRef.current.getActiveDraft?.() ?? null;
+      const workflowDesignIntent = detectWorkflowDesignIntent({
+        userText: text,
+        activeWorkflowDraft: activeDraft ?? undefined,
+      });
+      const aiAvailability = resolveAgentPlanningAvailability(settingsRef.current, codexStatus);
+      const workflowPlanningRoute: WorkflowPlanningRoute = workflowDesignIntent
+        ? sendOptions.forceWorkflowPlanningRoute
+          || resolveWorkflowPlanningRoute({
+            quickPlanRequested: sendOptions.quickPlanRequested === true,
+            aiAvailability,
+          })
+        : 'unavailable';
       const appAgentTurn = prepareAppAgentTurn({
         userText: text,
         context: contextWithVisualReferences,
-        activeDraft: optionsRef.current.getActiveDraft?.() ?? null,
+        activeDraft,
       });
+      if (workflowDesignIntent) {
+        appAgentTurn.trace.deterministicActionsUsed = workflowPlanningRoute === 'local_deterministic';
+      }
       appendAppAgentTrace(appAgentTurn.trace);
       upsertThinkingStep(conversation.id, assistantMessage.id, 'skills', {
         title: appAgentTurn.activeSkillIds.length > 0 ? '已匹配 App Agent Skill' : '使用基础 App Agent',
@@ -1999,18 +2229,49 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         userRequest: text,
         appAgentTrace: appAgentTurn.trace,
       };
-      if (appAgentTurn.shouldUseDeterministicPlan && appAgentTurn.deterministicLegacyActions.length > 0) {
+      if (workflowDesignIntent && workflowPlanningRoute === 'remote_ai') {
+        try {
+          await runWorkflowRemotePlanning({
+            conversation,
+            assistantMessageId: assistantMessage.id,
+            userText: text,
+            snapshot,
+            availability: aiAvailability,
+          });
+        } catch (error) {
+          markWorkflowPlanningFailure(conversation.id, assistantMessage.id, text, error);
+        }
+        return true;
+      }
+      if (
+        appAgentTurn.shouldUseDeterministicPlan
+        && appAgentTurn.deterministicLegacyActions.length > 0
+        && (!workflowDesignIntent || workflowPlanningRoute === 'local_deterministic')
+      ) {
         const calls: AgentToolCall[] = appAgentTurn.deterministicLegacyActions
           .map(action => createToolCallFromLegacyAction(action, 'app-agent-deterministic-tool'));
+        const localWorkflowPlanning = workflowDesignIntent && workflowPlanningRoute === 'local_deterministic';
+        const localWorkflowReason = localWorkflowPlanning
+          && !sendOptions.quickPlanRequested
+          && sendOptions.forceWorkflowPlanningRoute !== 'local_deterministic'
+          && !aiAvailability.canPlanWorkflow
+          ? '未配置可用 API，已使用快速规划'
+          : '';
         patchMessage(conversation.id, assistantMessage.id, message => ({
           ...message,
-          content: '已生成确定性执行计划，准备执行软件操作。',
+          content: localWorkflowPlanning
+            ? [
+              localWorkflowReason,
+              '规划方式：本地快速规划',
+              '不调用大模型',
+            ].filter(Boolean).join('\n')
+            : '正在执行本地软件操作。',
           status: 'streaming',
           toolCalls: calls,
         }));
         upsertThinkingStep(conversation.id, assistantMessage.id, 'deterministic-plan', {
-          title: '正在执行确定性计划',
-          detail: `准备执行 ${calls.length} 个软件操作`,
+          title: localWorkflowPlanning ? '规划方式：本地快速规划' : '正在执行本地软件操作',
+          detail: localWorkflowPlanning ? '不调用大模型' : `准备执行 ${calls.length} 个软件操作`,
           status: 'running',
         });
         await processToolCalls({
@@ -2025,6 +2286,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           deterministicActionsUsed: true,
         });
         return true;
+      }
+      if (workflowDesignIntent && workflowPlanningRoute === 'local_deterministic') {
+        throw new Error('本地快速规划没有生成可执行的 Workflow Draft');
       }
       if (provider === 'codex' || provider === 'openai-compatible') {
         await runCodexTurn(conversation, assistantMessage.id, text, contextWithVisualReferences, visualReferences, false, snapshot, appAgentTurn);
@@ -2058,7 +2322,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       optionsRef.current.onNotice?.(`Agent 请求失败：${String(error)}`);
       return false;
     }
-  }, [busy, patchConversation, patchMessage, runCodexTurn, runOpenAiLoop]);
+  }, [busy, codexStatus, markWorkflowPlanningFailure, patchConversation, patchMessage, runCodexTurn, runOpenAiLoop, runWorkflowRemotePlanning]);
 
   const resolveToolCall = useCallback(async (toolCallId: string, approved: boolean) => {
     const run = [...pendingToolRunsRef.current.values()]
