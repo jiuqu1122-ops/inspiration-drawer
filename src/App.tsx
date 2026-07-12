@@ -432,6 +432,26 @@ type ConfirmDialogState = {
   onConfirm: () => void | Promise<void>;
   actions?: ConfirmDialogAction[];
 };
+type TextInputDialogIcon = 'canvas' | 'rename' | 'copy' | 'snapshot';
+type TextInputDialogState = {
+  isOpen: boolean;
+  title: string;
+  description?: string;
+  value: string;
+  placeholder?: string;
+  confirmLabel: string;
+  icon: TextInputDialogIcon;
+  autoSelect: boolean;
+};
+type TextInputDialogOptions = {
+  title: string;
+  description?: string;
+  defaultValue?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  icon?: TextInputDialogIcon;
+  autoSelect?: boolean;
+};
 type AgentOpenAiChatResult = {
   requestId?: string;
   content?: string;
@@ -5476,6 +5496,47 @@ function MainApp() {
   const closeConfirmDialog = () => {
     setConfirmDialog(prev => ({ ...prev, isOpen: false }));
   };
+  const textInputDialogResolverRef = useRef<((value: string | null) => void) | null>(null);
+  const textInputDialogInputRef = useRef<HTMLInputElement | null>(null);
+  const [textInputDialog, setTextInputDialog] = useState<TextInputDialogState>({
+    isOpen: false,
+    title: '',
+    value: '',
+    confirmLabel: '确定',
+    icon: 'canvas',
+    autoSelect: true,
+  });
+  const closeTextInputDialog = useCallback((value: string | null = null) => {
+    const resolver = textInputDialogResolverRef.current;
+    textInputDialogResolverRef.current = null;
+    setTextInputDialog(prev => ({ ...prev, isOpen: false }));
+    resolver?.(value);
+  }, []);
+  const openTextInputDialog = useCallback((options: TextInputDialogOptions) => {
+    textInputDialogResolverRef.current?.(null);
+    return new Promise<string | null>((resolve) => {
+      textInputDialogResolverRef.current = resolve;
+      setTextInputDialog({
+        isOpen: true,
+        title: options.title,
+        description: options.description,
+        value: options.defaultValue || '',
+        placeholder: options.placeholder,
+        confirmLabel: options.confirmLabel || '确定',
+        icon: options.icon || 'canvas',
+        autoSelect: options.autoSelect !== false,
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!textInputDialog.isOpen) return;
+    const frame = requestAnimationFrame(() => {
+      textInputDialogInputRef.current?.focus({ preventScroll: true });
+      if (textInputDialog.autoSelect) textInputDialogInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [textInputDialog.autoSelect, textInputDialog.isOpen]);
 
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -11271,7 +11332,14 @@ function MainApp() {
   };
 
   const createNewCanvasPage = async () => {
-    const name = window.prompt('新建画布名称', `画布 ${canvases.length + 1}`);
+    const name = await openTextInputDialog({
+      title: '新建画布',
+      description: '为新的画布起一个容易辨认的名字。',
+      defaultValue: `画布 ${canvases.length + 1}`,
+      placeholder: '输入画布名称',
+      confirmLabel: '创建画布',
+      icon: 'canvas',
+    });
     if (!name?.trim()) return;
     const previousCanvasId = activeCanvasIdRef.current;
     isSwitchingCanvasRef.current = true;
@@ -11303,7 +11371,14 @@ function MainApp() {
   };
 
   const renameCanvasPage = async (canvas: CanvasRecord) => {
-    const name = window.prompt('重命名画布', canvas.name || '画布');
+    const name = await openTextInputDialog({
+      title: '重命名画布',
+      description: '修改后会同步到画布列表和切换菜单。',
+      defaultValue: canvas.name || '画布',
+      placeholder: '输入画布名称',
+      confirmLabel: '保存名称',
+      icon: 'rename',
+    });
     if (!name?.trim() || name.trim() === canvas.name) return;
     try {
       const next = await renameCanvas(canvas.id, name.trim());
@@ -11316,7 +11391,14 @@ function MainApp() {
   };
 
   const duplicateCanvasPage = async (canvas: CanvasRecord) => {
-    const name = window.prompt('复制画布名称', `${canvas.name || '画布'} 副本`);
+    const name = await openTextInputDialog({
+      title: '复制画布',
+      description: '复制当前画布内容，并保存为新的画布。',
+      defaultValue: `${canvas.name || '画布'} 副本`,
+      placeholder: '输入副本名称',
+      confirmLabel: '复制画布',
+      icon: 'copy',
+    });
     if (!name?.trim()) return;
     try {
       await saveCurrentCanvasBeforeSwitch();
@@ -11338,7 +11420,14 @@ function MainApp() {
       minute: '2-digit',
       hour12: false,
     }).replace(/\//g, '-').replace(/\s+/g, ' ')}`;
-    const name = window.prompt('快照名称', defaultName);
+    const name = await openTextInputDialog({
+      title: '保存快照',
+      description: '快照会保留当前画布状态，之后可从画布列表恢复。',
+      defaultValue: defaultName,
+      placeholder: '输入快照名称',
+      confirmLabel: '保存快照',
+      icon: 'snapshot',
+    });
     if (!name?.trim()) return;
     try {
       await saveCurrentCanvasBeforeSwitch();
@@ -22187,6 +22276,7 @@ useEffect(() => {
       !!folderContextMenu ||
       isSearchActive ||
       editingFolderId !== null ||
+      textInputDialog.isOpen ||
       confirmDialog.isOpen ||
       showLaunchIntro ||
       isSplashVisible ||
@@ -22210,6 +22300,7 @@ useEffect(() => {
     folderContextMenu,
     isSearchActive,
     editingFolderId,
+    textInputDialog.isOpen,
     confirmDialog.isOpen,
     showLaunchIntro,
     isSplashVisible,
@@ -22324,6 +22415,7 @@ useEffect(() => {
         showMoveFolderModal ||
         showMoveExistingFolderModal ||
         isSearchActive ||
+        textInputDialog.isOpen ||
         confirmDialog.isOpen ||
         !!selectedImage ||
         !!selectedVideo ||
@@ -22354,6 +22446,7 @@ useEffect(() => {
     showMoveFolderModal,
     showMoveExistingFolderModal,
     isSearchActive,
+    textInputDialog.isOpen,
     confirmDialog.isOpen,
     selectedImage,
     selectedVideo,
@@ -22398,6 +22491,7 @@ useEffect(() => {
     !!folderContextMenu ||
     isSearchActive ||
     editingFolderId !== null ||
+    textInputDialog.isOpen ||
     confirmDialog.isOpen ||
     showLaunchIntro ||
     isSplashVisible ||
@@ -22425,6 +22519,7 @@ useEffect(() => {
     showMoveExistingFolderModal ||
     !!folderContextMenu ||
     editingFolderId !== null ||
+    textInputDialog.isOpen ||
     confirmDialog.isOpen ||
     showLaunchIntro ||
     isSplashVisible ||
@@ -22515,6 +22610,7 @@ useEffect(() => {
       showMoveExistingFolderModal ||
       isDrawerAgentOpen ||
       !!folderContextMenu ||
+      textInputDialog.isOpen ||
       confirmDialog.isOpen
     ) {
       holdDrawerForPanelInteraction(1800);
@@ -22527,6 +22623,7 @@ useEffect(() => {
     showMoveExistingFolderModal,
     isDrawerAgentOpen,
     folderContextMenu,
+    textInputDialog.isOpen,
     confirmDialog.isOpen,
   ]);
 
@@ -22628,6 +22725,7 @@ useEffect(() => {
     folderContextMenu,
     isSearchActive,
     editingFolderId,
+    textInputDialog.isOpen,
     confirmDialog.isOpen,
     showLaunchIntro,
     isSplashVisible,
@@ -22667,6 +22765,7 @@ useEffect(() => {
     folderContextMenu,
     isSearchActive,
     editingFolderId,
+    textInputDialog.isOpen,
     confirmDialog.isOpen,
     showLaunchIntro,
     isSplashVisible,
@@ -22706,6 +22805,7 @@ useEffect(() => {
     isDrawerAgentOpen,
     folderContextMenu,
     editingFolderId,
+    textInputDialog.isOpen,
     confirmDialog.isOpen,
     showLaunchIntro,
     isSplashVisible,
@@ -26363,6 +26463,14 @@ useEffect(() => {
       />
     ))
   ), [deletedCanvases, handleRestoreDeletedCanvas, handlePermanentlyDeleteCanvas]);
+  const TextInputDialogIcon = textInputDialog.icon === 'rename'
+    ? Edit3
+    : textInputDialog.icon === 'copy'
+      ? Copy
+      : textInputDialog.icon === 'snapshot'
+        ? ArchiveRestore
+        : Layers;
+  const textInputDialogCanConfirm = textInputDialog.value.trim().length > 0;
 
   return (
     <div
@@ -33455,6 +33563,94 @@ useEffect(() => {
                   className="rounded-[16px] bg-emerald-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-emerald-500/20 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300 dark:disabled:bg-white/10 dark:disabled:text-white/35"
                 >
                   保存并封装
+                </button>
+              </div>
+            </motion.form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {textInputDialog.isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            data-canvas-floating-layer="true"
+            className="fixed inset-0 z-[100230] flex items-center justify-center overflow-hidden rounded-[30px] bg-black/28 p-5 backdrop-blur-sm pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onMouseDown={(event) => {
+              if (event.button === 0 && event.target === event.currentTarget) closeTextInputDialog(null);
+            }}
+          >
+            <motion.form
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+              transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
+              className="w-full max-w-[380px] overflow-hidden rounded-[26px] border border-stone-200/80 bg-white/95 p-4 text-stone-900 shadow-[0_24px_80px_rgba(15,23,42,0.24)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-950/94 dark:text-stone-50"
+              onMouseDown={(event) => event.stopPropagation()}
+              onSubmit={(event) => {
+                event.preventDefault();
+                const value = textInputDialog.value.trim();
+                if (!value) return;
+                closeTextInputDialog(value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeTextInputDialog(null);
+                }
+              }}
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] bg-stone-900 text-white shadow-sm shadow-stone-900/15 dark:bg-white dark:text-stone-950">
+                  <TextInputDialogIcon className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-sm font-black text-stone-900 dark:text-stone-50">{textInputDialog.title}</h3>
+                  {textInputDialog.description && (
+                    <p className="mt-1 text-[11px] font-medium leading-5 text-stone-500 dark:text-stone-400">
+                      {textInputDialog.description}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => closeTextInputDialog(null)}
+                  className="-mr-1 -mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white"
+                  title="关闭"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <input
+                ref={textInputDialogInputRef}
+                value={textInputDialog.value}
+                onChange={(event) => setTextInputDialog(prev => ({ ...prev, value: event.target.value }))}
+                placeholder={textInputDialog.placeholder}
+                spellCheck={false}
+                className="mt-4 h-11 w-full rounded-[18px] border border-stone-200/80 bg-stone-50/80 px-3 text-sm font-bold text-stone-900 outline-none transition-all placeholder:text-stone-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-500/12 dark:border-white/10 dark:bg-white/[0.06] dark:text-stone-50 dark:placeholder:text-white/30 dark:focus:border-blue-300/60 dark:focus:bg-white/[0.08]"
+              />
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => closeTextInputDialog(null)}
+                  className="rounded-[16px] bg-stone-100 px-3.5 py-2 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/8 dark:text-stone-300 dark:hover:bg-white/12"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={!textInputDialogCanConfirm}
+                  className="inline-flex items-center gap-1.5 rounded-[16px] bg-blue-600 px-4 py-2 text-xs font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 disabled:shadow-none dark:bg-blue-500 dark:hover:bg-blue-400 dark:disabled:bg-white/10 dark:disabled:text-white/35"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  {textInputDialog.confirmLabel}
                 </button>
               </div>
             </motion.form>
