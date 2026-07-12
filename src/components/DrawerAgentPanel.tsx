@@ -2,6 +2,7 @@ import {
   ArrowUp,
   Bot,
   Check,
+  ChevronDown,
   Copy,
   Clock3,
   History,
@@ -22,6 +23,25 @@ import type {
   CodexRuntimeStatus,
 } from '../features/agentModel';
 import { getCanvasAgentToolLabel } from '../features/canvasAgentTools';
+
+type WorkflowPlanningMode = 'ai' | 'quick';
+
+const WORKFLOW_PLANNING_MODE_OPTIONS: Array<{
+  value: WorkflowPlanningMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'ai',
+    label: 'AI 规划',
+    description: '使用当前 Agent API 深度分析并设计工作流。',
+  },
+  {
+    value: 'quick',
+    label: '快速规划',
+    description: '不调用大模型，使用本地规则生成草案。',
+  },
+];
 
 type DrawerAgentPanelProps = {
   messages: AgentChatMessage[];
@@ -66,8 +86,12 @@ export function DrawerAgentPanel({
   const endRef = useRef<HTMLDivElement>(null);
   const [copiedId, setCopiedId] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [showPlanningMenu, setShowPlanningMenu] = useState(false);
+  const [workflowPlanningMode, setWorkflowPlanningMode] = useState<WorkflowPlanningMode>('ai');
   const ready = settings.provider === 'codex' ? !!codexStatus?.authenticated : settings.hasApiKey;
   const activeConversation = conversations.find(conversation => conversation.id === activeConversationId);
+  const selectedWorkflowPlanningOption = WORKFLOW_PLANNING_MODE_OPTIONS.find(option => option.value === workflowPlanningMode)
+    || WORKFLOW_PLANNING_MODE_OPTIONS[0];
 
   useEffect(() => {
     window.setTimeout(() => inputRef.current?.focus(), 80);
@@ -78,20 +102,26 @@ export function DrawerAgentPanel({
   }, [messages]);
 
   useEffect(() => {
-    if (!showHistory) return;
+    if (!showHistory && !showPlanningMenu) return;
     const closeHistory = (event: PointerEvent) => {
       const target = event.target as Element | null;
-      if (!target?.closest('[data-drawer-agent-history-menu="true"], [data-drawer-agent-history-toggle="true"]')) {
+      if (showHistory && !target?.closest('[data-drawer-agent-history-menu="true"], [data-drawer-agent-history-toggle="true"]')) {
         setShowHistory(false);
+      }
+      if (showPlanningMenu && !target?.closest('[data-drawer-agent-planning-menu="true"], [data-drawer-agent-planning-toggle="true"]')) {
+        setShowPlanningMenu(false);
       }
     };
     document.addEventListener('pointerdown', closeHistory, true);
     return () => document.removeEventListener('pointerdown', closeHistory, true);
-  }, [showHistory]);
+  }, [showHistory, showPlanningMenu]);
 
   const send = () => {
     const content = inputValue.trim();
-    if (content && !busy) onSendMessage(content);
+    if (!content || busy) return;
+    onSendMessage(content, workflowPlanningMode === 'quick' ? { quickPlanRequested: true } : undefined);
+    setShowPlanningMenu(false);
+    if (workflowPlanningMode === 'quick') setWorkflowPlanningMode('ai');
   };
 
   const stopAgentKeyboardEvent = (event: React.KeyboardEvent) => {
@@ -266,7 +296,38 @@ export function DrawerAgentPanel({
             {selectedItems.length > 4 && <span className="flex h-6 items-center rounded-[9px] bg-stone-100 px-2 text-[8px] text-stone-500 dark:bg-white/7 dark:text-stone-400">+{selectedItems.length - 4}</span>}
           </div>
         )}
-        <div className="rounded-[20px] border border-blue-100/90 bg-white/92 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-white/8">
+        <div className="relative rounded-[20px] border border-blue-100/90 bg-white/92 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-white/8">
+          {showPlanningMenu && (
+            <div data-drawer-agent-planning-menu="true" className="absolute bottom-12 right-11 z-30 w-[210px] overflow-hidden rounded-[16px] border border-blue-100/90 bg-white/98 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/98">
+              <div className="px-2 pb-1 pt-1 text-[9px] font-semibold text-stone-400 dark:text-stone-500">本次规划方式</div>
+              {WORKFLOW_PLANNING_MODE_OPTIONS.map(option => {
+                const active = option.value === workflowPlanningMode;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      setWorkflowPlanningMode(option.value);
+                      setShowPlanningMenu(false);
+                    }}
+                    disabled={busy}
+                    className={`flex w-full items-start gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${active ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-600 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-white/6'}`}
+                  >
+                    <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${active ? 'border-blue-500 bg-blue-500 text-white' : 'border-stone-200 text-transparent dark:border-white/15'}`}>
+                      <Check className="h-2.5 w-2.5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1 text-[10px] font-black">
+                        {option.value === 'quick' ? <Zap className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
+                        {option.label}
+                      </span>
+                      <span className="mt-0.5 block text-[8px] leading-3.5 opacity-70">{option.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <textarea
             data-agent-composer-input="true"
             ref={inputRef}
@@ -288,17 +349,23 @@ export function DrawerAgentPanel({
             <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
-                onClick={() => inputValue.trim() && onSendMessage(inputValue.trim(), { quickPlanRequested: true })}
-                disabled={!inputValue.trim() || busy}
-                className="flex h-8 items-center gap-1 rounded-[9px] bg-amber-50 px-2 text-[8px] font-bold text-amber-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-30 dark:bg-amber-400/10 dark:text-amber-100"
-                title="不调用大模型，使用本地规则快速生成可编辑工作流草案"
+                data-drawer-agent-planning-toggle="true"
+                onClick={() => {
+                  setShowPlanningMenu(value => !value);
+                  setShowHistory(false);
+                }}
+                disabled={busy}
+                className={`flex h-8 max-w-[86px] items-center gap-0.5 rounded-[9px] px-1.5 text-[8px] font-bold shadow-sm disabled:cursor-wait disabled:opacity-45 ${workflowPlanningMode === 'quick' ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`}
+                title={workflowPlanningMode === 'quick' ? '不调用大模型，使用本地规则快速生成可编辑工作流草案' : '使用当前 Agent API 深度分析并设计工作流'}
               >
-                <Zap className="h-3 w-3" /> 快速规划
+                {workflowPlanningMode === 'quick' ? <Zap className="h-3 w-3 shrink-0" /> : <Bot className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{selectedWorkflowPlanningOption.label}</span>
+                <ChevronDown className={`h-2.5 w-2.5 shrink-0 opacity-50 transition-transform ${showPlanningMenu ? 'rotate-180' : ''}`} />
               </button>
               {busy ? (
                 <button type="button" onClick={onCancel} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
               ) : (
-                <button type="button" onClick={send} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-30" title="使用当前 Agent API 深度分析并设计工作流"><ArrowUp className="h-4 w-4" /></button>
+                <button type="button" onClick={send} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-30" title={workflowPlanningMode === 'quick' ? '使用快速规划发送' : '使用 AI 规划发送'}><ArrowUp className="h-4 w-4" /></button>
               )}
             </div>
           </div>

@@ -142,6 +142,25 @@ const AGENT_PROVIDER_OPTIONS: Array<{
   },
 ];
 
+type WorkflowPlanningMode = 'ai' | 'quick';
+
+const WORKFLOW_PLANNING_MODE_OPTIONS: Array<{
+  value: WorkflowPlanningMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'ai',
+    label: 'AI 规划',
+    description: '使用当前 Agent API 深度分析并设计工作流。',
+  },
+  {
+    value: 'quick',
+    label: '快速规划',
+    description: '不调用大模型，使用本地规则生成草案。',
+  },
+];
+
 const CODEX_REASONING_LABELS: Record<Exclude<CodexReasoningEffort, ''>, string> = {
   minimal: '最低',
   low: '低',
@@ -228,6 +247,8 @@ export function CanvasAgentSidebar({
   const [showUsage, setShowUsage] = useState(false);
   const [showAccessMenu, setShowAccessMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [showPlanningMenu, setShowPlanningMenu] = useState(false);
+  const [workflowPlanningMode, setWorkflowPlanningMode] = useState<WorkflowPlanningMode>('ai');
   const [savingAccess, setSavingAccess] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState('');
@@ -257,7 +278,7 @@ export function CanvasAgentSidebar({
   }, [codexStatus?.authenticated, onRefreshCodexRateLimits, settings.provider]);
 
   useEffect(() => {
-    if (!showHistory && !showUsage && !showAccessMenu && !showModelMenu) return;
+    if (!showHistory && !showUsage && !showAccessMenu && !showModelMenu && !showPlanningMenu) return;
     const closePopovers = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (!target) return;
@@ -273,10 +294,13 @@ export function CanvasAgentSidebar({
       if (showModelMenu && !target.closest('[data-agent-model-menu="true"], [data-agent-model-toggle="true"]')) {
         setShowModelMenu(false);
       }
+      if (showPlanningMenu && !target.closest('[data-agent-planning-menu="true"], [data-agent-planning-toggle="true"]')) {
+        setShowPlanningMenu(false);
+      }
     };
     document.addEventListener('pointerdown', closePopovers, true);
     return () => document.removeEventListener('pointerdown', closePopovers, true);
-  }, [showAccessMenu, showHistory, showModelMenu, showUsage]);
+  }, [showAccessMenu, showHistory, showModelMenu, showPlanningMenu, showUsage]);
 
   const providerReady = settings.provider === 'codex'
     ? !!codexStatus?.authenticated
@@ -317,6 +341,8 @@ export function CanvasAgentSidebar({
   );
   const visibleSelectedItems = selectedItems.slice(0, 5);
   const hiddenSelectedCount = Math.max(0, selectedItems.length - visibleSelectedItems.length);
+  const selectedWorkflowPlanningOption = WORKFLOW_PLANNING_MODE_OPTIONS.find(option => option.value === workflowPlanningMode)
+    || WORKFLOW_PLANNING_MODE_OPTIONS[0];
 
   const startResize = (event: React.PointerEvent) => {
     if (event.button !== 0) return;
@@ -337,11 +363,22 @@ export function CanvasAgentSidebar({
     document.addEventListener('pointercancel', stop, true);
   };
 
+  const sendCurrentMessage = () => {
+    const content = inputValue.trim();
+    if (!content || busy) return;
+    const options = workflowPlanningMode === 'quick'
+      ? { quickPlanRequested: true }
+      : undefined;
+    onSendMessage(content, options);
+    setShowPlanningMenu(false);
+    if (workflowPlanningMode === 'quick') setWorkflowPlanningMode('ai');
+  };
+
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     event.stopPropagation();
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (inputValue.trim() && !busy) onSendMessage(inputValue.trim());
+    sendCurrentMessage();
   };
 
   const copyMessageText = async (message: AgentChatMessage) => {
@@ -401,6 +438,7 @@ export function CanvasAgentSidebar({
       setShowUsage(false);
       setShowModelMenu(false);
       setShowHistory(false);
+      setShowPlanningMenu(false);
       if (shouldRequestLogin) onRequestCodexLogin();
     } finally {
       setSavingAccess(false);
@@ -934,6 +972,37 @@ export function CanvasAgentSidebar({
               </div>
             </div>
           )}
+          {showPlanningMenu && (
+            <div data-agent-planning-menu="true" className="absolute bottom-12 right-12 z-50 w-[220px] overflow-hidden rounded-[16px] border border-blue-100/90 bg-white/98 p-1.5 shadow-[0_18px_50px_rgba(30,64,104,0.20)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/98">
+              <div className="px-2 pb-1 pt-1 text-[9px] font-semibold text-stone-400 dark:text-stone-500">本次规划方式</div>
+              {WORKFLOW_PLANNING_MODE_OPTIONS.map(option => {
+                const active = option.value === workflowPlanningMode;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => {
+                      setWorkflowPlanningMode(option.value);
+                      setShowPlanningMenu(false);
+                    }}
+                    disabled={busy}
+                    className={`flex w-full items-start gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${active ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-600 hover:bg-stone-50 dark:text-stone-300 dark:hover:bg-white/6'}`}
+                  >
+                    <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${active ? 'border-blue-500 bg-blue-500 text-white' : 'border-stone-200 text-transparent dark:border-white/15'}`}>
+                      <Check className="h-2.5 w-2.5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1 text-[10px] font-black">
+                        {option.value === 'quick' ? <Zap className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
+                        {option.label}
+                      </span>
+                      <span className="mt-0.5 block text-[8px] leading-3.5 opacity-70">{option.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <textarea data-agent-composer-input="true" ref={inputRef} value={inputValue} onChange={event => onInputChange(event.target.value)} onKeyDown={handleKeyDown} onKeyUp={event => event.stopPropagation()} placeholder="告诉 Codex 如何处理画布…" rows={3} className="max-h-32 min-h-[58px] w-full resize-none bg-transparent px-2 py-1.5 text-[11px] leading-[18px] text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-600" />
           <div className="flex items-center justify-between gap-1.5 px-0.5 pb-0.5">
@@ -947,6 +1016,7 @@ export function CanvasAgentSidebar({
                   setShowHistory(false);
                   setShowUsage(false);
                   setShowModelMenu(false);
+                  setShowPlanningMenu(false);
                 }}
                 disabled={savingAccess || busy}
                 className={`flex h-7 max-w-[88px] items-center gap-0.5 rounded-[9px] px-1 text-[8px] font-medium transition-colors disabled:cursor-wait disabled:opacity-70 ${showAccessMenu ? 'bg-amber-50 text-amber-700 dark:bg-amber-400/10 dark:text-amber-100' : 'text-stone-500 hover:bg-amber-50 hover:text-amber-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-amber-100'}`}
@@ -960,7 +1030,7 @@ export function CanvasAgentSidebar({
 
             <div className="flex min-w-0 shrink-0 items-center justify-end gap-1">
               {settings.provider === 'codex' && (
-                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-7 items-center gap-1 rounded-[9px] px-1 text-[8px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
+                <button type="button" data-codex-usage-toggle="true" onClick={() => { setShowUsage(value => !value); setShowHistory(false); setShowAccessMenu(false); setShowModelMenu(false); setShowPlanningMenu(false); }} className={`flex h-7 items-center gap-1 rounded-[9px] px-1 text-[8px] font-medium transition-colors ${showUsage ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`} title="查看 Codex 剩余用量">
                   <span className="relative flex h-3.5 w-3.5 items-center justify-center rounded-full" style={{ background: `conic-gradient(rgb(59 130 246) ${Math.max(0, primaryRemaining || 0)}%, rgba(148,163,184,.22) 0)` }}><span className="h-2 w-2 rounded-full bg-white dark:bg-stone-900" /></span>
                   <span>{primaryRemaining == null ? '用量' : `${primaryRemaining}%`}</span>
                 </button>
@@ -974,6 +1044,7 @@ export function CanvasAgentSidebar({
                     setShowHistory(false);
                     setShowUsage(false);
                     setShowAccessMenu(false);
+                    setShowPlanningMenu(false);
                     if (codexModels.length === 0 && !codexModelsLoading) {
                       void onRefreshCodexModels().catch(() => {});
                     }
@@ -991,18 +1062,26 @@ export function CanvasAgentSidebar({
               )}
               <button
                 type="button"
-                onClick={() => inputValue.trim() && onSendMessage(inputValue.trim(), { quickPlanRequested: true })}
-                disabled={!inputValue.trim() || busy}
-                className="flex h-7 items-center gap-0.5 rounded-[9px] border border-amber-200/80 bg-amber-50 px-1.5 text-[8px] font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-35 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100 dark:hover:bg-amber-400/15"
-                title="不调用大模型，使用本地规则快速生成可编辑工作流草案"
+                data-agent-planning-toggle="true"
+                onClick={() => {
+                  setShowPlanningMenu(value => !value);
+                  setShowHistory(false);
+                  setShowUsage(false);
+                  setShowAccessMenu(false);
+                  setShowModelMenu(false);
+                }}
+                disabled={busy}
+                className={`flex h-7 max-w-[82px] items-center gap-0.5 rounded-[9px] px-1 text-[8px] font-semibold transition-colors disabled:cursor-wait disabled:opacity-45 ${workflowPlanningMode === 'quick' ? 'border border-amber-200/80 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100 dark:hover:bg-amber-400/15' : 'text-stone-500 hover:bg-blue-50 hover:text-blue-700 dark:text-stone-400 dark:hover:bg-white/7 dark:hover:text-blue-200'}`}
+                title={workflowPlanningMode === 'quick' ? '不调用大模型，使用本地规则快速生成可编辑工作流草案' : '使用当前 Agent API 深度分析并设计工作流'}
               >
-                <Zap className="h-3 w-3 shrink-0" />
-                <span>快速规划</span>
+                {workflowPlanningMode === 'quick' ? <Zap className="h-3 w-3 shrink-0" /> : <Bot className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{selectedWorkflowPlanningOption.label}</span>
+                <ChevronDown className={`h-2.5 w-2.5 shrink-0 opacity-45 transition-transform ${showPlanningMenu ? 'rotate-180' : ''}`} />
               </button>
               {busy ? (
                 <button type="button" onClick={onCancel} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-transform hover:scale-105 dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-2.5 w-2.5 fill-current" /></button>
               ) : (
-                <button type="button" onClick={() => inputValue.trim() && onSendMessage(inputValue.trim())} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-all hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 dark:bg-stone-100 dark:text-stone-900" title="使用当前 Agent API 深度分析并设计工作流"><ArrowUp className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={sendCurrentMessage} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white shadow-sm transition-all hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 dark:bg-stone-100 dark:text-stone-900" title={workflowPlanningMode === 'quick' ? '使用快速规划发送' : '使用 AI 规划发送'}><ArrowUp className="h-3.5 w-3.5" /></button>
               )}
             </div>
           </div>

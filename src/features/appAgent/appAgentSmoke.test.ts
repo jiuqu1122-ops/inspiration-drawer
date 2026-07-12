@@ -1123,6 +1123,10 @@ export function runWorkflowPlanningRouteSmokeTests() {
     'Workflow route: simple active draft edit should not trigger remote planner',
   );
   assert(
+    detectWorkflowDesignIntent({ userText: '保存这个工作流', activeWorkflowDraft: activeDraft }) === false,
+    'Workflow route: saving active draft should not trigger remote planner',
+  );
+  assert(
     detectWorkflowDesignIntent({ userText: 'redesign this workflow deeply', activeWorkflowDraft: activeDraft }) === true,
     'Workflow route: redesign request on active draft should trigger remote planner',
   );
@@ -1144,6 +1148,28 @@ export function runWorkflowPlanningRouteSmokeTests() {
   assert(
     !updateTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_workflow_draft'),
     'Workflow route: page count edit should not create a new draft',
+  );
+
+  const saveTurn = prepareAppAgentTurn({ userText: '保存这个工作流', context: {
+    surface: 'canvas',
+    selectedIds: [],
+    selectedItems: [],
+    visualReferences: [],
+    nodes: [],
+    presets: [],
+    workflows: [],
+    drawer: { activeTab: 'all', activeFolderId: '', searchQuery: '', pinned: false, folders: [], items: [] },
+  }, activeDraft });
+  assert(
+    saveTurn.deterministicLegacyActions.some(action =>
+      action.tool === 'canvas_update_workflow_draft'
+      && action.arguments.action === 'save_draft_as_workflow'
+    ),
+    'Workflow route: save active draft should save the same draft locally',
+  );
+  assert(
+    !saveTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_workflow_draft'),
+    'Workflow route: save active draft should not create a new draft',
   );
 
   const proposal = parseWorkflowDraftProposal(JSON.stringify({

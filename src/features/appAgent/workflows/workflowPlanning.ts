@@ -65,8 +65,16 @@ const isWorkflowRedesignIntent = (userText: string) => (
   /重新.*(?:设计|规划).*(?:工作流|workflow)|(?:工作流|workflow).*重新.*(?:设计|规划)|深度分析.*(?:当前流程|流程|工作流|workflow)|优化.*(?:整个|整体).*(?:工作流|结构|workflow)|根据.*新目标.*重新规划|判断.*(?:当前节点|节点设计|节点).*(?:合理|是否合理)|redesign.*workflow|re[-\s]?plan.*workflow|deep.*analysis.*workflow|optimi[sz]e.*workflow|judge.*node.*design/i.test(userText)
 );
 
+const isActiveWorkflowDraftLocalIntent = (userText: string) => (
+  /保存.*(?:工作流|草案|草稿)|保存草稿|save.*(?:workflow|draft)|运行.*(?:工作流|草案|草稿)|执行.*(?:工作流|草案|草稿)|run.*workflow/i.test(userText)
+  || /改成\s*\d+\s*页|(?:修改|调整|改成|设置).*(?:比例|宽高比|尺寸|分辨率|模型)|(?:aspect.?ratio|ratio|size|resolution|model)/i.test(userText)
+  || /(?:删除|去掉|不要|移除).*(?:输出|页面|页|图|节点|CMF|场景|细节|氛围|主视|故事板|分镜)|(?:增加|添加|加).*(?:输出|页面|页|图|节点|爆炸|分镜|故事板)/i.test(userText)
+  || /CMF.*(?:中文|英文|双语)|(?:所有|全部|都).*(?:中文|英文)|改成(?:中文|英文)|关闭.*(?:strategy|策略|分析)|不要.*(?:strategy|策略|分析|文字节点)|skip.*strategy|disable.*strategy/i.test(userText)
+);
+
 export const detectWorkflowDesignIntent = (input: Pick<WorkflowPlanningRequest, 'userText' | 'activeWorkflowDraft'>) => {
   if (input.activeWorkflowDraft && isWorkflowRedesignIntent(input.userText)) return true;
+  if (input.activeWorkflowDraft && isActiveWorkflowDraftLocalIntent(input.userText)) return false;
   const intent = parseWorkflowBuilderIntent(input.userText);
   return intent.createWorkflow === true;
 };
