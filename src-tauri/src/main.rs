@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod ai_credentials;
 mod commands;
 mod db;
 mod license;
@@ -9,6 +10,7 @@ mod native_drag;
 mod native_drop;
 mod repositories;
 mod services;
+mod virtual_drop;
 
 use hmac::{Hmac, Mac};
 use reqwest::blocking::multipart::{Form, Part};
@@ -16,7 +18,7 @@ use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering as CmpOrdering;
-use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
@@ -1070,13 +1072,15 @@ fn parse_app_version_segments(version: &str) -> Result<Vec<u64>, String> {
         .split(|ch: char| !ch.is_ascii_digit())
         .filter(|segment| !segment.is_empty())
         .map(|segment| {
-            segment
-                .parse::<u64>()
-                .map_err(|e| format!("版本号比较失败：无法解析版本号 {version:?} 中的 {segment:?}: {e}"))
+            segment.parse::<u64>().map_err(|e| {
+                format!("版本号比较失败：无法解析版本号 {version:?} 中的 {segment:?}: {e}")
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
     if segments.is_empty() {
-        return Err(format!("版本号比较失败：无法从版本号 {version:?} 提取数字段"));
+        return Err(format!(
+            "版本号比较失败：无法从版本号 {version:?} 提取数字段"
+        ));
     }
     Ok(segments)
 }
@@ -1217,9 +1221,9 @@ fn collect_app_update_sources(
         raw_json.get("url").and_then(serde_json::Value::as_str),
     );
 
-    if let Some(fallback_url) = fallback_url.filter(|url| {
-        !sources.iter().any(|source| source.url == **url)
-    }) {
+    if let Some(fallback_url) =
+        fallback_url.filter(|url| !sources.iter().any(|source| source.url == **url))
+    {
         push_app_update_source(
             &mut sources,
             Some("Manifest url"),
@@ -1255,9 +1259,11 @@ fn extract_app_update_size(raw_json: &serde_json::Value) -> Option<u64> {
     find_app_update_platform_field(raw_json, "size")
         .or_else(|| raw_json.get("size"))
         .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<u64>().ok()))
+            value.as_u64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<u64>().ok())
+            })
         })
 }
 
@@ -1511,7 +1517,8 @@ fn fetch_app_update_manifest_probe(
         let body = match response.text() {
             Ok(body) => body,
             Err(err) => {
-                let message = format!("manifest 请求失败：读取响应体失败 {endpoint_text}；原始错误: {err}");
+                let message =
+                    format!("manifest 请求失败：读取响应体失败 {endpoint_text}；原始错误: {err}");
                 eprintln!("[app-update] {message}");
                 failures.push(message.clone());
                 emit_app_update_progress_detail(
@@ -1666,14 +1673,18 @@ fn fetch_app_update_manifest_probe_for_current_version(
         );
         eprintln!("[app-update] manifest endpoint={endpoint_text} http_status={status_code}");
         if !status.is_success() {
-            failures.push(format!("manifest 请求失败：{endpoint_text}；HTTP 状态码: {status_code}"));
+            failures.push(format!(
+                "manifest 请求失败：{endpoint_text}；HTTP 状态码: {status_code}"
+            ));
             continue;
         }
 
         let body = match response.text() {
             Ok(body) => body,
             Err(err) => {
-                failures.push(format!("manifest 请求失败：读取响应体失败 {endpoint_text}；原始错误: {err}"));
+                failures.push(format!(
+                    "manifest 请求失败：读取响应体失败 {endpoint_text}；原始错误: {err}"
+                ));
                 continue;
             }
         };
@@ -1681,7 +1692,9 @@ fn fetch_app_update_manifest_probe_for_current_version(
             Ok(raw_json) => raw_json,
             Err(err) => {
                 let snippet = body.chars().take(180).collect::<String>();
-                failures.push(format!("manifest 不是合法 JSON：{endpoint_text}；原始错误: {err}；响应开头: {snippet}"));
+                failures.push(format!(
+                    "manifest 不是合法 JSON：{endpoint_text}；原始错误: {err}；响应开头: {snippet}"
+                ));
                 continue;
             }
         };
@@ -1707,7 +1720,9 @@ fn fetch_app_update_manifest_probe_for_current_version(
         eprintln!("[app-update] manifest json parse ok endpoint={endpoint_text}");
 
         let Some(parsed_version) = parsed_version else {
-            failures.push(format!("manifest 格式不符合预期：缺少 version 字段 {endpoint_text}"));
+            failures.push(format!(
+                "manifest 格式不符合预期：缺少 version 字段 {endpoint_text}"
+            ));
             continue;
         };
         let probe = AppUpdateManifestProbe {
@@ -1720,7 +1735,10 @@ fn fetch_app_update_manifest_probe_for_current_version(
             _ => {
                 let keep_best = best_probe
                     .as_ref()
-                    .map(|(_, best_version)| compare_app_versions(&parsed_version, best_version) == Ok(CmpOrdering::Greater))
+                    .map(|(_, best_version)| {
+                        compare_app_versions(&parsed_version, best_version)
+                            == Ok(CmpOrdering::Greater)
+                    })
                     .unwrap_or(true);
                 if keep_best {
                     best_probe = Some((probe, parsed_version.clone()));
@@ -1867,7 +1885,12 @@ async fn check_and_install_app_update_mirrors(
 
     eprintln!("[app-update] updater=自定义多源 updater current_version={current_version}");
 
-    let manifest_probe = fetch_app_update_manifest_probe_for_current_version(&app_handle, &progress_id, check_timeout, &current_version)?;
+    let manifest_probe = fetch_app_update_manifest_probe_for_current_version(
+        &app_handle,
+        &progress_id,
+        check_timeout,
+        &current_version,
+    )?;
     let manifest_endpoint = manifest_probe.endpoint.as_str().to_string();
     let raw_json = manifest_probe.raw_json;
     let version = extract_app_update_version(&raw_json).ok_or_else(|| {
@@ -2728,9 +2751,11 @@ async fn get_realesrgan_engine_status() -> Result<RealEsrganEngineStatus, String
 async fn install_realesrgan_engine(
     app_handle: tauri::AppHandle,
 ) -> Result<RealEsrganEngineStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || ensure_realesrgan_engine_installed(&app_handle, None))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_realesrgan_engine_installed(&app_handle, None)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5281,16 +5306,45 @@ fn http_get_text(
     api_key: &str,
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
+    http_get_text_with_headers(app_handle, url, api_key, explicit_proxy, None)
+}
+
+fn apply_custom_http_headers(
+    mut request: reqwest::blocking::RequestBuilder,
+    headers: Option<&BTreeMap<String, String>>,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    for (key, value) in headers.into_iter().flat_map(|headers| headers.iter()) {
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| format!("AI Header 名称无效：{}", key))?;
+        let value = reqwest::header::HeaderValue::from_str(value)
+            .map_err(|_| format!("AI Header 值无效：{}", key))?;
+        request = request.header(name, value);
+    }
+    Ok(request)
+}
+
+fn http_get_text_with_headers(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    explicit_proxy: Option<&str>,
+    headers: Option<&BTreeMap<String, String>>,
+) -> Result<String, String> {
     let timeout_secs = 1600;
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
-    let response_result = client
+    let request = client
         .get(url)
         .header(
             "accept",
             "text/event-stream, application/json, text/plain, */*",
         )
-        .bearer_auth(api_key)
-        .send();
+        .bearer_auth(api_key);
+    let response_result = apply_custom_http_headers(request, headers)?.send();
 
     let response = match response_result {
         Ok(response) => response,
@@ -5302,13 +5356,14 @@ fn http_get_text(
                 return Err(format!("AI GET 请求失败：{}", first_err));
             }
             let direct_client = build_direct_http_client(timeout_secs)?;
-            direct_client
+            let request = direct_client
                 .get(url)
                 .header(
                     "accept",
                     "text/event-stream, application/json, text/plain, */*",
                 )
-                .bearer_auth(api_key)
+                .bearer_auth(api_key);
+            apply_custom_http_headers(request, headers)?
                 .send()
                 .map_err(|second_err| {
                     format!(
@@ -5469,9 +5524,22 @@ fn http_post_json(
     body: &serde_json::Value,
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
+    http_post_json_with_headers(app_handle, url, api_key, body, explicit_proxy, None)
+}
+
+fn http_post_json_with_headers(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+    explicit_proxy: Option<&str>,
+    headers: Option<&BTreeMap<String, String>>,
+) -> Result<String, String> {
     let timeout_secs = 300;
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
-    let response_result = client.post(url).bearer_auth(api_key).json(body).send();
+    let response_result =
+        apply_custom_http_headers(client.post(url).bearer_auth(api_key).json(body), headers)?
+            .send();
 
     let response = match response_result {
         Ok(response) => response,
@@ -5483,17 +5551,17 @@ fn http_post_json(
                 return Err(format!("AI 请求失败：{}", first_err));
             }
             let direct_client = build_direct_http_client(timeout_secs)?;
-            direct_client
-                .post(url)
-                .bearer_auth(api_key)
-                .json(body)
-                .send()
-                .map_err(|second_err| {
-                    format!(
-                        "AI 请求失败：{}；无代理直连重试也失败：{}",
-                        first_err, second_err
-                    )
-                })?
+            apply_custom_http_headers(
+                direct_client.post(url).bearer_auth(api_key).json(body),
+                headers,
+            )?
+            .send()
+            .map_err(|second_err| {
+                format!(
+                    "AI 请求失败：{}；无代理直连重试也失败：{}",
+                    first_err, second_err
+                )
+            })?
         }
     };
 
@@ -5646,10 +5714,18 @@ fn find_xais_upload_url_response(value: &serde_json::Value) -> Option<XaisUpload
 }
 
 fn parse_xais_upload_url_response(raw: &str) -> Result<XaisUploadUrlResponse, String> {
-    let value: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|e| format!("XAIS reference upload URL JSON parse failed: {}; raw: {}", e, raw))?;
-    find_xais_upload_url_response(&value)
-        .ok_or_else(|| format!("XAIS reference upload URL response missing url/name: {}", raw))
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
+        format!(
+            "XAIS reference upload URL JSON parse failed: {}; raw: {}",
+            e, raw
+        )
+    })?;
+    find_xais_upload_url_response(&value).ok_or_else(|| {
+        format!(
+            "XAIS reference upload URL response missing url/name: {}",
+            raw
+        )
+    })
 }
 
 fn normalize_xais_worker_endpoint_for_upload(endpoint: &str) -> String {
@@ -5809,50 +5885,70 @@ fn http_post_image_edit(
     images: &[String],
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
+    http_post_image_edit_with_headers(
+        app_handle,
+        url,
+        api_key,
+        model,
+        prompt,
+        n,
+        size,
+        images,
+        explicit_proxy,
+        None,
+    )
+}
+
+fn http_post_image_edit_with_headers(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    n: u32,
+    size: &str,
+    images: &[String],
+    explicit_proxy: Option<&str>,
+    headers: Option<&BTreeMap<String, String>>,
+) -> Result<String, String> {
     if images.is_empty() {
         return Err("缺少参考图".to_string());
     }
 
     let timeout_secs = 300;
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
-    let response_result = client
+    let request = client
         .post(url)
         .bearer_auth(api_key)
         .multipart(build_ai_image_edit_form(
             &client, model, prompt, n, size, images,
-        )?)
-        .send();
+        )?);
+    let response_result = apply_custom_http_headers(request, headers)?.send();
 
-    let response = match response_result {
-        Ok(response) => response,
-        Err(first_err) => {
-            let can_retry_direct = explicit_proxy
-                .map(|value| value.trim().is_empty())
-                .unwrap_or(true);
-            if !can_retry_direct {
-                return Err(format!("AI 图片上传失败：{}", first_err));
+    let response =
+        match response_result {
+            Ok(response) => response,
+            Err(first_err) => {
+                let can_retry_direct = explicit_proxy
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true);
+                if !can_retry_direct {
+                    return Err(format!("AI 图片上传失败：{}", first_err));
+                }
+                let direct_client = build_direct_http_client(timeout_secs)?;
+                let request = direct_client.post(url).bearer_auth(api_key).multipart(
+                    build_ai_image_edit_form(&direct_client, model, prompt, n, size, images)?,
+                );
+                apply_custom_http_headers(request, headers)?
+                    .send()
+                    .map_err(|second_err| {
+                        format!(
+                            "AI 图片上传失败：{}；无代理直连重试也失败：{}",
+                            first_err, second_err
+                        )
+                    })?
             }
-            let direct_client = build_direct_http_client(timeout_secs)?;
-            direct_client
-                .post(url)
-                .bearer_auth(api_key)
-                .multipart(build_ai_image_edit_form(
-                    &direct_client,
-                    model,
-                    prompt,
-                    n,
-                    size,
-                    images,
-                )?)
-                .send()
-                .map_err(|second_err| {
-                    format!(
-                        "AI 图片上传失败：{}；无代理直连重试也失败：{}",
-                        first_err, second_err
-                    )
-                })?
-        }
-    };
+        };
 
     let status = response.status();
     let text = response.text().map_err(|e| e.to_string())?;
@@ -5863,6 +5959,158 @@ fn http_post_image_edit(
     }
 }
 
+fn canvas_request_profile(
+    app_handle: &tauri::AppHandle,
+    provider: Option<String>,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    headers: Option<BTreeMap<String, String>>,
+) -> Result<ai_credentials::EffectiveApiProfile, String> {
+    ai_credentials::resolve_effective_canvas_api_profile(
+        app_handle,
+        ai_credentials::StoredApiSettings {
+            provider: provider.unwrap_or_else(|| "canvas-ai".to_string()),
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            headers: headers.unwrap_or_default(),
+        },
+    )
+}
+
+fn is_license_managed_profile(profile: &ai_credentials::EffectiveApiProfile) -> bool {
+    profile.source == "license_managed"
+}
+
+fn normalize_openai_like_base_url(base_url: &str) -> String {
+    let mut value = base_url.trim().trim_end_matches('/').to_string();
+    for suffix in [
+        "/chat/completions",
+        "/images/generations",
+        "/images/edits",
+        "/models",
+    ] {
+        if value.to_ascii_lowercase().ends_with(suffix) {
+            value.truncate(value.len().saturating_sub(suffix.len()));
+            value = value.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    if !value.to_ascii_lowercase().ends_with("/v1") {
+        value.push_str("/v1");
+    }
+    value
+}
+
+fn normalize_xais_base_url(base_url: &str) -> String {
+    let mut value = base_url.trim().trim_end_matches('/').to_string();
+    for suffix in [
+        "/v1/chat/completions",
+        "/v1/images/generations",
+        "/v1/images/edits",
+        "/v1/models",
+        "/xais/userProfile",
+        "/xais/workerTaskStart",
+        "/xais/workerTaskWait",
+        "/xais/attUrls",
+        "/v1",
+    ] {
+        if value
+            .to_ascii_lowercase()
+            .ends_with(&suffix.to_ascii_lowercase())
+        {
+            value.truncate(value.len().saturating_sub(suffix.len()));
+            value = value.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    if value.to_ascii_lowercase().ends_with("/xais") {
+        value
+    } else {
+        format!("{}/xais", value)
+    }
+}
+
+fn rewrite_canvas_ai_url(
+    original_url: &str,
+    profile: &ai_credentials::EffectiveApiProfile,
+) -> String {
+    if !is_license_managed_profile(profile) {
+        return original_url.to_string();
+    }
+    if profile.provider == "xais-chat"
+        && canvas_url_has_same_origin(original_url, &profile.base_url)
+    {
+        return original_url.to_string();
+    }
+    let lower = original_url.to_ascii_lowercase();
+    if lower.ends_with("/xais/userprofile") {
+        return format!("{}/userProfile", normalize_xais_base_url(&profile.base_url));
+    }
+    if lower.ends_with("/xais/workertaskstart") || lower.ends_with("/workertaskstart") {
+        return format!(
+            "{}/workerTaskStart",
+            normalize_xais_base_url(&profile.base_url)
+        );
+    }
+    if lower.ends_with("/xais/workertaskwait") || lower.ends_with("/workertaskwait") {
+        return format!(
+            "{}/workerTaskWait",
+            normalize_xais_base_url(&profile.base_url)
+        );
+    }
+    if lower.ends_with("/xais/atturls") || lower.ends_with("/atturls") {
+        return format!("{}/attUrls", normalize_xais_base_url(&profile.base_url));
+    }
+    let base = normalize_openai_like_base_url(&profile.base_url);
+    if lower.ends_with("/models") {
+        return format!("{}/models", base);
+    }
+    if lower.ends_with("/chat/completions") {
+        return format!("{}/chat/completions", base);
+    }
+    if lower.ends_with("/images/generations") {
+        return format!("{}/images/generations", base);
+    }
+    if lower.ends_with("/images/edits") {
+        return format!("{}/images/edits", base);
+    }
+    profile.base_url.clone()
+}
+
+fn canvas_url_has_same_origin(url: &str, base_url: &str) -> bool {
+    let Ok(url) = Url::parse(url.trim()) else {
+        return false;
+    };
+    let Ok(base_url) = Url::parse(base_url.trim().trim_end_matches('/')) else {
+        return false;
+    };
+    url.scheme() == base_url.scheme()
+        && url.host_str() == base_url.host_str()
+        && url.port_or_known_default() == base_url.port_or_known_default()
+}
+
+fn apply_canvas_managed_model(
+    mut body: serde_json::Value,
+    profile: &ai_credentials::EffectiveApiProfile,
+) -> serde_json::Value {
+    if is_license_managed_profile(profile)
+        && profile.provider != "xais-chat"
+        && !profile.model.trim().is_empty()
+    {
+        if let Some(object) = body.as_object_mut() {
+            if object.contains_key("model") {
+                object.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(profile.model.clone()),
+                );
+            }
+        }
+    }
+    body
+}
+
 #[tauri::command]
 async fn post_ai_json(
     app_handle: tauri::AppHandle,
@@ -5870,17 +6118,40 @@ async fn post_ai_json(
     api_key: String,
     body: serde_json::Value,
     proxy: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
+    let fallback_model = model
+        .or_else(|| {
+            body.get("model")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        &url,
+        &api_key,
+        &fallback_model,
+        headers,
+    )?;
+    let request_url = rewrite_canvas_ai_url(&url, &profile);
+    let request_key = profile.api_key.clone();
+    let request_headers = profile.headers.clone();
+    let body = apply_canvas_managed_model(body, &profile);
     tauri::async_runtime::spawn_blocking(move || {
-        if api_key.trim().is_empty() {
+        if request_key.trim().is_empty() {
             return Err("请先填写 API Key".to_string());
         }
-        let raw = http_post_json(
+        let raw = http_post_json_with_headers(
             &app_handle,
-            &url,
-            &api_key,
+            &request_url,
+            &request_key,
             &body,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            Some(&request_headers),
         )?;
         serde_json::from_str(&raw)
             .map_err(|e| format!("AI 响应 JSON 解析失败：{}；原始返回：{}", e, raw))
@@ -5896,17 +6167,40 @@ async fn post_ai_text(
     api_key: String,
     body: serde_json::Value,
     proxy: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<String, String> {
+    let fallback_model = model
+        .or_else(|| {
+            body.get("model")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        &url,
+        &api_key,
+        &fallback_model,
+        headers,
+    )?;
+    let request_url = rewrite_canvas_ai_url(&url, &profile);
+    let request_key = profile.api_key.clone();
+    let request_headers = profile.headers.clone();
+    let body = apply_canvas_managed_model(body, &profile);
     tauri::async_runtime::spawn_blocking(move || {
-        if api_key.trim().is_empty() {
+        if request_key.trim().is_empty() {
             return Err("请先填写 API Key".to_string());
         }
-        http_post_json(
+        http_post_json_with_headers(
             &app_handle,
-            &url,
-            &api_key,
+            &request_url,
+            &request_key,
             &body,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            Some(&request_headers),
         )
     })
     .await
@@ -5924,21 +6218,36 @@ async fn post_ai_image_edit(
     size: String,
     images: Vec<String>,
     proxy: Option<String>,
+    provider: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
+    let profile = canvas_request_profile(&app_handle, provider, &url, &api_key, &model, headers)?;
+    let request_url = rewrite_canvas_ai_url(&url, &profile);
+    let request_key = profile.api_key.clone();
+    let request_headers = profile.headers.clone();
+    let model = if is_license_managed_profile(&profile)
+        && profile.provider != "xais-chat"
+        && !profile.model.trim().is_empty()
+    {
+        profile.model.clone()
+    } else {
+        model
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        if api_key.trim().is_empty() {
+        if request_key.trim().is_empty() {
             return Err("请先填写 API Key".to_string());
         }
-        let raw = http_post_image_edit(
+        let raw = http_post_image_edit_with_headers(
             &app_handle,
-            &url,
-            &api_key,
+            &request_url,
+            &request_key,
             &model,
             &prompt,
             n,
             &size,
             &images,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            Some(&request_headers),
         )?;
         serde_json::from_str(&raw)
             .map_err(|e| format!("AI 图片响应 JSON 解析失败：{}；原始返回：{}", e, raw))
@@ -5954,7 +6263,24 @@ async fn upload_xais_reference_images(
     api_key: String,
     sources: Vec<String>,
     proxy: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<Vec<String>, String> {
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider.or_else(|| Some("xais-chat".to_string())),
+        &endpoint,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    let endpoint = if is_license_managed_profile(&profile) {
+        normalize_xais_base_url(&profile.base_url)
+    } else {
+        endpoint
+    };
+    let api_key = profile.api_key.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if api_key.trim().is_empty() {
             return Err("Please enter XAIS API Key first.".to_string());
@@ -5991,16 +6317,31 @@ async fn get_ai_json(
     url: String,
     api_key: String,
     proxy: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        &url,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    let request_url = rewrite_canvas_ai_url(&url, &profile);
+    let request_key = profile.api_key.clone();
+    let request_headers = profile.headers.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if api_key.trim().is_empty() {
+        if request_key.trim().is_empty() {
             return Err("Please enter API Key first.".to_string());
         }
-        let raw = http_get_text(
+        let raw = http_get_text_with_headers(
             &app_handle,
-            &url,
-            &api_key,
+            &request_url,
+            &request_key,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            Some(&request_headers),
         )?;
         serde_json::from_str(&raw).map_err(|e| {
             format!(
@@ -6019,16 +6360,31 @@ async fn get_ai_text(
     url: String,
     api_key: String,
     proxy: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<String, String> {
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        &url,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    let request_url = rewrite_canvas_ai_url(&url, &profile);
+    let request_key = profile.api_key.clone();
+    let request_headers = profile.headers.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if api_key.trim().is_empty() {
+        if request_key.trim().is_empty() {
             return Err("Please enter API Key first.".to_string());
         }
-        http_get_text(
+        http_get_text_with_headers(
             &app_handle,
-            &url,
-            &api_key,
+            &request_url,
+            &request_key,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            Some(&request_headers),
         )
     })
     .await
@@ -6050,8 +6406,20 @@ fn path_kind(path: String) -> Result<String, String> {
 fn is_supported_drop_media_path(path: &Path) -> bool {
     matches!(
         local_file_extension(path).as_str(),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "avif" | "svg"
-            | "mp4" | "mov" | "avi" | "mkv" | "webm" | "m4v"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "webp"
+            | "gif"
+            | "bmp"
+            | "avif"
+            | "svg"
+            | "mp4"
+            | "mov"
+            | "avi"
+            | "mkv"
+            | "webm"
+            | "m4v"
     )
 }
 
@@ -6092,7 +6460,9 @@ fn local_media_metadata_impl(path: String) -> Result<LocalMediaMetadata, String>
     if !normalized.is_file() {
         return Err("not a local file".to_string());
     }
-    let resolved = normalized.canonicalize().unwrap_or_else(|_| normalized.clone());
+    let resolved = normalized
+        .canonicalize()
+        .unwrap_or_else(|_| normalized.clone());
     let metadata = fs::metadata(&resolved).map_err(|e| e.to_string())?;
     let size = metadata.len();
     let modified_at = metadata
@@ -6116,7 +6486,8 @@ fn local_media_metadata_impl(path: String) -> Result<LocalMediaMetadata, String>
         use std::io::Seek;
         use std::io::SeekFrom;
         let tail_start = size.saturating_sub(64 * 1024);
-        file.seek(SeekFrom::Start(tail_start)).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(tail_start))
+            .map_err(|e| e.to_string())?;
         let mut tail = vec![0u8; 64 * 1024];
         let tail_len = file.read(&mut tail).map_err(|e| e.to_string())?;
         hasher.update(&tail[..tail_len]);
@@ -6133,8 +6504,8 @@ fn local_media_metadata_impl(path: String) -> Result<LocalMediaMetadata, String>
 #[tauri::command]
 async fn get_local_media_metadata(path: String) -> Result<LocalMediaMetadata, String> {
     tauri::async_runtime::spawn_blocking(move || local_media_metadata_impl(path))
-    .await
-    .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -6396,7 +6767,9 @@ async fn eagle_api_get(url: String) -> Result<serde_json::Value, String> {
         if !status.is_success() {
             return Err(format!("Eagle API 返回 HTTP {}", status.as_u16()));
         }
-        response.json::<serde_json::Value>().map_err(|e| e.to_string())
+        response
+            .json::<serde_json::Value>()
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -6448,8 +6821,14 @@ fn read_eagle_json(path: &Path) -> Option<serde_json::Value> {
 }
 
 fn eagle_offline_item_file(info_dir: &Path, metadata: &serde_json::Value) -> Option<PathBuf> {
-    let name = metadata.get("name").and_then(serde_json::Value::as_str).unwrap_or("");
-    let ext = metadata.get("ext").and_then(serde_json::Value::as_str).unwrap_or("");
+    let name = metadata
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let ext = metadata
+        .get("ext")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
     if !name.is_empty() && !ext.is_empty() {
         let preferred = info_dir.join(format!("{}.{}", name, ext.trim_start_matches('.')));
         if preferred.is_file() {
@@ -6658,13 +7037,57 @@ mod eagle_import_tests {
             root.to_string_lossy().to_string(),
         ))
         .unwrap();
-        assert_eq!(result.pointer("/library/name").and_then(|value| value.as_str()), Some("Design"));
-        assert_eq!(result.pointer("/items/0/id").and_then(|value| value.as_str()), Some("ITEM-1"));
+        assert_eq!(
+            result
+                .pointer("/library/name")
+                .and_then(|value| value.as_str()),
+            Some("Design")
+        );
+        assert_eq!(
+            result
+                .pointer("/items/0/id")
+                .and_then(|value| value.as_str()),
+            Some("ITEM-1")
+        );
         assert!(result
             .pointer("/items/0/filePath")
             .and_then(|value| value.as_str())
             .is_some_and(|value| value.ends_with("Wheel.png")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn managed_canvas_profile(provider: &str) -> ai_credentials::EffectiveApiProfile {
+        ai_credentials::EffectiveApiProfile {
+            source: "license_managed".to_string(),
+            provider: provider.to_string(),
+            base_url: "https://xais.dchai.cn".to_string(),
+            api_key: "sk-managed".to_string(),
+            model: "Xais Nano Pro_2K".to_string(),
+            headers: BTreeMap::new(),
+            editable: false,
+            key_last4: Some("aged".to_string()),
+        }
+    }
+
+    #[test]
+    fn managed_xais_keeps_professional_worker_url() {
+        let profile = managed_canvas_profile("xais-chat");
+        let url = "https://xais.dchai.cn/xais/workerTaskStart";
+        assert_eq!(rewrite_canvas_ai_url(url, &profile), url);
+    }
+
+    #[test]
+    fn managed_xais_preserves_worker_request_model() {
+        let profile = managed_canvas_profile("xais-chat");
+        let body = serde_json::json!({
+            "model": "nano_banana_pro_2k_0",
+            "prompt": "test"
+        });
+        let next = apply_canvas_managed_model(body, &profile);
+        assert_eq!(
+            next.get("model").and_then(|value| value.as_str()),
+            Some("nano_banana_pro_2k_0")
+        );
     }
 }
 
@@ -7170,16 +7593,35 @@ fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Res
 #[tauri::command]
 fn load_folders(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
-    if is_folder_empty_state_confirmed(&app_handle, if path.exists() { Some(&path) } else { None }) {
+    if is_folder_empty_state_confirmed(
+        &app_handle,
+        if path.exists() { Some(&path) } else { None },
+    ) {
         return Ok(serde_json::json!([]));
     }
 
-    let mut candidates = Vec::new();
-    if let Some(candidate) = folder_payload_candidate_from_path(&path)? {
-        candidates.push(candidate);
+    if let Some(current) = folder_payload_candidate_from_path(&path)? {
+        let payload = current.payload;
+        if let Some(folder_array) = payload.as_array() {
+            let _ = crate::services::asset_service::replace_folders(
+                app_handle.clone(),
+                Some(crate::db::schema::DEFAULT_LIBRARY_ID.to_string()),
+                folder_array.clone(),
+            );
+        }
+        let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
+        return Ok(payload);
     }
-    collect_folder_backup_candidates(&get_user_data_dir(&app_handle).join("json_backups"), &mut candidates)?;
-    collect_folder_backup_candidates(&get_user_data_dir(&app_handle).join("canvas_schema_backups"), &mut candidates)?;
+
+    let mut candidates = Vec::new();
+    collect_folder_backup_candidates(
+        &get_user_data_dir(&app_handle).join("json_backups"),
+        &mut candidates,
+    )?;
+    collect_folder_backup_candidates(
+        &get_user_data_dir(&app_handle).join("canvas_schema_backups"),
+        &mut candidates,
+    )?;
 
     if crate::db::connection::should_use_sqlite(&app_handle) {
         if let Ok(sqlite_folders) = crate::services::asset_service::list_folders(
@@ -7224,7 +7666,10 @@ fn save_folders(
 ) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
     let next_count = folder_payload_count(&folders);
-    if next_count == 0 && !allow_empty.unwrap_or(false) && has_recoverable_folder_payloads(&app_handle)? {
+    if next_count == 0
+        && !allow_empty.unwrap_or(false)
+        && has_recoverable_folder_payloads(&app_handle)?
+    {
         let backup_path = path.with_file_name(format!(
             "drawer_folders.empty-save-blocked.{}.json",
             current_time_millis()
@@ -7234,7 +7679,10 @@ fn save_folders(
         return Ok(());
     }
     if next_count == 0 {
-        let _ = fs::write(folder_empty_marker_path(&app_handle), current_time_millis().to_string());
+        let _ = fs::write(
+            folder_empty_marker_path(&app_handle),
+            current_time_millis().to_string(),
+        );
     } else {
         let _ = fs::remove_file(folder_empty_marker_path(&app_handle));
     }
@@ -7255,7 +7703,10 @@ fn folder_empty_marker_path(app_handle: &tauri::AppHandle) -> PathBuf {
     get_user_data_dir(app_handle).join("drawer_folders.empty_confirmed.txt")
 }
 
-fn is_folder_empty_state_confirmed(app_handle: &tauri::AppHandle, folders_path: Option<&Path>) -> bool {
+fn is_folder_empty_state_confirmed(
+    app_handle: &tauri::AppHandle,
+    folders_path: Option<&Path>,
+) -> bool {
     let marker_path = folder_empty_marker_path(app_handle);
     if !marker_path.is_file() {
         return false;
@@ -7351,24 +7802,35 @@ fn has_recoverable_folder_payloads(app_handle: &tauri::AppHandle) -> Result<bool
     Ok(recover_folders_from_latest_backup(app_handle)?.is_some())
 }
 
-fn recover_folders_from_latest_backup(app_handle: &tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+fn recover_folders_from_latest_backup(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<serde_json::Value>, String> {
     let data_dir = get_user_data_dir(app_handle);
     let mut candidates = Vec::new();
     collect_folder_backup_candidates(&data_dir.join("json_backups"), &mut candidates)?;
     collect_folder_backup_candidates(&data_dir.join("canvas_schema_backups"), &mut candidates)?;
-    for entry in fs::read_dir(&data_dir).map_err(|err| err.to_string())?.flatten() {
+    for entry in fs::read_dir(&data_dir)
+        .map_err(|err| err.to_string())?
+        .flatten()
+    {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if path.is_file() && name.starts_with("drawer_folders.empty-save-blocked.") && name.ends_with(".json") {
+        if path.is_file()
+            && name.starts_with("drawer_folders.empty-save-blocked.")
+            && name.ends_with(".json")
+        {
             if let Some(candidate) = folder_payload_candidate_from_path(&path)? {
                 candidates.push(candidate);
             }
         }
     }
     sort_folder_payload_candidates(&mut candidates);
-    Ok(candidates.into_iter().next().map(|candidate| candidate.payload))
+    Ok(candidates
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.payload))
 }
 
 fn sort_folder_payload_candidates(candidates: &mut [FolderPayloadCandidate]) {
@@ -7413,7 +7875,9 @@ fn folder_payload_from_path(path: &Path) -> Result<Option<serde_json::Value>, St
     Ok(folder_payload_candidate_from_path(path)?.map(|candidate| candidate.payload))
 }
 
-fn folder_payload_candidate_from_path(path: &Path) -> Result<Option<FolderPayloadCandidate>, String> {
+fn folder_payload_candidate_from_path(
+    path: &Path,
+) -> Result<Option<FolderPayloadCandidate>, String> {
     if !path.is_file() {
         return Ok(None);
     }
@@ -7460,8 +7924,7 @@ fn write_folders_payload(path: &Path, folders: &serde_json::Value) -> Result<(),
 }
 
 fn modified_time_millis(path: &Path) -> i64 {
-    path
-        .metadata()
+    path.metadata()
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
@@ -7479,9 +7942,11 @@ fn json_value_string(value: &serde_json::Value, key: &str) -> Option<String> {
 }
 
 fn json_value_i64(value: &serde_json::Value, key: &str) -> Option<i64> {
-    value
-        .get(key)
-        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|item| item as i64)))
+    value.get(key).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().map(|item| item as i64))
+    })
 }
 
 fn json_folder_deleted(folder: &serde_json::Value) -> bool {
@@ -7559,7 +8024,9 @@ fn recover_canvas_state_from_sqlite(
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![DEFAULT_CANVAS_ID], |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params![DEFAULT_CANVAS_ID], |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|err| err.to_string())?;
     let mut items = Vec::new();
     for row in rows {
@@ -7592,7 +8059,10 @@ fn recover_canvas_state_from_latest_backup(
         return Ok(None);
     }
     let mut candidates = Vec::new();
-    for entry in fs::read_dir(backup_root).map_err(|err| err.to_string())?.flatten() {
+    for entry in fs::read_dir(backup_root)
+        .map_err(|err| err.to_string())?
+        .flatten()
+    {
         let canvas_path = entry.path().join("drawer_canvas.json");
         if !canvas_path.is_file() {
             continue;
@@ -7639,10 +8109,24 @@ fn fit_recovered_canvas_view(state: &mut serde_json::Value) {
     let mut max_x = 0.0_f64;
     let mut max_y = 0.0_f64;
     for item in items {
-        let x = item.get("x").and_then(|value| value.as_f64()).unwrap_or(0.0);
-        let y = item.get("y").and_then(|value| value.as_f64()).unwrap_or(0.0);
-        let width = item.get("width").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
-        let height = item.get("height").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
+        let x = item
+            .get("x")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0);
+        let y = item
+            .get("y")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0);
+        let width = item
+            .get("width")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            .max(1.0);
+        let height = item
+            .get("height")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            .max(1.0);
         min_x = min_x.min(x);
         min_y = min_y.min(y);
         max_x = max_x.max(x + width);
@@ -7674,10 +8158,24 @@ fn ensure_recovered_canvas_size(state: &mut serde_json::Value) {
     let mut max_x = 0.0_f64;
     let mut max_y = 0.0_f64;
     for item in items {
-        let x = item.get("x").and_then(|value| value.as_f64()).unwrap_or(0.0);
-        let y = item.get("y").and_then(|value| value.as_f64()).unwrap_or(0.0);
-        let width = item.get("width").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
-        let height = item.get("height").and_then(|value| value.as_f64()).unwrap_or(0.0).max(1.0);
+        let x = item
+            .get("x")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0);
+        let y = item
+            .get("y")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0);
+        let width = item
+            .get("width")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            .max(1.0);
+        let height = item
+            .get("height")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            .max(1.0);
         max_x = max_x.max(x + width);
         max_y = max_y.max(y + height);
     }
@@ -7704,7 +8202,9 @@ fn save_canvas_state(
 ) -> Result<(), String> {
     let path = get_user_data_dir(&app_handle).join("drawer_canvas.json");
     compact_items_payload(&mut state);
-    if canvas_state_item_count(&state) == 0 && has_recoverable_canvas_state(&app_handle).unwrap_or(false) {
+    if canvas_state_item_count(&state) == 0
+        && has_recoverable_canvas_state(&app_handle).unwrap_or(false)
+    {
         let backup_path = path.with_file_name(format!(
             "drawer_canvas.empty-save-blocked.{}.json",
             current_time_millis()
@@ -7724,7 +8224,8 @@ fn has_recoverable_canvas_state(app_handle: &tauri::AppHandle) -> Result<bool, S
     Ok(recover_canvas_state_from_latest_backup(app_handle)?
         .as_ref()
         .map(canvas_state_item_count)
-        .unwrap_or(0) > 0)
+        .unwrap_or(0)
+        > 0)
 }
 
 #[tauri::command]
@@ -7801,7 +8302,8 @@ fn ensure_image_thumbnail_file_impl(
 
     let out_path = cache_root.join(format!("{}.jpg", metadata.fingerprint));
     if out_path.is_file() {
-        let (thumb_width, thumb_height) = screenshots::image::image_dimensions(&out_path).unwrap_or((0, 0));
+        let (thumb_width, thumb_height) =
+            screenshots::image::image_dimensions(&out_path).unwrap_or((0, 0));
         return Ok(ImageThumbnailFileResult {
             path: out_path.to_string_lossy().to_string(),
             size: thumb_size,
@@ -7843,9 +8345,11 @@ async fn ensure_image_thumbnail_file(
     path: String,
     size: Option<u32>,
 ) -> Result<ImageThumbnailFileResult, String> {
-    tauri::async_runtime::spawn_blocking(move || ensure_image_thumbnail_file_impl(app_handle, path, size))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_image_thumbnail_file_impl(app_handle, path, size)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -9394,6 +9898,78 @@ async fn collect_web_images(
     .map_err(|e| e.to_string())?
 }
 
+fn huaban_pin_id_from_url(input: &str) -> Option<String> {
+    let parsed = Url::parse(input.trim()).ok()?;
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    if host != "huaban.com" && !host.ends_with(".huaban.com") {
+        return None;
+    }
+    let mut segments = parsed.path_segments()?;
+    if segments.next()? != "pins" {
+        return None;
+    }
+    let pin_id = segments.next()?.trim();
+    if pin_id.is_empty() || !pin_id.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(pin_id.to_string())
+}
+
+fn huaban_image_url_from_api_json(value: &serde_json::Value) -> Option<String> {
+    let file = value.get("pin")?.get("file")?;
+    let file_type = file
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !file_type.to_ascii_lowercase().starts_with("image/") {
+        return None;
+    }
+    file.get("url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+        .map(str::to_string)
+}
+
+fn resolve_huaban_pin_image_url(
+    app_handle: &tauri::AppHandle,
+    input: &str,
+    explicit_proxy: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(pin_id) = huaban_pin_id_from_url(input) else {
+        return Ok(None);
+    };
+    let api_url = format!("https://api.huaban.com/pins/{pin_id}");
+    let client = build_http_client(Some(app_handle), explicit_proxy, 45)?;
+    let response = client
+        .get(&api_url)
+        .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
+        .header(reqwest::header::REFERER, input)
+        .send()
+        .map_err(|e| format!("解析花瓣图片地址失败：{}", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "解析花瓣图片地址失败：HTTP 状态码 {}",
+            response.status()
+        ));
+    }
+    let value = response
+        .json::<serde_json::Value>()
+        .map_err(|e| format!("解析花瓣图片 JSON 失败：{}", e))?;
+    let image_url = huaban_image_url_from_api_json(&value)
+        .ok_or_else(|| "花瓣 pin 没有返回可用图片地址".to_string())?;
+    Ok(Some(image_url))
+}
+
+fn is_obvious_non_media_content_type(content_type: &str) -> bool {
+    let lower = content_type.to_ascii_lowercase();
+    lower.starts_with("text/html")
+        || lower.starts_with("text/plain")
+        || lower.starts_with("application/json")
+        || lower.starts_with("application/xml")
+        || lower.starts_with("text/xml")
+}
+
 fn cache_web_image_impl(
     app_handle: tauri::AppHandle,
     url: String,
@@ -9405,6 +9981,8 @@ fn cache_web_image_impl(
     if input.is_empty() {
         return Err("empty web image url".to_string());
     }
+    let resolved_input = resolve_huaban_pin_image_url(&app_handle, input, proxy.as_deref())?;
+    let input = resolved_input.as_deref().unwrap_or(input);
 
     // 优先使用前端传来的最新缓存路径；如果没有传，再读取后端保存的设置。
     // 这样可以避免拖拽监听和配置文件不同步时继续写入默认缓存目录。
@@ -9477,6 +10055,17 @@ fn cache_web_image_impl(
                     return Err(format!("缓存网页图片失败：{}", err));
                 }
             };
+        if content_type
+            .as_deref()
+            .map(is_obvious_non_media_content_type)
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(&out_path);
+            return Err(format!(
+                "下载结果不是图片或视频：{}",
+                content_type.unwrap_or_default()
+            ));
+        }
         if let Some(mime_ext) = content_type.as_deref().and_then(media_ext_from_mime) {
             let next_path = replace_media_extension(&out_path, mime_ext);
             if next_path != out_path {
@@ -10428,13 +11017,28 @@ async fn get_openai_compatible_models(
     app_handle: tauri::AppHandle,
     endpoint: String,
     api_key: String,
+    provider: Option<String>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
 ) -> Result<Vec<String>, String> {
-    let api_key = api_key.trim().to_string();
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        &endpoint,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    let api_key = profile.api_key.trim().to_string();
     if api_key.is_empty() {
         return Err("Please enter API Key first.".to_string());
     }
 
-    let base = endpoint.trim().trim_end_matches('/').to_string();
+    let base = if is_license_managed_profile(&profile) {
+        normalize_openai_like_base_url(&profile.base_url)
+    } else {
+        endpoint.trim().trim_end_matches('/').to_string()
+    };
     if base.is_empty() {
         return Err("Please enter API Base URL first.".to_string());
     }
@@ -10444,9 +11048,11 @@ async fn get_openai_compatible_models(
     } else {
         format!("{}/models", base)
     };
+    let request_headers = profile.headers.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let raw = http_get_text(&app_handle, &url, &api_key, None)?;
+        let raw =
+            http_get_text_with_headers(&app_handle, &url, &api_key, None, Some(&request_headers))?;
         let parsed: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|e| format!("Model list JSON parse failed: {}; raw response: {}", e, raw))?;
         let data = parsed
@@ -11784,7 +12390,124 @@ fn looks_like_image_url(url: &str) -> bool {
         || lower.ends_with(".jpeg")
         || lower.ends_with(".gif")
         || lower.ends_with(".webp")
+        || lower.ends_with(".avif")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".svg")
+        || lower.contains(".png?")
+        || lower.contains(".png#")
+        || lower.contains(".jpg?")
+        || lower.contains(".jpg#")
+        || lower.contains(".jpeg?")
+        || lower.contains(".jpeg#")
+        || lower.contains(".gif?")
+        || lower.contains(".gif#")
+        || lower.contains(".webp?")
+        || lower.contains(".webp#")
+        || lower.contains(".avif?")
+        || lower.contains(".avif#")
+        || lower.contains(".bmp?")
+        || lower.contains(".bmp#")
+        || lower.contains(".svg?")
+        || lower.contains(".svg#")
+        || lower.contains("format=jpg")
+        || lower.contains("format=jpeg")
+        || lower.contains("format=png")
+        || lower.contains("format=webp")
+        || lower.contains("format=gif")
+        || lower.contains("format=avif")
         || lower.contains("image")
+        || looks_like_image_endpoint(&lower)
+}
+
+fn looks_like_image_endpoint(lower_url: &str) -> bool {
+    let Some(rest) = lower_url
+        .strip_prefix("https://")
+        .or_else(|| lower_url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let host_end = rest
+        .find(|c| matches!(c, '/' | '?' | '#'))
+        .unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    let suffix = &rest[host_end..];
+
+        if (host == "mm.bing.net" || host.ends_with(".mm.bing.net"))
+            && (suffix.contains("/th/id/") || suffix.contains("pid=imgdetmain"))
+        {
+            return true;
+        }
+        if host == "huabanimg.com"
+            || host.ends_with(".huabanimg.com")
+            || host.contains("hbimg")
+        {
+            return true;
+        }
+        if (host == "huaban.com" || host.ends_with(".huaban.com"))
+            && looks_like_huaban_pin_suffix(suffix)
+        {
+            return true;
+        }
+
+        suffix.contains("imgurl=")
+            || suffix.contains("mediaurl=")
+            || suffix.contains("imageurl=")
+        || suffix.contains("thumbnail=")
+        || suffix.contains("/image/")
+        || suffix.contains("/images/")
+        || suffix.contains("/img/")
+        || suffix.contains("/thumb/")
+        || suffix.contains("/thumbnail/")
+}
+
+fn looks_like_huaban_pin_suffix(suffix: &str) -> bool {
+    let path = suffix.split(['?', '#']).next().unwrap_or(suffix);
+    let mut parts = path.trim_start_matches('/').split('/');
+    matches!(parts.next(), Some("pins"))
+        && parts
+            .next()
+            .map(|pin_id| !pin_id.is_empty() && pin_id.chars().all(|ch| ch.is_ascii_digit()))
+            .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod web_image_url_tests {
+    use super::{huaban_image_url_from_api_json, huaban_pin_id_from_url, looks_like_image_url};
+
+    #[test]
+    fn recognizes_bing_thumbnail_image_without_extension() {
+        assert!(looks_like_image_url(
+            "https://tse3.mm.bing.net/th/id/OIP.UMzDkGvA3qc16jOUUeZuSgAAAA?r=0&rs=1&pid=ImgDetMain&o=7&rm=3"
+        ));
+    }
+
+    #[test]
+    fn recognizes_huaban_pin_page_and_cdn_without_extension() {
+        assert!(looks_like_image_url("https://huaban.com/pins/5796954824"));
+        assert!(looks_like_image_url(
+            "https://gd-hbimg-edge.huaban.com/70e5f7001150d73db4d8b065f7977648c7af77f46536f-f9s7kc?auth_key=x"
+        ));
+        assert_eq!(
+            huaban_pin_id_from_url("https://huaban.com/pins/5796954824?foo=bar").as_deref(),
+            Some("5796954824")
+        );
+    }
+
+    #[test]
+    fn extracts_huaban_image_url_from_api_json() {
+        let value = serde_json::json!({
+            "pin": {
+                "file": {
+                    "type": "image/jpeg",
+                    "url": "https://gd-hbimg-edge.huaban.com/example"
+                }
+            }
+        });
+        assert_eq!(
+            huaban_image_url_from_api_json(&value).as_deref(),
+            Some("https://gd-hbimg-edge.huaban.com/example")
+        );
+    }
 }
 
 #[tauri::command]
@@ -11965,6 +12688,11 @@ fn update_shortcut(
 #[tauri::command]
 fn refresh_edge_drop_targets(app_handle: tauri::AppHandle) -> Result<(), String> {
     native_drop::refresh_edge_native_drop(&app_handle)
+}
+
+#[tauri::command]
+fn cancel_virtual_drop(job_id: String) -> Result<(), String> {
+    native_drop::cancel_virtual_drop(&job_id)
 }
 
 const AUTO_START_REG_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -12292,9 +13020,7 @@ fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
             let mut decoded = percent_decode_lossy(path_part);
             if cfg!(target_os = "windows") {
                 decoded = decoded.replace('/', "\\");
-                if decoded.len() >= 4
-                    && decoded.starts_with('\\')
-                    && decoded.as_bytes()[2] == b':'
+                if decoded.len() >= 4 && decoded.starts_with('\\') && decoded.as_bytes()[2] == b':'
                 {
                     decoded = decoded.trim_start_matches('\\').to_string();
                 }
@@ -12356,7 +13082,9 @@ fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Resul
     use winapi::shared::minwindef::DWORD;
     use winapi::um::winbase::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use winapi::um::wingdi::{BITMAPINFOHEADER, BI_RGB};
-    use winapi::um::winuser::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_DIB};
+    use winapi::um::winuser::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_DIB,
+    };
 
     let rgba = image.to_rgba8();
     let width = rgba.width();
@@ -14575,6 +15303,7 @@ fn main() {
             agent::agent_openai_chat,
             agent::agent_cancel_openai,
             agent::agent_list_openai_models,
+            agent::agent_query_api_balance,
             agent::agent_codex_status,
             agent::agent_install_codex,
             agent::agent_codex_start,
@@ -14677,6 +15406,7 @@ fn main() {
             get_shortcut,
             update_shortcut,
             refresh_edge_drop_targets,
+            cancel_virtual_drop,
             get_auto_start,
             set_auto_start,
             copy_image,

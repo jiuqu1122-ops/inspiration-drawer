@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 
 use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
+    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
+    MoveFoldersOptions, ViewportOptions,
 };
 
 pub struct JsonAssetRepository {
@@ -72,7 +73,10 @@ impl AssetRepository for JsonAssetRepository {
     }
 
     fn get_asset_by_id(&self, id: &str) -> Result<Option<Value>, String> {
-        Ok(self.read_items()?.into_iter().find(|item| item.get("id").and_then(Value::as_str) == Some(id)))
+        Ok(self
+            .read_items()?
+            .into_iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some(id)))
     }
 
     fn get_asset_count(&self, options: AssetListOptions) -> Result<i64, String> {
@@ -95,18 +99,32 @@ impl AssetRepository for JsonAssetRepository {
 
     fn get_assets_by_ids(&self, ids: Vec<String>) -> Result<Vec<Value>, String> {
         let id_set: std::collections::HashSet<String> = ids.into_iter().collect();
-        Ok(self.read_items()?.into_iter().filter(|item| {
-            item.get("id").and_then(Value::as_str).map(|id| id_set.contains(id)).unwrap_or(false)
-        }).collect())
+        Ok(self
+            .read_items()?
+            .into_iter()
+            .filter(|item| {
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| id_set.contains(id))
+                    .unwrap_or(false)
+            })
+            .collect())
     }
 
     fn get_assets_in_viewport(&self, _options: ViewportOptions) -> Result<Vec<Value>, String> {
         Ok(Vec::new())
     }
 
-    fn debug_get_all_canvas_nodes(&self, options: DebugCanvasNodesOptions) -> Result<Value, String> {
+    fn debug_get_all_canvas_nodes(
+        &self,
+        options: DebugCanvasNodesOptions,
+    ) -> Result<Value, String> {
         let state = self.read_canvas_state()?;
-        let items = state.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+        let items = state
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let limit = options.limit.unwrap_or(20).clamp(1, 200) as usize;
         Ok(json!({
             "mode": "json",
@@ -124,7 +142,11 @@ impl AssetRepository for JsonAssetRepository {
         self.read_folders()
     }
 
-    fn replace_folders(&self, _library_id: Option<String>, folders: Vec<Value>) -> Result<Vec<Value>, String> {
+    fn replace_folders(
+        &self,
+        _library_id: Option<String>,
+        folders: Vec<Value>,
+    ) -> Result<Vec<Value>, String> {
         let now = crate::current_time_millis();
         let path = self.folders_path();
         if let Some(parent) = path.parent() {
@@ -137,7 +159,10 @@ impl AssetRepository for JsonAssetRepository {
             fs::remove_file(&path).map_err(|err| err.to_string())?;
         }
         fs::rename(&temp_path, &path).map_err(|err| err.to_string())?;
-        Ok(folders.into_iter().filter(|folder| !json_folder_deleted(folder)).collect())
+        Ok(folders
+            .into_iter()
+            .filter(|folder| !json_folder_deleted(folder))
+            .collect())
     }
 
     fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String> {
@@ -162,7 +187,10 @@ impl AssetRepository for JsonAssetRepository {
                 .ok_or_else(|| format!("folder not found: {}", folder_id))?;
             let folder = &folders[index];
             if json_folder_deleted(folder) {
-                return Err(format!("folder has been deleted: {}", json_value_string(folder, "name").unwrap_or_else(|| folder_id.clone())));
+                return Err(format!(
+                    "folder has been deleted: {}",
+                    json_value_string(folder, "name").unwrap_or_else(|| folder_id.clone())
+                ));
             }
             if json_folder_library_id(folder) != library_id {
                 return Err("folders must belong to the same library".to_string());
@@ -173,7 +201,10 @@ impl AssetRepository for JsonAssetRepository {
             .iter()
             .filter_map(|folder| {
                 let id = json_value_string(folder, "id")?;
-                Some((id, normalize_json_parent_id(json_value_string(folder, "parentId"))))
+                Some((
+                    id,
+                    normalize_json_parent_id(json_value_string(folder, "parentId")),
+                ))
             })
             .collect::<HashMap<_, _>>();
 
@@ -204,8 +235,11 @@ impl AssetRepository for JsonAssetRepository {
             .filter(|folder| {
                 json_folder_library_id(folder) == library_id
                     && !json_folder_deleted(folder)
-                    && json_value_string(folder, "id").map(|id| !selected_ids.contains(&id)).unwrap_or(false)
-                    && normalize_json_parent_id(json_value_string(folder, "parentId")) == new_parent_id
+                    && json_value_string(folder, "id")
+                        .map(|id| !selected_ids.contains(&id))
+                        .unwrap_or(false)
+                    && normalize_json_parent_id(json_value_string(folder, "parentId"))
+                        == new_parent_id
             })
             .filter_map(|folder| json_value_i64(folder, "sortOrder"))
             .max();
@@ -241,9 +275,11 @@ impl AssetRepository for JsonAssetRepository {
         folders.sort_by(|left, right| {
             let left_sort = json_value_i64(left, "sortOrder").unwrap_or(i64::MAX);
             let right_sort = json_value_i64(right, "sortOrder").unwrap_or(i64::MAX);
-            left_sort
-                .cmp(&right_sort)
-                .then_with(|| json_value_string(left, "name").unwrap_or_default().cmp(&json_value_string(right, "name").unwrap_or_default()))
+            left_sort.cmp(&right_sort).then_with(|| {
+                json_value_string(left, "name")
+                    .unwrap_or_default()
+                    .cmp(&json_value_string(right, "name").unwrap_or_default())
+            })
         });
 
         let path = self.folders_path();
@@ -257,7 +293,10 @@ impl AssetRepository for JsonAssetRepository {
             fs::remove_file(&path).map_err(|err| err.to_string())?;
         }
         fs::rename(&temp_path, &path).map_err(|err| err.to_string())?;
-        Ok(folders.into_iter().filter(|folder| !json_folder_deleted(folder)).collect())
+        Ok(folders
+            .into_iter()
+            .filter(|folder| !json_folder_deleted(folder))
+            .collect())
     }
 
     fn list_tags(&self, _library_id: Option<String>) -> Result<Vec<Value>, String> {
@@ -265,11 +304,16 @@ impl AssetRepository for JsonAssetRepository {
     }
 
     fn get_asset_thumbnails(&self, asset_id: &str) -> Result<Vec<Value>, String> {
-        Ok(self.get_asset_by_id(asset_id)?.and_then(|item| {
-            item.get("thumbnail").and_then(Value::as_str).map(|thumbnail| {
-                vec![json!({ "asset_id": asset_id, "size": 512, "path": thumbnail })]
+        Ok(self
+            .get_asset_by_id(asset_id)?
+            .and_then(|item| {
+                item.get("thumbnail")
+                    .and_then(Value::as_str)
+                    .map(|thumbnail| {
+                        vec![json!({ "asset_id": asset_id, "size": 512, "path": thumbnail })]
+                    })
             })
-        }).unwrap_or_default())
+            .unwrap_or_default())
     }
 }
 
@@ -309,7 +353,11 @@ fn json_value_string(value: &Value, key: &str) -> Option<String> {
 }
 
 fn json_value_i64(value: &Value, key: &str) -> Option<i64> {
-    value.get(key).and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|item| item as i64)))
+    value.get(key).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().map(|item| item as i64))
+    })
 }
 
 fn json_folder_library_id(folder: &Value) -> String {
@@ -323,7 +371,11 @@ fn json_folder_deleted(folder: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn is_json_descendant_of(parent_by_id: &HashMap<String, Option<String>>, candidate_parent_id: &str, folder_id: &str) -> bool {
+fn is_json_descendant_of(
+    parent_by_id: &HashMap<String, Option<String>>,
+    candidate_parent_id: &str,
+    folder_id: &str,
+) -> bool {
     let mut cursor = Some(candidate_parent_id.to_string());
     let mut seen = HashSet::new();
     while let Some(current_id) = cursor {
@@ -339,29 +391,65 @@ fn is_json_descendant_of(parent_by_id: &HashMap<String, Option<String>>, candida
 }
 
 fn apply_json_filters(items: &mut Vec<Value>, options: &AssetListOptions) {
-    if let Some(folder_ids) = options.folder_ids.as_ref().map(|ids| {
-        ids.iter()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<std::collections::HashSet<_>>()
-    }).filter(|ids| !ids.is_empty()) {
-        items.retain(|item| item.get("folderId").and_then(Value::as_str).map(|id| folder_ids.contains(id)).unwrap_or(false));
-    } else if let Some(folder_id) = options.folder_id.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+    if let Some(folder_ids) = options
+        .folder_ids
+        .as_ref()
+        .map(|ids| {
+            ids.iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .filter(|ids| !ids.is_empty())
+    {
+        items.retain(|item| {
+            item.get("folderId")
+                .and_then(Value::as_str)
+                .map(|id| folder_ids.contains(id))
+                .unwrap_or(false)
+        });
+    } else if let Some(folder_id) = options
+        .folder_id
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         if folder_id == "all" {
-            items.retain(|item| item.get("folderId").and_then(Value::as_str).unwrap_or("").is_empty());
+            items.retain(|item| {
+                item.get("folderId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .is_empty()
+            });
         } else {
             items.retain(|item| item.get("folderId").and_then(Value::as_str) == Some(folder_id));
         }
     }
-    if let Some(file_type) = options.file_type.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+    if let Some(file_type) = options
+        .file_type
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         items.retain(|item| item.get("type").and_then(Value::as_str) == Some(file_type));
     }
-    if let Some(keyword) = options.keyword.as_ref().map(|value| value.trim().to_lowercase()).filter(|value| !value.is_empty()) {
+    if let Some(keyword) = options
+        .keyword
+        .as_ref()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+    {
         items.retain(|item| {
             ["name", "content", "remark", "sourceUrl", "originalUrl"]
                 .iter()
-                .any(|key| item.get(*key).and_then(Value::as_str).unwrap_or("").to_lowercase().contains(&keyword))
+                .any(|key| {
+                    item.get(*key)
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&keyword)
+                })
         });
     }
 }

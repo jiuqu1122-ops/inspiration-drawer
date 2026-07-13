@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const PRODUCT_NAME: &str = "Inspiration Drawer";
@@ -61,6 +63,55 @@ impl LicenseErrorCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiCredentialMode {
+    Byok,
+    LicenseManaged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedApiProfile {
+    pub provider: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LicenseAiAccess {
+    pub mode: AiCredentialMode,
+    pub allow_user_api: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_profile: Option<ManagedApiProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_profile: Option<ManagedApiProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LicenseAiAccessSummary {
+    pub mode: AiCredentialMode,
+    pub allow_user_api: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_last4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_api_key_last4: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LicensePayload {
     pub product: String,
     pub customer: String,
@@ -69,6 +120,8 @@ pub struct LicensePayload {
     #[serde(default)]
     pub features: Vec<String>,
     pub expire_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_access: Option<LicenseAiAccess>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,8 +139,40 @@ pub struct LicenseStatus {
     pub edition: Option<LicenseEdition>,
     pub expire_at: Option<String>,
     pub features: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_access: Option<LicenseAiAccessSummary>,
     pub message: Option<String>,
     pub error_code: Option<LicenseErrorCode>,
+}
+
+fn api_key_last4(api_key: &str) -> Option<String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(4);
+    Some(chars[start..].iter().collect())
+}
+
+impl From<&LicenseAiAccess> for LicenseAiAccessSummary {
+    fn from(value: &LicenseAiAccess) -> Self {
+        let managed_profile = value.managed_profile.as_ref();
+        let canvas_profile = value.canvas_profile.as_ref();
+        Self {
+            mode: value.mode.clone(),
+            allow_user_api: value.allow_user_api,
+            managed_provider: managed_profile.map(|profile| profile.provider.clone()),
+            managed_base_url: managed_profile.map(|profile| profile.base_url.clone()),
+            managed_model: managed_profile.map(|profile| profile.model.clone()),
+            api_key_last4: managed_profile.and_then(|profile| api_key_last4(&profile.api_key)),
+            canvas_provider: canvas_profile.map(|profile| profile.provider.clone()),
+            canvas_base_url: canvas_profile.map(|profile| profile.base_url.clone()),
+            canvas_model: canvas_profile.map(|profile| profile.model.clone()),
+            canvas_api_key_last4: canvas_profile
+                .and_then(|profile| api_key_last4(&profile.api_key)),
+        }
+    }
 }
 
 impl LicenseStatus {
@@ -100,12 +185,14 @@ impl LicenseStatus {
             edition: None,
             expire_at: None,
             features: Vec::new(),
+            ai_access: None,
             message: Some("未导入授权文件".to_string()),
             error_code: Some(LicenseErrorCode::NotLicensed),
         }
     }
 
     pub fn from_payload(machine_id: String, payload: LicensePayload) -> Self {
+        let ai_access = payload.ai_access.as_ref().map(LicenseAiAccessSummary::from);
         Self {
             state: payload.edition.status_state(),
             valid: true,
@@ -114,6 +201,7 @@ impl LicenseStatus {
             edition: Some(payload.edition),
             expire_at: Some(payload.expire_at),
             features: payload.features,
+            ai_access,
             message: Some("授权有效".to_string()),
             error_code: None,
         }
@@ -133,6 +221,7 @@ impl LicenseStatus {
             edition: None,
             expire_at: None,
             features: Vec::new(),
+            ai_access: None,
             message: Some(message),
             error_code: Some(code),
         }

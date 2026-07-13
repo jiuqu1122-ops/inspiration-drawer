@@ -13,6 +13,7 @@ import {
   type AgentCanvasContext,
   type AgentCanvasSelectionItem,
   type AgentCanvasVisualReference,
+  type AgentApiBalanceResult,
   type AgentCanvasToolExecutor,
   type AgentChatMessage,
   type AgentCodexApproval,
@@ -329,6 +330,10 @@ const normalizeAgentSettings = (value: unknown): AgentSettings => {
     systemPrompt,
     provider: record.provider === 'codex' ? 'codex' : 'openai-compatible',
     apiHeaders: record.apiHeaders && typeof record.apiHeaders === 'object' ? record.apiHeaders : {},
+    apiEditable: record.apiEditable !== false,
+    apiCredentialSource: typeof record.apiCredentialSource === 'string' ? record.apiCredentialSource : 'user_settings',
+    apiKeyLast4: typeof record.apiKeyLast4 === 'string' ? record.apiKeyLast4 : null,
+    apiError: typeof record.apiError === 'string' ? record.apiError : null,
     codexModel: normalizeCodexModelOverride(record.codexModel),
     codexReasoningEffort: normalizeCodexReasoningEffort(record.codexReasoningEffort),
     codexSandbox: ['workspace-write', 'danger-full-access'].includes(String(record.codexSandbox))
@@ -2486,6 +2491,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     invoke<string[]>('agent_list_openai_models')
   ), []);
 
+  const queryAgentApiBalance = useCallback(async () => (
+    invoke<AgentApiBalanceResult>('agent_query_api_balance')
+  ), []);
+
   const refreshCodexStatus = useCallback(async () => {
     const status = await invoke<CodexRuntimeStatus>('agent_codex_status');
     setCodexStatus(status);
@@ -2560,6 +2569,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     saveSettings,
     refreshSettings,
     listOpenAiModels,
+    queryAgentApiBalance,
     codexStatus,
     codexRateLimits,
     codexRateLimitsLoading,

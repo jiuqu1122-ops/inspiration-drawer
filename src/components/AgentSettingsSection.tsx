@@ -11,9 +11,11 @@ import {
   RefreshCw,
   Save,
   Server,
+  Wallet,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type {
+  AgentApiBalanceResult,
   AgentSettings,
   CodexInstallProgress,
   CodexLoginInfo,
@@ -28,9 +30,11 @@ type AgentSettingsSectionProps = {
   codexStatus: CodexRuntimeStatus | null;
   codexInstallProgress: CodexInstallProgress | null;
   codexLoginInfo: CodexLoginInfo | null;
+  apiLockedByLicense?: boolean;
   onToggle?: () => void;
   onSave: (settings: AgentSettings & { apiKey?: string; clearApiKey?: boolean }) => Promise<AgentSettings>;
   onListModels: () => Promise<string[]>;
+  onQueryBalance?: () => Promise<AgentApiBalanceResult>;
   onRefreshCodexStatus: () => Promise<CodexRuntimeStatus>;
   onInstallCodex: () => Promise<CodexRuntimeStatus>;
   onStartCodexLogin: (mode: 'chatgpt' | 'chatgptDeviceCode') => Promise<CodexLoginInfo>;
@@ -46,9 +50,11 @@ export function AgentSettingsSection({
   codexStatus,
   codexInstallProgress,
   codexLoginInfo,
+  apiLockedByLicense: forceApiLockedByLicense = false,
   onToggle,
   onSave,
   onListModels,
+  onQueryBalance,
   onRefreshCodexStatus,
   onInstallCodex,
   onStartCodexLogin,
@@ -61,6 +67,12 @@ export function AgentSettingsSection({
   const [models, setModels] = useState<string[]>([]);
   const [working, setWorking] = useState('');
   const [message, setMessage] = useState('');
+  const [balanceText, setBalanceText] = useState('');
+  const apiLockedByLicense = forceApiLockedByLicense || draft.apiEditable === false;
+  const effectiveProvider = draft.provider;
+  const canQueryAgentBalance = effectiveProvider === 'openai-compatible'
+    && !!onQueryBalance
+    && (draft.hasApiKey || apiKey.trim().length > 0);
 
   useEffect(() => {
     setDraft(settings);
@@ -115,6 +127,24 @@ export function AgentSettingsSection({
       const values = await onListModels();
       setModels(values);
       setMessage(`已读取 ${values.length} 个模型`);
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setWorking('');
+    }
+  };
+
+  const queryBalance = async () => {
+    if (!onQueryBalance) return;
+    setWorking('balance');
+    setMessage('');
+    setBalanceText('');
+    try {
+      await saveDraft(false, true, false);
+      const result = await onQueryBalance();
+      const text = result.display || result.balance || result.quota || '已读取余额';
+      setBalanceText(text);
+      setMessage(`Agent API 余额：${text}`);
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -179,7 +209,7 @@ export function AgentSettingsSection({
               <label className="flex flex-col gap-1">
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">Agent 引擎</span>
                 <select
-                  value={draft.provider}
+                  value={effectiveProvider}
                   onChange={event => setDraft(current => ({
                     ...current,
                     provider: event.target.value === 'codex' ? 'codex' : 'openai-compatible',
@@ -191,7 +221,48 @@ export function AgentSettingsSection({
                 </select>
               </label>
 
-              {draft.provider === 'openai-compatible' ? (
+              {effectiveProvider === 'openai-compatible' ? (
+                apiLockedByLicense ? (
+                  <div className="flex flex-col gap-2 rounded-[18px] border border-blue-100 bg-blue-50/55 p-3 dark:border-blue-400/20 dark:bg-blue-400/8">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-[11px] font-black text-blue-800 dark:text-blue-100">
+                        <Server className="h-3.5 w-3.5" /> API 配置由高级版授权提供
+                      </span>
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200">
+                        {draft.hasApiKey ? `Key ****${draft.apiKeyLast4 || ''}` : 'Key 不可用'}
+                      </span>
+                    </div>
+                    <div className="grid gap-1.5 rounded-[14px] bg-white/70 p-2 text-[10px] font-bold text-stone-600 dark:bg-stone-900/35 dark:text-stone-300">
+                      <div className="flex justify-between gap-2"><span>配置来源</span><span className="truncate text-right">高级版授权</span></div>
+                      <div className="flex justify-between gap-2"><span>模型</span><span className="truncate text-right">{draft.apiModel || '-'}</span></div>
+                    </div>
+                    {draft.apiError && (
+                      <div className="rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] leading-4 text-red-600 dark:bg-red-400/10 dark:text-red-200">
+                        {draft.apiError}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void refreshModels()}
+                        disabled={!!working || !draft.hasApiKey}
+                        className="flex items-center gap-1 rounded-[12px] bg-blue-100 px-2.5 py-1.5 text-[10px] font-black text-blue-700 disabled:opacity-50 dark:bg-blue-400/15 dark:text-blue-100"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${working === 'models' ? 'animate-spin' : ''}`} />
+                        {working === 'models' ? '读取中' : '刷新模型'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void queryBalance()}
+                        disabled={!!working || !canQueryAgentBalance}
+                        className="flex items-center gap-1 rounded-[12px] bg-emerald-100 px-2.5 py-1.5 text-[10px] font-black text-emerald-700 disabled:opacity-50 dark:bg-emerald-400/15 dark:text-emerald-100"
+                      >
+                        {working === 'balance' ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Wallet className="h-3 w-3" />}
+                        查余额
+                      </button>
+                    </div>
+                  </div>
+                ) : (
                 <div className="flex flex-col gap-2 rounded-[18px] border border-blue-100 bg-blue-50/55 p-3 dark:border-blue-400/20 dark:bg-blue-400/8">
                   <div className="flex items-center justify-between gap-2">
                     <span className="flex items-center gap-1.5 text-[11px] font-black text-blue-800 dark:text-blue-100">
@@ -244,6 +315,16 @@ export function AgentSettingsSection({
                       >
                         {working === 'models' ? '读取中' : '模型'}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void queryBalance()}
+                        disabled={!!working || !canQueryAgentBalance}
+                        className="flex items-center gap-1 rounded-[12px] bg-emerald-100 px-2 text-[10px] font-black text-emerald-700 disabled:opacity-50 dark:bg-emerald-400/15 dark:text-emerald-100"
+                        title="查询当前 Agent API 余额"
+                      >
+                        {working === 'balance' ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Wallet className="h-3 w-3" />}
+                        余额
+                      </button>
                     </div>
                   </label>
                   <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
@@ -254,6 +335,9 @@ export function AgentSettingsSection({
                       rows={2}
                       className="resize-y rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 font-mono text-[10px] font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
                     />
+                    <span className="text-[9px] font-medium leading-4 text-blue-700/70 dark:text-blue-100/60">
+                      New API 余额查询需添加 X-Linggan-NewAPI-Access-Token 和 X-Linggan-NewAPI-User。
+                    </span>
                   </label>
                   {draft.hasApiKey && (
                     <button
@@ -265,6 +349,7 @@ export function AgentSettingsSection({
                     </button>
                   )}
                 </div>
+                )
               ) : (
                 <div className="flex flex-col gap-2 rounded-[18px] border border-violet-100 bg-violet-50/55 p-3 dark:border-violet-400/20 dark:bg-violet-400/8">
                   <div className="flex items-center justify-between gap-2">
@@ -461,6 +546,12 @@ export function AgentSettingsSection({
                 </label>
               </div>
 
+              {balanceText && (
+                <div className="flex items-center gap-1.5 rounded-[12px] border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-[10px] font-bold leading-4 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
+                  <Wallet className="h-3 w-3 shrink-0" />
+                  <span className="min-w-0 truncate">{balanceText}</span>
+                </div>
+              )}
               {message && (
                 <div className={`rounded-[12px] px-2 py-1.5 text-[10px] leading-4 ${message.includes('失败') || message.includes('Error') || message.includes('必须') ? 'bg-red-50 text-red-600 dark:bg-red-400/10 dark:text-red-200' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200'}`}>
                   {message}
@@ -472,7 +563,7 @@ export function AgentSettingsSection({
                 disabled={loading || !!working}
                 className="flex h-8 items-center justify-center gap-1.5 rounded-[14px] bg-stone-900 text-[11px] font-bold text-white transition-colors hover:bg-black disabled:cursor-wait disabled:opacity-55 dark:bg-stone-100 dark:text-stone-900"
               >
-                {working === 'save' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : draft.provider === settings.provider ? <Save className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+                {working === 'save' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : effectiveProvider === settings.provider ? <Save className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
                 保存 Agent 设置
               </button>
             </div>

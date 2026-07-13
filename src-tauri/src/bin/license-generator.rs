@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use inspiration_drawer::license::generator::{
     generate_keypair, generate_license, public_key_from_private_key, LicenseGeneratorInput,
 };
-use inspiration_drawer::license::types::PRODUCT_NAME;
+use inspiration_drawer::license::types::{
+    AiCredentialMode, LicenseAiAccess, ManagedApiProfile, PRODUCT_NAME,
+};
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 struct Args {
@@ -19,6 +22,16 @@ struct Args {
     expire_at: Option<String>,
     features: Option<String>,
     product: Option<String>,
+    api_provider: Option<String>,
+    api_base_url: Option<String>,
+    api_key: Option<String>,
+    api_model: Option<String>,
+    api_headers: Vec<String>,
+    canvas_api_provider: Option<String>,
+    canvas_api_base_url: Option<String>,
+    canvas_api_key: Option<String>,
+    canvas_api_model: Option<String>,
+    canvas_api_headers: Vec<String>,
     out: Option<PathBuf>,
 }
 
@@ -50,6 +63,16 @@ Options:
   --expire-at <date>       Expiration date in YYYY-MM-DD.
   --features <csv>         Comma-separated feature list. Defaults to * for full access.
   --product <value>        Product name. Defaults to {PRODUCT_NAME}.
+  --api-provider <value>   Managed API provider for enterprise/Advanced licenses.
+  --api-base-url <value>   Managed API Base URL for enterprise/Advanced licenses.
+  --api-key <value>        Managed API Key for enterprise/Advanced licenses.
+  --api-model <value>      Managed API model for enterprise/Advanced licenses.
+  --api-header <k=v>       Optional managed API header. Can be repeated.
+  --canvas-api-provider <value>   Managed Canvas AI provider for enterprise/Advanced licenses.
+  --canvas-api-base-url <value>   Managed Canvas AI Base URL for enterprise/Advanced licenses.
+  --canvas-api-key <value>        Managed Canvas AI API Key for enterprise/Advanced licenses.
+  --canvas-api-model <value>      Managed Canvas AI model for enterprise/Advanced licenses.
+  --canvas-api-header <k=v>       Optional managed Canvas AI header. Can be repeated.
   --out <path>             Output license path. Prints JSON if omitted.
 "
     );
@@ -85,6 +108,28 @@ fn parse_args() -> Result<Args, String> {
             "--expire-at" => parsed.expire_at = Some(next_value(&args, &mut index, flag)?),
             "--features" => parsed.features = Some(next_value(&args, &mut index, flag)?),
             "--product" => parsed.product = Some(next_value(&args, &mut index, flag)?),
+            "--api-provider" => parsed.api_provider = Some(next_value(&args, &mut index, flag)?),
+            "--api-base-url" => parsed.api_base_url = Some(next_value(&args, &mut index, flag)?),
+            "--api-key" => parsed.api_key = Some(next_value(&args, &mut index, flag)?),
+            "--api-model" => parsed.api_model = Some(next_value(&args, &mut index, flag)?),
+            "--api-header" => parsed
+                .api_headers
+                .push(next_value(&args, &mut index, flag)?),
+            "--canvas-api-provider" => {
+                parsed.canvas_api_provider = Some(next_value(&args, &mut index, flag)?)
+            }
+            "--canvas-api-base-url" => {
+                parsed.canvas_api_base_url = Some(next_value(&args, &mut index, flag)?)
+            }
+            "--canvas-api-key" => {
+                parsed.canvas_api_key = Some(next_value(&args, &mut index, flag)?)
+            }
+            "--canvas-api-model" => {
+                parsed.canvas_api_model = Some(next_value(&args, &mut index, flag)?)
+            }
+            "--canvas-api-header" => parsed
+                .canvas_api_headers
+                .push(next_value(&args, &mut index, flag)?),
             "--out" => parsed.out = Some(PathBuf::from(next_value(&args, &mut index, flag)?)),
             _ => return Err(format!("Unknown argument: {flag}")),
         }
@@ -132,6 +177,52 @@ fn private_key_from_file(path: &PathBuf) -> Result<String, String> {
     Err("Signing key file does not contain privateKeyB64".to_string())
 }
 
+fn parse_headers(values: &[String]) -> Result<BTreeMap<String, String>, String> {
+    let mut headers = BTreeMap::new();
+    for value in values {
+        let Some((key, header_value)) = value.split_once('=') else {
+            return Err("--api-header must be in key=value format".to_string());
+        };
+        let key = key.trim();
+        let header_value = header_value.trim();
+        if key.is_empty() || header_value.is_empty() {
+            return Err("--api-header must include a non-empty key and value".to_string());
+        }
+        headers.insert(key.to_string(), header_value.to_string());
+    }
+    Ok(headers)
+}
+
+fn build_ai_access(args: &Args) -> Result<Option<LicenseAiAccess>, String> {
+    let edition = args
+        .edition
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if edition != "enterprise" {
+        return Ok(None);
+    }
+    Ok(Some(LicenseAiAccess {
+        mode: AiCredentialMode::LicenseManaged,
+        allow_user_api: false,
+        managed_profile: Some(ManagedApiProfile {
+            provider: args.api_provider.clone().unwrap_or_default(),
+            base_url: args.api_base_url.clone().unwrap_or_default(),
+            api_key: args.api_key.clone().unwrap_or_default(),
+            model: args.api_model.clone().unwrap_or_default(),
+            headers: parse_headers(&args.api_headers)?,
+        }),
+        canvas_profile: Some(ManagedApiProfile {
+            provider: args.canvas_api_provider.clone().unwrap_or_default(),
+            base_url: args.canvas_api_base_url.clone().unwrap_or_default(),
+            api_key: args.canvas_api_key.clone().unwrap_or_default(),
+            model: args.canvas_api_model.clone().unwrap_or_default(),
+            headers: parse_headers(&args.canvas_api_headers)?,
+        }),
+    }))
+}
+
 fn build_input(args: &Args) -> Result<LicenseGeneratorInput, String> {
     let private_key = match args.key_file.as_ref() {
         Some(path) => private_key_from_file(path)?,
@@ -160,6 +251,7 @@ fn build_input(args: &Args) -> Result<LicenseGeneratorInput, String> {
             .ok_or_else(|| "--expire-at is required".to_string())?,
         features: split_features(args.features.clone()),
         product: args.product.clone(),
+        ai_access: build_ai_access(args)?,
     })
 }
 

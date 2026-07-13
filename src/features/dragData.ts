@@ -26,7 +26,10 @@ const getNameFromUrl = (url: string) => {
   try {
     const parsed = new URL(url);
     const rawName = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '网页图片');
-    return rawName.includes('.') ? rawName : `${rawName || '网页图片'}_${Date.now()}`;
+    const ext = getFileExtension(rawName);
+    if (ext && isSupportedImageExtension(ext)) return rawName;
+    if (isLikelyImageEndpointUrl(url)) return `网页图片_${Date.now()}`;
+    return rawName && !rawName.includes('.') ? `${rawName}_${Date.now()}` : `网页图片_${Date.now()}`;
   } catch (_) {
     return `网页图片_${Date.now()}`;
   }
@@ -39,6 +42,38 @@ const getFileExtension = (value?: string | null) => {
   const name = clean.split(/[/\\]/).pop() || '';
   const ext = name.includes('.') ? name.split('.').pop() || '' : '';
   return ext.toLowerCase();
+};
+
+const isSupportedImageExtension = (ext: string) => (
+  ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg'].includes(ext.toLowerCase())
+);
+
+const isLikelyImageEndpointUrl = (value?: string | null) => {
+  const raw = String(value || '').trim();
+  if (!/^https?:\/\//i.test(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    const query = parsed.search.toLowerCase();
+    if ((host === 'mm.bing.net' || host.endsWith('.mm.bing.net'))
+      && (path.includes('/th/id/') || query.includes('pid=imgdetmain'))) {
+      return true;
+    }
+    if (host === 'huabanimg.com' || host.endsWith('.huabanimg.com') || host.includes('hbimg')) {
+      return true;
+    }
+    if ((host === 'huaban.com' || host.endsWith('.huaban.com')) && /^\/pins\/\d+(?:\/)?$/i.test(path)) {
+      return true;
+    }
+    return query.includes('imgurl=')
+      || query.includes('mediaurl=')
+      || query.includes('imageurl=')
+      || query.includes('thumbnail=')
+      || /\/(?:image|images|img|thumb|thumbnail)\//i.test(path);
+  } catch (_) {
+    return false;
+  }
 };
 
 const getWebImageFromDataTransfer = (dt?: DataTransfer | null) => {
@@ -77,5 +112,6 @@ export {
   getNameFromUrl,
   isProbablyUrl,
   getFileExtension,
+  isLikelyImageEndpointUrl,
   getWebImageFromDataTransfer,
 };

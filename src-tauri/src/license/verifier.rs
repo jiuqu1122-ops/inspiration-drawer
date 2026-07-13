@@ -174,7 +174,9 @@ fn validate_payload(
 mod tests {
     use super::*;
     use crate::license::generator::{generate_license, LicenseGeneratorInput};
-    use crate::license::types::LicenseEdition;
+    use crate::license::types::{
+        AiCredentialMode, LicenseAiAccess, LicenseEdition, ManagedApiProfile,
+    };
     use ed25519_dalek::{Signer, SigningKey};
 
     fn signed_license(machine_id: &str, expire_at: &str, features: Vec<&str>) -> (String, String) {
@@ -188,6 +190,7 @@ mod tests {
             edition: LicenseEdition::Pro,
             features: features.into_iter().map(str::to_string).collect(),
             expire_at: expire_at.to_string(),
+            ai_access: None,
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);
@@ -287,6 +290,7 @@ mod tests {
             expire_at: "2027-06-18".to_string(),
             features: vec!["*".to_string()],
             product: Some(PRODUCT_NAME.to_string()),
+            ai_access: None,
         })
         .unwrap();
 
@@ -300,5 +304,96 @@ mod tests {
         .unwrap();
         assert_eq!(payload.customer, "unmind");
         assert_eq!(payload.features, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn old_license_payload_without_ai_access_still_verifies() {
+        let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+        let public_key_b64 =
+            general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes());
+        let payload = serde_json::json!({
+            "product": PRODUCT_NAME,
+            "customer": "legacy",
+            "machine_id": "machine-legacy",
+            "edition": "enterprise",
+            "features": ["*"],
+            "expire_at": "2099-01-01"
+        });
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let signature = signing_key.sign(&payload_bytes);
+        let file = LicenseFile {
+            payload: general_purpose::STANDARD.encode(payload_bytes),
+            signature: general_purpose::STANDARD.encode(signature.to_bytes()),
+        };
+        let content = serde_json::to_string(&file).unwrap();
+        let verified = verify_license_content_with_key(
+            &content,
+            "machine-legacy",
+            &public_key_b64,
+            NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(verified.edition, LicenseEdition::Enterprise);
+        assert!(verified.ai_access.is_none());
+    }
+
+    #[test]
+    fn managed_api_fields_are_protected_by_signature() {
+        let signing_key = SigningKey::from_bytes(&[17u8; 32]);
+        let public_key_b64 =
+            general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes());
+        let payload = LicensePayload {
+            product: PRODUCT_NAME.to_string(),
+            customer: "managed".to_string(),
+            machine_id: "machine-managed".to_string(),
+            edition: LicenseEdition::Enterprise,
+            features: vec!["*".to_string()],
+            expire_at: "2099-01-01".to_string(),
+            ai_access: Some(LicenseAiAccess {
+                mode: AiCredentialMode::LicenseManaged,
+                allow_user_api: false,
+                managed_profile: Some(ManagedApiProfile {
+                    provider: "xais-chat".to_string(),
+                    base_url: "https://api.example.com/v1".to_string(),
+                    api_key: "sk-original".to_string(),
+                    model: "gpt-4.1".to_string(),
+                    headers: Default::default(),
+                }),
+                canvas_profile: Some(ManagedApiProfile {
+                    provider: "xais-chat".to_string(),
+                    base_url: "https://canvas.example.com".to_string(),
+                    api_key: "sk-canvas".to_string(),
+                    model: "Xais Nano Pro_2K".to_string(),
+                    headers: Default::default(),
+                }),
+            }),
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let signature = signing_key.sign(&payload_bytes);
+        let mut tampered_payload: LicensePayload = serde_json::from_slice(&payload_bytes).unwrap();
+        tampered_payload
+            .ai_access
+            .as_mut()
+            .unwrap()
+            .managed_profile
+            .as_mut()
+            .unwrap()
+            .api_key = "sk-tampered".to_string();
+        let file = LicenseFile {
+            payload: general_purpose::STANDARD
+                .encode(serde_json::to_vec(&tampered_payload).unwrap()),
+            signature: general_purpose::STANDARD.encode(signature.to_bytes()),
+        };
+        let content = serde_json::to_string(&file).unwrap();
+        let err = verify_license_content_with_key(
+            &content,
+            "machine-managed",
+            &public_key_b64,
+            NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code, LicenseErrorCode::InvalidSignature);
     }
 }

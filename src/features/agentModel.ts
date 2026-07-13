@@ -30,6 +30,10 @@ export type AgentSettings = {
   apiModel: string;
   apiHeaders: Record<string, string>;
   hasApiKey: boolean;
+  apiEditable: boolean;
+  apiCredentialSource: 'user_settings' | 'license_managed' | 'license_managed_error' | string;
+  apiKeyLast4?: string | null;
+  apiError?: string | null;
   codexExecutable: string;
   codexModel: string;
   codexReasoningEffort: CodexReasoningEffort;
@@ -38,6 +42,19 @@ export type AgentSettings = {
   systemPrompt: string;
   approvalMode: 'ask' | 'auto';
   retainHistory: boolean;
+};
+
+export type AgentApiBalanceResult = {
+  source: string;
+  provider: string;
+  model: string;
+  apiKeyLast4?: string | null;
+  endpointKind: string;
+  balance?: string | null;
+  quota?: string | null;
+  usedQuota?: string | null;
+  requestCount?: string | null;
+  display: string;
 };
 
 const LEGACY_CANVAS_AGENT_SYSTEM_PROMPT = '你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。';
@@ -63,6 +80,10 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   apiModel: 'gpt-4o-mini',
   apiHeaders: {},
   hasApiKey: false,
+  apiEditable: true,
+  apiCredentialSource: 'user_settings',
+  apiKeyLast4: null,
+  apiError: null,
   codexExecutable: 'codex',
   codexModel: '',
   codexReasoningEffort: '',

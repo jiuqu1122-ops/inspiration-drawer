@@ -1,7 +1,8 @@
 use serde_json::Value;
 
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
+    AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions,
+    ViewportOptions,
 };
 
 #[tauri::command]
@@ -13,10 +14,7 @@ pub fn list_assets(
 }
 
 #[tauri::command]
-pub fn get_asset_by_id(
-    app_handle: tauri::AppHandle,
-    id: String,
-) -> Result<Option<Value>, String> {
+pub fn get_asset_by_id(app_handle: tauri::AppHandle, id: String) -> Result<Option<Value>, String> {
     crate::services::asset_service::get_asset_by_id(app_handle, id)
 }
 
@@ -29,10 +27,7 @@ pub fn get_asset_count(
 }
 
 #[tauri::command]
-pub fn upsert_assets(
-    app_handle: tauri::AppHandle,
-    assets: Vec<Value>,
-) -> Result<usize, String> {
+pub fn upsert_assets(app_handle: tauri::AppHandle, assets: Vec<Value>) -> Result<usize, String> {
     crate::services::asset_service::upsert_assets(app_handle, assets)
 }
 

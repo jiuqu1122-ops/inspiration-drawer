@@ -9,7 +9,13 @@ pub fn list_canvases(
     project_id: Option<String>,
     library_id: Option<String>,
 ) -> Result<Vec<Value>, String> {
-    crate::services::canvas_service::list_canvases(app_handle, CanvasScope { project_id, library_id })
+    crate::services::canvas_service::list_canvases(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+    )
 }
 
 #[tauri::command]
@@ -18,7 +24,13 @@ pub fn list_deleted_canvases(
     project_id: Option<String>,
     library_id: Option<String>,
 ) -> Result<Vec<Value>, String> {
-    crate::services::canvas_service::list_deleted_canvases(app_handle, CanvasScope { project_id, library_id })
+    crate::services::canvas_service::list_deleted_canvases(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+    )
 }
 
 #[tauri::command]
@@ -36,7 +48,14 @@ pub fn create_canvas(
     library_id: Option<String>,
     name: String,
 ) -> Result<Value, String> {
-    crate::services::canvas_service::create_canvas(app_handle, CanvasScope { project_id, library_id }, name)
+    crate::services::canvas_service::create_canvas(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+        name,
+    )
 }
 
 #[tauri::command]
@@ -96,7 +115,13 @@ pub fn get_canvas_trash_count(
     project_id: Option<String>,
     library_id: Option<String>,
 ) -> Result<i64, String> {
-    crate::services::canvas_service::get_canvas_trash_count(app_handle, CanvasScope { project_id, library_id })
+    crate::services::canvas_service::get_canvas_trash_count(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+    )
 }
 
 #[tauri::command]
@@ -106,7 +131,14 @@ pub fn set_active_canvas(
     library_id: Option<String>,
     canvas_id: String,
 ) -> Result<Value, String> {
-    crate::services::canvas_service::set_active_canvas(app_handle, CanvasScope { project_id, library_id }, canvas_id)
+    crate::services::canvas_service::set_active_canvas(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+        canvas_id,
+    )
 }
 
 #[tauri::command]
@@ -115,7 +147,13 @@ pub fn get_active_canvas(
     project_id: Option<String>,
     library_id: Option<String>,
 ) -> Result<Value, String> {
-    crate::services::canvas_service::get_active_canvas(app_handle, CanvasScope { project_id, library_id })
+    crate::services::canvas_service::get_active_canvas(
+        app_handle,
+        CanvasScope {
+            project_id,
+            library_id,
+        },
+    )
 }
 
 #[tauri::command]

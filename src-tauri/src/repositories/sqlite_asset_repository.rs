@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 
 use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions, ViewportOptions,
+    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
+    MoveFoldersOptions, ViewportOptions,
 };
 
 pub struct SqliteAssetRepository {
@@ -30,7 +31,11 @@ impl SqliteAssetRepository {
 
     fn normalize_list_options(options: AssetListOptions) -> AssetListOptions {
         AssetListOptions {
-            library_id: Some(options.library_id.unwrap_or_else(|| DEFAULT_LIBRARY_ID.to_string())),
+            library_id: Some(
+                options
+                    .library_id
+                    .unwrap_or_else(|| DEFAULT_LIBRARY_ID.to_string()),
+            ),
             offset: Some(options.offset.unwrap_or(0).max(0)),
             limit: Some(options.limit.unwrap_or(200).clamp(1, 1000)),
             ..options
@@ -39,23 +44,36 @@ impl SqliteAssetRepository {
 
     fn build_asset_where(options: &AssetListOptions, values: &mut Vec<SqlValue>) -> String {
         let mut clauses = vec!["deleted_at IS NULL".to_string()];
-        let library_id = options.library_id.clone().unwrap_or_else(|| DEFAULT_LIBRARY_ID.to_string());
+        let library_id = options
+            .library_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LIBRARY_ID.to_string());
         clauses.push("library_id = ?".to_string());
         values.push(SqlValue::Text(library_id));
 
-        if let Some(folder_ids) = options.folder_ids.as_ref().map(|ids| {
-            ids.iter()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        }).filter(|ids| !ids.is_empty()) {
+        if let Some(folder_ids) = options
+            .folder_ids
+            .as_ref()
+            .map(|ids| {
+                ids.iter()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|ids| !ids.is_empty())
+        {
             let placeholders = folder_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             clauses.push(format!("folder_id IN ({})", placeholders));
             for folder_id in folder_ids {
                 values.push(SqlValue::Text(folder_id));
             }
-        } else if let Some(folder_id) = options.folder_id.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        } else if let Some(folder_id) = options
+            .folder_id
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
             if folder_id == "all" {
                 clauses.push("(folder_id IS NULL OR folder_id = '')".to_string());
             } else {
@@ -63,11 +81,21 @@ impl SqliteAssetRepository {
                 values.push(SqlValue::Text(folder_id.to_string()));
             }
         }
-        if let Some(file_type) = options.file_type.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        if let Some(file_type) = options
+            .file_type
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
             clauses.push("file_type = ?".to_string());
             values.push(SqlValue::Text(file_type.to_string()));
         }
-        if let Some(keyword) = options.keyword.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        if let Some(keyword) = options
+            .keyword
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
             clauses.push("(file_name LIKE ? OR note LIKE ? OR source_url LIKE ?)".to_string());
             let pattern = format!("%{}%", keyword.replace('%', "\\%").replace('_', "\\_"));
             values.push(SqlValue::Text(pattern.clone()));
@@ -116,7 +144,10 @@ impl SqliteAssetRepository {
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-        let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1", table.replace('\'', "''"));
+        let sql = format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
+            table.replace('\'', "''")
+        );
         let count: i64 = conn
             .query_row(&sql, params![column], |row| row.get(0))
             .map_err(|err| err.to_string())?;
@@ -146,9 +177,7 @@ impl SqliteAssetRepository {
             "#,
             deleted_at_sql
         );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|err| err.to_string())?;
+        let mut stmt = conn.prepare(&sql).map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map(params![library_id], |row| {
                 let id: String = row.get(0)?;
@@ -164,20 +193,29 @@ impl SqliteAssetRepository {
                 let mut metadata = metadata_json
                     .as_deref()
                     .and_then(|value| serde_json::from_str::<Value>(value).ok())
-                    .unwrap_or_else(|| json!({ "id": id.clone(), "name": name.clone(), "color": "#10b981" }));
+                    .unwrap_or_else(
+                        || json!({ "id": id.clone(), "name": name.clone(), "color": "#10b981" }),
+                    );
                 if !metadata.is_object() {
-                    metadata = json!({ "id": id.clone(), "name": name.clone(), "color": "#10b981" });
+                    metadata =
+                        json!({ "id": id.clone(), "name": name.clone(), "color": "#10b981" });
                 }
                 if let Some(object) = metadata.as_object_mut() {
                     object.insert("id".to_string(), Value::String(id.clone()));
                     object.insert("name".to_string(), Value::String(name.clone()));
-                    object.insert("libraryId".to_string(), Value::String(row_library_id.clone()));
+                    object.insert(
+                        "libraryId".to_string(),
+                        Value::String(row_library_id.clone()),
+                    );
                     object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
                     if let Some(parent_id) = parent_id.as_deref() {
                         if parent_id.trim().is_empty() {
                             object.remove("parentId");
                         } else {
-                            object.insert("parentId".to_string(), Value::String(parent_id.to_string()));
+                            object.insert(
+                                "parentId".to_string(),
+                                Value::String(parent_id.to_string()),
+                            );
                         }
                     } else {
                         object.remove("parentId");
@@ -202,7 +240,12 @@ impl SqliteAssetRepository {
         rows.map(|row| row.map_err(|err| err.to_string())).collect()
     }
 
-    fn normalize_folder_payload(folder: &Value, library_id: &str, sort_order: i64, now: i64) -> Result<Option<(String, Option<String>, String, i64, i64, i64, String)>, String> {
+    fn normalize_folder_payload(
+        folder: &Value,
+        library_id: &str,
+        sort_order: i64,
+        now: i64,
+    ) -> Result<Option<(String, Option<String>, String, i64, i64, i64, String)>, String> {
         let Some(object) = folder.as_object() else {
             return Ok(None);
         };
@@ -231,17 +274,29 @@ impl SqliteAssetRepository {
             .map(str::trim)
             .filter(|value| !value.is_empty() && *value != "all")
             .map(ToOwned::to_owned);
-        let created_at = object.get("createdAt").or_else(|| object.get("created_at")).and_then(Value::as_i64).unwrap_or(now);
-        let updated_at = object.get("updatedAt").or_else(|| object.get("updated_at")).and_then(Value::as_i64).unwrap_or(now);
+        let created_at = object
+            .get("createdAt")
+            .or_else(|| object.get("created_at"))
+            .and_then(Value::as_i64)
+            .unwrap_or(now);
+        let updated_at = object
+            .get("updatedAt")
+            .or_else(|| object.get("updated_at"))
+            .and_then(Value::as_i64)
+            .unwrap_or(now);
         let mut metadata = folder.clone();
         if let Some(metadata_object) = metadata.as_object_mut() {
             metadata_object.insert("id".to_string(), Value::String(id.clone()));
-            metadata_object.insert("libraryId".to_string(), Value::String(library_id.to_string()));
+            metadata_object.insert(
+                "libraryId".to_string(),
+                Value::String(library_id.to_string()),
+            );
             metadata_object.insert("name".to_string(), Value::String(name.clone()));
             metadata_object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
             metadata_object.insert("updatedAt".to_string(), Value::Number(updated_at.into()));
             if let Some(parent_id) = parent_id.as_deref() {
-                metadata_object.insert("parentId".to_string(), Value::String(parent_id.to_string()));
+                metadata_object
+                    .insert("parentId".to_string(), Value::String(parent_id.to_string()));
             } else {
                 metadata_object.remove("parentId");
             }
@@ -249,7 +304,15 @@ impl SqliteAssetRepository {
             metadata_object.remove("deleted_at");
         }
         let metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
-        Ok(Some((id, parent_id, name, sort_order, created_at, updated_at, metadata_json)))
+        Ok(Some((
+            id,
+            parent_id,
+            name,
+            sort_order,
+            created_at,
+            updated_at,
+            metadata_json,
+        )))
     }
 
     fn list_folders_from_conn(conn: &Connection, library_id: &str) -> Result<Vec<Value>, String> {
@@ -275,12 +338,20 @@ impl SqliteAssetRepository {
             if !seen.insert(current_id.clone()) {
                 return true;
             }
-            cursor = rows_by_id.get(&current_id).and_then(|row| row.parent_id.clone());
+            cursor = rows_by_id
+                .get(&current_id)
+                .and_then(|row| row.parent_id.clone());
         }
         false
     }
 
-    fn folder_metadata_for_update(row: &FolderRow, library_id: &str, new_parent_id: Option<&str>, sort_order: i64, now: i64) -> Value {
+    fn folder_metadata_for_update(
+        row: &FolderRow,
+        library_id: &str,
+        new_parent_id: Option<&str>,
+        sort_order: i64,
+        now: i64,
+    ) -> Value {
         let mut metadata = row.metadata.clone();
         if !metadata.is_object() {
             metadata = json!({
@@ -292,7 +363,10 @@ impl SqliteAssetRepository {
         if let Some(object) = metadata.as_object_mut() {
             object.insert("id".to_string(), Value::String(row.id.clone()));
             object.insert("name".to_string(), Value::String(row.name.clone()));
-            object.insert("libraryId".to_string(), Value::String(library_id.to_string()));
+            object.insert(
+                "libraryId".to_string(),
+                Value::String(library_id.to_string()),
+            );
             object.insert("sortOrder".to_string(), Value::Number(sort_order.into()));
             object.insert("updatedAt".to_string(), Value::Number(now.into()));
             if let Some(parent_id) = new_parent_id {
@@ -332,23 +406,32 @@ impl AssetRepository for SqliteAssetRepository {
         values.push(SqlValue::Integer(options.limit.unwrap_or(200)));
         values.push(SqlValue::Integer(options.offset.unwrap_or(0)));
         let mut stmt = self.conn.prepare(&sql).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params_from_iter(values), |row| {
-            let metadata: String = row.get(0)?;
-            Ok(metadata)
-        }).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(values), |row| {
+                let metadata: String = row.get(0)?;
+                Ok(metadata)
+            })
+            .map_err(|err| err.to_string())?;
         rows.map(|row| {
             let metadata = row.map_err(|err| err.to_string())?;
             serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())
-        }).collect()
+        })
+        .collect()
     }
 
     fn get_asset_by_id(&self, id: &str) -> Result<Option<Value>, String> {
-        let value: Option<String> = self.conn.query_row(
-            "SELECT metadata_json FROM assets WHERE id = ?1 AND deleted_at IS NULL",
-            params![id],
-            |row| row.get(0),
-        ).optional().map_err(|err| err.to_string())?;
-        value.map(|metadata| serde_json::from_str(&metadata).map_err(|err| err.to_string())).transpose()
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT metadata_json FROM assets WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        value
+            .map(|metadata| serde_json::from_str(&metadata).map_err(|err| err.to_string()))
+            .transpose()
     }
 
     fn get_asset_count(&self, options: AssetListOptions) -> Result<i64, String> {
@@ -356,7 +439,9 @@ impl AssetRepository for SqliteAssetRepository {
         let mut values = Vec::new();
         let where_sql = Self::build_asset_where(&options, &mut values);
         let sql = format!("SELECT COUNT(*) FROM assets {}", where_sql);
-        self.conn.query_row(&sql, params_from_iter(values), |row| row.get(0)).map_err(|err| err.to_string())
+        self.conn
+            .query_row(&sql, params_from_iter(values), |row| row.get(0))
+            .map_err(|err| err.to_string())
     }
 
     fn upsert_assets(&self, assets: Vec<Value>) -> Result<usize, String> {
@@ -364,7 +449,10 @@ impl AssetRepository for SqliteAssetRepository {
             return Ok(0);
         }
         let now = crate::current_time_millis();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let log_id = format!("asset-upsert-{}", now);
         tx.execute(
             "INSERT OR REPLACE INTO import_logs (id, library_id, status, total_count, success_count, skipped_count, failed_count, started_at, finished_at) VALUES (?1, ?2, 'running', ?3, 0, 0, 0, ?4, NULL)",
@@ -409,7 +497,11 @@ impl AssetRepository for SqliteAssetRepository {
             return Ok(None);
         };
         if let Some(folder_id) = patch.folder_id {
-            asset["folderId"] = if folder_id.is_empty() { Value::Null } else { Value::String(folder_id.clone()) };
+            asset["folderId"] = if folder_id.is_empty() {
+                Value::Null
+            } else {
+                Value::String(folder_id.clone())
+            };
         }
         if let Some(note) = patch.note {
             asset["remark"] = Value::String(note.clone());
@@ -426,8 +518,16 @@ impl AssetRepository for SqliteAssetRepository {
         }
         let now = crate::current_time_millis();
         asset["updatedAt"] = Value::Number(now.into());
-        let folder_id = asset.get("folderId").and_then(Value::as_str).unwrap_or("").to_string();
-        let note = asset.get("remark").and_then(Value::as_str).unwrap_or("").to_string();
+        let folder_id = asset
+            .get("folderId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let note = asset
+            .get("remark")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let rating = asset.get("rating").and_then(Value::as_i64).unwrap_or(0);
         let metadata_json = serde_json::to_string(&asset).map_err(|err| err.to_string())?;
         self.conn.execute(
@@ -450,17 +550,23 @@ impl AssetRepository for SqliteAssetRepository {
             return Ok(Vec::new());
         }
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT metadata_json FROM assets WHERE deleted_at IS NULL AND id IN ({})", placeholders);
+        let sql = format!(
+            "SELECT metadata_json FROM assets WHERE deleted_at IS NULL AND id IN ({})",
+            placeholders
+        );
         let mut stmt = self.conn.prepare(&sql).map_err(|err| err.to_string())?;
         let values = ids.into_iter().map(SqlValue::Text).collect::<Vec<_>>();
-        let rows = stmt.query_map(params_from_iter(values), |row| {
-            let metadata: String = row.get(0)?;
-            Ok(metadata)
-        }).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(values), |row| {
+                let metadata: String = row.get(0)?;
+                Ok(metadata)
+            })
+            .map_err(|err| err.to_string())?;
         rows.map(|row| {
             let metadata = row.map_err(|err| err.to_string())?;
             serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())
-        }).collect()
+        })
+        .collect()
     }
 
     fn get_assets_in_viewport(&self, options: ViewportOptions) -> Result<Vec<Value>, String> {
@@ -469,8 +575,10 @@ impl AssetRepository for SqliteAssetRepository {
         let top = options.viewport_y - buffer;
         let right = options.viewport_x + options.viewport_width + buffer;
         let bottom = options.viewport_y + options.viewport_height + buffer;
-        let mut stmt = self.conn.prepare(
-            r#"
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
             SELECT COALESCE(canvas_nodes.metadata_json, assets.metadata_json)
             FROM canvas_nodes
             LEFT JOIN assets ON assets.id = canvas_nodes.asset_id
@@ -483,54 +591,74 @@ impl AssetRepository for SqliteAssetRepository {
             ORDER BY canvas_nodes.z_index ASC, canvas_nodes.created_at ASC
             LIMIT 2000
             "#,
-        ).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params![options.canvas_id, left, right, top, bottom], |row| {
-            let metadata: String = row.get(0)?;
-            Ok(metadata)
-        }).map_err(|err| err.to_string())?;
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![options.canvas_id, left, right, top, bottom],
+                |row| {
+                    let metadata: String = row.get(0)?;
+                    Ok(metadata)
+                },
+            )
+            .map_err(|err| err.to_string())?;
         rows.map(|row| {
             let metadata = row.map_err(|err| err.to_string())?;
             serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())
-        }).collect()
+        })
+        .collect()
     }
 
-    fn debug_get_all_canvas_nodes(&self, options: DebugCanvasNodesOptions) -> Result<Value, String> {
+    fn debug_get_all_canvas_nodes(
+        &self,
+        options: DebugCanvasNodesOptions,
+    ) -> Result<Value, String> {
         let canvas_id = options.canvas_id.unwrap_or_else(|| "default".to_string());
         let limit = options.limit.unwrap_or(20).clamp(1, 200);
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM canvas_nodes WHERE canvas_id = ?1 AND deleted_at IS NULL",
-            params![canvas_id],
-            |row| row.get(0),
-        ).map_err(|err| err.to_string())?;
-        let mut stmt = self.conn.prepare(
-            r#"
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_nodes WHERE canvas_id = ?1 AND deleted_at IS NULL",
+                params![canvas_id],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
             SELECT id, canvas_id, asset_id, x, y, width, height, rotation, z_index, metadata_json
             FROM canvas_nodes
             WHERE canvas_id = ?1 AND deleted_at IS NULL
             ORDER BY z_index ASC, created_at ASC
             LIMIT ?2
             "#,
-        ).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params![canvas_id, limit], |row| {
-            let metadata: Option<String> = row.get(9)?;
-            let parsed = metadata
-                .as_deref()
-                .and_then(|value| serde_json::from_str::<Value>(value).ok())
-                .unwrap_or_else(|| json!({}));
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "canvasId": row.get::<_, String>(1)?,
-                "assetId": row.get::<_, Option<String>>(2)?,
-                "x": row.get::<_, f64>(3)?,
-                "y": row.get::<_, f64>(4)?,
-                "width": row.get::<_, f64>(5)?,
-                "height": row.get::<_, f64>(6)?,
-                "rotation": row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
-                "zIndex": row.get::<_, Option<i64>>(8)?.unwrap_or(0),
-                "metadata": parsed,
-            }))
-        }).map_err(|err| err.to_string())?;
-        let nodes = rows.map(|row| row.map_err(|err| err.to_string())).collect::<Result<Vec<_>, _>>()?;
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![canvas_id, limit], |row| {
+                let metadata: Option<String> = row.get(9)?;
+                let parsed = metadata
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                    .unwrap_or_else(|| json!({}));
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "canvasId": row.get::<_, String>(1)?,
+                    "assetId": row.get::<_, Option<String>>(2)?,
+                    "x": row.get::<_, f64>(3)?,
+                    "y": row.get::<_, f64>(4)?,
+                    "width": row.get::<_, f64>(5)?,
+                    "height": row.get::<_, f64>(6)?,
+                    "rotation": row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+                    "zIndex": row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                    "metadata": parsed,
+                }))
+            })
+            .map_err(|err| err.to_string())?;
+        let nodes = rows
+            .map(|row| row.map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({
             "mode": "sqlite",
             "canvasId": canvas_id,
@@ -544,10 +672,15 @@ impl AssetRepository for SqliteAssetRepository {
             return Ok(0);
         }
         let now = crate::current_time_millis();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let mut written = 0_usize;
         for node in nodes {
-            let _ = crate::services::migration_service::insert_canvas_node(&tx, &canvas_id, &node, now)?;
+            let _ = crate::services::migration_service::insert_canvas_node(
+                &tx, &canvas_id, &node, now,
+            )?;
             written += 1;
         }
         tx.commit().map_err(|err| err.to_string())?;
@@ -559,11 +692,18 @@ impl AssetRepository for SqliteAssetRepository {
         Self::list_folders_from_conn(&self.conn, &library_id)
     }
 
-    fn replace_folders(&self, library_id: Option<String>, folders: Vec<Value>) -> Result<Vec<Value>, String> {
+    fn replace_folders(
+        &self,
+        library_id: Option<String>,
+        folders: Vec<Value>,
+    ) -> Result<Vec<Value>, String> {
         let library_id = Self::normalize_library_id(library_id);
         Self::ensure_folder_deleted_at_column(&self.conn)?;
         let now = crate::current_time_millis();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let mut active_ids = HashSet::new();
         for (index, folder) in folders.iter().enumerate() {
             let Some((id, parent_id, name, sort_order, created_at, updated_at, metadata_json)) =
@@ -609,7 +749,8 @@ impl AssetRepository for SqliteAssetRepository {
                 SqlValue::Text(library_id.clone()),
             ];
             values.extend(active_ids.into_iter().map(SqlValue::Text));
-            tx.execute(&sql, params_from_iter(values)).map_err(|err| err.to_string())?;
+            tx.execute(&sql, params_from_iter(values))
+                .map_err(|err| err.to_string())?;
         }
 
         tx.commit().map_err(|err| err.to_string())?;
@@ -625,7 +766,10 @@ impl AssetRepository for SqliteAssetRepository {
         let library_id = Self::normalize_library_id(options.library_id);
         let new_parent_id = Self::normalize_parent_id(options.new_parent_id);
         let selected_ids = folder_ids.iter().cloned().collect::<HashSet<_>>();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let rows = Self::fetch_folder_rows(&tx, &library_id)?;
         let rows_by_id = rows
             .iter()
@@ -689,7 +833,13 @@ impl AssetRepository for SqliteAssetRepository {
                 .get(folder_id)
                 .ok_or_else(|| format!("folder not found: {}", folder_id))?;
             let sort_order = start_sort_order + index as i64;
-            let metadata = Self::folder_metadata_for_update(row, &library_id, new_parent_id.as_deref(), sort_order, now);
+            let metadata = Self::folder_metadata_for_update(
+                row,
+                &library_id,
+                new_parent_id.as_deref(),
+                sort_order,
+                now,
+            );
             let metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
             let changed = tx
                 .execute(
@@ -698,7 +848,14 @@ impl AssetRepository for SqliteAssetRepository {
                     SET parent_id = ?2, sort_order = ?3, updated_at = ?4, metadata_json = ?5
                     WHERE id = ?1 AND library_id = ?6 AND deleted_at IS NULL
                     "#,
-                    params![folder_id, new_parent_id.as_deref(), sort_order, now, metadata_json, &library_id],
+                    params![
+                        folder_id,
+                        new_parent_id.as_deref(),
+                        sort_order,
+                        now,
+                        metadata_json,
+                        &library_id
+                    ],
                 )
                 .map_err(|err| err.to_string())?;
             if changed != 1 {
@@ -714,15 +871,17 @@ impl AssetRepository for SqliteAssetRepository {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, color, created_at, updated_at FROM tags WHERE library_id = ?1 ORDER BY name COLLATE NOCASE ASC",
         ).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params![library_id], |row| {
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "color": row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                "createdAt": row.get::<_, i64>(3)?,
-                "updatedAt": row.get::<_, i64>(4)?,
-            }))
-        }).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![library_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "color": row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    "createdAt": row.get::<_, i64>(3)?,
+                    "updatedAt": row.get::<_, i64>(4)?,
+                }))
+            })
+            .map_err(|err| err.to_string())?;
         rows.map(|row| row.map_err(|err| err.to_string())).collect()
     }
 
@@ -730,20 +889,22 @@ impl AssetRepository for SqliteAssetRepository {
         let mut stmt = self.conn.prepare(
             "SELECT id, asset_id, size, path, width, height, format, file_size, created_at, source_modified_at FROM thumbnails WHERE asset_id = ?1 ORDER BY size ASC",
         ).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params![asset_id], |row| {
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "assetId": row.get::<_, String>(1)?,
-                "size": row.get::<_, i64>(2)?,
-                "path": row.get::<_, String>(3)?,
-                "width": row.get::<_, i64>(4)?,
-                "height": row.get::<_, i64>(5)?,
-                "format": row.get::<_, String>(6)?,
-                "fileSize": row.get::<_, i64>(7)?,
-                "createdAt": row.get::<_, i64>(8)?,
-                "sourceModifiedAt": row.get::<_, i64>(9)?,
-            }))
-        }).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![asset_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "assetId": row.get::<_, String>(1)?,
+                    "size": row.get::<_, i64>(2)?,
+                    "path": row.get::<_, String>(3)?,
+                    "width": row.get::<_, i64>(4)?,
+                    "height": row.get::<_, i64>(5)?,
+                    "format": row.get::<_, String>(6)?,
+                    "fileSize": row.get::<_, i64>(7)?,
+                    "createdAt": row.get::<_, i64>(8)?,
+                    "sourceModifiedAt": row.get::<_, i64>(9)?,
+                }))
+            })
+            .map_err(|err| err.to_string())?;
         rows.map(|row| row.map_err(|err| err.to_string())).collect()
     }
 }

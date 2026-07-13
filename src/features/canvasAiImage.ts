@@ -67,6 +67,7 @@ export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
 
 export type CanvasAiBaseImageOptions = {
   apiKey: string;
+  licenseManaged?: boolean;
   prompt: string;
   negativePrompt?: string;
   model?: string;
@@ -896,7 +897,7 @@ const resolveXaisVideoAttachmentUrls = async (
 const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count: number) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey) throw new Error('请先填写 Xais API Key');
+  if (!apiKey && !options.licenseManaged) throw new Error('请先填写 Xais API Key');
   if (!prompt) throw new Error('请输入生图提示词');
 
   const model = normalizeXaisImage2Model(options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
@@ -1174,7 +1175,7 @@ const isFatalXaisWorkerTaskFailure = (message: string) => (
 const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey) throw new Error('请先填写 Xais API Key');
+  if (!apiKey && !options.licenseManaged) throw new Error('请先填写 Xais API Key');
   if (!prompt) throw new Error('请输入视频提示词');
   if (options.provider !== 'xais-chat') throw new Error('视频模型当前使用 XAIS 异步接口，请切换到 Xais / DCHAI 中转');
 
@@ -1374,7 +1375,7 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
 const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey) throw new Error('请先填写 API Key');
+  if (!apiKey && !options.licenseManaged) throw new Error('请先填写 API Key');
   if (!prompt) throw new Error('请输入生图提示词');
 
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
@@ -1409,7 +1410,7 @@ const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => 
 const generateNewApiImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey) throw new Error('Please enter New API Key first.');
+  if (!apiKey && !options.licenseManaged) throw new Error('Please enter New API Key first.');
   if (!prompt) throw new Error('Please enter an image prompt.');
 
   const endpoint = normalizeNewApiBaseEndpoint(options.endpoint || '');
@@ -1508,7 +1509,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
 const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey) throw new Error('请先填写 Xais API Key');
+  if (!apiKey && !options.licenseManaged) throw new Error('请先填写 Xais API Key');
   if (!prompt) throw new Error('请输入生图提示词');
 
   const model = normalizeXaisImage2Model(options.model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
@@ -1717,7 +1718,7 @@ const generateAoduoGptImage2Images = async (options: CanvasAiImageOptions, count
 const generateAoduoImages = async (options: CanvasAiImageOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey) throw new Error('请先填写中转2 API Key');
+  if (!apiKey && !options.licenseManaged) throw new Error('请先填写中转2 API Key');
   if (!prompt) throw new Error('请输入生图提示词');
 
   const endpoint = normalizeAoduoEndpoint(options.endpoint || '');

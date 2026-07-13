@@ -13,6 +13,10 @@ use std::thread;
 use std::time::Duration;
 use tauri::{Emitter, State};
 
+use crate::ai_credentials::{
+    resolve_effective_api_profile, EffectiveApiProfile, StoredApiSettings,
+};
+
 const AGENT_SETTINGS_FILE: &str = "agent_config.json";
 const CODEX_RPC_TIMEOUT_SECS: u64 = 45;
 const CODEX_API_KEY_ENV: &str = "LINGGAN_CODEX_API_KEY";
@@ -57,6 +61,8 @@ struct CodexRuntimeProfile {
     mode: CodexRuntimeMode,
     codex_home: PathBuf,
     api_key: Option<String>,
+    api_base_url: Option<String>,
+    api_key_configured: bool,
     profile_key: String,
 }
 
@@ -108,6 +114,10 @@ pub struct AgentSettingsPublic {
     api_model: String,
     api_headers: BTreeMap<String, String>,
     has_api_key: bool,
+    api_editable: bool,
+    api_credential_source: String,
+    api_key_last4: Option<String>,
+    api_error: Option<String>,
     codex_executable: String,
     codex_model: String,
     codex_reasoning_effort: String,
@@ -126,6 +136,10 @@ impl From<&AgentSettingsStored> for AgentSettingsPublic {
             api_model: normalize_api_model(&value.api_model),
             api_headers: value.api_headers.clone(),
             has_api_key: !value.api_key.trim().is_empty(),
+            api_editable: true,
+            api_credential_source: "user_settings".to_string(),
+            api_key_last4: crate::ai_credentials::api_key_last4(&value.api_key),
+            api_error: None,
             codex_executable: value.codex_executable.clone(),
             codex_model: normalize_codex_model(&value.codex_model),
             codex_reasoning_effort: normalize_codex_reasoning_effort(&value.codex_reasoning_effort),
@@ -136,6 +150,36 @@ impl From<&AgentSettingsStored> for AgentSettingsPublic {
             retain_history: value.retain_history,
         }
     }
+}
+
+fn public_settings_from_stored(
+    app_handle: &tauri::AppHandle,
+    settings: &AgentSettingsStored,
+) -> AgentSettingsPublic {
+    let mut public = AgentSettingsPublic::from(settings);
+    match resolve_agent_api_profile(app_handle, settings) {
+        Ok(profile) => {
+            if !profile.editable {
+                public.api_base_url = profile.base_url;
+                public.api_model = normalize_api_model(&profile.model);
+                public.api_headers = profile.headers;
+                public.has_api_key = !profile.api_key.trim().is_empty();
+            }
+            public.api_editable = profile.editable;
+            public.api_credential_source = profile.source;
+            public.api_key_last4 = profile.key_last4;
+            public.api_error = None;
+        }
+        Err(error) => {
+            public.provider = "openai-compatible".to_string();
+            public.has_api_key = false;
+            public.api_editable = false;
+            public.api_credential_source = "license_managed_error".to_string();
+            public.api_key_last4 = None;
+            public.api_error = Some(error);
+        }
+    }
+    public
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,12 +337,12 @@ fn escape_toml_string(value: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn build_codex_runtime_config(settings: &AgentSettingsStored) -> Result<String, String> {
-    let model = normalize_api_model(&settings.api_model);
+fn build_codex_runtime_config(profile: &EffectiveApiProfile) -> Result<String, String> {
+    let model = normalize_api_model(&profile.model);
     if model.is_empty() {
         return Err("自定义 API 模式需要填写模型名".to_string());
     }
-    let base_url = normalize_base_url(&settings.api_base_url)?;
+    let base_url = normalize_base_url(&profile.base_url)?;
     let mut lines = vec![
         format!("model = \"{}\"", escape_toml_string(&model)),
         "model_provider = \"custom\"".to_string(),
@@ -313,9 +357,9 @@ fn build_codex_runtime_config(settings: &AgentSettingsStored) -> Result<String, 
         format!("env_key = \"{}\"", CODEX_API_KEY_ENV),
         "wire_api = \"responses\"".to_string(),
     ];
-    if !settings.api_headers.is_empty() {
-        let headers = settings
-            .api_headers
+    if !profile.headers.is_empty() {
+        let headers = profile
+            .headers
             .iter()
             .map(|(key, value)| {
                 format!(
@@ -334,15 +378,32 @@ fn build_codex_runtime_config(settings: &AgentSettingsStored) -> Result<String, 
 
 fn write_codex_runtime_config(
     app_handle: &tauri::AppHandle,
-    settings: &AgentSettingsStored,
+    profile: &EffectiveApiProfile,
 ) -> Result<PathBuf, String> {
     let codex_home = get_codex_home(app_handle, CodexRuntimeMode::Api);
     fs::create_dir_all(&codex_home)
         .map_err(|error| format!("创建自定义 API CODEX_HOME 失败：{}", error))?;
     let path = codex_home.join("config.toml");
-    fs::write(&path, build_codex_runtime_config(settings)?)
+    fs::write(&path, build_codex_runtime_config(profile)?)
         .map_err(|error| format!("写入自定义 API Codex 配置失败：{}", error))?;
     Ok(path)
+}
+
+fn stored_api_settings(settings: &AgentSettingsStored) -> StoredApiSettings {
+    StoredApiSettings {
+        provider: settings.provider.clone(),
+        base_url: settings.api_base_url.clone(),
+        api_key: settings.api_key.clone(),
+        model: settings.api_model.clone(),
+        headers: settings.api_headers.clone(),
+    }
+}
+
+fn resolve_agent_api_profile(
+    app_handle: &tauri::AppHandle,
+    settings: &AgentSettingsStored,
+) -> Result<EffectiveApiProfile, String> {
+    resolve_effective_api_profile(app_handle, stored_api_settings(settings))
 }
 
 fn build_codex_runtime_profile(
@@ -350,18 +411,23 @@ fn build_codex_runtime_profile(
     settings: &AgentSettingsStored,
     prepare: bool,
 ) -> Result<CodexRuntimeProfile, String> {
-    let mode = CodexRuntimeMode::from_provider(&settings.provider);
+    let api_profile = resolve_agent_api_profile(app_handle, settings)?;
+    let mode = if normalize_provider(&settings.provider) == "codex" {
+        CodexRuntimeMode::Chatgpt
+    } else {
+        CodexRuntimeMode::Api
+    };
     let codex_home = get_codex_home(app_handle, mode);
     fs::create_dir_all(&codex_home)
         .map_err(|error| format!("创建 Codex 运行目录失败：{}", error))?;
     let api_key = if mode == CodexRuntimeMode::Api {
         if prepare {
-            if settings.api_key.trim().is_empty() {
+            if api_profile.api_key.trim().is_empty() {
                 return Err("自定义 API 模式尚未配置 API Key".to_string());
             }
-            write_codex_runtime_config(app_handle, settings)?;
+            write_codex_runtime_config(app_handle, &api_profile)?;
         }
-        Some(settings.api_key.trim().to_string())
+        Some(api_profile.api_key.trim().to_string())
     } else {
         None
     };
@@ -369,10 +435,10 @@ fn build_codex_runtime_profile(
     hasher.update(mode.as_str().as_bytes());
     hasher.update(codex_home.to_string_lossy().as_bytes());
     if mode == CodexRuntimeMode::Api {
-        hasher.update(settings.api_base_url.as_bytes());
-        hasher.update(settings.api_model.as_bytes());
-        hasher.update(settings.api_key.as_bytes());
-        for (key, value) in &settings.api_headers {
+        hasher.update(api_profile.base_url.as_bytes());
+        hasher.update(api_profile.model.as_bytes());
+        hasher.update(api_profile.api_key.as_bytes());
+        for (key, value) in &api_profile.headers {
             hasher.update(key.as_bytes());
             hasher.update(value.as_bytes());
         }
@@ -381,6 +447,8 @@ fn build_codex_runtime_profile(
         mode,
         codex_home,
         api_key,
+        api_base_url: (mode == CodexRuntimeMode::Api).then(|| api_profile.base_url.clone()),
+        api_key_configured: mode == CodexRuntimeMode::Api && !api_profile.api_key.trim().is_empty(),
         profile_key: hex::encode(hasher.finalize()),
     })
 }
@@ -473,9 +541,51 @@ fn normalize_codex_reasoning_effort(value: &str) -> String {
     }
 }
 
+fn sanitize_api_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    headers
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = key.trim().to_string();
+            let value = value.trim().to_string();
+            (!key.is_empty() && !value.is_empty()).then_some((key, value))
+        })
+        .collect()
+}
+
+fn input_changes_managed_api(profile: &EffectiveApiProfile, input: &AgentSettingsInput) -> bool {
+    if input.clear_api_key
+        || input
+            .api_key
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return true;
+    }
+    input.api_base_url.trim().trim_end_matches('/') != profile.base_url.trim().trim_end_matches('/')
+        || normalize_api_model(&input.api_model) != normalize_api_model(&profile.model)
+        || sanitize_api_headers(input.api_headers.clone()) != profile.headers
+}
+
+fn input_changes_stored_api(current: &AgentSettingsStored, input: &AgentSettingsInput) -> bool {
+    if input.clear_api_key
+        || input
+            .api_key
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return true;
+    }
+    normalize_provider(&input.provider) != normalize_provider(&current.provider)
+        || input.api_base_url.trim().trim_end_matches('/')
+            != current.api_base_url.trim().trim_end_matches('/')
+        || normalize_api_model(&input.api_model) != normalize_api_model(&current.api_model)
+        || sanitize_api_headers(input.api_headers.clone()) != current.api_headers
+}
+
 #[tauri::command]
 pub fn agent_load_settings(app_handle: tauri::AppHandle) -> AgentSettingsPublic {
-    AgentSettingsPublic::from(&read_settings(&app_handle))
+    let settings = read_settings(&app_handle);
+    public_settings_from_stored(&app_handle, &settings)
 }
 
 #[tauri::command]
@@ -484,23 +594,34 @@ pub fn agent_save_settings(
     input: AgentSettingsInput,
 ) -> Result<AgentSettingsPublic, String> {
     let mut current = read_settings(&app_handle);
-    current.provider = normalize_provider(&input.provider);
-    current.api_base_url = input.api_base_url.trim().trim_end_matches('/').to_string();
-    current.api_model = normalize_api_model(&input.api_model);
-    current.api_headers = input
-        .api_headers
-        .into_iter()
-        .filter_map(|(key, value)| {
-            let key = key.trim().to_string();
-            let value = value.trim().to_string();
-            (!key.is_empty() && !value.is_empty()).then_some((key, value))
-        })
-        .collect();
-    if input.clear_api_key {
-        current.api_key.clear();
-    } else if let Some(api_key) = input.api_key {
-        if !api_key.trim().is_empty() {
-            current.api_key = api_key.trim().to_string();
+    let resolved_profile = resolve_agent_api_profile(&app_handle, &current);
+    if let Some(profile) = resolved_profile
+        .as_ref()
+        .ok()
+        .filter(|profile| !profile.editable)
+    {
+        if input_changes_managed_api(profile, &input) {
+            return Err(
+                "高级版授权已托管 Agent API，不能修改 Endpoint、API Key、模型或 Headers"
+                    .to_string(),
+            );
+        }
+        current.provider = normalize_provider(&input.provider);
+    } else if let Err(error) = &resolved_profile {
+        if error.contains("不能回退") && input_changes_stored_api(&current, &input) {
+            return Err("高级版授权当前无效，不能修改 Agent API 设置或回退到 BYOK".to_string());
+        }
+    } else {
+        current.provider = normalize_provider(&input.provider);
+        current.api_base_url = input.api_base_url.trim().trim_end_matches('/').to_string();
+        current.api_model = normalize_api_model(&input.api_model);
+        current.api_headers = sanitize_api_headers(input.api_headers);
+        if input.clear_api_key {
+            current.api_key.clear();
+        } else if let Some(api_key) = input.api_key {
+            if !api_key.trim().is_empty() {
+                current.api_key = api_key.trim().to_string();
+            }
         }
     }
     current.codex_executable = if input.codex_executable.trim().is_empty() {
@@ -521,7 +642,7 @@ pub fn agent_save_settings(
     };
     current.retain_history = input.retain_history;
     write_settings(&app_handle, &current)?;
-    Ok(AgentSettingsPublic::from(&current))
+    Ok(public_settings_from_stored(&app_handle, &current))
 }
 
 fn chat_completions_url(base_url: &str) -> Result<String, String> {
@@ -548,11 +669,31 @@ fn models_url(base_url: &str) -> Result<String, String> {
     }
 }
 
+fn is_internal_agent_header(key: &str) -> bool {
+    matches!(
+        normalize_agent_balance_key(key).as_str(),
+        "authorization"
+            | "xlinggannewapiaccesstoken"
+            | "xlinggannewapiuser"
+            | "xlinggannewapiuserid"
+            | "xnewapiaccesstoken"
+            | "xnewapiuser"
+            | "xnewapiuserid"
+            | "newapiaccesstoken"
+            | "newapiusertoken"
+            | "newapiuser"
+            | "newapiuserid"
+    )
+}
+
 fn add_custom_headers(
     mut request: reqwest::blocking::RequestBuilder,
     headers: &BTreeMap<String, String>,
 ) -> Result<reqwest::blocking::RequestBuilder, String> {
     for (key, value) in headers {
+        if is_internal_agent_header(key) {
+            continue;
+        }
         let name = HeaderName::from_bytes(key.as_bytes())
             .map_err(|_| format!("Agent API Header 名称无效：{}", key))?;
         let value = HeaderValue::from_str(value)
@@ -586,6 +727,411 @@ pub struct AgentOpenAiChatResult {
     content: String,
     tool_calls: Vec<OpenAiToolCallResult>,
     finish_reason: Option<String>,
+}
+
+#[derive(Default)]
+struct AgentBalanceFields {
+    balance: Option<String>,
+    quota: Option<String>,
+    used_quota: Option<String>,
+    request_count: Option<String>,
+}
+
+fn normalize_agent_balance_key(key: &str) -> String {
+    key.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn json_scalar_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn assign_agent_balance_field(fields: &mut AgentBalanceFields, key: &str, value: &Value) {
+    let Some(value) = json_scalar_to_string(value) else {
+        return;
+    };
+    match normalize_agent_balance_key(key).as_str() {
+        "balance" | "balances" | "credit" | "credits" | "availablebalance" | "accountbalance"
+        | "userbalance" | "amount" => {
+            if fields.balance.is_none() {
+                fields.balance = Some(value);
+            }
+        }
+        "quota" | "totalquota" | "remainingquota" | "remainquota" | "availablequota" | "limit"
+        | "hardlimit" => {
+            if fields.quota.is_none() {
+                fields.quota = Some(value);
+            }
+        }
+        "usedquota" | "used" | "usedamount" | "usage" | "totalusage" | "consumed" => {
+            if fields.used_quota.is_none() {
+                fields.used_quota = Some(value);
+            }
+        }
+        "requestcount" | "requestcounts" | "requests" | "request" => {
+            if fields.request_count.is_none() {
+                fields.request_count = Some(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_agent_balance_fields(value: &Value, fields: &mut AgentBalanceFields) {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object {
+                assign_agent_balance_field(fields, key, nested);
+                collect_agent_balance_fields(nested, fields);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_agent_balance_fields(item, fields);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_agent_balance_number(value: &str) -> Option<f64> {
+    let normalized = value.trim().trim_start_matches('$').replace(',', "");
+    normalized.parse::<f64>().ok()
+}
+
+fn format_new_api_quota(value: &str) -> String {
+    let Some(raw) = parse_agent_balance_number(value) else {
+        return value.to_string();
+    };
+    if raw.abs() < 1000.0 {
+        return value.to_string();
+    }
+    format!("{} (约 ${:.4})", value, raw / 500_000.0)
+}
+
+fn parse_agent_balance_response(
+    profile: &EffectiveApiProfile,
+    endpoint_kind: &str,
+    parsed: &Value,
+) -> Result<AgentApiBalanceResult, String> {
+    if parsed.get("success").and_then(Value::as_bool) == Some(false) {
+        let message = parsed
+            .get("message")
+            .or_else(|| parsed.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or("New API 管理接口返回失败");
+        return Err(format!("{}：{}", endpoint_kind, message));
+    }
+
+    let mut fields = AgentBalanceFields::default();
+    collect_agent_balance_fields(parsed, &mut fields);
+    if fields.balance.is_none() {
+        fields.balance = parsed.get("data").and_then(json_scalar_to_string);
+    }
+
+    let is_new_api_user_self = endpoint_kind.contains("/api/user/self");
+    let quota = fields.quota.map(|value| {
+        if is_new_api_user_self {
+            format_new_api_quota(&value)
+        } else {
+            value
+        }
+    });
+    let used_quota = fields.used_quota.map(|value| {
+        if is_new_api_user_self {
+            format_new_api_quota(&value)
+        } else {
+            value
+        }
+    });
+
+    let mut display_parts = Vec::new();
+    if let Some(balance) = &fields.balance {
+        display_parts.push(format!("余额 {}", balance));
+    }
+    if let Some(quota) = &quota {
+        display_parts.push(format!("额度 {}", quota));
+    }
+    if let Some(used) = &used_quota {
+        display_parts.push(format!("已用 {}", used));
+    }
+    if let Some(count) = &fields.request_count {
+        display_parts.push(format!("请求 {}", count));
+    }
+    if display_parts.is_empty() {
+        return Err(format!(
+            "{} 响应中没有找到余额字段：{}",
+            endpoint_kind,
+            preview_response_text(&parsed.to_string())
+        ));
+    }
+
+    Ok(AgentApiBalanceResult {
+        source: profile.source.clone(),
+        provider: profile.provider.clone(),
+        model: profile.model.clone(),
+        api_key_last4: profile.key_last4.clone(),
+        endpoint_kind: endpoint_kind.to_string(),
+        balance: fields.balance,
+        quota,
+        used_quota,
+        request_count: fields.request_count,
+        display: display_parts.join(" · "),
+    })
+}
+
+fn strip_agent_api_base_to_root(base_url: &str) -> Result<String, String> {
+    let mut value = base_url.trim().trim_end_matches('/').to_string();
+    if value.is_empty() {
+        return Err("请先填写 Agent API Base URL".to_string());
+    }
+    for suffix in [
+        "/v1/chat/completions",
+        "/v1/responses",
+        "/v1/models",
+        "/chat/completions",
+        "/responses",
+        "/models",
+        "/api/user/self",
+        "/newapi/balance",
+        "/dashboard/billing/credit_grants",
+        "/v1",
+    ] {
+        if value.to_ascii_lowercase().ends_with(suffix) {
+            value.truncate(value.len().saturating_sub(suffix.len()));
+            value = value.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    if value.is_empty() {
+        return Err("请先填写 Agent API Base URL".to_string());
+    }
+    Ok(value)
+}
+
+fn push_agent_balance_candidate(
+    candidates: &mut Vec<(String, String)>,
+    endpoint_kind: &str,
+    url: String,
+) {
+    if !candidates.iter().any(|(_, existing)| existing == &url) {
+        candidates.push((endpoint_kind.to_string(), url));
+    }
+}
+
+fn agent_balance_candidate_urls(base_url: &str) -> Result<Vec<(String, String)>, String> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("请先填写 Agent API Base URL".to_string());
+    }
+    let root = strip_agent_api_base_to_root(&base)?;
+    let mut candidates = Vec::new();
+    push_agent_balance_candidate(
+        &mut candidates,
+        "New API /api/user/self",
+        agent_balance_user_self_url(&base)?,
+    );
+    push_agent_balance_candidate(
+        &mut candidates,
+        "New API /newapi/balance",
+        format!("{}/newapi/balance", root),
+    );
+    push_agent_balance_candidate(
+        &mut candidates,
+        "OpenAI billing credit_grants",
+        format!("{}/dashboard/billing/credit_grants", root),
+    );
+    if base != root {
+        push_agent_balance_candidate(
+            &mut candidates,
+            "Agent Base /newapi/balance",
+            format!("{}/newapi/balance", base),
+        );
+    }
+    Ok(candidates)
+}
+
+fn agent_balance_user_self_url(base_url: &str) -> Result<String, String> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("璇峰厛濉啓 Agent API Base URL".to_string());
+    }
+    let root = strip_agent_api_base_to_root(&base)?;
+    Ok(format!("{}/api/user/self", root))
+}
+
+fn lookup_agent_header(headers: &BTreeMap<String, String>, names: &[&str]) -> Option<String> {
+    let wanted = names
+        .iter()
+        .map(|name| normalize_agent_balance_key(name))
+        .collect::<HashSet<_>>();
+    headers.iter().find_map(|(key, value)| {
+        let value = value.trim();
+        (!value.is_empty() && wanted.contains(&normalize_agent_balance_key(key)))
+            .then(|| value.to_string())
+    })
+}
+
+fn bearer_token_from_authorization(value: &str) -> String {
+    value
+        .trim()
+        .strip_prefix("Bearer ")
+        .or_else(|| value.trim().strip_prefix("bearer "))
+        .unwrap_or_else(|| value.trim())
+        .trim()
+        .to_string()
+}
+
+fn extract_new_api_management_auth(
+    headers: &BTreeMap<String, String>,
+) -> Result<(String, String), String> {
+    let access_token = lookup_agent_header(
+        headers,
+        &[
+            "X-Linggan-NewAPI-Access-Token",
+            "X-NewAPI-Access-Token",
+            "NewAPI-Access-Token",
+            "NewAPI-User-Token",
+        ],
+    )
+    .or_else(|| {
+        lookup_agent_header(headers, &["Authorization"])
+            .map(|value| bearer_token_from_authorization(&value))
+    })
+    .unwrap_or_default();
+    let user_id = lookup_agent_header(
+        headers,
+        &[
+            "X-Linggan-NewAPI-User",
+            "X-Linggan-NewAPI-User-ID",
+            "X-NewAPI-User",
+            "X-NewAPI-User-ID",
+            "New-Api-User",
+            "NewAPI-User",
+            "NewAPI-User-ID",
+        ],
+    )
+    .unwrap_or_default();
+
+    if access_token.is_empty() || user_id.is_empty() {
+        return Err(
+            "New API 余额查询需要管理接口凭据。请在 Agent API 自定义 Headers 中配置 X-Linggan-NewAPI-Access-Token（登录 access token）和 X-Linggan-NewAPI-User（用户 ID）；模型 API Key 只能用于聊天和模型列表。"
+                .to_string(),
+        );
+    }
+
+    Ok((access_token, user_id))
+}
+
+fn redact_http_urls(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(|part| {
+            let trimmed = part.trim_start_matches(|ch| matches!(ch, '(' | '[' | '"' | '\''));
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                "[url]".to_string()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn request_agent_balance_json(
+    app_handle: &tauri::AppHandle,
+    profile: &EffectiveApiProfile,
+    endpoint_kind: &str,
+    url: &str,
+) -> Result<Value, String> {
+    let (access_token, user_id) = extract_new_api_management_auth(&profile.headers)?;
+    let client = crate::build_http_client(Some(app_handle), None, 90)?;
+    let request = client
+        .get(url)
+        .header("accept", "application/json, text/plain, */*")
+        .header("New-Api-User", user_id)
+        .bearer_auth(access_token);
+    let response = request.send().map_err(|error| {
+        format!(
+            "{} 请求失败：{}",
+            endpoint_kind,
+            redact_http_urls(&error.to_string())
+        )
+    })?;
+    let status = response.status();
+    let text = response.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "{} HTTP {}：{}",
+            endpoint_kind,
+            status,
+            preview_response_text(&text)
+        ));
+    }
+    serde_json::from_str::<Value>(&text).map_err(|error| {
+        format!(
+            "{} JSON 解析失败：{}；响应片段：{}",
+            endpoint_kind,
+            error,
+            preview_response_text(&text)
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn agent_query_api_balance(
+    app_handle: tauri::AppHandle,
+) -> Result<AgentApiBalanceResult, String> {
+    let settings = read_settings(&app_handle);
+    let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if api_profile.api_key.trim().is_empty() {
+            return Err("请先在 Agent 设置中填写 API Key".to_string());
+        }
+        let candidates = agent_balance_candidate_urls(&api_profile.base_url)?;
+        let mut errors = Vec::new();
+        for (endpoint_kind, url) in candidates.into_iter().take(1) {
+            match request_agent_balance_json(&app_handle, &api_profile, &endpoint_kind, &url)
+                .and_then(|parsed| {
+                    parse_agent_balance_response(&api_profile, &endpoint_kind, &parsed)
+                }) {
+                Ok(result) => return Ok(result),
+                Err(error) => errors.push(error),
+            }
+        }
+        Err(format!(
+            "Agent API 余额查询失败：{}",
+            errors.into_iter().take(4).collect::<Vec<_>>().join("；")
+        ))
+    })
+    .await
+    .map_err(|error| format!("Agent API 余额查询后台任务失败：{}", error))?
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentApiBalanceResult {
+    source: String,
+    provider: String,
+    model: String,
+    api_key_last4: Option<String>,
+    endpoint_kind: String,
+    balance: Option<String>,
+    quota: Option<String>,
+    used_quota: Option<String>,
+    request_count: Option<String>,
+    display: String,
 }
 
 #[derive(Default)]
@@ -687,8 +1233,13 @@ fn parse_openai_sse_data(
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
-    let parsed: Value = serde_json::from_str(data)
-        .map_err(|error| format!("解析 Agent 流失败：{}；响应片段：{}", error, preview_response_text(data)))?;
+    let parsed: Value = serde_json::from_str(data).map_err(|error| {
+        format!(
+            "解析 Agent 流失败：{}；响应片段：{}",
+            error,
+            preview_response_text(data)
+        )
+    })?;
     parse_openai_response_value(
         &parsed,
         content,
@@ -708,7 +1259,10 @@ fn parse_openai_buffered_text(
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
-    if text.lines().any(|line| line.trim_start().starts_with("data:")) {
+    if text
+        .lines()
+        .any(|line| line.trim_start().starts_with("data:"))
+    {
         for line in text.lines() {
             let Some(data) = line.trim().strip_prefix("data:") else {
                 continue;
@@ -729,8 +1283,13 @@ fn parse_openai_buffered_text(
         return Ok(());
     }
 
-    let parsed: Value = serde_json::from_str(text)
-        .map_err(|error| format!("解析 Agent API 响应失败：{}；响应片段：{}", error, preview_response_text(text)))?;
+    let parsed: Value = serde_json::from_str(text).map_err(|error| {
+        format!(
+            "解析 Agent API 响应失败：{}；响应片段：{}",
+            error,
+            preview_response_text(text)
+        )
+    })?;
     parse_openai_response_value(
         &parsed,
         content,
@@ -749,12 +1308,13 @@ pub async fn agent_openai_chat(
     request: AgentOpenAiChatRequest,
 ) -> Result<AgentOpenAiChatResult, String> {
     let settings = read_settings(&app_handle);
+    let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     let cancellations = state.openai_cancellations.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if settings.api_key.trim().is_empty() {
+        if api_profile.api_key.trim().is_empty() {
             return Err("请先在 Agent 设置中填写 API Key".to_string());
         }
-        let api_model = normalize_api_model(&settings.api_model);
+        let api_model = normalize_api_model(&api_profile.model);
         if api_model.trim().is_empty() {
             return Err("请先在 Agent 设置中填写模型".to_string());
         }
@@ -776,11 +1336,11 @@ pub async fn agent_openai_chat(
 
         let client = crate::build_http_client(Some(&app_handle), None, 600)?;
         let mut request_builder = client
-            .post(chat_completions_url(&settings.api_base_url)?)
-            .bearer_auth(&settings.api_key)
+            .post(chat_completions_url(&api_profile.base_url)?)
+            .bearer_auth(&api_profile.api_key)
             .header(CONTENT_TYPE, "application/json")
             .json(&body);
-        request_builder = add_custom_headers(request_builder, &settings.api_headers)?;
+        request_builder = add_custom_headers(request_builder, &api_profile.headers)?;
         let response = request_builder
             .send()
             .map_err(|error| format!("Agent API 请求失败：{}", error))?;
@@ -900,15 +1460,16 @@ pub fn agent_cancel_openai(
 #[tauri::command]
 pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
     let settings = read_settings(&app_handle);
+    let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     tauri::async_runtime::spawn_blocking(move || {
-        if settings.api_key.trim().is_empty() {
+        if api_profile.api_key.trim().is_empty() {
             return Err("请先在 Agent 设置中填写 API Key".to_string());
         }
         let client = crate::build_http_client(Some(&app_handle), None, 90)?;
         let mut request = client
-            .get(models_url(&settings.api_base_url)?)
-            .bearer_auth(&settings.api_key);
-        request = add_custom_headers(request, &settings.api_headers)?;
+            .get(models_url(&api_profile.base_url)?)
+            .bearer_auth(&api_profile.api_key);
+        request = add_custom_headers(request, &api_profile.headers)?;
         let response = request
             .send()
             .map_err(|error| format!("读取 Agent 模型列表失败：{}", error))?;
@@ -1221,7 +1782,7 @@ fn inspect_codex_status(
     running: bool,
     managed: bool,
     profile: &CodexRuntimeProfile,
-    settings: &AgentSettingsStored,
+    _settings: &AgentSettingsStored,
 ) -> CodexStatus {
     let version = match codex_version(&executable) {
         Ok(version) => version,
@@ -1242,16 +1803,13 @@ fn inspect_codex_status(
         }
     };
     let (authenticated, detail) = if profile.mode == CodexRuntimeMode::Api {
-        let detail = normalize_base_url(&settings.api_base_url)
+        let detail = normalize_base_url(profile.api_base_url.as_deref().unwrap_or(""))
             .map(|base_url| format!("Custom API · {}", base_url))
             .unwrap_or_else(|error| error);
-        (!settings.api_key.trim().is_empty(), detail)
+        (profile.api_key_configured, detail)
     } else {
-        let output = command_output_with_codex_home(
-            &executable,
-            &["login", "status"],
-            &profile.codex_home,
-        );
+        let output =
+            command_output_with_codex_home(&executable, &["login", "status"], &profile.codex_home);
         match output {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -1296,11 +1854,7 @@ pub async fn agent_codex_status(
         let managed = is_managed_codex_path(&app_handle, &executable);
         let profile = build_codex_runtime_profile(&app_handle, &settings, false)?;
         Ok(inspect_codex_status(
-            executable,
-            running,
-            managed,
-            &profile,
-            &settings,
+            executable, running, managed, &profile, &settings,
         ))
     })
     .await
@@ -1323,11 +1877,7 @@ pub async fn agent_install_codex(
         let executable = install_managed_codex(&app_handle)?;
         let profile = build_codex_runtime_profile(&app_handle, &settings, false)?;
         Ok(inspect_codex_status(
-            executable,
-            running,
-            true,
-            &profile,
-            &settings,
+            executable, running, true, &profile, &settings,
         ))
     })
     .await
@@ -1449,8 +1999,13 @@ pub async fn agent_codex_start(
     state: State<'_, AgentRuntimeState>,
 ) -> Result<CodexStatus, String> {
     let settings = read_settings(&app_handle);
-    let profile = build_codex_runtime_profile(&app_handle, &settings, true)
-        .map_err(|error| format!("准备 {} Codex 运行环境失败：{}", CodexRuntimeMode::from_provider(&settings.provider).as_str(), error))?;
+    let profile = build_codex_runtime_profile(&app_handle, &settings, true).map_err(|error| {
+        format!(
+            "准备 {} Codex 运行环境失败：{}",
+            CodexRuntimeMode::from_provider(&settings.provider).as_str(),
+            error
+        )
+    })?;
     let executable = resolve_codex_executable(&app_handle, &settings.codex_executable);
     let managed = is_managed_codex_path(&app_handle, &executable);
     let existing = state
@@ -1512,10 +2067,11 @@ pub async fn agent_codex_start(
 
     let (authenticated, auth_detail) = if profile.mode == CodexRuntimeMode::Api {
         (
-            !settings.api_key.trim().is_empty(),
+            profile.api_key_configured,
             format!(
                 "Custom API · {}",
-                normalize_base_url(&settings.api_base_url).unwrap_or_else(|_| settings.api_base_url.clone())
+                normalize_base_url(profile.api_base_url.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| profile.api_base_url.clone().unwrap_or_default())
             ),
         )
     } else {
@@ -1588,9 +2144,13 @@ pub async fn agent_codex_restart(
     {
         runtime.stop();
     }
-    agent_codex_start(app_handle, state)
-        .await
-        .map_err(|error| format!("重启 {} Codex App Server 失败：{}", requested_mode.as_str(), error))
+    agent_codex_start(app_handle, state).await.map_err(|error| {
+        format!(
+            "重启 {} Codex App Server 失败：{}",
+            requested_mode.as_str(),
+            error
+        )
+    })
 }
 
 #[tauri::command]
@@ -1663,6 +2223,70 @@ mod tests {
     }
 
     #[test]
+    fn builds_agent_balance_candidates_from_v1_base() {
+        let candidates = agent_balance_candidate_urls("https://api.example.com/v1").unwrap();
+        assert_eq!(
+            candidates.first().map(|(_, url)| url.as_str()),
+            Some("https://api.example.com/api/user/self")
+        );
+        assert!(candidates
+            .iter()
+            .any(|(_, url)| url == "https://api.example.com/newapi/balance"));
+        assert!(candidates
+            .iter()
+            .any(|(_, url)| url == "https://api.example.com/dashboard/billing/credit_grants"));
+    }
+
+    #[test]
+    fn extracts_new_api_management_headers_for_balance_only() {
+        let headers = BTreeMap::from([
+            (
+                "X-Linggan-NewAPI-Access-Token".to_string(),
+                "user-access-token".to_string(),
+            ),
+            ("X-Linggan-NewAPI-User".to_string(), "42".to_string()),
+        ]);
+        let (token, user_id) = extract_new_api_management_auth(&headers).unwrap();
+        assert_eq!(token, "user-access-token");
+        assert_eq!(user_id, "42");
+        assert!(is_internal_agent_header("X-Linggan-NewAPI-Access-Token"));
+        assert!(is_internal_agent_header("New-Api-User"));
+        assert!(is_internal_agent_header("Authorization"));
+        assert!(!is_internal_agent_header("X-Tenant"));
+    }
+
+    #[test]
+    fn parses_new_api_user_balance_without_secret_leak() {
+        let profile = EffectiveApiProfile {
+            source: "license_managed".to_string(),
+            provider: "openai-compatible".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-secret-value".to_string(),
+            model: "gpt-4.1".to_string(),
+            headers: BTreeMap::new(),
+            editable: false,
+            key_last4: Some("alue".to_string()),
+        };
+        let parsed = json!({
+            "success": true,
+            "data": {
+                "quota": 1000000,
+                "used_quota": 250000,
+                "request_count": 12
+            }
+        });
+        let result =
+            parse_agent_balance_response(&profile, "New API /api/user/self", &parsed).unwrap();
+        assert_eq!(result.source, "license_managed");
+        assert_eq!(result.api_key_last4.as_deref(), Some("alue"));
+        assert!(result.display.contains("约 $2.0000"));
+        assert!(result.display.contains("已用 250000"));
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("sk-secret-value"));
+    }
+
+    #[test]
     fn normalizes_custom_codex_provider_base_urls() {
         assert_eq!(CodexRuntimeMode::Chatgpt.home_dir_name(), "chatgpt");
         assert_eq!(CodexRuntimeMode::Api.home_dir_name(), "api-runtime");
@@ -1687,7 +2311,17 @@ mod tests {
             .api_headers
             .insert("X-Tenant".to_string(), "drawer".to_string());
 
-        let config = build_codex_runtime_config(&stored).unwrap();
+        let profile = EffectiveApiProfile {
+            source: "user_settings".to_string(),
+            provider: stored.provider.clone(),
+            base_url: stored.api_base_url.clone(),
+            api_key: stored.api_key.clone(),
+            model: stored.api_model.clone(),
+            headers: stored.api_headers.clone(),
+            editable: true,
+            key_last4: crate::ai_credentials::api_key_last4(&stored.api_key),
+        };
+        let config = build_codex_runtime_config(&profile).unwrap();
         assert!(config.contains("model = \"custom-model\""));
         assert!(config.contains("base_url = \"https://api.example.com/v1\""));
         assert!(config.contains("env_key = \"LINGGAN_CODEX_API_KEY\""));
@@ -1703,8 +2337,9 @@ mod tests {
         let public = AgentSettingsPublic::from(&stored);
         let serialized = serde_json::to_string(&public).unwrap();
         assert!(public.has_api_key);
+        assert_eq!(public.api_key_last4.as_deref(), Some("-key"));
         assert!(!serialized.contains("secret-key"));
-        assert!(!serialized.contains("apiKey"));
+        assert!(serialized.contains("apiKeyLast4"));
     }
 
     #[test]

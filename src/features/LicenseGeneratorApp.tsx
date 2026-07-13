@@ -34,6 +34,30 @@ type LicensePayload = {
   edition: LicenseEdition;
   features: string[];
   expire_at: string;
+  ai_access?: LicenseAiAccessPayload | null;
+};
+
+type ManagedApiProfilePayload = {
+  provider: string;
+  base_url: string;
+  api_key: string;
+  model: string;
+  headers: Record<string, string>;
+};
+
+type LicenseAiAccessPayload = {
+  mode: 'byok' | 'license_managed';
+  allow_user_api: boolean;
+  managed_profile?: ManagedApiProfilePayload | null;
+  canvas_profile?: ManagedApiProfilePayload | null;
+};
+
+type ManagedApiDraft = {
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  headersText: string;
 };
 
 type GeneratedLicense = {
@@ -62,12 +86,70 @@ type ImportedLicensesResult = {
   failures: Array<{ path: string; message: string }>;
 };
 
+type ManagedApiProbeResult = {
+  ok: boolean;
+  message: string;
+  detail?: string | null;
+};
+
 const FULL_LICENSE_FEATURES = ['*'];
 const EDITION_OPTIONS: Array<{ value: LicenseEdition; label: string }> = [
   { value: 'trial', label: '试用版' },
   { value: 'pro', label: '专业版' },
-  { value: 'enterprise', label: '企业版' },
+  { value: 'enterprise', label: '高级版' },
 ];
+
+const createManagedApiDraft = (overrides: Partial<ManagedApiDraft> = {}): ManagedApiDraft => ({
+  provider: 'openai-compatible',
+  baseUrl: 'https://api.openai.com/v1',
+  apiKey: '',
+  model: 'gpt-4o-mini',
+  headersText: '{}',
+  ...overrides,
+});
+
+const editionLabel = (value: LicenseEdition) => (
+  value === 'trial' ? '试用版' : value === 'pro' ? '专业版' : '高级版'
+);
+
+const apiKeyLast4 = (value?: string | null) => {
+  const chars = Array.from(String(value || '').trim());
+  if (chars.length === 0) return '';
+  return chars.slice(Math.max(0, chars.length - 4)).join('');
+};
+
+const maskManagedProfile = (profile?: ManagedApiProfilePayload | null) => (
+  profile
+    ? {
+      ...profile,
+      api_key: profile.api_key.trim() ? `****${apiKeyLast4(profile.api_key)}` : '',
+    }
+    : profile
+);
+
+const maskLicenseJson = (licenseJson: string) => {
+  try {
+    const file = JSON.parse(licenseJson);
+    if (typeof file?.payload !== 'string') return licenseJson;
+    const bytes = Uint8Array.from(atob(file.payload), char => char.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as LicensePayload;
+    return JSON.stringify({
+      payload: {
+        ...payload,
+        ai_access: payload.ai_access
+          ? {
+            ...payload.ai_access,
+            managed_profile: maskManagedProfile(payload.ai_access.managed_profile),
+            canvas_profile: maskManagedProfile(payload.ai_access.canvas_profile),
+          }
+          : payload.ai_access,
+      },
+      signature: file.signature ? '[hidden in preview]' : file.signature,
+    }, null, 2);
+  } catch (_) {
+    return licenseJson;
+  }
+};
 
 const todayPlusOneYear = () => {
   const date = new Date();
@@ -99,8 +181,15 @@ export function LicenseGeneratorApp() {
   const [product, setProduct] = useState('Inspiration Drawer');
   const [edition, setEdition] = useState<LicenseEdition>('pro');
   const [expireAt, setExpireAt] = useState(todayPlusOneYear);
+  const [agentApiDraft, setAgentApiDraft] = useState<ManagedApiDraft>(() => createManagedApiDraft());
+  const [canvasApiDraft, setCanvasApiDraft] = useState<ManagedApiDraft>(() => createManagedApiDraft({
+    provider: 'xais-chat',
+    baseUrl: 'https://xais.dchai.cn',
+    model: 'Xais Nano Pro_2K',
+  }));
   const [generated, setGenerated] = useState<GeneratedLicense | null>(null);
   const [busy, setBusy] = useState(false);
+  const [apiProbeBusy, setApiProbeBusy] = useState<string | null>(null);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
 
@@ -210,6 +299,37 @@ export function LicenseGeneratorApp() {
     }
   };
 
+  const parseManagedHeaders = (value: string) => {
+    const text = value.trim();
+    if (!text) return {};
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('自定义 Headers 必须是 JSON 对象');
+    }
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([key, headerValue]) => [key.trim(), String(headerValue).trim()])
+        .filter(([key, headerValue]) => key && headerValue),
+    );
+  };
+
+  const buildManagedProfile = (draft: ManagedApiDraft, label: string): ManagedApiProfilePayload => {
+    const provider = draft.provider.trim();
+    const baseUrl = draft.baseUrl.trim();
+    const apiKey = draft.apiKey.trim();
+    const model = draft.model.trim();
+    if (!provider || !baseUrl || !apiKey || !model) {
+      throw new Error(`高级版${label} API 必须填写 Provider、Base URL、API Key 和模型`);
+    }
+    return {
+      provider,
+      base_url: baseUrl,
+      api_key: apiKey,
+      model,
+      headers: parseManagedHeaders(draft.headersText),
+    };
+  };
+
   const buildInput = () => {
     setError('');
     if (!signingStatus?.configured) {
@@ -229,6 +349,28 @@ export function LicenseGeneratorApp() {
       return null;
     }
 
+    let aiAccess: LicenseAiAccessPayload | null = null;
+    try {
+      aiAccess = edition === 'enterprise'
+        ? {
+          mode: 'license_managed',
+          allow_user_api: false,
+          managed_profile: buildManagedProfile(agentApiDraft, 'Agent / 工作流'),
+          canvas_profile: buildManagedProfile(canvasApiDraft, '画布生图'),
+        }
+        : edition === 'pro'
+          ? {
+            mode: 'byok',
+            allow_user_api: true,
+            managed_profile: null,
+            canvas_profile: null,
+          }
+          : null;
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+      return null;
+    }
+
     return {
       machineId: machineId.trim(),
       customer: customer.trim(),
@@ -236,6 +378,7 @@ export function LicenseGeneratorApp() {
       edition,
       expireAt,
       features: FULL_LICENSE_FEATURES,
+      aiAccess,
     };
   };
 
@@ -273,6 +416,32 @@ export function LicenseGeneratorApp() {
     }
   };
 
+  const probeManagedApi = async (
+    draft: ManagedApiDraft,
+    label: string,
+    kind: 'connection' | 'balance',
+  ) => {
+    const busyKey = `${label}:${kind}`;
+    try {
+      setError('');
+      setApiProbeBusy(busyKey);
+      const profile = buildManagedProfile(draft, label);
+      const result = await invoke<ManagedApiProbeResult>(
+        kind === 'connection' ? 'test_managed_api_connection' : 'query_managed_api_balance',
+        { profile },
+      );
+      if (result.ok) {
+        showToast(`${label}：${result.message}`);
+      } else {
+        setError(`${label}：${result.message}`);
+      }
+    } catch (err) {
+      setError(`${label}：${String(err || (kind === 'connection' ? '测试连接失败' : '查询余额失败'))}`);
+    } finally {
+      setApiProbeBusy(null);
+    }
+  };
+
   const publicKey = signingStatus?.publicKeyB64 || '';
   const signingReady = signingStatus?.configured === true;
 
@@ -282,6 +451,20 @@ export function LicenseGeneratorApp() {
     setProduct(record.product);
     setEdition(record.edition);
     setExpireAt(buildRenewalExpireAt(record.expireAt));
+    if (record.edition === 'enterprise') {
+      setAgentApiDraft(createManagedApiDraft({
+        provider: record.managedProvider || 'openai-compatible',
+        baseUrl: record.managedBaseUrl || 'https://api.openai.com/v1',
+        model: record.managedModel || 'gpt-4o-mini',
+        apiKey: '',
+      }));
+      setCanvasApiDraft(createManagedApiDraft({
+        provider: record.canvasProvider || 'xais-chat',
+        baseUrl: record.canvasBaseUrl || 'https://xais.dchai.cn',
+        model: record.canvasModel || 'Xais Nano Pro_2K',
+        apiKey: '',
+      }));
+    }
     setGenerated(null);
     setRenewingRecord(record);
     setActiveView('issue');
@@ -320,6 +503,80 @@ export function LicenseGeneratorApp() {
       setError(`窗口${label}失败：${String(err || '权限不足')}`);
     });
   };
+
+  const renderManagedApiFields = (
+    title: string,
+    description: string,
+    draft: ManagedApiDraft,
+    setDraft: (updater: (current: ManagedApiDraft) => ManagedApiDraft) => void,
+  ) => (
+    <div className="grid gap-2 rounded-[12px] border border-cyan-100/80 bg-cyan-50/55 p-3 dark:border-cyan-400/20 dark:bg-cyan-400/8">
+      <div>
+        <div className="text-xs font-black text-cyan-800 dark:text-cyan-100">{title}</div>
+        <div className="mt-0.5 text-[10px] font-medium text-cyan-700/75 dark:text-cyan-100/65">{description}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          value={draft.provider}
+          onChange={event => setDraft(current => ({ ...current, provider: event.target.value }))}
+          placeholder="Provider"
+          className="license-input h-9 px-3 text-xs"
+        />
+        <input
+          value={draft.model}
+          onChange={event => setDraft(current => ({ ...current, model: event.target.value }))}
+          placeholder="模型"
+          className="license-input h-9 px-3 text-xs"
+        />
+      </div>
+      <input
+        value={draft.baseUrl}
+        onChange={event => setDraft(current => ({ ...current, baseUrl: event.target.value }))}
+        placeholder="API Base URL"
+        className="license-input h-9 px-3 text-xs"
+      />
+      <input
+        type="password"
+        value={draft.apiKey}
+        onChange={event => setDraft(current => ({ ...current, apiKey: event.target.value }))}
+        placeholder="API Key"
+        className="license-input h-9 px-3 text-xs"
+      />
+      <textarea
+        value={draft.headersText}
+        onChange={event => setDraft(current => ({ ...current, headersText: event.target.value }))}
+        rows={2}
+        placeholder='自定义 Headers，可选，例如 {"X-Tenant":"demo"}'
+        className="license-input resize-y px-3 py-2 font-mono text-[10px]"
+      />
+      {title.includes('Agent') && (
+        <div className="rounded-[10px] bg-white/65 px-2 py-1 text-[10px] leading-4 text-cyan-700 dark:bg-stone-950/25 dark:text-cyan-100/75">
+          New API 余额查询需管理接口凭据：在 Headers JSON 中添加 X-Linggan-NewAPI-Access-Token 和 X-Linggan-NewAPI-User；模型 API Key 仍填写在 API Key。
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+        <span>预览仅显示 Key 后四位：{draft.apiKey.trim() ? `****${draft.apiKey.trim().slice(-4)}` : '-'}</span>
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            className="license-button license-button-secondary h-7 px-2 text-[10px]"
+            disabled={apiProbeBusy !== null}
+            onClick={() => void probeManagedApi(draft, title, 'connection')}
+          >
+            {apiProbeBusy === `${title}:connection` ? '测试中' : '测试连接'}
+          </button>
+          <button
+            type="button"
+            className="license-button license-button-secondary h-7 px-2 text-[10px]"
+            disabled={apiProbeBusy !== null}
+            onClick={() => void probeManagedApi(draft, title, 'balance')}
+          >
+            {apiProbeBusy === `${title}:balance` ? '查询中' : '查询余额'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <main className={`${isDark ? 'dark ' : ''}license-generator-theme min-h-screen overflow-hidden font-sans`}>
@@ -516,7 +773,7 @@ export function LicenseGeneratorApp() {
                   className="license-input h-10 px-3 text-sm"
                 >
                   {EDITION_OPTIONS.map(option => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
+                    <option key={option.value} value={option.value}>{editionLabel(option.value)}</option>
                   ))}
                 </select>
               </label>
@@ -544,6 +801,29 @@ export function LicenseGeneratorApp() {
                 <span className="text-[11px] font-bold text-stone-500 dark:text-stone-400">FULL ACCESS</span>
               </div>
             </div>
+
+            {edition === 'pro' && (
+              <div className="license-notice is-ready p-3 text-xs font-bold">
+                API 由用户自行配置，授权文件不包含托管 API Key。
+              </div>
+            )}
+
+            {edition === 'enterprise' && (
+              <div className="grid gap-3">
+                {renderManagedApiFields(
+                  'Agent / 工作流规划 API',
+                  '用于 Agent 对话、工作流 AI 规划、模型列表、连接测试和余额查询。',
+                  agentApiDraft,
+                  setAgentApiDraft,
+                )}
+                {renderManagedApiFields(
+                  '画布生图 API',
+                  '用于画布生图、Xais 余额查询、画布模型列表和参考图上传。',
+                  canvasApiDraft,
+                  setCanvasApiDraft,
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-[0.82fr_1.18fr] gap-2 pt-1">
               <button
@@ -612,12 +892,36 @@ export function LicenseGeneratorApp() {
                   <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3 p-4">
                     <div className="license-result-summary grid gap-2 p-3 text-xs">
                       <div className="flex items-center justify-between gap-3"><span className="text-stone-500">客户</span><span className="truncate font-bold">{generated.payload.customer}</span></div>
-                      <div className="flex items-center justify-between gap-3"><span className="text-stone-500">版本</span><span className="font-bold">{generated.payload.edition}</span></div>
+                      <div className="flex items-center justify-between gap-3"><span className="text-stone-500">版本</span><span className="font-bold">{editionLabel(generated.payload.edition)}</span></div>
                       <div className="flex items-center justify-between gap-3"><span className="text-stone-500">到期</span><span className="font-bold">{generated.payload.expire_at}</span></div>
+                      {generated.payload.ai_access && (
+                        <>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-stone-500">AI 模式</span>
+                            <span className="font-bold">{generated.payload.ai_access.mode === 'license_managed' ? '高级版托管 API' : '用户自行配置 BYOK'}</span>
+                          </div>
+                          {generated.payload.ai_access.managed_profile && (
+                            <div className="flex items-start justify-between gap-3">
+                              <span className="text-stone-500">Agent API</span>
+                              <span className="text-right font-bold">
+                                {generated.payload.ai_access.managed_profile.provider} · {generated.payload.ai_access.managed_profile.model} · ****{apiKeyLast4(generated.payload.ai_access.managed_profile.api_key)}
+                              </span>
+                            </div>
+                          )}
+                          {generated.payload.ai_access.canvas_profile && (
+                            <div className="flex items-start justify-between gap-3">
+                              <span className="text-stone-500">画布 API</span>
+                              <span className="text-right font-bold">
+                                {generated.payload.ai_access.canvas_profile.provider} · {generated.payload.ai_access.canvas_profile.model} · ****{apiKeyLast4(generated.payload.ai_access.canvas_profile.api_key)}
+                              </span>
+                            </div>
+                          )}
+                        </>
+                      )}
                       <div className="flex items-start justify-between gap-3"><span className="text-stone-500">功能</span><span className="text-right font-bold">{generated.payload.features.map(feature => (feature === '*' ? '全部功能' : feature)).join(', ')}</span></div>
                     </div>
                     <textarea
-                      value={generated.licenseJson}
+                      value={maskLicenseJson(generated.licenseJson)}
                       readOnly
                       spellCheck={false}
                       className="license-code-block min-h-0 resize-none p-3 font-mono text-[10px] leading-4 outline-none"

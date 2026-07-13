@@ -109,21 +109,27 @@ pub fn migrate_json_to_sqlite(app_handle: tauri::AppHandle) -> Result<MigrationS
     let folders = repo.read_folders()?;
     let canvas_state = repo.read_canvas_state().unwrap_or_else(|_| json!({}));
     let total = items.len() as i64;
-    upsert_migration_row(&conn, "running", total, 0, 0, 0, None, None, started_at, None)?;
+    upsert_migration_row(
+        &conn, "running", total, 0, 0, 0, None, None, started_at, None,
+    )?;
 
     let migration_result = migrate_payloads(&conn, &items, &folders, &canvas_state, started_at);
     match migration_result {
         Ok((processed, success, failed)) => {
-            let sqlite_asset_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM assets WHERE library_id = ?1 AND deleted_at IS NULL",
-                params![DEFAULT_LIBRARY_ID],
-                |row| row.get(0),
-            ).map_err(|err| err.to_string())?;
-            let sqlite_folder_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM folders WHERE library_id = ?1",
-                params![DEFAULT_LIBRARY_ID],
-                |row| row.get(0),
-            ).map_err(|err| err.to_string())?;
+            let sqlite_asset_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM assets WHERE library_id = ?1 AND deleted_at IS NULL",
+                    params![DEFAULT_LIBRARY_ID],
+                    |row| row.get(0),
+                )
+                .map_err(|err| err.to_string())?;
+            let sqlite_folder_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM folders WHERE library_id = ?1",
+                    params![DEFAULT_LIBRARY_ID],
+                    |row| row.get(0),
+                )
+                .map_err(|err| err.to_string())?;
             if sqlite_asset_count < success || sqlite_folder_count < folders.len() as i64 {
                 return finish_migration_error(
                     &conn,
@@ -142,7 +148,18 @@ pub fn migrate_json_to_sqlite(app_handle: tauri::AppHandle) -> Result<MigrationS
                 );
             }
             let finished_at = crate::current_time_millis();
-            upsert_migration_row(&conn, "success", total, processed, success, failed, None, None, started_at, Some(finished_at))?;
+            upsert_migration_row(
+                &conn,
+                "success",
+                total,
+                processed,
+                success,
+                failed,
+                None,
+                None,
+                started_at,
+                Some(finished_at),
+            )?;
             set_json_mode_forced(&app_handle, false)?;
             get_migration_status(app_handle)
         }
@@ -160,7 +177,18 @@ fn finish_migration_error(
     error: String,
 ) -> Result<MigrationStatus, String> {
     let finished_at = crate::current_time_millis();
-    upsert_migration_row(conn, "failed", total, processed, success, failed, None, Some(error.clone()), started_at, Some(finished_at))?;
+    upsert_migration_row(
+        conn,
+        "failed",
+        total,
+        processed,
+        success,
+        failed,
+        None,
+        Some(error.clone()),
+        started_at,
+        Some(finished_at),
+    )?;
     Err(error)
 }
 
@@ -173,14 +201,19 @@ fn ensure_migration_progress_columns(conn: &Connection) -> Result<(), String> {
         ("current_file", "TEXT"),
     ];
     for (name, ty) in columns {
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('migrations') WHERE name = ?1",
-            params![name],
-            |row| row.get(0),
-        ).map_err(|err| err.to_string())?;
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('migrations') WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
         if exists == 0 {
-            conn.execute(&format!("ALTER TABLE migrations ADD COLUMN {} {}", name, ty), [])
-                .map_err(|err| err.to_string())?;
+            conn.execute(
+                &format!("ALTER TABLE migrations ADD COLUMN {} {}", name, ty),
+                [],
+            )
+            .map_err(|err| err.to_string())?;
         }
     }
     Ok(())
@@ -242,7 +275,10 @@ fn backup_json_files(
         if !source.exists() {
             continue;
         }
-        let file_name = source.file_name().and_then(|value| value.to_str()).unwrap_or("data.json");
+        let file_name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("data.json");
         fs::copy(&source, backup_dir.join(file_name)).map_err(|err| err.to_string())?;
     }
     Ok(())
@@ -269,9 +305,16 @@ fn migrate_payloads(
     ).map_err(|err| err.to_string())?;
 
     for (index, chunk) in folders.chunks(MIGRATION_BATCH_SIZE).enumerate() {
-        let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         for (offset, folder) in chunk.iter().enumerate() {
-            insert_folder(&tx, folder, (index * MIGRATION_BATCH_SIZE + offset) as i64, started_at)?;
+            insert_folder(
+                &tx,
+                folder,
+                (index * MIGRATION_BATCH_SIZE + offset) as i64,
+                started_at,
+            )?;
         }
         tx.commit().map_err(|err| err.to_string())?;
     }
@@ -280,7 +323,9 @@ fn migrate_payloads(
     let mut success = 0_i64;
     let mut failed = 0_i64;
     for chunk in items.chunks(MIGRATION_BATCH_SIZE) {
-        let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         for item in chunk {
             processed += 1;
             match insert_asset(&tx, item, started_at) {
@@ -306,14 +351,30 @@ fn migrate_payloads(
             }
         }
         tx.commit().map_err(|err| err.to_string())?;
-        upsert_migration_row(conn, "running", items.len() as i64, processed, success, failed, None, None, started_at, None)?;
+        upsert_migration_row(
+            conn,
+            "running",
+            items.len() as i64,
+            processed,
+            success,
+            failed,
+            None,
+            None,
+            started_at,
+            None,
+        )?;
     }
 
     insert_canvas_nodes(conn, canvas_state, started_at)?;
     Ok((processed, success, failed))
 }
 
-fn insert_folder(conn: &Connection, folder: &Value, sort_order: i64, now: i64) -> Result<(), String> {
+fn insert_folder(
+    conn: &Connection,
+    folder: &Value,
+    sort_order: i64,
+    now: i64,
+) -> Result<(), String> {
     let id = value_string(folder, "id").ok_or_else(|| "folder missing id".to_string())?;
     let name = value_string(folder, "name").unwrap_or_else(|| "Folder".to_string());
     let parent_id = value_string(folder, "parentId");
@@ -329,7 +390,9 @@ fn insert_folder(conn: &Connection, folder: &Value, sort_order: i64, now: i64) -
 pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<(), String> {
     let id = value_string(item, "id").ok_or_else(|| "asset missing id".to_string())?;
     let file_type = value_string(item, "type").unwrap_or_else(|| "file".to_string());
-    let file_path = value_string(item, "path").or_else(|| value_string(item, "url")).unwrap_or_default();
+    let file_path = value_string(item, "path")
+        .or_else(|| value_string(item, "url"))
+        .unwrap_or_default();
     let file_name = value_string(item, "name")
         .or_else(|| value_string(item, "content"))
         .unwrap_or_else(|| file_name_from_path(&file_path));
@@ -402,7 +465,11 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
 
     if let Some(remarks) = item.get("remarks").and_then(Value::as_array) {
         for remark in remarks {
-            let Some(text) = remark.as_str().map(str::trim).filter(|value| value.starts_with('#') && value.len() > 1) else {
+            let Some(text) = remark
+                .as_str()
+                .map(str::trim)
+                .filter(|value| value.starts_with('#') && value.len() > 1)
+            else {
                 continue;
             };
             let tag_name = text.trim_start_matches('#').trim();
@@ -414,7 +481,8 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
             conn.execute(
                 "INSERT OR IGNORE INTO asset_tags (asset_id, tag_id) VALUES (?1, ?2)",
                 params![id, tag_id],
-            ).map_err(|err| err.to_string())?;
+            )
+            .map_err(|err| err.to_string())?;
         }
     }
 
@@ -422,9 +490,15 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
 }
 
 fn insert_canvas_nodes(conn: &Connection, canvas_state: &Value, now: i64) -> Result<(), String> {
-    let items = canvas_state.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let items = canvas_state
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     for chunk in items.chunks(MIGRATION_BATCH_SIZE) {
-        let tx = conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         for node in chunk {
             let _ = insert_canvas_node(&tx, DEFAULT_CANVAS_ID, node, now)?;
         }
@@ -439,7 +513,15 @@ pub(crate) fn insert_canvas_node(
     node: &Value,
     now: i64,
 ) -> Result<String, String> {
-    insert_canvas_node_with_z_index(conn, canvas_id, node, now, value_i64(node, "zIndex").or_else(|| value_i64(node, "z_index")).unwrap_or(0))
+    insert_canvas_node_with_z_index(
+        conn,
+        canvas_id,
+        node,
+        now,
+        value_i64(node, "zIndex")
+            .or_else(|| value_i64(node, "z_index"))
+            .unwrap_or(0),
+    )
 }
 
 pub(crate) fn insert_canvas_node_with_z_index(
@@ -466,20 +548,29 @@ pub(crate) fn insert_canvas_node_with_z_index(
     let width = value_f64(node, "width").unwrap_or(0.0);
     let height = value_f64(node, "height").unwrap_or(0.0);
     let rotation = value_f64(node, "rotation").unwrap_or(0.0);
-    let z_index = value_i64(node, "zIndex").or_else(|| value_i64(node, "z_index")).unwrap_or(fallback_z_index);
+    let z_index = value_i64(node, "zIndex")
+        .or_else(|| value_i64(node, "z_index"))
+        .unwrap_or(fallback_z_index);
     let mut metadata = node.clone();
     if let Some(object) = metadata.as_object_mut() {
         object.insert("id".to_string(), Value::String(id.clone()));
     }
     if asset_id.is_none() && raw_asset_id.is_some() {
         if let Some(object) = metadata.as_object_mut() {
-            object.insert("orphanAssetId".to_string(), Value::String(raw_asset_id.unwrap_or_default()));
-            object.insert("orphanReason".to_string(), Value::String("canvas asset id could not be matched to assets table".to_string()));
+            object.insert(
+                "orphanAssetId".to_string(),
+                Value::String(raw_asset_id.unwrap_or_default()),
+            );
+            object.insert(
+                "orphanReason".to_string(),
+                Value::String("canvas asset id could not be matched to assets table".to_string()),
+            );
         }
     }
     let metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
-    let updated = conn.execute(
-        r#"
+    let updated = conn
+        .execute(
+            r#"
         UPDATE canvas_nodes
         SET canvas_id = ?2,
             asset_id = ?3,
@@ -494,8 +585,21 @@ pub(crate) fn insert_canvas_node_with_z_index(
             metadata_json = ?11
         WHERE id = ?1 AND canvas_id = ?2
         "#,
-        params![id, canvas_id, asset_id, x, y, width, height, rotation, z_index, now, metadata_json],
-    ).map_err(|err| err.to_string())?;
+            params![
+                id,
+                canvas_id,
+                asset_id,
+                x,
+                y,
+                width,
+                height,
+                rotation,
+                z_index,
+                now,
+                metadata_json
+            ],
+        )
+        .map_err(|err| err.to_string())?;
     if updated == 0 {
         conn.execute(
             r#"
@@ -533,7 +637,10 @@ fn resolve_canvas_asset_id(
     raw_asset_id: Option<&str>,
     item: Option<&Value>,
 ) -> Result<Option<String>, String> {
-    if let Some(id) = raw_asset_id.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(id) = raw_asset_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         if asset_exists(conn, id)? {
             return Ok(Some(id.to_string()));
         }
@@ -542,9 +649,15 @@ fn resolve_canvas_asset_id(
         return Ok(raw_asset_id.map(ToOwned::to_owned));
     };
     for (column, value) in [
-        ("file_path", value_string(item, "path").or_else(|| value_string(item, "url"))),
+        (
+            "file_path",
+            value_string(item, "path").or_else(|| value_string(item, "url")),
+        ),
         ("hash", value_string(item, "hash")),
-        ("quick_hash", value_string(item, "quickHash").or_else(|| value_string(item, "fingerprint"))),
+        (
+            "quick_hash",
+            value_string(item, "quickHash").or_else(|| value_string(item, "fingerprint")),
+        ),
     ] {
         if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
             if let Some(id) = query_asset_id_by_column(conn, column, &value)? {
@@ -572,8 +685,15 @@ fn asset_exists(conn: &Connection, id: &str) -> Result<bool, String> {
     .map_err(|err| err.to_string())
 }
 
-fn query_asset_id_by_column(conn: &Connection, column: &str, value: &str) -> Result<Option<String>, String> {
-    let sql = format!("SELECT id FROM assets WHERE {} = ?1 ORDER BY updated_at DESC LIMIT 1", column);
+fn query_asset_id_by_column(
+    conn: &Connection,
+    column: &str,
+    value: &str,
+) -> Result<Option<String>, String> {
+    let sql = format!(
+        "SELECT id FROM assets WHERE {} = ?1 ORDER BY updated_at DESC LIMIT 1",
+        column
+    );
     match conn.query_row(&sql, params![value], |row| row.get::<_, String>(0)) {
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -581,7 +701,11 @@ fn query_asset_id_by_column(conn: &Connection, column: &str, value: &str) -> Res
     }
 }
 
-fn query_asset_id_by_name_size(conn: &Connection, file_name: &str, file_size: i64) -> Result<Option<String>, String> {
+fn query_asset_id_by_name_size(
+    conn: &Connection,
+    file_name: &str,
+    file_size: i64,
+) -> Result<Option<String>, String> {
     match conn.query_row(
         "SELECT id FROM assets WHERE file_name = ?1 AND file_size = ?2 ORDER BY updated_at DESC LIMIT 1",
         params![file_name, file_size],
@@ -594,11 +718,20 @@ fn query_asset_id_by_name_size(conn: &Connection, file_name: &str, file_size: i6
 }
 
 fn value_string(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()).map(ToOwned::to_owned)
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn value_i64(value: &Value, key: &str) -> Option<i64> {
-    value.get(key).and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|item| item as i64)))
+    value.get(key).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().map(|item| item as i64))
+    })
 }
 
 fn value_f64(value: &Value, key: &str) -> Option<f64> {

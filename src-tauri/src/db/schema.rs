@@ -181,7 +181,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
 
     ensure_canvas_schema_migrations(conn)?;
     ensure_folder_schema_migrations(conn)?;
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(|err| err.to_string())?;
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -253,13 +254,19 @@ fn add_column_if_missing(
     column: &str,
     ty: &str,
 ) -> Result<(), String> {
-    let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1", table.replace('\'', "''"));
+    let sql = format!(
+        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
+        table.replace('\'', "''")
+    );
     let exists: i64 = conn
         .query_row(&sql, rusqlite::params![column], |row| row.get(0))
         .map_err(|err| err.to_string())?;
     if exists == 0 {
-        conn.execute(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, ty), [])
-            .map_err(|err| err.to_string())?;
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, ty),
+            [],
+        )
+        .map_err(|err| err.to_string())?;
     }
     Ok(())
 }

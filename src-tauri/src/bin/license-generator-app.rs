@@ -3,17 +3,22 @@
 // empty Terminal window alongside the app.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{NaiveDate, SecondsFormat, Utc};
 use inspiration_drawer::license::generator::{
     generate_license, public_key_from_private_key, GeneratedLicense, LicenseGeneratorInput,
 };
-use inspiration_drawer::license::types::{LicenseEdition, LicenseFile, LicensePayload};
+use inspiration_drawer::license::types::{
+    LicenseAiAccess, LicenseEdition, LicenseFile, LicensePayload, ManagedApiProfile,
+};
 use inspiration_drawer::license::verifier::verify_license_content_with_key;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::Manager;
 
 const SIGNING_KEY_FILE_NAME: &str = "signing-key.json";
@@ -29,6 +34,8 @@ struct LicenseGeneratorRequest {
     #[serde(default)]
     features: Vec<String>,
     product: Option<String>,
+    #[serde(default)]
+    ai_access: Option<LicenseAiAccess>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -62,6 +69,28 @@ struct AuthorizationRecord {
     #[serde(default = "default_issue_count")]
     issue_count: u32,
     last_output_path: Option<String>,
+    #[serde(default)]
+    ai_mode: Option<String>,
+    #[serde(default)]
+    managed_provider: Option<String>,
+    #[serde(default)]
+    managed_base_url: Option<String>,
+    #[serde(default)]
+    managed_model: Option<String>,
+    #[serde(default)]
+    api_key_last4: Option<String>,
+    #[serde(default)]
+    api_key_fingerprint: Option<String>,
+    #[serde(default)]
+    canvas_provider: Option<String>,
+    #[serde(default)]
+    canvas_base_url: Option<String>,
+    #[serde(default)]
+    canvas_model: Option<String>,
+    #[serde(default)]
+    canvas_api_key_last4: Option<String>,
+    #[serde(default)]
+    canvas_api_key_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -96,8 +125,81 @@ struct ImportedLicensesResult {
     failures: Vec<LicenseImportFailure>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedApiProbeResult {
+    ok: bool,
+    message: String,
+    detail: Option<String>,
+}
+
 fn default_issue_count() -> u32 {
     1
+}
+
+fn api_key_last4(api_key: &str) -> Option<String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(4);
+    Some(chars[start..].iter().collect())
+}
+
+fn api_key_fingerprint(api_key: &str) -> Option<String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(trimmed.as_bytes());
+    Some(hex::encode(hasher.finalize()))
+}
+
+fn ai_record_fields(
+    payload: &LicensePayload,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let Some(access) = payload.ai_access.as_ref() else {
+        return (
+            None, None, None, None, None, None, None, None, None, None, None,
+        );
+    };
+    let profile = access.managed_profile.as_ref();
+    let canvas_profile = access.canvas_profile.as_ref();
+    (
+        Some(
+            match access.mode {
+                inspiration_drawer::license::types::AiCredentialMode::Byok => "byok",
+                inspiration_drawer::license::types::AiCredentialMode::LicenseManaged => {
+                    "license_managed"
+                }
+            }
+            .to_string(),
+        ),
+        profile.map(|value| value.provider.clone()),
+        profile.map(|value| value.base_url.clone()),
+        profile.map(|value| value.model.clone()),
+        profile.and_then(|value| api_key_last4(&value.api_key)),
+        profile.and_then(|value| api_key_fingerprint(&value.api_key)),
+        canvas_profile.map(|value| value.provider.clone()),
+        canvas_profile.map(|value| value.base_url.clone()),
+        canvas_profile.map(|value| value.model.clone()),
+        canvas_profile.and_then(|value| api_key_last4(&value.api_key)),
+        canvas_profile.and_then(|value| api_key_fingerprint(&value.api_key)),
+    )
 }
 
 fn generator_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -170,6 +272,19 @@ fn upsert_authorization_record(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let (
+        ai_mode,
+        managed_provider,
+        managed_base_url,
+        managed_model,
+        api_key_last4,
+        api_key_fingerprint,
+        canvas_provider,
+        canvas_base_url,
+        canvas_model,
+        canvas_api_key_last4,
+        canvas_api_key_fingerprint,
+    ) = ai_record_fields(payload);
 
     if let Some(record) = records_file.records.iter_mut().find(|record| {
         record.product.eq_ignore_ascii_case(&payload.product)
@@ -181,6 +296,17 @@ fn upsert_authorization_record(
         record.expire_at = payload.expire_at.clone();
         record.updated_at = now.to_string();
         record.issue_count = record.issue_count.saturating_add(1);
+        record.ai_mode = ai_mode;
+        record.managed_provider = managed_provider;
+        record.managed_base_url = managed_base_url;
+        record.managed_model = managed_model;
+        record.api_key_last4 = api_key_last4;
+        record.api_key_fingerprint = api_key_fingerprint;
+        record.canvas_provider = canvas_provider;
+        record.canvas_base_url = canvas_base_url;
+        record.canvas_model = canvas_model;
+        record.canvas_api_key_last4 = canvas_api_key_last4;
+        record.canvas_api_key_fingerprint = canvas_api_key_fingerprint;
         if output_path.is_some() {
             record.last_output_path = output_path;
         }
@@ -196,6 +322,17 @@ fn upsert_authorization_record(
             updated_at: now.to_string(),
             issue_count: 1,
             last_output_path: output_path,
+            ai_mode,
+            managed_provider,
+            managed_base_url,
+            managed_model,
+            api_key_last4,
+            api_key_fingerprint,
+            canvas_provider,
+            canvas_base_url,
+            canvas_model,
+            canvas_api_key_last4,
+            canvas_api_key_fingerprint,
         });
     }
 
@@ -208,6 +345,20 @@ fn merge_imported_authorization_record(
     source_path: &str,
     now: &str,
 ) -> bool {
+    let (
+        ai_mode,
+        managed_provider,
+        managed_base_url,
+        managed_model,
+        api_key_last4,
+        api_key_fingerprint,
+        canvas_provider,
+        canvas_base_url,
+        canvas_model,
+        canvas_api_key_last4,
+        canvas_api_key_fingerprint,
+    ) = ai_record_fields(payload);
+
     if let Some(record) = records_file.records.iter_mut().find(|record| {
         record.product.eq_ignore_ascii_case(&payload.product)
             && record.machine_id.eq_ignore_ascii_case(&payload.machine_id)
@@ -218,6 +369,17 @@ fn merge_imported_authorization_record(
         record.expire_at = payload.expire_at.clone();
         record.updated_at = now.to_string();
         record.last_output_path = Some(source_path.to_string());
+        record.ai_mode = ai_mode;
+        record.managed_provider = managed_provider;
+        record.managed_base_url = managed_base_url;
+        record.managed_model = managed_model;
+        record.api_key_last4 = api_key_last4;
+        record.api_key_fingerprint = api_key_fingerprint;
+        record.canvas_provider = canvas_provider;
+        record.canvas_base_url = canvas_base_url;
+        record.canvas_model = canvas_model;
+        record.canvas_api_key_last4 = canvas_api_key_last4;
+        record.canvas_api_key_fingerprint = canvas_api_key_fingerprint;
         return false;
     }
 
@@ -232,6 +394,17 @@ fn merge_imported_authorization_record(
         updated_at: now.to_string(),
         issue_count: 1,
         last_output_path: Some(source_path.to_string()),
+        ai_mode,
+        managed_provider,
+        managed_base_url,
+        managed_model,
+        api_key_last4,
+        api_key_fingerprint,
+        canvas_provider,
+        canvas_base_url,
+        canvas_model,
+        canvas_api_key_last4,
+        canvas_api_key_fingerprint,
     });
     records_file.version = 1;
     true
@@ -433,6 +606,169 @@ fn import_issued_licenses(
     })
 }
 
+fn sanitize_probe_profile(profile: ManagedApiProfile) -> Result<ManagedApiProfile, String> {
+    let provider = profile.provider.trim().to_string();
+    let base_url = profile.base_url.trim().trim_end_matches('/').to_string();
+    let api_key = profile.api_key.trim().to_string();
+    let model = profile.model.trim().to_string();
+    if provider.is_empty() || base_url.is_empty() || api_key.is_empty() || model.is_empty() {
+        return Err("请先填写 Provider、API Base URL、API Key 和模型".to_string());
+    }
+    let headers = profile
+        .headers
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = key.trim().to_string();
+            let value = value.trim().to_string();
+            (!key.is_empty() && !value.is_empty()).then_some((key, value))
+        })
+        .collect();
+    Ok(ManagedApiProfile {
+        provider,
+        base_url,
+        api_key,
+        model,
+        headers,
+    })
+}
+
+fn apply_probe_headers(
+    mut request: reqwest::blocking::RequestBuilder,
+    headers: &BTreeMap<String, String>,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    for (key, value) in headers {
+        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| format!("Header 名称无效：{}", key))?;
+        let value = reqwest::header::HeaderValue::from_str(value)
+            .map_err(|_| format!("Header 值无效：{}", key))?;
+        request = request.header(name, value);
+    }
+    Ok(request)
+}
+
+fn trim_probe_base_url(base_url: &str) -> String {
+    let mut value = base_url.trim().trim_end_matches('/').to_string();
+    for suffix in [
+        "/v1/chat/completions",
+        "/v1/images/generations",
+        "/v1/images/edits",
+        "/v1/models",
+        "/chat/completions",
+        "/images/generations",
+        "/images/edits",
+        "/models",
+        "/xais/userProfile",
+        "/xais",
+    ] {
+        if value
+            .to_ascii_lowercase()
+            .ends_with(&suffix.to_ascii_lowercase())
+        {
+            value.truncate(value.len().saturating_sub(suffix.len()));
+            value = value.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    value
+}
+
+fn probe_models_url(base_url: &str) -> String {
+    let mut base = trim_probe_base_url(base_url);
+    if !base.to_ascii_lowercase().ends_with("/v1") {
+        base = format!("{}/v1", base);
+    }
+    format!("{}/models", base)
+}
+
+fn probe_xais_user_profile_url(base_url: &str) -> String {
+    let base = trim_probe_base_url(base_url);
+    format!("{}/xais/userProfile", base)
+}
+
+fn probe_get_json(profile: &ManagedApiProfile, url: &str) -> Result<serde_json::Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|err| format!("创建 HTTP 客户端失败：{err}"))?;
+    let request = client
+        .get(url)
+        .bearer_auth(profile.api_key.trim())
+        .header("accept", "application/json, text/plain, */*");
+    let response = apply_probe_headers(request, &profile.headers)?
+        .send()
+        .map_err(|err| format!("请求失败：{err}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|err| format!("读取响应失败：{err}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "HTTP {}：{}",
+            status.as_u16(),
+            text.chars().take(240).collect::<String>()
+        ));
+    }
+    serde_json::from_str(&text).map_err(|err| {
+        format!(
+            "响应不是有效 JSON：{}；原始返回：{}",
+            err,
+            text.chars().take(240).collect::<String>()
+        )
+    })
+}
+
+#[tauri::command]
+fn test_managed_api_connection(
+    profile: ManagedApiProfile,
+) -> Result<ManagedApiProbeResult, String> {
+    let profile = sanitize_probe_profile(profile)?;
+    let url = probe_models_url(&profile.base_url);
+    let value = probe_get_json(&profile, &url)?;
+    let count = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .map(|items| items.len())
+        .or_else(|| {
+            value
+                .get("models")
+                .and_then(|models| models.as_array())
+                .map(|items| items.len())
+        });
+    Ok(ManagedApiProbeResult {
+        ok: true,
+        message: count
+            .map(|count| format!("连接成功，读取到 {count} 个模型"))
+            .unwrap_or_else(|| "连接成功".to_string()),
+        detail: Some(url),
+    })
+}
+
+#[tauri::command]
+fn query_managed_api_balance(profile: ManagedApiProfile) -> Result<ManagedApiProbeResult, String> {
+    let profile = sanitize_probe_profile(profile)?;
+    if profile.provider.trim() != "xais-chat" {
+        return Ok(ManagedApiProbeResult {
+            ok: false,
+            message: "当前 Provider 未内置余额查询接口，请使用测试连接验证可用性".to_string(),
+            detail: None,
+        });
+    }
+    let url = probe_xais_user_profile_url(&profile.base_url);
+    let value = probe_get_json(&profile, &url)?;
+    let balance = value.get("balance").and_then(|balance| {
+        balance
+            .as_f64()
+            .or_else(|| balance.as_str()?.parse::<f64>().ok())
+    });
+    Ok(ManagedApiProbeResult {
+        ok: balance.is_some(),
+        message: balance
+            .map(|balance| format!("余额：{:.2}", balance / 10000.0))
+            .unwrap_or_else(|| "接口未返回 balance 字段".to_string()),
+        detail: Some(url),
+    })
+}
+
 #[tauri::command]
 fn generate_license_file(
     app_handle: tauri::AppHandle,
@@ -448,6 +784,7 @@ fn generate_license_file(
         expire_at: input.expire_at,
         features: input.features,
         product: input.product,
+        ai_access: input.ai_access,
     })?;
     if generated.public_key_b64 != expected_public_key {
         return Err("签发密钥校验失败".to_string());
@@ -496,6 +833,8 @@ fn main() {
             get_authorization_registry,
             import_generator_signing_key,
             import_issued_licenses,
+            test_managed_api_connection,
+            query_managed_api_balance,
             generate_license_file
         ])
         .run(tauri::generate_context!("tauri.generator.conf.json"))
@@ -514,6 +853,7 @@ mod tests {
             edition: LicenseEdition::Pro,
             features: vec!["*".to_string()],
             expire_at: expire_at.to_string(),
+            ai_access: None,
         }
     }
 
@@ -581,6 +921,7 @@ mod tests {
             expire_at: "2025-01-01".to_string(),
             features: vec!["*".to_string()],
             product: Some("Inspiration Drawer".to_string()),
+            ai_access: None,
         })
         .unwrap();
 
@@ -627,5 +968,52 @@ mod tests {
             file.records[0].last_output_path.as_deref(),
             Some("D:\\archive\\customer-a.license.json")
         );
+    }
+
+    #[test]
+    fn authorization_record_never_stores_full_managed_api_key() {
+        let mut file = AuthorizationRecordsFile {
+            version: 1,
+            records: Vec::new(),
+        };
+        let mut managed = payload("customer", "MACHINE-A", "2027-06-29");
+        managed.edition = LicenseEdition::Enterprise;
+        managed.ai_access = Some(LicenseAiAccess {
+            mode: inspiration_drawer::license::types::AiCredentialMode::LicenseManaged,
+            allow_user_api: false,
+            managed_profile: Some(inspiration_drawer::license::types::ManagedApiProfile {
+                provider: "xais-chat".to_string(),
+                base_url: "https://api.example.com/v1".to_string(),
+                api_key: "sk-managed-super-secret".to_string(),
+                model: "gpt-4.1".to_string(),
+                headers: Default::default(),
+            }),
+            canvas_profile: Some(inspiration_drawer::license::types::ManagedApiProfile {
+                provider: "xais-chat".to_string(),
+                base_url: "https://canvas.example.com".to_string(),
+                api_key: "sk-canvas-super-secret".to_string(),
+                model: "Xais Nano Pro_2K".to_string(),
+                headers: Default::default(),
+            }),
+        });
+
+        upsert_authorization_record(&mut file, &managed, None, "2026-06-29T10:00:00Z");
+        let serialized = serde_json::to_string(&file).unwrap();
+
+        assert!(!serialized.contains("sk-managed-super-secret"));
+        assert!(!serialized.contains("sk-canvas-super-secret"));
+        assert_eq!(file.records[0].api_key_last4.as_deref(), Some("cret"));
+        assert_eq!(
+            file.records[0].canvas_api_key_last4.as_deref(),
+            Some("cret")
+        );
+        assert_eq!(file.records[0].ai_mode.as_deref(), Some("license_managed"));
+        assert_eq!(file.records[0].managed_model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(
+            file.records[0].canvas_model.as_deref(),
+            Some("Xais Nano Pro_2K")
+        );
+        assert!(file.records[0].api_key_fingerprint.is_some());
+        assert!(file.records[0].canvas_api_key_fingerprint.is_some());
     }
 }

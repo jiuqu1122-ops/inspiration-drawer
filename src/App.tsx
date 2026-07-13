@@ -78,6 +78,41 @@ import {
   type ImageRuleDefaultContext,
 } from './features/appAgent/imageQuality/imageRuleDefaults';
 import { buildFinalImagePrompt } from './features/appAgent/imageQuality/imageRulePromptBuilder';
+
+type VirtualDropStatus =
+  | 'queued'
+  | 'inspecting'
+  | 'reading'
+  | 'writing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out';
+
+type VirtualDropPayload = {
+  job_id?: string;
+  jobId?: string;
+  status?: VirtualDropStatus;
+  file_name?: string | null;
+  fileName?: string | null;
+  loaded?: number;
+  total?: number | null;
+  progress?: number | null;
+  message?: string | null;
+  path?: string | null;
+  paths?: string[];
+};
+
+type VirtualDropUiJob = {
+  id: string;
+  status: VirtualDropStatus;
+  fileName: string;
+  loaded: number;
+  total?: number;
+  progress?: number;
+  message?: string;
+  createdAt: number;
+};
 import {
   flattenDrawerFolderTree,
   getDrawerFolderDeletionPlan,
@@ -513,6 +548,18 @@ type LicenseStatus = {
   edition?: LicenseEdition | null;
   expire_at?: string | null;
   features: string[];
+  ai_access?: {
+    mode: 'byok' | 'license_managed';
+    allow_user_api: boolean;
+    managed_provider?: string | null;
+    managed_base_url?: string | null;
+    managed_model?: string | null;
+    api_key_last4?: string | null;
+    canvas_provider?: string | null;
+    canvas_base_url?: string | null;
+    canvas_model?: string | null;
+    canvas_api_key_last4?: string | null;
+  } | null;
   message?: string | null;
   error_code?: LicenseErrorCode | null;
 };
@@ -521,14 +568,14 @@ const LICENSE_STATE_LABELS: Record<LicenseState, string> = {
   unlicensed: '未授权',
   trial: '试用版',
   pro: '专业版',
-  enterprise: '企业版',
+  enterprise: '高级版',
   expired: '已过期',
 };
 
 const LICENSE_EDITION_LABELS: Record<LicenseEdition, string> = {
   trial: '试用版',
   pro: '专业版',
-  enterprise: '企业版',
+  enterprise: '高级版',
 };
 
 const LICENSE_FEATURE_LABELS: Record<string, string> = {
@@ -1039,51 +1086,24 @@ const DRAWER_FOLDER_TONES = [
   },
 ];
 const DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY = 'drawer_collapsed_folder_ids';
+const FOLDERS_CACHE_UPDATED_AT_STORAGE_KEY = `${FOLDERS_CACHE_STORAGE_KEY}_updated_at`;
 const normalizeDrawerSidebarLayout = (value: string | null): DrawerSidebarLayout => (
   value === 'icons' ? 'icons' : 'folders'
 );
-const readFoldersFromCache = (): Folder[] => {
+const readFoldersFromCache = (): { folders: Folder[]; isValid: boolean; updatedAt: number } => {
+  const raw = localStorage.getItem(FOLDERS_CACHE_STORAGE_KEY);
+  const updatedAt = Number(localStorage.getItem(FOLDERS_CACHE_UPDATED_AT_STORAGE_KEY) || 0) || 0;
+  if (raw === null) return { folders: [], isValid: false, updatedAt };
   try {
-    const parsed = JSON.parse(localStorage.getItem(FOLDERS_CACHE_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(raw);
+    return {
+      folders: Array.isArray(parsed) ? parsed : [],
+      isValid: Array.isArray(parsed),
+      updatedAt,
+    };
   } catch (_) {
-    return [];
+    return { folders: [], isValid: false, updatedAt };
   }
-};
-const scoreRestoredFolders = (folders: Folder[]) => {
-  const ids = new Set(folders.map(folder => folder.id));
-  const childLinks = folders.filter(folder => folder.parentId && ids.has(folder.parentId)).length;
-  return folders.length * 100 + childLinks * 1000;
-};
-const restoredFolderParentScore = (folder: Folder, ids: Set<string>) => {
-  if (!folder.parentId) return 0;
-  return ids.has(folder.parentId) ? 2 : 1;
-};
-const mergeRestoredFolderCandidates = (primary: Folder[], candidates: Folder[][]) => {
-  const mergedById = new Map<string, { folder: Folder; parentScore: number }>();
-  const orderedIds: string[] = [];
-  const applyCandidate = (candidate: Folder[]) => {
-    const ids = new Set(candidate.map(folder => folder.id));
-    candidate.forEach(folder => {
-      if (!folder.id) return;
-      const parentScore = restoredFolderParentScore(folder, ids);
-      const existing = mergedById.get(folder.id);
-      if (!existing) {
-        orderedIds.push(folder.id);
-        mergedById.set(folder.id, { folder, parentScore });
-        return;
-      }
-      if (parentScore > existing.parentScore) {
-        mergedById.set(folder.id, { folder, parentScore });
-      }
-    });
-  };
-
-  applyCandidate(primary);
-  candidates.forEach(candidate => {
-    applyCandidate(candidate);
-  });
-  return normalizeDrawerFolders(orderedIds.map(id => mergedById.get(id)!.folder));
 };
 const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
 const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
@@ -1845,8 +1865,9 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
     const rawTextInputIds = Array.isArray(step.textInputStepIds)
       ? step.textInputStepIds.map(String).filter(Boolean)
       : [];
+    const strategyTextInputIds = rawTextInputIds.filter(inputId => inputId === strategyStepId);
     const textInputIds = strategyStepId
-      ? rawTextInputIds.filter(inputId => inputId === strategyStepId)
+      ? (strategyTextInputIds.length > 0 ? strategyTextInputIds : [strategyStepId])
       : [];
     const inputs = Array.from(new Set([
       ...(visualInputIds.includes(productInputId) ? visualInputIds : [productInputId, ...visualInputIds]),
@@ -3948,8 +3969,6 @@ function MainApp() {
   const [drawerAgentInput, setDrawerAgentInput] = useState('');
   const [canvasTextAgentRunningIds, setCanvasTextAgentRunningIds] = useState<string[]>([]);
   const [canvasAgentSidebarWidth, setCanvasAgentSidebarWidth] = useState(readAgentSidebarWidth);
-  const [showCanvasExitPrompt, setShowCanvasExitPrompt] = useState(false);
-  const [canvasExitPromptStep, setCanvasExitPromptStep] = useState<'choice' | 'save'>('choice');
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
   const [canvasViewport, setCanvasViewport] = useState<CanvasViewportRect | null>(null);
   const [canvases, setCanvases] = useState<CanvasRecord[]>([]);
@@ -4664,6 +4683,7 @@ function MainApp() {
 
   const [toast, setToast] = useState({ show: false, msg: '' });
   const toastTimerRef = useRef<any | null>(null);
+  const [virtualDropJobs, setVirtualDropJobs] = useState<VirtualDropUiJob[]>([]);
   const [appVersion, setAppVersion] = useState('');
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
   const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
@@ -4680,6 +4700,23 @@ function MainApp() {
     setToast({ show: true, msg });
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast({ show: false, msg: '' }), 2500);
+  };
+
+  const formatVirtualDropBytes = (value?: number | null) => {
+    const bytes = Math.max(0, Number(value || 0));
+    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${Math.round(bytes)} B`;
+  };
+
+  const cancelVirtualDropJob = (jobId: string) => {
+    setVirtualDropJobs(prev => prev.map(job => (
+      job.id === jobId ? { ...job, message: 'Cancelling...' } : job
+    )));
+    invoke('cancel_virtual_drop', { jobId }).catch((err) => {
+      console.warn('cancel virtual drop failed:', err);
+      showToast('取消网页图片导入失败');
+    });
   };
 
   const toggleDrawerSidebarLayout = () => {
@@ -5857,12 +5894,28 @@ function MainApp() {
       return next.length === prev.length ? prev : next;
     });
   }, [canvasWorkflowTemplates]);
-  const canvasAiRemoteModelCount = canvasAiProvider === 'xais-chat'
+  const licenseAiAccess = licenseStatus?.valid ? licenseStatus.ai_access : null;
+  const isAgentAiLicenseManaged = licenseAiAccess?.mode === 'license_managed';
+  const isCanvasAiLicenseManaged = licenseAiAccess?.mode === 'license_managed'
+    && !!licenseAiAccess.canvas_provider
+    && !!licenseAiAccess.canvas_base_url
+    && !!licenseAiAccess.canvas_model;
+  const managedCanvasAiProvider = normalizeCanvasAiProvider(licenseAiAccess?.canvas_provider || '');
+  const effectiveCanvasAiProvider = isCanvasAiLicenseManaged ? managedCanvasAiProvider : canvasAiProvider;
+  const effectiveCanvasAiEndpoint = isCanvasAiLicenseManaged
+    ? String(licenseAiAccess?.canvas_base_url || '').trim()
+    : canvasAiEndpoint;
+  const effectiveCanvasAiModel = isCanvasAiLicenseManaged
+    ? String(licenseAiAccess?.canvas_model || '').trim()
+    : '';
+  const canvasAiHasApiCredential = isCanvasAiLicenseManaged || !!canvasAiApiKey.trim();
+  const managedCanvasAiProviderLabel = '由高级版授权决定';
+  const canvasAiRemoteModelCount = effectiveCanvasAiProvider === 'xais-chat'
     ? canvasAiXaisModels.length
-    : canvasAiProvider === 'new-api'
+    : effectiveCanvasAiProvider === 'new-api'
       ? canvasAiNewApiModels.length
     : canvasAiOpenAiModels.length;
-  const canvasAiRemoteModelEmptyHint = canvasAiProvider === 'xais-chat'
+  const canvasAiRemoteModelEmptyHint = effectiveCanvasAiProvider === 'xais-chat'
     ? '填入 Key 后自动读取 /v1/models'
     : '填入 Key 和 URL 后自动刷新';
   const canvasAiXaisBalanceText = canvasAiXaisBalance.status === 'success'
@@ -5874,19 +5927,19 @@ function MainApp() {
         : '点击查询当前 Xais 剩余积分';
 
   useEffect(() => {
-    if (canvasAiProvider !== 'xais-chat') {
+    if (effectiveCanvasAiProvider !== 'xais-chat') {
       setCanvasAiXaisBalance({ status: 'idle' });
       return;
     }
     setCanvasAiXaisBalance(prev => (
       prev.status === 'loading' ? prev : { status: 'idle' }
     ));
-  }, [canvasAiProvider, canvasAiApiKey, canvasAiEndpoint]);
+  }, [effectiveCanvasAiProvider, canvasAiApiKey, effectiveCanvasAiEndpoint, isCanvasAiLicenseManaged]);
 
   const checkCanvasAiXaisBalance = async () => {
-    if (canvasAiProvider !== 'xais-chat') return;
-    const apiKey = canvasAiApiKey.trim();
-    if (!apiKey) {
+    if (effectiveCanvasAiProvider !== 'xais-chat') return;
+    const apiKey = isCanvasAiLicenseManaged ? '' : canvasAiApiKey.trim();
+    if (!apiKey && !isCanvasAiLicenseManaged) {
       setCanvasAiXaisBalance({ status: 'error', message: '请先填写 Xais API Key' });
       showToast('请先填写 Xais API Key');
       return;
@@ -5895,8 +5948,10 @@ function MainApp() {
     setCanvasAiXaisBalance({ status: 'loading' });
     try {
       const profile = await invoke<Record<string, unknown>>('get_ai_json', {
-        url: getCanvasAiXaisUserProfileEndpoint(canvasAiEndpoint),
+        url: getCanvasAiXaisUserProfileEndpoint(effectiveCanvasAiEndpoint || canvasAiEndpoint),
         apiKey,
+        provider: effectiveCanvasAiProvider,
+        model: effectiveCanvasAiModel,
       });
       const rawBalance = profile?.balance;
       const balance = typeof rawBalance === 'number' ? rawBalance : Number(rawBalance);
@@ -5920,18 +5975,20 @@ function MainApp() {
   };
 
   const refreshCanvasAiOpenAiModels = async (silent = false) => {
-    if (!isCanvasAiRemoteModelProvider(canvasAiProvider)) return;
-    const provider = canvasAiProvider;
-    const endpoint = getCanvasAiEndpointForModels(provider, canvasAiEndpoint);
-    const apiKey = canvasAiApiKey.trim();
-    if (!endpoint || !apiKey) return;
-    canvasAiModelRefreshSignatureRef.current = `${provider}\n${endpoint}\n${apiKey}`;
+    if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) return;
+    const provider = effectiveCanvasAiProvider;
+    const endpoint = getCanvasAiEndpointForModels(provider, effectiveCanvasAiEndpoint || canvasAiEndpoint);
+    const apiKey = isCanvasAiLicenseManaged ? '' : canvasAiApiKey.trim();
+    if (!endpoint || (!apiKey && !isCanvasAiLicenseManaged)) return;
+    canvasAiModelRefreshSignatureRef.current = `${provider}\n${endpoint}\n${apiKey}\n${effectiveCanvasAiModel}`;
     setIsRefreshingCanvasAiOpenAiModels(true);
     setCanvasAiOpenAiModelError('');
     try {
       const models = await invoke<string[]>('get_openai_compatible_models', {
         endpoint,
         apiKey,
+        provider,
+        model: effectiveCanvasAiModel,
       });
       const rawModels = (models || []).map(model => model.trim()).filter(Boolean);
       const normalized = provider === 'xais-chat'
@@ -5981,24 +6038,24 @@ function MainApp() {
 
   useEffect(() => {
     if (!isCanvasMode) return;
-    if (!isCanvasAiRemoteModelProvider(canvasAiProvider)) {
+    if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
-    const apiKey = canvasAiApiKey.trim();
-    const endpoint = getCanvasAiEndpointForModels(canvasAiProvider, canvasAiEndpoint).trim();
-    if (!apiKey || !endpoint) {
+    const apiKey = isCanvasAiLicenseManaged ? '' : canvasAiApiKey.trim();
+    const endpoint = getCanvasAiEndpointForModels(effectiveCanvasAiProvider, effectiveCanvasAiEndpoint || canvasAiEndpoint).trim();
+    if ((!apiKey && !isCanvasAiLicenseManaged) || !endpoint) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
-    const signature = `${canvasAiProvider}\n${endpoint}\n${apiKey}`;
+    const signature = `${effectiveCanvasAiProvider}\n${endpoint}\n${apiKey}\n${effectiveCanvasAiModel}`;
     if (canvasAiModelRefreshSignatureRef.current === signature) return;
     const timer = window.setTimeout(() => {
       canvasAiModelRefreshSignatureRef.current = signature;
       void refreshCanvasAiOpenAiModels(true);
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [isCanvasMode, canvasAiProvider, canvasAiApiKey, canvasAiEndpoint]);
+  }, [isCanvasMode, effectiveCanvasAiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiEndpoint, isCanvasAiLicenseManaged]);
 
   const getAiAnalysisConfig = (): AiAnalysisConfig => ({
     provider: aiApiProvider,
@@ -8947,34 +9004,39 @@ function MainApp() {
     };
     void restoreActiveCanvas();
     const restoreFolders = async () => {
-      const candidates: Folder[][] = [];
+      const cachedSnapshot = readFoldersFromCache();
+      const cachedFolders = cachedSnapshot.isValid
+        ? normalizeDrawerFolders(cachedSnapshot.folders)
+        : [];
+      let restoredFolders: Folder[] | null = null;
+      let restoredFromTrustedCache = false;
       try {
         const savedFolders = await invoke('load_folders');
         if (Array.isArray(savedFolders) && savedFolders.length > 0) {
-          candidates.push(normalizeDrawerFolders(savedFolders));
+          restoredFolders = normalizeDrawerFolders(savedFolders);
         }
       } catch (err) {
         console.warn('恢复旧文件夹状态失败，尝试后端文件夹:', err);
       }
       try {
-        const backendFolders = await listFolders(DEFAULT_LIBRARY_ID);
-        if (backendFolders && backendFolders.length > 0) {
-          candidates.push(normalizeDrawerFolders(backendFolders));
+        if (!restoredFolders || restoredFolders.length === 0) {
+          const backendFolders = await listFolders(DEFAULT_LIBRARY_ID);
+          if (backendFolders && backendFolders.length > 0) {
+            restoredFolders = normalizeDrawerFolders(backendFolders);
+          }
         }
       } catch (err) {
         console.warn('恢复后端文件夹失败:', err);
       } finally {
-        const cachedFolders = normalizeDrawerFolders(readFoldersFromCache());
-        if (cachedFolders.length > 0) {
-          candidates.push(cachedFolders);
+        if (cachedSnapshot.isValid && cachedSnapshot.updatedAt > 0) {
+          restoredFolders = cachedFolders;
+          restoredFromTrustedCache = true;
+        } else if ((!restoredFolders || restoredFolders.length === 0) && cachedFolders.length > 0) {
+          restoredFolders = cachedFolders;
         }
-        const bestFolders = candidates
-          .filter(candidate => candidate.length > 0)
-          .sort((left, right) => scoreRestoredFolders(right) - scoreRestoredFolders(left))[0];
-        if (bestFolders && bestFolders.length > 0) {
-          const mergedFolders = mergeRestoredFolderCandidates(bestFolders, candidates);
+        if (restoredFromTrustedCache || (restoredFolders && restoredFolders.length > 0)) {
           hasRestoredNonEmptyFoldersRef.current = true;
-          setFolders(mergedFolders);
+          setFolders(restoredFolders || []);
         }
         setIsFoldersLoaded(true);
       }
@@ -9030,7 +9092,10 @@ function MainApp() {
       return;
     }
     localStorage.setItem(FOLDERS_CACHE_STORAGE_KEY, JSON.stringify(nextFolders));
-    invoke('save_folders', { folders: nextFolders, allowEmpty: true, allow_empty: true }).catch(()=>{});
+    localStorage.setItem(FOLDERS_CACHE_UPDATED_AT_STORAGE_KEY, String(Date.now()));
+    invoke('save_folders', { folders: nextFolders, allowEmpty: true, allow_empty: true }).catch(err => {
+      console.warn('保存文件夹树失败:', err);
+    });
     replaceFolders(nextFolders, DEFAULT_LIBRARY_ID).catch(err => {
       console.warn('同步文件夹树到后端失败:', err);
     });
@@ -11441,35 +11506,80 @@ function MainApp() {
     }
   };
 
+  const moveCanvasPageToTrash = async (canvas: CanvasRecord) => {
+    if (canvas.id === activeCanvasIdRef.current) {
+      await saveCurrentCanvasBeforeSwitch();
+    }
+    const result = await softDeleteCanvas(canvas.id);
+    const canvasList = await refreshCanvases();
+    const nextCanvasId = result.activeCanvasId || canvasList.find(item => item.isActive)?.id || canvasList[0]?.id || DEFAULT_CANVAS_ID;
+    if (canvas.id === activeCanvasIdRef.current || nextCanvasId !== activeCanvasIdRef.current) {
+      activeCanvasIdRef.current = nextCanvasId;
+      setActiveCanvasId(nextCanvasId);
+      await loadCanvasItems(nextCanvasId);
+    }
+    if (isCanvasTrashOpen) {
+      await refreshDeletedCanvases();
+    }
+  };
+
+  const saveCanvasPageElementsToDrawer = async (canvas: CanvasRecord) => {
+    if (canvas.id === activeCanvasIdRef.current) {
+      await saveCurrentCanvasBeforeSwitch();
+      return copyCanvasItemsToDrawerFolder(canvasItemsRef.current, canvas);
+    }
+    const nodes = await listCanvasNodes(canvas.id);
+    const restored = sanitizeCanvasPersistedState({ items: nodes });
+    return copyCanvasItemsToDrawerFolder(restored.items, canvas);
+  };
+
   const confirmSoftDeleteCanvasPage = (canvas: CanvasRecord) => {
     setCanvasActionMenuId(null);
+    const knownItemCount = canvas.id === activeCanvasIdRef.current ? canvasItemsRef.current.length : null;
+    const itemCountPrefix = typeof knownItemCount === 'number'
+      ? `当前画布有 ${knownItemCount} 个元素。`
+      : '';
     setConfirmDialog({
       isOpen: true,
       title: '删除画布',
-      message: '该画布会被移动到回收站，不会删除素材文件。你可以之后从回收站恢复。',
-      onConfirm: async () => {
-        closeConfirmDialog();
-        try {
-          if (canvas.id === activeCanvasIdRef.current) {
-            await saveCurrentCanvasBeforeSwitch();
-          }
-          const result = await softDeleteCanvas(canvas.id);
-          const canvasList = await refreshCanvases();
-          const nextCanvasId = result.activeCanvasId || canvasList.find(item => item.isActive)?.id || canvasList[0]?.id || DEFAULT_CANVAS_ID;
-          if (canvas.id === activeCanvasIdRef.current || nextCanvasId !== activeCanvasIdRef.current) {
-            activeCanvasIdRef.current = nextCanvasId;
-            setActiveCanvasId(nextCanvasId);
-            await loadCanvasItems(nextCanvasId);
-          }
-          if (isCanvasTrashOpen) {
-            await refreshDeletedCanvases();
-          }
-          showToast('画布已移到回收站');
-        } catch (err) {
-          console.warn('删除画布失败:', err);
-          showToast('删除画布失败');
-        }
-      },
+      message: `${itemCountPrefix}删除「${canvas.name || '画布'}」前，可以先把这个画布里的元素复制到抽屉；也可以不保存，直接移到回收站。`,
+      onConfirm: () => {},
+      actions: [
+        {
+          label: '不保存，删除',
+          className: 'rounded-[16px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/45',
+          onClick: async () => {
+            closeConfirmDialog();
+            try {
+              await moveCanvasPageToTrash(canvas);
+              showToast('画布已移到回收站');
+            } catch (err) {
+              console.warn('删除画布失败:', err);
+              showToast('删除画布失败');
+            }
+          },
+        },
+        {
+          label: '保存元素并删除',
+          className: 'rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-blue-600',
+          onClick: async () => {
+            closeConfirmDialog();
+            let savedResult: { savedCount: number; folderName: string } | null = null;
+            try {
+              savedResult = await saveCanvasPageElementsToDrawer(canvas);
+              await moveCanvasPageToTrash(canvas);
+              if (savedResult.savedCount > 0) {
+                showToast(`已保存 ${savedResult.savedCount} 个元素到「${savedResult.folderName}」，画布已移到回收站`);
+              } else {
+                showToast('该画布没有可保存的元素，已移到回收站');
+              }
+            } catch (err) {
+              console.warn('保存并删除画布失败:', err);
+              showToast(savedResult ? '画布元素已保存，但删除失败' : '保存画布元素失败，已取消删除');
+            }
+          },
+        },
+      ],
     });
   };
 
@@ -13980,12 +14090,30 @@ function MainApp() {
   const getCanvasTextInputsForNode = (
     canvasItem: CanvasImageItem,
     sourceItems: CanvasImageItem[] = canvasItemsRef.current
-  ) => (
+  ) => {
+    const textInputs: string[] = [];
+    const seenTextKeys = new Set<string>();
+    const pushTextInput = (inputItem: CanvasImageItem) => {
+      if (inputItem.item.type !== 'text' || inputItem.ai) return;
+      const content = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
+      if (!content) return;
+      const key = `${inputItem.id}:${content}`;
+      if (seenTextKeys.has(key)) return;
+      seenTextKeys.add(key);
+      textInputs.push(content);
+    };
+    const visitInputItem = (inputItem: CanvasImageItem, seenNodeIds: Set<string>) => {
+      if (seenNodeIds.has(inputItem.id)) return;
+      seenNodeIds.add(inputItem.id);
+      pushTextInput(inputItem);
+      if (!inputItem.ai && (inputItem.inputs || []).length > 0) {
+        getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visitInputItem(upstreamItem, seenNodeIds));
+      }
+    };
     getCanvasInputItemsForNode(canvasItem, sourceItems)
-      .filter(item => item.item.type === 'text' && !item.ai)
-      .map(item => (item.item.remark || '').trim() || item.item.content || '')
-      .filter(Boolean)
-  );
+      .forEach(inputItem => visitInputItem(inputItem, new Set([canvasItem.id])));
+    return textInputs;
+  };
 
   const getCanvasImageInputBufferItemsForNode = (
     canvasItem: CanvasImageItem,
@@ -14141,15 +14269,22 @@ function MainApp() {
   ) => {
     const cleanSources = sources.map(source => source.trim()).filter(Boolean).slice(0, 8);
     if (cleanSources.length === 0) return [] as string[];
-    const apiKey = (provider === canvasAiProvider ? canvasAiApiKey : getStoredCanvasAiApiKey(provider)).trim();
-    if (!apiKey) throw new Error('Please enter XAIS API Key first.');
+    const requestProvider = isCanvasAiLicenseManaged ? effectiveCanvasAiProvider : provider;
+    const apiKey = isCanvasAiLicenseManaged
+      ? ''
+      : (provider === canvasAiProvider ? canvasAiApiKey : getStoredCanvasAiApiKey(provider)).trim();
+    if (!apiKey && !isCanvasAiLicenseManaged) throw new Error('Please enter XAIS API Key first.');
     const endpoint = getCanvasAiEndpointForRequest(
-      provider,
-      provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
+      requestProvider,
+      isCanvasAiLicenseManaged
+        ? effectiveCanvasAiEndpoint
+        : provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
     );
     const refs = await invoke<string[]>('upload_xais_reference_images', {
       endpoint,
       apiKey,
+      provider: requestProvider,
+      model: effectiveCanvasAiModel,
       sources: cleanSources,
     });
     return (refs || []).map(ref => ref.trim()).filter(Boolean);
@@ -16734,8 +16869,11 @@ function MainApp() {
     if (!isCanvasAiGeneratorType(target.ai?.type)) return [] as CanvasAiGeneratedOutput[];
 
     const mediaType = getCanvasAiMediaType(target.ai);
-    const provider = mediaType === 'video' ? 'xais-chat' : normalizeCanvasAiProvider(target.ai.provider || canvasAiProvider);
-    const apiKey = (provider === canvasAiProvider ? canvasAiApiKey : getStoredCanvasAiApiKey(provider)).trim();
+    const requestedProvider = mediaType === 'video' ? 'xais-chat' : normalizeCanvasAiProvider(target.ai.provider || canvasAiProvider);
+    const provider = isCanvasAiLicenseManaged ? effectiveCanvasAiProvider : requestedProvider;
+    const apiKey = isCanvasAiLicenseManaged
+      ? ''
+      : (provider === canvasAiProvider ? canvasAiApiKey : getStoredCanvasAiApiKey(provider)).trim();
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
@@ -16755,7 +16893,7 @@ function MainApp() {
       }
       return [] as CanvasAiGeneratedOutput[];
     }
-    if (!apiKey) {
+    if (!apiKey && !isCanvasAiLicenseManaged) {
       const errorSummary = '请先在 AI 设置里填写 API Key';
       (options.forceUpdateAi || options.updateAi)({ status: 'error', error: errorSummary });
       if (options.showResultToast !== false) {
@@ -16790,7 +16928,9 @@ function MainApp() {
     });
     let temporaryReferenceShares: TemporaryReferenceShare[] = [];
     try {
-      const requestModel = getCanvasAiResolvedModel(provider, target.ai.model, mediaType);
+      const requestModel = isCanvasAiLicenseManaged && effectiveCanvasAiModel
+        ? effectiveCanvasAiModel
+        : getCanvasAiResolvedModel(provider, target.ai.model, mediaType);
       const isXaisWorkerRequest = mediaType === 'video' || (provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel));
       const xaisReferenceFormat: 'any' | 'jpeg' = mediaType !== 'video' && provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel)
         ? 'jpeg'
@@ -16843,9 +16983,12 @@ function MainApp() {
       let generateOptions = {
         provider,
         apiKey,
+        licenseManaged: isCanvasAiLicenseManaged,
         endpoint: getCanvasAiEndpointForRequest(
           provider,
-          provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
+          isCanvasAiLicenseManaged
+            ? effectiveCanvasAiEndpoint
+            : provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
         ),
         prompt,
         negativePrompt,
@@ -18431,8 +18574,6 @@ function MainApp() {
     const primaryImageId = getCanvasPrimaryImageItem()?.id || canvasItemsRef.current[0]?.id || null;
     isCanvasModeRef.current = true;
     setIsCanvasMode(true);
-    setShowCanvasExitPrompt(false);
-    setCanvasExitPromptStep('choice');
     setActiveFolderId('all');
     setActiveTab('all');
     setShowSettings(false);
@@ -19326,8 +19467,6 @@ function MainApp() {
     saveCanvasStateNow({ syncNodes: true });
     keepCanvasSessionOnLeaveRef.current = true;
     isCanvasModeRef.current = false;
-    setCanvasExitPromptStep('choice');
-    setShowCanvasExitPrompt(false);
     setIsCanvasMode(false);
     setIsCanvasSpacePressed(false);
     updateCanvasSelection([]);
@@ -19337,18 +19476,8 @@ function MainApp() {
     showToast(canvasItemsRef.current.length > 0 ? '已切回抽屉，画布内容已保留' : '已切回抽屉');
   };
 
-  const closeCanvasExitPrompt = () => {
-    setCanvasExitPromptStep('choice');
-    setShowCanvasExitPrompt(false);
-  };
-
   const requestExitCanvasMode = () => {
-    if (canvasItemsRef.current.length === 0) {
-      leaveCanvasToDrawer();
-      return;
-    }
-    setCanvasExitPromptStep('choice');
-    setShowCanvasExitPrompt(true);
+    leaveCanvasToDrawer();
   };
 
   const runCanvasWorkbenchWindowAction = (action: 'minimize' | 'maximize' | 'close') => {
@@ -19367,15 +19496,6 @@ function MainApp() {
       return;
     }
     requestExitCanvasMode();
-  };
-
-  const requestDiscardCanvasMode = () => {
-    if (canvasItemsRef.current.length === 0) {
-      discardCanvasMode();
-      return;
-    }
-    setCanvasExitPromptStep('save');
-    setShowCanvasExitPrompt(true);
   };
 
   const toggleCanvasMode = () => {
@@ -19597,37 +19717,24 @@ function MainApp() {
     };
   }, []);
 
-  const discardCanvasMode = () => {
-    keepCanvasSessionOnLeaveRef.current = false;
-    canvasReturnScrollRef.current = null;
-    isCanvasModeRef.current = false;
-    clearCanvasUndoStack();
-    updateCanvasItemsImmediate(() => []);
-    updateCanvasSelection([]);
-    saveCanvasStateNow({ syncNodes: true });
-    setCanvasExitPromptStep('choice');
-    setShowCanvasExitPrompt(false);
-    setIsCanvasMode(false);
-    setIsCanvasSpacePressed(false);
-    setIsPinned(false);
-    isPinnedRef.current = false;
-    invoke('toggle_pin', { pinned: false }).catch(() => {});
-    showToast('已退出无限画布');
-  };
-
-  const saveCanvasToDrawer = () => {
-    const snapshots = canvasItemsRef.current;
-    if (snapshots.length === 0) {
-      discardCanvasMode();
-      return;
-    }
-    const now = Date.now();
-    const folderName = `临时画布 ${new Date(now).toLocaleString('zh-CN', {
+  const buildCanvasDrawerFolderName = (canvas: CanvasRecord, now = Date.now()) => {
+    const canvasName = (canvas.name || '画布').trim() || '画布';
+    const shortName = canvasName.length > 18 ? `${canvasName.slice(0, 18)}...` : canvasName;
+    return `${shortName} 元素 ${new Date(now).toLocaleString('zh-CN', {
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
     }).replace(/[/:]/g, '-').replace(/\s+/g, ' ')}`;
+  };
+
+  const copyCanvasItemsToDrawerFolder = (snapshots: CanvasImageItem[], canvas: CanvasRecord) => {
+    const validSnapshots = snapshots.filter((snapshot): snapshot is CanvasImageItem => !!snapshot?.item);
+    if (validSnapshots.length === 0) {
+      return { savedCount: 0, folderName: '' };
+    }
+    const now = Date.now();
+    const folderName = buildCanvasDrawerFolderName(canvas, now);
     const newFolder: Folder = {
       id: Math.random().toString(36).substring(2, 9),
       name: folderName,
@@ -19635,44 +19742,36 @@ function MainApp() {
     };
     const existingDrawerIds = new Set(itemsRef.current.map(item => item.id));
     const usedSavedIds = new Set<string>();
-    const savedItems = snapshots.map(snapshot => {
-      const desiredId = snapshot.item.id || '';
+    const savedItems = validSnapshots.map(snapshot => {
+      const sourceItem = cloneDrawerValue(snapshot.item);
+      const desiredId = sourceItem.id || '';
       const needsFreshId = !desiredId || existingDrawerIds.has(desiredId) || usedSavedIds.has(desiredId);
       const id = needsFreshId ? Math.random().toString(36).substring(2, 9) : desiredId;
       usedSavedIds.add(id);
       return {
-        ...snapshot.item,
+        ...sourceItem,
         id,
         folderId: newFolder.id,
-        createdAt: snapshot.item.createdAt || now,
+        createdAt: sourceItem.createdAt || now,
       } as BufferItem;
     });
 
-    pushDrawerUndoSnapshot('保存画布');
+    pushDrawerUndoSnapshot('保存画布元素');
     setFolders(prev => {
       const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
+      foldersRef.current = nextFolders;
       persistFoldersSnapshot(nextFolders);
       return nextFolders;
     });
-    setItems(prev => [...savedItems, ...prev]);
+    setItems(prev => {
+      const nextItems = [...savedItems, ...prev];
+      itemsRef.current = nextItems;
+      return nextItems;
+    });
     triggerAutoPaletteForItems(savedItems);
-    keepCanvasSessionOnLeaveRef.current = false;
-    canvasReturnScrollRef.current = null;
-    isCanvasModeRef.current = false;
-    clearCanvasUndoStack();
-    updateCanvasItemsImmediate(() => []);
-    updateCanvasSelection([]);
-    saveCanvasStateNow({ syncNodes: true });
-    setCanvasExitPromptStep('choice');
-    setShowCanvasExitPrompt(false);
-    setIsCanvasMode(false);
-    setIsCanvasSpacePressed(false);
-    setIsPinned(false);
-    isPinnedRef.current = false;
-    invoke('toggle_pin', { pinned: false }).catch(() => {});
     setActiveFolderId(newFolder.id);
     setActiveTab('all');
-    showToast(`已保存 ${savedItems.length} 个画布元素到 ${folderName}`);
+    return { savedCount: savedItems.length, folderName };
   };
 
   const addDroppedPaths = async (paths: string[]) => {
@@ -19835,6 +19934,81 @@ function MainApp() {
   // Windows 原生 OLE 拖拽：统一接收本地源路径 + 网页图片 URL。
   // Rust 后端会发 native-drop，payload.paths 是本地文件/文件夹源路径，
   // payload.web_images 是从 HTML Format / URL / 文本中解析到的网页图片。
+  useEffect(() => {
+    const eventNames = [
+      'virtual-drop://queued',
+      'virtual-drop://metadata',
+      'virtual-drop://progress',
+      'virtual-drop://completed',
+      'virtual-drop://failed',
+      'virtual-drop://cancelled',
+      'virtual-drop://timed-out',
+    ];
+    const unlisteners: Array<() => void> = [];
+    const cleanupTimers = new Map<string, number>();
+    let disposed = false;
+
+    const scheduleCleanup = (jobId: string, delay = 4200) => {
+      const existing = cleanupTimers.get(jobId);
+      if (existing) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        cleanupTimers.delete(jobId);
+        setVirtualDropJobs(prev => prev.filter(job => job.id !== jobId));
+      }, delay);
+      cleanupTimers.set(jobId, timer);
+    };
+
+    const handleVirtualDropEvent = (payload: VirtualDropPayload) => {
+      const jobId = payload.job_id || payload.jobId || '';
+      if (!jobId) return;
+      const status = payload.status || 'queued';
+      const loaded = Math.max(0, Number(payload.loaded || 0));
+      const total = payload.total == null ? undefined : Math.max(0, Number(payload.total || 0));
+      const progress = payload.progress == null
+        ? (total && total > 0 ? Math.min(1, loaded / total) : undefined)
+        : Math.min(1, Math.max(0, Number(payload.progress)));
+      const fileName = payload.file_name || payload.fileName || payload.path?.split(/[\\/]/).pop() || '网页图片';
+      const message = payload.message || undefined;
+
+      setVirtualDropJobs(prev => {
+        const current = prev.find(job => job.id === jobId);
+        const next: VirtualDropUiJob = {
+          id: jobId,
+          status,
+          fileName: fileName || current?.fileName || '网页图片',
+          loaded,
+          total,
+          progress,
+          message,
+          createdAt: current?.createdAt || Date.now(),
+        };
+        return [next, ...prev.filter(job => job.id !== jobId)].slice(0, 4);
+      });
+
+      if (status === 'queued') showToast('正在导入网页图片...');
+      if (status === 'completed') scheduleCleanup(jobId, 1800);
+      if (status === 'failed' || status === 'cancelled' || status === 'timed_out') {
+        showToast(status === 'cancelled' ? '已取消网页图片导入' : '网页图片导入失败');
+        scheduleCleanup(jobId);
+      }
+    };
+
+    Promise.all(eventNames.map(name => listen<VirtualDropPayload>(name, (event) => {
+      handleVirtualDropEvent(event.payload);
+    }))).then(listeners => {
+      if (disposed) listeners.forEach(unlisten => unlisten());
+      else unlisteners.push(...listeners);
+    }).catch((err) => {
+      console.warn('listen virtual drop events failed:', err);
+    });
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach(unlisten => unlisten());
+      cleanupTimers.forEach(timer => window.clearTimeout(timer));
+    };
+  }, []);
+
   useEffect(() => {
     let unlistenNativeDrop: (() => void) | undefined;
     let unlistenNativeDragEnter: (() => void) | undefined;
@@ -22467,9 +22641,6 @@ useEffect(() => {
   }, [canvasWorkflowSaveDraft]);
 
   const shouldBlockAutoClose = () => (
-    // 只保留真正需要阻止自动缩回的情况：
-    // 1. 用户手动点了钉住；2. 正在预览图片/视频；3. 正在拖动/缩放这类瞬时操作。
-    // 设置、搜索、文本输入、二维码、弹窗等面板不再阻止自动缩回；鼠标是否在抽屉内由 scheduleAutoClose 单独判断。
     Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
@@ -22477,25 +22648,19 @@ useEffect(() => {
     isResizingState.current ||
     isDraggingOver ||
     isCanvasWorkbenchActive ||
+    isCanvasWorkbenchActiveRef.current ||
     isPinned ||
+    isPinnedRef.current ||
     !!canvasBrushEditor ||
     !!selectedImage ||
     !!selectedVideo ||
-    isTextEntryActive() ||
-    isDrawerAgentOpen ||
-    showTextInput ||
-    showWebImageCollector ||
-    showFolderModal ||
-    showMoveFolderModal ||
-    showMoveExistingFolderModal ||
-    !!folderContextMenu ||
-    isSearchActive ||
-    editingFolderId !== null ||
-    textInputDialog.isOpen ||
-    confirmDialog.isOpen ||
     showLaunchIntro ||
     isSplashVisible ||
-    showUpdateLog
+    showUpdateLog ||
+    snipMode.active ||
+    snipModeActiveRef.current ||
+    snipExitInFlightRef.current ||
+    isSnipSessionActive
   );
 
   const shouldBlockIdleAutoClose = () => (
@@ -22535,6 +22700,41 @@ useEffect(() => {
     }
   };
 
+  const isCursorInsideDrawerWindow = async () => {
+    try {
+      const [cursor, position, size] = await Promise.all([
+        cursorPosition(),
+        appWindow.outerPosition(),
+        appWindow.outerSize(),
+      ]);
+      return (
+        cursor.x >= position.x &&
+        cursor.y >= position.y &&
+        cursor.x <= position.x + size.width &&
+        cursor.y <= position.y + size.height
+      );
+    } catch (_) {
+      return isPointerInsideDrawerRef.current;
+    }
+  };
+
+  const requestAutoCloseDrawer = () => {
+    if (shouldBlockAutoClose()) return;
+    isPointerInsideDrawerRef.current = false;
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    clearIdleAutoClose();
+    setIsOpen(false);
+    setIsPinned(false);
+    setIsSelectMode(false);
+    setSelectedIds([]);
+    lastSelectedDrawerItemIdRef.current = null;
+    isPinnedRef.current = false;
+    invoke('toggle_pin', { pinned: false }).catch(() => {});
+  };
+
   const holdDrawerForPanelInteraction = (duration = 1400) => {
     drawerPanelInteractionHoldUntilRef.current = Math.max(
       drawerPanelInteractionHoldUntilRef.current,
@@ -22568,8 +22768,7 @@ useEffect(() => {
     idleAutoCloseTimerRef.current = setTimeout(() => {
       idleAutoCloseTimerRef.current = null;
       if (!isPointerInsideDrawerRef.current && !shouldBlockIdleAutoClose()) {
-        setIsOpen(false);
-        setIsPinned(false);
+        requestAutoCloseDrawer();
       }
     }, delay);
   };
@@ -22578,9 +22777,12 @@ useEffect(() => {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     clearIdleAutoClose();
     closeTimerRef.current = setTimeout(() => {
-      if (!isPointerInsideDrawerRef.current && !shouldBlockAutoClose()) {
-        setIsOpen(false);
-      }
+      closeTimerRef.current = null;
+      void (async () => {
+        const isCursorInside = await isCursorInsideDrawerWindow();
+        isPointerInsideDrawerRef.current = isCursorInside;
+        if (!isCursorInside) requestAutoCloseDrawer();
+      })();
     }, delay);
   };
 
@@ -22598,7 +22800,7 @@ useEffect(() => {
     if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
     isPointerInsideDrawerRef.current = false;
     if (drawerState === 'open' && !shouldBlockAutoClose()) scheduleAutoClose(180);
-    else scheduleIdleAutoClose(3000);
+    else scheduleAutoClose(3000);
   };
 
   useEffect(() => {
@@ -23551,6 +23753,15 @@ useEffect(() => {
         throw new Error(`无法识别日期：${text}`);
       };
       const uniqueAgentIds = (ids: string[]) => Array.from(new Set(ids.map(String).filter(Boolean)));
+      const collectAgentBoundNodeIds = (value: unknown): string[] => {
+        if (Array.isArray(value)) return value.map(String).filter(Boolean);
+        if (!value || typeof value !== 'object') return [];
+        const record = value as Record<string, unknown>;
+        return [
+          typeof record.nodeId === 'string' ? record.nodeId : '',
+          ...(Array.isArray(record.nodeIds) ? record.nodeIds.map(String) : []),
+        ].filter(Boolean);
+      };
       const getExistingCanvasIds = (ids: string[]) => {
         const existingIds = new Set(canvasItemsRef.current.map(item => item.id));
         return uniqueAgentIds(ids).filter(id => existingIds.has(id));
@@ -24443,7 +24654,7 @@ useEffect(() => {
         const requestedInputCandidates = [
           ...(Array.isArray(args.inputIds) ? args.inputIds.map(String) : []),
           ...(Array.isArray(args.selectedReferenceImageNodeIds) ? args.selectedReferenceImageNodeIds.map(String) : []),
-          ...(Array.isArray(inputBindingsArg.product_reference_image) ? inputBindingsArg.product_reference_image.map(String) : []),
+          ...collectAgentBoundNodeIds(inputBindingsArg.product_reference_image),
         ];
         const requestedInputs = Array.from(new Set(requestedInputCandidates))
           .filter(id => canvasItemsRef.current.some(item => item.id === id));
@@ -24787,7 +24998,21 @@ useEffect(() => {
           : null;
         if (!workflowDraftArg) throw new Error('canvas_create_workflow_draft requires workflowDraft argument');
         const draftId = 'draft-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
-        const draft: WorkflowRecipeDraft = { ...workflowDraftArg, id: draftId };
+        const inputBindingsArg = args.inputBindings && typeof args.inputBindings === 'object' && !Array.isArray(args.inputBindings)
+          ? args.inputBindings as Record<string, unknown>
+          : {};
+        const selectedReferenceImageNodeIds = getExistingCanvasIds([
+          ...(Array.isArray(args.selectedReferenceImageNodeIds) ? args.selectedReferenceImageNodeIds.map(String) : []),
+          ...collectAgentBoundNodeIds(inputBindingsArg.product_reference_image),
+        ]).filter(id => canUseCanvasItemAsReferenceBridgeInput(canvasItemsRef.current.find(item => item.id === id)));
+        const draft: WorkflowRecipeDraft = {
+          ...workflowDraftArg,
+          id: draftId,
+          metadata: {
+            ...workflowDraftArg.metadata,
+            ...(selectedReferenceImageNodeIds.length > 0 ? { selectedReferenceImageNodeIds } : {}),
+          },
+        };
         if (args.languagePolicy && typeof args.languagePolicy === 'object') {
           draft.languagePolicy = { ...draft.languagePolicy, ...(args.languagePolicy as WorkflowTextPolicy) };
         }
@@ -24964,7 +25189,13 @@ useEffect(() => {
             ? { ...updatedDraft.strategy, enabled: strategyEnabled, mode: strategyEnabled ? 'enabled' as const : 'disabled' as const }
             : { enabled: strategyEnabled, mode: strategyEnabled ? 'enabled' as const : 'disabled' as const, title: '', prompt: '' };
         } else if (action === 'save_draft_as_workflow') {
-          const selectedImageNodeIds = getSelectedCanvasAiInputIds();
+          const draftReferenceNodeIds = Array.isArray(updatedDraft.metadata.selectedReferenceImageNodeIds)
+            ? updatedDraft.metadata.selectedReferenceImageNodeIds.map(String)
+            : [];
+          const selectedImageNodeIds = uniqueAgentIds([
+            ...getSelectedCanvasAiInputIds(),
+            ...draftReferenceNodeIds,
+          ]).filter(id => canUseCanvasItemAsReferenceBridgeInput(canvasItemsRef.current.find(item => item.id === id)));
           const originalRequest = updatedDraft.metadata.originalRequest || '';
           const workflowDefinitionArg = convertWorkflowDraftToDefinition(
             updatedDraft,
@@ -25052,9 +25283,8 @@ useEffect(() => {
           ...(isProductReferenceExplicitlyUnbound ? [] : Array.isArray(args.selectedReferenceImageNodeIds) ? args.selectedReferenceImageNodeIds.map(String) : []),
           ...(isProductReferenceExplicitlyUnbound ? [] : collectBoundNodeIds(productReferenceBindingArg)),
         ];
-        const liveSelectedInputIds = new Set(getSelectedCanvasAiInputIds());
         const requestedInputs = Array.from(new Set(requestedInputCandidates))
-          .filter(id => liveSelectedInputIds.has(id));
+          .filter(id => canvasItemsRef.current.some(item => item.id === id));
         const selectedInputIds = requestedInputs;
         const rawSteps = Array.isArray(args.steps) ? args.steps : [];
         const workflowDefinitionArg = args.workflowDefinition && typeof args.workflowDefinition === 'object' && !Array.isArray(args.workflowDefinition)
@@ -25528,15 +25758,8 @@ useEffect(() => {
       throw new Error('先在文字节点里输入需求');
     }
 
-    const inputItems = getCanvasInputItemsForNode(latestTarget, getSourceItems());
-    const upstreamTexts = inputItems
-      .filter(item => item.item.type === 'text' && !item.ai && item.id !== target.id)
-      .map((item, index) => {
-        const content = ((item.item.remark || '').trim() || item.item.content || '').trim();
-        if (!content) return '';
-        return '上游文字 ' + (index + 1) + '（' + (item.item.name || item.id) + '）：\n' + content;
-      })
-      .filter(Boolean);
+    const upstreamTexts = getCanvasTextInputsForNode(latestTarget, getSourceItems())
+      .map((content, index) => '上游文字 ' + (index + 1) + '：\n' + content);
     const visualReferences = getCanvasAgentVisualReferencesForNodeInputs(latestTarget, getSourceItems());
     let preparedReferences: AgentCanvasVisualReference[] = [];
 
@@ -25679,6 +25902,23 @@ useEffect(() => {
     canvasAgent.clearConversation();
     setDrawerAgentInput('');
   };
+
+  useEffect(() => {
+    if (!licenseStatus) return;
+    void canvasAgent.refreshSettings().catch(error => {
+      console.warn('刷新授权后的 Agent 设置失败:', error);
+    });
+  }, [
+    canvasAgent.refreshSettings,
+    licenseStatus?.valid,
+    licenseStatus?.edition,
+    licenseStatus?.expire_at,
+    licenseStatus?.error_code,
+    licenseStatus?.ai_access?.mode,
+    licenseStatus?.ai_access?.managed_provider,
+    licenseStatus?.ai_access?.managed_base_url,
+    licenseStatus?.ai_access?.managed_model,
+  ]);
 
   useEffect(() => {
     writeAgentSidebarWidth(canvasAgentSidebarWidth);
@@ -26560,6 +26800,75 @@ useEffect(() => {
       </AnimatePresence>
 
       <AnimatePresence>
+        {virtualDropJobs.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="fixed right-3 top-12 z-[999998] flex w-[min(340px,calc(100vw-24px))] flex-col gap-2 pointer-events-auto"
+          >
+            {virtualDropJobs.map(job => {
+              const progress = typeof job.progress === 'number' ? Math.round(job.progress * 100) : undefined;
+              const isTerminal = job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'timed_out';
+              const statusText = job.status === 'completed'
+                ? '完成'
+                : job.status === 'failed'
+                  ? '失败'
+                  : job.status === 'cancelled'
+                    ? '已取消'
+                    : job.status === 'timed_out'
+                      ? '已超时'
+                      : '正在导入网页图片...';
+              return (
+                <motion.div
+                  key={job.id}
+                  layout
+                  initial={{ opacity: 0, x: 12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 12 }}
+                  className="rounded-[14px] border border-stone-200/80 bg-white/94 p-3 text-stone-800 shadow-2xl shadow-black/12 backdrop-blur-xl dark:border-white/10 dark:bg-stone-950/94 dark:text-stone-100"
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-blue-50 text-blue-600 dark:bg-blue-400/12 dark:text-blue-200">
+                      <ImageIcon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="min-w-0 flex-1 truncate text-[12px] font-black">{job.fileName}</p>
+                        <span className="shrink-0 text-[10px] font-bold text-stone-400 dark:text-stone-500">{statusText}</span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+                        <span>{formatVirtualDropBytes(job.loaded)}</span>
+                        {job.total ? <span>/ {formatVirtualDropBytes(job.total)}</span> : null}
+                        {progress !== undefined ? <span>{progress}%</span> : null}
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-stone-200 dark:bg-stone-800">
+                        <div
+                          className={`h-full rounded-full transition-all ${job.status === 'failed' || job.status === 'timed_out' ? 'bg-red-500' : job.status === 'cancelled' ? 'bg-stone-400' : 'bg-blue-500'}`}
+                          style={{ width: `${progress ?? (isTerminal ? 100 : 22)}%` }}
+                        />
+                      </div>
+                      {job.message ? <p className="mt-1 max-h-8 overflow-hidden text-[10px] leading-4 text-stone-400 dark:text-stone-500">{job.message}</p> : null}
+                    </div>
+                    {!isTerminal && (
+                      <button
+                        type="button"
+                        onClick={() => cancelVirtualDropJob(job.id)}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:hover:bg-white/10"
+                        title="取消导入"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {snipMode.active && (
           <motion.div
             initial={{ opacity: 1 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -26766,7 +27075,7 @@ useEffect(() => {
           // 动画阶段的 pointerleave 很容易是元素移动造成的，不代表鼠标真的离开了抽屉。
           if (isStartupOverlayActive || drawerState !== 'open') return;
           if (shouldBlockAutoClose()) {
-            scheduleIdleAutoClose(3000);
+            scheduleAutoClose(3000);
             return;
           }
 
@@ -27873,38 +28182,47 @@ useEffect(() => {
                                         AI 生图
                                       </span>
                                       <span className="truncate rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-bold text-cyan-700 dark:bg-cyan-900/36 dark:text-cyan-200">
-                                        {CANVAS_AI_PROVIDER_SELECT_OPTIONS.find(option => option.value === canvasAiProvider)?.label || canvasAiProvider}
+                                        {isCanvasAiLicenseManaged ? managedCanvasAiProviderLabel : CANVAS_AI_PROVIDER_SELECT_OPTIONS.find(option => option.value === effectiveCanvasAiProvider)?.label || effectiveCanvasAiProvider}
                                       </span>
                                     </div>
                                     <label className="flex flex-col gap-1">
                                       <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">接口类型</span>
-                                      <select
-                                        value={canvasAiProvider}
-                                        onChange={(event) => {
-                                          const provider = normalizeCanvasAiProvider(event.target.value);
-                                          setCanvasAiProvider(provider);
-                                          setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
-                                          const endpoint = getStoredCanvasAiEndpoint(provider);
-                                          if (endpoint) setCanvasAiEndpoint(endpoint);
-                                        }}
-                                        className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
-                                      >
-                                        {CANVAS_AI_PROVIDER_SELECT_OPTIONS.map(option => (
-                                          <option key={option.value} value={option.value}>{option.label}</option>
-                                        ))}
-                                      </select>
+                                      {isCanvasAiLicenseManaged ? (
+                                        <div className="w-full rounded-[14px] border border-cyan-100 bg-white/82 px-3 py-1.5 text-xs font-bold text-stone-700 dark:border-cyan-900/45 dark:bg-stone-800/70 dark:text-stone-200">
+                                          {managedCanvasAiProviderLabel}
+                                        </div>
+                                      ) : (
+                                        <select
+                                          value={effectiveCanvasAiProvider}
+                                          onChange={(event) => {
+                                            const provider = normalizeCanvasAiProvider(event.target.value);
+                                            setCanvasAiProvider(provider);
+                                            setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
+                                            const endpoint = getStoredCanvasAiEndpoint(provider);
+                                            if (endpoint) setCanvasAiEndpoint(endpoint);
+                                          }}
+                                          className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
+                                        >
+                                          {CANVAS_AI_PROVIDER_SELECT_OPTIONS.map(option => (
+                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                          ))}
+                                        </select>
+                                      )}
                                     </label>
                                     <label className="flex flex-col gap-1">
                                       <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">API Key</span>
                                       <input
-                                        type="password"
-                                        value={canvasAiApiKey}
-                                        onChange={(event) => setCanvasAiApiKey(event.target.value)}
-                                        placeholder={getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
+                                        type={isCanvasAiLicenseManaged ? 'text' : 'password'}
+                                        value={isCanvasAiLicenseManaged ? `由高级版授权提供${licenseAiAccess?.canvas_api_key_last4 ? ` · ****${licenseAiAccess.canvas_api_key_last4}` : ''}` : canvasAiApiKey}
+                                        onChange={(event) => {
+                                          if (!isCanvasAiLicenseManaged) setCanvasAiApiKey(event.target.value);
+                                        }}
+                                        disabled={isCanvasAiLicenseManaged}
+                                        placeholder={isCanvasAiLicenseManaged ? 'API 配置由高级版授权提供' : getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
                                         className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
                                       />
                                     </label>
-                                    {canvasAiProvider === 'xais-chat' && (
+                                    {effectiveCanvasAiProvider === 'xais-chat' && (
                                       <div className="flex items-center justify-between gap-2 rounded-[14px] border border-cyan-100/80 bg-white/62 px-2.5 py-2 dark:border-cyan-900/38 dark:bg-stone-900/38">
                                         <div className="flex min-w-0 items-center gap-2">
                                           <Wallet className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
@@ -27915,7 +28233,7 @@ useEffect(() => {
                                         <button
                                           type="button"
                                           onClick={() => void checkCanvasAiXaisBalance()}
-                                          disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiApiKey.trim()}
+                                          disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiHasApiCredential}
                                           className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-cyan-100 px-2 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-900/42 dark:text-cyan-100 dark:hover:bg-cyan-900/70"
                                           title="查询 Xais 余额"
                                         >
@@ -27924,23 +28242,26 @@ useEffect(() => {
                                         </button>
                                       </div>
                                     )}
-                                    {isCanvasAiEndpointVisible(canvasAiProvider) && (
+                                    {!isCanvasAiLicenseManaged && isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
                                       <div className="flex flex-col gap-1">
                                         <div className="flex items-center justify-between gap-2">
                                           <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">API Base URL</span>
                                           <button
                                             type="button"
                                             onClick={() => refreshCanvasAiOpenAiModels(false)}
-                                            disabled={isRefreshingCanvasAiOpenAiModels || !canvasAiEndpoint.trim() || !canvasAiApiKey.trim()}
+                                            disabled={isRefreshingCanvasAiOpenAiModels || !(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential}
                                             className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-bold text-cyan-700 disabled:opacity-45 dark:bg-cyan-900/35 dark:text-cyan-200"
                                           >
                                             {isRefreshingCanvasAiOpenAiModels ? '刷新中' : '刷新模型'}
                                           </button>
                                         </div>
                                         <input
-                                          value={canvasAiEndpoint}
-                                          onChange={(event) => setCanvasAiEndpoint(event.target.value)}
-                                          placeholder={getCanvasAiEndpointPlaceholder(canvasAiProvider)}
+                                          value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
+                                          onChange={(event) => {
+                                            if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
+                                          }}
+                                          disabled={isCanvasAiLicenseManaged}
+                                          placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
                                           className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
                                         />
                                         <span className={`text-[10px] leading-4 ${canvasAiOpenAiModelError ? 'text-red-500 dark:text-red-300' : 'text-stone-400 dark:text-stone-500'}`}>
@@ -28026,8 +28347,10 @@ useEffect(() => {
                                     codexStatus={canvasAgent.codexStatus}
                                     codexInstallProgress={canvasAgent.codexInstallProgress}
                                     codexLoginInfo={canvasAgent.codexLoginInfo}
+                                    apiLockedByLicense={isAgentAiLicenseManaged}
                                     onSave={canvasAgent.saveSettings}
                                     onListModels={canvasAgent.listOpenAiModels}
+                                    onQueryBalance={canvasAgent.queryAgentApiBalance}
                                     onRefreshCodexStatus={canvasAgent.refreshCodexStatus}
                                     onInstallCodex={canvasAgent.installCodex}
                                     onStartCodexLogin={canvasAgent.startCodexLogin}
@@ -28580,7 +28903,7 @@ useEffect(() => {
                               无限画布
                             </div>
                             <p className="mt-2 text-xs leading-5">
-                              把图片拖进这里，按住图片即可移动排列。离开画布时可以先切回抽屉保留现场，也可以直接退出并选择是否保存到临时文件夹。
+                              把图片拖进这里，按住图片即可移动排列。切回抽屉会保留现场；删除侧边栏里的画布时，可选择把元素保存到抽屉。
                             </p>
                           </div>
                         )}
@@ -28761,32 +29084,63 @@ useEffect(() => {
                               || inputItem.ai?.type === 'workflow'
                               || generatorOutput?.mediaType === 'image';
                           };
-                          const getCanvasReferencePreviewSource = (inputItem: CanvasImageItem) => {
-                            if (isCanvasWorkflowReferenceBridge(inputItem)) {
-                              const bridgeInput = getCanvasImageInputBufferItemsForNode(inputItem, canvasItems)[0];
-                              return bridgeInput ? getCanvasItemNavSource(bridgeInput) : '';
+                          type CanvasInputPreviewItem = {
+                            id: string;
+                            node: CanvasImageItem;
+                            disconnectId: string;
+                            bufferItem?: BufferItem;
+                          };
+                          const getCanvasExpandedInputPreviewItems = (inputItem: CanvasImageItem): CanvasInputPreviewItem[] => {
+                            if (!isCanvasWorkflowReferenceBridge(inputItem)) {
+                              return [{ id: inputItem.id, node: inputItem, disconnectId: inputItem.id }];
                             }
-                            if (inputItem.item.type === 'image') return getCanvasItemNavSource(inputItem.item);
-                            if (inputItem.item.type === 'video') return inputItem.item.thumbnail || '';
-                            const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem)[0];
+                            return getCanvasImageInputBufferItemsForNode(inputItem, canvasItems)
+                              .map((bufferItem, inputIndex) => ({
+                                id: `${inputItem.id}:bridge-preview:${bufferItem.id || inputIndex}`,
+                                node: inputItem,
+                                disconnectId: inputItem.id,
+                                bufferItem,
+                              }));
+                          };
+                          const isCanvasVideoReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => {
+                            if (inputItem.bufferItem) return inputItem.bufferItem.type === 'video';
+                            return isCanvasVideoReferenceItem(inputItem.node);
+                          };
+                          const isCanvasImageReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => {
+                            if (inputItem.bufferItem) return inputItem.bufferItem.type === 'image';
+                            return isCanvasImageReferenceItem(inputItem.node);
+                          };
+                          const isCanvasTextReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => (
+                            !inputItem.bufferItem && inputItem.node.item.type === 'text' && !inputItem.node.ai
+                          );
+                          const getCanvasReferencePreviewSource = (inputItem: CanvasInputPreviewItem) => {
+                            if (inputItem.bufferItem) return getCanvasItemNavSource(inputItem.bufferItem);
+                            if (inputItem.node.item.type === 'image') return getCanvasItemNavSource(inputItem.node.item);
+                            if (inputItem.node.item.type === 'video') return inputItem.node.item.thumbnail || '';
+                            const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem.node)[0];
                             return generatorOutput?.mediaType === 'image'
                               ? getCanvasAiOutputDisplaySource(generatorOutput)
                               : '';
                           };
-                          const canvasVisualInputPreviewItems = rawCanvasInputPreviewItems.filter(item => (
-                            isCanvasImageReferenceItem(item) || isCanvasVideoReferenceItem(item)
+                          const expandedCanvasInputPreviewItems = rawCanvasInputPreviewItems.flatMap(getCanvasExpandedInputPreviewItems);
+                          const canvasVisualInputPreviewItems = expandedCanvasInputPreviewItems.filter(item => (
+                            isCanvasImageReferencePreviewItem(item) || isCanvasVideoReferencePreviewItem(item)
                           ));
                           const canvasInputPreviewItems = isCanvasAiNodeItem
-                            ? canvasVisualInputPreviewItems
-                            : rawCanvasInputPreviewItems;
+                            ? expandedCanvasInputPreviewItems.filter(item => (
+                              isCanvasImageReferencePreviewItem(item)
+                              || isCanvasVideoReferencePreviewItem(item)
+                              || isCanvasTextReferencePreviewItem(item)
+                            ))
+                            : expandedCanvasInputPreviewItems;
                           const canvasTextMediaInputItems = isTextCanvasItem
                             ? canvasVisualInputPreviewItems
                             : [];
                           const canvasVideoReferenceImageItems = canvasAiMediaType === 'video' && !isCanvasSingleVideoInputItem
-                            ? canvasInputPreviewItems.filter(item => isCanvasImageReferenceItem(item) && !isCanvasVideoReferenceItem(item))
+                            ? canvasVisualInputPreviewItems.filter(item => isCanvasImageReferencePreviewItem(item) && !isCanvasVideoReferencePreviewItem(item))
                             : [];
                           const canvasVideoReferenceVideoItems = canvasAiMediaType === 'video'
-                            ? canvasInputPreviewItems.filter(isCanvasVideoReferenceItem)
+                            ? canvasVisualInputPreviewItems.filter(isCanvasVideoReferencePreviewItem)
                             : [];
                           const canvasVideoReferenceImageSlotCount = isCanvasSingleVideoInputItem ? 0 : canvasVideoInputMode === 'FLF' ? 2 : 9;
                           const canvasVideoReferenceVideoSlotCount = isCanvasSingleVideoInputItem ? 1 : canvasVideoInputMode === 'FLF' ? 0 : 1;
@@ -28920,15 +29274,10 @@ useEffect(() => {
                                                 const inputItem = isVideoReferenceSlot
                                                   ? canvasVideoReferenceVideoItems[inputIndex - canvasVideoReferenceImageSlotCount]
                                                   : canvasVideoReferenceImageItems[inputIndex];
-                                                const generatorOutput = inputItem ? getCanvasAiSuccessfulOutputs(inputItem)[0] : null;
-                                                const generatorOutputSource = generatorOutput?.mediaType === 'video'
-                                                  ? ''
-                                                  : getCanvasAiOutputThumbnailSource(generatorOutput);
-                                                const inputPreviewSource = inputItem?.item.type === 'video'
-                                                  ? inputItem.item.thumbnail || ''
-                                                  : inputItem?.item.type === 'image'
-                                                  ? getCanvasItemNavSource(inputItem.item)
-                                                  : generatorOutputSource;
+                                                const inputSourceNode = inputItem?.node;
+                                                const inputPreviewSource = inputItem
+                                                  ? getCanvasReferencePreviewSource(inputItem)
+                                                  : '';
                                                 const slotLabel = isCanvasSingleVideoInputItem ? '视频输入' : isVideoReferenceSlot
                                                   ? '参考视频1'
                                                   : canvasVideoInputMode === 'FLF'
@@ -28946,7 +29295,7 @@ useEffect(() => {
                                                       if (!inputItem) return;
                                                       event.preventDefault();
                                                       event.stopPropagation();
-                                                      disconnectCanvasInput(canvasItem.id, inputItem.id);
+                                                      disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
                                                     }}
                                                   >
                                                     {inputPreviewSource ? (
@@ -28959,11 +29308,11 @@ useEffect(() => {
                                                         draggable={false}
                                                         onDragStart={preventCanvasNativeDrag}
                                                       />
-                                                    ) : inputItem && (isCanvasAiGeneratorType(inputItem.ai?.type) || inputItem.ai?.type === 'workflow') ? (
+                                                    ) : inputSourceNode && (isCanvasAiGeneratorType(inputSourceNode.ai?.type) || inputSourceNode.ai?.type === 'workflow') ? (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
-                                                        {getCanvasAiMediaType(inputItem.ai) === 'video' ? <Film className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+                                                        {getCanvasAiMediaType(inputSourceNode.ai) === 'video' ? <Film className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                                                       </span>
-                                                    ) : inputItem?.item.type === 'video' ? (
+                                                    ) : inputItem && isCanvasVideoReferencePreviewItem(inputItem) ? (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
                                                         <Film className="h-4 w-4" />
                                                       </span>
@@ -28991,6 +29340,7 @@ useEffect(() => {
                                             <span className="flex h-[58px] max-w-full items-center gap-1.5 overflow-hidden">
                                               {canvasInputPreviewItems.slice(0, 6).map((inputItem, inputIndex) => {
                                                 const inputPreviewSource = getCanvasReferencePreviewSource(inputItem);
+                                                const inputSourceNode = inputItem.node;
                                                 return (
                                                   <span
                                                     key={inputItem.id}
@@ -29004,7 +29354,7 @@ useEffect(() => {
                                                     onDoubleClick={(event) => {
                                                       event.preventDefault();
                                                       event.stopPropagation();
-                                                      disconnectCanvasInput(canvasItem.id, inputItem.id);
+                                                      disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
                                                     }}
                                                   >
                                                     {inputPreviewSource ? (
@@ -29017,9 +29367,9 @@ useEffect(() => {
                                                         draggable={false}
                                                         onDragStart={preventCanvasNativeDrag}
                                                       />
-                                                    ) : isCanvasAiGeneratorType(inputItem.ai?.type) || inputItem.ai?.type === 'workflow' ? (
+                                                    ) : isCanvasAiGeneratorType(inputSourceNode.ai?.type) || inputSourceNode.ai?.type === 'workflow' ? (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
-                                                        {getCanvasAiMediaType(inputItem.ai) === 'video' ? <Film className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+                                                        {getCanvasAiMediaType(inputSourceNode.ai) === 'video' ? <Film className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                                                       </span>
                                                     ) : (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
@@ -30009,7 +30359,7 @@ useEffect(() => {
                                       <div className="flex max-w-full items-center gap-1.5 overflow-x-auto pb-0.5">
                                         {canvasTextMediaInputItems.slice(0, 6).map(inputItem => {
                                           const previewSource = getCanvasReferencePreviewSource(inputItem);
-                                          const isVideoReference = isCanvasVideoReferenceItem(inputItem);
+                                          const isVideoReference = isCanvasVideoReferencePreviewItem(inputItem);
                                           return (
                                             <button
                                               key={inputItem.id}
@@ -30021,7 +30371,7 @@ useEffect(() => {
                                               onDoubleClick={(event) => {
                                                 event.preventDefault();
                                                 event.stopPropagation();
-                                                disconnectCanvasInput(canvasItem.id, inputItem.id);
+                                                disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
                                               }}
                                             >
                                               {previewSource ? (
@@ -30591,35 +30941,48 @@ useEffect(() => {
                       </div>
 
                       <div className="grid gap-2">
-                        <RoundedSelect
-                          data-no-drag="true"
-                          data-canvas-edit-control="true"
-                          value={canvasAiProvider}
-                          options={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
-                          onChange={(value) => {
-                            const provider = normalizeCanvasAiProvider(value);
-                            setCanvasAiProvider(provider);
-                            setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
-                            const endpoint = getStoredCanvasAiEndpoint(provider);
-                            if (endpoint) setCanvasAiEndpoint(endpoint);
-                          }}
-                          className={CANVAS_AI_PANEL_SELECT_CLASS}
-                          menuMinWidth={220}
-                        />
+                        {isCanvasAiLicenseManaged ? (
+                          <div
+                            data-no-drag="true"
+                            data-canvas-edit-control="true"
+                            className="rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs font-bold text-stone-700 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
+                          >
+                            {managedCanvasAiProviderLabel}
+                          </div>
+                        ) : (
+                          <RoundedSelect
+                            data-no-drag="true"
+                            data-canvas-edit-control="true"
+                            value={effectiveCanvasAiProvider}
+                            options={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
+                            onChange={(value) => {
+                              const provider = normalizeCanvasAiProvider(value);
+                              setCanvasAiProvider(provider);
+                              setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
+                              const endpoint = getStoredCanvasAiEndpoint(provider);
+                              if (endpoint) setCanvasAiEndpoint(endpoint);
+                            }}
+                            className={CANVAS_AI_PANEL_SELECT_CLASS}
+                            menuMinWidth={220}
+                          />
+                        )}
                         <input
                           data-no-drag="true"
                           data-canvas-edit-control="true"
-                          type="password"
-                          value={canvasAiApiKey}
+                          type={isCanvasAiLicenseManaged ? 'text' : 'password'}
+                          value={isCanvasAiLicenseManaged ? `由高级版授权提供${licenseAiAccess?.canvas_api_key_last4 ? ` · ****${licenseAiAccess.canvas_api_key_last4}` : ''}` : canvasAiApiKey}
                           onPointerDown={stopCanvasEditEvent}
                           onMouseDown={stopCanvasEditEvent}
                           onDoubleClick={stopCanvasEditEvent}
                           onKeyDown={stopCanvasEditEvent}
-                          onChange={(event) => setCanvasAiApiKey(event.target.value)}
-                          placeholder={getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
+                          onChange={(event) => {
+                            if (!isCanvasAiLicenseManaged) setCanvasAiApiKey(event.target.value);
+                          }}
+                          disabled={isCanvasAiLicenseManaged}
+                          placeholder={isCanvasAiLicenseManaged ? 'API 配置由高级版授权提供' : getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
                           className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                         />
-                        {canvasAiProvider === 'xais-chat' && (
+                        {effectiveCanvasAiProvider === 'xais-chat' && (
                           <div className="flex items-center justify-between gap-2 rounded-[14px] border border-stone-200/80 bg-white/64 px-2.5 py-2 dark:border-stone-700 dark:bg-stone-950/34">
                             <div className="flex min-w-0 items-center gap-2">
                               <Wallet className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
@@ -30634,7 +30997,7 @@ useEffect(() => {
                               onPointerDown={stopCanvasEditEvent}
                               onMouseDown={stopCanvasEditEvent}
                               onClick={() => void checkCanvasAiXaisBalance()}
-                              disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiApiKey.trim()}
+                              disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiHasApiCredential}
                               className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-cyan-100 px-2 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-900/42 dark:text-cyan-100 dark:hover:bg-cyan-900/70"
                               title="查询 Xais 余额"
                             >
@@ -30643,19 +31006,22 @@ useEffect(() => {
                             </button>
                           </div>
                         )}
-                        {isCanvasAiEndpointVisible(canvasAiProvider) && (
+                        {!isCanvasAiLicenseManaged && isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
                           <div className="grid gap-1">
                             <div className="flex items-center gap-1.5">
                               <input
                                 data-no-drag="true"
                                 data-canvas-edit-control="true"
-                                value={canvasAiEndpoint}
+                                value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
                                 onPointerDown={stopCanvasEditEvent}
                                 onMouseDown={stopCanvasEditEvent}
                                 onDoubleClick={stopCanvasEditEvent}
                                 onKeyDown={stopCanvasEditEvent}
-                                onChange={(event) => setCanvasAiEndpoint(event.target.value)}
-                                placeholder={getCanvasAiEndpointPlaceholder(canvasAiProvider)}
+                                onChange={(event) => {
+                                  if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
+                                }}
+                                disabled={isCanvasAiLicenseManaged}
+                                placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
                                 className="min-w-0 flex-1 rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                               />
                               <button
@@ -30665,7 +31031,7 @@ useEffect(() => {
                                 onPointerDown={stopCanvasEditEvent}
                                 onMouseDown={stopCanvasEditEvent}
                                 onClick={() => refreshCanvasAiOpenAiModels(false)}
-                                disabled={isRefreshingCanvasAiOpenAiModels || !canvasAiEndpoint.trim() || !canvasAiApiKey.trim()}
+                                disabled={isRefreshingCanvasAiOpenAiModels || !(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential}
                                 className="h-[30px] shrink-0 rounded-[13px] bg-cyan-100 px-2 text-[10px] font-bold text-cyan-700 disabled:opacity-45 dark:bg-cyan-900/35 dark:text-cyan-200"
                               >
                                 {isRefreshingCanvasAiOpenAiModels ? '刷新中' : '模型'}
@@ -33292,73 +33658,6 @@ useEffect(() => {
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseDown={(event) => event.stopPropagation()}
               />
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {showCanvasExitPrompt && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9999] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeCanvasExitPrompt(); }}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white p-4 shadow-2xl border border-stone-200 dark:border-stone-700 dark:bg-stone-900" onMouseDown={(event) => event.stopPropagation()}>
-              <div className="flex items-center gap-2 text-sm font-black text-stone-800 dark:text-stone-100">
-                <LayoutGrid className="h-4 w-4 text-amber-500" />
-                {canvasExitPromptStep === 'choice' ? '离开无限画布？' : '保存画布内容？'}
-              </div>
-              <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">
-                {canvasExitPromptStep === 'choice'
-                  ? `当前画布里有 ${canvasItems.length} 个元素。可以先切回抽屉，画布内容会保留，之后还能随时切回来继续整理。`
-                  : `直接退出会清空当前画布。保存后会新建一个临时画布文件夹，并把这些内容存入抽屉。`}
-              </p>
-              {canvasExitPromptStep === 'choice' ? (
-                <div className="mt-4 flex flex-wrap justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={closeCanvasExitPrompt}
-                    className="rounded-[16px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    onClick={requestDiscardCanvasMode}
-                    className="rounded-[16px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/45"
-                  >
-                    直接退出
-                  </button>
-                  <button
-                    type="button"
-                    onClick={leaveCanvasToDrawer}
-                    className="rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-600"
-                  >
-                    切换到抽屉
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-4 flex flex-wrap justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setCanvasExitPromptStep('choice')}
-                    className="rounded-[16px] bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-600 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
-                  >
-                    返回
-                  </button>
-                  <button
-                    type="button"
-                    onClick={discardCanvasMode}
-                    className="rounded-[16px] bg-red-50 px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/45"
-                  >
-                    不保存退出
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveCanvasToDrawer}
-                    className="rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-blue-600"
-                  >
-                    保存到临时文件夹
-                  </button>
-                </div>
-              )}
             </motion.div>
           </motion.div>
         )}

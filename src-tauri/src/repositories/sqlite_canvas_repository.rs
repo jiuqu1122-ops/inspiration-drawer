@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use crate::db::schema::{DEFAULT_LIBRARY_ID, DEFAULT_PROJECT_ID};
 use crate::repositories::asset_repository::ViewportOptions;
@@ -21,7 +21,12 @@ impl SqliteCanvasRepository {
 
     fn make_id(prefix: &str, seed: &str) -> String {
         let now = Self::now();
-        format!("{}-{}-{}", prefix, now, crate::stable_hash_hex(&format!("{}:{}:{}", prefix, now, seed)))
+        format!(
+            "{}-{}-{}",
+            prefix,
+            now,
+            crate::stable_hash_hex(&format!("{}:{}:{}", prefix, now, seed))
+        )
     }
 
     fn row_to_canvas(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
@@ -43,7 +48,11 @@ impl SqliteCanvasRepository {
         }))
     }
 
-    fn query_canvas(&self, canvas_id: &str, include_deleted: bool) -> Result<Option<Value>, String> {
+    fn query_canvas(
+        &self,
+        canvas_id: &str,
+        include_deleted: bool,
+    ) -> Result<Option<Value>, String> {
         let sql = if include_deleted {
             "SELECT id, project_id, library_id, name, description, thumbnail_path, sort_order, is_active, is_snapshot, source_canvas_id, created_at, updated_at, last_opened_at, deleted_at FROM canvases WHERE id = ?1"
         } else {
@@ -55,7 +64,10 @@ impl SqliteCanvasRepository {
             .map_err(|err| err.to_string())
     }
 
-    fn query_canvas_in_tx(tx: &rusqlite::Transaction<'_>, canvas_id: &str) -> Result<Option<Value>, String> {
+    fn query_canvas_in_tx(
+        tx: &rusqlite::Transaction<'_>,
+        canvas_id: &str,
+    ) -> Result<Option<Value>, String> {
         tx.query_row(
             "SELECT id, project_id, library_id, name, description, thumbnail_path, sort_order, is_active, is_snapshot, source_canvas_id, created_at, updated_at, last_opened_at, deleted_at FROM canvases WHERE id = ?1 AND deleted_at IS NULL",
             params![canvas_id],
@@ -172,7 +184,8 @@ impl SqliteCanvasRepository {
                     row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
                     row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
                     row.get::<_, Option<i64>>(7)?.unwrap_or(0),
-                    row.get::<_, Option<String>>(8)?.unwrap_or_else(|| "{}".to_string()),
+                    row.get::<_, Option<String>>(8)?
+                        .unwrap_or_else(|| "{}".to_string()),
                 ))
             })
             .map_err(|err| err.to_string())?
@@ -180,34 +193,50 @@ impl SqliteCanvasRepository {
             .map_err(|err| err.to_string())?;
         drop(stmt);
 
-        let id_map = rows.iter().enumerate().map(|(index, (source_node_id, _, _, _, _, _, _, _, _))| {
-            let target_node_id = format!(
-                "{}-copy-{}-{}",
-                source_node_id,
-                now,
-                crate::stable_hash_hex(&format!("{}:{}:{}", source_node_id, target_canvas_id, index))
-            );
-            (source_node_id.clone(), target_node_id)
-        }).collect::<HashMap<_, _>>();
+        let id_map = rows
+            .iter()
+            .enumerate()
+            .map(|(index, (source_node_id, _, _, _, _, _, _, _, _))| {
+                let target_node_id = format!(
+                    "{}-copy-{}-{}",
+                    source_node_id,
+                    now,
+                    crate::stable_hash_hex(&format!(
+                        "{}:{}:{}",
+                        source_node_id, target_canvas_id, index
+                    ))
+                );
+                (source_node_id.clone(), target_node_id)
+            })
+            .collect::<HashMap<_, _>>();
 
-        for (source_node_id, asset_id, x, y, width, height, rotation, z_index, metadata_json) in rows.iter() {
+        for (source_node_id, asset_id, x, y, width, height, rotation, z_index, metadata_json) in
+            rows.iter()
+        {
             let target_node_id = id_map
                 .get(source_node_id)
                 .cloned()
                 .ok_or_else(|| "copied canvas node id was not prepared".to_string())?;
-            let mut metadata = serde_json::from_str::<Value>(metadata_json).unwrap_or_else(|_| json!({}));
+            let mut metadata =
+                serde_json::from_str::<Value>(metadata_json).unwrap_or_else(|_| json!({}));
             if let Some(object) = metadata.as_object_mut() {
                 object.insert("id".to_string(), Value::String(target_node_id.clone()));
-                object.insert("sourceCanvasNodeId".to_string(), Value::String(source_node_id.clone()));
+                object.insert(
+                    "sourceCanvasNodeId".to_string(),
+                    Value::String(source_node_id.clone()),
+                );
                 if let Some(inputs) = object.get_mut("inputs").and_then(Value::as_array_mut) {
                     for input in inputs.iter_mut() {
-                        if let Some(remapped) = input.as_str().and_then(|input_id| id_map.get(input_id)) {
+                        if let Some(remapped) =
+                            input.as_str().and_then(|input_id| id_map.get(input_id))
+                        {
                             *input = Value::String(remapped.clone());
                         }
                     }
                 }
             }
-            let target_metadata_json = serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
+            let target_metadata_json =
+                serde_json::to_string(&metadata).map_err(|err| err.to_string())?;
             tx.execute(
                 r#"
                 INSERT INTO canvas_nodes
@@ -233,7 +262,12 @@ impl SqliteCanvasRepository {
         Ok(rows.len())
     }
 
-    fn create_copy(&self, canvas_id: &str, new_name: String, is_snapshot: bool) -> Result<Value, String> {
+    fn create_copy(
+        &self,
+        canvas_id: &str,
+        new_name: String,
+        is_snapshot: bool,
+    ) -> Result<Value, String> {
         let name = new_name.trim();
         if name.is_empty() {
             return Err("canvas name cannot be empty".to_string());
@@ -241,12 +275,30 @@ impl SqliteCanvasRepository {
         let Some(source) = self.query_canvas(canvas_id, false)? else {
             return Err("canvas not found".to_string());
         };
-        let project_id = source.get("projectId").and_then(Value::as_str).unwrap_or(DEFAULT_PROJECT_ID).to_string();
-        let library_id = source.get("libraryId").and_then(Value::as_str).unwrap_or(DEFAULT_LIBRARY_ID).to_string();
+        let project_id = source
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_PROJECT_ID)
+            .to_string();
+        let library_id = source
+            .get("libraryId")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_LIBRARY_ID)
+            .to_string();
         let now = Self::now();
-        let target_id = Self::make_id(if is_snapshot { "canvas-snapshot" } else { "canvas" }, &format!("{}:{}", canvas_id, name));
+        let target_id = Self::make_id(
+            if is_snapshot {
+                "canvas-snapshot"
+            } else {
+                "canvas"
+            },
+            &format!("{}:{}", canvas_id, name),
+        );
         let sort_order = self.max_sort_order(&project_id, &library_id)? + 1;
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         Self::create_canvas_row(
             &tx,
             &target_id,
@@ -364,7 +416,11 @@ impl CanvasRepository for SqliteCanvasRepository {
         self.create_copy(canvas_id, new_name, false)
     }
 
-    fn save_canvas_snapshot(&self, canvas_id: &str, snapshot_name: String) -> Result<Value, String> {
+    fn save_canvas_snapshot(
+        &self,
+        canvas_id: &str,
+        snapshot_name: String,
+    ) -> Result<Value, String> {
         self.create_copy(canvas_id, snapshot_name, true)
     }
 
@@ -385,13 +441,27 @@ impl CanvasRepository for SqliteCanvasRepository {
 
     fn soft_delete_canvas(&self, canvas_id: &str) -> Result<Value, String> {
         let now = Self::now();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let Some(canvas) = Self::query_canvas_in_tx(&tx, canvas_id)? else {
             return Err("canvas not found".to_string());
         };
-        let project_id = canvas.get("projectId").and_then(Value::as_str).unwrap_or(DEFAULT_PROJECT_ID).to_string();
-        let library_id = canvas.get("libraryId").and_then(Value::as_str).unwrap_or(DEFAULT_LIBRARY_ID).to_string();
-        let was_active = canvas.get("isActive").and_then(Value::as_bool).unwrap_or(false);
+        let project_id = canvas
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_PROJECT_ID)
+            .to_string();
+        let library_id = canvas
+            .get("libraryId")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_LIBRARY_ID)
+            .to_string();
+        let was_active = canvas
+            .get("isActive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         tx.execute(
             "UPDATE canvases SET deleted_at = ?2, updated_at = ?2, is_active = 0 WHERE id = ?1 AND deleted_at IS NULL",
             params![canvas_id, now],
@@ -400,9 +470,11 @@ impl CanvasRepository for SqliteCanvasRepository {
 
         let mut next_active_id = None;
         if was_active {
-            next_active_id = Self::select_replacement_canvas_in_tx(&tx, &project_id, &library_id, canvas_id)?;
+            next_active_id =
+                Self::select_replacement_canvas_in_tx(&tx, &project_id, &library_id, canvas_id)?;
             if next_active_id.is_none() {
-                let fallback_id = Self::make_id("canvas-default", &format!("{}:{}", project_id, library_id));
+                let fallback_id =
+                    Self::make_id("canvas-default", &format!("{}:{}", project_id, library_id));
                 tx.execute(
                     r#"
                     INSERT INTO canvases
@@ -447,12 +519,21 @@ impl CanvasRepository for SqliteCanvasRepository {
         if canvas.get("deletedAt").and_then(Value::as_i64).is_none() {
             return Err("canvas is not in trash".to_string());
         }
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let deleted_nodes = tx
-            .execute("DELETE FROM canvas_nodes WHERE canvas_id = ?1", params![canvas_id])
+            .execute(
+                "DELETE FROM canvas_nodes WHERE canvas_id = ?1",
+                params![canvas_id],
+            )
             .map_err(|err| err.to_string())?;
         let deleted_canvases = tx
-            .execute("DELETE FROM canvases WHERE id = ?1 AND deleted_at IS NOT NULL", params![canvas_id])
+            .execute(
+                "DELETE FROM canvases WHERE id = ?1 AND deleted_at IS NOT NULL",
+                params![canvas_id],
+            )
             .map_err(|err| err.to_string())?;
         tx.commit().map_err(|err| err.to_string())?;
         if deleted_canvases == 0 {
@@ -491,7 +572,10 @@ impl CanvasRepository for SqliteCanvasRepository {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| scope.normalized_library_id());
         let now = Self::now();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         tx.execute(
             "UPDATE canvases SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END, last_opened_at = CASE WHEN id = ?1 THEN ?2 ELSE last_opened_at END, updated_at = ?2 WHERE project_id = ?3 AND library_id = ?4 AND deleted_at IS NULL",
             params![canvas_id, now, project_id, library_id],
@@ -560,8 +644,10 @@ impl CanvasRepository for SqliteCanvasRepository {
         let top = options.viewport_y - buffer;
         let right = options.viewport_x + options.viewport_width + buffer;
         let bottom = options.viewport_y + options.viewport_height + buffer;
-        let mut stmt = self.conn.prepare(
-            r#"
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
             SELECT COALESCE(canvas_nodes.metadata_json, assets.metadata_json)
             FROM canvas_nodes
             LEFT JOIN assets ON assets.id = canvas_nodes.asset_id
@@ -574,15 +660,22 @@ impl CanvasRepository for SqliteCanvasRepository {
             ORDER BY canvas_nodes.z_index ASC, canvas_nodes.created_at ASC
             LIMIT 2000
             "#,
-        ).map_err(|err| err.to_string())?;
-        let rows = stmt.query_map(params![options.canvas_id, left, right, top, bottom], |row| {
-            let metadata: String = row.get(0)?;
-            Ok(metadata)
-        }).map_err(|err| err.to_string())?;
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![options.canvas_id, left, right, top, bottom],
+                |row| {
+                    let metadata: String = row.get(0)?;
+                    Ok(metadata)
+                },
+            )
+            .map_err(|err| err.to_string())?;
         rows.map(|row| {
             let metadata = row.map_err(|err| err.to_string())?;
             serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())
-        }).collect()
+        })
+        .collect()
     }
 
     fn update_canvas_nodes(&self, canvas_id: String, nodes: Vec<Value>) -> Result<usize, String> {
@@ -590,11 +683,20 @@ impl CanvasRepository for SqliteCanvasRepository {
             return Err("canvas not found".to_string());
         }
         let now = Self::now();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let mut ids = Vec::with_capacity(nodes.len());
         let mut written = 0_usize;
         for (index, node) in nodes.iter().enumerate() {
-            let id = crate::services::migration_service::insert_canvas_node_with_z_index(&tx, &canvas_id, node, now, index as i64)?;
+            let id = crate::services::migration_service::insert_canvas_node_with_z_index(
+                &tx,
+                &canvas_id,
+                node,
+                now,
+                index as i64,
+            )?;
             ids.push(id);
             written += 1;
         }
@@ -636,7 +738,10 @@ impl CanvasRepository for SqliteCanvasRepository {
             return Ok(0);
         }
         let now = Self::now();
-        let tx = self.conn.unchecked_transaction().map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
         let mut written = 0_usize;
         for node in nodes.iter() {
             let node_id = node.get("id").and_then(Value::as_str).unwrap_or_default();

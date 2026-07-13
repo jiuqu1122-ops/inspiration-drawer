@@ -46,9 +46,12 @@ pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection, Stri
     }
     backup_before_canvas_schema_migration(app_handle)?;
     let conn = Connection::open(path).map_err(|err| err.to_string())?;
-    conn.pragma_update(None, "foreign_keys", "ON").map_err(|err| err.to_string())?;
-    conn.pragma_update(None, "journal_mode", "WAL").map_err(|err| err.to_string())?;
-    conn.pragma_update(None, "synchronous", "NORMAL").map_err(|err| err.to_string())?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|err| err.to_string())?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|err| err.to_string())?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|err| err.to_string())?;
     ensure_schema(&conn)?;
     Ok(conn)
 }

@@ -23,6 +23,17 @@ export type AuthorizationRecord = {
   updatedAt: string;
   issueCount: number;
   lastOutputPath?: string | null;
+  aiMode?: string | null;
+  managedProvider?: string | null;
+  managedBaseUrl?: string | null;
+  managedModel?: string | null;
+  apiKeyLast4?: string | null;
+  apiKeyFingerprint?: string | null;
+  canvasProvider?: string | null;
+  canvasBaseUrl?: string | null;
+  canvasModel?: string | null;
+  canvasApiKeyLast4?: string | null;
+  canvasApiKeyFingerprint?: string | null;
 };
 
 type AuthorizationFilter = 'all' | 'valid' | 'expiring' | 'expired';
@@ -61,7 +72,24 @@ const authorizationHealth = (record: AuthorizationRecord): AuthorizationHealth =
 const EDITION_LABELS: Record<LicenseEdition, string> = {
   trial: '试用版',
   pro: '专业版',
-  enterprise: '企业版',
+  enterprise: '高级版',
+};
+
+const apiModeLabel = (mode?: string | null) => (
+  mode === 'license_managed' ? '高级版托管 API' : mode === 'byok' ? '用户 BYOK' : ''
+);
+
+const recordApiSummary = (record: AuthorizationRecord) => {
+  const mode = apiModeLabel(record.aiMode);
+  if (!mode) return '';
+  const parts = [mode];
+  if (record.managedProvider || record.managedModel || record.apiKeyLast4) {
+    parts.push(`Agent ${[record.managedProvider, record.managedModel, record.apiKeyLast4 ? `****${record.apiKeyLast4}` : ''].filter(Boolean).join(' / ')}`);
+  }
+  if (record.canvasProvider || record.canvasModel || record.canvasApiKeyLast4) {
+    parts.push(`画布 ${[record.canvasProvider, record.canvasModel, record.canvasApiKeyLast4 ? `****${record.canvasApiKeyLast4}` : ''].filter(Boolean).join(' / ')}`);
+  }
+  return parts.join(' · ');
 };
 
 const HEALTH_STYLES: Record<AuthorizationHealth, { label: string; className: string }> = {
@@ -220,6 +248,7 @@ export function LicenseManagementPanel({
           const health = authorizationHealth(record);
           const healthStyle = HEALTH_STYLES[health];
           const days = daysUntilExpiry(record.expireAt);
+          const apiSummary = recordApiSummary(record);
           return (
             <div
               key={`${record.product}:${record.machineId}`}
@@ -230,6 +259,11 @@ export function LicenseManagementPanel({
                 <div className="mt-0.5 truncate text-[11px] font-medium text-stone-500 dark:text-stone-400">
                   {record.product} · {EDITION_LABELS[record.edition]} · 签发 {record.issueCount} 次
                 </div>
+                {apiSummary && (
+                  <div className="mt-1 truncate text-[10px] font-bold text-cyan-700 dark:text-cyan-200" title={apiSummary}>
+                    {apiSummary}
+                  </div>
+                )}
               </div>
               <div className="min-w-0">
                 <div className="truncate font-mono text-xs font-bold" title={record.machineId}>{record.machineId}</div>

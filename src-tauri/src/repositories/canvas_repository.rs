@@ -38,7 +38,8 @@ pub trait CanvasRepository {
     fn get_canvas(&self, canvas_id: &str) -> Result<Option<Value>, String>;
     fn create_canvas(&self, scope: CanvasScope, name: String) -> Result<Value, String>;
     fn duplicate_canvas(&self, canvas_id: &str, new_name: String) -> Result<Value, String>;
-    fn save_canvas_snapshot(&self, canvas_id: &str, snapshot_name: String) -> Result<Value, String>;
+    fn save_canvas_snapshot(&self, canvas_id: &str, snapshot_name: String)
+        -> Result<Value, String>;
     fn rename_canvas(&self, canvas_id: &str, name: String) -> Result<Option<Value>, String>;
     fn soft_delete_canvas(&self, canvas_id: &str) -> Result<Value, String>;
     fn restore_canvas(&self, canvas_id: &str) -> Result<Option<Value>, String>;

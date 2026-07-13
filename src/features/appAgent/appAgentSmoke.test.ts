@@ -232,6 +232,42 @@ export function runAppAgentSmokeTests() {
   assert(industrialReviewTurn.trace.outputTypes?.includes('storyboard_or_video_key_visual') === true, 'trace should include storyboard/key visual output type');
 
   // strategy mode tests: use explicit "工业设计评审" to ensure correct routing
+  const multiReferenceContext: AgentCanvasContext = {
+    ...industrialReviewContext,
+    selectedIds: ['product-ref-a', 'product-ref-b'],
+    visualReferences: [
+      { id: 'product-ref-a-visual', nodeId: 'product-ref-a', name: 'product ref A', mediaType: 'image' },
+      { id: 'product-ref-b-visual', nodeId: 'product-ref-b', name: 'product ref B', mediaType: 'image' },
+    ],
+    nodes: [
+      { id: 'product-ref-a', type: 'image', name: 'product ref A', inputs: [] },
+      { id: 'product-ref-b', type: 'image', name: 'product ref B', inputs: [] },
+    ],
+  };
+  const multiReferenceRequest = 'Create an industrial design review workflow from these product references, strategy first, then generate a review suite';
+  const multiReferenceTurn = prepareAppAgentTurn({
+    userText: multiReferenceRequest,
+    context: multiReferenceContext,
+  });
+  const multiReferenceAction = getWorkflowDraftAction(multiReferenceTurn.deterministicLegacyActions);
+  const multiReferenceBindings = multiReferenceAction?.arguments.inputBindings as Record<string, unknown>;
+  const multiProductBinding = multiReferenceBindings?.product_reference_image as Record<string, unknown>;
+  const multiBoundNodeIds = Array.isArray(multiProductBinding?.nodeIds) ? multiProductBinding.nodeIds.map(String) : [];
+  assert(multiProductBinding?.kind === 'canvas_nodes', 'multi-reference workflow should bind product_reference_image as canvas_nodes');
+  assert(multiBoundNodeIds.includes('product-ref-a') && multiBoundNodeIds.includes('product-ref-b'), 'multi-reference workflow should preserve all selected product refs');
+  assert(multiReferenceTurn.trace.connectedReferenceImageNodeIds?.length === 2, 'trace should keep both connected reference image node ids');
+  assert(multiReferenceTurn.trace.workflowInputBindings?.product_reference_image?.length === 2, 'trace workflow input binding should keep both product refs');
+  const multiReferenceDefinition = getIndustrialReviewDraftDefinition(
+    multiReferenceTurn.deterministicLegacyActions,
+    ['product-ref-a', 'product-ref-b'],
+    multiReferenceRequest,
+  ).workflowDefinition;
+  const multiReferenceSteps = Array.isArray(multiReferenceDefinition?.steps) ? multiReferenceDefinition.steps as Array<Record<string, unknown>> : [];
+  const multiReferenceGenerators = multiReferenceSteps.filter(step => step.type === 'image_generator');
+  assert(multiReferenceDefinition?.strategyStepMode === 'enabled', 'multi-reference strategy-first workflow should enable strategy');
+  assert(multiReferenceGenerators.every(step => Array.isArray(step.visualInputStepIds) && step.visualInputStepIds.includes('product_reference_image')), 'multi-reference generators should keep direct visual bridge input');
+  assert(multiReferenceGenerators.every(step => Array.isArray(step.textInputStepIds) && step.textInputStepIds.includes('industrial_design_review_strategy')), 'multi-reference generators should depend on strategy text node');
+
   const strategyDisabledTurn = prepareAppAgentTurn({
     userText: '帮我设计一个工业设计评审工作流，根据参考产品图生成细节图、CMF图、场景图，不要分析，直接出图',
     context: industrialReviewContext,
