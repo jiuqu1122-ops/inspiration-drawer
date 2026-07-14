@@ -21622,10 +21622,11 @@ useEffect(() => {
     }
 
     if (isDrawerActive) {
-      // 启动欢迎页由专门的启动动画控制；这里不要再把状态重置成 pre_open。
-      if (!isStartupOverlayActive) {
-        setDrawerState(prev => (prev === 'open' ? 'open' : 'pre_open'));
-      }
+      // 启动覆盖层拥有独立且唯一的窗口打开/滑入序列。这里若继续调用
+      // open_drawer，会和启动 useLayoutEffect 竞争并反复回写开合状态。
+      if (isStartupOverlayActive) return;
+
+      setDrawerState(prev => (prev === 'open' ? 'open' : 'pre_open'));
 
       await invoke('open_drawer', {
         width: drawerWidthRef.current,
@@ -21659,7 +21660,7 @@ useEffect(() => {
     if (timer) clearTimeout(timer);
     if (frame !== null) cancelAnimationFrame(frame);
   };
-}, [isDrawerActive, snipMode.active, isSnipSessionActive]);
+}, [isDrawerActive, isStartupOverlayActive, snipMode.active, isSnipSessionActive]);
 
   // 兜底：只要前端状态已经是 closed，就再次把真实 Tauri 窗口压回 20px。
   // 这样即使上一轮动画/异步 resize 被打断，也不会留下一个透明的大命中框。
@@ -22579,25 +22580,12 @@ useEffect(() => {
     isPinnedRef.current = true;
     invoke('toggle_pin', { pinned: true }).catch(() => {});
 
-    setIsOpen(true);
-    setDrawerState('pre_open');
-
-    // main 自己负责启动时打开真实抽屉窗口，不再依赖 edge 的旧启动预览。
-    invoke('open_drawer', {
-      width: drawerWidthRef.current,
-      height: drawerHeightRef.current,
-      mode: triggerModeRef.current,
-    }).catch(() => {});
-    invoke('set_topmost', { topmost: true }).catch(() => {});
-
-    const frame = requestAnimationFrame(() => {
-      requestAnimationFrame(() => setDrawerState('open'));
-    });
+    // 真实窗口打开和 pre_open -> open 动画统一由上方的启动覆盖层 effect 控制。
+    // 此处只维护欢迎页锁定与倒计时，避免同一轮启动重播滑入动画。
 
     const timer = window.setTimeout(() => finishLaunchIntro(false, true), STARTUP_CONSENT_DELAY_MS);
 
     return () => {
-      cancelAnimationFrame(frame);
       window.clearTimeout(timer);
     };
   }, [showLaunchIntro]);

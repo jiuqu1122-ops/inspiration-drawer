@@ -350,6 +350,23 @@ fn is_startup_close_locked() -> bool {
     STARTUP_CLOSE_LOCK_UNTIL_MS.load(Ordering::Relaxed) > now_millis_u64()
 }
 
+fn should_suppress_edge_window(startup_locked: bool, main_visible: bool) -> bool {
+    startup_locked || main_visible
+}
+
+#[cfg(test)]
+mod startup_window_tests {
+    use super::should_suppress_edge_window;
+
+    #[test]
+    fn edge_stays_hidden_during_startup_or_while_main_is_visible() {
+        assert!(should_suppress_edge_window(true, false));
+        assert!(should_suppress_edge_window(false, true));
+        assert!(should_suppress_edge_window(true, true));
+        assert!(!should_suppress_edge_window(false, false));
+    }
+}
+
 #[tauri::command]
 fn set_startup_close_lock(ms: u64) {
     let until = if ms == 0 {
@@ -14294,7 +14311,11 @@ fn position_edge(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
-    if is_anti_touch_locked() {
+    let suppress_for_drawer = should_suppress_edge_window(
+        is_startup_close_locked(),
+        window_is_visible(&app_handle, "main"),
+    );
+    if is_anti_touch_locked() || suppress_for_drawer {
         if let Some(edge) = app_handle.get_webview_window("edge") {
             let _ = edge.hide();
         }
@@ -15467,6 +15488,10 @@ fn schedule_startup_edge_rescue(app: tauri::AppHandle) {
         {
             return;
         }
+
+        // Frontend failed to show the startup drawer within the rescue window.
+        // Release the startup guard so the edge fallback can become visible.
+        set_startup_close_lock(0);
 
         let height = app
             .get_webview_window("main")
