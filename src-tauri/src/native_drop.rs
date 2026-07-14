@@ -15,6 +15,7 @@ mod win {
     use std::time::Instant;
 
     use tauri::{AppHandle, Emitter};
+    use url::Url;
 
     use winapi::ctypes::c_void;
     use winapi::shared::guiddef::{GUID, REFIID};
@@ -65,6 +66,7 @@ mod win {
     pub struct NativeWebImage {
         pub url: String,
         pub name: Option<String>,
+        pub fallback_urls: Vec<String>,
     }
 
     #[derive(Debug, Clone, Serialize)]
@@ -206,29 +208,41 @@ mod win {
             let mut payload = parse_data_object(data_object);
             payload.source = target.label.clone();
 
-            if !payload.paths.is_empty() || !payload.web_images.is_empty() {
-                let _ = target.app.emit("native-drop", payload);
-            } else {
-                let formats = virtual_drop::inspect_formats(data_object);
-                let source_formats = formats.names();
-                if formats.file_descriptor && formats.file_contents {
-                    let drop_position = if pt.is_null() {
-                        None
-                    } else {
-                        Some(((*pt).x, (*pt).y))
-                    };
-                    if let Err(err) = virtual_drop::enqueue_from_drop(
-                        &target.app,
-                        data_object,
-                        target.label.clone(),
-                        source_formats,
-                        drop_position,
-                    ) {
-                        eprintln!("virtual drop enqueue failed: {err}");
-                    }
-                } else if !payload.texts.is_empty() {
-                    let _ = target.app.emit("native-drop", payload);
+            let formats = virtual_drop::inspect_formats(data_object);
+            let has_virtual_file = formats.file_descriptor && formats.file_contents;
+            let needs_web_file_fallback = payload.paths.is_empty()
+                && has_virtual_file
+                && payload
+                    .web_images
+                    .iter()
+                    .any(|image| should_use_virtual_file_fallback(&image.url));
+            let has_primary_payload = !payload.paths.is_empty() || !payload.web_images.is_empty();
+            if has_primary_payload {
+                let _ = target.app.emit("native-drop", payload.clone());
+            }
+
+            if (!has_primary_payload && has_virtual_file) || needs_web_file_fallback {
+                let drop_position = if pt.is_null() {
+                    None
+                } else {
+                    Some(((*pt).x, (*pt).y))
+                };
+                let source = if needs_web_file_fallback {
+                    format!("{}/web-fallback", target.label)
+                } else {
+                    target.label.clone()
+                };
+                if let Err(err) = virtual_drop::enqueue_from_drop(
+                    &target.app,
+                    data_object,
+                    source,
+                    formats.names(),
+                    drop_position,
+                ) {
+                    eprintln!("virtual drop enqueue failed: {err}");
                 }
+            } else if !has_primary_payload && !payload.texts.is_empty() {
+                let _ = target.app.emit("native-drop", payload);
             }
 
             virtual_drop::diagnostics::warn_slow_drop(&target.label, callback_started.elapsed());
@@ -373,13 +387,17 @@ mod win {
             }
         }
 
-        let mut seen = std::collections::HashSet::<String>::new();
-        for raw in candidates {
-            for url in extract_urls_from_drag_text(&raw) {
-                if looks_like_image_url(&url) && seen.insert(url.clone()) {
-                    payload.web_images.push(NativeWebImage { url, name: None });
-                }
-            }
+        if let Some(mut urls) = candidates
+            .iter()
+            .map(|raw| extract_urls_from_drag_text(raw))
+            .find(|urls| !urls.is_empty())
+        {
+            let url = urls.remove(0);
+            payload.web_images.push(NativeWebImage {
+                url,
+                name: None,
+                fallback_urls: urls.into_iter().take(6).collect(),
+            });
         }
 
         payload
@@ -555,78 +573,351 @@ mod win {
         }
     }
 
-    fn extract_urls_from_drag_text(input: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        let text = decode_html_entities(input);
-        let lower_text: String = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    #[derive(Debug)]
+    struct DragUrlCandidate {
+        value: String,
+        priority: i32,
+        order: usize,
+    }
 
-        for attr in ["src=", "data-src=", "href="] {
-            let mut search_from = 0usize;
-            while search_from < lower_text.len() {
-                let Some(haystack) = lower_text.get(search_from..) else {
-                    break;
-                };
-                let Some(rel_idx) = haystack.find(attr) else {
-                    break;
-                };
-                let idx = search_from + rel_idx + attr.len();
-                let Some(after_attr) = text.get(idx..) else {
-                    break;
-                };
-                let trimmed = after_attr.trim_start();
-                if let Some(first) = trimmed.chars().next() {
-                    if first == '"' || first == '\'' {
-                        if let Some(after_quote) = trimmed.get(1..) {
-                            if let Some(end) = after_quote.find(first) {
-                                if let Some(value) = trimmed.get(1..(1 + end)) {
-                                    out.push(value.to_string());
-                                }
-                                search_from = idx.saturating_add(1 + end).min(lower_text.len());
-                                continue;
-                            }
-                        }
-                    }
+    fn extract_urls_from_drag_text(input: &str) -> Vec<String> {
+        let text = decode_drag_text(input);
+        let mut candidates = Vec::<DragUrlCandidate>::new();
+        let mut order = 0usize;
+        let mut push = |value: String, priority: i32| {
+            if !value.trim().is_empty() {
+                order += 1;
+                candidates.push(DragUrlCandidate {
+                    value,
+                    priority,
+                    order,
+                });
+            }
+        };
+
+        for (name, priority) in [
+            ("data-objurl", 120),
+            ("objurl", 120),
+            ("data-imgurl", 115),
+            ("imgurl", 115),
+            ("data-image-url", 115),
+            ("imageurl", 115),
+            ("data-original", 110),
+            ("data-original-src", 110),
+            ("data-hover-url", 105),
+            ("hover-url", 105),
+            ("data-middle-url", 105),
+            ("middle-url", 105),
+            ("data-lazy-src", 90),
+            ("data-src", 85),
+            ("src", 75),
+            ("data-thumburl", 65),
+            ("thumburl", 65),
+            ("data-thumbnail", 65),
+            ("thumbnail", 65),
+            ("href", 10),
+        ] {
+            for value in extract_named_assignment_values(&text, name, b'=') {
+                push(value, priority);
+            }
+        }
+
+        for (name, priority) in [("data-srcset", 80), ("srcset", 80)] {
+            for value in extract_named_assignment_values(&text, name, b'=') {
+                for (index, url) in extract_srcset_urls(&value).into_iter().enumerate() {
+                    push(url, priority + index as i32);
                 }
-                search_from = idx.saturating_add(1).min(lower_text.len());
+            }
+        }
+
+        for (name, priority) in [
+            ("objurl", 120),
+            ("imgurl", 115),
+            ("imageurl", 115),
+            ("original", 110),
+            ("originalurl", 110),
+            ("hoverurl", 105),
+            ("middleurl", 105),
+            ("replaceurl", 100),
+            ("src", 75),
+            ("thumburl", 65),
+            ("thumbnail", 65),
+        ] {
+            for value in extract_named_assignment_values(&text, name, b':') {
+                push(value, priority);
             }
         }
 
         for line in text.lines() {
             let line = line.trim();
-            if line.starts_with('#') || line.is_empty() {
+            if !line.starts_with('#')
+                && (line.starts_with("http://")
+                    || line.starts_with("https://")
+                    || line.to_ascii_lowercase().starts_with("http%")
+                    || line.starts_with("data:image/"))
+            {
+                push(line.to_string(), 30);
+            }
+        }
+
+        for value in extract_embedded_urls(&text) {
+            push(value, 0);
+        }
+
+        let mut ranked = candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let value = normalize_url_candidate(candidate.value);
+                let score = image_candidate_score(&value, candidate.priority);
+                (score >= 55).then_some((value, score, candidate.order))
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| right.1.cmp(&left.1).then(left.2.cmp(&right.2)));
+
+        let mut seen = std::collections::HashSet::<String>::new();
+        ranked
+            .into_iter()
+            .filter_map(|(value, _, _)| seen.insert(value.clone()).then_some(value))
+            .collect()
+    }
+
+    fn decode_drag_text(value: &str) -> String {
+        let mut current = decode_html_entities(value);
+        for _ in 0..3 {
+            let decoded = current
+                .replace("\\u003a", ":")
+                .replace("\\u003A", ":")
+                .replace("\\u002f", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u0026", "&")
+                .replace("\\u003d", "=")
+                .replace("\\u003D", "=")
+                .replace("\\u003f", "?")
+                .replace("\\u003F", "?")
+                .replace("\\u0025", "%")
+                .replace("\\u0023", "#")
+                .replace("\\/", "/")
+                .replace("\\\"", "\"")
+                .replace("\\'", "'");
+            if decoded == current {
+                break;
+            }
+            current = decoded;
+        }
+        current
+    }
+
+    fn extract_named_assignment_values(input: &str, name: &str, delimiter: u8) -> Vec<String> {
+        let lower = input.to_ascii_lowercase();
+        let bytes = input.as_bytes();
+        let lower_bytes = lower.as_bytes();
+        let name_bytes = name.as_bytes();
+        let mut values = Vec::new();
+        let mut search_from = 0usize;
+
+        while search_from < lower_bytes.len() {
+            let Some(relative) = lower.get(search_from..).and_then(|tail| tail.find(name)) else {
+                break;
+            };
+            let start = search_from + relative;
+            let end = start + name_bytes.len();
+            search_from = end;
+
+            if start > 0 && is_assignment_name_byte(lower_bytes[start - 1]) {
                 continue;
             }
-            if line.starts_with("http://")
-                || line.starts_with("https://")
-                || line.starts_with("data:image/")
-            {
-                out.push(line.trim_matches(['\'', '"']).to_string());
+            if end < lower_bytes.len() && is_assignment_name_byte(lower_bytes[end]) {
+                continue;
             }
+
+            let mut cursor = end;
+            if matches!(bytes.get(cursor).copied(), Some(b'\'' | b'"')) {
+                cursor += 1;
+            }
+            while matches!(bytes.get(cursor).copied(), Some(byte) if byte.is_ascii_whitespace()) {
+                cursor += 1;
+            }
+            if bytes.get(cursor).copied() != Some(delimiter) {
+                continue;
+            }
+            cursor += 1;
+            while matches!(bytes.get(cursor).copied(), Some(byte) if byte.is_ascii_whitespace()) {
+                cursor += 1;
+            }
+
+            let quote = bytes
+                .get(cursor)
+                .copied()
+                .filter(|byte| matches!(byte, b'\'' | b'"'));
+            if quote.is_some() {
+                cursor += 1;
+            }
+            let value_start = cursor;
+            while cursor < bytes.len() {
+                let byte = bytes[cursor];
+                if quote
+                    .map(|expected| byte == expected)
+                    .unwrap_or_else(|| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'}'))
+                {
+                    break;
+                }
+                cursor += 1;
+            }
+            if cursor > value_start {
+                values.push(input[value_start..cursor].to_string());
+            }
+            search_from = cursor.saturating_add(1);
         }
 
-        for token in
-            text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>')
+        values
+    }
+
+    fn is_assignment_name_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+    }
+
+    fn extract_srcset_urls(value: &str) -> Vec<String> {
+        let mut segments = Vec::new();
+        let mut start = 0usize;
+        for (index, _) in value.match_indices(',') {
+            let remainder = value[index + 1..].trim_start();
+            if remainder.starts_with("http://")
+                || remainder.starts_with("https://")
+                || remainder.starts_with("data:")
+                || remainder.starts_with("//")
+            {
+                segments.push(&value[start..index]);
+                start = index + 1;
+            }
+        }
+        segments.push(&value[start..]);
+        segments
+            .into_iter()
+            .filter_map(|segment| segment.split_whitespace().next())
+            .filter(|url| !url.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn extract_embedded_urls(input: &str) -> Vec<String> {
+        let lower = input.to_ascii_lowercase();
+        let mut matches = Vec::<(usize, String)>::new();
+        for prefix in [
+            "https://",
+            "http://",
+            "data:image/",
+            "https%3a%2f%2f",
+            "http%3a%2f%2f",
+            "https%25",
+            "http%25",
+        ] {
+            let mut search_from = 0usize;
+            while search_from < lower.len() {
+                let Some(relative) = lower.get(search_from..).and_then(|tail| tail.find(prefix))
+                else {
+                    break;
+                };
+                let start = search_from + relative;
+                let mut end = start + prefix.len();
+                while let Some(byte) = input.as_bytes().get(end) {
+                    if byte.is_ascii_whitespace()
+                        || matches!(byte, b'\'' | b'"' | b'<' | b'>' | b'\\' | b')' | b'}')
+                    {
+                        break;
+                    }
+                    end += 1;
+                }
+                matches.push((start, input[start..end].to_string()));
+                search_from = end.max(start + 1);
+            }
+        }
+        matches.sort_by_key(|(index, _)| *index);
+        matches.into_iter().map(|(_, value)| value).collect()
+    }
+
+    fn image_candidate_score(value: &str, priority: i32) -> i32 {
+        if value.is_empty() || is_baidu_search_page_url(value) {
+            return -10000;
+        }
+        let lower = value.to_ascii_lowercase();
+        if lower.starts_with("data:image/") {
+            return if value.len() < 160 || value.contains("R0lGODlhAQABA") {
+                priority - 200
+            } else {
+                priority + 90
+            };
+        }
+
+        let mut score = priority;
+        if has_image_extension_in_url(&lower) {
+            score += 100;
+        }
+        if looks_like_image_endpoint(&lower) {
+            score += 80;
+        }
+        if is_baidu_image_cdn_url(&lower) {
+            score += 200;
+        }
+        if image_like_url_host(&lower) {
+            score += 60;
+        }
+        if lower.starts_with("https://") {
+            score += 5;
+        }
+        if ["blank", "transparent", "placeholder", "loading"]
+            .iter()
+            .any(|token| lower.contains(token))
         {
-            let token = token.trim_matches([')', '(', ',', ';']);
-            if token.starts_with("http://")
-                || token.starts_with("https://")
-                || token.starts_with("data:image/")
-            {
-                out.push(token.to_string());
-            }
+            score -= 80;
         }
+        score
+    }
 
-        dedupe(
-            out.into_iter()
-                .map(normalize_url_candidate)
-                .filter(|s| !s.is_empty())
-                .collect(),
-        )
+    fn is_baidu_search_page_url(value: &str) -> bool {
+        Url::parse(value)
+            .ok()
+            .map(|parsed| {
+                parsed.host_str() == Some("image.baidu.com")
+                    && (parsed.path().starts_with("/search/index")
+                        || parsed.path().starts_with("/search/detail"))
+            })
+            .unwrap_or(false)
+    }
+
+    fn image_like_url_host(lower_url: &str) -> bool {
+        Url::parse(lower_url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(is_image_like_host))
+            .unwrap_or(false)
+    }
+
+    fn should_use_virtual_file_fallback(value: &str) -> bool {
+        Url::parse(value)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+            .map(|host| {
+                host == "699pic.com"
+                    || host.ends_with(".699pic.com")
+                    || host == "90sjimg.com"
+                    || host.ends_with(".90sjimg.com")
+            })
+            .unwrap_or(false)
+    }
+
+    fn is_baidu_image_cdn_url(lower_url: &str) -> bool {
+        Url::parse(lower_url)
+            .ok()
+            .and_then(|parsed| {
+                let host = parsed.host_str()?;
+                Some(is_baidu_image_cdn(host, parsed.path()))
+            })
+            .unwrap_or(false)
     }
 
     fn looks_like_image_url(url: &str) -> bool {
         let lower = url.trim().to_ascii_lowercase();
         lower.starts_with("data:image/")
+            || has_image_extension_in_url(&lower)
             || lower.ends_with(".png")
             || lower.ends_with(".jpg")
             || lower.ends_with(".jpeg")
@@ -657,8 +948,119 @@ mod win {
             || lower.contains("format=webp")
             || lower.contains("format=gif")
             || lower.contains("format=avif")
-            || lower.contains("image")
+            || contains_image_format_parameter(&lower)
+            || (image_like_url_host(&lower) && !is_baidu_search_page_url(&lower))
             || looks_like_image_endpoint(&lower)
+    }
+
+    fn extract_nested_image_url(value: &str) -> Option<String> {
+        let parsed = Url::parse(value.trim()).ok()?;
+        let mut candidates = Vec::new();
+        for (key, param_value) in parsed.query_pairs() {
+            if !is_nested_image_url_param(&key) {
+                continue;
+            }
+            let decoded = decode_url_component_loose(&param_value)
+                .trim()
+                .trim_matches(['\'', '"'])
+                .to_string();
+            if decoded.starts_with("http://") || decoded.starts_with("https://") {
+                candidates.push(decoded);
+            }
+        }
+        candidates.into_iter().find(|candidate| {
+            looks_like_image_url(candidate) || has_image_extension_in_url(candidate)
+        })
+    }
+
+    fn is_nested_image_url_param(key: &str) -> bool {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "objurl"
+                | "imgurl"
+                | "imageurl"
+                | "mediaurl"
+                | "thumbnail"
+                | "thumburl"
+                | "picurl"
+                | "hoverurl"
+                | "middleurl"
+                | "originalurl"
+                | "replaceurl"
+                | "src"
+        )
+    }
+
+    fn decode_url_component_loose(value: &str) -> String {
+        let mut current = value.to_string();
+        for _ in 0..3 {
+            let decoded = percent_decode_once(&current);
+            if decoded == current {
+                break;
+            }
+            current = decoded;
+        }
+        current
+    }
+
+    fn percent_decode_once(value: &str) -> String {
+        let bytes = value.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut index = 0usize;
+        let mut changed = false;
+        while index < bytes.len() {
+            if bytes[index] == b'%' && index + 2 < bytes.len() {
+                if let (Some(high), Some(low)) =
+                    (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+                {
+                    out.push((high << 4) | low);
+                    index += 3;
+                    changed = true;
+                    continue;
+                }
+            }
+            out.push(bytes[index]);
+            index += 1;
+        }
+        if changed {
+            String::from_utf8_lossy(&out).to_string()
+        } else {
+            value.to_string()
+        }
+    }
+
+    fn hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn has_image_extension_in_url(value: &str) -> bool {
+        let lower = value.to_ascii_lowercase();
+        [
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".svg",
+        ]
+        .iter()
+        .any(|ext| {
+            lower
+                .find(ext)
+                .map(|idx| {
+                    let next = lower.as_bytes().get(idx + ext.len()).copied();
+                    matches!(
+                        next,
+                        None | Some(b'/')
+                            | Some(b'?')
+                            | Some(b'#')
+                            | Some(b'!')
+                            | Some(b'&')
+                            | Some(b':')
+                    )
+                })
+                .unwrap_or(false)
+        })
     }
 
     fn looks_like_image_endpoint(lower_url: &str) -> bool {
@@ -679,10 +1081,10 @@ mod win {
         {
             return true;
         }
-        if host == "huabanimg.com"
-            || host.ends_with(".huabanimg.com")
-            || host.contains("hbimg")
-        {
+        if is_baidu_image_cdn(host, suffix) {
+            return true;
+        }
+        if host == "huabanimg.com" || host.ends_with(".huabanimg.com") || host.contains("hbimg") {
             return true;
         }
         if (host == "huaban.com" || host.ends_with(".huaban.com"))
@@ -690,16 +1092,73 @@ mod win {
         {
             return true;
         }
+        if is_image_like_host(host) && contains_image_format_parameter(suffix) {
+            return true;
+        }
 
         suffix.contains("imgurl=")
             || suffix.contains("mediaurl=")
             || suffix.contains("imageurl=")
             || suffix.contains("thumbnail=")
+            || contains_image_format_parameter(suffix)
             || suffix.contains("/image/")
             || suffix.contains("/images/")
             || suffix.contains("/img/")
             || suffix.contains("/thumb/")
             || suffix.contains("/thumbnail/")
+    }
+
+    fn is_baidu_image_cdn(host: &str, suffix: &str) -> bool {
+        host.strip_prefix("img")
+            .and_then(|rest| rest.strip_suffix(".baidu.com"))
+            .map(|middle| middle.is_empty() || middle.chars().all(|ch| ch.is_ascii_digit()))
+            .unwrap_or(false)
+            && suffix.starts_with("/it/")
+    }
+
+    fn is_image_like_host(host: &str) -> bool {
+        host.starts_with("img") || host.contains(".img.") || host.contains("image")
+    }
+
+    fn contains_image_format_parameter(value: &str) -> bool {
+        value.split(['?', '&', ';']).any(|part| {
+            let Some((raw_key, raw_value)) = part.split_once('=') else {
+                return false;
+            };
+            let key = raw_key
+                .rsplit('/')
+                .next()
+                .unwrap_or(raw_key)
+                .trim()
+                .to_ascii_lowercase();
+            matches!(
+                key.as_str(),
+                "format"
+                    | "fmt"
+                    | "f"
+                    | "type"
+                    | "mime"
+                    | "mimetype"
+                    | "content-type"
+                    | "filetype"
+                    | "ext"
+            ) && has_image_format_hint(raw_value)
+        })
+    }
+
+    fn has_image_format_hint(value: &str) -> bool {
+        let lower = value.to_ascii_lowercase();
+        if lower.contains("image/") || lower.contains("image%2f") {
+            return true;
+        }
+        lower
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|token| {
+                matches!(
+                    token,
+                    "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "svg"
+                )
+            })
     }
 
     fn looks_like_huaban_pin_suffix(suffix: &str) -> bool {
@@ -713,11 +1172,31 @@ mod win {
     }
 
     fn normalize_url_candidate(value: String) -> String {
-        value
+        let mut normalized = decode_drag_text(&value)
             .trim()
             .trim_matches(['\'', '"'])
-            .trim_end_matches([')', ',', ';'])
-            .replace("&amp;", "&")
+            .trim_end_matches([')', '}', ']', '\\', ',', ';'])
+            .to_string();
+        let lower = normalized.to_ascii_lowercase();
+        let encoded_protocol = lower.starts_with("http%") || lower.starts_with("https%");
+        if encoded_protocol {
+            normalized = decode_url_component_loose(&normalized);
+            normalized = trim_baidu_detail_query_tail(normalized);
+        }
+        if normalized.starts_with("//") {
+            normalized = format!("https:{normalized}");
+        }
+        extract_nested_image_url(&normalized).unwrap_or(normalized)
+    }
+
+    fn trim_baidu_detail_query_tail(value: String) -> String {
+        let lower = value.to_ascii_lowercase();
+        ["&os=", "&pd=", "&pi=", "&pn=", "&rn=", "&simid=", "&tn=", "&width=", "&word=", "&z="]
+            .iter()
+            .filter_map(|marker| lower.find(marker))
+            .min()
+            .map(|index| value[..index].to_string())
+            .unwrap_or(value)
     }
 
     fn decode_html_entities(value: &str) -> String {
@@ -747,6 +1226,72 @@ mod win {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{extract_urls_from_drag_text, should_use_virtual_file_fallback};
+
+        #[test]
+        fn extracts_percent_encoded_baidu_data_objurl_before_placeholder() {
+            let html = r#"<a href="https://image.baidu.com/search/index?tn=baiduimage&word=s"><img src="https://image.baidu.com/static/blank.gif" data-objurl="https%3A%2F%2Fimg95.699pic.com%2Fxsj%2F0p%2Fb3%2Fur.jpg%21%2Ffh%2F300"></a>"#;
+            let urls = extract_urls_from_drag_text(html);
+            assert_eq!(
+                urls.first().map(String::as_str),
+                Some("https://img95.699pic.com/xsj/0p/b3/ur.jpg!/fh/300")
+            );
+        }
+
+        #[test]
+        fn extracts_escaped_baidu_objurl_json() {
+            let html = r#"<div data-state=\"{\\\"objURL\\\":\\\"https:\\/\\/img2.baidu.com\\/it\\/u=3840004386,1451325835&amp;fm=253&amp;fmt=auto&amp;f=JPEG?w=500&amp;h=700\\\"}\"></div>"#;
+            let urls = extract_urls_from_drag_text(html);
+            assert_eq!(
+                urls.first().map(String::as_str),
+                Some("https://img2.baidu.com/it/u=3840004386,1451325835&fm=253&fmt=auto&f=JPEG?w=500&h=700")
+            );
+        }
+
+        #[test]
+        fn prefers_accessible_baidu_cached_tile_over_source_image() {
+            let html = r#"<a href="https://image.baidu.com/search/detail?tn=baiduimagedetail"><img src="https://img2.baidu.com/it/u=3840004386,1451325835&amp;fm=253&amp;fmt=auto&amp;f=JPEG?w=500&amp;h=700" data-objurl="https://img95.699pic.com/xsj/0p/b3/ur.jpg!/fh/300"></a>"#;
+            let urls = extract_urls_from_drag_text(html);
+            assert_eq!(
+                urls.first().map(String::as_str),
+                Some("https://img2.baidu.com/it/u=3840004386,1451325835&fm=253&fmt=auto&f=JPEG?w=500&h=700")
+            );
+        }
+
+        #[test]
+        fn rejects_plain_baidu_search_page() {
+            let urls = extract_urls_from_drag_text(
+                "https://image.baidu.com/search/index?tn=baiduimage&word=s",
+            );
+            assert!(urls.is_empty());
+        }
+
+        #[test]
+        fn decodes_detached_double_encoded_baidu_objurl() {
+            let raw = "https%253A%252F%252Fku.90sjimg.com%252Felement_origin_min_pic%252F17%252F08%252F14%252Ff07d382fe836fbf9657581b5ac57ca51.jpg&os=828300594%2C37046194&pd=image_content&pn=5&tn=baiduimagedetail";
+            let urls = extract_urls_from_drag_text(raw);
+            assert_eq!(
+                urls.first().map(String::as_str),
+                Some("https://ku.90sjimg.com/element_origin_min_pic/17/08/14/f07d382fe836fbf9657581b5ac57ca51.jpg")
+            );
+        }
+
+        #[test]
+        fn uses_virtual_file_fallback_for_blocked_image_hosts() {
+            assert!(should_use_virtual_file_fallback(
+                "https://img95.699pic.com/xsj/0p/b3/ur.jpg!/fh/300"
+            ));
+            assert!(should_use_virtual_file_fallback(
+                "https://ku.90sjimg.com/example.jpg"
+            ));
+            assert!(!should_use_virtual_file_fallback(
+                "https://img2.baidu.com/it/u=1,2&f=JPEG"
+            ));
+        }
     }
 }
 

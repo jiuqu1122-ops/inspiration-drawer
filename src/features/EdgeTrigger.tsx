@@ -9,7 +9,12 @@ import { listen, emitTo } from '@tauri-apps/api/event';
 import { clamp } from './common';
 import { clearLegacyStartupFlags } from './startup';
 import { getStoredDrawerSize } from './drawerPrefs';
-import { getWebImageFromDataTransfer, normalizeDraggedUrl } from './dragData';
+import {
+  getImageFileFromDataTransfer,
+  getWebImageFromDataTransfer,
+  normalizeDraggedUrl,
+  readImageFileAsDataUrl,
+} from './dragData';
 import {
   EDGE_HOVER_OPEN_DELAY,
   EDGE_STRIP_HEIGHT,
@@ -168,6 +173,9 @@ export function EdgeTrigger() {
   const hasBrowserImageDragData = (dt?: DataTransfer | null) => {
     if (!dt) return false;
     const types = Array.from(dt.types || []);
+    const image = getWebImageFromDataTransfer(dt);
+    const imageUrl = image?.url ? normalizeDraggedUrl(image.url) : '';
+    if (/^(https?:|data:image\/)/i.test(imageUrl)) return true;
 
     // 从浏览器拖图片时，Chrome/Edge 常见类型是 DownloadURL 或 text/html；
     // 即使同时带有 Files，也要优先按网页图片处理，否则抽屉提前展开后会丢失 URL 数据。
@@ -181,7 +189,7 @@ export function EdgeTrigger() {
 
   const hasWebImageDragData = (dt?: DataTransfer | null) => hasBrowserImageDragData(dt);
 
-  const sendWebDropToMain = (dt?: DataTransfer | null) => {
+  const sendWebDropToMain = async (dt?: DataTransfer | null) => {
     const image = getWebImageFromDataTransfer(dt);
     const imageUrl = image?.url ? normalizeDraggedUrl(image.url) : '';
 
@@ -189,6 +197,20 @@ export function EdgeTrigger() {
     // 之前先处理 Files，会把浏览器/Tauri 默认临时路径当成本地文件保存，导致自定义缓存目录完全不生效。
     // 这里必须优先按网页图片 URL 处理，让 main 侧统一调用 cache_web_image_to_dir 写入用户设置的缓存目录。
     if (image?.url && /^(https?:|data:image\/)/i.test(imageUrl)) {
+      const imageFile = getImageFileFromDataTransfer(dt);
+      if (imageFile && imageFile.size > 0) {
+        try {
+          const dataUrl = await readImageFileAsDataUrl(imageFile);
+          emitTo('main', 'edge-web-image-dropped', {
+            url: dataUrl,
+            name: imageFile.name || image.name,
+            fallbackUrls: [image.url, ...(image.fallbackUrls || [])],
+          }).catch(() => {});
+          return;
+        } catch (_) {
+          // Continue with URL candidates when the file item cannot be read.
+        }
+      }
       emitTo('main', 'edge-web-image-dropped', image).catch(() => {});
       return;
     }
@@ -339,7 +361,7 @@ export function EdgeTrigger() {
 
         if (isDrop) {
           clearFloatHoverOpenTimer();
-          sendWebDropToMain(event.dataTransfer);
+          void sendWebDropToMain(event.dataTransfer);
           // 网页图片在 edge/悬浮方块上松手后再展开抽屉，避免抽屉打开后
           // edge 被隐藏，导致 drop 事件落到 main 原生拖拽层而丢失 URL 数据。
           startDragOpenBurst(event.dataTransfer);

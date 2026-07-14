@@ -224,10 +224,12 @@ import {
 import { EDGE_WIDTH, getStoredTriggerMode, type TriggerMode } from './features/triggerModel';
 import {
   getFileExtension,
+  getImageFileFromDataTransfer,
   getNameFromUrl,
   getWebImageFromDataTransfer,
   isProbablyUrl,
   normalizeDraggedUrl,
+  readImageFileAsDataUrl,
 } from './features/dragData';
 import {
   AODUO_AI_ENDPOINT_DEFAULT,
@@ -3381,8 +3383,18 @@ const readImageDisplaySize = (src: string) => new Promise<{ width: number; heigh
     return;
   }
   const image = new window.Image();
-  image.onload = () => resolve(getCanvasInitialImageSize(image.naturalWidth, image.naturalHeight));
-  image.onerror = () => resolve(getCanvasInitialImageSize());
+  let settled = false;
+  const finish = (size: { width: number; height: number }) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timer);
+    image.onload = null;
+    image.onerror = null;
+    resolve(size);
+  };
+  const timer = window.setTimeout(() => finish(getCanvasInitialImageSize()), 1800);
+  image.onload = () => finish(getCanvasInitialImageSize(image.naturalWidth, image.naturalHeight));
+  image.onerror = () => finish(getCanvasInitialImageSize());
   image.decoding = 'async';
   image.src = src;
 });
@@ -4483,6 +4495,7 @@ function MainApp() {
 
   const [isOpen, setIsOpen] = useState(shouldShowInitialLaunchIntro);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const externalDragResetTimerRef = useRef<number | null>(null);
   const [triggerMode, setTriggerMode] = useState<TriggerMode>(() => getStoredTriggerMode());
   const triggerModeRef = useRef<TriggerMode>(triggerMode);
   useEffect(() => { triggerModeRef.current = triggerMode; }, [triggerMode]);
@@ -4502,6 +4515,13 @@ function MainApp() {
   const lastDroppedPathsKeyRef = useRef('');
   const lastWebImageUrlRef = useRef('');
   const lastWebImageDropAtRef = useRef(0);
+  const lastAcceptedWebImageRef = useRef<{
+    id: string;
+    location: 'drawer' | 'canvas';
+    inline: boolean;
+    at: number;
+  } | null>(null);
+  const supersededWebImageItemIdsRef = useRef(new Set<string>());
   const [isShortcutReveal, setIsShortcutReveal] = useState(false);
   const shortcutRevealTimerRef = useRef<any | null>(null);
 
@@ -4514,7 +4534,45 @@ function MainApp() {
     }, 420);
   };
 
+  const clearExternalDragResetTimer = () => {
+    if (externalDragResetTimerRef.current !== null) {
+      window.clearTimeout(externalDragResetTimerRef.current);
+      externalDragResetTimerRef.current = null;
+    }
+  };
+
+  const setExternalDragActive = (active: boolean) => {
+    clearExternalDragResetTimer();
+    setIsDraggingOver(active);
+    externalDragResetTimerRef.current = window.setTimeout(() => {
+      externalDragResetTimerRef.current = null;
+      setIsDraggingOver(false);
+      void Promise.all([
+        cursorPosition(),
+        appWindow.outerPosition(),
+        appWindow.outerSize(),
+      ]).then(([cursor, position, size]) => {
+        const isCursorInside = cursor.x >= position.x
+          && cursor.y >= position.y
+          && cursor.x <= position.x + size.width
+          && cursor.y <= position.y + size.height;
+        isPointerInsideDrawerRef.current = isCursorInside;
+        if (
+          !isCursorInside
+          && !isPinnedRef.current
+          && !isCanvasModeRef.current
+          && !showLaunchIntroRef.current
+          && !isSplashVisibleRef.current
+          && !showUpdateLogRef.current
+        ) {
+          setIsOpen(false);
+        }
+      }).catch(() => {});
+    }, active ? 2800 : 1400);
+  };
+
   useEffect(() => () => {
+    clearExternalDragResetTimer();
     if (shortcutRevealTimerRef.current) clearTimeout(shortcutRevealTimerRef.current);
     Object.values(floatingTextUndoTimersRef.current).forEach(timer => window.clearTimeout(timer));
     floatingTextUndoTimersRef.current = {};
@@ -18502,15 +18560,71 @@ function MainApp() {
     void addDrawerImageItemToCanvas(itemId);
   };
 
-  const addCanvasWebImageUrl = async (url: string, name?: string, client?: { x: number; y: number }) => {
-    const normalizedUrl = normalizeDraggedUrl(url);
-    if (!normalizedUrl) return;
+  const cacheWebImageFromCandidates = async (
+    urls: string[],
+    name: string,
+    dir?: string,
+  ) => {
+    const candidates = Array.from(new Set(urls
+      .map(normalizeDraggedUrl)
+      .filter(value => /^(https?:|data:image\/)/i.test(value))))
+      .slice(0, 7);
+    let lastError: unknown = new Error('No usable image URL candidates');
+    for (const candidate of candidates) {
+      try {
+        const cachedPath = await invoke<string>('cache_web_image', {
+          url: candidate,
+          name,
+          dir,
+        });
+        if (cachedPath) return { cachedPath, sourceUrl: candidate };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError;
+  };
+
+  const claimExternalWebImageDrop = (
+    normalizedUrl: string,
+    itemId: string,
+    location: 'drawer' | 'canvas',
+  ) => {
     const now = Date.now();
-    if (normalizedUrl === lastWebImageUrlRef.current && now - lastWebImageDropAtRef.current < 900) return;
+    const inline = normalizedUrl.startsWith('data:image/');
+    const previous = lastAcceptedWebImageRef.current;
+    if (previous) {
+      const elapsed = now - previous.at;
+      if (previous.inline && inline && elapsed < 1200) return false;
+      if (previous.inline && !inline && elapsed < 3000) return false;
+      if (!previous.inline && !inline && elapsed < 500) return false;
+      if (!previous.inline && inline && elapsed < 3000) {
+        supersededWebImageItemIdsRef.current.add(previous.id);
+        if (previous.location === 'canvas') {
+          updateCanvasItemsImmediate(items => items.filter(item => item.item.id !== previous.id));
+        } else {
+          setItems(items => items.filter(item => item.id !== previous.id));
+        }
+      }
+    }
+
+    lastAcceptedWebImageRef.current = { id: itemId, location, inline, at: now };
     lastWebImageUrlRef.current = normalizedUrl;
     lastWebImageDropAtRef.current = now;
+    return true;
+  };
+
+  const addCanvasWebImageUrl = async (
+    url: string,
+    name?: string,
+    client?: { x: number; y: number },
+    fallbackUrls: string[] = [],
+  ) => {
+    const normalizedUrl = normalizeDraggedUrl(url);
+    if (!normalizedUrl) return;
 
     const itemId = Math.random().toString(36).substring(2, 9);
+    if (!claimExternalWebImageDrop(normalizedUrl, itemId, 'canvas')) return;
     const displayName = name || getNameFromUrl(normalizedUrl);
     const item: BufferItem = {
       id: itemId,
@@ -18544,11 +18658,12 @@ function MainApp() {
       ''
     ).trim();
 
-    invoke<string>('cache_web_image', {
-      url: normalizedUrl,
-      name: displayName,
-      dir: latestCacheDir || undefined,
-    }).then((cachedPath) => {
+    cacheWebImageFromCandidates(
+      [normalizedUrl, ...fallbackUrls],
+      displayName,
+      latestCacheDir || undefined,
+    ).then(({ cachedPath, sourceUrl }) => {
+      if (supersededWebImageItemIdsRef.current.delete(itemId)) return;
       if (!cachedPath) return;
       const cachedUrl = convertFileSrc(cachedPath);
       updateCanvasItemsImmediate(prev => prev.map(canvasItem => canvasItem.id === canvasId
@@ -18558,12 +18673,13 @@ function MainApp() {
               ...canvasItem.item,
               url: cachedUrl,
               path: cachedPath,
-              sourceUrl: normalizedUrl,
+              sourceUrl,
               originalUrl: normalizedUrl,
             },
           }
         : canvasItem));
     }).catch((err) => {
+      if (supersededWebImageItemIdsRef.current.delete(itemId)) return;
       console.warn('画布网页图片缓存失败:', err);
       showToast('网页图片已加入画布，缓存失败');
     });
@@ -19433,8 +19549,23 @@ function MainApp() {
 
     const image = getWebImageFromDataTransfer(e.dataTransfer);
     const imageUrl = image?.url ? normalizeDraggedUrl(image.url) : '';
+    const imageFile = image ? getImageFileFromDataTransfer(e.dataTransfer) : null;
+    if (imageFile && imageFile.size > 0) {
+      try {
+        const dataUrl = await readImageFileAsDataUrl(imageFile);
+        await addCanvasWebImageUrl(
+          dataUrl,
+          imageFile.name || image?.name,
+          client,
+          [imageUrl, ...(image?.fallbackUrls || [])],
+        );
+        return;
+      } catch (_) {
+        // Fall through to URL candidates when the browser exposes an unreadable file item.
+      }
+    }
     if (imageUrl && /^(https?:|data:image\/)/i.test(imageUrl)) {
-      await addCanvasWebImageUrl(imageUrl, image?.name, client);
+      await addCanvasWebImageUrl(imageUrl, image?.name, client, image?.fallbackUrls);
       return;
     }
 
@@ -19870,15 +20001,12 @@ function MainApp() {
     setIsOpen(true);
   };
 
-  const addWebImageUrl = (url: string, name?: string) => {
+  const addWebImageUrl = (url: string, name?: string, fallbackUrls: string[] = []) => {
     const normalizedUrl = normalizeDraggedUrl(url);
     if (!normalizedUrl) return;
-    const now = Date.now();
-    if (normalizedUrl === lastWebImageUrlRef.current && now - lastWebImageDropAtRef.current < 900) return;
-    lastWebImageUrlRef.current = normalizedUrl;
-    lastWebImageDropAtRef.current = now;
 
     const itemId = Math.random().toString(36).substring(2, 9);
+    if (!claimExternalWebImageDrop(normalizedUrl, itemId, 'drawer')) return;
     const displayName = name || getNameFromUrl(normalizedUrl);
     const newItem: BufferItem = {
       id: itemId,
@@ -19906,19 +20034,20 @@ function MainApp() {
       ''
     ).trim();
 
-    invoke<string>('cache_web_image', {
-      url: normalizedUrl,
-      name: displayName,
-      dir: latestCacheDir || undefined,
-    })
-      .then((cachedPath) => {
+    cacheWebImageFromCandidates(
+      [normalizedUrl, ...fallbackUrls],
+      displayName,
+      latestCacheDir || undefined,
+    )
+      .then(({ cachedPath, sourceUrl }) => {
+        if (supersededWebImageItemIdsRef.current.delete(itemId)) return;
         if (!cachedPath) return;
         const cachedUrl = convertFileSrc(cachedPath);
         const cachedItem = {
           ...newItem,
           url: cachedUrl,
           path: cachedPath,
-          sourceUrl: normalizedUrl,
+          sourceUrl,
           originalUrl: normalizedUrl,
         } as BufferItem;
         setItems(prev => prev.map(item => item.id === itemId ? cachedItem : item));
@@ -19926,6 +20055,7 @@ function MainApp() {
         showToast('网页图片已缓存');
       })
       .catch((err) => {
+        if (supersededWebImageItemIdsRef.current.delete(itemId)) return;
         console.warn('网页图片缓存失败:', err);
         showToast('网页图片已添加，缓存失败');
       });
@@ -20015,7 +20145,7 @@ function MainApp() {
     let unlistenNativeDragLeave: (() => void) | undefined;
 
     listen('native-drag-enter', () => {
-      setIsDraggingOver(true);
+      setExternalDragActive(true);
       if (isCanvasModeRef.current) {
         setIsOpen(true);
         setIsPinned(true);
@@ -20034,19 +20164,35 @@ function MainApp() {
     }).then(f => unlistenNativeDragEnter = f);
 
     listen('native-drag-leave', () => {
-      setIsDraggingOver(false);
+      setExternalDragActive(false);
       if (isCanvasModeRef.current) return;
       if (!isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
     }).then(f => unlistenNativeDragLeave = f);
 
     listen('native-drop', (event: any) => {
-      setIsDraggingOver(false);
+      setExternalDragActive(false);
       if (stateRef.current.isAntiTouchMode) return;
       const payload = event.payload as {
+        source?: string;
         paths?: string[];
-        web_images?: { url?: string; name?: string }[];
+        web_images?: { url?: string; name?: string; fallback_urls?: string[] }[];
         texts?: string[];
       };
+
+      const isVirtualWebFallback = payload.source?.endsWith('/web-fallback') === true;
+      if (isVirtualWebFallback && Array.isArray(payload.paths) && payload.paths.length > 0) {
+        const previous = lastAcceptedWebImageRef.current;
+        if (previous && Date.now() - previous.at < 60000) {
+          if (previous.inline) return;
+          supersededWebImageItemIdsRef.current.add(previous.id);
+          if (previous.location === 'canvas') {
+            updateCanvasItemsImmediate(items => items.filter(item => item.item.id !== previous.id));
+          } else {
+            setItems(items => items.filter(item => item.id !== previous.id));
+          }
+          lastAcceptedWebImageRef.current = null;
+        }
+      }
 
       const webImages = Array.isArray(payload.web_images)
         ? payload.web_images.filter(image => image?.url)
@@ -20058,7 +20204,7 @@ function MainApp() {
         const client = lastCanvasDragClientRef.current || undefined;
         if (webImages.length > 0) {
           for (const image of webImages) {
-            void addCanvasWebImageUrl(image.url as string, image.name, client);
+            void addCanvasWebImageUrl(image.url as string, image.name, client, image.fallback_urls);
           }
         } else if (Array.isArray(payload.paths) && payload.paths.length > 0) {
           if (Date.now() - lastCanvasDropAtRef.current < 700) return;
@@ -20066,7 +20212,7 @@ function MainApp() {
         }
       } else if (webImages.length > 0) {
         for (const image of webImages) {
-          addWebImageUrl(image.url as string, image.name);
+          addWebImageUrl(image.url as string, image.name, image.fallback_urls);
         }
       } else if (Array.isArray(payload.paths) && payload.paths.length > 0) {
         void addDroppedPaths(payload.paths);
@@ -20089,7 +20235,7 @@ function MainApp() {
     const unlistenPromise = appWindow.onDragDropEvent((event) => {
       const type = (event.payload as any).type;
       if (type === 'enter' || type === 'over') {
-        setIsDraggingOver(true);
+        setExternalDragActive(true);
         if (isCanvasModeRef.current) {
           setIsOpen(true);
           setIsPinned(true);
@@ -20105,11 +20251,11 @@ function MainApp() {
           }
         }
       } else if (type === 'leave') {
-        setIsDraggingOver(false);
+        setExternalDragActive(false);
         if (isCanvasModeRef.current) return;
         if (!isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
       } else if (type === 'drop') {
-        setIsDraggingOver(false);
+        setExternalDragActive(false);
         if (stateRef.current.isAntiTouchMode) return;
         // DOM/edge/native 网页图片 drop 之后，Tauri 可能还会紧接着派发一次临时文件 paths。
         // 这时不要再把临时文件当成本地图片加入抽屉，否则会绕过自定义网页缓存目录。
@@ -20135,6 +20281,7 @@ function MainApp() {
     let unlistenFiles: (() => void) | undefined;
     let unlistenWebImage: (() => void) | undefined;
     listen('edge-files-dropped', (event: any) => {
+      setExternalDragActive(false);
       if (stateRef.current.isAntiTouchMode) return;
       if (Date.now() - lastWebImageDropAtRef.current < 1500) return;
       const paths = event.payload as string[];
@@ -20147,11 +20294,18 @@ function MainApp() {
       }
     }).then(f => unlistenFiles = f);
     listen('edge-web-image-dropped', (event: any) => {
+      setExternalDragActive(false);
       if (stateRef.current.isAntiTouchMode) return;
-      const payload = event.payload as { url?: string; name?: string };
+      const payload = event.payload as { url?: string; name?: string; fallbackUrls?: string[] };
       if (payload?.url) {
-        if (isCanvasModeRef.current) void addCanvasWebImageUrl(payload.url, payload.name, lastCanvasDragClientRef.current || undefined);
-        else addWebImageUrl(payload.url, payload.name);
+        if (isCanvasModeRef.current) {
+          void addCanvasWebImageUrl(
+            payload.url,
+            payload.name,
+            lastCanvasDragClientRef.current || undefined,
+            payload.fallbackUrls,
+          );
+        } else addWebImageUrl(payload.url, payload.name, payload.fallbackUrls);
       }
     }).then(f => unlistenWebImage = f);
     return () => {
@@ -20206,11 +20360,38 @@ function MainApp() {
 
       event.preventDefault();
       event.stopPropagation();
-      if (isCanvasModeRef.current) {
-        void addCanvasWebImageUrl(image.url, image.name, { x: event.clientX, y: event.clientY });
-        return;
-      }
-      addWebImageUrl(image.url, image.name);
+      setExternalDragActive(false);
+      const client = { x: event.clientX, y: event.clientY };
+      const imageFile = getImageFileFromDataTransfer(event.dataTransfer);
+      void (async () => {
+        if (imageFile && imageFile.size > 0) {
+          try {
+            const dataUrl = await readImageFileAsDataUrl(imageFile);
+            if (isCanvasModeRef.current) {
+              await addCanvasWebImageUrl(
+                dataUrl,
+                imageFile.name || image.name,
+                client,
+                [image.url, ...(image.fallbackUrls || [])],
+              );
+            } else {
+              addWebImageUrl(
+                dataUrl,
+                imageFile.name || image.name,
+                [image.url, ...(image.fallbackUrls || [])],
+              );
+            }
+            return;
+          } catch (_) {
+            // Continue with URL candidates if this browser's file item cannot be read.
+          }
+        }
+        if (isCanvasModeRef.current) {
+          await addCanvasWebImageUrl(image.url, image.name, client, image.fallbackUrls);
+        } else {
+          addWebImageUrl(image.url, image.name, image.fallbackUrls);
+        }
+      })();
     };
 
     window.addEventListener('dragenter', handleDomDragOver, true);

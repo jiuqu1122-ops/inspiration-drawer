@@ -641,7 +641,17 @@ fn download_url_to_file(
     out_path: &PathBuf,
     explicit_proxy: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let client = build_http_client(Some(app_handle), explicit_proxy, 90)?;
+    download_url_to_file_with_timeout(app_handle, url, out_path, explicit_proxy, 90)
+}
+
+fn download_url_to_file_with_timeout(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    out_path: &PathBuf,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Option<String>, String> {
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
     let mut response = client
         .get(url)
         .send()
@@ -9981,6 +9991,8 @@ fn cache_web_image_impl(
     if input.is_empty() {
         return Err("empty web image url".to_string());
     }
+    let nested_input = extract_nested_image_url(input);
+    let input = nested_input.as_deref().unwrap_or(input);
     let resolved_input = resolve_huaban_pin_image_url(&app_handle, input, proxy.as_deref())?;
     let input = resolved_input.as_deref().unwrap_or(input);
 
@@ -10047,14 +10059,19 @@ fn cache_web_image_impl(
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        let content_type =
-            match download_url_to_file(&app_handle, input, &out_path, proxy.as_deref()) {
-                Ok(value) => value,
-                Err(err) => {
-                    let _ = fs::remove_file(&out_path);
-                    return Err(format!("缓存网页图片失败：{}", err));
-                }
-            };
+        let content_type = match download_url_to_file_with_timeout(
+            &app_handle,
+            input,
+            &out_path,
+            proxy.as_deref(),
+            45,
+        ) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = fs::remove_file(&out_path);
+                return Err(format!("缓存网页图片失败：{}", err));
+            }
+        };
         if content_type
             .as_deref()
             .map(is_obvious_non_media_content_type)
@@ -12385,6 +12402,7 @@ fn default_mobile_file_name(mime: &str) -> String {
 fn looks_like_image_url(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.starts_with("data:image/")
+        || has_image_extension_in_url(&lower)
         || lower.ends_with(".png")
         || lower.ends_with(".jpg")
         || lower.ends_with(".jpeg")
@@ -12415,8 +12433,119 @@ fn looks_like_image_url(url: &str) -> bool {
         || lower.contains("format=webp")
         || lower.contains("format=gif")
         || lower.contains("format=avif")
-        || lower.contains("image")
+        || contains_image_format_parameter(&lower)
+        || (image_like_url_host(&lower) && !is_baidu_search_page_url(&lower))
         || looks_like_image_endpoint(&lower)
+}
+
+fn extract_nested_image_url(value: &str) -> Option<String> {
+    let parsed = Url::parse(value.trim()).ok()?;
+    let mut candidates = Vec::new();
+    for (key, param_value) in parsed.query_pairs() {
+        if !is_nested_image_url_param(&key) {
+            continue;
+        }
+        let decoded = decode_url_component_loose(&param_value)
+            .trim()
+            .trim_matches(['\'', '"'])
+            .to_string();
+        if decoded.starts_with("http://") || decoded.starts_with("https://") {
+            candidates.push(decoded);
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| looks_like_image_url(candidate) || has_image_extension_in_url(candidate))
+}
+
+fn is_nested_image_url_param(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "objurl"
+            | "imgurl"
+            | "imageurl"
+            | "mediaurl"
+            | "thumbnail"
+            | "thumburl"
+            | "picurl"
+            | "hoverurl"
+            | "middleurl"
+            | "originalurl"
+            | "replaceurl"
+            | "src"
+    )
+}
+
+fn decode_url_component_loose(value: &str) -> String {
+    let mut current = value.to_string();
+    for _ in 0..3 {
+        let decoded = percent_decode_once(&current);
+        if decoded == current {
+            break;
+        }
+        current = decoded;
+    }
+    current
+}
+
+fn percent_decode_once(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    let mut changed = false;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                out.push((high << 4) | low);
+                index += 3;
+                changed = true;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    if changed {
+        String::from_utf8_lossy(&out).to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn has_image_extension_in_url(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".svg",
+    ]
+    .iter()
+    .any(|ext| {
+        lower
+            .find(ext)
+            .map(|idx| {
+                let next = lower.as_bytes().get(idx + ext.len()).copied();
+                matches!(
+                    next,
+                    None | Some(b'/')
+                        | Some(b'?')
+                        | Some(b'#')
+                        | Some(b'!')
+                        | Some(b'&')
+                        | Some(b':')
+                )
+            })
+            .unwrap_or(false)
+    })
 }
 
 fn looks_like_image_endpoint(lower_url: &str) -> bool {
@@ -12432,32 +12561,107 @@ fn looks_like_image_endpoint(lower_url: &str) -> bool {
     let host = &rest[..host_end];
     let suffix = &rest[host_end..];
 
-        if (host == "mm.bing.net" || host.ends_with(".mm.bing.net"))
-            && (suffix.contains("/th/id/") || suffix.contains("pid=imgdetmain"))
-        {
-            return true;
-        }
-        if host == "huabanimg.com"
-            || host.ends_with(".huabanimg.com")
-            || host.contains("hbimg")
-        {
-            return true;
-        }
-        if (host == "huaban.com" || host.ends_with(".huaban.com"))
-            && looks_like_huaban_pin_suffix(suffix)
-        {
-            return true;
-        }
+    if (host == "mm.bing.net" || host.ends_with(".mm.bing.net"))
+        && (suffix.contains("/th/id/") || suffix.contains("pid=imgdetmain"))
+    {
+        return true;
+    }
+    if is_baidu_image_cdn(host, suffix) {
+        return true;
+    }
+    if host == "huabanimg.com" || host.ends_with(".huabanimg.com") || host.contains("hbimg") {
+        return true;
+    }
+    if (host == "huaban.com" || host.ends_with(".huaban.com"))
+        && looks_like_huaban_pin_suffix(suffix)
+    {
+        return true;
+    }
+    if is_image_like_host(host) && contains_image_format_parameter(suffix) {
+        return true;
+    }
 
-        suffix.contains("imgurl=")
-            || suffix.contains("mediaurl=")
-            || suffix.contains("imageurl=")
+    suffix.contains("imgurl=")
+        || suffix.contains("mediaurl=")
+        || suffix.contains("imageurl=")
         || suffix.contains("thumbnail=")
+        || contains_image_format_parameter(suffix)
         || suffix.contains("/image/")
         || suffix.contains("/images/")
         || suffix.contains("/img/")
         || suffix.contains("/thumb/")
         || suffix.contains("/thumbnail/")
+}
+
+fn is_baidu_image_cdn(host: &str, suffix: &str) -> bool {
+    host.strip_prefix("img")
+        .and_then(|rest| rest.strip_suffix(".baidu.com"))
+        .map(|middle| middle.is_empty() || middle.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or(false)
+        && suffix.starts_with("/it/")
+}
+
+fn is_image_like_host(host: &str) -> bool {
+    host.starts_with("img") || host.contains(".img.") || host.contains("image")
+}
+
+fn image_like_url_host(lower_url: &str) -> bool {
+    Url::parse(lower_url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(is_image_like_host))
+        .unwrap_or(false)
+}
+
+fn is_baidu_search_page_url(value: &str) -> bool {
+    Url::parse(value)
+        .ok()
+        .map(|parsed| {
+            parsed.host_str() == Some("image.baidu.com")
+                && (parsed.path().starts_with("/search/index")
+                    || parsed.path().starts_with("/search/detail"))
+        })
+        .unwrap_or(false)
+}
+
+fn contains_image_format_parameter(value: &str) -> bool {
+    value.split(['?', '&', ';']).any(|part| {
+        let Some((raw_key, raw_value)) = part.split_once('=') else {
+            return false;
+        };
+        let key = raw_key
+            .rsplit('/')
+            .next()
+            .unwrap_or(raw_key)
+            .trim()
+            .to_ascii_lowercase();
+        matches!(
+            key.as_str(),
+            "format"
+                | "fmt"
+                | "f"
+                | "type"
+                | "mime"
+                | "mimetype"
+                | "content-type"
+                | "filetype"
+                | "ext"
+        ) && has_image_format_hint(raw_value)
+    })
+}
+
+fn has_image_format_hint(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("image/") || lower.contains("image%2f") {
+        return true;
+    }
+    lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| {
+            matches!(
+                token,
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "svg"
+            )
+        })
 }
 
 fn looks_like_huaban_pin_suffix(suffix: &str) -> bool {
@@ -12472,12 +12676,44 @@ fn looks_like_huaban_pin_suffix(suffix: &str) -> bool {
 
 #[cfg(test)]
 mod web_image_url_tests {
-    use super::{huaban_image_url_from_api_json, huaban_pin_id_from_url, looks_like_image_url};
+    use super::{
+        extract_nested_image_url, huaban_image_url_from_api_json, huaban_pin_id_from_url,
+        looks_like_image_url,
+    };
 
     #[test]
     fn recognizes_bing_thumbnail_image_without_extension() {
         assert!(looks_like_image_url(
             "https://tse3.mm.bing.net/th/id/OIP.UMzDkGvA3qc16jOUUeZuSgAAAA?r=0&rs=1&pid=ImgDetMain&o=7&rm=3"
+        ));
+    }
+
+    #[test]
+    fn recognizes_baidu_image_cdn_url_without_extension() {
+        assert!(looks_like_image_url(
+            "https://img2.baidu.com/it/u=3840004386,1451325835&fm=253&fmt=auto&app=138&f=JPEG?w=500&h=700"
+        ));
+    }
+
+    #[test]
+    fn recognizes_image_format_query_parameter_without_extension() {
+        assert!(looks_like_image_url(
+            "https://cdn.example.com/render?id=42&fmt=webp&w=500&h=700"
+        ));
+        assert!(looks_like_image_url(
+            "https://cdn.example.com/render/type=image%2Fpng?id=42"
+        ));
+    }
+
+    #[test]
+    fn extracts_double_encoded_baidu_detail_objurl() {
+        let detail_url = "https://image.baidu.com/search/detail?tn=baiduimagedetail&objurl=https%253A%252F%252Fimg95.699pic.com%252Fxsj%252F0p%252Fb3%252Fur.jpg%2521%252Ffh%252F300&word=s";
+        assert_eq!(
+            extract_nested_image_url(detail_url).as_deref(),
+            Some("https://img95.699pic.com/xsj/0p/b3/ur.jpg!/fh/300")
+        );
+        assert!(looks_like_image_url(
+            "https://img95.699pic.com/xsj/0p/b3/ur.jpg!/fh/300"
         ));
     }
 
