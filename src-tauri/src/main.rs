@@ -3,6 +3,7 @@
 
 mod agent;
 mod ai_credentials;
+mod ai_gateway;
 mod commands;
 mod db;
 mod license;
@@ -5327,15 +5328,6 @@ async fn run_realesrgan_video_enhancement(
     result
 }
 
-fn http_get_text(
-    app_handle: &tauri::AppHandle,
-    url: &str,
-    api_key: &str,
-    explicit_proxy: Option<&str>,
-) -> Result<String, String> {
-    http_get_text_with_headers(app_handle, url, api_key, explicit_proxy, None)
-}
-
 fn apply_custom_http_headers(
     mut request: reqwest::blocking::RequestBuilder,
     headers: Option<&BTreeMap<String, String>>,
@@ -5353,6 +5345,18 @@ fn apply_custom_http_headers(
         request = request.header(name, value);
     }
     Ok(request)
+}
+
+fn redact_ai_secrets(
+    text: &str,
+    api_key: &str,
+    headers: Option<&BTreeMap<String, String>>,
+) -> String {
+    let mut redacted = ai_gateway::router::redact_secret(text, api_key);
+    for value in headers.into_iter().flat_map(|headers| headers.values()) {
+        redacted = ai_gateway::router::redact_secret(&redacted, value);
+    }
+    redacted
 }
 
 fn http_get_text_with_headers(
@@ -5418,7 +5422,11 @@ fn http_get_text_with_headers(
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("AI GET 请求失败，HTTP {}：{}", status, text))
+        Err(format!(
+            "AI GET 请求失败，HTTP {}：{}",
+            status,
+            redact_ai_secrets(&text, api_key, headers)
+        ))
     }
 }
 
@@ -5544,16 +5552,6 @@ fn read_streaming_text_until_result(
     Ok(text)
 }
 
-fn http_post_json(
-    app_handle: &tauri::AppHandle,
-    url: &str,
-    api_key: &str,
-    body: &serde_json::Value,
-    explicit_proxy: Option<&str>,
-) -> Result<String, String> {
-    http_post_json_with_headers(app_handle, url, api_key, body, explicit_proxy, None)
-}
-
 fn http_post_json_with_headers(
     app_handle: &tauri::AppHandle,
     url: &str,
@@ -5597,7 +5595,11 @@ fn http_post_json_with_headers(
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("AI 请求失败，HTTP {}：{}", status, text))
+        Err(format!(
+            "AI 请求失败，HTTP {}：{}",
+            status,
+            redact_ai_secrets(&text, api_key, headers)
+        ))
     }
 }
 fn image_mime_extension(mime: &str) -> &'static str {
@@ -5740,62 +5742,30 @@ fn find_xais_upload_url_response(value: &serde_json::Value) -> Option<XaisUpload
     }
 }
 
-fn parse_xais_upload_url_response(raw: &str) -> Result<XaisUploadUrlResponse, String> {
+fn parse_xais_upload_url_response(
+    raw: &str,
+    profile: &ai_credentials::EffectiveApiProfile,
+) -> Result<XaisUploadUrlResponse, String> {
+    let preview = ai_gateway::router::response_preview(
+        &ai_gateway::router::redact_profile_secrets(raw, profile),
+    );
     let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
         format!(
             "XAIS reference upload URL JSON parse failed: {}; raw: {}",
-            e, raw
+            e, preview
         )
     })?;
     find_xais_upload_url_response(&value).ok_or_else(|| {
         format!(
             "XAIS reference upload URL response missing url/name: {}",
-            raw
+            preview
         )
     })
 }
 
-fn normalize_xais_worker_endpoint_for_upload(endpoint: &str) -> String {
-    let fallback = "https://sg2.dchai.cn/xais";
-    let mut value = endpoint.trim().trim_end_matches('/').to_string();
-    if value.is_empty() {
-        return fallback.to_string();
-    }
-    loop {
-        let lower = value.to_ascii_lowercase();
-        let suffixes = [
-            "/v1/chat/completions",
-            "/v1/images/generations",
-            "/v1/images/edits",
-            "/workertaskstart",
-            "/workertaskwait",
-            "/fileattachmentuploadurl",
-            "/atturls",
-            "/v1/models",
-            "/models",
-            "/v1",
-        ];
-        let Some(suffix) = suffixes.iter().find(|suffix| lower.ends_with(**suffix)) else {
-            break;
-        };
-        let next_len = value.len().saturating_sub(suffix.len());
-        value.truncate(next_len);
-        value = value.trim_end_matches('/').to_string();
-    }
-    let lower = value.to_ascii_lowercase();
-    if lower.ends_with("/xais") {
-        value
-    } else if lower.contains("dchai.cn") {
-        format!("{}/xais", value)
-    } else {
-        value
-    }
-}
-
 fn xais_upload_reference_image(
     app_handle: &tauri::AppHandle,
-    endpoint: &str,
-    api_key: &str,
+    profile: &ai_credentials::EffectiveApiProfile,
     source: &str,
     explicit_proxy: Option<&str>,
 ) -> Result<String, String> {
@@ -5817,14 +5787,16 @@ fn xais_upload_reference_image(
         })
     })?;
     let ext = image_mime_extension(&mime);
-    let upload_endpoint = normalize_xais_worker_endpoint_for_upload(endpoint);
-    let upload_url_raw = http_get_text(
+    let upload_endpoint =
+        ai_gateway::xais_adapter::file_attachment_upload_url_endpoint(profile, ext)?;
+    let upload_url_raw = http_get_text_with_headers(
         app_handle,
-        &format!("{}/fileAttachmentUploadUrl?ext={}", upload_endpoint, ext),
-        api_key,
+        &upload_endpoint,
+        &profile.api_key,
         explicit_proxy,
+        Some(&profile.headers),
     )?;
-    let upload = parse_xais_upload_url_response(&upload_url_raw)?;
+    let upload = parse_xais_upload_url_response(&upload_url_raw, profile)?;
     let upload_result = client
         .put(&upload.url)
         .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -5858,17 +5830,22 @@ fn xais_upload_reference_image(
     if !status.is_success() {
         return Err(format!(
             "XAIS reference image upload failed: HTTP {}; {}",
-            status, text
+            status,
+            ai_gateway::router::response_preview(&ai_gateway::router::redact_profile_secrets(
+                &text, profile
+            ))
         ));
     }
 
     let name = upload.name.trim().to_string();
-    let encoded_name: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
-    let _ = http_get_text(
+    let registration_endpoint =
+        ai_gateway::xais_adapter::attachment_registration_endpoint(profile, &name)?;
+    let _ = http_get_text_with_headers(
         app_handle,
-        &format!("{}/attUrls?att={}", upload_endpoint, encoded_name),
-        api_key,
+        &registration_endpoint,
+        &profile.api_key,
         explicit_proxy,
+        Some(&profile.headers),
     );
     Ok(name)
 }
@@ -5879,6 +5856,7 @@ fn build_ai_image_edit_form(
     prompt: &str,
     n: u32,
     size: &str,
+    quality: Option<&str>,
     images: &[String],
 ) -> Result<Form, String> {
     let mut form = Form::new()
@@ -5886,6 +5864,9 @@ fn build_ai_image_edit_form(
         .text("prompt", prompt.to_string())
         .text("n", n.to_string())
         .text("size", size.to_string());
+    if let Some(value) = quality.filter(|value| !value.trim().is_empty()) {
+        form = form.text("quality", value.to_string());
+    }
 
     for (index, image) in images.iter().take(8).enumerate() {
         let (bytes, mime) = image_edit_source_to_bytes(client, image)?;
@@ -5901,31 +5882,6 @@ fn build_ai_image_edit_form(
     Ok(form)
 }
 
-fn http_post_image_edit(
-    app_handle: &tauri::AppHandle,
-    url: &str,
-    api_key: &str,
-    model: &str,
-    prompt: &str,
-    n: u32,
-    size: &str,
-    images: &[String],
-    explicit_proxy: Option<&str>,
-) -> Result<String, String> {
-    http_post_image_edit_with_headers(
-        app_handle,
-        url,
-        api_key,
-        model,
-        prompt,
-        n,
-        size,
-        images,
-        explicit_proxy,
-        None,
-    )
-}
-
 fn http_post_image_edit_with_headers(
     app_handle: &tauri::AppHandle,
     url: &str,
@@ -5934,6 +5890,7 @@ fn http_post_image_edit_with_headers(
     prompt: &str,
     n: u32,
     size: &str,
+    quality: Option<&str>,
     images: &[String],
     explicit_proxy: Option<&str>,
     headers: Option<&BTreeMap<String, String>>,
@@ -5948,7 +5905,7 @@ fn http_post_image_edit_with_headers(
         .post(url)
         .bearer_auth(api_key)
         .multipart(build_ai_image_edit_form(
-            &client, model, prompt, n, size, images,
+            &client, model, prompt, n, size, quality, images,
         )?);
     let response_result = apply_custom_http_headers(request, headers)?.send();
 
@@ -5964,7 +5921,15 @@ fn http_post_image_edit_with_headers(
                 }
                 let direct_client = build_direct_http_client(timeout_secs)?;
                 let request = direct_client.post(url).bearer_auth(api_key).multipart(
-                    build_ai_image_edit_form(&direct_client, model, prompt, n, size, images)?,
+                    build_ai_image_edit_form(
+                        &direct_client,
+                        model,
+                        prompt,
+                        n,
+                        size,
+                        quality,
+                        images,
+                    )?,
                 );
                 apply_custom_http_headers(request, headers)?
                     .send()
@@ -5982,140 +5947,68 @@ fn http_post_image_edit_with_headers(
     if status.is_success() {
         Ok(text)
     } else {
-        Err(format!("AI 图片上传失败，HTTP {}：{}", status, text))
+        Err(format!(
+            "AI 图片上传失败，HTTP {}：{}",
+            status,
+            redact_ai_secrets(&text, api_key, headers)
+        ))
     }
 }
 
 fn canvas_request_profile(
     app_handle: &tauri::AppHandle,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     base_url: &str,
     api_key: &str,
     model: &str,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<ai_credentials::EffectiveApiProfile, String> {
-    ai_credentials::resolve_effective_canvas_api_profile(
+    let provider = provider.unwrap_or_else(|| "canvas-ai".to_string());
+    let headers = headers.unwrap_or_default();
+    let gateway_kind = gateway_kind
+        .unwrap_or_else(|| license::types::AiGatewayKind::infer(&provider, base_url, &headers));
+    let profile = ai_credentials::resolve_effective_canvas_api_profile(
         app_handle,
         ai_credentials::StoredApiSettings {
-            provider: provider.unwrap_or_else(|| "canvas-ai".to_string()),
+            gateway_kind: Some(gateway_kind),
+            provider: provider.clone(),
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),
-            headers: headers.unwrap_or_default(),
+            headers: headers.clone(),
         },
-    )
+    )?;
+    if is_license_managed_profile(&profile) {
+        let redacted_base = ai_gateway::endpoint::redact_api_base_url(&profile.base_url);
+        let same_managed_origin = ai_gateway::endpoint::same_origin(base_url, &profile.base_url)
+            || base_url.trim().trim_end_matches('/') == redacted_base;
+        if !api_key.trim().is_empty()
+            || !headers.is_empty()
+            || (!base_url.trim().is_empty() && !same_managed_origin)
+            || (!model.trim().is_empty() && model.trim() != profile.model.trim())
+            || gateway_kind != profile.gateway_kind
+            || (!provider.trim().is_empty() && provider.trim() != profile.provider.trim())
+        {
+            return Err(
+                "高级版授权已托管 Canvas API，不能覆盖 Gateway、Base URL、API Key、模型或 Headers"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(profile)
 }
 
 fn is_license_managed_profile(profile: &ai_credentials::EffectiveApiProfile) -> bool {
     profile.source == "license_managed"
 }
 
-fn normalize_openai_like_base_url(base_url: &str) -> String {
-    let mut value = base_url.trim().trim_end_matches('/').to_string();
-    for suffix in [
-        "/chat/completions",
-        "/images/generations",
-        "/images/edits",
-        "/models",
-    ] {
-        if value.to_ascii_lowercase().ends_with(suffix) {
-            value.truncate(value.len().saturating_sub(suffix.len()));
-            value = value.trim_end_matches('/').to_string();
-            break;
-        }
-    }
-    if !value.to_ascii_lowercase().ends_with("/v1") {
-        value.push_str("/v1");
-    }
-    value
-}
-
-fn normalize_xais_base_url(base_url: &str) -> String {
-    let mut value = base_url.trim().trim_end_matches('/').to_string();
-    for suffix in [
-        "/v1/chat/completions",
-        "/v1/images/generations",
-        "/v1/images/edits",
-        "/v1/models",
-        "/xais/userProfile",
-        "/xais/workerTaskStart",
-        "/xais/workerTaskWait",
-        "/xais/attUrls",
-        "/v1",
-    ] {
-        if value
-            .to_ascii_lowercase()
-            .ends_with(&suffix.to_ascii_lowercase())
-        {
-            value.truncate(value.len().saturating_sub(suffix.len()));
-            value = value.trim_end_matches('/').to_string();
-            break;
-        }
-    }
-    if value.to_ascii_lowercase().ends_with("/xais") {
-        value
-    } else {
-        format!("{}/xais", value)
-    }
-}
-
 fn rewrite_canvas_ai_url(
     original_url: &str,
     profile: &ai_credentials::EffectiveApiProfile,
 ) -> String {
-    if !is_license_managed_profile(profile) {
-        return original_url.to_string();
-    }
-    if profile.provider == "xais-chat"
-        && canvas_url_has_same_origin(original_url, &profile.base_url)
-    {
-        return original_url.to_string();
-    }
-    let lower = original_url.to_ascii_lowercase();
-    if lower.ends_with("/xais/userprofile") {
-        return format!("{}/userProfile", normalize_xais_base_url(&profile.base_url));
-    }
-    if lower.ends_with("/xais/workertaskstart") || lower.ends_with("/workertaskstart") {
-        return format!(
-            "{}/workerTaskStart",
-            normalize_xais_base_url(&profile.base_url)
-        );
-    }
-    if lower.ends_with("/xais/workertaskwait") || lower.ends_with("/workertaskwait") {
-        return format!(
-            "{}/workerTaskWait",
-            normalize_xais_base_url(&profile.base_url)
-        );
-    }
-    if lower.ends_with("/xais/atturls") || lower.ends_with("/atturls") {
-        return format!("{}/attUrls", normalize_xais_base_url(&profile.base_url));
-    }
-    let base = normalize_openai_like_base_url(&profile.base_url);
-    if lower.ends_with("/models") {
-        return format!("{}/models", base);
-    }
-    if lower.ends_with("/chat/completions") {
-        return format!("{}/chat/completions", base);
-    }
-    if lower.ends_with("/images/generations") {
-        return format!("{}/images/generations", base);
-    }
-    if lower.ends_with("/images/edits") {
-        return format!("{}/images/edits", base);
-    }
-    profile.base_url.clone()
-}
-
-fn canvas_url_has_same_origin(url: &str, base_url: &str) -> bool {
-    let Ok(url) = Url::parse(url.trim()) else {
-        return false;
-    };
-    let Ok(base_url) = Url::parse(base_url.trim().trim_end_matches('/')) else {
-        return false;
-    };
-    url.scheme() == base_url.scheme()
-        && url.host_str() == base_url.host_str()
-        && url.port_or_known_default() == base_url.port_or_known_default()
+    ai_gateway::router::route_existing_url(profile, original_url)
+        .unwrap_or_else(|_| original_url.to_string())
 }
 
 fn apply_canvas_managed_model(
@@ -6123,7 +6016,7 @@ fn apply_canvas_managed_model(
     profile: &ai_credentials::EffectiveApiProfile,
 ) -> serde_json::Value {
     if is_license_managed_profile(profile)
-        && profile.provider != "xais-chat"
+        && profile.gateway_kind != license::types::AiGatewayKind::Xais
         && !profile.model.trim().is_empty()
     {
         if let Some(object) = body.as_object_mut() {
@@ -6146,6 +6039,7 @@ async fn post_ai_json(
     body: serde_json::Value,
     proxy: Option<String>,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
@@ -6159,6 +6053,7 @@ async fn post_ai_json(
     let profile = canvas_request_profile(
         &app_handle,
         provider,
+        gateway_kind,
         &url,
         &api_key,
         &fallback_model,
@@ -6180,8 +6075,13 @@ async fn post_ai_json(
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
             Some(&request_headers),
         )?;
-        serde_json::from_str(&raw)
-            .map_err(|e| format!("AI 响应 JSON 解析失败：{}；原始返回：{}", e, raw))
+        serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "AI 响应 JSON 解析失败：{}；原始返回：{}",
+                e,
+                redact_ai_secrets(&raw, &request_key, Some(&request_headers))
+            )
+        })
     })
     .await
     .map_err(|e| format!("AI 请求任务失败：{}", e))?
@@ -6195,6 +6095,7 @@ async fn post_ai_text(
     body: serde_json::Value,
     proxy: Option<String>,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<String, String> {
@@ -6208,6 +6109,7 @@ async fn post_ai_text(
     let profile = canvas_request_profile(
         &app_handle,
         provider,
+        gateway_kind,
         &url,
         &api_key,
         &fallback_model,
@@ -6243,17 +6145,27 @@ async fn post_ai_image_edit(
     prompt: String,
     n: u32,
     size: String,
+    quality: Option<String>,
     images: Vec<String>,
     proxy: Option<String>,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
-    let profile = canvas_request_profile(&app_handle, provider, &url, &api_key, &model, headers)?;
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        gateway_kind,
+        &url,
+        &api_key,
+        &model,
+        headers,
+    )?;
     let request_url = rewrite_canvas_ai_url(&url, &profile);
     let request_key = profile.api_key.clone();
     let request_headers = profile.headers.clone();
     let model = if is_license_managed_profile(&profile)
-        && profile.provider != "xais-chat"
+        && profile.gateway_kind != license::types::AiGatewayKind::Xais
         && !profile.model.trim().is_empty()
     {
         profile.model.clone()
@@ -6272,12 +6184,18 @@ async fn post_ai_image_edit(
             &prompt,
             n,
             &size,
+            quality.as_deref(),
             &images,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
             Some(&request_headers),
         )?;
-        serde_json::from_str(&raw)
-            .map_err(|e| format!("AI 图片响应 JSON 解析失败：{}；原始返回：{}", e, raw))
+        serde_json::from_str(&raw).map_err(|e| {
+            format!(
+                "AI 图片响应 JSON 解析失败：{}；原始返回：{}",
+                e,
+                redact_ai_secrets(&raw, &request_key, Some(&request_headers))
+            )
+        })
     })
     .await
     .map_err(|e| format!("AI 图片上传任务失败：{}", e))?
@@ -6291,25 +6209,21 @@ async fn upload_xais_reference_images(
     sources: Vec<String>,
     proxy: Option<String>,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<Vec<String>, String> {
     let profile = canvas_request_profile(
         &app_handle,
         provider.or_else(|| Some("xais-chat".to_string())),
+        gateway_kind,
         &endpoint,
         &api_key,
         model.as_deref().unwrap_or(""),
         headers,
     )?;
-    let endpoint = if is_license_managed_profile(&profile) {
-        normalize_xais_base_url(&profile.base_url)
-    } else {
-        endpoint
-    };
-    let api_key = profile.api_key.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if api_key.trim().is_empty() {
+        if profile.api_key.trim().is_empty() {
             return Err("Please enter XAIS API Key first.".to_string());
         }
         let clean_sources: Vec<String> = sources
@@ -6321,13 +6235,11 @@ async fn upload_xais_reference_images(
         if clean_sources.is_empty() {
             return Ok(Vec::new());
         }
-        let endpoint = normalize_xais_worker_endpoint_for_upload(&endpoint);
         let mut output = Vec::with_capacity(clean_sources.len());
         for source in clean_sources {
             output.push(xais_upload_reference_image(
                 &app_handle,
-                &endpoint,
-                &api_key,
+                &profile,
                 &source,
                 proxy.as_deref().filter(|value| !value.trim().is_empty()),
             )?);
@@ -6345,12 +6257,14 @@ async fn get_ai_json(
     api_key: String,
     proxy: Option<String>,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
     let profile = canvas_request_profile(
         &app_handle,
         provider,
+        gateway_kind,
         &url,
         &api_key,
         model.as_deref().unwrap_or(""),
@@ -6373,7 +6287,8 @@ async fn get_ai_json(
         serde_json::from_str(&raw).map_err(|e| {
             format!(
                 "AI response JSON parse failed: {}; raw response: {}",
-                e, raw
+                e,
+                redact_ai_secrets(&raw, &request_key, Some(&request_headers))
             )
         })
     })
@@ -6388,12 +6303,14 @@ async fn get_ai_text(
     api_key: String,
     proxy: Option<String>,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<String, String> {
     let profile = canvas_request_profile(
         &app_handle,
         provider,
+        gateway_kind,
         &url,
         &api_key,
         model.as_deref().unwrap_or(""),
@@ -7086,6 +7003,11 @@ mod eagle_import_tests {
     fn managed_canvas_profile(provider: &str) -> ai_credentials::EffectiveApiProfile {
         ai_credentials::EffectiveApiProfile {
             source: "license_managed".to_string(),
+            gateway_kind: license::types::AiGatewayKind::infer(
+                provider,
+                "https://xais.dchai.cn",
+                &BTreeMap::new(),
+            ),
             provider: provider.to_string(),
             base_url: "https://xais.dchai.cn".to_string(),
             api_key: "sk-managed".to_string(),
@@ -7620,10 +7542,8 @@ fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Res
 #[tauri::command]
 fn load_folders(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_folders.json");
-    if is_folder_empty_state_confirmed(
-        &app_handle,
-        if path.exists() { Some(&path) } else { None },
-    ) {
+    if is_folder_empty_state_confirmed(&app_handle, if path.exists() { Some(&path) } else { None })
+    {
         return Ok(serde_json::json!([]));
     }
 
@@ -10244,34 +10164,6 @@ fn save_ai_analysis_config(
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
-fn cmf_palette_for_name(name: &str) -> serde_json::Value {
-    let palettes = [
-        serde_json::json!({
-            "colors": ["#e7dfd2", "#b8aea1", "#6f6a63", "#f0a45a"],
-            "keywords": ["暖中性色", "柔和金属", "圆润边缘", "家居科技"],
-            "materials": ["哑光铝材", "暖灰 PC/ABS", "柔软橡胶", "织物点缀"]
-        }),
-        serde_json::json!({
-            "colors": ["#ebe7df", "#9aa0a3", "#5e696f", "#1f2528"],
-            "keywords": ["半透明", "轻科技", "层次感", "克制"],
-            "materials": ["烟灰透明 PC", "雾银喷涂", "黑色 TPU 密封件", "半透明磨砂纹理"]
-        }),
-        serde_json::json!({
-            "colors": ["#f1eadf", "#c9b8a2", "#8d7d6f", "#4b4038"],
-            "keywords": ["安静", "温暖", "触感友好", "家居感"],
-            "materials": ["针织声学布", "暖灰磨砂 PC", "咖色橡胶", "细砂纹喷涂"]
-        }),
-        serde_json::json!({
-            "colors": ["#e8ece9", "#aeb8b2", "#65736b", "#23312c"],
-            "keywords": ["冷静", "专业", "细节秩序", "耐用"],
-            "materials": ["微砂纹喷涂", "雾面金属饰条", "防滑 TPU", "深灰阻燃 PC"]
-        }),
-    ];
-
-    let index = (hash_u64(name) as usize) % palettes.len();
-    palettes[index].clone()
-}
-
 fn value_as_string(config: &serde_json::Value, key: &str) -> String {
     config
         .get(key)
@@ -10279,20 +10171,6 @@ fn value_as_string(config: &serde_json::Value, key: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
-}
-
-fn normalize_siliconflow_endpoint(endpoint: &str) -> String {
-    let trimmed = endpoint.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return "https://api.siliconflow.cn/v1/chat/completions".to_string();
-    }
-    if trimmed.ends_with("/chat/completions") {
-        trimmed.to_string()
-    } else if trimmed.ends_with("/v1") {
-        format!("{}/chat/completions", trimmed)
-    } else {
-        format!("{}/v1/chat/completions", trimmed)
-    }
 }
 
 fn guess_mime_from_path(path: &std::path::Path) -> &'static str {
@@ -10386,87 +10264,11 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn model_supports_image(model: &str) -> bool {
-    is_siliconflow_vision_model_id(model) || {
-        let lower = model.to_ascii_lowercase();
-        lower.contains("vision")
-            || lower.contains("omni")
-            || lower.contains("ocr")
-            || lower.contains("qvq")
-    }
-}
-
-fn cmf_system_prompt() -> &'static str {
-    "你是一名资深产品 CMF 与造型语言分析师。必须只返回严格 JSON，不要 Markdown，不要解释。除 colors 中的十六进制色值外，所有文本字段必须使用简体中文。必需字段：title:string, colors:string[], keywords:string[], summary:string, form:string, cmf:string, borrow:string[], avoid:string[], materials:string[]。colors 保持 4-6 个十六进制色值；keywords 保持 4-8 个中文短语；summary 保持 20-60 个中文词；borrow/avoid/materials 保持 3-6 条中文短句。"
-}
-
-fn cmf_user_text(item_name: &str, note: &str, with_image: bool) -> String {
-    format!(
-        "请分析这张参考图。名称：{}。备注：{}。{}请只返回 JSON，内容包括：1）主色与辅助色；2）配色、材料和表面处理逻辑；3）造型语言；4）可以借鉴的设计动作；5）不应照搬的风险；6）材料建议。所有描述必须使用简体中文。",
-        item_name,
-        if note.trim().is_empty() { "无" } else { note.trim() },
-        if with_image { "" } else { "当前模型没有图像能力，请根据名称和备注推断。" }
-    )
-}
-
-fn build_siliconflow_request_body(
-    model: &str,
-    image_url: &str,
-    item_name: &str,
-    note: &str,
-) -> serde_json::Value {
-    let with_image = model_supports_image(model);
-    let user_text = cmf_user_text(item_name, note, with_image);
-
-    let user_content = if with_image {
-        serde_json::json!([
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": image_url,
-                    "detail": "high"
-                }
-            },
-            {
-                "type": "text",
-                "text": user_text
-            }
-        ])
-    } else {
-        serde_json::json!(format!("图片来源：{}\n{}", image_url, user_text))
-    };
-
-    serde_json::json!({
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": cmf_system_prompt()
-            },
-            {
-                "role": "user",
-                "content": user_content
-            }
-        ],
-        "temperature": 0.25,
-        "top_p": 0.7,
-        "max_tokens": 1200,
-        "stream": false
-    })
-}
-
 fn build_siliconflow_image_search_query_body(
     model: &str,
     image_url: &str,
     hint: &str,
 ) -> Result<serde_json::Value, String> {
-    if !model_supports_image(model) {
-        return Err(
-            "当前模型看起来不支持图片理解，请在设置里选择硅基流动视觉模型后再按参考图收图"
-                .to_string(),
-        );
-    }
-
     let user_text = format!(
         "请根据参考图做图片检索标签识别，只输出严格 JSON 对象，不要 Markdown，不要解释。JSON 字段：subject=图片里最主要的东西，必须是具体物件/空间/人物/建筑/平面视觉等；style=图片风格，无法判断则为空字符串；materials=材质标签数组；colors=色彩标签数组；composition=构图/光线/关键元素标签数组；tags=最终用于搜图的 4-8 个短标签，第一项必须是 subject，第二项优先是 style，不要写“设计”“图片”“参考图”这类泛词；query=把 tags 组合成一行适合网络搜图的简体中文关键词。只有画面明显是文字排版、广告、展览视觉或印刷物时，subject 才能写海报/平面海报。用户补充：{}",
         if hint.trim().is_empty() { "无" } else { hint.trim() }
@@ -11012,31 +10814,18 @@ async fn get_siliconflow_vision_models(
     endpoint: String,
     api_key: String,
 ) -> Result<Vec<String>, String> {
-    let api_key = api_key.trim().to_string();
-    if api_key.is_empty() {
-        return Err("请先填写硅基流动 API Key".to_string());
-    }
-
-    let base = endpoint.trim().trim_end_matches('/').to_string();
-    let url = if base.ends_with("/models") {
-        base
-    } else {
-        format!("{}/models", base)
-    };
+    let config = serde_json::json!({
+        "provider": "siliconflow",
+        "endpoint": endpoint,
+        "apiKey": api_key,
+        "model": "vision-model"
+    });
+    let profile = resolve_vision_api_profile(&app_handle, &config)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let raw = http_get_text(&app_handle, &url, &api_key, None)?;
-        let parsed: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| format!("模型列表 JSON 解析失败：{}", e))?;
-        let data = parsed
-            .get("data")
-            .and_then(|value| value.as_array())
-            .ok_or_else(|| "模型列表返回格式不正确：缺少 data 数组".to_string())?;
-
-        let mut models: Vec<String> = data
-            .iter()
-            .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
+        let client = build_http_client(Some(&app_handle), None, 45)?;
+        let mut models: Vec<String> = ai_gateway::router::list_models(&client, &profile)?
+            .into_iter()
             .filter(|id| is_siliconflow_vision_model_id(id))
-            .map(|id| id.to_string())
             .collect();
         models.sort();
         models.dedup();
@@ -11052,69 +10841,79 @@ async fn get_openai_compatible_models(
     endpoint: String,
     api_key: String,
     provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
 ) -> Result<Vec<String>, String> {
     let profile = canvas_request_profile(
         &app_handle,
         provider,
+        gateway_kind,
         &endpoint,
         &api_key,
         model.as_deref().unwrap_or(""),
         headers,
     )?;
-    let api_key = profile.api_key.trim().to_string();
-    if api_key.is_empty() {
-        return Err("Please enter API Key first.".to_string());
-    }
-
-    let base = if is_license_managed_profile(&profile) {
-        normalize_openai_like_base_url(&profile.base_url)
-    } else {
-        endpoint.trim().trim_end_matches('/').to_string()
-    };
-    if base.is_empty() {
-        return Err("Please enter API Base URL first.".to_string());
-    }
-
-    let url = if base.ends_with("/models") {
-        base
-    } else {
-        format!("{}/models", base)
-    };
-    let request_headers = profile.headers.clone();
-
     tauri::async_runtime::spawn_blocking(move || {
-        let raw =
-            http_get_text_with_headers(&app_handle, &url, &api_key, None, Some(&request_headers))?;
-        let parsed: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| format!("Model list JSON parse failed: {}; raw response: {}", e, raw))?;
-        let data = parsed
-            .get("data")
-            .and_then(|value| value.as_array())
-            .or_else(|| parsed.as_array())
-            .ok_or_else(|| "Model list response is missing a data array.".to_string())?;
-
-        let mut models: Vec<String> = data
-            .iter()
-            .filter_map(|item| {
-                item.get("id")
-                    .or_else(|| item.get("name"))
-                    .and_then(|value| value.as_str())
-            })
-            .map(|id| id.trim().to_string())
-            .filter(|id| !id.is_empty())
-            .collect();
-        models.sort();
-        models.dedup();
-        if models.is_empty() {
-            Err("No models found in /models response.".to_string())
-        } else {
-            Ok(models)
-        }
+        let client = build_http_client(Some(&app_handle), None, 45)?;
+        ai_gateway::router::list_models(&client, &profile)
     })
     .await
     .map_err(|e| format!("Refresh model list task failed: {}", e))?
+}
+
+#[tauri::command]
+async fn query_canvas_api_balance(
+    app_handle: tauri::AppHandle,
+    endpoint: String,
+    api_key: String,
+    provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
+) -> Result<ai_gateway::ApiBalanceResult, String> {
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        gateway_kind,
+        &endpoint,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = build_http_client(Some(&app_handle), None, 45)?;
+        ai_gateway::router::query_api_balance(&client, &profile)
+    })
+    .await
+    .map_err(|error| format!("查询 Canvas API 余额任务失败：{error}"))?
+}
+
+#[tauri::command]
+async fn test_canvas_api_connection(
+    app_handle: tauri::AppHandle,
+    endpoint: String,
+    api_key: String,
+    provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
+) -> Result<ai_gateway::GatewayConnectionResult, String> {
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        gateway_kind,
+        &endpoint,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = build_http_client(Some(&app_handle), None, 45)?;
+        ai_gateway::router::test_connection(&client, &profile)
+    })
+    .await
+    .map_err(|error| format!("测试 Canvas API 连接任务失败：{error}"))?
 }
 
 fn extract_json_object_text(text: &str) -> Option<String> {
@@ -11152,115 +10951,59 @@ fn get_chat_message_content(response: &serde_json::Value) -> Result<String, Stri
         .and_then(|message| message.get("content"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("AI response missing message.content: {}", response))
+        .ok_or_else(|| "Vision 响应缺少 message.content".to_string())
 }
 
-fn normalize_ai_result_json(item_name: &str, mut value: serde_json::Value) -> serde_json::Value {
-    if !value.is_object() {
-        value = serde_json::json!({});
-    }
-
-    let palette = cmf_palette_for_name(item_name);
-    let colors = value
-        .get("colors")
-        .and_then(|v| v.as_array())
-        .filter(|arr| !arr.is_empty())
-        .cloned()
-        .unwrap_or_else(|| {
-            palette
-                .get("colors")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default()
-        });
-    let keywords = value
-        .get("keywords")
-        .and_then(|v| v.as_array())
-        .filter(|arr| !arr.is_empty())
-        .cloned()
-        .unwrap_or_else(|| {
-            palette
-                .get("keywords")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default()
-        });
-    let materials = value
-        .get("materials")
-        .and_then(|v| v.as_array())
-        .filter(|arr| !arr.is_empty())
-        .cloned()
-        .unwrap_or_else(|| {
-            palette
-                .get("materials")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default()
-        });
-
-    let get_str = |key: &str, fallback: &str| {
-        value
-            .get(key)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(fallback)
-            .to_string()
-    };
-    let get_arr = |key: &str, fallback: Vec<&str>| {
-        value
-            .get(key)
-            .and_then(|v| v.as_array())
-            .filter(|arr| !arr.is_empty())
-            .cloned()
-            .unwrap_or_else(|| fallback.into_iter().map(|s| serde_json::json!(s)).collect())
-    };
-
-    serde_json::json!({
-        "title": get_str("title", item_name),
-        "colors": colors,
-        "keywords": keywords,
-        "form": get_str("form", "保留参考图中的整体比例、柔和边缘和可识别的局部细节，同时让产品语言保持简洁并便于量产。"),
-        "summary": first_sentence_or_fallback(&get_str("summary", "这张参考图呈现出克制的科技感，可延展为一套产品 CMF 方向。"), "这张参考图呈现出克制的科技感，可延展为一套产品 CMF 方向。"),
-        "cmf": get_str("cmf", "围绕主色与辅助色建立 CMF 方向，并结合低光泽、细纹理和适合量产的材料组合。"),
-        "borrow": get_arr("borrow", vec!["借鉴主色与强调色的比例关系", "借鉴材料之间的粗细与冷暖对比", "借鉴局部细节作为识别点"]),
-        "avoid": get_arr("avoid", vec!["不要直接复制原图轮廓", "高饱和点缀色需要克制使用", "量产前需要验证耐磨和耐刮表现"]),
-        "materials": materials,
-        "analysisMode": "ai",
-        "apiStatus": "siliconflow_ok",
-        "generatedAt": now_millis_u128()
-    })
+fn api_headers_from_config(config: &serde_json::Value) -> BTreeMap<String, String> {
+    config
+        .get("headers")
+        .and_then(serde_json::Value::as_object)
+        .map(|headers| {
+            headers
+                .iter()
+                .filter_map(|(key, value)| {
+                    let key = key.trim().to_string();
+                    let value = value.as_str().unwrap_or_default().trim().to_string();
+                    (!key.is_empty() && !value.is_empty()).then_some((key, value))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-fn call_siliconflow_cmf(
+fn resolve_vision_api_profile(
     app_handle: &tauri::AppHandle,
-    endpoint: &str,
-    api_key: &str,
-    model: &str,
-    image_source: &str,
-    item_name: &str,
-    note: &str,
-    explicit_proxy: Option<&str>,
-) -> Result<serde_json::Value, String> {
-    if api_key.trim().is_empty() {
-        return Err("请先填写硅基流动 API Key".to_string());
-    }
-    if model.trim().is_empty() {
-        return Err("请先选择硅基流动模型".to_string());
+    config: &serde_json::Value,
+) -> Result<ai_gateway::EffectiveApiProfile, String> {
+    let current = agent::resolve_current_agent_api_profile(app_handle)?;
+    if current.source == "license_managed"
+        || (!current.api_key.trim().is_empty()
+            && !current.base_url.trim().is_empty()
+            && !current.model.trim().is_empty())
+    {
+        return Ok(current);
     }
 
-    let url = normalize_siliconflow_endpoint(endpoint);
-    let image_url = image_source_for_ai(image_source)?;
-    let body = build_siliconflow_request_body(model, &image_url, item_name, note);
-    let raw = http_post_json(app_handle, &url, api_key, &body, explicit_proxy)?;
-    let response: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
-    let content = get_chat_message_content(&response)?;
-    let Some(json_text) = extract_json_object_text(&content) else {
-        return Err(format!("模型没有返回 JSON：{}", content));
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&json_text)
-        .map_err(|e| format!("解析模型 JSON 失败：{}；内容：{}", e, json_text))?;
-    Ok(normalize_ai_result_json(item_name, parsed))
+    let provider = value_as_string(config, "provider");
+    let endpoint = value_as_string(config, "endpoint");
+    let api_key = value_as_string(config, "apiKey");
+    let model = value_as_string(config, "model");
+    let headers = api_headers_from_config(config);
+    ai_credentials::resolve_effective_api_profile(
+        app_handle,
+        ai_credentials::StoredApiSettings {
+            gateway_kind: None,
+            provider: if provider.trim().is_empty() {
+                "openai-compatible".to_string()
+            } else {
+                provider
+            },
+            base_url: endpoint,
+            api_key,
+            model,
+            headers,
+        },
+    )
 }
 
 #[tauri::command]
@@ -11284,52 +11027,41 @@ fn describe_image_for_search_impl(
     api_config: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let config = api_config.unwrap_or_else(|| serde_json::json!({}));
-    let provider = value_as_string(&config, "provider");
-    let endpoint = value_as_string(&config, "endpoint");
-    let model = value_as_string(&config, "model");
-    let api_key = value_as_string(&config, "apiKey");
     let proxy = value_as_string(&config, "proxy");
-
-    if provider != "siliconflow" {
-        return Err("请先在设置里配置硅基流动视觉模型，才能按参考图收图".to_string());
+    let profile = resolve_vision_api_profile(&app_handle, &config)?;
+    if profile.api_key.trim().is_empty() {
+        return Err("请先配置可用于 Vision 的 Agent API Key，才能按参考图收图".to_string());
     }
-    if api_key.trim().is_empty() {
-        return Err("请先填写硅基流动 API Key，才能按参考图收图".to_string());
+    if profile.model.trim().is_empty() {
+        return Err("请先配置可用于 Vision 的模型，才能按参考图收图".to_string());
     }
-    if model.trim().is_empty() {
-        return Err("请先选择硅基流动视觉模型，才能按参考图收图".to_string());
-    }
-    if !model_supports_image(&model) {
-        return Err(
-            "当前模型看起来不支持图片理解，请在设置里选择硅基流动视觉模型后再按参考图收图"
-                .to_string(),
-        );
-    }
-
-    let url = normalize_siliconflow_endpoint(if endpoint.is_empty() {
-        "https://api.siliconflow.cn/v1"
-    } else {
-        &endpoint
-    });
+    let url =
+        ai_gateway::router::endpoint_for(&profile, ai_gateway::GatewayOperation::ChatCompletions)?;
     let image_url = image_source_for_ai(&image_source)?;
     let body = build_siliconflow_image_search_query_body(
-        &model,
+        &profile.model,
         &image_url,
         hint.as_deref().unwrap_or(""),
     )?;
-    let raw = http_post_json(
+    let raw = http_post_json_with_headers(
         &app_handle,
         &url,
-        &api_key,
+        &profile.api_key,
         &body,
         if proxy.trim().is_empty() {
             None
         } else {
             Some(proxy.as_str())
         },
+        Some(&profile.headers),
     )?;
-    let response: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("解析硅基流动响应失败：{}；原始返回：{}", e, raw))?;
+    let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "解析 Vision 响应失败：{}；原始返回：{}",
+            e,
+            ai_gateway::router::redact_profile_secrets(&raw, &profile)
+        )
+    })?;
     let content = get_chat_message_content(&response)?;
     let description = normalize_image_search_description(&content);
     let query = description
@@ -11343,120 +11075,6 @@ fn describe_image_for_search_impl(
     } else {
         Ok(description)
     }
-}
-
-#[tauri::command]
-async fn analyze_cmf_card(
-    app_handle: tauri::AppHandle,
-    image_source: String,
-    item_name: String,
-    note: Option<String>,
-    api_config: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        analyze_cmf_card_impl(app_handle, image_source, item_name, note, api_config)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-fn analyze_cmf_card_impl(
-    app_handle: tauri::AppHandle,
-    image_source: String,
-    item_name: String,
-    note: Option<String>,
-    api_config: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let config = api_config.unwrap_or_else(|| serde_json::json!({}));
-    let endpoint = value_as_string(&config, "endpoint");
-    let model = value_as_string(&config, "model");
-    let provider = value_as_string(&config, "provider");
-    let api_key = value_as_string(&config, "apiKey");
-    let proxy = value_as_string(&config, "proxy");
-    let provider = if provider.is_empty() {
-        "openai-compatible".to_string()
-    } else {
-        provider
-    };
-    let note_text = note.unwrap_or_default();
-
-    if provider == "siliconflow" {
-        return call_siliconflow_cmf(
-            &app_handle,
-            if endpoint.is_empty() {
-                "https://api.siliconflow.cn/v1"
-            } else {
-                &endpoint
-            },
-            &api_key,
-            if model.is_empty() {
-                "Qwen/Qwen3-VL-32B-Instruct"
-            } else {
-                &model
-            },
-            &image_source,
-            &item_name,
-            &note_text,
-            if proxy.trim().is_empty() {
-                None
-            } else {
-                Some(proxy.as_str())
-            },
-        );
-    }
-
-    let palette = cmf_palette_for_name(&item_name);
-    let colors = palette
-        .get("colors")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-    let keywords = palette
-        .get("keywords")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-
-    if endpoint.is_empty() {
-        return Ok(serde_json::json!({
-            "title": item_name,
-            "colors": colors,
-            "keywords": keywords,
-            "summary": "当前没有配置 AI 接口，此结果仅提供基于色板的本地分析结构。",
-            "form": "",
-            "cmf": "当前没有配置 AI 接口，可先将本地提取的色板作为初步 CMF 方向。",
-            "borrow": [],
-            "avoid": [],
-            "materials": [],
-            "analysisMode": "palette",
-            "apiStatus": "no_ai_palette_only",
-            "provider": provider,
-            "endpoint": endpoint,
-            "source": image_source,
-            "generatedAt": now_millis_u128()
-        }));
-    }
-
-    let materials = palette
-        .get("materials")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-
-    Ok(serde_json::json!({
-        "title": item_name,
-        "colors": colors,
-        "keywords": keywords,
-        "summary": "这张参考图呈现出克制的科技感，可继续延展为产品 CMF 方向。",
-        "form": format!("将「{}」作为克制的造型参考：大面保持简洁，边缘处理柔和，并让局部细节形成记忆点。{}", item_name, if note_text.trim().is_empty() { "".to_string() } else { format!(" 备注：{}", note_text.trim()) }),
-        "cmf": format!("基于当前参考建立 CMF 方向：控制色彩饱和度，结合哑光表面、细腻纹理和适合量产的材料组合。{}", if model.is_empty() { "".to_string() } else { format!(" 已保留模型配置：{}。", model) }),
-        "borrow": ["借鉴主色与强调色的比例关系", "借鉴材料之间的对比关系", "借鉴局部细节作为识别点"],
-        "avoid": ["不要直接复制原图造型", "高饱和点缀色需要克制使用", "量产前需要验证耐用性和耐刮表现"],
-        "materials": materials,
-        "analysisMode": "ai",
-        "apiStatus": "reserved_mock",
-        "provider": provider,
-        "endpoint": endpoint,
-        "source": image_source,
-        "generatedAt": now_millis_u128()
-    }))
 }
 
 // src-tauri/src/main.rs
@@ -12334,21 +11952,6 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
-}
-
-fn first_sentence_or_fallback(value: &str, fallback: &str) -> String {
-    let clean = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let source = if clean.trim().is_empty() {
-        fallback
-    } else {
-        clean.trim()
-    };
-    for (idx, ch) in source.char_indices() {
-        if matches!(ch, '.' | '!' | '?') {
-            return source[..idx + ch.len_utf8()].trim().to_string();
-        }
-    }
-    source.trim().to_string()
 }
 
 fn json_escape(value: &str) -> String {
@@ -15564,6 +15167,7 @@ fn main() {
             agent::agent_openai_chat,
             agent::agent_cancel_openai,
             agent::agent_list_openai_models,
+            agent::agent_test_api_connection,
             agent::agent_query_api_balance,
             agent::agent_codex_status,
             agent::agent_install_codex,
@@ -15603,6 +15207,8 @@ fn main() {
             set_network_proxy,
             get_siliconflow_vision_models,
             get_openai_compatible_models,
+            query_canvas_api_balance,
+            test_canvas_api_connection,
             get_ai_json,
             post_ai_json,
             post_ai_text,
@@ -15621,7 +15227,6 @@ fn main() {
             relocate_web_cache_file,
             describe_image_for_search_local_vlm,
             describe_image_for_search,
-            analyze_cmf_card,
             sys_update_bounds,
             set_topmost,
             set_canvas_workbench_active,

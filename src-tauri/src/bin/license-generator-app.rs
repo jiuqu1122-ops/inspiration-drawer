@@ -3,18 +3,18 @@
 // empty Terminal window alongside the app.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{NaiveDate, SecondsFormat, Utc};
+use inspiration_drawer::ai_gateway::{self, EffectiveApiProfile};
 use inspiration_drawer::license::generator::{
     generate_license, public_key_from_private_key, GeneratedLicense, LicenseGeneratorInput,
 };
 use inspiration_drawer::license::types::{
-    LicenseAiAccess, LicenseEdition, LicenseFile, LicensePayload, ManagedApiProfile,
+    AiGatewayKind, LicenseAiAccess, LicenseEdition, LicenseFile, LicensePayload, ManagedApiProfile,
 };
 use inspiration_drawer::license::verifier::verify_license_content_with_key;
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,8 @@ struct AuthorizationRecord {
     #[serde(default)]
     ai_mode: Option<String>,
     #[serde(default)]
+    managed_gateway_kind: Option<AiGatewayKind>,
+    #[serde(default)]
     managed_provider: Option<String>,
     #[serde(default)]
     managed_base_url: Option<String>,
@@ -81,6 +83,8 @@ struct AuthorizationRecord {
     api_key_last4: Option<String>,
     #[serde(default)]
     api_key_fingerprint: Option<String>,
+    #[serde(default)]
+    canvas_gateway_kind: Option<AiGatewayKind>,
     #[serde(default)]
     canvas_provider: Option<String>,
     #[serde(default)]
@@ -161,11 +165,13 @@ fn ai_record_fields(
     payload: &LicensePayload,
 ) -> (
     Option<String>,
+    Option<AiGatewayKind>,
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<AiGatewayKind>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -174,7 +180,7 @@ fn ai_record_fields(
 ) {
     let Some(access) = payload.ai_access.as_ref() else {
         return (
-            None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None, None,
         );
     };
     let profile = access.managed_profile.as_ref();
@@ -189,13 +195,23 @@ fn ai_record_fields(
             }
             .to_string(),
         ),
+        profile.map(|value| {
+            value.gateway_kind.unwrap_or_else(|| {
+                AiGatewayKind::infer(&value.provider, &value.base_url, &value.headers)
+            })
+        }),
         profile.map(|value| value.provider.clone()),
-        profile.map(|value| value.base_url.clone()),
+        profile.map(|value| ai_gateway::endpoint::redact_api_base_url(&value.base_url)),
         profile.map(|value| value.model.clone()),
         profile.and_then(|value| api_key_last4(&value.api_key)),
         profile.and_then(|value| api_key_fingerprint(&value.api_key)),
+        canvas_profile.map(|value| {
+            value.gateway_kind.unwrap_or_else(|| {
+                AiGatewayKind::infer(&value.provider, &value.base_url, &value.headers)
+            })
+        }),
         canvas_profile.map(|value| value.provider.clone()),
-        canvas_profile.map(|value| value.base_url.clone()),
+        canvas_profile.map(|value| ai_gateway::endpoint::redact_api_base_url(&value.base_url)),
         canvas_profile.map(|value| value.model.clone()),
         canvas_profile.and_then(|value| api_key_last4(&value.api_key)),
         canvas_profile.and_then(|value| api_key_fingerprint(&value.api_key)),
@@ -274,11 +290,13 @@ fn upsert_authorization_record(
         .map(str::to_string);
     let (
         ai_mode,
+        managed_gateway_kind,
         managed_provider,
         managed_base_url,
         managed_model,
         api_key_last4,
         api_key_fingerprint,
+        canvas_gateway_kind,
         canvas_provider,
         canvas_base_url,
         canvas_model,
@@ -297,11 +315,13 @@ fn upsert_authorization_record(
         record.updated_at = now.to_string();
         record.issue_count = record.issue_count.saturating_add(1);
         record.ai_mode = ai_mode;
+        record.managed_gateway_kind = managed_gateway_kind;
         record.managed_provider = managed_provider;
         record.managed_base_url = managed_base_url;
         record.managed_model = managed_model;
         record.api_key_last4 = api_key_last4;
         record.api_key_fingerprint = api_key_fingerprint;
+        record.canvas_gateway_kind = canvas_gateway_kind;
         record.canvas_provider = canvas_provider;
         record.canvas_base_url = canvas_base_url;
         record.canvas_model = canvas_model;
@@ -323,11 +343,13 @@ fn upsert_authorization_record(
             issue_count: 1,
             last_output_path: output_path,
             ai_mode,
+            managed_gateway_kind,
             managed_provider,
             managed_base_url,
             managed_model,
             api_key_last4,
             api_key_fingerprint,
+            canvas_gateway_kind,
             canvas_provider,
             canvas_base_url,
             canvas_model,
@@ -347,11 +369,13 @@ fn merge_imported_authorization_record(
 ) -> bool {
     let (
         ai_mode,
+        managed_gateway_kind,
         managed_provider,
         managed_base_url,
         managed_model,
         api_key_last4,
         api_key_fingerprint,
+        canvas_gateway_kind,
         canvas_provider,
         canvas_base_url,
         canvas_model,
@@ -370,11 +394,13 @@ fn merge_imported_authorization_record(
         record.updated_at = now.to_string();
         record.last_output_path = Some(source_path.to_string());
         record.ai_mode = ai_mode;
+        record.managed_gateway_kind = managed_gateway_kind;
         record.managed_provider = managed_provider;
         record.managed_base_url = managed_base_url;
         record.managed_model = managed_model;
         record.api_key_last4 = api_key_last4;
         record.api_key_fingerprint = api_key_fingerprint;
+        record.canvas_gateway_kind = canvas_gateway_kind;
         record.canvas_provider = canvas_provider;
         record.canvas_base_url = canvas_base_url;
         record.canvas_model = canvas_model;
@@ -395,11 +421,13 @@ fn merge_imported_authorization_record(
         issue_count: 1,
         last_output_path: Some(source_path.to_string()),
         ai_mode,
+        managed_gateway_kind,
         managed_provider,
         managed_base_url,
         managed_model,
         api_key_last4,
         api_key_fingerprint,
+        canvas_gateway_kind,
         canvas_provider,
         canvas_base_url,
         canvas_model,
@@ -607,6 +635,9 @@ fn import_issued_licenses(
 }
 
 fn sanitize_probe_profile(profile: ManagedApiProfile) -> Result<ManagedApiProfile, String> {
+    let gateway_kind = profile.gateway_kind.unwrap_or_else(|| {
+        AiGatewayKind::infer(&profile.provider, &profile.base_url, &profile.headers)
+    });
     let provider = profile.provider.trim().to_string();
     let base_url = profile.base_url.trim().trim_end_matches('/').to_string();
     let api_key = profile.api_key.trim().to_string();
@@ -624,6 +655,7 @@ fn sanitize_probe_profile(profile: ManagedApiProfile) -> Result<ManagedApiProfil
         })
         .collect();
     Ok(ManagedApiProfile {
+        gateway_kind: Some(gateway_kind),
         provider,
         base_url,
         api_key,
@@ -632,140 +664,59 @@ fn sanitize_probe_profile(profile: ManagedApiProfile) -> Result<ManagedApiProfil
     })
 }
 
-fn apply_probe_headers(
-    mut request: reqwest::blocking::RequestBuilder,
-    headers: &BTreeMap<String, String>,
-) -> Result<reqwest::blocking::RequestBuilder, String> {
-    for (key, value) in headers {
-        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
-            .map_err(|_| format!("Header 名称无效：{}", key))?;
-        let value = reqwest::header::HeaderValue::from_str(value)
-            .map_err(|_| format!("Header 值无效：{}", key))?;
-        request = request.header(name, value);
-    }
-    Ok(request)
+fn effective_probe_profile(profile: ManagedApiProfile) -> Result<EffectiveApiProfile, String> {
+    let profile = sanitize_probe_profile(profile)?;
+    let gateway_kind = profile.gateway_kind.unwrap_or_else(|| {
+        AiGatewayKind::infer(&profile.provider, &profile.base_url, &profile.headers)
+    });
+    let key_last4 = api_key_last4(&profile.api_key);
+    Ok(EffectiveApiProfile {
+        source: "license_generator".to_string(),
+        gateway_kind,
+        provider: profile.provider,
+        base_url: profile.base_url,
+        api_key: profile.api_key,
+        model: profile.model,
+        headers: profile.headers,
+        editable: true,
+        key_last4,
+    })
 }
 
-fn trim_probe_base_url(base_url: &str) -> String {
-    let mut value = base_url.trim().trim_end_matches('/').to_string();
-    for suffix in [
-        "/v1/chat/completions",
-        "/v1/images/generations",
-        "/v1/images/edits",
-        "/v1/models",
-        "/chat/completions",
-        "/images/generations",
-        "/images/edits",
-        "/models",
-        "/xais/userProfile",
-        "/xais",
-    ] {
-        if value
-            .to_ascii_lowercase()
-            .ends_with(&suffix.to_ascii_lowercase())
-        {
-            value.truncate(value.len().saturating_sub(suffix.len()));
-            value = value.trim_end_matches('/').to_string();
-            break;
-        }
-    }
-    value
-}
-
-fn probe_models_url(base_url: &str) -> String {
-    let mut base = trim_probe_base_url(base_url);
-    if !base.to_ascii_lowercase().ends_with("/v1") {
-        base = format!("{}/v1", base);
-    }
-    format!("{}/models", base)
-}
-
-fn probe_xais_user_profile_url(base_url: &str) -> String {
-    let base = trim_probe_base_url(base_url);
-    format!("{}/xais/userProfile", base)
-}
-
-fn probe_get_json(profile: &ManagedApiProfile, url: &str) -> Result<serde_json::Value, String> {
-    let client = reqwest::blocking::Client::builder()
+fn probe_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(45))
         .build()
-        .map_err(|err| format!("创建 HTTP 客户端失败：{err}"))?;
-    let request = client
-        .get(url)
-        .bearer_auth(profile.api_key.trim())
-        .header("accept", "application/json, text/plain, */*");
-    let response = apply_probe_headers(request, &profile.headers)?
-        .send()
-        .map_err(|err| format!("请求失败：{err}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|err| format!("读取响应失败：{err}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "HTTP {}：{}",
-            status.as_u16(),
-            text.chars().take(240).collect::<String>()
-        ));
-    }
-    serde_json::from_str(&text).map_err(|err| {
-        format!(
-            "响应不是有效 JSON：{}；原始返回：{}",
-            err,
-            text.chars().take(240).collect::<String>()
-        )
-    })
+        .map_err(|err| format!("创建 HTTP 客户端失败：{err}"))
 }
 
 #[tauri::command]
 fn test_managed_api_connection(
     profile: ManagedApiProfile,
 ) -> Result<ManagedApiProbeResult, String> {
-    let profile = sanitize_probe_profile(profile)?;
-    let url = probe_models_url(&profile.base_url);
-    let value = probe_get_json(&profile, &url)?;
-    let count = value
-        .get("data")
-        .and_then(|data| data.as_array())
-        .map(|items| items.len())
-        .or_else(|| {
-            value
-                .get("models")
-                .and_then(|models| models.as_array())
-                .map(|items| items.len())
-        });
+    let profile = effective_probe_profile(profile)?;
+    let result = ai_gateway::router::test_connection(&probe_client()?, &profile)?;
     Ok(ManagedApiProbeResult {
-        ok: true,
-        message: count
-            .map(|count| format!("连接成功，读取到 {count} 个模型"))
-            .unwrap_or_else(|| "连接成功".to_string()),
-        detail: Some(url),
+        ok: result.ok,
+        message: result.message,
+        detail: Some(result.endpoint_kind),
     })
 }
 
 #[tauri::command]
+fn list_managed_api_models(profile: ManagedApiProfile) -> Result<Vec<String>, String> {
+    let profile = effective_probe_profile(profile)?;
+    ai_gateway::router::list_models(&probe_client()?, &profile)
+}
+
+#[tauri::command]
 fn query_managed_api_balance(profile: ManagedApiProfile) -> Result<ManagedApiProbeResult, String> {
-    let profile = sanitize_probe_profile(profile)?;
-    if profile.provider.trim() != "xais-chat" {
-        return Ok(ManagedApiProbeResult {
-            ok: false,
-            message: "当前 Provider 未内置余额查询接口，请使用测试连接验证可用性".to_string(),
-            detail: None,
-        });
-    }
-    let url = probe_xais_user_profile_url(&profile.base_url);
-    let value = probe_get_json(&profile, &url)?;
-    let balance = value.get("balance").and_then(|balance| {
-        balance
-            .as_f64()
-            .or_else(|| balance.as_str()?.parse::<f64>().ok())
-    });
+    let profile = effective_probe_profile(profile)?;
+    let result = ai_gateway::router::query_api_balance(&probe_client()?, &profile)?;
     Ok(ManagedApiProbeResult {
-        ok: balance.is_some(),
-        message: balance
-            .map(|balance| format!("余额：{:.2}", balance / 10000.0))
-            .unwrap_or_else(|| "接口未返回 balance 字段".to_string()),
-        detail: Some(url),
+        ok: result.available,
+        message: result.display,
+        detail: Some(result.endpoint_kind),
     })
 }
 
@@ -834,6 +785,7 @@ fn main() {
             import_generator_signing_key,
             import_issued_licenses,
             test_managed_api_connection,
+            list_managed_api_models,
             query_managed_api_balance,
             generate_license_file
         ])
@@ -982,6 +934,7 @@ mod tests {
             mode: inspiration_drawer::license::types::AiCredentialMode::LicenseManaged,
             allow_user_api: false,
             managed_profile: Some(inspiration_drawer::license::types::ManagedApiProfile {
+                gateway_kind: Some(AiGatewayKind::Xais),
                 provider: "xais-chat".to_string(),
                 base_url: "https://api.example.com/v1".to_string(),
                 api_key: "sk-managed-super-secret".to_string(),
@@ -989,6 +942,7 @@ mod tests {
                 headers: Default::default(),
             }),
             canvas_profile: Some(inspiration_drawer::license::types::ManagedApiProfile {
+                gateway_kind: Some(AiGatewayKind::Xais),
                 provider: "xais-chat".to_string(),
                 base_url: "https://canvas.example.com".to_string(),
                 api_key: "sk-canvas-super-secret".to_string(),
@@ -1008,6 +962,18 @@ mod tests {
             Some("cret")
         );
         assert_eq!(file.records[0].ai_mode.as_deref(), Some("license_managed"));
+        assert_eq!(
+            file.records[0].managed_gateway_kind,
+            Some(AiGatewayKind::Xais)
+        );
+        assert_eq!(
+            file.records[0].managed_base_url.as_deref(),
+            Some("https://api.example.com")
+        );
+        assert_eq!(
+            file.records[0].canvas_base_url.as_deref(),
+            Some("https://canvas.example.com")
+        );
         assert_eq!(file.records[0].managed_model.as_deref(), Some("gpt-4.1"));
         assert_eq!(
             file.records[0].canvas_model.as_deref(),

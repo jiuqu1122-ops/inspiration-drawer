@@ -1,4 +1,5 @@
 export type AgentProvider = 'openai-compatible' | 'codex';
+export type AiGatewayKind = 'new_api' | 'xais' | 'openai_compatible' | 'custom';
 
 export type AgentSendOptions = {
   quickPlanRequested?: boolean;
@@ -26,6 +27,8 @@ export type CodexModelOption = {
 
 export type AgentSettings = {
   provider: AgentProvider;
+  apiGatewayKind: AiGatewayKind;
+  apiProvider: string;
   apiBaseUrl: string;
   apiModel: string;
   apiHeaders: Record<string, string>;
@@ -45,16 +48,28 @@ export type AgentSettings = {
 };
 
 export type AgentApiBalanceResult = {
-  source: string;
+  available: boolean;
   provider: string;
-  model: string;
-  apiKeyLast4?: string | null;
+  gatewayKind: AiGatewayKind;
   endpointKind: string;
-  balance?: string | null;
-  quota?: string | null;
-  usedQuota?: string | null;
-  requestCount?: string | null;
+  totalGranted?: number | null;
+  totalUsed?: number | null;
+  totalAvailable?: number | null;
+  unlimited: boolean;
+  currency?: string | null;
+  expiresAt?: number | null;
+  rawSummary?: string | null;
+  unsupportedReason?: string | null;
   display: string;
+};
+
+export type AgentApiConnectionResult = {
+  ok: boolean;
+  gatewayKind: AiGatewayKind;
+  provider: string;
+  modelCount: number;
+  message: string;
+  endpointKind: string;
 };
 
 const LEGACY_CANVAS_AGENT_SYSTEM_PROMPT = '你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。';
@@ -76,6 +91,8 @@ export const isBuiltInAgentSystemPrompt = (value?: string | null) => {
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   provider: 'openai-compatible',
+  apiGatewayKind: 'openai_compatible',
+  apiProvider: 'openai-compatible',
   apiBaseUrl: 'https://api.openai.com/v1',
   apiModel: 'gpt-4o-mini',
   apiHeaders: {},

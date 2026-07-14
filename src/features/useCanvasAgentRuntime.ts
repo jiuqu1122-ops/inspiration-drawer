@@ -14,6 +14,7 @@ import {
   type AgentCanvasSelectionItem,
   type AgentCanvasVisualReference,
   type AgentApiBalanceResult,
+  type AgentApiConnectionResult,
   type AgentCanvasToolExecutor,
   type AgentChatMessage,
   type AgentCodexApproval,
@@ -329,6 +330,12 @@ const normalizeAgentSettings = (value: unknown): AgentSettings => {
     ...record,
     systemPrompt,
     provider: record.provider === 'codex' ? 'codex' : 'openai-compatible',
+    apiGatewayKind: ['new_api', 'xais', 'openai_compatible', 'custom'].includes(String(record.apiGatewayKind))
+      ? record.apiGatewayKind as AgentSettings['apiGatewayKind']
+      : 'openai_compatible',
+    apiProvider: typeof record.apiProvider === 'string' && record.apiProvider.trim()
+      ? record.apiProvider.trim()
+      : 'openai-compatible',
     apiHeaders: record.apiHeaders && typeof record.apiHeaders === 'object' ? record.apiHeaders : {},
     apiEditable: record.apiEditable !== false,
     apiCredentialSource: typeof record.apiCredentialSource === 'string' ? record.apiCredentialSource : 'user_settings',
@@ -2461,6 +2468,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         saved.provider === 'openai-compatible'
         && (
           previous.apiBaseUrl !== saved.apiBaseUrl
+          || previous.apiGatewayKind !== saved.apiGatewayKind
+          || previous.apiProvider !== saved.apiProvider
           || previous.apiModel !== saved.apiModel
           || JSON.stringify(previous.apiHeaders) !== JSON.stringify(saved.apiHeaders)
           || !!input.apiKey?.trim()
@@ -2489,6 +2498,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
 
   const listOpenAiModels = useCallback(async () => (
     invoke<string[]>('agent_list_openai_models')
+  ), []);
+
+  const testAgentApiConnection = useCallback(async () => (
+    invoke<AgentApiConnectionResult>('agent_test_api_connection')
   ), []);
 
   const queryAgentApiBalance = useCallback(async () => (
@@ -2569,6 +2582,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     saveSettings,
     refreshSettings,
     listOpenAiModels,
+    testAgentApiConnection,
     queryAgentApiBalance,
     codexStatus,
     codexRateLimits,

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { AiGatewayKind } from './agentModel';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT = 'gpt-image-1';
 export const OPENAI_COMPATIBLE_ENDPOINT_DEFAULT = 'https://api.openai.com/v1';
@@ -8,10 +9,9 @@ export const NEW_API_ENDPOINT_PLACEHOLDER = 'https://your-new-api.example.com/v1
 export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://xais.dchai.cn';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Xais Nano Pro_2K';
 export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
-export const AODUO_AI_ENDPOINT_DEFAULT = 'https://api.lk888.ai';
-export const AODUO_AI_IMAGE_MODEL_DEFAULT = 'nanobanana-pro';
-export const AODUO_AI_GPT_IMAGE_2_MODEL = 'gpt-image-2';
-export const AODUO_AI_GPT_IMAGE_2_GUAN_MODEL = 'gpt-image-2-guan';
+export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
+export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
+export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS = [
   { value: OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT, label: 'gpt-image-1' },
@@ -20,6 +20,9 @@ export const OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS = [
 ];
 
 export const NEW_API_IMAGE_MODEL_OPTIONS = [
+  { value: NEW_API_NANO_BANANA_PRO_MODEL, label: 'Nano Banana Pro' },
+  { value: NEW_API_NANO_BANANA_2_MODEL, label: 'Nano Banana 2' },
+  { value: NEW_API_GPT_IMAGE_2_MODEL, label: 'GPT Image 2' },
   { value: NEW_API_IMAGE_MODEL_DEFAULT, label: 'gpt-image-1' },
   { value: 'dall-e-3', label: 'DALL-E 3' },
   { value: 'dall-e-2', label: 'DALL-E 2' },
@@ -44,29 +47,79 @@ export const XAIS_CHAT_VIDEO_MODEL_OPTIONS = [
   { value: XAIS_CHAT_VIDEO_MODEL_DEFAULT, label: 'seedance2.0(支持真人上传)' },
 ];
 
-export const AODUO_AI_IMAGE_MODEL_OPTIONS = [
-  { value: AODUO_AI_IMAGE_MODEL_DEFAULT, label: 'nanobanana-pro' },
-  { value: 'nanobanana-2', label: 'nanobanana-2' },
-  { value: 'qwen-image-max', label: 'qwen-image-max' },
-  { value: AODUO_AI_GPT_IMAGE_2_MODEL, label: 'GPT Image 2' },
-  { value: AODUO_AI_GPT_IMAGE_2_GUAN_MODEL, label: 'GPT Image 2 官转' },
-];
-
 export const CANVAS_AI_PROVIDER_OPTIONS = [
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
   { value: 'new-api', label: 'New API 中转' },
   { value: 'openai-compatible', label: 'OpenAI Compatible' },
-  { value: 'aoduo-ai', label: '中转2' },
+  { value: 'custom', label: '自定义 Gateway' },
+] as const;
+
+export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
+  { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
+  { value: 'new-api', label: 'New API 中转' },
 ] as const;
 
 export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
 
+export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2';
+export type CanvasAiImageResolution = '2k' | '4k';
+
+const toImageModelToken = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
+);
+
+export const getNewApiImageModelFamily = (model?: string | null): NewApiImageModelFamily | null => {
+  const token = toImageModelToken(model).replace(/preview/g, '');
+  const geminiIndex = token.indexOf('gemini');
+  if (geminiIndex < 0) return null;
+  const signature = token.slice(geminiIndex + 'gemini'.length);
+  const isGemini3 = /^3/.test(signature) || /^image3/.test(signature);
+  if (!isGemini3) return null;
+  if (signature.includes('flash')) return 'nano-banana-2';
+  if (signature.includes('pro')) return 'nano-banana-pro';
+  return null;
+};
+
+export const getNewApiImageModelDisplayName = (model?: string | null) => {
+  const value = String(model || '').trim();
+  const family = getNewApiImageModelFamily(value);
+  if (family === 'nano-banana-pro') return 'Nano Banana Pro';
+  if (family === 'nano-banana-2') return 'Nano Banana 2';
+  if (toImageModelToken(value).includes('gptimage2')) return 'GPT Image 2';
+  return value;
+};
+
+export const isGptImage2LikeModel = (model?: string | null) => (
+  toImageModelToken(model).includes('gptimage2')
+);
+
+export const isLikelyNewApiVideoModel = (model?: string | null) => {
+  const normalized = String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return /(?:^|-)(video|sora|veo|seedance|kling|hailuo|minimax|runway|luma|pixverse|vidu|jimeng)(?:$|-|\d)/.test(normalized)
+    || /(?:image2video|text2video|i2v|t2v|wan\d.*video|video.*wan\d)/.test(normalized);
+};
+
+export const normalizeCanvasAiImageResolution = (resolution?: string | null): CanvasAiImageResolution => (
+  String(resolution || '').trim().toLowerCase() === '4k' ? '4k' : '2k'
+);
+
+export const supportsCanvasAiImageResolution = (
+  provider?: string | null,
+  model?: string | null,
+) => {
+  if (provider === 'xais-chat') return false;
+  if (isGptImage2LikeModel(model)) return true;
+  return provider === 'new-api' && getNewApiImageModelFamily(model) !== null;
+};
+
 export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
-  provider === 'openai-compatible' || provider === 'new-api'
+  provider === 'openai-compatible' || provider === 'new-api' || provider === 'custom'
 );
 
 export type CanvasAiBaseImageOptions = {
   apiKey: string;
+  gatewayKind?: AiGatewayKind;
+  apiProvider?: string;
   licenseManaged?: boolean;
   prompt: string;
   negativePrompt?: string;
@@ -76,6 +129,7 @@ export type CanvasAiBaseImageOptions = {
   resolution?: string;
   outputFormat?: string;
   count?: number;
+  headers?: Record<string, string>;
 };
 
 export type CanvasAiVideoInputMode = 'REF' | 'FLF';
@@ -117,6 +171,13 @@ const getErrorMessage = (error: unknown) => {
 
 const isUnauthorizedError = (error: unknown) => /(?:HTTP\s*)?401|unauthorized|invalid api key|invalid token/i.test(getErrorMessage(error));
 const isRetryableServerError = (error: unknown) => /HTTP\s*5\d\d|internal server error|bad gateway|service unavailable|gateway timeout|connection|error sending request|timed?\s*out|timeout|network|dns|reset|closed|连接|超时|断开/i.test(getErrorMessage(error));
+
+export const shouldFallbackNewApiImageGenerationToChat = (error: unknown) => {
+  const message = getErrorMessage(error);
+  return /(?:HTTP|status(?:\s+code)?)[^\d]{0,8}(?:404|405|501)\b/i.test(message)
+    || /(?:method not allowed|no route matched|cannot\s+post|unsupported endpoint|endpoint not (?:found|supported)|route not found|not implemented)/i.test(message)
+    || /(?:路由|接口|端点).{0,24}(?:不存在|未找到|不支持|未实现)|(?:不存在|未找到|不支持|未实现).{0,24}(?:路由|接口|端点)/i.test(message);
+};
 
 const isRemoteHttpImageSource = (source?: string | null) => (
   /^https?:\/\//i.test(String(source || '').trim()) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(String(source || ''))
@@ -170,15 +231,15 @@ export const normalizeNewApiBaseEndpoint = (endpoint: string) => {
   let trimmed = String(endpoint || '').trim().replace(/\/+$/, '');
   if (!trimmed) return '';
   trimmed = trimmed
-    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '/v1')
-    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '')
+    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations)(?:\/[^/]+)?$/i, '/v1')
+    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations)(?:\/[^/]+)?$/i, '')
     .replace(/\/+$/, '');
   return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
 };
 
 const normalizeNewApiEndpoint = (
   endpoint: string,
-  path: 'images/generations' | 'images/edits' | 'chat/completions'
+  path: 'images/generations' | 'images/edits' | 'chat/completions' | 'video/generations'
 ) => {
   const base = normalizeNewApiBaseEndpoint(endpoint);
   if (!base) throw new Error('Please enter New API Base URL first, for example https://your-new-api.example.com/v1');
@@ -215,30 +276,48 @@ const normalizeXaisWorkerEndpoint = (endpoint: string) => {
   return trimmed;
 };
 
-const normalizeAoduoEndpoint = (endpoint: string) => {
-  const trimmed = (endpoint || AODUO_AI_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
-  if (/\/v1(?:\/|$)/i.test(trimmed)) return trimmed;
-  return `${trimmed}/v1`;
-};
+type CanvasAiRequestContext = Pick<
+  CanvasAiImageOptions,
+  'provider' | 'gatewayKind' | 'apiProvider' | 'model' | 'headers'
+>;
 
-const postJsonViaTauri = async (url: string, apiKey: string, body: unknown) => {
+const requestProfileArgs = (context?: CanvasAiRequestContext) => ({
+  gatewayKind: context?.gatewayKind,
+  provider: context?.apiProvider || context?.provider,
+  model: context?.model,
+  headers: context?.headers,
+});
+
+const postJsonViaTauri = async (
+  url: string,
+  apiKey: string,
+  body: unknown,
+  context?: CanvasAiRequestContext,
+) => {
   try {
     return await invoke<unknown>('post_ai_json', {
       url,
       apiKey,
       body,
+      ...requestProfileArgs(context),
     });
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }
 };
 
-const postTextViaTauri = async (url: string, apiKey: string, body: unknown) => {
+const postTextViaTauri = async (
+  url: string,
+  apiKey: string,
+  body: unknown,
+  context?: CanvasAiRequestContext,
+) => {
   try {
     return await invoke<string>('post_ai_text', {
       url,
       apiKey,
       body,
+      ...requestProfileArgs(context),
     });
   } catch (error) {
     throw new Error(getErrorMessage(error));
@@ -253,36 +332,41 @@ const postImageEditViaTauri = async (
     prompt: string;
     n: number;
     size: string;
+    quality?: string;
     images: string[];
   },
+  context?: CanvasAiRequestContext,
 ) => {
   try {
     return await invoke<unknown>('post_ai_image_edit', {
       url,
       apiKey,
       ...payload,
+      ...requestProfileArgs(context),
     });
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }
 };
 
-const getJsonViaTauri = async (url: string, apiKey: string) => {
+const getJsonViaTauri = async (url: string, apiKey: string, context?: CanvasAiRequestContext) => {
   try {
     return await invoke<unknown>('get_ai_json', {
       url,
       apiKey,
+      ...requestProfileArgs(context),
     });
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }
 };
 
-const getTextViaTauri = async (url: string, apiKey: string) => {
+const getTextViaTauri = async (url: string, apiKey: string, context?: CanvasAiRequestContext) => {
   try {
     return await invoke<string>('get_ai_text', {
       url,
       apiKey,
+      ...requestProfileArgs(context),
     });
   } catch (error) {
     throw new Error(getErrorMessage(error));
@@ -304,9 +388,9 @@ const normalizeImageAspectRatio = (aspectRatio?: string | null) => {
   return ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(value) ? value : '1:1';
 };
 
-const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
-  const isHighResolution = resolution === '4k';
-  switch (aspectRatio) {
+export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
+  const isHighResolution = normalizeCanvasAiImageResolution(resolution) === '4k';
+  switch (normalizeImageAspectRatio(aspectRatio)) {
     case '9:16': return isHighResolution ? '2160x3840' : '1088x1920';
     case '16:9': return isHighResolution ? '3840x2160' : '1920x1088';
     case '3:4': return isHighResolution ? '2400x3200' : '960x1280';
@@ -315,17 +399,13 @@ const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string)
   }
 };
 
-const isGptImage2LikeModel = (model?: string | null) => (
-  /gpt[-_\s]?image[-_\s]?2/i.test(String(model || ''))
-);
-
 const newApiSizeFromAspectRatio = (model?: string | null, aspectRatio?: string, resolution?: string) => (
-  isGptImage2LikeModel(model)
+  isGptImage2LikeModel(model) || getNewApiImageModelFamily(model) !== null
     ? gptImage2SizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio), resolution)
     : imageSizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio))
 );
 
-const newApiImageRequestParams = (
+export const newApiImageRequestParams = (
   model: string,
   count: number,
   aspectRatio?: string,
@@ -333,11 +413,69 @@ const newApiImageRequestParams = (
 ) => {
   const ratio = normalizeImageAspectRatio(aspectRatio);
   const size = newApiSizeFromAspectRatio(model, ratio, resolution);
+  const supportsResolution = isGptImage2LikeModel(model) || getNewApiImageModelFamily(model) !== null;
   return {
     n: count,
     size,
     aspect_ratio: ratio,
     ratio,
+    ...(supportsResolution ? {
+      quality: normalizeCanvasAiImageResolution(resolution) === '4k' ? 'high' : 'standard',
+    } : {}),
+  };
+};
+
+const normalizeNewApiVideoResolution = (resolution?: string | null) => {
+  const value = String(resolution || '').trim().toLowerCase();
+  return value === '480p' || value === '1080p' ? value : '720p';
+};
+
+export const getNewApiVideoDimensions = (aspectRatio?: string, resolution?: string) => {
+  const ratio = normalizeImageAspectRatio(aspectRatio);
+  const shortEdge = normalizeNewApiVideoResolution(resolution) === '1080p'
+    ? 1080
+    : normalizeNewApiVideoResolution(resolution) === '480p' ? 480 : 720;
+  switch (ratio) {
+    case '16:9': return { width: shortEdge === 480 ? 854 : Math.round(shortEdge * 16 / 9), height: shortEdge };
+    case '9:16': return { width: shortEdge, height: shortEdge === 480 ? 854 : Math.round(shortEdge * 16 / 9) };
+    case '4:3': return { width: Math.round(shortEdge * 4 / 3), height: shortEdge };
+    case '3:4': return { width: shortEdge, height: Math.round(shortEdge * 4 / 3) };
+    default: return { width: shortEdge, height: shortEdge };
+  }
+};
+
+export const newApiVideoRequestParams = (options: {
+  model: string;
+  prompt: string;
+  inputImages?: string[];
+  aspectRatio?: string;
+  resolution?: string;
+  duration?: number;
+  inputMode?: CanvasAiVideoInputMode;
+  count?: number;
+}) => {
+  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
+  const aspectRatio = normalizeImageAspectRatio(options.aspectRatio);
+  const resolution = normalizeNewApiVideoResolution(options.resolution);
+  const inputMode = options.inputMode === 'FLF' ? 'FLF' : 'REF';
+  const dimensions = getNewApiVideoDimensions(aspectRatio, resolution);
+  const durationValue = Number(options.duration);
+  const duration = Number.isFinite(durationValue) ? Math.max(1, Math.min(60, durationValue)) : 5;
+  return {
+    model: options.model.trim(),
+    prompt: options.prompt.trim(),
+    ...(inputImages[0] ? { image: inputImages[0] } : {}),
+    duration,
+    ...dimensions,
+    n: Math.max(1, Math.min(4, Math.round(options.count || 1))),
+    response_format: 'url',
+    metadata: {
+      aspect_ratio: aspectRatio,
+      resolution,
+      input_mode: inputMode,
+      ...(inputMode === 'FLF' && inputImages[1] ? { end_image: inputImages[1] } : {}),
+      ...(inputImages.length > 1 ? { reference_images: inputImages } : {}),
+    },
   };
 };
 
@@ -741,12 +879,13 @@ const getTextViaTauriWithRetry = async (
   apiKey: string,
   label: string,
   attempts = 4,
-  delayMs = 1400
+  delayMs = 1400,
+  context?: CanvasAiRequestContext,
 ) => {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await getTextViaTauri(url, apiKey);
+      return await getTextViaTauri(url, apiKey, context);
     } catch (error) {
       lastError = error;
       if (isUnauthorizedError(error) || (!isRetryableServerError(error) && /HTTP\s*4\d\d/i.test(getErrorMessage(error)))) {
@@ -796,14 +935,18 @@ const resolveXaisAttachmentUrls = async (
   endpoint: string,
   apiKey: string,
   attachments: string[],
-  mediaType: 'image' | 'video' = 'image'
+  mediaType: 'image' | 'video' = 'image',
+  context?: CanvasAiRequestContext,
 ) => {
   const mediaUrls: string[] = [];
   for (const att of Array.from(new Set(attachments.filter(Boolean)))) {
     const raw = await getTextViaTauriWithRetry(
       `${endpoint}/attUrls?att=${encodeURIComponent(att)}`,
       apiKey,
-      'Xais 结果链接解析'
+      'Xais 结果链接解析',
+      4,
+      1400,
+      context,
     );
     const parsed = parseAiResponseText(raw);
     const parsedMedia = collectXaisWorkerMediaStrings(parsed, mediaType);
@@ -820,7 +963,8 @@ const resolveXaisAttachmentUrls = async (
 const resolveXaisVideoAttachmentUrls = async (
   endpoint: string,
   apiKey: string,
-  attachments: string[]
+  attachments: string[],
+  context?: CanvasAiRequestContext,
 ) => {
   const mediaUrls: string[] = [];
   const cleanAttachments = Array.from(new Set(attachments
@@ -848,7 +992,7 @@ const resolveXaisVideoAttachmentUrls = async (
     ]));
     for (const url of batchUrls) {
       try {
-        const raw = await getTextViaTauriWithRetry(url, apiKey, 'Xais video result link resolve', 2, 1000);
+        const raw = await getTextViaTauriWithRetry(url, apiKey, 'Xais video result link resolve', 2, 1000, context);
         if (pushResolvedMedia(raw)) {
           debugXaisVideo('attUrls batch resolved', {
             count: cleanAttachments.length,
@@ -874,7 +1018,7 @@ const resolveXaisVideoAttachmentUrls = async (
     for (const url of urls) {
       let raw = '';
       try {
-        raw = await getTextViaTauriWithRetry(url, apiKey, 'Xais video result link resolve', 2, 1000);
+        raw = await getTextViaTauriWithRetry(url, apiKey, 'Xais video result link resolve', 2, 1000, context);
       } catch (error) {
         lastError = error;
         if (isUnauthorizedError(error)) throw error;
@@ -953,7 +1097,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     for (let attempt = 0; attempt < 4; attempt += 1) {
       try {
         if (attempt > 0) await delay(1800 * attempt);
-        startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
+        startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody, options);
         debugXaisImage2('workerTaskStart response', {
           attempt: attempt + 1,
           raw: trimDebugText(startedRaw),
@@ -994,7 +1138,10 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
       const waitedRaw = await getTextViaTauriWithRetry(
         `${endpoint}/workerTaskWait?json=1&id=${encodeURIComponent(taskId)}`,
         apiKey,
-        `Xais ${model} 任务等待`
+        `Xais ${model} 任务等待`,
+        4,
+        1400,
+        options,
       );
       const waited = parseAiResponseText(waitedRaw);
       debugXaisImage2('workerTaskWait response', {
@@ -1010,7 +1157,7 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
 
       const attachments = collectXaisAttachmentIds(waited);
       if (attachments.length > 0) {
-        const urls = await resolveXaisAttachmentUrls(endpoint, apiKey, attachments);
+        const urls = await resolveXaisAttachmentUrls(endpoint, apiKey, attachments, 'image', options);
         if (urls.length > 0) return urls;
       }
     }
@@ -1234,7 +1381,7 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
       ratio: taskBody.ratio,
     });
 
-    const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody);
+    const startedRaw = await postTextViaTauri(`${endpoint}/workerTaskStart`, apiKey, taskBody, options);
     const started = parseAiResponseText(startedRaw);
     debugXaisVideo('start response', trimDebugText(startedRaw));
     const startFailure = getXaisWorkerTaskFailureMessage(started);
@@ -1255,7 +1402,7 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
     debugXaisVideo('task id', taskId);
     const resolveTaskIdAttachmentUrls = async (label: string) => {
       try {
-        const urls = await resolveXaisVideoAttachmentUrls(endpoint, apiKey, [taskId]);
+        const urls = await resolveXaisVideoAttachmentUrls(endpoint, apiKey, [taskId], options);
         debugXaisVideo(label, urls.map(url => url.slice(0, 180)));
         return urls
           .map(cleanExtractedMediaUrl)
@@ -1284,7 +1431,8 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
             apiKey,
             `Xais ${model} 视频任务等待`,
             2,
-            1200
+            1200,
+            options,
           );
           break;
         } catch (error) {
@@ -1330,7 +1478,7 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
       const attachments = collectXaisAttachmentIds(waited);
       if (attachments.length > 0) {
         debugXaisVideo(`attachments #${attempt}`, attachments);
-        const urls = await resolveXaisVideoAttachmentUrls(endpoint, apiKey, attachments);
+        const urls = await resolveXaisVideoAttachmentUrls(endpoint, apiKey, attachments, options);
         debugXaisVideo(`resolved urls #${attempt}`, urls.map(url => url.slice(0, 180)));
         const videoUrls = urls
           .map(cleanExtractedMediaUrl)
@@ -1381,7 +1529,13 @@ const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => 
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
   const model = (options.model || OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT).trim();
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
-  const size = imageSizeFromAspectRatio(options.aspectRatio);
+  const supportsResolution = isGptImage2LikeModel(model);
+  const size = supportsResolution
+    ? gptImage2SizeFromAspectRatio(options.aspectRatio, options.resolution)
+    : imageSizeFromAspectRatio(options.aspectRatio);
+  const quality = supportsResolution
+    ? normalizeCanvasAiImageResolution(options.resolution) === '4k' ? 'high' : 'standard'
+    : undefined;
 
   if (inputImages.length > 0) {
     const data = await postImageEditViaTauri(normalizeOpenAiEndpoint(options.endpoint || '', 'images/edits'), apiKey, {
@@ -1389,8 +1543,9 @@ const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => 
       prompt: buildPromptWithOptions(prompt, options.aspectRatio, options.resolution),
       n: count,
       size,
+      ...(quality ? { quality } : {}),
       images: inputImages,
-    });
+    }, options);
     const images = Array.from(new Set(collectImageStrings(data)));
     if (images.length > 0) return images.slice(0, count);
   }
@@ -1400,8 +1555,9 @@ const generateOpenAiCompatibleImages = async (options: CanvasAiImageOptions) => 
     prompt: buildPromptWithOptions(prompt, options.aspectRatio, options.resolution),
     n: count,
     size,
+    ...(quality ? { quality } : {}),
     response_format: 'b64_json',
-  });
+  }, options);
   const images = Array.from(new Set(collectImageStrings(data)));
   if (images.length === 0) throw new Error('接口没有返回图片数据');
   return images.slice(0, count);
@@ -1449,7 +1605,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
     let lastError: unknown = null;
     for (let index = 0; index < count && Array.from(new Set(output)).length < count; index += 1) {
       try {
-        const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'chat/completions'), apiKey, body);
+        const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'chat/completions'), apiKey, body, options);
         output.push(...collectImageStrings(data));
       } catch (error) {
         lastError = error;
@@ -1475,8 +1631,9 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
           ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
           n: imageParams.n,
           size: imageParams.size,
+          ...('quality' in imageParams ? { quality: imageParams.quality } : {}),
           images: inputImages,
-        });
+        }, options);
         const images = Array.from(new Set(collectImageStrings(data)));
         if (images.length > 0) return images.slice(0, count);
         throw new Error('New API images/edits did not return image data.');
@@ -1493,11 +1650,14 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
       ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
       ...imageParams,
       response_format: 'b64_json',
-    });
+    }, options);
     const images = Array.from(new Set(collectImageStrings(data)));
     if (images.length > 0) return images.slice(0, count);
     throw new Error('New API images/generations did not return image data.');
   } catch (generationError) {
+    if (!shouldFallbackNewApiImageGenerationToChat(generationError)) {
+      throw generationError;
+    }
     try {
       return await requestChatImages();
     } catch (chatError) {
@@ -1528,7 +1688,7 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
     let lastError: unknown = null;
     for (let index = 0; index < repeatCount && Array.from(new Set(output)).length < repeatCount; index += 1) {
       try {
-        const data = await postJsonViaTauri(url, apiKey, body);
+        const data = await postJsonViaTauri(url, apiKey, body, options);
         output.push(...collectImageStrings(data));
       } catch (error) {
         lastError = error;
@@ -1623,151 +1783,119 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   throw new Error(`Xais 调用失败：${errors.filter(Boolean).join('；') || '接口没有返回图片链接'}`);
 };
 
-const generateAoduoChatImages = async (options: CanvasAiImageOptions, count: number) => {
-  const apiKey = options.apiKey.trim();
-  const model = (options.model || AODUO_AI_IMAGE_MODEL_DEFAULT).trim() || AODUO_AI_IMAGE_MODEL_DEFAULT;
-  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
-  const promptText = buildChinesePromptWithOptions(options.prompt, options.aspectRatio, options.resolution);
-  const content = inputImages.length > 0
-    ? [
-      { type: 'text', text: promptText },
-      ...inputImages.map(image => ({
-        type: 'image_url',
-        image_url: { url: image },
-      })),
-    ]
-    : promptText;
-  const body = {
-    model,
-    messages: [
-      {
-        role: 'user',
-        content,
-      },
-    ],
-    stream: false,
-  };
-  const url = normalizeChatCompletionsEndpoint(normalizeAoduoEndpoint(options.endpoint || ''));
-  const images: string[] = [];
-  let lastError: unknown = null;
-
-  for (let index = 0; index < count && Array.from(new Set(images)).length < count; index += 1) {
-    try {
-      const data = await postJsonViaTauri(url, apiKey, body);
-      images.push(...collectImageStrings(data));
-    } catch (error) {
-      lastError = error;
-      if (images.length > 0) break;
-      throw error;
-    }
+const getNewApiVideoTaskState = (value: unknown): string => {
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  const direct = record.status ?? record.state;
+  if (typeof direct === 'string') return direct.trim().toLowerCase();
+  for (const nested of [record.data, record.result, record.task, record.response]) {
+    const state = getNewApiVideoTaskState(nested);
+    if (state) return state;
   }
-
-  const uniqueImages = Array.from(new Set(images));
-  if (uniqueImages.length === 0) {
-    throw new Error(lastError ? getErrorMessage(lastError) : '中转2 chat 接口没有返回图片数据');
-  }
-  return uniqueImages.slice(0, count);
+  return '';
 };
 
-const generateAoduoGptImage2Images = async (options: CanvasAiImageOptions, count: number) => {
-  const apiKey = options.apiKey.trim();
-  const prompt = options.prompt.trim();
-  const model = (options.model || AODUO_AI_GPT_IMAGE_2_MODEL).trim();
-  const modelLabel = model === AODUO_AI_GPT_IMAGE_2_GUAN_MODEL ? 'GPT Image 2 官转' : 'GPT Image 2';
-  const endpoint = normalizeAoduoEndpoint(options.endpoint || '');
-  const generateUrl = `${endpoint}/media/generate`;
-  const statusUrl = `${endpoint}/media/status`;
-  const requestCount = Math.max(1, Math.min(4, count));
-  const body = {
-    ...(model === AODUO_AI_GPT_IMAGE_2_MODEL ? { background: 'opaque' } : {}),
-    model,
-    n: requestCount,
-    prompt: buildPromptWithOptions(prompt, options.aspectRatio, options.resolution),
-    quality: options.resolution === '4k' ? 'high' : 'auto',
-    size: gptImage2SizeFromAspectRatio(options.aspectRatio, options.resolution),
-  };
-
-  const created = await postJsonViaTauri(generateUrl, apiKey, body);
-  const immediateImages = Array.from(new Set(collectImageStrings(created)));
-  if (immediateImages.length > 0) return immediateImages.slice(0, requestCount);
-
-  const taskId = getTaskIdFromResponse(created);
-  if (!taskId) {
-    throw new Error(`${modelLabel} 没有返回图片或 task_id`);
+const getNewApiVideoFailureMessage = (value: unknown): string => {
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  const direct = record.error ?? record.fail_reason ?? record.failure_reason;
+  if (direct) return getErrorMessage(direct);
+  for (const nested of [record.data, record.result, record.task, record.response]) {
+    const message = getNewApiVideoFailureMessage(nested);
+    if (message) return message;
   }
-
-  let lastStatus: unknown = null;
-  for (let attempt = 0; attempt < 36; attempt += 1) {
-    if (attempt > 0) await delay(3500);
-    const status = await getJsonViaTauri(`${statusUrl}?task_id=${encodeURIComponent(taskId)}`, apiKey);
-    lastStatus = status;
-    const record = status && typeof status === 'object' ? status as Record<string, unknown> : {};
-    const images = Array.from(new Set(collectImageStrings(status)));
-    if (record.state === 'failed') {
-      throw new Error(getErrorMessage(record.error) || `${modelLabel} 任务失败`);
-    }
-    if (record.is_final === true) {
-      if (record.state === 'success' && images.length > 0) return images.slice(0, requestCount);
-      throw new Error(getErrorMessage(record.error) || `${modelLabel} 任务结束但没有返回图片`);
-    }
-  }
-
-  throw new Error(`${modelLabel} 任务超时：${getErrorMessage(lastStatus)}`);
+  return typeof record.message === 'string' ? record.message : '';
 };
 
-const generateAoduoImages = async (options: CanvasAiImageOptions) => {
+export const formatNewApiVideoFailureMessage = (message?: string | null) => {
+  const raw = String(message || '').trim();
+  if (/cloudflare.*(?:403|challenge)|(?:403|429).*cloudflare|list recipes failed/i.test(raw)) {
+    return 'NewAPI 上游视频渠道触发 Cloudflare 403/429 限流或挑战，客户端无法绕过。请稍后重试，或在 NewAPI 后台更换/修复视频渠道。';
+  }
+  return raw;
+};
+
+const collectNewApiVideoResults = (value: unknown, inputImages: string[]) => {
+  const inputSet = new Set(inputImages.map(cleanExtractedMediaUrl));
+  return Array.from(new Set(collectVideoStrings(value)
+    .map(cleanExtractedMediaUrl)
+    .filter(url => (
+      (/^https?:\/\//i.test(url) || /^data:video\//i.test(url))
+      && !inputSet.has(url)
+      && !hasImageFileExtension(url)
+    ))));
+};
+
+const NEW_API_VIDEO_TASK_MAX_WAIT_MS = 25 * 60 * 1000;
+const NEW_API_VIDEO_TASK_POLL_INTERVAL_MS = 2500;
+
+const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
   const apiKey = options.apiKey.trim();
   const prompt = options.prompt.trim();
-  if (!apiKey && !options.licenseManaged) throw new Error('请先填写中转2 API Key');
-  if (!prompt) throw new Error('请输入生图提示词');
+  const model = String(options.model || '').trim();
+  if (!apiKey && !options.licenseManaged) throw new Error('请先填写 New API Key 或视频 API Key');
+  if (!prompt) throw new Error('请输入视频提示词');
+  if (!model) throw new Error('请先在视频节点选择 NewAPI 视频模型');
 
-  const endpoint = normalizeAoduoEndpoint(options.endpoint || '');
-  const model = (options.model || AODUO_AI_IMAGE_MODEL_DEFAULT).trim() || AODUO_AI_IMAGE_MODEL_DEFAULT;
-  const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'video/generations');
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
-  const size = imageSizeFromAspectRatio(options.aspectRatio);
+  const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const output: string[] = [];
 
-  if (model === AODUO_AI_GPT_IMAGE_2_MODEL || model === AODUO_AI_GPT_IMAGE_2_GUAN_MODEL) {
-    if (inputImages.length > 0) {
-      throw new Error(`${model === AODUO_AI_GPT_IMAGE_2_GUAN_MODEL ? 'GPT Image 2 官转' : 'GPT Image 2'} 当前仅接入文生图；图生图需要公开可访问的图片 URL 后再接入`);
-    }
-    return generateAoduoGptImage2Images({ ...options, endpoint, model }, count);
-  }
-
-  if (inputImages.length > 0) {
-    if (inputImages.every(isRemoteHttpImageSource)) {
-      return generateAoduoChatImages({ ...options, endpoint, model, inputImages }, count);
-    }
-    throw new Error('中转2 图生图需要公网图片 URL，本地图片不能直接用 base64 或 multipart 上传');
-  }
-
-  try {
-    const data = await postJsonViaTauri(normalizeOpenAiEndpoint(endpoint, 'images/generations'), apiKey, {
+  for (let index = 0; index < requestCount; index += 1) {
+    const body = newApiVideoRequestParams({
       model,
-      prompt: buildPromptWithOptions(prompt, options.aspectRatio, options.resolution),
-      n: count,
-      size,
-      response_format: 'b64_json',
+      prompt,
+      inputImages,
+      aspectRatio: options.aspectRatio,
+      resolution: options.resolution,
+      duration: options.duration,
+      inputMode: options.inputMode,
+      count: 1,
     });
-    const images = Array.from(new Set(collectImageStrings(data)));
-    if (images.length > 0) return images.slice(0, count);
-    throw new Error('Images 接口没有返回图片数据');
-  } catch (openAiError) {
-    try {
-      return await generateAoduoChatImages({ ...options, endpoint, model, inputImages }, count);
-    } catch (chatError) {
-      throw new Error(`中转2 调用失败：Images 接口 ${getErrorMessage(openAiError)}；Chat 接口 ${getErrorMessage(chatError)}`);
+    const started = await postJsonViaTauri(endpoint, apiKey, body, options);
+    const immediate = collectNewApiVideoResults(started, inputImages);
+    if (immediate.length > 0) {
+      output.push(...immediate);
+      continue;
+    }
+    const taskId = getTaskIdFromResponse(started);
+    if (!taskId) throw new Error('NewAPI 视频接口没有返回 task_id');
+
+    const waitUntil = Date.now() + NEW_API_VIDEO_TASK_MAX_WAIT_MS;
+    let lastStatus: unknown = started;
+    while (Date.now() <= waitUntil) {
+      await delay(NEW_API_VIDEO_TASK_POLL_INTERVAL_MS);
+      const status = await getJsonViaTauri(`${endpoint}/${encodeURIComponent(taskId)}`, apiKey, options);
+      lastStatus = status;
+      const videos = collectNewApiVideoResults(status, inputImages);
+      if (videos.length > 0) {
+        output.push(...videos);
+        break;
+      }
+      const state = getNewApiVideoTaskState(status);
+      if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+        const failure = formatNewApiVideoFailureMessage(getNewApiVideoFailureMessage(status));
+        throw new Error(failure || `NewAPI 视频任务失败：${taskId}`);
+      }
+    }
+    if (output.length <= index) {
+      const failure = formatNewApiVideoFailureMessage(getNewApiVideoFailureMessage(lastStatus));
+      throw new Error(`NewAPI 视频任务超时或没有返回视频：${failure || taskId}`);
     }
   }
+
+  return Array.from(new Set(output)).slice(0, requestCount);
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
   if (options.provider === 'xais-chat') return generateXaisChatImages(options);
   if (options.provider === 'new-api') return generateNewApiImages(options);
-  if (options.provider === 'aoduo-ai') return generateAoduoImages(options);
   return generateOpenAiCompatibleImages(options);
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
-  return generateXaisWorkerTaskVideos(options);
+  if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);
+  if (options.provider === 'new-api') return generateNewApiVideos(options);
+  throw new Error(`当前 Gateway 不支持视频生成：${options.provider}`);
 };

@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use base64::{engine::general_purpose, Engine as _};
 use chrono::NaiveDate;
-use serde::Serialize;
 use tauri::Manager;
 
+pub use crate::ai_gateway::{EffectiveApiProfile, StoredApiSettings};
 use crate::license::current_machine_id;
+use crate::license::types::AiGatewayKind;
 use crate::license::types::{
     AiCredentialMode, LicenseEdition, LicenseError, LicenseErrorCode, LicenseFile, LicensePayload,
     ManagedApiProfile,
@@ -15,29 +16,6 @@ use crate::license::types::{
 use crate::license::verifier::{verify_license_content, verify_license_content_with_key};
 
 const LICENSE_FILE_NAME: &str = "license.json";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoredApiSettings {
-    pub provider: String,
-    pub base_url: String,
-    pub api_key: String,
-    pub model: String,
-    pub headers: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EffectiveApiProfile {
-    pub source: String,
-    pub provider: String,
-    pub base_url: String,
-    #[serde(skip_serializing)]
-    pub api_key: String,
-    pub model: String,
-    pub headers: BTreeMap<String, String>,
-    pub editable: bool,
-    pub key_last4: Option<String>,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiProfileScope {
@@ -101,6 +79,9 @@ fn sanitize_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, Strin
 }
 
 fn managed_profile_to_effective(profile: ManagedApiProfile) -> Result<EffectiveApiProfile, String> {
+    let gateway_kind = profile.gateway_kind.unwrap_or_else(|| {
+        AiGatewayKind::infer(&profile.provider, &profile.base_url, &profile.headers)
+    });
     let provider = profile.provider.trim().to_string();
     let base_url = profile.base_url.trim().trim_end_matches('/').to_string();
     let api_key = profile.api_key.trim().to_string();
@@ -110,6 +91,7 @@ fn managed_profile_to_effective(profile: ManagedApiProfile) -> Result<EffectiveA
     }
     Ok(EffectiveApiProfile {
         source: "license_managed".to_string(),
+        gateway_kind,
         provider,
         base_url,
         key_last4: api_key_last4(&api_key),
@@ -121,9 +103,13 @@ fn managed_profile_to_effective(profile: ManagedApiProfile) -> Result<EffectiveA
 }
 
 fn user_settings_to_effective(settings: StoredApiSettings) -> EffectiveApiProfile {
+    let gateway_kind = settings.gateway_kind.unwrap_or_else(|| {
+        AiGatewayKind::infer(&settings.provider, &settings.base_url, &settings.headers)
+    });
     let api_key = settings.api_key.trim().to_string();
     EffectiveApiProfile {
         source: "user_settings".to_string(),
+        gateway_kind,
         provider: settings.provider.trim().to_string(),
         base_url: settings.base_url.trim().trim_end_matches('/').to_string(),
         key_last4: api_key_last4(&api_key),
@@ -150,6 +136,7 @@ fn managed_payload_to_effective(
             .ok_or_else(|| "高级版授权缺少 Agent 托管 API 配置，不能回退到旧 BYOK".to_string())?,
         ApiProfileScope::Canvas => access
             .canvas_profile
+            .or(access.managed_profile)
             .ok_or_else(|| "高级版授权缺少画布生图托管 API 配置，不能回退到旧 BYOK".to_string())?,
     };
     managed_profile_to_effective(profile)
@@ -245,6 +232,7 @@ mod tests {
 
     fn settings() -> StoredApiSettings {
         StoredApiSettings {
+            gateway_kind: Some(AiGatewayKind::OpenAiCompatible),
             provider: "openai-compatible".to_string(),
             base_url: "https://byok.example.com/v1".to_string(),
             api_key: "sk-byok".to_string(),
@@ -276,6 +264,7 @@ mod tests {
                 mode: AiCredentialMode::LicenseManaged,
                 allow_user_api: false,
                 managed_profile: Some(ManagedApiProfile {
+                    gateway_kind: Some(AiGatewayKind::Xais),
                     provider: "xais-chat".to_string(),
                     base_url: "https://api.example.com/v1".to_string(),
                     api_key: "sk-managed".to_string(),
@@ -283,6 +272,7 @@ mod tests {
                     headers: BTreeMap::from([("X-Test".to_string(), "ok".to_string())]),
                 }),
                 canvas_profile: Some(ManagedApiProfile {
+                    gateway_kind: Some(AiGatewayKind::Xais),
                     provider: "xais-chat".to_string(),
                     base_url: "https://canvas.example.com".to_string(),
                     api_key: "sk-canvas".to_string(),
@@ -339,9 +329,57 @@ mod tests {
         .unwrap();
 
         assert_eq!(profile.source, "license_managed");
+        assert_eq!(profile.gateway_kind, AiGatewayKind::Xais);
         assert_eq!(profile.api_key, "sk-managed");
         assert_eq!(profile.base_url, "https://api.example.com/v1");
         assert_eq!(profile.model, "managed-model");
+        assert!(!profile.editable);
+    }
+
+    #[test]
+    fn legacy_managed_profile_without_gateway_kind_is_inferred() {
+        let profile = managed_profile_to_effective(ManagedApiProfile {
+            gateway_kind: None,
+            provider: "xais-chat".to_string(),
+            base_url: "https://xais.example.com/v1".to_string(),
+            api_key: "sk-managed".to_string(),
+            model: "legacy-model".to_string(),
+            headers: BTreeMap::new(),
+        })
+        .unwrap();
+
+        assert_eq!(profile.gateway_kind, AiGatewayKind::Xais);
+        assert_eq!(profile.source, "license_managed");
+    }
+
+    #[test]
+    fn canvas_reuses_managed_profile_when_legacy_license_has_no_canvas_profile() {
+        let payload = LicensePayload {
+            product: PRODUCT_NAME.to_string(),
+            customer: "legacy-managed".to_string(),
+            machine_id: "machine-a".to_string(),
+            edition: LicenseEdition::Enterprise,
+            features: vec!["*".to_string()],
+            expire_at: "2099-01-01".to_string(),
+            ai_access: Some(LicenseAiAccess {
+                mode: AiCredentialMode::LicenseManaged,
+                allow_user_api: false,
+                managed_profile: Some(ManagedApiProfile {
+                    gateway_kind: None,
+                    provider: "new-api".to_string(),
+                    base_url: "https://gateway.example.com/v1".to_string(),
+                    api_key: "sk-managed".to_string(),
+                    model: "image-model".to_string(),
+                    headers: BTreeMap::new(),
+                }),
+                canvas_profile: None,
+            }),
+        };
+
+        let profile = managed_payload_to_effective(payload, ApiProfileScope::Canvas).unwrap();
+        assert_eq!(profile.gateway_kind, AiGatewayKind::NewApi);
+        assert_eq!(profile.api_key, "sk-managed");
+        assert_eq!(profile.model, "image-model");
         assert!(!profile.editable);
     }
 

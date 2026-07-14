@@ -16,6 +16,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import type {
   AgentApiBalanceResult,
+  AgentApiConnectionResult,
   AgentSettings,
   CodexInstallProgress,
   CodexLoginInfo,
@@ -34,6 +35,7 @@ type AgentSettingsSectionProps = {
   onToggle?: () => void;
   onSave: (settings: AgentSettings & { apiKey?: string; clearApiKey?: boolean }) => Promise<AgentSettings>;
   onListModels: () => Promise<string[]>;
+  onTestConnection?: () => Promise<AgentApiConnectionResult>;
   onQueryBalance?: () => Promise<AgentApiBalanceResult>;
   onRefreshCodexStatus: () => Promise<CodexRuntimeStatus>;
   onInstallCodex: () => Promise<CodexRuntimeStatus>;
@@ -54,6 +56,7 @@ export function AgentSettingsSection({
   onToggle,
   onSave,
   onListModels,
+  onTestConnection,
   onQueryBalance,
   onRefreshCodexStatus,
   onInstallCodex,
@@ -70,9 +73,15 @@ export function AgentSettingsSection({
   const [balanceText, setBalanceText] = useState('');
   const apiLockedByLicense = forceApiLockedByLicense || draft.apiEditable === false;
   const effectiveProvider = draft.provider;
-  const canQueryAgentBalance = effectiveProvider === 'openai-compatible'
-    && !!onQueryBalance
+  const canQueryAgentBalance = !!onQueryBalance
     && (draft.hasApiKey || apiKey.trim().length > 0);
+  const gatewayLabel = draft.apiGatewayKind === 'new_api'
+    ? 'NewAPI'
+    : draft.apiGatewayKind === 'xais'
+      ? 'XAIS'
+      : draft.apiGatewayKind === 'custom'
+        ? '自定义'
+        : 'OpenAI Compatible';
 
   useEffect(() => {
     setDraft(settings);
@@ -123,10 +132,25 @@ export function AgentSettingsSection({
     setWorking('models');
     setMessage('');
     try {
-      await saveDraft(false, true, false);
+      if (!apiLockedByLicense) await saveDraft(false, true, false);
       const values = await onListModels();
       setModels(values);
       setMessage(`已读取 ${values.length} 个模型`);
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setWorking('');
+    }
+  };
+
+  const testConnection = async () => {
+    if (!onTestConnection) return;
+    setWorking('connection');
+    setMessage('');
+    try {
+      if (!apiLockedByLicense) await saveDraft(false, true, false);
+      const result = await onTestConnection();
+      setMessage(result.message || '连接成功');
     } catch (error) {
       setMessage(String(error));
     } finally {
@@ -140,9 +164,17 @@ export function AgentSettingsSection({
     setMessage('');
     setBalanceText('');
     try {
-      await saveDraft(false, true, false);
+      if (!apiLockedByLicense) await saveDraft(false, true, false);
       const result = await onQueryBalance();
-      const text = result.display || result.balance || result.quota || '已读取余额';
+      const balance = result.display || (result.totalAvailable != null
+        ? `${result.totalAvailable}${result.currency ? ` ${result.currency}` : ''}`
+        : '已读取余额');
+      const expiresAt = result.expiresAt != null
+        ? new Date(result.expiresAt < 1_000_000_000_000 ? result.expiresAt * 1000 : result.expiresAt)
+        : null;
+      const text = expiresAt && !Number.isNaN(expiresAt.getTime())
+        ? `${balance} · Token 到期 ${expiresAt.toLocaleString('zh-CN')}`
+        : balance;
       setBalanceText(text);
       setMessage(`Agent API 余额：${text}`);
     } catch (error) {
@@ -210,6 +242,7 @@ export function AgentSettingsSection({
                 <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">Agent 引擎</span>
                 <select
                   value={effectiveProvider}
+                  disabled={apiLockedByLicense}
                   onChange={event => setDraft(current => ({
                     ...current,
                     provider: event.target.value === 'codex' ? 'codex' : 'openai-compatible',
@@ -234,6 +267,9 @@ export function AgentSettingsSection({
                     </div>
                     <div className="grid gap-1.5 rounded-[14px] bg-white/70 p-2 text-[10px] font-bold text-stone-600 dark:bg-stone-900/35 dark:text-stone-300">
                       <div className="flex justify-between gap-2"><span>配置来源</span><span className="truncate text-right">高级版授权</span></div>
+                      <div className="flex justify-between gap-2"><span>Gateway</span><span className="truncate text-right">{gatewayLabel}</span></div>
+                      <div className="flex justify-between gap-2"><span>Base URL</span><span className="truncate text-right">{draft.apiBaseUrl || '-'}</span></div>
+                      <div className="flex justify-between gap-2"><span>Provider</span><span className="truncate text-right">{draft.apiProvider || '-'}</span></div>
                       <div className="flex justify-between gap-2"><span>模型</span><span className="truncate text-right">{draft.apiModel || '-'}</span></div>
                     </div>
                     {draft.apiError && (
@@ -242,6 +278,15 @@ export function AgentSettingsSection({
                       </div>
                     )}
                     <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void testConnection()}
+                        disabled={!!working || !draft.hasApiKey || !onTestConnection}
+                        className="flex items-center gap-1 rounded-[12px] bg-violet-100 px-2.5 py-1.5 text-[10px] font-black text-violet-700 disabled:opacity-50 dark:bg-violet-400/15 dark:text-violet-100"
+                      >
+                        {working === 'connection' ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                        测试连接
+                      </button>
                       <button
                         type="button"
                         onClick={() => void refreshModels()}
@@ -273,8 +318,40 @@ export function AgentSettingsSection({
                     </span>
                   </div>
                   <p className="text-[9px] leading-4 text-blue-700/75 dark:text-blue-100/65">
-                    使用应用专属的 api-runtime 配置；API Key 仅通过运行时环境变量传入，不修改系统 Codex 配置。
+                    Gateway 配置同时用于 Agent 对话、工作流规划和 API Runtime；API Key 仅通过运行时环境变量传入。
                   </p>
+                  <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+                    Gateway
+                    <select
+                      value={draft.apiGatewayKind}
+                      onChange={event => {
+                        const apiGatewayKind = event.target.value as AgentSettings['apiGatewayKind'];
+                        const apiProvider = apiGatewayKind === 'new_api'
+                          ? 'new-api'
+                          : apiGatewayKind === 'xais'
+                            ? 'xais-chat'
+                            : apiGatewayKind === 'custom'
+                              ? 'custom'
+                              : 'openai-compatible';
+                        setDraft(current => ({ ...current, apiGatewayKind, apiProvider }));
+                      }}
+                      className="rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
+                    >
+                      <option value="new_api">NewAPI</option>
+                      <option value="xais">XAIS</option>
+                      <option value="openai_compatible">OpenAI Compatible</option>
+                      <option value="custom">自定义</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+                    Provider
+                    <input
+                      value={draft.apiProvider}
+                      onChange={event => setDraft(current => ({ ...current, apiProvider: event.target.value }))}
+                      placeholder="例如 new-api、xais-chat、openai-compatible"
+                      className="rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
+                    />
+                  </label>
                   <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
                     API Base URL
                     <input
@@ -309,6 +386,16 @@ export function AgentSettingsSection({
                       </datalist>
                       <button
                         type="button"
+                        onClick={() => void testConnection()}
+                        disabled={!!working || !onTestConnection}
+                        className="flex items-center gap-1 rounded-[12px] bg-violet-100 px-2 text-[10px] font-black text-violet-700 disabled:opacity-50 dark:bg-violet-400/15 dark:text-violet-100"
+                        title="测试当前 Gateway 连接"
+                      >
+                        {working === 'connection' ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                        测试
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void refreshModels()}
                         disabled={!!working}
                         className="rounded-[12px] bg-blue-100 px-2 text-[10px] font-black text-blue-700 disabled:opacity-50 dark:bg-blue-400/15 dark:text-blue-100"
@@ -336,7 +423,11 @@ export function AgentSettingsSection({
                       className="resize-y rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 font-mono text-[10px] font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
                     />
                     <span className="text-[9px] font-medium leading-4 text-blue-700/70 dark:text-blue-100/60">
-                      New API 余额查询需添加 X-Linggan-NewAPI-Access-Token 和 X-Linggan-NewAPI-User。
+                      {draft.apiGatewayKind === 'new_api'
+                        ? 'NewAPI 使用 Bearer Token，余额读取 /api/usage/token/。'
+                        : draft.apiGatewayKind === 'xais'
+                          ? 'XAIS 保留 X-Linggan-NewAPI-* Headers，并使用 /xais/userProfile 查询余额。'
+                          : 'OpenAI Compatible/自定义 Gateway 会依次探测服务支持的余额接口。'}
                     </span>
                   </label>
                   {draft.hasApiKey && (

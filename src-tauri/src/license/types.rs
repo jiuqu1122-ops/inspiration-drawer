@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 pub const PRODUCT_NAME: &str = "Inspiration Drawer";
 
@@ -69,8 +70,72 @@ pub enum AiCredentialMode {
     LicenseManaged,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiGatewayKind {
+    NewApi,
+    Xais,
+    OpenAiCompatible,
+    Custom,
+}
+
+impl Default for AiGatewayKind {
+    fn default() -> Self {
+        Self::OpenAiCompatible
+    }
+}
+
+impl AiGatewayKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NewApi => "new_api",
+            Self::Xais => "xais",
+            Self::OpenAiCompatible => "openai_compatible",
+            Self::Custom => "custom",
+        }
+    }
+
+    pub fn infer(provider: &str, base_url: &str, headers: &BTreeMap<String, String>) -> Self {
+        let provider = provider.trim().to_ascii_lowercase().replace('_', "-");
+        let base_url = base_url.trim().to_ascii_lowercase();
+        let normalized_headers = headers
+            .keys()
+            .map(|key| {
+                key.chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+            })
+            .collect::<Vec<_>>();
+
+        if provider == "xais"
+            || provider == "xais-chat"
+            || base_url.contains("/xais")
+            || base_url.contains("xais.")
+            || base_url.contains("dchai.cn")
+            || normalized_headers
+                .iter()
+                .any(|key| key.starts_with("xlinggannewapi"))
+        {
+            return Self::Xais;
+        }
+        if provider == "new-api"
+            || provider == "newapi"
+            || normalized_headers.iter().any(|key| key == "newapiuser")
+        {
+            return Self::NewApi;
+        }
+        if provider == "custom" {
+            return Self::Custom;
+        }
+        Self::OpenAiCompatible
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedApiProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_kind: Option<AiGatewayKind>,
     pub provider: String,
     pub base_url: String,
     pub api_key: String,
@@ -94,6 +159,8 @@ pub struct LicenseAiAccessSummary {
     pub mode: AiCredentialMode,
     pub allow_user_api: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_gateway_kind: Option<AiGatewayKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_base_url: Option<String>,
@@ -101,6 +168,8 @@ pub struct LicenseAiAccessSummary {
     pub managed_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_last4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_gateway_kind: Option<AiGatewayKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,19 +224,42 @@ fn api_key_last4(api_key: &str) -> Option<String> {
     Some(chars[start..].iter().collect())
 }
 
+fn base_url_summary(base_url: &str) -> String {
+    Url::parse(base_url.trim())
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?;
+            Some(match url.port() {
+                Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+                None => format!("{}://{}", url.scheme(), host),
+            })
+        })
+        .unwrap_or_else(|| "[configured]".to_string())
+}
+
 impl From<&LicenseAiAccess> for LicenseAiAccessSummary {
     fn from(value: &LicenseAiAccess) -> Self {
         let managed_profile = value.managed_profile.as_ref();
-        let canvas_profile = value.canvas_profile.as_ref();
+        let canvas_profile = value.canvas_profile.as_ref().or(managed_profile);
         Self {
             mode: value.mode.clone(),
             allow_user_api: value.allow_user_api,
+            managed_gateway_kind: managed_profile.map(|profile| {
+                profile.gateway_kind.unwrap_or_else(|| {
+                    AiGatewayKind::infer(&profile.provider, &profile.base_url, &profile.headers)
+                })
+            }),
             managed_provider: managed_profile.map(|profile| profile.provider.clone()),
-            managed_base_url: managed_profile.map(|profile| profile.base_url.clone()),
+            managed_base_url: managed_profile.map(|profile| base_url_summary(&profile.base_url)),
             managed_model: managed_profile.map(|profile| profile.model.clone()),
             api_key_last4: managed_profile.and_then(|profile| api_key_last4(&profile.api_key)),
+            canvas_gateway_kind: canvas_profile.map(|profile| {
+                profile.gateway_kind.unwrap_or_else(|| {
+                    AiGatewayKind::infer(&profile.provider, &profile.base_url, &profile.headers)
+                })
+            }),
             canvas_provider: canvas_profile.map(|profile| profile.provider.clone()),
-            canvas_base_url: canvas_profile.map(|profile| profile.base_url.clone()),
+            canvas_base_url: canvas_profile.map(|profile| base_url_summary(&profile.base_url)),
             canvas_model: canvas_profile.map(|profile| profile.model.clone()),
             canvas_api_key_last4: canvas_profile
                 .and_then(|profile| api_key_last4(&profile.api_key)),

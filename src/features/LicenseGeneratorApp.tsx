@@ -26,6 +26,7 @@ import {
   type AuthorizationRecord,
   type LicenseEdition,
 } from './LicenseManagementPanel';
+import type { AiGatewayKind } from './agentModel';
 
 type LicensePayload = {
   product: string;
@@ -38,6 +39,7 @@ type LicensePayload = {
 };
 
 type ManagedApiProfilePayload = {
+  gateway_kind: AiGatewayKind;
   provider: string;
   base_url: string;
   api_key: string;
@@ -53,6 +55,7 @@ type LicenseAiAccessPayload = {
 };
 
 type ManagedApiDraft = {
+  gatewayKind: AiGatewayKind;
   provider: string;
   baseUrl: string;
   apiKey: string;
@@ -100,6 +103,7 @@ const EDITION_OPTIONS: Array<{ value: LicenseEdition; label: string }> = [
 ];
 
 const createManagedApiDraft = (overrides: Partial<ManagedApiDraft> = {}): ManagedApiDraft => ({
+  gatewayKind: 'openai_compatible',
   provider: 'openai-compatible',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
@@ -183,10 +187,13 @@ export function LicenseGeneratorApp() {
   const [expireAt, setExpireAt] = useState(todayPlusOneYear);
   const [agentApiDraft, setAgentApiDraft] = useState<ManagedApiDraft>(() => createManagedApiDraft());
   const [canvasApiDraft, setCanvasApiDraft] = useState<ManagedApiDraft>(() => createManagedApiDraft({
+    gatewayKind: 'xais',
     provider: 'xais-chat',
     baseUrl: 'https://xais.dchai.cn',
     model: 'Xais Nano Pro_2K',
   }));
+  const [reuseAgentApiForCanvas, setReuseAgentApiForCanvas] = useState(false);
+  const [managedApiModels, setManagedApiModels] = useState<Record<string, string[]>>({});
   const [generated, setGenerated] = useState<GeneratedLicense | null>(null);
   const [busy, setBusy] = useState(false);
   const [apiProbeBusy, setApiProbeBusy] = useState<string | null>(null);
@@ -322,6 +329,7 @@ export function LicenseGeneratorApp() {
       throw new Error(`高级版${label} API 必须填写 Provider、Base URL、API Key 和模型`);
     }
     return {
+      gateway_kind: draft.gatewayKind,
       provider,
       base_url: baseUrl,
       api_key: apiKey,
@@ -356,7 +364,9 @@ export function LicenseGeneratorApp() {
           mode: 'license_managed',
           allow_user_api: false,
           managed_profile: buildManagedProfile(agentApiDraft, 'Agent / 工作流'),
-          canvas_profile: buildManagedProfile(canvasApiDraft, '画布生图'),
+          canvas_profile: reuseAgentApiForCanvas
+            ? buildManagedProfile(agentApiDraft, 'Agent / 工作流')
+            : buildManagedProfile(canvasApiDraft, '画布生图'),
         }
         : edition === 'pro'
           ? {
@@ -419,13 +429,19 @@ export function LicenseGeneratorApp() {
   const probeManagedApi = async (
     draft: ManagedApiDraft,
     label: string,
-    kind: 'connection' | 'balance',
+    kind: 'connection' | 'models' | 'balance',
   ) => {
     const busyKey = `${label}:${kind}`;
     try {
       setError('');
       setApiProbeBusy(busyKey);
       const profile = buildManagedProfile(draft, label);
+      if (kind === 'models') {
+        const models = await invoke<string[]>('list_managed_api_models', { profile });
+        setManagedApiModels(current => ({ ...current, [label]: models }));
+        showToast(`${label}：已读取 ${models.length} 个模型`);
+        return;
+      }
       const result = await invoke<ManagedApiProbeResult>(
         kind === 'connection' ? 'test_managed_api_connection' : 'query_managed_api_balance',
         { profile },
@@ -436,7 +452,12 @@ export function LicenseGeneratorApp() {
         setError(`${label}：${result.message}`);
       }
     } catch (err) {
-      setError(`${label}：${String(err || (kind === 'connection' ? '测试连接失败' : '查询余额失败'))}`);
+      const fallback = kind === 'connection'
+        ? '测试连接失败'
+        : kind === 'models'
+          ? '获取模型失败'
+          : '查询余额失败';
+      setError(`${label}：${String(err || fallback)}`);
     } finally {
       setApiProbeBusy(null);
     }
@@ -453,17 +474,26 @@ export function LicenseGeneratorApp() {
     setExpireAt(buildRenewalExpireAt(record.expireAt));
     if (record.edition === 'enterprise') {
       setAgentApiDraft(createManagedApiDraft({
+        gatewayKind: record.managedGatewayKind || 'openai_compatible',
         provider: record.managedProvider || 'openai-compatible',
         baseUrl: record.managedBaseUrl || 'https://api.openai.com/v1',
         model: record.managedModel || 'gpt-4o-mini',
         apiKey: '',
       }));
       setCanvasApiDraft(createManagedApiDraft({
+        gatewayKind: record.canvasGatewayKind || 'xais',
         provider: record.canvasProvider || 'xais-chat',
         baseUrl: record.canvasBaseUrl || 'https://xais.dchai.cn',
         model: record.canvasModel || 'Xais Nano Pro_2K',
         apiKey: '',
       }));
+      setReuseAgentApiForCanvas(Boolean(
+        record.managedGatewayKind === record.canvasGatewayKind
+        && record.managedBaseUrl === record.canvasBaseUrl
+        && record.managedModel === record.canvasModel
+        && record.apiKeyFingerprint
+        && record.apiKeyFingerprint === record.canvasApiKeyFingerprint,
+      ));
     }
     setGenerated(null);
     setRenewingRecord(record);
@@ -515,6 +545,29 @@ export function LicenseGeneratorApp() {
         <div className="text-xs font-black text-cyan-800 dark:text-cyan-100">{title}</div>
         <div className="mt-0.5 text-[10px] font-medium text-cyan-700/75 dark:text-cyan-100/65">{description}</div>
       </div>
+      <label className="grid gap-1">
+        <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400">Gateway</span>
+        <select
+          value={draft.gatewayKind}
+          onChange={event => {
+            const gatewayKind = event.target.value as AiGatewayKind;
+            const provider = gatewayKind === 'new_api'
+              ? 'new-api'
+              : gatewayKind === 'xais'
+                ? 'xais-chat'
+                : gatewayKind === 'custom'
+                  ? 'custom'
+                  : 'openai-compatible';
+            setDraft(current => ({ ...current, gatewayKind, provider }));
+          }}
+          className="license-input h-9 px-3 text-xs"
+        >
+          <option value="new_api">NewAPI</option>
+          <option value="xais">XAIS</option>
+          <option value="openai_compatible">OpenAI Compatible</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
       <div className="grid grid-cols-2 gap-2">
         <input
           value={draft.provider}
@@ -523,11 +576,15 @@ export function LicenseGeneratorApp() {
           className="license-input h-9 px-3 text-xs"
         />
         <input
+          list={`managed-models-${title.replace(/[^a-zA-Z0-9]/g, '-')}`}
           value={draft.model}
           onChange={event => setDraft(current => ({ ...current, model: event.target.value }))}
           placeholder="模型"
           className="license-input h-9 px-3 text-xs"
         />
+        <datalist id={`managed-models-${title.replace(/[^a-zA-Z0-9]/g, '-')}`}>
+          {(managedApiModels[title] || []).map(model => <option key={model} value={model} />)}
+        </datalist>
       </div>
       <input
         value={draft.baseUrl}
@@ -549,14 +606,27 @@ export function LicenseGeneratorApp() {
         placeholder='自定义 Headers，可选，例如 {"X-Tenant":"demo"}'
         className="license-input resize-y px-3 py-2 font-mono text-[10px]"
       />
-      {title.includes('Agent') && (
+      {draft.gatewayKind === 'new_api' && (
         <div className="rounded-[10px] bg-white/65 px-2 py-1 text-[10px] leading-4 text-cyan-700 dark:bg-stone-950/25 dark:text-cyan-100/75">
-          New API 余额查询需管理接口凭据：在 Headers JSON 中添加 X-Linggan-NewAPI-Access-Token 和 X-Linggan-NewAPI-User；模型 API Key 仍填写在 API Key。
+          NewAPI 使用 Bearer Token；余额查询走当前 Base URL 对应的 /api/usage/token/。
+        </div>
+      )}
+      {draft.gatewayKind === 'xais' && (
+        <div className="rounded-[10px] bg-white/65 px-2 py-1 text-[10px] leading-4 text-cyan-700 dark:bg-stone-950/25 dark:text-cyan-100/75">
+          XAIS 保留 X-Linggan-NewAPI-Access-Token、X-Linggan-NewAPI-User 和 /xais/userProfile 协议。
         </div>
       )}
       <div className="flex items-center justify-between gap-2 text-[10px] font-bold text-stone-500 dark:text-stone-400">
         <span>预览仅显示 Key 后四位：{draft.apiKey.trim() ? `****${draft.apiKey.trim().slice(-4)}` : '-'}</span>
         <div className="flex gap-1.5">
+          <button
+            type="button"
+            className="license-button license-button-secondary h-7 px-2 text-[10px]"
+            disabled={apiProbeBusy !== null}
+            onClick={() => void probeManagedApi(draft, title, 'models')}
+          >
+            {apiProbeBusy === `${title}:models` ? '读取中' : '获取模型'}
+          </button>
           <button
             type="button"
             className="license-button license-button-secondary h-7 px-2 text-[10px]"
@@ -816,9 +886,18 @@ export function LicenseGeneratorApp() {
                   agentApiDraft,
                   setAgentApiDraft,
                 )}
-                {renderManagedApiFields(
+                <label className="flex items-center gap-2 text-xs font-bold text-stone-600 dark:text-stone-300">
+                  <input
+                    type="checkbox"
+                    checked={reuseAgentApiForCanvas}
+                    onChange={event => setReuseAgentApiForCanvas(event.target.checked)}
+                    className="h-4 w-4 accent-cyan-600"
+                  />
+                  Canvas 复用 Agent Gateway、Token、模型和 Headers
+                </label>
+                {!reuseAgentApiForCanvas && renderManagedApiFields(
                   '画布生图 API',
-                  '用于画布生图、Xais 余额查询、画布模型列表和参考图上传。',
+                  '用于画布生图、余额查询、画布模型列表和参考图上传。',
                   canvasApiDraft,
                   setCanvasApiDraft,
                 )}
@@ -904,7 +983,7 @@ export function LicenseGeneratorApp() {
                             <div className="flex items-start justify-between gap-3">
                               <span className="text-stone-500">Agent API</span>
                               <span className="text-right font-bold">
-                                {generated.payload.ai_access.managed_profile.provider} · {generated.payload.ai_access.managed_profile.model} · ****{apiKeyLast4(generated.payload.ai_access.managed_profile.api_key)}
+                                {generated.payload.ai_access.managed_profile.gateway_kind} · {generated.payload.ai_access.managed_profile.provider} · {generated.payload.ai_access.managed_profile.model} · ****{apiKeyLast4(generated.payload.ai_access.managed_profile.api_key)}
                               </span>
                             </div>
                           )}
@@ -912,7 +991,7 @@ export function LicenseGeneratorApp() {
                             <div className="flex items-start justify-between gap-3">
                               <span className="text-stone-500">画布 API</span>
                               <span className="text-right font-bold">
-                                {generated.payload.ai_access.canvas_profile.provider} · {generated.payload.ai_access.canvas_profile.model} · ****{apiKeyLast4(generated.payload.ai_access.canvas_profile.api_key)}
+                                {generated.payload.ai_access.canvas_profile.gateway_kind} · {generated.payload.ai_access.canvas_profile.provider} · {generated.payload.ai_access.canvas_profile.model} · ****{apiKeyLast4(generated.payload.ai_access.canvas_profile.api_key)}
                               </span>
                             </div>
                           )}

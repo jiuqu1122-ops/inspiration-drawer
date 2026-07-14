@@ -1,4 +1,4 @@
-use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -16,8 +16,11 @@ use tauri::{Emitter, State};
 use crate::ai_credentials::{
     resolve_effective_api_profile, EffectiveApiProfile, StoredApiSettings,
 };
+use crate::ai_gateway::{self, ApiBalanceResult};
+use crate::license::types::AiGatewayKind;
 
 const AGENT_SETTINGS_FILE: &str = "agent_config.json";
+const CONFIGURED_HEADER_VALUE: &str = "[configured]";
 const CODEX_RPC_TIMEOUT_SECS: u64 = 45;
 const CODEX_API_KEY_ENV: &str = "LINGGAN_CODEX_API_KEY";
 const MANAGED_CODEX_VERSION: &str = "0.142.5";
@@ -70,6 +73,10 @@ struct CodexRuntimeProfile {
 #[serde(rename_all = "camelCase")]
 struct AgentSettingsStored {
     provider: String,
+    #[serde(default)]
+    api_gateway_kind: Option<AiGatewayKind>,
+    #[serde(default)]
+    api_provider: String,
     api_base_url: String,
     api_key: String,
     api_model: String,
@@ -90,6 +97,8 @@ impl Default for AgentSettingsStored {
     fn default() -> Self {
         Self {
             provider: "openai-compatible".to_string(),
+            api_gateway_kind: Some(AiGatewayKind::OpenAiCompatible),
+            api_provider: "openai-compatible".to_string(),
             api_base_url: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
             api_model: "gpt-4o-mini".to_string(),
@@ -110,6 +119,8 @@ impl Default for AgentSettingsStored {
 #[serde(rename_all = "camelCase")]
 pub struct AgentSettingsPublic {
     provider: String,
+    api_gateway_kind: AiGatewayKind,
+    api_provider: String,
     api_base_url: String,
     api_model: String,
     api_headers: BTreeMap<String, String>,
@@ -131,10 +142,22 @@ pub struct AgentSettingsPublic {
 impl From<&AgentSettingsStored> for AgentSettingsPublic {
     fn from(value: &AgentSettingsStored) -> Self {
         Self {
-            provider: value.provider.clone(),
-            api_base_url: value.api_base_url.clone(),
+            provider: normalize_provider(&value.provider),
+            api_gateway_kind: value.api_gateway_kind.unwrap_or_else(|| {
+                AiGatewayKind::infer(
+                    stored_api_provider(value),
+                    &value.api_base_url,
+                    &value.api_headers,
+                )
+            }),
+            api_provider: stored_api_provider(value).to_string(),
+            api_base_url: crate::ai_gateway::endpoint::redact_api_base_url(&value.api_base_url),
             api_model: normalize_api_model(&value.api_model),
-            api_headers: value.api_headers.clone(),
+            api_headers: value
+                .api_headers
+                .keys()
+                .map(|key| (key.clone(), CONFIGURED_HEADER_VALUE.to_string()))
+                .collect(),
             has_api_key: !value.api_key.trim().is_empty(),
             api_editable: true,
             api_credential_source: "user_settings".to_string(),
@@ -159,10 +182,14 @@ fn public_settings_from_stored(
     let mut public = AgentSettingsPublic::from(settings);
     match resolve_agent_api_profile(app_handle, settings) {
         Ok(profile) => {
+            public.api_gateway_kind = profile.gateway_kind;
+            public.api_provider = profile.provider.clone();
             if !profile.editable {
-                public.api_base_url = profile.base_url;
+                public.provider = "openai-compatible".to_string();
+                public.api_base_url =
+                    crate::ai_gateway::endpoint::redact_api_base_url(&profile.base_url);
                 public.api_model = normalize_api_model(&profile.model);
-                public.api_headers = profile.headers;
+                public.api_headers.clear();
                 public.has_api_key = !profile.api_key.trim().is_empty();
             }
             public.api_editable = profile.editable;
@@ -172,6 +199,8 @@ fn public_settings_from_stored(
         }
         Err(error) => {
             public.provider = "openai-compatible".to_string();
+            public.api_gateway_kind = AiGatewayKind::OpenAiCompatible;
+            public.api_provider = "openai-compatible".to_string();
             public.has_api_key = false;
             public.api_editable = false;
             public.api_credential_source = "license_managed_error".to_string();
@@ -186,6 +215,10 @@ fn public_settings_from_stored(
 #[serde(rename_all = "camelCase")]
 pub struct AgentSettingsInput {
     provider: String,
+    #[serde(default)]
+    api_gateway_kind: Option<AiGatewayKind>,
+    #[serde(default)]
+    api_provider: String,
     api_base_url: String,
     api_key: Option<String>,
     #[serde(default)]
@@ -307,25 +340,7 @@ fn get_codex_home(app_handle: &tauri::AppHandle, mode: CodexRuntimeMode) -> Path
 }
 
 fn normalize_base_url(base_url: &str) -> Result<String, String> {
-    let mut normalized = base_url.trim().trim_end_matches('/').to_string();
-    if normalized.is_empty() {
-        return Err("自定义 API 模式需要填写 Base URL".to_string());
-    }
-    if !normalized.starts_with("https://") && !normalized.starts_with("http://") {
-        return Err("Base URL 必须以 http:// 或 https:// 开头".to_string());
-    }
-    for suffix in ["/chat/completions", "/responses", "/models"] {
-        if normalized.to_ascii_lowercase().ends_with(suffix) {
-            let next_len = normalized.len().saturating_sub(suffix.len());
-            normalized.truncate(next_len);
-            normalized = normalized.trim_end_matches('/').to_string();
-            break;
-        }
-    }
-    if !normalized.to_ascii_lowercase().ends_with("/v1") {
-        normalized.push_str("/v1");
-    }
-    Ok(normalized)
+    crate::ai_gateway::endpoint::normalize_api_base_url(base_url)
 }
 
 fn escape_toml_string(value: &str) -> String {
@@ -342,7 +357,7 @@ fn build_codex_runtime_config(profile: &EffectiveApiProfile) -> Result<String, S
     if model.is_empty() {
         return Err("自定义 API 模式需要填写模型名".to_string());
     }
-    let base_url = normalize_base_url(&profile.base_url)?;
+    let base_url = ai_gateway::router::codex_v1_base_url(profile)?;
     let mut lines = vec![
         format!("model = \"{}\"", escape_toml_string(&model)),
         "model_provider = \"custom\"".to_string(),
@@ -391,11 +406,38 @@ fn write_codex_runtime_config(
 
 fn stored_api_settings(settings: &AgentSettingsStored) -> StoredApiSettings {
     StoredApiSettings {
-        provider: settings.provider.clone(),
+        gateway_kind: settings.api_gateway_kind,
+        provider: stored_api_provider(settings).to_string(),
         base_url: settings.api_base_url.clone(),
         api_key: settings.api_key.clone(),
         model: settings.api_model.clone(),
         headers: settings.api_headers.clone(),
+    }
+}
+
+fn stored_api_provider(settings: &AgentSettingsStored) -> &str {
+    let configured = settings.api_provider.trim();
+    if !configured.is_empty() {
+        return configured;
+    }
+    let legacy = settings.provider.trim();
+    if !legacy.is_empty() && !matches!(legacy, "codex" | "openai-compatible") {
+        legacy
+    } else {
+        "openai-compatible"
+    }
+}
+
+fn normalize_api_provider(value: &str, gateway_kind: AiGatewayKind) -> String {
+    let value = value.trim();
+    if !value.is_empty() {
+        return value.to_string();
+    }
+    match gateway_kind {
+        AiGatewayKind::NewApi => "new-api".to_string(),
+        AiGatewayKind::Xais => "xais-chat".to_string(),
+        AiGatewayKind::OpenAiCompatible => "openai-compatible".to_string(),
+        AiGatewayKind::Custom => "custom".to_string(),
     }
 }
 
@@ -404,6 +446,13 @@ fn resolve_agent_api_profile(
     settings: &AgentSettingsStored,
 ) -> Result<EffectiveApiProfile, String> {
     resolve_effective_api_profile(app_handle, stored_api_settings(settings))
+}
+
+pub fn resolve_current_agent_api_profile(
+    app_handle: &tauri::AppHandle,
+) -> Result<EffectiveApiProfile, String> {
+    let settings = read_settings(app_handle);
+    resolve_agent_api_profile(app_handle, &settings)
 }
 
 fn build_codex_runtime_profile(
@@ -552,6 +601,30 @@ fn sanitize_api_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, S
         .collect()
 }
 
+fn merge_api_headers(
+    current: &BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    sanitize_api_headers(headers)
+        .into_iter()
+        .filter_map(|(key, value)| {
+            if value == CONFIGURED_HEADER_VALUE {
+                current.get(&key).cloned().map(|value| (key, value))
+            } else {
+                Some((key, value))
+            }
+        })
+        .collect()
+}
+
+fn merge_api_base_url(current: &str, input: &str) -> Result<String, String> {
+    let input = input.trim();
+    if input == crate::ai_gateway::endpoint::redact_api_base_url(current) {
+        return Ok(current.trim().trim_end_matches('/').to_string());
+    }
+    crate::ai_gateway::endpoint::normalize_api_root_url(input)
+}
+
 fn input_changes_managed_api(profile: &EffectiveApiProfile, input: &AgentSettingsInput) -> bool {
     if input.clear_api_key
         || input
@@ -561,9 +634,16 @@ fn input_changes_managed_api(profile: &EffectiveApiProfile, input: &AgentSetting
     {
         return true;
     }
-    input.api_base_url.trim().trim_end_matches('/') != profile.base_url.trim().trim_end_matches('/')
+    let input_gateway = input.api_gateway_kind.unwrap_or(profile.gateway_kind);
+    let input_base = input.api_base_url.trim().trim_end_matches('/');
+    let profile_base = profile.base_url.trim().trim_end_matches('/');
+    let redacted_base = crate::ai_gateway::endpoint::redact_api_base_url(profile_base);
+    input_gateway != profile.gateway_kind
+        || normalize_api_provider(&input.api_provider, input_gateway) != profile.provider
+        || (input_base != profile_base && input_base != redacted_base)
         || normalize_api_model(&input.api_model) != normalize_api_model(&profile.model)
-        || sanitize_api_headers(input.api_headers.clone()) != profile.headers
+        || (!input.api_headers.is_empty()
+            && sanitize_api_headers(input.api_headers.clone()) != profile.headers)
 }
 
 fn input_changes_stored_api(current: &AgentSettingsStored, input: &AgentSettingsInput) -> bool {
@@ -576,10 +656,16 @@ fn input_changes_stored_api(current: &AgentSettingsStored, input: &AgentSettings
         return true;
     }
     normalize_provider(&input.provider) != normalize_provider(&current.provider)
-        || input.api_base_url.trim().trim_end_matches('/')
-            != current.api_base_url.trim().trim_end_matches('/')
+        || input.api_gateway_kind != current.api_gateway_kind
+        || normalize_api_provider(
+            &input.api_provider,
+            input.api_gateway_kind.unwrap_or_default(),
+        ) != stored_api_provider(current)
+        || merge_api_base_url(&current.api_base_url, &input.api_base_url)
+            .map(|value| value != current.api_base_url.trim().trim_end_matches('/'))
+            .unwrap_or(true)
         || normalize_api_model(&input.api_model) != normalize_api_model(&current.api_model)
-        || sanitize_api_headers(input.api_headers.clone()) != current.api_headers
+        || merge_api_headers(&current.api_headers, input.api_headers.clone()) != current.api_headers
 }
 
 #[tauri::command]
@@ -602,20 +688,28 @@ pub fn agent_save_settings(
     {
         if input_changes_managed_api(profile, &input) {
             return Err(
-                "高级版授权已托管 Agent API，不能修改 Endpoint、API Key、模型或 Headers"
+                "高级版授权已托管 Agent API，不能修改 Gateway、Provider、Base URL、API Key、模型或 Headers"
                     .to_string(),
             );
         }
-        current.provider = normalize_provider(&input.provider);
+        if normalize_provider(&input.provider) != "openai-compatible" {
+            return Err("高级版必须使用设备授权中的托管 Agent API".to_string());
+        }
+        current.provider = "openai-compatible".to_string();
     } else if let Err(error) = &resolved_profile {
         if error.contains("不能回退") && input_changes_stored_api(&current, &input) {
             return Err("高级版授权当前无效，不能修改 Agent API 设置或回退到 BYOK".to_string());
         }
     } else {
         current.provider = normalize_provider(&input.provider);
-        current.api_base_url = input.api_base_url.trim().trim_end_matches('/').to_string();
+        let gateway_kind = input.api_gateway_kind.unwrap_or_else(|| {
+            AiGatewayKind::infer(&input.api_provider, &input.api_base_url, &input.api_headers)
+        });
+        current.api_gateway_kind = Some(gateway_kind);
+        current.api_provider = normalize_api_provider(&input.api_provider, gateway_kind);
+        current.api_base_url = merge_api_base_url(&current.api_base_url, &input.api_base_url)?;
         current.api_model = normalize_api_model(&input.api_model);
-        current.api_headers = sanitize_api_headers(input.api_headers);
+        current.api_headers = merge_api_headers(&current.api_headers, input.api_headers);
         if input.clear_api_key {
             current.api_key.clear();
         } else if let Some(api_key) = input.api_key {
@@ -645,64 +739,6 @@ pub fn agent_save_settings(
     Ok(public_settings_from_stored(&app_handle, &current))
 }
 
-fn chat_completions_url(base_url: &str) -> Result<String, String> {
-    let base = base_url.trim().trim_end_matches('/');
-    if base.is_empty() {
-        return Err("请先填写 Agent API Base URL".to_string());
-    }
-    if base.ends_with("/chat/completions") {
-        Ok(base.to_string())
-    } else {
-        Ok(format!("{}/chat/completions", base))
-    }
-}
-
-fn models_url(base_url: &str) -> Result<String, String> {
-    let base = base_url.trim().trim_end_matches('/');
-    if base.is_empty() {
-        return Err("请先填写 Agent API Base URL".to_string());
-    }
-    if base.ends_with("/models") {
-        Ok(base.to_string())
-    } else {
-        Ok(format!("{}/models", base))
-    }
-}
-
-fn is_internal_agent_header(key: &str) -> bool {
-    matches!(
-        normalize_agent_balance_key(key).as_str(),
-        "authorization"
-            | "xlinggannewapiaccesstoken"
-            | "xlinggannewapiuser"
-            | "xlinggannewapiuserid"
-            | "xnewapiaccesstoken"
-            | "xnewapiuser"
-            | "xnewapiuserid"
-            | "newapiaccesstoken"
-            | "newapiusertoken"
-            | "newapiuser"
-            | "newapiuserid"
-    )
-}
-
-fn add_custom_headers(
-    mut request: reqwest::blocking::RequestBuilder,
-    headers: &BTreeMap<String, String>,
-) -> Result<reqwest::blocking::RequestBuilder, String> {
-    for (key, value) in headers {
-        if is_internal_agent_header(key) {
-            continue;
-        }
-        let name = HeaderName::from_bytes(key.as_bytes())
-            .map_err(|_| format!("Agent API Header 名称无效：{}", key))?;
-        let value = HeaderValue::from_str(value)
-            .map_err(|_| format!("Agent API Header 值无效：{}", key))?;
-        request = request.header(name, value);
-    }
-    Ok(request)
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentOpenAiChatRequest {
@@ -729,409 +765,32 @@ pub struct AgentOpenAiChatResult {
     finish_reason: Option<String>,
 }
 
-#[derive(Default)]
-struct AgentBalanceFields {
-    balance: Option<String>,
-    quota: Option<String>,
-    used_quota: Option<String>,
-    request_count: Option<String>,
-}
-
-fn normalize_agent_balance_key(key: &str) -> String {
-    key.chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase()
-}
-
-fn json_scalar_to_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        }
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-fn assign_agent_balance_field(fields: &mut AgentBalanceFields, key: &str, value: &Value) {
-    let Some(value) = json_scalar_to_string(value) else {
-        return;
-    };
-    match normalize_agent_balance_key(key).as_str() {
-        "balance" | "balances" | "credit" | "credits" | "availablebalance" | "accountbalance"
-        | "userbalance" | "amount" => {
-            if fields.balance.is_none() {
-                fields.balance = Some(value);
-            }
-        }
-        "quota" | "totalquota" | "remainingquota" | "remainquota" | "availablequota" | "limit"
-        | "hardlimit" => {
-            if fields.quota.is_none() {
-                fields.quota = Some(value);
-            }
-        }
-        "usedquota" | "used" | "usedamount" | "usage" | "totalusage" | "consumed" => {
-            if fields.used_quota.is_none() {
-                fields.used_quota = Some(value);
-            }
-        }
-        "requestcount" | "requestcounts" | "requests" | "request" => {
-            if fields.request_count.is_none() {
-                fields.request_count = Some(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_agent_balance_fields(value: &Value, fields: &mut AgentBalanceFields) {
-    match value {
-        Value::Object(object) => {
-            for (key, nested) in object {
-                assign_agent_balance_field(fields, key, nested);
-                collect_agent_balance_fields(nested, fields);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_agent_balance_fields(item, fields);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn parse_agent_balance_number(value: &str) -> Option<f64> {
-    let normalized = value.trim().trim_start_matches('$').replace(',', "");
-    normalized.parse::<f64>().ok()
-}
-
-fn format_new_api_quota(value: &str) -> String {
-    let Some(raw) = parse_agent_balance_number(value) else {
-        return value.to_string();
-    };
-    if raw.abs() < 1000.0 {
-        return value.to_string();
-    }
-    format!("{} (约 ${:.4})", value, raw / 500_000.0)
-}
-
-fn parse_agent_balance_response(
-    profile: &EffectiveApiProfile,
-    endpoint_kind: &str,
-    parsed: &Value,
-) -> Result<AgentApiBalanceResult, String> {
-    if parsed.get("success").and_then(Value::as_bool) == Some(false) {
-        let message = parsed
-            .get("message")
-            .or_else(|| parsed.get("error"))
-            .and_then(Value::as_str)
-            .unwrap_or("New API 管理接口返回失败");
-        return Err(format!("{}：{}", endpoint_kind, message));
-    }
-
-    let mut fields = AgentBalanceFields::default();
-    collect_agent_balance_fields(parsed, &mut fields);
-    if fields.balance.is_none() {
-        fields.balance = parsed.get("data").and_then(json_scalar_to_string);
-    }
-
-    let is_new_api_user_self = endpoint_kind.contains("/api/user/self");
-    let quota = fields.quota.map(|value| {
-        if is_new_api_user_self {
-            format_new_api_quota(&value)
-        } else {
-            value
-        }
-    });
-    let used_quota = fields.used_quota.map(|value| {
-        if is_new_api_user_self {
-            format_new_api_quota(&value)
-        } else {
-            value
-        }
-    });
-
-    let mut display_parts = Vec::new();
-    if let Some(balance) = &fields.balance {
-        display_parts.push(format!("余额 {}", balance));
-    }
-    if let Some(quota) = &quota {
-        display_parts.push(format!("额度 {}", quota));
-    }
-    if let Some(used) = &used_quota {
-        display_parts.push(format!("已用 {}", used));
-    }
-    if let Some(count) = &fields.request_count {
-        display_parts.push(format!("请求 {}", count));
-    }
-    if display_parts.is_empty() {
-        return Err(format!(
-            "{} 响应中没有找到余额字段：{}",
-            endpoint_kind,
-            preview_response_text(&parsed.to_string())
-        ));
-    }
-
-    Ok(AgentApiBalanceResult {
-        source: profile.source.clone(),
-        provider: profile.provider.clone(),
-        model: profile.model.clone(),
-        api_key_last4: profile.key_last4.clone(),
-        endpoint_kind: endpoint_kind.to_string(),
-        balance: fields.balance,
-        quota,
-        used_quota,
-        request_count: fields.request_count,
-        display: display_parts.join(" · "),
-    })
-}
-
-fn strip_agent_api_base_to_root(base_url: &str) -> Result<String, String> {
-    let mut value = base_url.trim().trim_end_matches('/').to_string();
-    if value.is_empty() {
-        return Err("请先填写 Agent API Base URL".to_string());
-    }
-    for suffix in [
-        "/v1/chat/completions",
-        "/v1/responses",
-        "/v1/models",
-        "/chat/completions",
-        "/responses",
-        "/models",
-        "/api/user/self",
-        "/newapi/balance",
-        "/dashboard/billing/credit_grants",
-        "/v1",
-    ] {
-        if value.to_ascii_lowercase().ends_with(suffix) {
-            value.truncate(value.len().saturating_sub(suffix.len()));
-            value = value.trim_end_matches('/').to_string();
-            break;
-        }
-    }
-    if value.is_empty() {
-        return Err("请先填写 Agent API Base URL".to_string());
-    }
-    Ok(value)
-}
-
-fn push_agent_balance_candidate(
-    candidates: &mut Vec<(String, String)>,
-    endpoint_kind: &str,
-    url: String,
-) {
-    if !candidates.iter().any(|(_, existing)| existing == &url) {
-        candidates.push((endpoint_kind.to_string(), url));
-    }
-}
-
-fn agent_balance_candidate_urls(base_url: &str) -> Result<Vec<(String, String)>, String> {
-    let base = base_url.trim().trim_end_matches('/').to_string();
-    if base.is_empty() {
-        return Err("请先填写 Agent API Base URL".to_string());
-    }
-    let root = strip_agent_api_base_to_root(&base)?;
-    let mut candidates = Vec::new();
-    push_agent_balance_candidate(
-        &mut candidates,
-        "New API /api/user/self",
-        agent_balance_user_self_url(&base)?,
-    );
-    push_agent_balance_candidate(
-        &mut candidates,
-        "New API /newapi/balance",
-        format!("{}/newapi/balance", root),
-    );
-    push_agent_balance_candidate(
-        &mut candidates,
-        "OpenAI billing credit_grants",
-        format!("{}/dashboard/billing/credit_grants", root),
-    );
-    if base != root {
-        push_agent_balance_candidate(
-            &mut candidates,
-            "Agent Base /newapi/balance",
-            format!("{}/newapi/balance", base),
-        );
-    }
-    Ok(candidates)
-}
-
-fn agent_balance_user_self_url(base_url: &str) -> Result<String, String> {
-    let base = base_url.trim().trim_end_matches('/').to_string();
-    if base.is_empty() {
-        return Err("璇峰厛濉啓 Agent API Base URL".to_string());
-    }
-    let root = strip_agent_api_base_to_root(&base)?;
-    Ok(format!("{}/api/user/self", root))
-}
-
-fn lookup_agent_header(headers: &BTreeMap<String, String>, names: &[&str]) -> Option<String> {
-    let wanted = names
-        .iter()
-        .map(|name| normalize_agent_balance_key(name))
-        .collect::<HashSet<_>>();
-    headers.iter().find_map(|(key, value)| {
-        let value = value.trim();
-        (!value.is_empty() && wanted.contains(&normalize_agent_balance_key(key)))
-            .then(|| value.to_string())
-    })
-}
-
-fn bearer_token_from_authorization(value: &str) -> String {
-    value
-        .trim()
-        .strip_prefix("Bearer ")
-        .or_else(|| value.trim().strip_prefix("bearer "))
-        .unwrap_or_else(|| value.trim())
-        .trim()
-        .to_string()
-}
-
-fn extract_new_api_management_auth(
-    headers: &BTreeMap<String, String>,
-) -> Result<(String, String), String> {
-    let access_token = lookup_agent_header(
-        headers,
-        &[
-            "X-Linggan-NewAPI-Access-Token",
-            "X-NewAPI-Access-Token",
-            "NewAPI-Access-Token",
-            "NewAPI-User-Token",
-        ],
-    )
-    .or_else(|| {
-        lookup_agent_header(headers, &["Authorization"])
-            .map(|value| bearer_token_from_authorization(&value))
-    })
-    .unwrap_or_default();
-    let user_id = lookup_agent_header(
-        headers,
-        &[
-            "X-Linggan-NewAPI-User",
-            "X-Linggan-NewAPI-User-ID",
-            "X-NewAPI-User",
-            "X-NewAPI-User-ID",
-            "New-Api-User",
-            "NewAPI-User",
-            "NewAPI-User-ID",
-        ],
-    )
-    .unwrap_or_default();
-
-    if access_token.is_empty() || user_id.is_empty() {
-        return Err(
-            "New API 余额查询需要管理接口凭据。请在 Agent API 自定义 Headers 中配置 X-Linggan-NewAPI-Access-Token（登录 access token）和 X-Linggan-NewAPI-User（用户 ID）；模型 API Key 只能用于聊天和模型列表。"
-                .to_string(),
-        );
-    }
-
-    Ok((access_token, user_id))
-}
-
-fn redact_http_urls(message: &str) -> String {
-    message
-        .split_whitespace()
-        .map(|part| {
-            let trimmed = part.trim_start_matches(|ch| matches!(ch, '(' | '[' | '"' | '\''));
-            let lower = trimmed.to_ascii_lowercase();
-            if lower.starts_with("http://") || lower.starts_with("https://") {
-                "[url]".to_string()
-            } else {
-                part.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn request_agent_balance_json(
-    app_handle: &tauri::AppHandle,
-    profile: &EffectiveApiProfile,
-    endpoint_kind: &str,
-    url: &str,
-) -> Result<Value, String> {
-    let (access_token, user_id) = extract_new_api_management_auth(&profile.headers)?;
-    let client = crate::build_http_client(Some(app_handle), None, 90)?;
-    let request = client
-        .get(url)
-        .header("accept", "application/json, text/plain, */*")
-        .header("New-Api-User", user_id)
-        .bearer_auth(access_token);
-    let response = request.send().map_err(|error| {
-        format!(
-            "{} 请求失败：{}",
-            endpoint_kind,
-            redact_http_urls(&error.to_string())
-        )
-    })?;
-    let status = response.status();
-    let text = response.text().unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!(
-            "{} HTTP {}：{}",
-            endpoint_kind,
-            status,
-            preview_response_text(&text)
-        ));
-    }
-    serde_json::from_str::<Value>(&text).map_err(|error| {
-        format!(
-            "{} JSON 解析失败：{}；响应片段：{}",
-            endpoint_kind,
-            error,
-            preview_response_text(&text)
-        )
-    })
-}
-
 #[tauri::command]
 pub async fn agent_query_api_balance(
     app_handle: tauri::AppHandle,
-) -> Result<AgentApiBalanceResult, String> {
+) -> Result<ApiBalanceResult, String> {
     let settings = read_settings(&app_handle);
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     tauri::async_runtime::spawn_blocking(move || {
-        if api_profile.api_key.trim().is_empty() {
-            return Err("请先在 Agent 设置中填写 API Key".to_string());
-        }
-        let candidates = agent_balance_candidate_urls(&api_profile.base_url)?;
-        let mut errors = Vec::new();
-        for (endpoint_kind, url) in candidates.into_iter().take(1) {
-            match request_agent_balance_json(&app_handle, &api_profile, &endpoint_kind, &url)
-                .and_then(|parsed| {
-                    parse_agent_balance_response(&api_profile, &endpoint_kind, &parsed)
-                }) {
-                Ok(result) => return Ok(result),
-                Err(error) => errors.push(error),
-            }
-        }
-        Err(format!(
-            "Agent API 余额查询失败：{}",
-            errors.into_iter().take(4).collect::<Vec<_>>().join("；")
-        ))
+        let client = crate::build_http_client(Some(&app_handle), None, 90)?;
+        ai_gateway::router::query_api_balance(&client, &api_profile)
     })
     .await
     .map_err(|error| format!("Agent API 余额查询后台任务失败：{}", error))?
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentApiBalanceResult {
-    source: String,
-    provider: String,
-    model: String,
-    api_key_last4: Option<String>,
-    endpoint_kind: String,
-    balance: Option<String>,
-    quota: Option<String>,
-    used_quota: Option<String>,
-    request_count: Option<String>,
-    display: String,
+#[tauri::command]
+pub async fn agent_test_api_connection(
+    app_handle: tauri::AppHandle,
+) -> Result<ai_gateway::GatewayConnectionResult, String> {
+    let settings = read_settings(&app_handle);
+    let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = crate::build_http_client(Some(&app_handle), None, 90)?;
+        ai_gateway::router::test_connection(&client, &api_profile)
+    })
+    .await
+    .map_err(|error| format!("Agent API 连接测试后台任务失败：{}", error))?
 }
 
 #[derive(Default)]
@@ -1336,18 +995,28 @@ pub async fn agent_openai_chat(
 
         let client = crate::build_http_client(Some(&app_handle), None, 600)?;
         let mut request_builder = client
-            .post(chat_completions_url(&api_profile.base_url)?)
+            .post(ai_gateway::router::endpoint_for(
+                &api_profile,
+                ai_gateway::GatewayOperation::ChatCompletions,
+            )?)
             .bearer_auth(&api_profile.api_key)
             .header(CONTENT_TYPE, "application/json")
             .json(&body);
-        request_builder = add_custom_headers(request_builder, &api_profile.headers)?;
+        request_builder = ai_gateway::router::apply_profile_headers(request_builder, &api_profile)?;
         let response = request_builder
             .send()
             .map_err(|error| format!("Agent API 请求失败：{}", error))?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().unwrap_or_default();
-            return Err(format!("Agent API HTTP {}：{}", status, text));
+            return Err(format!(
+                "Agent API HTTP {}：{}",
+                status,
+                ai_gateway::router::response_preview(&ai_gateway::router::redact_profile_secrets(
+                    &text,
+                    &api_profile
+                ))
+            ));
         }
 
         let content_type = response
@@ -1462,44 +1131,8 @@ pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Ve
     let settings = read_settings(&app_handle);
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     tauri::async_runtime::spawn_blocking(move || {
-        if api_profile.api_key.trim().is_empty() {
-            return Err("请先在 Agent 设置中填写 API Key".to_string());
-        }
         let client = crate::build_http_client(Some(&app_handle), None, 90)?;
-        let mut request = client
-            .get(models_url(&api_profile.base_url)?)
-            .bearer_auth(&api_profile.api_key);
-        request = add_custom_headers(request, &api_profile.headers)?;
-        let response = request
-            .send()
-            .map_err(|error| format!("读取 Agent 模型列表失败：{}", error))?;
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
-        if !status.is_success() {
-            return Err(format!("Agent 模型列表 HTTP {}：{}", status, text));
-        }
-        let parsed: Value = serde_json::from_str(&text)
-            .map_err(|error| format!("Agent 模型列表格式错误：{}", error))?;
-        let values = parsed
-            .get("data")
-            .and_then(Value::as_array)
-            .or_else(|| parsed.as_array())
-            .ok_or_else(|| "Agent 模型列表缺少 data 数组".to_string())?;
-        let mut models: Vec<String> = values
-            .iter()
-            .filter_map(|value| {
-                value
-                    .get("id")
-                    .or_else(|| value.get("name"))
-                    .and_then(Value::as_str)
-            })
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect();
-        models.sort();
-        models.dedup();
-        Ok(models)
+        ai_gateway::router::list_models(&client, &api_profile)
     })
     .await
     .map_err(|error| format!("Agent 模型列表后台任务失败：{}", error))?
@@ -2207,86 +1840,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_openai_compatible_urls_without_duplicate_suffixes() {
-        assert_eq!(
-            chat_completions_url("https://api.example.com/v1").unwrap(),
-            "https://api.example.com/v1/chat/completions"
-        );
-        assert_eq!(
-            chat_completions_url("https://api.example.com/v1/chat/completions").unwrap(),
-            "https://api.example.com/v1/chat/completions"
-        );
-        assert_eq!(
-            models_url("https://api.example.com/v1/").unwrap(),
-            "https://api.example.com/v1/models"
-        );
-    }
-
-    #[test]
-    fn builds_agent_balance_candidates_from_v1_base() {
-        let candidates = agent_balance_candidate_urls("https://api.example.com/v1").unwrap();
-        assert_eq!(
-            candidates.first().map(|(_, url)| url.as_str()),
-            Some("https://api.example.com/api/user/self")
-        );
-        assert!(candidates
-            .iter()
-            .any(|(_, url)| url == "https://api.example.com/newapi/balance"));
-        assert!(candidates
-            .iter()
-            .any(|(_, url)| url == "https://api.example.com/dashboard/billing/credit_grants"));
-    }
-
-    #[test]
-    fn extracts_new_api_management_headers_for_balance_only() {
-        let headers = BTreeMap::from([
-            (
-                "X-Linggan-NewAPI-Access-Token".to_string(),
-                "user-access-token".to_string(),
-            ),
-            ("X-Linggan-NewAPI-User".to_string(), "42".to_string()),
-        ]);
-        let (token, user_id) = extract_new_api_management_auth(&headers).unwrap();
-        assert_eq!(token, "user-access-token");
-        assert_eq!(user_id, "42");
-        assert!(is_internal_agent_header("X-Linggan-NewAPI-Access-Token"));
-        assert!(is_internal_agent_header("New-Api-User"));
-        assert!(is_internal_agent_header("Authorization"));
-        assert!(!is_internal_agent_header("X-Tenant"));
-    }
-
-    #[test]
-    fn parses_new_api_user_balance_without_secret_leak() {
-        let profile = EffectiveApiProfile {
-            source: "license_managed".to_string(),
-            provider: "openai-compatible".to_string(),
-            base_url: "https://api.example.com/v1".to_string(),
-            api_key: "sk-secret-value".to_string(),
-            model: "gpt-4.1".to_string(),
-            headers: BTreeMap::new(),
-            editable: false,
-            key_last4: Some("alue".to_string()),
-        };
-        let parsed = json!({
-            "success": true,
-            "data": {
-                "quota": 1000000,
-                "used_quota": 250000,
-                "request_count": 12
-            }
-        });
-        let result =
-            parse_agent_balance_response(&profile, "New API /api/user/self", &parsed).unwrap();
-        assert_eq!(result.source, "license_managed");
-        assert_eq!(result.api_key_last4.as_deref(), Some("alue"));
-        assert!(result.display.contains("约 $2.0000"));
-        assert!(result.display.contains("已用 250000"));
-        assert!(!serde_json::to_string(&result)
-            .unwrap()
-            .contains("sk-secret-value"));
-    }
-
-    #[test]
     fn normalizes_custom_codex_provider_base_urls() {
         assert_eq!(CodexRuntimeMode::Chatgpt.home_dir_name(), "chatgpt");
         assert_eq!(CodexRuntimeMode::Api.home_dir_name(), "api-runtime");
@@ -2313,6 +1866,7 @@ mod tests {
 
         let profile = EffectiveApiProfile {
             source: "user_settings".to_string(),
+            gateway_kind: AiGatewayKind::OpenAiCompatible,
             provider: stored.provider.clone(),
             base_url: stored.api_base_url.clone(),
             api_key: stored.api_key.clone(),
@@ -2334,12 +1888,81 @@ mod tests {
     fn public_settings_never_include_the_api_key() {
         let mut stored = AgentSettingsStored::default();
         stored.api_key = "secret-key".to_string();
+        stored.api_base_url = "https://gateway.example.com/private/tenant/v1".to_string();
+        stored
+            .api_headers
+            .insert("X-Secret-Token".to_string(), "secret-header".to_string());
         let public = AgentSettingsPublic::from(&stored);
         let serialized = serde_json::to_string(&public).unwrap();
         assert!(public.has_api_key);
         assert_eq!(public.api_key_last4.as_deref(), Some("-key"));
         assert!(!serialized.contains("secret-key"));
+        assert!(!serialized.contains("secret-header"));
+        assert_eq!(public.api_base_url, "https://gateway.example.com");
+        assert!(!serialized.contains("private/tenant"));
+        assert_eq!(
+            public.api_headers.get("X-Secret-Token").map(String::as_str),
+            Some(CONFIGURED_HEADER_VALUE)
+        );
         assert!(serialized.contains("apiKeyLast4"));
+    }
+
+    #[test]
+    fn configured_header_placeholders_preserve_existing_secret_values() {
+        let current = BTreeMap::from([
+            ("X-Secret-Token".to_string(), "secret-header".to_string()),
+            ("X-Remove-Me".to_string(), "old".to_string()),
+        ]);
+        let merged = merge_api_headers(
+            &current,
+            BTreeMap::from([
+                (
+                    "X-Secret-Token".to_string(),
+                    CONFIGURED_HEADER_VALUE.to_string(),
+                ),
+                ("X-New".to_string(), "new-value".to_string()),
+            ]),
+        );
+
+        assert_eq!(
+            merged.get("X-Secret-Token").map(String::as_str),
+            Some("secret-header")
+        );
+        assert_eq!(merged.get("X-New").map(String::as_str), Some("new-value"));
+        assert!(!merged.contains_key("X-Remove-Me"));
+    }
+
+    #[test]
+    fn redacted_base_url_preserves_current_path_until_user_replaces_it() {
+        let current = "https://gateway.example.com/private/tenant/v1";
+        assert_eq!(
+            merge_api_base_url(current, "https://gateway.example.com").unwrap(),
+            current
+        );
+        assert_eq!(
+            merge_api_base_url(current, "https://gateway.example.com/").unwrap(),
+            "https://gateway.example.com"
+        );
+        assert_eq!(
+            merge_api_base_url(current, "https://other.example.com/v1").unwrap(),
+            "https://other.example.com"
+        );
+    }
+
+    #[test]
+    fn legacy_agent_settings_without_gateway_kind_still_deserialize_and_infer_xais() {
+        let mut value = serde_json::to_value(AgentSettingsStored::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("apiGatewayKind");
+        object.insert("apiProvider".to_string(), json!("xais-chat"));
+        object.insert(
+            "apiBaseUrl".to_string(),
+            json!("https://xais.example.com/v1"),
+        );
+
+        let stored: AgentSettingsStored = serde_json::from_value(value).unwrap();
+        let public = AgentSettingsPublic::from(&stored);
+        assert_eq!(public.api_gateway_kind, AiGatewayKind::Xais);
     }
 
     #[test]

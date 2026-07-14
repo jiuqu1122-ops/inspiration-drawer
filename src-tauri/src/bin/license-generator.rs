@@ -207,6 +207,7 @@ fn build_ai_access(args: &Args) -> Result<Option<LicenseAiAccess>, String> {
         mode: AiCredentialMode::LicenseManaged,
         allow_user_api: false,
         managed_profile: Some(ManagedApiProfile {
+            gateway_kind: None,
             provider: args.api_provider.clone().unwrap_or_default(),
             base_url: args.api_base_url.clone().unwrap_or_default(),
             api_key: args.api_key.clone().unwrap_or_default(),
@@ -214,6 +215,7 @@ fn build_ai_access(args: &Args) -> Result<Option<LicenseAiAccess>, String> {
             headers: parse_headers(&args.api_headers)?,
         }),
         canvas_profile: Some(ManagedApiProfile {
+            gateway_kind: None,
             provider: args.canvas_api_provider.clone().unwrap_or_default(),
             base_url: args.canvas_api_base_url.clone().unwrap_or_default(),
             api_key: args.canvas_api_key.clone().unwrap_or_default(),

@@ -20,7 +20,7 @@ export type CanvasImageItem = {
   };
 };
 
-export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'aoduo-ai';
+export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'custom';
 
 export type CanvasAiMediaType = 'image' | 'video';
 
@@ -43,6 +43,7 @@ export type CanvasAiGeneratedOutput = {
   name?: string;
   prompt?: string;
   status?: 'working' | 'success' | 'error';
+  cacheStatus?: 'pending' | 'ready' | 'failed';
   error?: string;
   generatedAt?: number;
   width?: number;

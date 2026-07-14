@@ -7,7 +7,7 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    AiCredentialMode, LicenseAiAccess, LicenseEdition, LicenseFile, LicensePayload,
+    AiCredentialMode, AiGatewayKind, LicenseAiAccess, LicenseEdition, LicenseFile, LicensePayload,
     ManagedApiProfile, PRODUCT_NAME,
 };
 
@@ -124,6 +124,9 @@ fn normalize_headers(headers: BTreeMap<String, String>) -> BTreeMap<String, Stri
 }
 
 fn validate_managed_profile(profile: ManagedApiProfile) -> Result<ManagedApiProfile, String> {
+    let gateway_kind = profile.gateway_kind.unwrap_or_else(|| {
+        AiGatewayKind::infer(&profile.provider, &profile.base_url, &profile.headers)
+    });
     let provider = profile.provider.trim().to_string();
     let base_url = profile.base_url.trim().trim_end_matches('/').to_string();
     let api_key = profile.api_key.trim().to_string();
@@ -141,6 +144,7 @@ fn validate_managed_profile(profile: ManagedApiProfile) -> Result<ManagedApiProf
         return Err("高级版托管 API 必须填写模型".to_string());
     }
     Ok(ManagedApiProfile {
+        gateway_kind: Some(gateway_kind),
         provider,
         base_url,
         api_key,
@@ -309,6 +313,7 @@ mod tests {
                 mode: AiCredentialMode::LicenseManaged,
                 allow_user_api: false,
                 managed_profile: Some(ManagedApiProfile {
+                    gateway_kind: Some(AiGatewayKind::Xais),
                     provider: "xais-chat".to_string(),
                     base_url: "https://api.example.com/v1/".to_string(),
                     api_key: "sk-managed-secret".to_string(),
@@ -316,6 +321,7 @@ mod tests {
                     headers: BTreeMap::from([("X-Test".to_string(), "ok".to_string())]),
                 }),
                 canvas_profile: Some(ManagedApiProfile {
+                    gateway_kind: Some(AiGatewayKind::Xais),
                     provider: "xais-chat".to_string(),
                     base_url: "https://xais.example.com/".to_string(),
                     api_key: "sk-canvas-secret".to_string(),

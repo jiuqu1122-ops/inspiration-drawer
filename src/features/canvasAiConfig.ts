@@ -1,10 +1,8 @@
 import type { RoundedSelectOption } from '../components/RoundedSelect';
 import type { CanvasAiProvider } from './canvasModel';
 import {
-  AODUO_AI_ENDPOINT_DEFAULT,
-  AODUO_AI_IMAGE_MODEL_DEFAULT,
-  AODUO_AI_IMAGE_MODEL_OPTIONS,
   CANVAS_AI_PROVIDER_OPTIONS,
+  CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
   NEW_API_ENDPOINT_DEFAULT,
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
@@ -29,8 +27,8 @@ import { parseCanvasAspectRatioValue } from './canvasAiNodeLayout';
 export const CANVAS_AI_PROVIDER_STORAGE_KEY = 'drawer_canvas_ai_provider';
 export const CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY = 'drawer_canvas_ai_provider_default_version';
 export const CANVAS_AI_PROVIDER_DEFAULT_VERSION = 'xais-chat-default';
-export const CANVAS_AI_API_KEY_STORAGE_KEY = 'drawer_canvas_ai_api_key';
 export const CANVAS_AI_API_KEY_STORAGE_PREFIX = 'drawer_canvas_ai_api_key_';
+export const CANVAS_AI_NEW_API_VIDEO_KEY_STORAGE_KEY = 'drawer_canvas_ai_new_api_video_key';
 export const CANVAS_AI_ENDPOINT_STORAGE_KEY = 'drawer_canvas_ai_endpoint';
 export const CANVAS_AI_ENDPOINT_STORAGE_PREFIX = 'drawer_canvas_ai_endpoint_';
 export const CANVAS_AI_OPENAI_MODELS_STORAGE_KEY = 'drawer_canvas_ai_openai_models';
@@ -40,11 +38,13 @@ export const CANVAS_AI_XAIS_MODELS_STORAGE_KEY = 'drawer_canvas_ai_xais_models';
 export const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 export const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
 export const CANVAS_AI_COUNTS = [1, 2, 3, 4];
+export const CANVAS_AI_IMAGE_RESOLUTIONS = ['2k', '4k'];
 export const CANVAS_AI_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
 export const CANVAS_AI_VIDEO_DURATIONS = Array.from({ length: 12 }, (_, index) => index + 4);
 export const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
 export const CANVAS_AI_DEFAULT_OUTPUT_FORMAT = 'jpg';
 export const CANVAS_AI_DEFAULT_COUNT = 1;
+export const CANVAS_AI_DEFAULT_IMAGE_RESOLUTION = '2k';
 export const CANVAS_AI_DEFAULT_VIDEO_DURATION = 15;
 export const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
 export const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
@@ -58,8 +58,12 @@ export const CANVAS_AI_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_A
   value: provider.value,
   label: provider.label,
 }));
+export const CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_PROVIDER_OPTIONS.map(provider => ({
+  value: provider.value,
+  label: provider.label,
+}));
 export const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'openai-compatible', 'aoduo-ai'];
+export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'openai-compatible', 'custom'];
 export const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_RATIOS.map(ratio => ({
   value: ratio,
   label: ratio,
@@ -71,6 +75,10 @@ export const CANVAS_AI_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_
 export const CANVAS_AI_COUNT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_COUNTS.map(count => ({
   value: String(count),
   label: String(count),
+}));
+export const CANVAS_AI_IMAGE_RESOLUTION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_IMAGE_RESOLUTIONS.map(resolution => ({
+  value: resolution,
+  label: resolution.toUpperCase(),
 }));
 export const CANVAS_AI_VIDEO_RESOLUTION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_RESOLUTIONS.map(resolution => ({
   value: resolution,
@@ -204,12 +212,10 @@ export const getCanvasAiDefaultModel = (
   mediaType: 'image' | 'video' = 'image'
 ) => (
   mediaType === 'video'
-    ? XAIS_CHAT_VIDEO_MODEL_DEFAULT
+    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : ''
     : provider === 'xais-chat'
       ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
-      : provider === 'aoduo-ai'
-        ? AODUO_AI_IMAGE_MODEL_DEFAULT
-        : provider === 'new-api'
+      : provider === 'new-api'
           ? NEW_API_IMAGE_MODEL_DEFAULT
         : OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT
 );
@@ -217,9 +223,7 @@ export const getCanvasAiDefaultModel = (
 export const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
   provider === 'xais-chat'
     ? XAIS_CHAT_ENDPOINT_DEFAULT
-    : provider === 'aoduo-ai'
-      ? AODUO_AI_ENDPOINT_DEFAULT
-      : provider === 'new-api'
+    : provider === 'new-api'
         ? NEW_API_ENDPOINT_DEFAULT
       : provider === 'openai-compatible'
         ? OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
@@ -231,12 +235,10 @@ export const getCanvasAiModelOptions = (
   mediaType: 'image' | 'video' = 'image'
 ) => (
   mediaType === 'video'
-    ? XAIS_CHAT_VIDEO_MODEL_OPTIONS
+    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_OPTIONS : []
     : provider === 'xais-chat'
       ? XAIS_CHAT_IMAGE_MODEL_OPTIONS
-      : provider === 'aoduo-ai'
-        ? AODUO_AI_IMAGE_MODEL_OPTIONS
-        : provider === 'new-api'
+      : provider === 'new-api'
           ? NEW_API_IMAGE_MODEL_OPTIONS
         : OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS
 );
@@ -277,7 +279,7 @@ export const readStoredCanvasAiXaisModels = () => {
 export const isCanvasAiEndpointEditable = (provider: CanvasAiProvider) => (
   isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat'
 );
-export const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider);
+export const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => isCanvasAiEndpointEditable(provider);
 export const isCanvasAiRemoteModelProvider = (provider: CanvasAiProvider) => (
   isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat'
 );
@@ -381,10 +383,6 @@ export const normalizeCanvasAiProvider = (provider?: string | null): CanvasAiPro
 
 export const getStoredCanvasAiProvider = () => {
   const storedProvider = localStorage.getItem(CANVAS_AI_PROVIDER_STORAGE_KEY);
-  const storedVersion = localStorage.getItem(CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY);
-  if (storedVersion !== CANVAS_AI_PROVIDER_DEFAULT_VERSION && storedProvider === 'aoduo-ai') {
-    return CANVAS_AI_DEFAULT_PROVIDER;
-  }
   return normalizeCanvasAiProvider(storedProvider);
 };
 
@@ -398,7 +396,6 @@ export const getCanvasAiEndpointStorageKey = (provider: CanvasAiProvider) => (
 export const getStoredCanvasAiApiKey = (provider: CanvasAiProvider) => {
   const scopedKey = localStorage.getItem(getCanvasAiApiKeyStorageKey(provider));
   if (scopedKey !== null) return scopedKey;
-  if (provider === 'aoduo-ai') return localStorage.getItem(CANVAS_AI_API_KEY_STORAGE_KEY) || '';
   return '';
 };
 
@@ -416,7 +413,5 @@ export const getCanvasAiApiKeyPlaceholder = (provider: CanvasAiProvider) => (
     ? 'Xais / DCHAI API Key'
     : provider === 'new-api'
       ? 'New API Key'
-    : provider === 'aoduo-ai'
-      ? '中转2 API Key'
       : 'API Key'
 );

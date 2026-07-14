@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+pub mod ai_gateway;
 pub mod license;
 
 #[tauri::command]

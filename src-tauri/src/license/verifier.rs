@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use crate::license::generator::{generate_license, LicenseGeneratorInput};
     use crate::license::types::{
-        AiCredentialMode, LicenseAiAccess, LicenseEdition, ManagedApiProfile,
+        AiCredentialMode, AiGatewayKind, LicenseAiAccess, LicenseEdition, ManagedApiProfile,
     };
     use ed25519_dalek::{Signer, SigningKey};
 
@@ -354,6 +354,7 @@ mod tests {
                 mode: AiCredentialMode::LicenseManaged,
                 allow_user_api: false,
                 managed_profile: Some(ManagedApiProfile {
+                    gateway_kind: Some(AiGatewayKind::Xais),
                     provider: "xais-chat".to_string(),
                     base_url: "https://api.example.com/v1".to_string(),
                     api_key: "sk-original".to_string(),
@@ -361,6 +362,7 @@ mod tests {
                     headers: Default::default(),
                 }),
                 canvas_profile: Some(ManagedApiProfile {
+                    gateway_kind: Some(AiGatewayKind::Xais),
                     provider: "xais-chat".to_string(),
                     base_url: "https://canvas.example.com".to_string(),
                     api_key: "sk-canvas".to_string(),
@@ -371,29 +373,41 @@ mod tests {
         };
         let payload_bytes = serde_json::to_vec(&payload).unwrap();
         let signature = signing_key.sign(&payload_bytes);
-        let mut tampered_payload: LicensePayload = serde_json::from_slice(&payload_bytes).unwrap();
-        tampered_payload
-            .ai_access
-            .as_mut()
-            .unwrap()
-            .managed_profile
-            .as_mut()
-            .unwrap()
-            .api_key = "sk-tampered".to_string();
-        let file = LicenseFile {
-            payload: general_purpose::STANDARD
-                .encode(serde_json::to_vec(&tampered_payload).unwrap()),
-            signature: general_purpose::STANDARD.encode(signature.to_bytes()),
-        };
-        let content = serde_json::to_string(&file).unwrap();
-        let err = verify_license_content_with_key(
-            &content,
-            "machine-managed",
-            &public_key_b64,
-            NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
-        )
-        .unwrap_err();
-
-        assert_eq!(err.code, LicenseErrorCode::InvalidSignature);
+        for (pointer, replacement) in [
+            (
+                "/ai_access/managed_profile/gateway_kind",
+                serde_json::json!("new_api"),
+            ),
+            (
+                "/ai_access/managed_profile/base_url",
+                serde_json::json!("https://tampered.example.com/v1"),
+            ),
+            (
+                "/ai_access/managed_profile/api_key",
+                serde_json::json!("sk-tampered"),
+            ),
+            (
+                "/ai_access/managed_profile/model",
+                serde_json::json!("tampered-model"),
+            ),
+        ] {
+            let mut tampered_payload: serde_json::Value =
+                serde_json::from_slice(&payload_bytes).unwrap();
+            *tampered_payload.pointer_mut(pointer).unwrap() = replacement;
+            let file = LicenseFile {
+                payload: general_purpose::STANDARD
+                    .encode(serde_json::to_vec(&tampered_payload).unwrap()),
+                signature: general_purpose::STANDARD.encode(signature.to_bytes()),
+            };
+            let content = serde_json::to_string(&file).unwrap();
+            let err = verify_license_content_with_key(
+                &content,
+                "machine-managed",
+                &public_key_b64,
+                NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(err.code, LicenseErrorCode::InvalidSignature, "{pointer}");
+        }
     }
 }

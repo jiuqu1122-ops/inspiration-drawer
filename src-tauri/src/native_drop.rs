@@ -37,8 +37,7 @@ mod win {
     const DVASPECT_CONTENT_VALUE: DWORD = 1;
     const TYMED_HGLOBAL_VALUE: DWORD = 1;
     const MAX_NATIVE_DROP_TEXT_BYTES: usize = 8 * 1024 * 1024;
-    const EDGE_WINDOW_TITLE: &str =
-        "\u{7075}\u{611f}\u{62bd}\u{5c49}-\u{89e6}\u{53d1}\u{6761}";
+    const EDGE_WINDOW_TITLE: &str = "\u{7075}\u{611f}\u{62bd}\u{5c49}-\u{89e6}\u{53d1}\u{6761}";
     const MAIN_WINDOW_TITLE: &str = "\u{7075}\u{611f}\u{62bd}\u{5c49}";
 
     #[link(name = "ole32")]
@@ -1191,12 +1190,14 @@ mod win {
 
     fn trim_baidu_detail_query_tail(value: String) -> String {
         let lower = value.to_ascii_lowercase();
-        ["&os=", "&pd=", "&pi=", "&pn=", "&rn=", "&simid=", "&tn=", "&width=", "&word=", "&z="]
-            .iter()
-            .filter_map(|marker| lower.find(marker))
-            .min()
-            .map(|index| value[..index].to_string())
-            .unwrap_or(value)
+        [
+            "&os=", "&pd=", "&pi=", "&pn=", "&rn=", "&simid=", "&tn=", "&width=", "&word=", "&z=",
+        ]
+        .iter()
+        .filter_map(|marker| lower.find(marker))
+        .min()
+        .map(|index| value[..index].to_string())
+        .unwrap_or(value)
     }
 
     fn decode_html_entities(value: &str) -> String {

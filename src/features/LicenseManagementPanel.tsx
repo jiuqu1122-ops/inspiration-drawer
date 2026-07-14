@@ -9,6 +9,7 @@ import {
   ShieldAlert,
   UsersRound,
 } from 'lucide-react';
+import type { AiGatewayKind } from './agentModel';
 
 export type LicenseEdition = 'trial' | 'pro' | 'enterprise';
 
@@ -24,11 +25,13 @@ export type AuthorizationRecord = {
   issueCount: number;
   lastOutputPath?: string | null;
   aiMode?: string | null;
+  managedGatewayKind?: AiGatewayKind | null;
   managedProvider?: string | null;
   managedBaseUrl?: string | null;
   managedModel?: string | null;
   apiKeyLast4?: string | null;
   apiKeyFingerprint?: string | null;
+  canvasGatewayKind?: AiGatewayKind | null;
   canvasProvider?: string | null;
   canvasBaseUrl?: string | null;
   canvasModel?: string | null;
@@ -79,15 +82,27 @@ const apiModeLabel = (mode?: string | null) => (
   mode === 'license_managed' ? '高级版托管 API' : mode === 'byok' ? '用户 BYOK' : ''
 );
 
+const gatewayLabel = (gateway?: AiGatewayKind | null) => (
+  gateway === 'new_api'
+    ? 'NewAPI'
+    : gateway === 'xais'
+      ? 'XAIS'
+      : gateway === 'custom'
+        ? 'Custom'
+        : gateway === 'openai_compatible'
+          ? 'OpenAI Compatible'
+          : ''
+);
+
 const recordApiSummary = (record: AuthorizationRecord) => {
   const mode = apiModeLabel(record.aiMode);
   if (!mode) return '';
   const parts = [mode];
   if (record.managedProvider || record.managedModel || record.apiKeyLast4) {
-    parts.push(`Agent ${[record.managedProvider, record.managedModel, record.apiKeyLast4 ? `****${record.apiKeyLast4}` : ''].filter(Boolean).join(' / ')}`);
+    parts.push(`Agent ${[gatewayLabel(record.managedGatewayKind), record.managedBaseUrl, record.managedProvider, record.managedModel, record.apiKeyLast4 ? `****${record.apiKeyLast4}` : ''].filter(Boolean).join(' / ')}`);
   }
   if (record.canvasProvider || record.canvasModel || record.canvasApiKeyLast4) {
-    parts.push(`画布 ${[record.canvasProvider, record.canvasModel, record.canvasApiKeyLast4 ? `****${record.canvasApiKeyLast4}` : ''].filter(Boolean).join(' / ')}`);
+    parts.push(`画布 ${[gatewayLabel(record.canvasGatewayKind), record.canvasBaseUrl, record.canvasProvider, record.canvasModel, record.canvasApiKeyLast4 ? `****${record.canvasApiKeyLast4}` : ''].filter(Boolean).join(' / ')}`);
   }
   return parts.join(' · ');
 };
