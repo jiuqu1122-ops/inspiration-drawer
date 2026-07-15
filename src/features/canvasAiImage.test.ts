@@ -1,16 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
+  NEW_API_IMAGE_RESPONSE_FORMAT,
+  NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
+  executeNewApiImageProtocol,
+  formatNewApiImageProtocolError,
+  getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
   getNewApiVideoDimensions,
   formatNewApiVideoFailureMessage,
   gptImage2SizeFromAspectRatio,
   isLikelyNewApiVideoModel,
+  isNewApiImageProtocolUnsupportedError,
   newApiImageRequestParams,
   newApiVideoRequestParams,
   normalizeCanvasAiImageResolution,
   normalizeNewApiBaseEndpoint,
-  shouldFallbackNewApiImageGenerationToChat,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
 
@@ -124,23 +129,102 @@ describe('image resolution routing', () => {
   });
 });
 
-describe('NewAPI image endpoint fallback', () => {
+describe('NewAPI image protocol errors', () => {
+  it('prefers URL responses so large 2K/4K payloads can cache in the background', () => {
+    expect(NEW_API_IMAGE_RESPONSE_FORMAT).toBe('url');
+  });
+
+  it('keeps the synchronous request open long enough for slow upstream image jobs', () => {
+    expect(NEW_API_IMAGE_REQUEST_TIMEOUT_SECS).toBeGreaterThan(267);
+  });
+
+  it('routes all current NewAPI image models through chat/completions', () => {
+    expect(getDefaultNewApiImageProtocol('gemini-3.1-flash-image', true)).toBe('chat_completions');
+    expect(getDefaultNewApiImageProtocol('gpt-image-2', true)).toBe('chat_completions');
+    expect(getDefaultNewApiImageProtocol('gpt-image-2', false)).toBe('chat_completions');
+    expect(getDefaultNewApiImageProtocol('custom-image-model', false)).toBe('chat_completions');
+  });
+
   it.each([
     'AI request failed: HTTP 404: route not found',
     'HTTP 405 method not allowed',
     'status code: 501 endpoint not implemented',
     '当前服务不支持该接口',
-  ])('falls back for an unsupported images endpoint: %s', message => {
-    expect(shouldFallbackNewApiImageGenerationToChat(new Error(message))).toBe(true);
+  ])('recognizes an unsupported configured endpoint: %s', message => {
+    expect(isNewApiImageProtocolUnsupportedError(new Error(message))).toBe(true);
   });
 
-  it.each([
-    'request timed out after 300 seconds',
-    'HTTP 500 internal server error',
-    'New API images/generations did not return image data.',
-    'network connection reset',
-  ])('does not start a second generation request for: %s', message => {
-    expect(shouldFallbackNewApiImageGenerationToChat(new Error(message))).toBe(false);
+  it('shows a concise upstream message for transient server failures', () => {
+    expect(formatNewApiImageProtocolError('chat_completions', new Error('HTTP 502 bad gateway')))
+      .toBe('上游渠道暂时不可用（chat/completions，HTTP 502），请稍后手动重试。');
+  });
+
+  it('does not call images/edits after chat/completions returns 502', async () => {
+    let chatCalls = 0;
+    let editCalls = 0;
+    await expect(executeNewApiImageProtocol('chat_completions', [], {
+      ensureReferencesReady: async () => ({ readyDurationMs: 0, referenceHosts: [] }),
+      chatCompletions: async () => {
+        chatCalls += 1;
+        throw new Error('HTTP 502 bad gateway');
+      },
+      imagesEdits: async () => {
+        editCalls += 1;
+        return {};
+      },
+      imagesGenerations: async () => ({}),
+    })).rejects.toThrow('HTTP 502');
+    expect(chatCalls).toBe(1);
+    expect(editCalls).toBe(0);
+  });
+
+  it('does not retry images/edits after a 502', async () => {
+    let editCalls = 0;
+    await expect(executeNewApiImageProtocol('images_edits', [], {
+      ensureReferencesReady: async () => ({ readyDurationMs: 0, referenceHosts: [] }),
+      chatCompletions: async () => ({}),
+      imagesEdits: async () => {
+        editCalls += 1;
+        throw new Error('HTTP 502 bad gateway');
+      },
+      imagesGenerations: async () => ({}),
+    })).rejects.toThrow('HTTP 502');
+    expect(editCalls).toBe(1);
+  });
+
+  it('does not submit a paid request while a Cloudflare reference URL is unready', async () => {
+    let submitCalls = 0;
+    await expect(executeNewApiImageProtocol('chat_completions', ['https://ref.trycloudflare.com/a.png'], {
+      ensureReferencesReady: async () => {
+        throw new Error('reference not ready');
+      },
+      chatCompletions: async () => {
+        submitCalls += 1;
+        return {};
+      },
+      imagesEdits: async () => ({}),
+      imagesGenerations: async () => ({}),
+    })).rejects.toThrow('reference not ready');
+    expect(submitCalls).toBe(0);
+  });
+
+  it('submits exactly once after the reference URL is ready', async () => {
+    let submitCalls = 0;
+    const result = await executeNewApiImageProtocol<{ readyDurationMs: number; referenceHosts: string[] }>(
+      'images_generations',
+      ['https://ref.trycloudflare.com/a.png'],
+      {
+        ensureReferencesReady: async () => ({ readyDurationMs: 420, referenceHosts: ['ref.trycloudflare.com'] }),
+        chatCompletions: async () => ({ readyDurationMs: 0, referenceHosts: [] }),
+        imagesEdits: async () => ({ readyDurationMs: 0, referenceHosts: [] }),
+        imagesGenerations: async (readiness) => {
+          submitCalls += 1;
+          return readiness;
+        },
+      },
+    );
+    expect(submitCalls).toBe(1);
+    expect(result.readyDurationMs).toBe(420);
   });
 });
 

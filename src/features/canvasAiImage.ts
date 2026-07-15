@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AiGatewayKind } from './agentModel';
+import type { NewApiImageProtocol } from './canvasModel';
+
+export type { NewApiImageProtocol } from './canvasModel';
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT = 'gpt-image-1';
 export const OPENAI_COMPATIBLE_ENDPOINT_DEFAULT = 'https://api.openai.com/v1';
@@ -12,6 +15,8 @@ export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
 export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
+export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
+export const NEW_API_IMAGE_REQUEST_TIMEOUT_SECS = 360;
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS = [
   { value: OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT, label: 'gpt-image-1' },
@@ -91,6 +96,11 @@ export const getNewApiImageModelDisplayName = (model?: string | null) => {
   return value;
 };
 
+export const getDefaultNewApiImageProtocol = (
+  _model?: string | null,
+  _hasInputImages = false,
+): NewApiImageProtocol => 'chat_completions';
+
 export const isGptImage2LikeModel = (model?: string | null) => (
   toImageModelToken(model).includes('gptimage2')
 );
@@ -144,6 +154,14 @@ export type CanvasAiVideoInputMode = 'REF' | 'FLF';
 export type CanvasAiImageOptions = CanvasAiBaseImageOptions & {
   provider: CanvasAiImageProvider;
   endpoint?: string;
+  imageProtocol?: NewApiImageProtocol;
+  clientRequestId?: string;
+  endpointProtocol?: NewApiImageProtocol;
+  referenceHost?: string;
+  referenceReadyDurationMs?: number;
+  isFirstRequest?: boolean;
+  singleAttempt?: boolean;
+  timeoutSecs?: number;
 };
 
 export type CanvasAiVideoOptions = CanvasAiImageOptions & {
@@ -179,11 +197,70 @@ const getErrorMessage = (error: unknown) => {
 const isUnauthorizedError = (error: unknown) => /(?:HTTP\s*)?401|unauthorized|invalid api key|invalid token/i.test(getErrorMessage(error));
 const isRetryableServerError = (error: unknown) => /HTTP\s*5\d\d|internal server error|bad gateway|service unavailable|gateway timeout|connection|error sending request|timed?\s*out|timeout|network|dns|reset|closed|连接|超时|断开/i.test(getErrorMessage(error));
 
-export const shouldFallbackNewApiImageGenerationToChat = (error: unknown) => {
+export const isNewApiImageProtocolUnsupportedError = (error: unknown) => {
   const message = getErrorMessage(error);
   return /(?:HTTP|status(?:\s+code)?)[^\d]{0,8}(?:404|405|501)\b/i.test(message)
     || /(?:method not allowed|no route matched|cannot\s+post|unsupported endpoint|endpoint not (?:found|supported)|route not found|not implemented)/i.test(message)
     || /(?:路由|接口|端点).{0,24}(?:不存在|未找到|不支持|未实现)|(?:不存在|未找到|不支持|未实现).{0,24}(?:路由|接口|端点)/i.test(message);
+};
+
+const getNewApiImageHttpStatus = (error: unknown) => {
+  const match = getErrorMessage(error).match(/(?:HTTP|status(?:\s+code)?)[^\d]{0,8}(\d{3})\b/i);
+  return match ? Number(match[1]) : null;
+};
+
+const newApiImageProtocolLabel = (protocol: NewApiImageProtocol) => {
+  if (protocol === 'chat_completions') return 'chat/completions';
+  if (protocol === 'images_edits') return 'images/edits';
+  if (protocol === 'images_generations') return 'images/generations';
+  return 'async task';
+};
+
+export const formatNewApiImageProtocolError = (
+  protocol: NewApiImageProtocol,
+  error: unknown,
+) => {
+  const message = getErrorMessage(error);
+  const status = getNewApiImageHttpStatus(error);
+  const label = newApiImageProtocolLabel(protocol);
+  if (status && [500, 502, 503, 504].includes(status)) {
+    return `上游渠道暂时不可用（${label}，HTTP ${status}），请稍后手动重试。`;
+  }
+  if (isNewApiImageProtocolUnsupportedError(error)) {
+    return `当前模型的 ${label} 协议可能配置错误，请切换正确协议后手动重试。`;
+  }
+  if (/timed?\s*out|timeout|超时/i.test(message)) {
+    return `NewAPI ${label} 请求等待超时；上游可能仍在继续生成，请先到中转后台确认后再手动重试。`;
+  }
+  return `NewAPI ${label} 请求失败：${message}`;
+};
+
+export type NewApiReferenceReadiness = {
+  readyDurationMs: number;
+  referenceHosts: string[];
+};
+
+type NewApiImageProtocolExecutor<T> = {
+  ensureReferencesReady: (urls: string[]) => Promise<NewApiReferenceReadiness>;
+  chatCompletions: (readiness: NewApiReferenceReadiness) => Promise<T>;
+  imagesEdits: (readiness: NewApiReferenceReadiness) => Promise<T>;
+  imagesGenerations: (readiness: NewApiReferenceReadiness) => Promise<T>;
+  asyncTask?: (readiness: NewApiReferenceReadiness) => Promise<T>;
+};
+
+export const executeNewApiImageProtocol = async <T>(
+  protocol: NewApiImageProtocol,
+  cloudflareReferenceUrls: string[],
+  executor: NewApiImageProtocolExecutor<T>,
+) => {
+  const readiness = cloudflareReferenceUrls.length > 0
+    ? await executor.ensureReferencesReady(cloudflareReferenceUrls)
+    : { readyDurationMs: 0, referenceHosts: [] };
+  if (protocol === 'chat_completions') return executor.chatCompletions(readiness);
+  if (protocol === 'images_edits') return executor.imagesEdits(readiness);
+  if (protocol === 'images_generations') return executor.imagesGenerations(readiness);
+  if (executor.asyncTask) return executor.asyncTask(readiness);
+  throw new Error('NewAPI 图片异步任务协议尚未配置提交端点。');
 };
 
 const isRemoteHttpImageSource = (source?: string | null) => (
@@ -285,7 +362,18 @@ const normalizeXaisWorkerEndpoint = (endpoint: string) => {
 
 type CanvasAiRequestContext = Pick<
   CanvasAiImageOptions,
-  'provider' | 'gatewayKind' | 'apiProvider' | 'model' | 'headers'
+  | 'provider'
+  | 'gatewayKind'
+  | 'apiProvider'
+  | 'model'
+  | 'headers'
+  | 'clientRequestId'
+  | 'endpointProtocol'
+  | 'referenceHost'
+  | 'referenceReadyDurationMs'
+  | 'isFirstRequest'
+  | 'singleAttempt'
+  | 'timeoutSecs'
 >;
 
 const requestProfileArgs = (context?: CanvasAiRequestContext) => ({
@@ -293,6 +381,13 @@ const requestProfileArgs = (context?: CanvasAiRequestContext) => ({
   provider: context?.apiProvider || context?.provider,
   model: context?.model,
   headers: context?.headers,
+  clientRequestId: context?.clientRequestId,
+  endpointProtocol: context?.endpointProtocol,
+  referenceHost: context?.referenceHost,
+  referenceReadyDurationMs: context?.referenceReadyDurationMs,
+  isFirstRequest: context?.isFirstRequest,
+  singleAttempt: context?.singleAttempt,
+  timeoutSecs: context?.timeoutSecs,
 });
 
 const postJsonViaTauri = async (
@@ -340,6 +435,7 @@ const postImageEditViaTauri = async (
     n: number;
     size: string;
     quality?: string;
+    responseFormat?: string;
     images: string[];
   },
   context?: CanvasAiRequestContext,
@@ -387,6 +483,34 @@ const imageSizeFromAspectRatio = (aspectRatio?: string) => {
     case '3:4': return '1024x1536';
     case '4:3': return '1536x1024';
     default: return '1024x1024';
+  }
+};
+
+const getRemoteReferenceHosts = (sources: string[]) => Array.from(new Set(sources.flatMap(source => {
+  try {
+    const parsed = new URL(source);
+    return /^https?:$/.test(parsed.protocol) && parsed.hostname ? [parsed.hostname.toLowerCase()] : [];
+  } catch (_) {
+    return [];
+  }
+})));
+
+const getCloudflareReferenceUrls = (sources: string[]) => sources.filter(source => {
+  try {
+    return new URL(source).hostname.toLowerCase().endsWith('.trycloudflare.com');
+  } catch (_) {
+    return false;
+  }
+});
+
+const ensureNewApiReferenceUrlsReady = async (urls: string[]): Promise<NewApiReferenceReadiness> => {
+  try {
+    return await invoke<NewApiReferenceReadiness>('check_newapi_reference_urls_ready', {
+      urls,
+      maxWaitMs: 5000,
+    });
+  } catch (error) {
+    throw new Error(`Cloudflare 参考图尚未就绪，未提交生图任务：${getErrorMessage(error)}`);
   }
 };
 
@@ -1584,92 +1708,83 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
   const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution);
   const promptText = buildPromptWithOptions(prompt, options.aspectRatio, options.resolution);
   const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
+  const protocol = getDefaultNewApiImageProtocol(model, inputImages.length > 0);
+  const cloudflareReferenceUrls = getCloudflareReferenceUrls(inputImages);
+  const referenceHosts = getRemoteReferenceHosts(inputImages);
+  const clientRequestId = options.clientRequestId?.trim()
+    || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const requestContext = (readiness: NewApiReferenceReadiness): CanvasAiImageOptions => ({
+    ...options,
+    clientRequestId,
+    endpointProtocol: protocol,
+    referenceHost: (readiness.referenceHosts.length > 0 ? readiness.referenceHosts : referenceHosts).join(','),
+    referenceReadyDurationMs: readiness.readyDurationMs,
+    isFirstRequest: true,
+    singleAttempt: true,
+    timeoutSecs: NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
+  });
+  const chatContent = inputImages.length > 0
+    ? [
+      { type: 'text', text: promptText },
+      ...inputImages.map(image => ({
+        type: 'image_url',
+        image_url: { url: image },
+      })),
+    ]
+    : promptText;
 
-  const requestChatImages = async () => {
-    const content = inputImages.length > 0
-      ? [
-        { type: 'text', text: promptText },
-        ...inputImages.map(image => ({
-          type: 'image_url',
-          image_url: { url: image },
-        })),
-      ]
-      : promptText;
-    const body = {
-      model,
-      ...imageParams,
-      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
-      messages: [
+  try {
+    const data = await executeNewApiImageProtocol(protocol, cloudflareReferenceUrls, {
+      ensureReferencesReady: ensureNewApiReferenceUrlsReady,
+      chatCompletions: (readiness) => postJsonViaTauri(
+        normalizeNewApiEndpoint(endpoint, 'chat/completions'),
+        apiKey,
         {
-          role: 'user',
-          content,
+          model,
+          ...imageParams,
+          ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+          messages: [{ role: 'user', content: chatContent }],
+          stream: false,
+          max_tokens: 8192,
         },
-      ],
-      stream: false,
-      max_tokens: 8192,
-    };
-    const output: string[] = [];
-    let lastError: unknown = null;
-    for (let index = 0; index < count && Array.from(new Set(output)).length < count; index += 1) {
-      try {
-        const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'chat/completions'), apiKey, body, options);
-        output.push(...collectImageStrings(data));
-      } catch (error) {
-        lastError = error;
-        if (output.length > 0) break;
-        throw error;
-      }
-    }
-    const images = Array.from(new Set(output));
-    if (images.length === 0) {
-      throw new Error(lastError ? getErrorMessage(lastError) : 'New API chat/completions did not return image data.');
-    }
-    return images.slice(0, count);
-  };
-
-  if (inputImages.length > 0) {
-    try {
-      return await requestChatImages();
-    } catch (chatError) {
-      try {
-        const data = await postImageEditViaTauri(normalizeNewApiEndpoint(endpoint, 'images/edits'), apiKey, {
+        requestContext(readiness),
+      ),
+      imagesEdits: (readiness) => {
+        if (inputImages.length === 0) {
+          throw new Error('images/edits 需要至少一张参考图。');
+        }
+        return postImageEditViaTauri(normalizeNewApiEndpoint(endpoint, 'images/edits'), apiKey, {
           model,
           prompt: promptText,
-          ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
           n: imageParams.n,
           size: imageParams.size,
           ...('quality' in imageParams ? { quality: imageParams.quality } : {}),
+          responseFormat: NEW_API_IMAGE_RESPONSE_FORMAT,
           images: inputImages,
-        }, options);
-        const images = Array.from(new Set(collectImageStrings(data)));
-        if (images.length > 0) return images.slice(0, count);
-        throw new Error('New API images/edits did not return image data.');
-      } catch (editError) {
-        throw new Error(`New API image-to-image failed: chat/completions ${getErrorMessage(chatError)}; images/edits ${getErrorMessage(editError)}`);
-      }
-    }
-  }
-
-  try {
-    const data = await postJsonViaTauri(normalizeNewApiEndpoint(endpoint, 'images/generations'), apiKey, {
-      model,
-      prompt: promptText,
-      ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
-      ...imageParams,
-      response_format: 'b64_json',
-    }, options);
+        }, requestContext(readiness));
+      },
+      imagesGenerations: (readiness) => postJsonViaTauri(
+        normalizeNewApiEndpoint(endpoint, 'images/generations'),
+        apiKey,
+        {
+          model,
+          prompt: promptText,
+          ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+          ...imageParams,
+          response_format: NEW_API_IMAGE_RESPONSE_FORMAT,
+        },
+        requestContext(readiness),
+      ),
+    });
     const images = Array.from(new Set(collectImageStrings(data)));
-    if (images.length > 0) return images.slice(0, count);
-    throw new Error('New API images/generations did not return image data.');
-  } catch (generationError) {
-    if (!shouldFallbackNewApiImageGenerationToChat(generationError)) {
-      throw generationError;
+    if (images.length === 0) {
+      throw new Error(`${newApiImageProtocolLabel(protocol)} did not return image data.`);
     }
-    try {
-      return await requestChatImages();
-    } catch (chatError) {
-      throw new Error(`New API generation failed: images/generations ${getErrorMessage(generationError)}; chat/completions ${getErrorMessage(chatError)}`);
-    }
+    return images.slice(0, count);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    if (/Cloudflare 参考图尚未就绪，未提交生图任务/.test(message)) throw error;
+    throw new Error(formatNewApiImageProtocolError(protocol, error));
   }
 };
 

@@ -141,6 +141,11 @@ import {
 } from './features/canvasModel';
 import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './features/canvasTemplates';
 import {
+  claimCanvasAiRun,
+  createCanvasAiClientRequestId,
+  releaseCanvasAiRun,
+} from './features/canvasAiRunGuard';
+import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
   buildScheduleItemsFromText,
@@ -238,6 +243,7 @@ import {
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
   NEW_API_IMAGE_MODEL_OPTIONS,
+  NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
   OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS,
@@ -248,6 +254,7 @@ import {
   XAIS_CHAT_VIDEO_MODEL_OPTIONS,
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
+  getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
   getXaisImage2RatioOptions,
@@ -971,6 +978,7 @@ const CANVAS_AI_DEFAULT_IMAGE_RESOLUTION = '2k';
 const CANVAS_AI_DEFAULT_VIDEO_DURATION = 15;
 const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
 const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
+const CANVAS_AI_NEW_API_STUCK_TIMEOUT_MS = (NEW_API_IMAGE_REQUEST_TIMEOUT_SECS + 30) * 1000;
 const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
 const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
 const CANVAS_AI_INPUT_IMAGE_QUALITY = 0.9;
@@ -4185,7 +4193,7 @@ function MainApp() {
   const canvasImageUpgradeTimerRef = useRef<number | null>(null);
   const canvasImageUpgradeTokenRef = useRef(0);
   const canvasHoveredItemIdRef = useRef('');
-  const canvasAiRunTokensRef = useRef<Record<string, string>>({});
+  const canvasAiRunTokensRef = useRef(new Map<string, string>());
   const canvasAiModelRefreshSignatureRef = useRef('');
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
   const canvasRunButtonPointerRef = useRef<{ targetId: string; at: number } | null>(null);
@@ -17193,9 +17201,12 @@ function MainApp() {
       selectTarget?: () => void;
       showResultToast?: boolean;
       toastLabel?: string;
+      clientRequestId?: string;
     }
   ) => {
     if (!isCanvasAiGeneratorType(target.ai?.type)) return [] as CanvasAiGeneratedOutput[];
+
+    const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
 
     const mediaType = getCanvasAiMediaType(target.ai);
     const requestedProvider = normalizeCanvasAiProvider(
@@ -17288,6 +17299,12 @@ function MainApp() {
       let inputImages = preparedInputs.images;
       let negativePrompt: string | undefined;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
+      const imageProtocol = mediaType === 'image' && provider === 'new-api'
+        ? getDefaultNewApiImageProtocol(requestModel, inputImages.length > 0)
+        : undefined;
+      if (imageProtocol && target.ai.imageProtocol !== imageProtocol) {
+        options.updateAi({ imageProtocol });
+      }
       if (mediaType === 'image') {
         const hasReferenceImage = inputImages.length > 0 || (target.inputs || []).length > 0;
         const finalPrompt = buildFinalImagePrompt({
@@ -17335,6 +17352,8 @@ function MainApp() {
         prompt,
         negativePrompt,
         model: requestModel,
+        imageProtocol,
+        clientRequestId,
         headers: isCanvasAiLicenseManaged
           ? undefined
           : parseCanvasAiHeaders(provider === canvasAiProvider
@@ -17426,8 +17445,11 @@ function MainApp() {
 
       const placeGeneratedMedia = async (url: string, index: number) => {
         const source = url.trim();
-        const deferRemoteImageCache = mediaType === 'image' && /^https?:\/\//i.test(source);
-        let cached = deferRemoteImageCache
+        const deferGeneratedImageCache = mediaType === 'image' && (
+          /^https?:\/\//i.test(source)
+          || (provider === 'new-api' && /^data:image\//i.test(source))
+        );
+        let cached = deferGeneratedImageCache
           ? { url: source, path: '' }
           : await cacheCanvasGeneratedImageSource(
             source,
@@ -17451,10 +17473,10 @@ function MainApp() {
           }
         }
         const displayUrl = cached.url || source;
-        const size = mediaType === 'video' || deferRemoteImageCache
+        const size = mediaType === 'video' || deferGeneratedImageCache
           ? getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO)
           : await readImageDisplaySize(displayUrl);
-        const thumbnail = mediaType === 'image' && !deferRemoteImageCache
+        const thumbnail = mediaType === 'image' && !deferGeneratedImageCache
           ? await createCanvasImagePreviewThumbnail(displayUrl, cached.path || undefined)
           : undefined;
         const generatedAt = Date.now();
@@ -17470,7 +17492,7 @@ function MainApp() {
           name: mediaType === 'video' ? `AI generated video #${index + 1}` : `AI generated #${index + 1}`,
           prompt,
           status: 'success',
-          cacheStatus: deferRemoteImageCache ? 'pending' : 'ready',
+          cacheStatus: deferGeneratedImageCache ? 'pending' : 'ready',
           error: undefined,
           generatedAt,
           width: size.width,
@@ -17512,6 +17534,61 @@ function MainApp() {
       };
 
       const slotErrors: unknown[] = [];
+      const runNewApiImageBatch = async () => {
+        const batchStartedAt = Date.now();
+        let responseReceivedAt = 0;
+        let returnedCount = 0;
+        let responseKinds = '';
+        setCanvasAiOutputs(currentOutputs.map(output => ({
+          ...output,
+          status: 'working' as const,
+          error: undefined,
+        })), { status: 'working', error: undefined });
+        try {
+          const batch = await generateCanvasAiProviderImages({
+            ...generateOptions,
+            count: requestedCount,
+          });
+          responseReceivedAt = Date.now();
+          returnedCount = batch.length;
+          responseKinds = Array.from(new Set(batch.map(source => (
+            /^data:image\//i.test(source) ? 'base64' : /^https?:\/\//i.test(source) ? 'url' : 'other'
+          )))).join(',');
+          const freshUrls = Array.from(new Set(batch.map(url => url.trim()).filter(Boolean)))
+            .filter(url => !seenGeneratedUrls.has(url))
+            .slice(0, requestedCount);
+          if (freshUrls.length === 0) throw new Error('接口没有返回新的图片数据');
+          for (const [index, freshUrl] of freshUrls.entries()) {
+            seenGeneratedUrls.add(freshUrl);
+            await placeGeneratedMedia(freshUrl, index);
+          }
+          if (freshUrls.length < requestedCount) {
+            lastPartialError = new Error(`接口只返回了 ${freshUrls.length}/${requestedCount} 张图片`);
+          }
+        } catch (error) {
+          lastPartialError = error;
+          slotErrors[0] = error;
+          const failedAt = Date.now();
+          const errorSummary = getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error));
+          setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
+            ? output
+            : { ...output, status: 'error' as const, error: errorSummary, generatedAt: output.generatedAt || failedAt }
+          ), { status: 'working', error: undefined, generatedAt: failedAt });
+        } finally {
+          const finishedAt = Date.now();
+          console.info('[newapi_image_client_timing]', {
+            clientRequestId,
+            model: requestModel,
+            protocol: imageProtocol,
+            requestedCount,
+            returnedCount,
+            responseKinds,
+            requestMs: (responseReceivedAt || finishedAt) - batchStartedAt,
+            placementMs: responseReceivedAt ? finishedAt - responseReceivedAt : 0,
+            totalMs: finishedAt - batchStartedAt,
+          });
+        }
+      };
       const runOutputSlot = async (index: number) => {
         while (true) {
           setCanvasAiOutputs(currentOutputs.map((output, outputIndex) => outputIndex === index
@@ -17554,9 +17631,13 @@ function MainApp() {
         }
       };
 
-      await Promise.all(
-        Array.from({ length: requestedCount }, (_, index) => runOutputSlot(index))
-      );
+      if (provider === 'new-api' && mediaType === 'image') {
+        await runNewApiImageBatch();
+      } else {
+        await Promise.all(
+          Array.from({ length: requestedCount }, (_, index) => runOutputSlot(index))
+        );
+      }
 
       if (generatedOutputs.length === 0) {
         const firstError = slotErrors.find(Boolean);
@@ -18098,9 +18179,12 @@ function MainApp() {
     commitCanvasAiPromptDraft(targetId, undefined, true);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !isCanvasAiGeneratorType(target.ai?.type)) return;
-    const runToken = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    canvasAiRunTokensRef.current[targetId] = runToken;
-    const isCurrentRun = () => canvasAiRunTokensRef.current[targetId] === runToken;
+    const runToken = createCanvasAiClientRequestId(targetId);
+    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, targetId, runToken)) {
+      showToast('这个节点正在生成，请等待完成后再手动重试');
+      return;
+    }
+    const isCurrentRun = () => canvasAiRunTokensRef.current.get(targetId) === runToken;
     const updateAiIfCurrent = (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
       if (!isCurrentRun()) return;
       updateCanvasAiGeneratorData(targetId, patch, content);
@@ -18115,44 +18199,97 @@ function MainApp() {
         },
         showResultToast: true,
         toastLabel: getCanvasAiNodeTitle(target.ai),
+        clientRequestId: runToken,
       });
     } finally {
-      window.setTimeout(() => {
-        if (isCurrentRun()) delete canvasAiRunTokensRef.current[targetId];
-      }, 250);
+      if (isCurrentRun()) {
+        const latest = canvasItemsRef.current.find(item => item.id === targetId);
+        if (latest?.ai?.status === 'working') {
+          const failedAt = Date.now();
+          const error = '生成任务已结束但未返回可用结果，请手动重试。';
+          updateCanvasAiGeneratorData(targetId, {
+            status: 'error',
+            error,
+            generatedAt: failedAt,
+            outputs: (latest.ai.outputs || []).map(output => output.status === 'working'
+              ? { ...output, status: 'error' as const, error, generatedAt: output.generatedAt || failedAt }
+              : output),
+          });
+        }
+        releaseCanvasAiRun(canvasAiRunTokensRef.current, targetId, runToken);
+      }
     }
   };
 
-  const generateCanvasAiGeneratorNode = async (targetId: string) => {
-    commitCanvasAiPromptDraft(targetId, undefined, true);
-    const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || !canUseCanvasItemAsAiTarget(target)) return;
-    if (isCanvasAgentTextTarget(target)) {
-      await runCanvasTextAgentNode(targetId);
-      return;
-    }
-    if (target.ai?.type === 'frame-interpolation') {
-      await runCanvasFrameInterpolationNode(targetId);
-      return;
-    }
-    if (isCanvasAiEnhancementType(target.ai?.type)) {
-      await runCanvasEnhancementNode(targetId);
-      return;
-    }
-    if (getCanvasWorkflowGroup(target) && target.ai?.type === 'image-generator') {
-      await runCanvasExpandedWorkflowFromNode(targetId);
-      return;
-    }
-    if (!hasCanvasAiGeneratedResults(target)) {
-      await runCanvasAiGeneratorNode(targetId);
-      return;
-    }
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const settleStaleNewApiNodes = () => {
+      const now = Date.now();
+      const staleNodes = canvasItemsRef.current.filter(item => {
+        const ai = item.ai;
+        if (ai?.type !== 'image-generator' || ai.status !== 'working' || !ai.generatedAt) return false;
+        if (normalizeCanvasAiProvider(ai.provider || '') !== 'new-api') return false;
+        return now - ai.generatedAt >= CANVAS_AI_NEW_API_STUCK_TIMEOUT_MS;
+      });
+      staleNodes.forEach(item => {
+        canvasAiRunTokensRef.current.delete(item.id);
+        const error = 'NewAPI 生图请求已超时结束，请手动重试。';
+        updateCanvasAiGeneratorData(item.id, {
+          status: 'error',
+          error,
+          generatedAt: now,
+          outputs: (item.ai?.outputs || []).map(output => output.status === 'working'
+            ? { ...output, status: 'error' as const, error, generatedAt: output.generatedAt || now }
+            : output),
+        });
+      });
+      if (staleNodes.length > 0) showToast(`已结束 ${staleNodes.length} 个超时的 NewAPI 生图任务，可手动重试`);
+    };
+    settleStaleNewApiNodes();
+    const timer = window.setInterval(settleStaleNewApiNodes, 5000);
+    return () => window.clearInterval(timer);
+  }, [isCanvasMode]);
 
-    const nextNode = cloneCanvasAiGeneratorForRerun(target);
-    if (!nextNode) return;
-    if (appendCanvasItems([nextNode], '再次生成 AI 节点') <= 0) return;
-    showToast('已复制节点，开始再次生成');
-    await runCanvasAiGeneratorNode(nextNode.id);
+  const generateCanvasAiGeneratorNode = async (targetId: string) => {
+    const launchKey = `launch:${targetId}`;
+    const launchToken = createCanvasAiClientRequestId(launchKey);
+    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, launchKey, launchToken)) {
+      showToast('这个节点已经在处理本次生成操作');
+      return;
+    }
+    try {
+      commitCanvasAiPromptDraft(targetId, undefined, true);
+      const target = canvasItemsRef.current.find(item => item.id === targetId);
+      if (!target || !canUseCanvasItemAsAiTarget(target)) return;
+      if (isCanvasAgentTextTarget(target)) {
+        await runCanvasTextAgentNode(targetId);
+        return;
+      }
+      if (target.ai?.type === 'frame-interpolation') {
+        await runCanvasFrameInterpolationNode(targetId);
+        return;
+      }
+      if (isCanvasAiEnhancementType(target.ai?.type)) {
+        await runCanvasEnhancementNode(targetId);
+        return;
+      }
+      if (getCanvasWorkflowGroup(target) && target.ai?.type === 'image-generator') {
+        await runCanvasExpandedWorkflowFromNode(targetId);
+        return;
+      }
+      if (!hasCanvasAiGeneratedResults(target)) {
+        await runCanvasAiGeneratorNode(targetId);
+        return;
+      }
+
+      const nextNode = cloneCanvasAiGeneratorForRerun(target);
+      if (!nextNode) return;
+      if (appendCanvasItems([nextNode], '再次生成 AI 节点') <= 0) return;
+      showToast('已复制节点，开始再次生成');
+      await runCanvasAiGeneratorNode(nextNode.id);
+    } finally {
+      releaseCanvasAiRun(canvasAiRunTokensRef.current, launchKey, launchToken);
+    }
   };
 
   const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
@@ -30685,6 +30822,7 @@ useEffect(() => {
                                               updateCanvasAiGeneratorData(canvasItem.id, {
                                                 provider,
                                                 model,
+                                                imageProtocol: undefined,
                                                 ...(supportsCanvasAiImageResolution(provider, model) ? {
                                                   resolution: normalizeCanvasAiImageResolution(canvasItem.ai?.resolution),
                                                 } : {}),
@@ -30717,6 +30855,7 @@ useEffect(() => {
                                                 : value;
                                               updateCanvasAiGeneratorData(canvasItem.id, {
                                                 model,
+                                                imageProtocol: undefined,
                                                 aspectRatio: normalizeCanvasAiAspectRatioForModel(
                                                   model,
                                                   canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO

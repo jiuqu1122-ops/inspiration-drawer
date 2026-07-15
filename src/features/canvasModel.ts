@@ -24,6 +24,12 @@ export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | '
 
 export type CanvasAiMediaType = 'image' | 'video';
 
+export type NewApiImageProtocol =
+  | 'chat_completions'
+  | 'images_edits'
+  | 'images_generations'
+  | 'async_task';
+
 export type CanvasAiItemType =
   | 'image-generator'
   | 'video-generator'
@@ -81,6 +87,7 @@ export type CanvasAiItemData = {
   provider?: CanvasAiProvider;
   endpoint?: string;
   model?: string;
+  imageProtocol?: NewApiImageProtocol;
   prompt?: string;
   presetId?: string;
   presetLabel?: string;

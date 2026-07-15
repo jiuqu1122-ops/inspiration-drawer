@@ -5552,6 +5552,126 @@ fn read_streaming_text_until_result(
     Ok(text)
 }
 
+#[derive(Clone)]
+struct AiImageRequestTrace {
+    model: String,
+    endpoint_protocol: String,
+    client_request_id: String,
+    reference_host: String,
+    reference_ready_duration_ms: u64,
+    is_first_request: bool,
+}
+
+#[derive(Clone)]
+struct AiHttpRequestOptions {
+    timeout_secs: u64,
+    single_attempt: bool,
+    trace: Option<AiImageRequestTrace>,
+}
+
+impl Default for AiHttpRequestOptions {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 300,
+            single_attempt: false,
+            trace: None,
+        }
+    }
+}
+
+fn sanitize_ai_request_log_field(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn ai_response_request_id(response: &reqwest::blocking::Response) -> String {
+    ["x-request-id", "request-id", "cf-ray"]
+        .iter()
+        .find_map(|name| {
+            response
+                .headers()
+                .get(*name)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| sanitize_ai_request_log_field(value, 120))
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_default()
+}
+
+fn log_ai_image_request(
+    trace: Option<&AiImageRequestTrace>,
+    status: &str,
+    request_id: &str,
+    elapsed: Duration,
+    response_bytes: usize,
+) {
+    let Some(trace) = trace else {
+        return;
+    };
+    eprintln!(
+        "[newapi_image_request] model={} protocol={} status={} request_id={} client_request_id={} elapsed_ms={} response_bytes={} reference_host={} reference_ready_duration_ms={} first_request={}",
+        sanitize_ai_request_log_field(&trace.model, 160),
+        sanitize_ai_request_log_field(&trace.endpoint_protocol, 48),
+        sanitize_ai_request_log_field(status, 48),
+        sanitize_ai_request_log_field(request_id, 120),
+        sanitize_ai_request_log_field(&trace.client_request_id, 160),
+        elapsed.as_millis(),
+        response_bytes,
+        sanitize_ai_request_log_field(&trace.reference_host, 240),
+        trace.reference_ready_duration_ms,
+        trace.is_first_request,
+    );
+}
+
+fn apply_ai_client_request_id(
+    mut request: reqwest::blocking::RequestBuilder,
+    trace: Option<&AiImageRequestTrace>,
+) -> reqwest::blocking::RequestBuilder {
+    if let Some(value) = trace
+        .map(|trace| trace.client_request_id.trim())
+        .filter(|value| !value.is_empty())
+    {
+        request = request.header("x-client-request-id", value);
+    }
+    request
+}
+
+fn build_ai_http_request_options(
+    model: &str,
+    single_attempt: Option<bool>,
+    timeout_secs: Option<u64>,
+    client_request_id: Option<String>,
+    endpoint_protocol: Option<String>,
+    reference_host: Option<String>,
+    reference_ready_duration_ms: Option<u64>,
+    is_first_request: Option<bool>,
+) -> AiHttpRequestOptions {
+    let client_request_id = client_request_id.unwrap_or_default();
+    let endpoint_protocol = endpoint_protocol.unwrap_or_default();
+    let trace = if client_request_id.trim().is_empty() && endpoint_protocol.trim().is_empty() {
+        None
+    } else {
+        Some(AiImageRequestTrace {
+            model: model.to_string(),
+            endpoint_protocol,
+            client_request_id,
+            reference_host: reference_host.unwrap_or_default(),
+            reference_ready_duration_ms: reference_ready_duration_ms.unwrap_or_default(),
+            is_first_request: is_first_request.unwrap_or(true),
+        })
+    };
+    AiHttpRequestOptions {
+        timeout_secs: timeout_secs.unwrap_or(300).clamp(30, 420),
+        single_attempt: single_attempt.unwrap_or(false),
+        trace,
+    }
+}
+
 fn http_post_json_with_headers(
     app_handle: &tauri::AppHandle,
     url: &str,
@@ -5559,16 +5679,30 @@ fn http_post_json_with_headers(
     body: &serde_json::Value,
     explicit_proxy: Option<&str>,
     headers: Option<&BTreeMap<String, String>>,
+    options: &AiHttpRequestOptions,
 ) -> Result<String, String> {
-    let timeout_secs = 300;
+    let timeout_secs = options.timeout_secs.clamp(30, 420);
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
-    let response_result =
-        apply_custom_http_headers(client.post(url).bearer_auth(api_key).json(body), headers)?
-            .send();
+    let started_at = Instant::now();
+    let request = apply_ai_client_request_id(
+        client.post(url).bearer_auth(api_key).json(body),
+        options.trace.as_ref(),
+    );
+    let response_result = apply_custom_http_headers(request, headers)?.send();
 
     let response = match response_result {
         Ok(response) => response,
         Err(first_err) => {
+            if options.single_attempt {
+                log_ai_image_request(
+                    options.trace.as_ref(),
+                    "transport_error",
+                    "",
+                    started_at.elapsed(),
+                    0,
+                );
+                return Err(format!("AI 请求失败：{}", first_err));
+            }
             let can_retry_direct = explicit_proxy
                 .map(|value| value.trim().is_empty())
                 .unwrap_or(true);
@@ -5576,22 +5710,31 @@ fn http_post_json_with_headers(
                 return Err(format!("AI 请求失败：{}", first_err));
             }
             let direct_client = build_direct_http_client(timeout_secs)?;
-            apply_custom_http_headers(
+            let request = apply_ai_client_request_id(
                 direct_client.post(url).bearer_auth(api_key).json(body),
-                headers,
-            )?
-            .send()
-            .map_err(|second_err| {
-                format!(
-                    "AI 请求失败：{}；无代理直连重试也失败：{}",
-                    first_err, second_err
-                )
-            })?
+                options.trace.as_ref(),
+            );
+            apply_custom_http_headers(request, headers)?
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "AI 请求失败：{}；无代理直连重试也失败：{}",
+                        first_err, second_err
+                    )
+                })?
         }
     };
 
     let status = response.status();
+    let request_id = ai_response_request_id(&response);
     let text = response.text().map_err(|e| e.to_string())?;
+    log_ai_image_request(
+        options.trace.as_ref(),
+        &status.as_u16().to_string(),
+        &request_id,
+        started_at.elapsed(),
+        text.len(),
+    );
     if status.is_success() {
         Ok(text)
     } else {
@@ -5857,6 +6000,7 @@ fn build_ai_image_edit_form(
     n: u32,
     size: &str,
     quality: Option<&str>,
+    response_format: Option<&str>,
     images: &[String],
 ) -> Result<Form, String> {
     let mut form = Form::new()
@@ -5866,6 +6010,9 @@ fn build_ai_image_edit_form(
         .text("size", size.to_string());
     if let Some(value) = quality.filter(|value| !value.trim().is_empty()) {
         form = form.text("quality", value.to_string());
+    }
+    if let Some(value) = response_format.filter(|value| !value.trim().is_empty()) {
+        form = form.text("response_format", value.to_string());
     }
 
     for (index, image) in images.iter().take(8).enumerate() {
@@ -5891,59 +6038,94 @@ fn http_post_image_edit_with_headers(
     n: u32,
     size: &str,
     quality: Option<&str>,
+    response_format: Option<&str>,
     images: &[String],
     explicit_proxy: Option<&str>,
     headers: Option<&BTreeMap<String, String>>,
+    options: &AiHttpRequestOptions,
 ) -> Result<String, String> {
     if images.is_empty() {
         return Err("缺少参考图".to_string());
     }
 
-    let timeout_secs = 300;
+    let timeout_secs = options.timeout_secs.clamp(30, 420);
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
-    let request = client
-        .post(url)
-        .bearer_auth(api_key)
-        .multipart(build_ai_image_edit_form(
-            &client, model, prompt, n, size, quality, images,
-        )?);
+    let started_at = Instant::now();
+    let request = apply_ai_client_request_id(
+        client
+            .post(url)
+            .bearer_auth(api_key)
+            .multipart(build_ai_image_edit_form(
+                &client,
+                model,
+                prompt,
+                n,
+                size,
+                quality,
+                response_format,
+                images,
+            )?),
+        options.trace.as_ref(),
+    );
     let response_result = apply_custom_http_headers(request, headers)?.send();
 
-    let response =
-        match response_result {
-            Ok(response) => response,
-            Err(first_err) => {
-                let can_retry_direct = explicit_proxy
-                    .map(|value| value.trim().is_empty())
-                    .unwrap_or(true);
-                if !can_retry_direct {
-                    return Err(format!("AI 图片上传失败：{}", first_err));
-                }
-                let direct_client = build_direct_http_client(timeout_secs)?;
-                let request = direct_client.post(url).bearer_auth(api_key).multipart(
-                    build_ai_image_edit_form(
+    let response = match response_result {
+        Ok(response) => response,
+        Err(first_err) => {
+            if options.single_attempt {
+                log_ai_image_request(
+                    options.trace.as_ref(),
+                    "transport_error",
+                    "",
+                    started_at.elapsed(),
+                    0,
+                );
+                return Err(format!("AI 图片上传失败：{}", first_err));
+            }
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("AI 图片上传失败：{}", first_err));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            let request = apply_ai_client_request_id(
+                direct_client
+                    .post(url)
+                    .bearer_auth(api_key)
+                    .multipart(build_ai_image_edit_form(
                         &direct_client,
                         model,
                         prompt,
                         n,
                         size,
                         quality,
+                        response_format,
                         images,
-                    )?,
-                );
-                apply_custom_http_headers(request, headers)?
-                    .send()
-                    .map_err(|second_err| {
-                        format!(
-                            "AI 图片上传失败：{}；无代理直连重试也失败：{}",
-                            first_err, second_err
-                        )
-                    })?
-            }
-        };
+                    )?),
+                options.trace.as_ref(),
+            );
+            apply_custom_http_headers(request, headers)?
+                .send()
+                .map_err(|second_err| {
+                    format!(
+                        "AI 图片上传失败：{}；无代理直连重试也失败：{}",
+                        first_err, second_err
+                    )
+                })?
+        }
+    };
 
     let status = response.status();
+    let request_id = ai_response_request_id(&response);
     let text = response.text().map_err(|e| e.to_string())?;
+    log_ai_image_request(
+        options.trace.as_ref(),
+        &status.as_u16().to_string(),
+        &request_id,
+        started_at.elapsed(),
+        text.len(),
+    );
     if status.is_success() {
         Ok(text)
     } else {
@@ -6042,6 +6224,13 @@ async fn post_ai_json(
     gateway_kind: Option<license::types::AiGatewayKind>,
     model: Option<String>,
     headers: Option<BTreeMap<String, String>>,
+    client_request_id: Option<String>,
+    endpoint_protocol: Option<String>,
+    reference_host: Option<String>,
+    reference_ready_duration_ms: Option<u64>,
+    is_first_request: Option<bool>,
+    single_attempt: Option<bool>,
+    timeout_secs: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let fallback_model = model
         .or_else(|| {
@@ -6063,6 +6252,16 @@ async fn post_ai_json(
     let request_key = profile.api_key.clone();
     let request_headers = profile.headers.clone();
     let body = apply_canvas_managed_model(body, &profile);
+    let request_options = build_ai_http_request_options(
+        &fallback_model,
+        single_attempt,
+        timeout_secs,
+        client_request_id,
+        endpoint_protocol,
+        reference_host,
+        reference_ready_duration_ms,
+        is_first_request,
+    );
     tauri::async_runtime::spawn_blocking(move || {
         if request_key.trim().is_empty() {
             return Err("请先填写 API Key".to_string());
@@ -6074,6 +6273,7 @@ async fn post_ai_json(
             &body,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
             Some(&request_headers),
+            &request_options,
         )?;
         serde_json::from_str(&raw).map_err(|e| {
             format!(
@@ -6130,6 +6330,7 @@ async fn post_ai_text(
             &body,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
             Some(&request_headers),
+            &AiHttpRequestOptions::default(),
         )
     })
     .await
@@ -6146,11 +6347,19 @@ async fn post_ai_image_edit(
     n: u32,
     size: String,
     quality: Option<String>,
+    response_format: Option<String>,
     images: Vec<String>,
     proxy: Option<String>,
     provider: Option<String>,
     gateway_kind: Option<license::types::AiGatewayKind>,
     headers: Option<BTreeMap<String, String>>,
+    client_request_id: Option<String>,
+    endpoint_protocol: Option<String>,
+    reference_host: Option<String>,
+    reference_ready_duration_ms: Option<u64>,
+    is_first_request: Option<bool>,
+    single_attempt: Option<bool>,
+    timeout_secs: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let profile = canvas_request_profile(
         &app_handle,
@@ -6172,6 +6381,16 @@ async fn post_ai_image_edit(
     } else {
         model
     };
+    let request_options = build_ai_http_request_options(
+        &model,
+        single_attempt,
+        timeout_secs,
+        client_request_id,
+        endpoint_protocol,
+        reference_host,
+        reference_ready_duration_ms,
+        is_first_request,
+    );
     tauri::async_runtime::spawn_blocking(move || {
         if request_key.trim().is_empty() {
             return Err("请先填写 API Key".to_string());
@@ -6185,9 +6404,11 @@ async fn post_ai_image_edit(
             n,
             &size,
             quality.as_deref(),
+            response_format.as_deref(),
             &images,
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
             Some(&request_headers),
+            &request_options,
         )?;
         serde_json::from_str(&raw).map_err(|e| {
             format!(
@@ -9371,6 +9592,140 @@ fn warm_up_cloudflared_public_urls(
     ))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NewApiReferenceReadiness {
+    ready_duration_ms: u64,
+    reference_hosts: Vec<String>,
+}
+
+fn newapi_reference_response_ready(response: &reqwest::blocking::Response) -> bool {
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(status, 200 | 206) && content_type.starts_with("image/")
+}
+
+fn probe_newapi_reference_url(
+    client: &Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<bool, String> {
+    let host = Url::parse(url)
+        .ok()
+        .and_then(|value| value.host_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown-host".to_string());
+    let head = client
+        .head(url)
+        .timeout(timeout)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .send()
+        .map_err(|err| format!("{} HEAD 失败：{}", host, err))?;
+    if newapi_reference_response_ready(&head) {
+        return Ok(true);
+    }
+    if !matches!(head.status().as_u16(), 200 | 206 | 405 | 501) {
+        return Ok(false);
+    }
+    let response = client
+        .get(url)
+        .timeout(timeout)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .header(reqwest::header::RANGE, "bytes=0-31")
+        .send()
+        .map_err(|err| format!("{} Range GET 失败：{}", host, err))?;
+    Ok(newapi_reference_response_ready(&response))
+}
+
+fn wait_for_newapi_reference_urls(
+    app_handle: &tauri::AppHandle,
+    urls: &[String],
+    max_wait_ms: u64,
+) -> Result<NewApiReferenceReadiness, String> {
+    let started_at = Instant::now();
+    let max_wait = Duration::from_millis(max_wait_ms.clamp(500, 5000));
+    let client =
+        build_http_client(Some(app_handle), None, 5).or_else(|_| build_direct_http_client(5))?;
+    let reference_hosts = urls
+        .iter()
+        .filter_map(|url| Url::parse(url).ok())
+        .filter_map(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut ready_rounds = 0;
+    let mut last_error = "参考图尚未返回 200/206 image/*".to_string();
+
+    while started_at.elapsed() < max_wait {
+        let mut all_ready = true;
+        for url in urls {
+            let remaining = max_wait.saturating_sub(started_at.elapsed());
+            if remaining.is_zero() {
+                all_ready = false;
+                break;
+            }
+            let request_timeout = remaining.min(Duration::from_millis(1200));
+            match probe_newapi_reference_url(&client, url, request_timeout) {
+                Ok(true) => {}
+                Ok(false) => {
+                    all_ready = false;
+                    last_error = "参考图状态或 Content-Type 尚未就绪".to_string();
+                    break;
+                }
+                Err(error) => {
+                    all_ready = false;
+                    last_error = error;
+                    break;
+                }
+            }
+        }
+        if all_ready {
+            ready_rounds += 1;
+            if ready_rounds >= 2 {
+                return Ok(NewApiReferenceReadiness {
+                    ready_duration_ms: started_at.elapsed().as_millis() as u64,
+                    reference_hosts,
+                });
+            }
+        } else {
+            ready_rounds = 0;
+        }
+        let remaining = max_wait.saturating_sub(started_at.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(remaining.min(Duration::from_millis(250)));
+    }
+
+    Err(format!(
+        "5 秒内未连续两次确认 Cloudflare 参考图可用：{}",
+        last_error
+    ))
+}
+
+#[tauri::command]
+async fn check_newapi_reference_urls_ready(
+    app_handle: tauri::AppHandle,
+    urls: Vec<String>,
+    max_wait_ms: Option<u64>,
+) -> Result<NewApiReferenceReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if urls.is_empty() {
+            return Ok(NewApiReferenceReadiness {
+                ready_duration_ms: 0,
+                reference_hosts: Vec::new(),
+            });
+        }
+        wait_for_newapi_reference_urls(&app_handle, &urls, max_wait_ms.unwrap_or(5000))
+    })
+    .await
+    .map_err(|error| format!("Cloudflare 参考图就绪检查失败：{}", error))?
+}
+
 #[tauri::command]
 async fn create_cloudflared_public_image_urls(
     app_handle: tauri::AppHandle,
@@ -11094,6 +11449,7 @@ fn describe_image_for_search_impl(
             Some(proxy.as_str())
         },
         Some(&profile.headers),
+        &AiHttpRequestOptions::default(),
     )?;
     let response: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
         format!(
@@ -15255,6 +15611,7 @@ fn main() {
             post_ai_image_edit,
             upload_xais_reference_images,
             get_ai_text,
+            check_newapi_reference_urls_ready,
             create_cloudflared_public_image_urls,
             stop_cloudflared_share,
             create_tmpfiles_public_image_urls,
