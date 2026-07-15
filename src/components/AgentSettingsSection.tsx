@@ -22,6 +22,7 @@ import type {
   CodexLoginInfo,
   CodexRuntimeStatus,
 } from '../features/agentModel';
+import { XAIS_CHAT_ENDPOINT_DEFAULT } from '../features/canvasAiImage';
 
 type AgentSettingsSectionProps = {
   expanded: boolean;
@@ -73,6 +74,7 @@ export function AgentSettingsSection({
   const [balanceText, setBalanceText] = useState('');
   const apiLockedByLicense = forceApiLockedByLicense || draft.apiEditable === false;
   const effectiveProvider = draft.provider;
+  const hideXaisBaseUrl = draft.apiGatewayKind === 'xais';
   const canQueryAgentBalance = !!onQueryBalance
     && (draft.hasApiKey || apiKey.trim().length > 0);
   const gatewayLabel = draft.apiGatewayKind === 'new_api'
@@ -113,6 +115,9 @@ export function AgentSettingsSection({
       }
       const saved = await onSave({
         ...draft,
+        apiBaseUrl: draft.apiGatewayKind === 'xais'
+          ? draft.apiBaseUrl.trim() || XAIS_CHAT_ENDPOINT_DEFAULT
+          : draft.apiBaseUrl,
         apiHeaders,
         apiKey: apiKey.trim() || undefined,
         clearApiKey,
@@ -268,7 +273,7 @@ export function AgentSettingsSection({
                     <div className="grid gap-1.5 rounded-[14px] bg-white/70 p-2 text-[10px] font-bold text-stone-600 dark:bg-stone-900/35 dark:text-stone-300">
                       <div className="flex justify-between gap-2"><span>配置来源</span><span className="truncate text-right">高级版授权</span></div>
                       <div className="flex justify-between gap-2"><span>Gateway</span><span className="truncate text-right">{gatewayLabel}</span></div>
-                      <div className="flex justify-between gap-2"><span>Base URL</span><span className="truncate text-right">{draft.apiBaseUrl || '-'}</span></div>
+                      {!hideXaisBaseUrl && <div className="flex justify-between gap-2"><span>Base URL</span><span className="truncate text-right">{draft.apiBaseUrl || '-'}</span></div>}
                       <div className="flex justify-between gap-2"><span>Provider</span><span className="truncate text-right">{draft.apiProvider || '-'}</span></div>
                       <div className="flex justify-between gap-2"><span>模型</span><span className="truncate text-right">{draft.apiModel || '-'}</span></div>
                     </div>
@@ -333,7 +338,14 @@ export function AgentSettingsSection({
                             : apiGatewayKind === 'custom'
                               ? 'custom'
                               : 'openai-compatible';
-                        setDraft(current => ({ ...current, apiGatewayKind, apiProvider }));
+                        setDraft(current => ({
+                          ...current,
+                          apiGatewayKind,
+                          apiProvider,
+                          apiBaseUrl: apiGatewayKind === 'xais'
+                            ? (current.apiGatewayKind === 'xais' && current.apiBaseUrl.trim() ? current.apiBaseUrl : XAIS_CHAT_ENDPOINT_DEFAULT)
+                            : current.apiBaseUrl,
+                        }));
                       }}
                       className="rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
                     >
@@ -352,15 +364,17 @@ export function AgentSettingsSection({
                       className="rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
                     />
                   </label>
-                  <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
-                    API Base URL
-                    <input
-                      value={draft.apiBaseUrl}
-                      onChange={event => setDraft(current => ({ ...current, apiBaseUrl: event.target.value }))}
-                      placeholder="https://api.openai.com/v1"
-                      className="rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
-                    />
-                  </label>
+                  {!hideXaisBaseUrl && (
+                    <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+                      API Base URL
+                      <input
+                        value={draft.apiBaseUrl}
+                        onChange={event => setDraft(current => ({ ...current, apiBaseUrl: event.target.value }))}
+                        placeholder="https://api.openai.com/v1"
+                        className="rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
+                      />
+                    </label>
+                  )}
                   <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
                     API Key
                     <input

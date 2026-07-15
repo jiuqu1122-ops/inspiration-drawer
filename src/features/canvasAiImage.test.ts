@@ -35,9 +35,21 @@ describe('NewAPI image model mapping', () => {
     expect(getNewApiImageModelDisplayName(model)).toBe('Nano Banana 2');
   });
 
+  it.each([
+    'gemini-lite-image',
+    'GeminiImageLite',
+    'google/lite-gemini-3-image-preview',
+    'models/gemini_3_flash_image_lite',
+  ])('maps %s to Nano Banana Lite 1K', model => {
+    expect(getNewApiImageModelFamily(model)).toBe('nano-banana-lite');
+    expect(getNewApiImageModelDisplayName(model)).toBe('Nano Banana Lite 1K');
+  });
+
   it('does not relabel unrelated Gemini models', () => {
     expect(getNewApiImageModelFamily('gemini-2.5-flash-image')).toBeNull();
     expect(getNewApiImageModelFamily('gemini-3-image-preview')).toBeNull();
+    expect(getNewApiImageModelFamily('gemini-lite-text')).toBeNull();
+    expect(getNewApiImageModelFamily('imagen-lite-image')).toBeNull();
     expect(getNewApiImageModelDisplayName('imagen-4')).toBe('imagen-4');
   });
 
@@ -59,6 +71,7 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('xais-chat', 'Xais Nano Pro_2K')).toBe(false);
     expect(supportsCanvasAiImageResolution('xais-chat', 'gpt-image-2')).toBe(false);
     expect(supportsCanvasAiImageResolution('new-api', 'gpt-image-1')).toBe(false);
+    expect(supportsCanvasAiImageResolution('new-api', 'gemini-lite-image')).toBe(false);
   });
 
   it('normalizes resolution casing and calculates GPT Image 2 sizes', () => {
@@ -94,6 +107,15 @@ describe('image resolution routing', () => {
 
   it('keeps legacy NewAPI image request parameters unchanged', () => {
     expect(newApiImageRequestParams('gpt-image-1', 1, '16:9', '4K')).toEqual({
+      n: 1,
+      size: '1792x1024',
+      aspect_ratio: '16:9',
+      ratio: '16:9',
+    });
+  });
+
+  it('keeps Nano Banana Lite at the normal 1K path without quality controls', () => {
+    expect(newApiImageRequestParams('models/gemini_3_flash_image_lite', 1, '16:9', '4K')).toEqual({
       n: 1,
       size: '1792x1024',
       aspect_ratio: '16:9',

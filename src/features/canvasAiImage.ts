@@ -61,7 +61,7 @@ export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
 
 export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
 
-export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2';
+export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
 export type CanvasAiImageResolution = '2k' | '4k';
 
 const toImageModelToken = (model?: string | null) => (
@@ -72,6 +72,7 @@ export const getNewApiImageModelFamily = (model?: string | null): NewApiImageMod
   const token = toImageModelToken(model).replace(/preview/g, '');
   const geminiIndex = token.indexOf('gemini');
   if (geminiIndex < 0) return null;
+  if (token.includes('lite') && token.includes('image')) return 'nano-banana-lite';
   const signature = token.slice(geminiIndex + 'gemini'.length);
   const isGemini3 = /^3/.test(signature) || /^image3/.test(signature);
   if (!isGemini3) return null;
@@ -85,6 +86,7 @@ export const getNewApiImageModelDisplayName = (model?: string | null) => {
   const family = getNewApiImageModelFamily(value);
   if (family === 'nano-banana-pro') return 'Nano Banana Pro';
   if (family === 'nano-banana-2') return 'Nano Banana 2';
+  if (family === 'nano-banana-lite') return 'Nano Banana Lite 1K';
   if (toImageModelToken(value).includes('gptimage2')) return 'GPT Image 2';
   return value;
 };
@@ -92,6 +94,11 @@ export const getNewApiImageModelDisplayName = (model?: string | null) => {
 export const isGptImage2LikeModel = (model?: string | null) => (
   toImageModelToken(model).includes('gptimage2')
 );
+
+const supportsNewApiImageFamilyResolution = (model?: string | null) => {
+  const family = getNewApiImageModelFamily(model);
+  return family === 'nano-banana-pro' || family === 'nano-banana-2';
+};
 
 export const isLikelyNewApiVideoModel = (model?: string | null) => {
   const normalized = String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -109,7 +116,7 @@ export const supportsCanvasAiImageResolution = (
 ) => {
   if (provider === 'xais-chat') return false;
   if (isGptImage2LikeModel(model)) return true;
-  return provider === 'new-api' && getNewApiImageModelFamily(model) !== null;
+  return provider === 'new-api' && supportsNewApiImageFamilyResolution(model);
 };
 
 export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
@@ -400,7 +407,7 @@ export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: 
 };
 
 const newApiSizeFromAspectRatio = (model?: string | null, aspectRatio?: string, resolution?: string) => (
-  isGptImage2LikeModel(model) || getNewApiImageModelFamily(model) !== null
+  isGptImage2LikeModel(model) || supportsNewApiImageFamilyResolution(model)
     ? gptImage2SizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio), resolution)
     : imageSizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio))
 );
@@ -413,7 +420,7 @@ export const newApiImageRequestParams = (
 ) => {
   const ratio = normalizeImageAspectRatio(aspectRatio);
   const size = newApiSizeFromAspectRatio(model, ratio, resolution);
-  const supportsResolution = isGptImage2LikeModel(model) || getNewApiImageModelFamily(model) !== null;
+  const supportsResolution = isGptImage2LikeModel(model) || supportsNewApiImageFamilyResolution(model);
   return {
     n: count,
     size,

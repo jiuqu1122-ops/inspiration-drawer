@@ -2960,7 +2960,7 @@ const readStoredCanvasAiXaisModels = () => {
   }
 };
 const isCanvasAiEndpointEditable = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat';
-const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => isCanvasAiEndpointEditable(provider);
+const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider);
 const isCanvasAiRemoteModelProvider = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat';
 const getCanvasAiEndpointPlaceholder = (provider: CanvasAiProvider) => (
   provider === 'xais-chat'
@@ -28653,10 +28653,12 @@ useEffect(() => {
                                         </button>
                                       </div>
                                     )}
-                                    {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
+                                    {isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider) && (
                                       <div className="flex flex-col gap-1">
                                         <div className="flex items-center justify-between gap-2">
-                                          <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">API Base URL</span>
+                                          <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                            {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) ? 'API Base URL' : '连接与模型'}
+                                          </span>
                                           <div className="flex gap-1">
                                             <button
                                               type="button"
@@ -28676,15 +28678,17 @@ useEffect(() => {
                                             </button>
                                           </div>
                                         </div>
-                                        <input
-                                          value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
-                                          onChange={(event) => {
-                                            if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
-                                          }}
-                                          disabled={isCanvasAiLicenseManaged}
-                                          placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
-                                          className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
-                                        />
+                                        {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
+                                          <input
+                                            value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
+                                            onChange={(event) => {
+                                              if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
+                                            }}
+                                            disabled={isCanvasAiLicenseManaged}
+                                            placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
+                                            className="w-full rounded-[14px] bg-white/82 dark:bg-stone-800/70 border border-cyan-100 dark:border-cyan-900/45 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-cyan-500/20"
+                                          />
+                                        )}
                                         <span className={`text-[10px] leading-4 ${canvasAiOpenAiModelError ? 'text-red-500 dark:text-red-300' : 'text-stone-400 dark:text-stone-500'}`}>
                                           {canvasAiOpenAiModelError || (canvasAiRemoteModelCount > 0 ? `已读取 ${canvasAiRemoteModelCount} 个模型` : canvasAiRemoteModelEmptyHint)}
                                         </span>
@@ -28927,11 +28931,11 @@ useEffect(() => {
                                     <div className="grid gap-1.5 rounded-[16px] border border-cyan-100 bg-cyan-50/45 px-3 py-2 text-[10px] dark:border-cyan-400/20 dark:bg-cyan-400/8">
                                       <div className="font-black text-cyan-800 dark:text-cyan-100">配置来源：高级版设备授权</div>
                                       <div className="flex justify-between gap-2"><span>Agent Gateway</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_gateway_kind || '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Agent API</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_base_url || '-'} · {licenseStatus.ai_access.managed_provider || '-'}</span></div>
+                                      <div className="flex justify-between gap-2"><span>Agent API</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_gateway_kind === 'xais' ? licenseStatus.ai_access.managed_provider || '-' : `${licenseStatus.ai_access.managed_base_url || '-'} · ${licenseStatus.ai_access.managed_provider || '-'}`}</span></div>
                                       <div className="flex justify-between gap-2"><span>Agent 模型</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_model || '-'}</span></div>
                                       <div className="flex justify-between gap-2"><span>Agent Key</span><span className="font-bold">{licenseStatus.ai_access.api_key_last4 ? `****${licenseStatus.ai_access.api_key_last4}` : '-'}</span></div>
                                       <div className="flex justify-between gap-2"><span>Canvas Gateway</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_gateway_kind || '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Canvas API</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_base_url || '-'} · {licenseStatus.ai_access.canvas_provider || '-'}</span></div>
+                                      <div className="flex justify-between gap-2"><span>Canvas API</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_gateway_kind === 'xais' ? licenseStatus.ai_access.canvas_provider || '-' : `${licenseStatus.ai_access.canvas_base_url || '-'} · ${licenseStatus.ai_access.canvas_provider || '-'}`}</span></div>
                                       <div className="flex justify-between gap-2"><span>Canvas 模型</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_model || '-'}</span></div>
                                       <div className="flex justify-between gap-2"><span>Canvas Key</span><span className="font-bold">{licenseStatus.ai_access.canvas_api_key_last4 ? `****${licenseStatus.ai_access.canvas_api_key_last4}` : '-'}</span></div>
                                     </div>
@@ -31569,24 +31573,26 @@ useEffect(() => {
                             </button>
                           </div>
                         )}
-                        {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
+                        {isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider) && (
                           <div className="grid gap-1">
                             <div className="flex items-center gap-1.5">
-                              <input
-                                data-no-drag="true"
-                                data-canvas-edit-control="true"
-                                value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
-                                onPointerDown={stopCanvasEditEvent}
-                                onMouseDown={stopCanvasEditEvent}
-                                onDoubleClick={stopCanvasEditEvent}
-                                onKeyDown={stopCanvasEditEvent}
-                                onChange={(event) => {
-                                  if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
-                                }}
-                                disabled={isCanvasAiLicenseManaged}
-                                placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
-                                className="min-w-0 flex-1 rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                              />
+                              {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
+                                <input
+                                  data-no-drag="true"
+                                  data-canvas-edit-control="true"
+                                  value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
+                                  onPointerDown={stopCanvasEditEvent}
+                                  onMouseDown={stopCanvasEditEvent}
+                                  onDoubleClick={stopCanvasEditEvent}
+                                  onKeyDown={stopCanvasEditEvent}
+                                  onChange={(event) => {
+                                    if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
+                                  }}
+                                  disabled={isCanvasAiLicenseManaged}
+                                  placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
+                                  className="min-w-0 flex-1 rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
+                                />
+                              )}
                               <button
                                 type="button"
                                 data-no-drag="true"
