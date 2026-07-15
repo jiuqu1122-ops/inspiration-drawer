@@ -867,11 +867,14 @@ type CanvasNavThumbnailCacheEntry = {
 };
 type CanvasAiOutputThumbnailJob = {
   key: string;
-  canvasItemId: string;
-  outputIndex: number;
+  canvasItemId?: string;
+  outputIndex?: number;
   outputId?: string;
+  matchSources?: string[];
+  drawerItemId?: string;
   source: string;
   path?: string;
+  onSettled?: (patch: Partial<CanvasAiGeneratedOutput>) => void;
 };
 
 const getCanvasAiErrorSummary = (error?: string | null) => {
@@ -913,6 +916,7 @@ const IMAGE_THUMBNAIL_LEGACY_MAX_HEIGHT = 240;
 const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
 const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
 const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
+const CANVAS_AI_OUTPUT_CACHE_STALE_MS = 75_000;
 const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 1;
 const CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE = 3;
 const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 90;
@@ -8555,7 +8559,16 @@ function MainApp() {
     return newFolder.id;
   };
 
-  const addGeneratedImagesToDrawer = (generatedItems: BufferItem[]) => {
+  const addGeneratedImagesToDrawer = (
+    generatedItems: BufferItem[],
+    options?: {
+      onOutputCachePatch?: (
+        outputId: string,
+        matchSources: string[],
+        patch: Partial<CanvasAiGeneratedOutput>
+      ) => void;
+    }
+  ) => {
     const cleanItems = generatedItems.filter(item => item.type === 'image');
     if (cleanItems.length === 0) return;
 
@@ -8568,12 +8581,16 @@ function MainApp() {
       isQuickAccess: false,
     } as BufferItem));
     const savedIds = new Set(savedItems.map(item => item.id));
+    savedItems.forEach((item) => {
+      const source = item.sourceUrl || item.originalUrl || item.url || item.path || '';
+      if (source && !source.startsWith('asset:') && !/^[a-zA-Z]:[\\/]/.test(source) && !source.startsWith('\\\\')) {
+        generatedImageCachePendingIdsRef.current.add(item.id);
+      }
+    });
     setItems(prev => [
       ...savedItems.filter(item => !prev.some(existing => existing.id === item.id)),
       ...prev,
     ]);
-    triggerAutoPaletteForItems(savedItems);
-
     const latestCacheDir = (
       webImageCacheDirRef.current ||
       localStorage.getItem('drawer_web_image_cache_dir') ||
@@ -8582,7 +8599,30 @@ function MainApp() {
 
     savedItems.forEach((item) => {
       const source = item.sourceUrl || item.originalUrl || item.url || item.path || '';
-      if (!source || source.startsWith('asset:') || /^[a-zA-Z]:[\\/]/.test(source) || source.startsWith('\\\\')) return;
+      if (!source) return;
+      if (source.startsWith('asset:') || /^[a-zA-Z]:[\\/]/.test(source) || source.startsWith('\\\\')) {
+        const paletteItem = item.thumbnail
+          ? { ...item, url: item.thumbnail, path: undefined }
+          : item;
+        triggerAutoPaletteForItems([paletteItem as BufferItem]);
+        return;
+      }
+
+      const patchMatchingOutputs = (patch: Partial<CanvasAiGeneratedOutput>, matchSources = [source]) => {
+        const sourceSet = new Set(matchSources.filter(Boolean));
+        updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
+          if (!canvasItem.ai?.outputs?.length) return canvasItem;
+          let changed = false;
+          const outputs = canvasItem.ai.outputs.map((output) => {
+            const outputSource = getCanvasAiOutputDisplaySource(output);
+            if (output.id !== item.id && !sourceSet.has(outputSource)) return output;
+            changed = true;
+            return { ...output, ...patch };
+          });
+          return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
+        }));
+        options?.onOutputCachePatch?.(item.id, Array.from(sourceSet), patch);
+      };
 
       invoke<string>('cache_web_image', {
         url: source,
@@ -8591,13 +8631,9 @@ function MainApp() {
       })
         .then((cachedPath) => {
           if (!cachedPath) {
-            updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
-              if (!canvasItem.ai?.outputs?.some(output => output.id === item.id)) return canvasItem;
-              const outputs = canvasItem.ai.outputs.map(output => output.id === item.id
-                ? { ...output, cacheStatus: 'failed' as const }
-                : output);
-              return { ...canvasItem, ai: { ...canvasItem.ai, outputs } };
-            }));
+            generatedImageCachePendingIdsRef.current.delete(item.id);
+            setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
+            patchMatchingOutputs({ cacheStatus: 'failed' });
             return;
           }
           const cachedUrl = convertFileSrc(cachedPath);
@@ -8613,38 +8649,37 @@ function MainApp() {
             originalUrl,
           } as BufferItem;
           setItems(prev => prev.map(existing => existing.id === item.id ? cachedItem : existing));
-          const cachedOutputTargets: Array<{ canvasItemId: string; outputIndex: number; outputId?: string }> = [];
-          updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
-            const nextItem = canvasItem.item.id === item.id
+          updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
+            canvasItem.item.id === item.id
               ? { ...canvasItem, item: cachedItem }
-              : canvasItem;
-            if (!nextItem.ai?.outputs?.some(output => output.id === item.id)) return nextItem;
-            const outputs = nextItem.ai.outputs.map((output, outputIndex) => {
-              if (output.id !== item.id) return output;
-              cachedOutputTargets.push({ canvasItemId: nextItem.id, outputIndex, outputId: output.id });
-              return { ...output, url: cachedUrl, path: cachedPath, cacheStatus: 'ready' as const };
-            });
-            return { ...nextItem, ai: { ...nextItem.ai, outputs } };
-          }));
-          cachedOutputTargets.forEach(target => enqueueCanvasAiOutputThumbnailJob({
-            key: `${target.canvasItemId}:${target.outputId || target.outputIndex}:${cachedPath}`,
-            canvasItemId: target.canvasItemId,
-            outputIndex: target.outputIndex,
-            outputId: target.outputId,
+              : canvasItem
+          )));
+          const matchSources = [source, cachedUrl];
+          patchMatchingOutputs({ url: cachedUrl, path: cachedPath, cacheStatus: 'pending' }, matchSources);
+          enqueueCanvasAiOutputThumbnailJob({
+            key: `output:${item.id}:${cachedPath}`,
+            outputId: item.id,
+            matchSources,
+            drawerItemId: item.id,
             source: cachedUrl,
             path: cachedPath,
-          }));
-          triggerAutoPaletteForItems([cachedItem]);
+            onSettled: (patch) => {
+              options?.onOutputCachePatch?.(item.id, matchSources, patch);
+              if (!patch.thumbnail) return;
+              triggerAutoPaletteForItems([{
+                ...cachedItem,
+                url: patch.thumbnail,
+                path: undefined,
+                thumbnail: patch.thumbnail,
+              } as BufferItem]);
+            },
+          });
         })
         .catch((err) => {
           console.warn('AI 生图缓存失败:', err);
-          updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
-            if (!canvasItem.ai?.outputs?.some(output => output.id === item.id)) return canvasItem;
-            const outputs = canvasItem.ai.outputs.map(output => output.id === item.id
-              ? { ...output, cacheStatus: 'failed' as const }
-              : output);
-            return { ...canvasItem, ai: { ...canvasItem.ai, outputs } };
-          }));
+          generatedImageCachePendingIdsRef.current.delete(item.id);
+          setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
+          patchMatchingOutputs({ cacheStatus: 'failed' });
         });
     });
 
@@ -10169,6 +10204,7 @@ function MainApp() {
   const imageThumbnailDisposedRef = useRef(false);
   const canvasAiOutputThumbnailQueueRef = useRef<CanvasAiOutputThumbnailJob[]>([]);
   const canvasAiOutputThumbnailInFlightRef = useRef(new Set<string>());
+  const generatedImageCachePendingIdsRef = useRef(new Set<string>());
 
   const readDataImageSize = (source?: string) => new Promise<{ width: number; height: number } | null>((resolve) => {
     const rawSource = (source || '').trim();
@@ -10330,6 +10366,7 @@ function MainApp() {
     if (
       item.type !== 'image'
       || item.isDirectory
+      || generatedImageCachePendingIdsRef.current.has(item.id)
       || imageThumbnailInFlightRef.current.has(item.id)
     ) {
       return;
@@ -10871,7 +10908,7 @@ function MainApp() {
   );
 
   const getCanvasAiOutputThumbnailSource = (output?: CanvasAiGeneratedOutput | null) => (
-    output?.thumbnail || getCanvasAiOutputDisplaySource(output)
+    output?.thumbnail || (output?.cacheStatus === 'pending' ? '' : getCanvasAiOutputDisplaySource(output))
   );
 
   const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
@@ -14245,10 +14282,50 @@ function MainApp() {
         const thumbnail = result.url || (result.path ? convertFileSrc(result.path) : '');
         if (thumbnail) return thumbnail;
       } catch (err) {
-        console.warn('画布输出缩略图文件生成失败，尝试 WebView 兜底:', err);
+        console.warn('画布输出缩略图文件生成失败:', err);
       }
+      return '';
     }
     return trimmedSource ? createImageThumbnailInWebview(trimmedSource) : '';
+  };
+
+  const settleCanvasAiOutputThumbnailJob = (
+    job: CanvasAiOutputThumbnailJob,
+    patch: Partial<CanvasAiGeneratedOutput>
+  ) => {
+    const thumbnail = patch.thumbnail;
+    const matchSources = new Set((job.matchSources || []).filter(Boolean));
+    const changedCanvasIds = new Set<string>();
+    updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
+      if ((job.canvasItemId && canvasItem.id !== job.canvasItemId) || !canvasItem.ai?.outputs?.length) return canvasItem;
+      let changed = false;
+      const outputs = canvasItem.ai.outputs.map((output, index) => {
+        const isTarget = job.outputId
+          ? output.id === job.outputId || matchSources.has(getCanvasAiOutputDisplaySource(output))
+          : job.outputIndex !== undefined && index === job.outputIndex;
+        if (!isTarget || (thumbnail && output.thumbnail === thumbnail && output.cacheStatus === 'ready')) return output;
+        changed = true;
+        return { ...output, ...patch };
+      });
+      if (changed) changedCanvasIds.add(canvasItem.id);
+      return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
+    }));
+    if (job.drawerItemId) {
+      generatedImageCachePendingIdsRef.current.delete(job.drawerItemId);
+      setItems(prev => prev.map(item => item.id === job.drawerItemId
+        ? { ...item, ...(thumbnail ? { thumbnail } : {}) }
+        : item));
+    }
+    try {
+      job.onSettled?.(patch);
+    } catch (err) {
+      console.warn('AI 输出预览状态同步失败:', err);
+    }
+    if (changedCanvasIds.size > 0) {
+      const changedIds = Array.from(changedCanvasIds);
+      scheduleCanvasChangedNodesPatchSave(changedIds);
+      scheduleCanvasStateSave({ syncNodes: false });
+    }
   };
 
   const runNextCanvasAiOutputThumbnailJob = () => {
@@ -14259,26 +14336,15 @@ function MainApp() {
     canvasAiOutputThumbnailInFlightRef.current.add(job.key);
     void createCanvasImagePreviewThumbnail(job.source, job.path)
       .then((thumbnail) => {
-        if (!thumbnail) return;
-        let changed = false;
-        updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
-          if (canvasItem.id !== job.canvasItemId || !canvasItem.ai?.outputs?.length) return canvasItem;
-          const outputs = canvasItem.ai.outputs.map((output, index) => {
-            const isTarget = job.outputId
-              ? output.id === job.outputId
-              : index === job.outputIndex;
-            if (!isTarget || output.thumbnail) return output;
-            changed = true;
-            return { ...output, thumbnail };
-          });
-          return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
-        }));
-        if (changed) {
-          scheduleCanvasChangedNodesPatchSave([job.canvasItemId]);
-          scheduleCanvasStateSave({ syncNodes: false });
-        }
+        const patch: Partial<CanvasAiGeneratedOutput> = thumbnail
+          ? { thumbnail, cacheStatus: 'ready' }
+          : { cacheStatus: 'failed' };
+        settleCanvasAiOutputThumbnailJob(job, patch);
       })
-      .catch((err) => console.warn('AI 输出预览缩略图补全失败:', err))
+      .catch((err) => {
+        console.warn('AI 输出预览缩略图补全失败:', err);
+        settleCanvasAiOutputThumbnailJob(job, { cacheStatus: 'failed' });
+      })
       .finally(() => {
         canvasAiOutputThumbnailInFlightRef.current.delete(job.key);
         if (canvasAiOutputThumbnailQueueRef.current.length > 0) {
@@ -14291,7 +14357,8 @@ function MainApp() {
     if (canvasAiOutputThumbnailInFlightRef.current.has(job.key)) return;
     if (canvasAiOutputThumbnailQueueRef.current.some(item => item.key === job.key)) return;
     while (canvasAiOutputThumbnailQueueRef.current.length >= IMAGE_THUMBNAIL_QUEUE_LIMIT) {
-      canvasAiOutputThumbnailQueueRef.current.shift();
+      const droppedJob = canvasAiOutputThumbnailQueueRef.current.shift();
+      if (droppedJob) settleCanvasAiOutputThumbnailJob(droppedJob, { cacheStatus: 'failed' });
     }
     canvasAiOutputThumbnailQueueRef.current.push(job);
     runNextCanvasAiOutputThumbnailJob();
@@ -17411,7 +17478,19 @@ function MainApp() {
         const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, index);
         if (drawerItem) {
           if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
-          else addGeneratedImagesToDrawer([drawerItem]);
+          else addGeneratedImagesToDrawer([drawerItem], {
+            onOutputCachePatch: (outputId, matchSources, patch) => {
+              const sourceSet = new Set(matchSources);
+              const nextOutputs = currentOutputs.map((currentOutput) => (
+                currentOutput.id === outputId || sourceSet.has(getCanvasAiOutputDisplaySource(currentOutput))
+                  ? { ...currentOutput, ...patch }
+                  : currentOutput
+              ));
+              if (nextOutputs.every((currentOutput, outputIndex) => currentOutput === currentOutputs[outputIndex])) return;
+              currentOutputs = nextOutputs;
+              options.updateAi({ outputs: nextOutputs });
+            },
+          });
         }
         return output;
       };
@@ -26447,16 +26526,54 @@ useEffect(() => {
   useEffect(() => {
     if (!isCanvasMode) return;
     if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
+    const reconcilePendingOutputs = () => {
+      const cutoff = Date.now() - CANVAS_AI_OUTPUT_CACHE_STALE_MS;
+      const changedIds = new Set<string>();
+      updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
+        if (!canvasItem.ai?.outputs?.length) return canvasItem;
+        let changed = false;
+        const outputs = canvasItem.ai.outputs.map((output) => {
+          if (output.cacheStatus !== 'pending') return output;
+          if (output.thumbnail) {
+            changed = true;
+            return { ...output, cacheStatus: 'ready' as const };
+          }
+          if (output.path || !output.generatedAt || output.generatedAt > cutoff) return output;
+          changed = true;
+          return { ...output, cacheStatus: 'failed' as const };
+        });
+        if (changed) changedIds.add(canvasItem.id);
+        return changed ? { ...canvasItem, ai: { ...canvasItem.ai, outputs } } : canvasItem;
+      }));
+      if (changedIds.size > 0) {
+        scheduleCanvasChangedNodesPatchSave(Array.from(changedIds));
+        scheduleCanvasStateSave({ syncNodes: false });
+      }
+    };
+    const pendingWithoutPath = canvasRenderableItems
+      .flatMap(canvasItem => getCanvasAiOutputPreviewSlots(canvasItem))
+      .filter(output => output.status === 'success' && output.cacheStatus === 'pending' && !output.path && !!output.generatedAt);
+    const hasCompletedPendingOutput = canvasRenderableItems
+      .flatMap(canvasItem => getCanvasAiOutputPreviewSlots(canvasItem))
+      .some(output => output.status === 'success' && output.cacheStatus === 'pending' && !!output.thumbnail);
+    const staleDelay = pendingWithoutPath.length > 0
+      ? Math.max(0, Math.min(...pendingWithoutPath.map(output => (
+        (output.generatedAt || Date.now()) + CANVAS_AI_OUTPUT_CACHE_STALE_MS - Date.now()
+      ))))
+      : null;
     canvasRenderableItems.forEach((canvasItem) => {
       const hasImageSourceAsset = !!(canvasItem.item.url || canvasItem.item.path || canvasItem.item.sourceUrl || canvasItem.item.originalUrl || canvasItem.item.thumbnail);
       if (canvasItem.item.type === 'image' && !canvasItem.item.thumbnail && hasImageSourceAsset) ensureImageThumbnail(canvasItem.item);
       getCanvasAiOutputPreviewSlots(canvasItem).forEach((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
-        if (mediaType !== 'image' || output.thumbnail || output.status !== 'success') return;
+        if (mediaType !== 'image' || output.thumbnail || output.status !== 'success' || output.cacheStatus === 'failed') return;
+        if (output.cacheStatus === 'pending' && !output.path) return;
         const source = getCanvasAiOutputDisplaySource(output);
         if (!source) return;
         enqueueCanvasAiOutputThumbnailJob({
-          key: `${canvasItem.id}:${output.id || outputIndex}:${source}`,
+          key: output.id && output.path
+            ? `output:${output.id}:${output.path}`
+            : `${canvasItem.id}:${output.id || outputIndex}:${source}`,
           canvasItemId: canvasItem.id,
           outputIndex,
           outputId: output.id,
@@ -26465,6 +26582,10 @@ useEffect(() => {
         });
       });
     });
+    if (hasCompletedPendingOutput || staleDelay === 0) reconcilePendingOutputs();
+    if (staleDelay === null || staleDelay === 0) return;
+    const staleTimer = window.setTimeout(reconcilePendingOutputs, staleDelay);
+    return () => window.clearTimeout(staleTimer);
   }, [isCanvasMode, canvasRenderableItems]);
   const getCanvasItemNavPreview = (canvasItem: CanvasImageItem): CanvasNavPreview | null => {
     const directPreview = getCanvasBufferItemNavPreview(canvasItem.item);
@@ -29578,7 +29699,7 @@ useEffect(() => {
                             if (inputItem.node.item.type === 'video') return inputItem.node.item.thumbnail || '';
                             const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem.node)[0];
                             return generatorOutput?.mediaType === 'image'
-                              ? getCanvasAiOutputDisplaySource(generatorOutput)
+                              ? getCanvasAiOutputThumbnailSource(generatorOutput)
                               : '';
                           };
                           const expandedCanvasInputPreviewItems = rawCanvasInputPreviewItems.flatMap(getCanvasExpandedInputPreviewItems);
@@ -29937,6 +30058,7 @@ useEffect(() => {
                                               const isOutputWorking = output.status === 'working';
                                               const outputMediaType = output.mediaType || canvasAiMediaType;
                                               const isOutputImageCaching = outputMediaType === 'image' && output.cacheStatus === 'pending';
+                                              const isOutputImagePreviewing = isOutputImageCaching && !!output.path;
                                               const didOutputImageCacheFail = outputMediaType === 'image' && output.cacheStatus === 'failed';
                                               const outputLabel = output.nodeLabel || output.name || (isCanvasWorkflowItem ? '工作流输出' : canvasItem.ai?.presetLabel || canvasItem.item.name || `输出 ${outputIndex + 1}`);
                                               const outputWorkingElapsedText = isOutputWorking
@@ -30075,7 +30197,7 @@ useEffect(() => {
                                                       key={outputPreviewSource}
                                                       src={outputPreviewSource}
                                                       alt={outputLabel}
-                                                      loading={isOutputImageCaching ? 'eager' : 'lazy'}
+                                                      loading="lazy"
                                                       decoding="async"
                                                       referrerPolicy="no-referrer"
                                                       className="h-full w-full object-contain transition-opacity duration-200"
@@ -30100,7 +30222,7 @@ useEffect(() => {
                                                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 overflow-hidden rounded-md bg-white/92 px-2.5 py-2 text-left shadow-sm ring-1 ring-black/[0.05] backdrop-blur-md dark:bg-stone-950/88 dark:ring-white/[0.08]">
                                                       <div className="flex items-center gap-2 text-[10px] font-black text-stone-600 dark:text-white/72">
                                                         <Download className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
-                                                        <span>图片已生成，正在下载原图</span>
+                                                        <span>{isOutputImagePreviewing ? '原图已下载，正在生成预览' : '图片已生成，正在下载原图'}</span>
                                                       </div>
                                                       <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-950/[0.08] dark:bg-white/[0.09]">
                                                         <div className="h-full w-2/5 animate-pulse rounded-full bg-cyan-500" />
@@ -30109,7 +30231,7 @@ useEffect(() => {
                                                   )}
                                                   {didOutputImageCacheFail && !isOutputError && (
                                                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 rounded-md bg-amber-50/94 px-2.5 py-1.5 text-[9px] font-black text-amber-800 shadow-sm ring-1 ring-amber-950/[0.08] backdrop-blur-md dark:bg-amber-950/86 dark:text-amber-100 dark:ring-amber-100/[0.1]">
-                                                      本地缓存失败，保留远程预览
+                                                      {output.path ? '原图已保存，预览生成失败，可点击打开原图' : '本地缓存失败，保留远程预览'}
                                                     </div>
                                                   )}
                                                 </div>
@@ -33270,11 +33392,13 @@ useEffect(() => {
                                   onTextEditEnd={endDrawerTextEditUndo}
                                   optimizeLargeList={optimizeLargeDrawerList}
                                   preferFullImageSource={
-                                    displayItems.length < DRAWER_VIRTUALIZATION_THRESHOLD
-                                    || item.type !== 'image'
-                                    || !!item.thumbnail
-                                    || item.folderId === AI_GENERATED_FOLDER_ID
-                                    || String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
+                                    !generatedImageCachePendingIdsRef.current.has(item.id) && (
+                                      displayItems.length < DRAWER_VIRTUALIZATION_THRESHOLD
+                                      || item.type !== 'image'
+                                      || !!item.thumbnail
+                                      || item.folderId === AI_GENERATED_FOLDER_ID
+                                      || String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
+                                    )
                                   }
                                   onUpdateRemark={(id: string, newRemark: string, nextRemarks?: string[]) => {
                                     const cleanRemarks = Array.isArray(nextRemarks) ? nextRemarks.filter(Boolean) : undefined;
