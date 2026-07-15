@@ -874,6 +874,7 @@ type CanvasAiOutputThumbnailJob = {
   drawerItemId?: string;
   source: string;
   path?: string;
+  attempt?: number;
   onSettled?: (patch: Partial<CanvasAiGeneratedOutput>) => void;
 };
 
@@ -10204,6 +10205,7 @@ function MainApp() {
   const imageThumbnailDisposedRef = useRef(false);
   const canvasAiOutputThumbnailQueueRef = useRef<CanvasAiOutputThumbnailJob[]>([]);
   const canvasAiOutputThumbnailInFlightRef = useRef(new Set<string>());
+  const canvasAiOutputThumbnailRecoveryAttemptedRef = useRef(new Set<string>());
   const generatedImageCachePendingIdsRef = useRef(new Set<string>());
 
   const readDataImageSize = (source?: string) => new Promise<{ width: number; height: number } | null>((resolve) => {
@@ -14273,7 +14275,11 @@ function MainApp() {
     }
   };
 
-  const createCanvasImagePreviewThumbnail = async (source: string, path?: string) => {
+  const createCanvasImagePreviewThumbnail = async (
+    source: string,
+    path?: string,
+    allowWebviewFallback = false
+  ) => {
     const trimmedSource = source.trim();
     const trimmedPath = (path || '').trim();
     if (trimmedPath) {
@@ -14284,7 +14290,7 @@ function MainApp() {
       } catch (err) {
         console.warn('画布输出缩略图文件生成失败:', err);
       }
-      return '';
+      if (!allowWebviewFallback) return '';
     }
     return trimmedSource ? createImageThumbnailInWebview(trimmedSource) : '';
   };
@@ -14334,8 +14340,17 @@ function MainApp() {
     const job = canvasAiOutputThumbnailQueueRef.current.shift();
     if (!job || canvasAiOutputThumbnailInFlightRef.current.has(job.key)) return;
     canvasAiOutputThumbnailInFlightRef.current.add(job.key);
-    void createCanvasImagePreviewThumbnail(job.source, job.path)
+    const attempt = job.attempt || 0;
+    const retryJob = () => {
+      if (!job.path || attempt >= 2) return false;
+      window.setTimeout(() => {
+        enqueueCanvasAiOutputThumbnailJob({ ...job, attempt: attempt + 1 });
+      }, 240 * (attempt + 1));
+      return true;
+    };
+    void createCanvasImagePreviewThumbnail(job.source, job.path, attempt >= 2)
       .then((thumbnail) => {
+        if (!thumbnail && retryJob()) return;
         const patch: Partial<CanvasAiGeneratedOutput> = thumbnail
           ? { thumbnail, cacheStatus: 'ready' }
           : { cacheStatus: 'failed' };
@@ -14343,6 +14358,7 @@ function MainApp() {
       })
       .catch((err) => {
         console.warn('AI 输出预览缩略图补全失败:', err);
+        if (retryJob()) return;
         settleCanvasAiOutputThumbnailJob(job, { cacheStatus: 'failed' });
       })
       .finally(() => {
@@ -26566,7 +26582,12 @@ useEffect(() => {
       if (canvasItem.item.type === 'image' && !canvasItem.item.thumbnail && hasImageSourceAsset) ensureImageThumbnail(canvasItem.item);
       getCanvasAiOutputPreviewSlots(canvasItem).forEach((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
-        if (mediaType !== 'image' || output.thumbnail || output.status !== 'success' || output.cacheStatus === 'failed') return;
+        if (mediaType !== 'image' || output.thumbnail || output.status !== 'success') return;
+        const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${output.path || output.url || ''}`;
+        if (output.cacheStatus === 'failed') {
+          if (!output.path || canvasAiOutputThumbnailRecoveryAttemptedRef.current.has(recoveryKey)) return;
+          canvasAiOutputThumbnailRecoveryAttemptedRef.current.add(recoveryKey);
+        }
         if (output.cacheStatus === 'pending' && !output.path) return;
         const source = getCanvasAiOutputDisplaySource(output);
         if (!source) return;
@@ -30229,9 +30250,9 @@ useEffect(() => {
                                                       </div>
                                                     </div>
                                                   )}
-                                                  {didOutputImageCacheFail && !isOutputError && (
+                                                  {didOutputImageCacheFail && !output.path && !isOutputError && (
                                                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 rounded-md bg-amber-50/94 px-2.5 py-1.5 text-[9px] font-black text-amber-800 shadow-sm ring-1 ring-amber-950/[0.08] backdrop-blur-md dark:bg-amber-950/86 dark:text-amber-100 dark:ring-amber-100/[0.1]">
-                                                      {output.path ? '原图已保存，预览生成失败，可点击打开原图' : '本地缓存失败，保留远程预览'}
+                                                      本地缓存失败，保留远程预览
                                                     </div>
                                                   )}
                                                 </div>

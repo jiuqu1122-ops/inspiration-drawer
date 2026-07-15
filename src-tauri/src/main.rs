@@ -8235,6 +8235,16 @@ fn normalize_thumbnail_size(size: Option<u32>) -> u32 {
     }
 }
 
+fn save_thumbnail_jpeg(
+    image: &screenshots::image::DynamicImage,
+    path: &Path,
+) -> Result<(), String> {
+    image
+        .to_rgb8()
+        .save_with_format(path, screenshots::image::ImageFormat::Jpeg)
+        .map_err(|e| e.to_string())
+}
+
 fn ensure_image_thumbnail_file_impl(
     app_handle: tauri::AppHandle,
     path: String,
@@ -8249,17 +8259,20 @@ fn ensure_image_thumbnail_file_impl(
 
     let out_path = cache_root.join(format!("{}.jpg", metadata.fingerprint));
     if out_path.is_file() {
-        let (thumb_width, thumb_height) =
-            screenshots::image::image_dimensions(&out_path).unwrap_or((0, 0));
-        return Ok(ImageThumbnailFileResult {
-            path: out_path.to_string_lossy().to_string(),
-            size: thumb_size,
-            width: thumb_width,
-            height: thumb_height,
-            fingerprint: metadata.fingerprint,
-            file_size: metadata.size,
-            modified_at: metadata.modified_at,
-        });
+        if let Ok((thumb_width, thumb_height)) = screenshots::image::image_dimensions(&out_path) {
+            if thumb_width > 0 && thumb_height > 0 {
+                return Ok(ImageThumbnailFileResult {
+                    path: out_path.to_string_lossy().to_string(),
+                    size: thumb_size,
+                    width: thumb_width,
+                    height: thumb_height,
+                    fingerprint: metadata.fingerprint,
+                    file_size: metadata.size,
+                    modified_at: metadata.modified_at,
+                });
+            }
+        }
+        let _ = fs::remove_file(&out_path);
     }
 
     let image = screenshots::image::open(&metadata.path).map_err(|e| e.to_string())?;
@@ -8273,7 +8286,7 @@ fn ensure_image_thumbnail_file_impl(
         next_height,
         screenshots::image::imageops::FilterType::Triangle,
     );
-    resized.save(&out_path).map_err(|e| e.to_string())?;
+    save_thumbnail_jpeg(&resized, &out_path)?;
 
     Ok(ImageThumbnailFileResult {
         path: out_path.to_string_lossy().to_string(),
@@ -8284,6 +8297,33 @@ fn ensure_image_thumbnail_file_impl(
         file_size: metadata.size,
         modified_at: metadata.modified_at,
     })
+}
+
+#[cfg(test)]
+mod image_thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_thumbnail_writer_accepts_rgba_images() {
+        let output = std::env::temp_dir().join(format!(
+            "inspiration-drawer-rgba-thumbnail-{}-{}.jpg",
+            std::process::id(),
+            now_millis_u64()
+        ));
+        let rgba = screenshots::image::RgbaImage::from_pixel(
+            32,
+            24,
+            screenshots::image::Rgba([24, 48, 72, 120]),
+        );
+        let image = screenshots::image::DynamicImage::ImageRgba8(rgba);
+
+        save_thumbnail_jpeg(&image, &output).unwrap();
+        assert_eq!(
+            screenshots::image::image_dimensions(&output).unwrap(),
+            (32, 24)
+        );
+        let _ = fs::remove_file(output);
+    }
 }
 
 #[tauri::command]
