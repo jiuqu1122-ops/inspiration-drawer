@@ -15,11 +15,7 @@ pub enum LicenseEdition {
 
 impl LicenseEdition {
     pub fn status_state(&self) -> LicenseState {
-        match self {
-            LicenseEdition::Trial => LicenseState::Trial,
-            LicenseEdition::Pro => LicenseState::Pro,
-            LicenseEdition::Enterprise => LicenseState::Enterprise,
-        }
+        LicenseState::Enterprise
     }
 }
 
@@ -210,6 +206,7 @@ pub struct LicenseStatus {
     pub edition: Option<LicenseEdition>,
     pub expire_at: Option<String>,
     pub features: Vec<String>,
+    pub needs_email_registration: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_access: Option<LicenseAiAccessSummary>,
     pub message: Option<String>,
@@ -279,6 +276,7 @@ impl LicenseStatus {
             edition: None,
             expire_at: None,
             features: Vec::new(),
+            needs_email_registration: true,
             ai_access: None,
             message: Some("未导入授权文件".to_string()),
             error_code: Some(LicenseErrorCode::NotLicensed),
@@ -286,15 +284,17 @@ impl LicenseStatus {
     }
 
     pub fn from_payload(machine_id: String, payload: LicensePayload) -> Self {
+        let needs_email_registration = payload.license_id.is_none();
         let ai_access = payload.ai_access.as_ref().map(LicenseAiAccessSummary::from);
         Self {
             state: payload.edition.status_state(),
             valid: true,
             machine_id,
             customer: Some(payload.customer),
-            edition: Some(payload.edition),
+            edition: Some(LicenseEdition::Enterprise),
             expire_at: Some(payload.expire_at),
-            features: payload.features,
+            features: vec!["*".to_string()],
+            needs_email_registration,
             ai_access,
             message: Some("授权有效".to_string()),
             error_code: None,
@@ -315,6 +315,7 @@ impl LicenseStatus {
             edition: None,
             expire_at: None,
             features: Vec::new(),
+            needs_email_registration: true,
             ai_access: None,
             message: Some(message),
             error_code: Some(code),

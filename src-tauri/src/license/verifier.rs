@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unlicensed_feature() {
+    fn legacy_licenses_receive_all_advanced_features() {
         let (license, public_key) = signed_license("machine-a", "2099-01-01", vec!["hd_export"]);
         let payload = verify_license_content_with_key(
             &license,
@@ -272,8 +272,8 @@ mod tests {
         .unwrap();
         let status = LicenseStatus::from_payload("machine-a".to_string(), payload);
         let result = check_feature_from_status(status, "batch_render");
-        assert!(!result.allowed);
-        assert!(result.message.unwrap().contains("功能未授权"));
+        assert!(result.allowed);
+        assert_eq!(result.status.edition, Some(LicenseEdition::Enterprise));
     }
 
     #[test]

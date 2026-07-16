@@ -686,10 +686,7 @@ fn download_url_to_file_with_timeout(
             let _ = fs::remove_file(out_path.with_extension("download.tmp"));
             let direct_client = build_direct_http_client(timeout_secs)?;
             download_url_to_file_with_client(&direct_client, url, out_path).map_err(|second_err| {
-                format!(
-                    "{}；无代理直连重试也失败：{}",
-                    first_err, second_err
-                )
+                format!("{}；无代理直连重试也失败：{}", first_err, second_err)
             })
         }
     }
@@ -15689,8 +15686,9 @@ fn main() {
             save_dropped_file,
             commands::license::get_machine_id,
             commands::license::get_license_status,
-            commands::license::register_trial,
-            commands::license::sync_server_license,
+            commands::license::request_email_verification,
+            commands::license::verify_email_registration,
+            commands::license::sync_email_license,
             commands::license::import_license,
             commands::license::remove_license,
             commands::license::check_feature,

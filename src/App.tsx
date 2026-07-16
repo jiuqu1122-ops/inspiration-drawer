@@ -558,6 +558,7 @@ type LicenseStatus = {
   edition?: LicenseEdition | null;
   expire_at?: string | null;
   features: string[];
+  needs_email_registration: boolean;
   ai_access?: {
     mode: 'byok' | 'license_managed';
     allow_user_api: boolean;
@@ -578,16 +579,22 @@ type LicenseStatus = {
 
 const LICENSE_STATE_LABELS: Record<LicenseState, string> = {
   unlicensed: '未授权',
-  trial: '试用版',
-  pro: '专业版',
+  trial: '高级版',
+  pro: '高级版',
   enterprise: '高级版',
   expired: '已过期',
 };
 
 const LICENSE_EDITION_LABELS: Record<LicenseEdition, string> = {
-  trial: '试用版',
-  pro: '专业版',
+  trial: '高级版',
+  pro: '高级版',
   enterprise: '高级版',
+};
+
+type EmailCodeChallenge = {
+  challengeId: string;
+  expiresIn: number;
+  resendAfter: number;
 };
 
 const LICENSE_FEATURE_LABELS: Record<string, string> = {
@@ -5440,13 +5447,15 @@ function MainApp() {
   const [mobilePairUrl, setMobilePairUrl] = useState('');
   const [isAutoStart, setIsAutoStart] = useState(false);
   const [isAutoStartChanging, setIsAutoStartChanging] = useState(false);
-  const [machineId, setMachineId] = useState('');
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [isLicenseLoading, setIsLicenseLoading] = useState(false);
-  const [licenseInputText, setLicenseInputText] = useState('');
-  const [trialDisplayName, setTrialDisplayName] = useState('');
-  const [trialRegistrationError, setTrialRegistrationError] = useState('');
-  const [isTrialRegistering, setIsTrialRegistering] = useState(false);
+  const [registrationEmail, setRegistrationEmail] = useState('');
+  const [registrationDisplayName, setRegistrationDisplayName] = useState('');
+  const [emailVerificationCode, setEmailVerificationCode] = useState('');
+  const [emailChallengeId, setEmailChallengeId] = useState('');
+  const [emailRegistrationError, setEmailRegistrationError] = useState('');
+  const [isEmailCodeSending, setIsEmailCodeSending] = useState(false);
+  const [isEmailVerifying, setIsEmailVerifying] = useState(false);
   const licenseGateActiveRef = useRef(true);
 
   const [shortcut, setShortcut] = useState('Alt+G');
@@ -5467,95 +5476,12 @@ function MainApp() {
   const refreshLicenseStatus = async (silent = false) => {
     setIsLicenseLoading(true);
     try {
-      const [nextMachineId, nextStatus] = await Promise.all([
-        invoke<string>('get_machine_id'),
-        invoke<LicenseStatus>('get_license_status'),
-      ]);
-      setMachineId(nextMachineId || nextStatus.machine_id || '');
+      const nextStatus = await invoke<LicenseStatus>('get_license_status');
       setLicenseStatus(nextStatus);
       if (!silent) showToast('授权状态已刷新');
     } catch (err) {
       console.error('读取授权状态失败:', err);
       if (!silent) showToast(formatLicenseCommandError(err));
-    } finally {
-      setIsLicenseLoading(false);
-    }
-  };
-
-  const copyMachineId = async () => {
-    const value = machineId || licenseStatus?.machine_id || '';
-    if (!value) {
-      showToast('机器码还没有生成');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(value);
-      showToast('机器码已复制');
-    } catch (err) {
-      console.warn('复制机器码失败:', err);
-      showToast('复制失败');
-    }
-  };
-
-  const importLicenseFile = async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: 'License', extensions: ['json', 'license'] }],
-      });
-      const licensePath = Array.isArray(selected) ? selected[0] : selected;
-      if (typeof licensePath !== 'string' || !licensePath) return;
-      setIsLicenseLoading(true);
-      const nextStatus = await invoke<LicenseStatus>('import_license', {
-        path: licensePath,
-        content: null,
-      });
-      setLicenseStatus(nextStatus);
-      setMachineId(nextStatus.machine_id);
-      showToast('授权已导入');
-    } catch (err) {
-      console.error('导入授权失败:', err);
-      showToast(formatLicenseCommandError(err));
-    } finally {
-      setIsLicenseLoading(false);
-    }
-  };
-
-  const importLicenseText = async () => {
-    const content = licenseInputText.trim();
-    if (!content) {
-      showToast('请先粘贴 license 内容');
-      return;
-    }
-
-    try {
-      setIsLicenseLoading(true);
-      const nextStatus = await invoke<LicenseStatus>('import_license', {
-        path: null,
-        content,
-      });
-      setLicenseStatus(nextStatus);
-      setMachineId(nextStatus.machine_id);
-      setLicenseInputText('');
-      showToast('授权已导入');
-    } catch (err) {
-      console.error('导入授权失败:', err);
-      showToast(formatLicenseCommandError(err));
-    } finally {
-      setIsLicenseLoading(false);
-    }
-  };
-
-  const removeLicenseFile = async () => {
-    try {
-      setIsLicenseLoading(true);
-      const nextStatus = await invoke<LicenseStatus>('remove_license');
-      setLicenseStatus(nextStatus);
-      setMachineId(nextStatus.machine_id);
-      showToast('授权已移除');
-    } catch (err) {
-      console.error('移除授权失败:', err);
-      showToast(formatLicenseCommandError(err));
     } finally {
       setIsLicenseLoading(false);
     }
@@ -5655,27 +5581,64 @@ function MainApp() {
     setConfirmDialog(prev => ({ ...prev, isOpen: false }));
   };
 
-  const registerTrialAccount = async () => {
-    const displayName = trialDisplayName.trim();
-    const displayNameLength = Array.from(displayName).length;
-    if (displayNameLength < 2 || displayNameLength > 32) {
-      setTrialRegistrationError('用户名需要填写 2 到 32 个字符');
+  const requestEmailCode = async () => {
+    const email = registrationEmail.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setEmailRegistrationError('请输入有效的邮箱地址');
       return;
     }
 
     try {
-      setIsTrialRegistering(true);
-      setTrialRegistrationError('');
-      const nextStatus = await invoke<LicenseStatus>('register_trial', { displayName });
-      setLicenseStatus(nextStatus);
-      setMachineId(nextStatus.machine_id);
-      setTrialDisplayName('');
-      showToast('注册成功，30 天试用已开通');
+      setIsEmailCodeSending(true);
+      setEmailRegistrationError('');
+      const challenge = await invoke<EmailCodeChallenge>('request_email_verification', { email });
+      setRegistrationEmail(email);
+      setEmailChallengeId(challenge.challengeId);
+      setEmailVerificationCode('');
+      showToast('验证码已发送，请检查邮箱');
     } catch (err) {
-      console.error('自动试用注册失败:', err);
-      setTrialRegistrationError(formatLicenseCommandError(err));
+      console.error('发送邮箱验证码失败:', err);
+      setEmailRegistrationError(formatLicenseCommandError(err));
     } finally {
-      setIsTrialRegistering(false);
+      setIsEmailCodeSending(false);
+    }
+  };
+
+  const verifyEmailAccount = async () => {
+    const email = registrationEmail.trim().toLowerCase();
+    const displayName = registrationDisplayName.trim();
+    const code = emailVerificationCode.trim();
+    if (!emailChallengeId) {
+      setEmailRegistrationError('请先获取邮箱验证码');
+      return;
+    }
+    if (!/^\d{6}$/.test(code)) {
+      setEmailRegistrationError('请输入 6 位数字验证码');
+      return;
+    }
+    if (displayName && (Array.from(displayName).length < 2 || Array.from(displayName).length > 32)) {
+      setEmailRegistrationError('用户名需要填写 2 到 32 个字符');
+      return;
+    }
+
+    try {
+      setIsEmailVerifying(true);
+      setEmailRegistrationError('');
+      const nextStatus = await invoke<LicenseStatus>('verify_email_registration', {
+        email,
+        challengeId: emailChallengeId,
+        code,
+        displayName: displayName || null,
+      });
+      setLicenseStatus(nextStatus);
+      setEmailVerificationCode('');
+      setEmailChallengeId('');
+      showToast('邮箱验证成功，高级版授权已同步');
+    } catch (err) {
+      console.error('邮箱注册或登录失败:', err);
+      setEmailRegistrationError(formatLicenseCommandError(err));
+    } finally {
+      setIsEmailVerifying(false);
     }
   };
   const textInputDialogResolverRef = useRef<((value: string | null) => void) | null>(null);
@@ -6078,7 +6041,8 @@ function MainApp() {
   }, [canvasWorkflowTemplates]);
   const licenseAiAccess = licenseStatus?.valid ? licenseStatus.ai_access : null;
   const isAgentAiLicenseManaged = licenseAiAccess?.mode === 'license_managed';
-  const isCanvasAiLicenseManaged = licenseAiAccess?.mode === 'license_managed'
+  const isCanvasAiLicenseManaged = !canvasAiApiKey.trim()
+    && licenseAiAccess?.mode === 'license_managed'
     && !!licenseAiAccess.canvas_provider
     && !!licenseAiAccess.canvas_base_url
     && !!licenseAiAccess.canvas_model;
@@ -6349,13 +6313,15 @@ function MainApp() {
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
     invoke('set_topmost', { topmost: true }).catch(()=>{});
     void refreshLicenseStatus(true);
-    void invoke<LicenseStatus | null>('sync_server_license')
+    void invoke<LicenseStatus | null>('sync_email_license')
       .then((nextStatus) => {
         if (!nextStatus) return;
         setLicenseStatus(nextStatus);
-        setMachineId(nextStatus.machine_id);
       })
-      .catch((err) => console.warn('同步服务器授权失败，将继续使用本地授权:', err));
+      .catch((err) => {
+        console.warn('云端授权同步失败，将按当前本地授权状态继续:', err);
+        void refreshLicenseStatus(true);
+      });
   }, []);
 
   const handleOpenTextInput = () => { setIsDrawerAgentOpen(false); setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
@@ -9006,7 +8972,7 @@ function MainApp() {
       };
       const blockShortcutWhenLicenseLocked = () => {
         if (!licenseGateActiveRef.current) return false;
-        showToast('请先导入授权');
+        showToast('请先完成邮箱注册或登录');
         return true;
       };
 
@@ -27019,22 +26985,22 @@ useEffect(() => {
   const canvasWorkflowEditingTemplate = canvasWorkflowTemplates.find(item => item.id === canvasWorkflowEditingId) || null;
   const canvasWorkflowEditingNodeCount = canvasWorkflowEditingTemplate?.nodes.length || 0;
   const canvasWorkflowEditingAiCount = canvasWorkflowEditingTemplate?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0;
-  const isLicenseUnlocked = licenseStatus?.valid === true;
+  const isLicenseUnlocked = licenseStatus?.valid === true && licenseStatus.needs_email_registration !== true;
   const isLicenseGateActive = !isLicenseUnlocked;
-  const canRegisterTrial = licenseStatus?.error_code === 'not_licensed';
+  const canRegisterByEmail = licenseStatus?.needs_email_registration !== false;
   licenseGateActiveRef.current = isLicenseGateActive;
   const licenseGateState = licenseStatus?.state || 'unlicensed';
   const licenseGateTitle = isLicenseLoading && !licenseStatus
     ? '正在读取授权'
     : isLicenseUnlocked
       ? '授权有效'
-      : canRegisterTrial
-        ? '注册 30 天免费试用'
+      : canRegisterByEmail
+        ? '邮箱注册 / 登录'
         : LICENSE_STATE_LABELS[licenseGateState] || '未授权';
   const licenseGateMessage = isLicenseLoading && !licenseStatus
     ? '正在读取本机授权状态，请稍候。'
-    : canRegisterTrial
-      ? '输入一个用于后台识别的用户名，程序会自动绑定本机并开通试用。'
+    : canRegisterByEmail
+      ? '新邮箱注册自动获得 30 天高级版；已有邮箱登录会继承原账户的授权到期时间。'
       : licenseStatus?.message || '请导入有效 license 后使用抽屉。';
 
   useEffect(() => {
@@ -27685,9 +27651,9 @@ useEffect(() => {
                 </div>
               </div>
 
-              {canRegisterTrial ? (
+              {canRegisterByEmail ? (
                 <div className="mt-4 rounded-[14px] border border-blue-200 bg-blue-50 px-3 py-2 text-center text-[11px] font-black text-blue-700 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-100">
-                  每台设备只能领取一次，卸载重装不会重置试用时间
+                  邮箱是账户身份 · 换设备不会重新计算授权时间
                 </div>
               ) : (
                 <div className="mt-4 rounded-[14px] border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-black text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
@@ -27695,102 +27661,113 @@ useEffect(() => {
                 </div>
               )}
 
-              {canRegisterTrial && (
+              {canRegisterByEmail && (
                 <div className="mt-4 rounded-[16px] border border-blue-100 bg-blue-50/70 p-3 dark:border-blue-400/20 dark:bg-blue-400/10">
                   <label className="grid gap-2">
-                    <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">用户名</span>
+                    <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">邮箱</span>
                     <input
-                      value={trialDisplayName}
+                      value={registrationEmail}
                       onChange={(event) => {
-                        setTrialDisplayName(event.target.value);
-                        if (trialRegistrationError) setTrialRegistrationError('');
+                        setRegistrationEmail(event.target.value);
+                        if (emailRegistrationError) setEmailRegistrationError('');
                       }}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !isTrialRegistering) void registerTrialAccount();
+                        if (event.key === 'Enter' && !isEmailCodeSending && !emailChallengeId) void requestEmailCode();
                       }}
-                      maxLength={32}
-                      autoComplete="name"
-                      placeholder="例如：张三设计"
+                      maxLength={254}
+                      readOnly={Boolean(emailChallengeId)}
+                      autoComplete="email"
+                      inputMode="email"
+                      placeholder="name@example.com"
                       className="h-11 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-sm font-bold text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100"
                     />
-                    <small className="text-[10px] leading-4 text-stone-500 dark:text-stone-400">仅用于账户识别，无需填写真实姓名</small>
                   </label>
-                  {trialRegistrationError && (
+
+                  <label className="mt-3 grid gap-2">
+                    <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">用户名</span>
+                    <input
+                      value={registrationDisplayName}
+                      onChange={(event) => {
+                        setRegistrationDisplayName(event.target.value);
+                        if (emailRegistrationError) setEmailRegistrationError('');
+                      }}
+                      maxLength={32}
+                      autoComplete="nickname"
+                      placeholder="首次注册必填，已有账户可留空"
+                      className="h-11 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-sm font-bold text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100"
+                    />
+                    <small className="text-[10px] leading-4 text-stone-500 dark:text-stone-400">仅用于后台识别，无需填写真实姓名</small>
+                  </label>
+
+                  <label className="mt-3 grid gap-2">
+                    <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">6 位验证码</span>
+                    <input
+                      value={emailVerificationCode}
+                      onChange={(event) => {
+                        setEmailVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6));
+                        if (emailRegistrationError) setEmailRegistrationError('');
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && emailChallengeId && !isEmailVerifying) void verifyEmailAccount();
+                      }}
+                      disabled={!emailChallengeId || isEmailVerifying}
+                      maxLength={6}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      placeholder={emailChallengeId ? '000000' : '发送验证码后在这里填写'}
+                      className="h-12 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-center font-mono text-xl font-black tracking-[0.28em] text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-400 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100 dark:disabled:bg-stone-900 dark:disabled:text-stone-600"
+                    />
+                  </label>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void requestEmailCode()}
+                      disabled={isEmailCodeSending || isEmailVerifying || isLicenseLoading}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-[14px] border border-blue-200 bg-white px-3 text-[11px] font-black text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-wait disabled:border-stone-200 disabled:bg-stone-100 disabled:text-stone-400 dark:border-blue-400/20 dark:bg-stone-950 dark:text-blue-200 dark:disabled:border-stone-700 dark:disabled:bg-stone-900"
+                    >
+                      <Send className="h-4 w-4" />
+                      {isEmailCodeSending ? '正在发送…' : emailChallengeId ? '重新发送' : '发送验证码'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void verifyEmailAccount()}
+                      disabled={!emailChallengeId || isEmailVerifying || isLicenseLoading}
+                      className="inline-flex h-11 items-center justify-center gap-2 rounded-[14px] bg-blue-600 px-3 text-[11px] font-black text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-stone-300 dark:disabled:bg-stone-700"
+                    >
+                      <Check className="h-4 w-4" />
+                      {isEmailVerifying ? '正在验证…' : '验证并进入'}
+                    </button>
+                  </div>
+
+                  {emailChallengeId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmailChallengeId('');
+                        setEmailVerificationCode('');
+                        setEmailRegistrationError('');
+                      }}
+                      disabled={isEmailVerifying}
+                      className="mt-2 h-8 w-full rounded-[12px] text-[10px] font-black text-stone-500 hover:bg-white/80 disabled:opacity-50 dark:text-stone-400 dark:hover:bg-stone-950/50"
+                    >
+                      更换邮箱
+                    </button>
+                  )}
+
+                  {emailRegistrationError && (
                     <div className="mt-2 rounded-[12px] bg-red-50 px-3 py-2 text-[10px] font-bold leading-4 text-red-600 dark:bg-red-400/10 dark:text-red-200">
-                      {trialRegistrationError}
+                      {emailRegistrationError}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => void registerTrialAccount()}
-                    disabled={isTrialRegistering || isLicenseLoading}
-                    className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 text-xs font-black text-white transition-colors hover:bg-blue-500 disabled:cursor-wait disabled:bg-stone-300 dark:disabled:bg-stone-700"
-                  >
-                    <Check className="h-4 w-4" />
-                    {isTrialRegistering ? '正在注册…' : '注册并开始 30 天试用'}
-                  </button>
                 </div>
               )}
 
-              <div className="mt-4 rounded-[16px] border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-950/60">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-black text-stone-500 dark:text-stone-400">本机机器码</span>
-                  <button
-                    type="button"
-                    onClick={() => void copyMachineId()}
-                    disabled={!machineId && !licenseStatus?.machine_id}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-[10px] bg-white px-2 text-[10px] font-black text-stone-600 ring-1 ring-stone-200 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-900 dark:text-stone-200 dark:ring-stone-700 dark:hover:bg-stone-800"
-                  >
-                    <Copy className="h-3 w-3" />
-                    复制
-                  </button>
+              {canRegisterByEmail && (
+                <div className="mt-4 rounded-[14px] border border-stone-200 bg-stone-50 px-3 py-2 text-center text-[10px] leading-4 text-stone-500 dark:border-stone-800 dark:bg-stone-950/60 dark:text-stone-400">
+                  本机会自动读取已有离线授权并继承原到期时间，无需粘贴 License 或填写机器码。
                 </div>
-                <div className="max-h-16 overflow-auto break-all font-mono text-[10px] leading-4 text-stone-600 dark:text-stone-300">
-                  {machineId || licenseStatus?.machine_id || '读取中...'}
-                </div>
-              </div>
-
-              <label className="mt-4 grid gap-2">
-                <span className="text-[11px] font-black text-stone-500 dark:text-stone-400">{canRegisterTrial ? '已有授权？粘贴 License 内容' : '粘贴 License 内容'}</span>
-                <textarea
-                  value={licenseInputText}
-                  onChange={(event) => setLicenseInputText(event.target.value)}
-                  rows={5}
-                  spellCheck={false}
-                  placeholder="粘贴 .license / .json 文件中的 license JSON"
-                  className="w-full resize-none rounded-[16px] border border-stone-200 bg-stone-50 p-3 font-mono text-xs leading-5 text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100 dark:focus:border-blue-500"
-                />
-              </label>
-
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => void importLicenseText()}
-                  disabled={isLicenseLoading}
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-[14px] bg-blue-600 text-xs font-black text-white transition-colors hover:bg-blue-500 disabled:cursor-wait disabled:bg-stone-300 dark:disabled:bg-stone-700"
-                >
-                  <Check className="h-4 w-4" />
-                  导入文本
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void importLicenseFile()}
-                  disabled={isLicenseLoading}
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-[14px] bg-stone-900 text-xs font-black text-white transition-colors hover:bg-stone-700 disabled:cursor-wait disabled:bg-stone-300 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200 dark:disabled:bg-stone-700"
-                >
-                  <Upload className="h-4 w-4" />
-                  选择文件
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void refreshLicenseStatus(false)}
-                  disabled={isLicenseLoading}
-                  className="col-span-2 inline-flex h-9 items-center justify-center gap-2 rounded-[13px] border border-stone-200 bg-white text-xs font-black text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isLicenseLoading ? 'animate-spin' : ''}`} />
-                  刷新授权状态
-                </button>
-              </div>
+              )}
             </motion.div>
           </motion.div>
         )}
@@ -29167,7 +29144,7 @@ useEffect(() => {
                                     codexStatus={canvasAgent.codexStatus}
                                     codexInstallProgress={canvasAgent.codexInstallProgress}
                                     codexLoginInfo={canvasAgent.codexLoginInfo}
-                                    apiLockedByLicense={isAgentAiLicenseManaged}
+                                    apiLockedByLicense={isAgentAiLicenseManaged && canvasAgent.settings.apiCredentialSource === 'license_managed'}
                                     onSave={canvasAgent.saveSettings}
                                     onListModels={canvasAgent.listOpenAiModels}
                                     onTestConnection={canvasAgent.testAgentApiConnection}
@@ -29263,7 +29240,7 @@ useEffect(() => {
 
                         <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
                           <button onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
-                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 离线授权</span>
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 账户授权</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
@@ -29275,23 +29252,6 @@ useEffect(() => {
                                     <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-black text-stone-700 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200">
                                       {isLicenseLoading ? '读取中' : LICENSE_STATE_LABELS[licenseStatus?.state || 'unlicensed']}
                                     </span>
-                                  </div>
-
-                                  <div className="rounded-[16px] border border-stone-200 bg-white/70 px-3 py-2 dark:border-stone-700 dark:bg-stone-900/35">
-                                    <div className="mb-1 flex items-center justify-between gap-2">
-                                      <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400">机器码</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => void copyMachineId()}
-                                        disabled={!machineId && !licenseStatus?.machine_id}
-                                        className="rounded-[12px] bg-stone-100 px-2 py-1 text-[10px] font-bold text-stone-600 transition-colors hover:bg-stone-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-stone-700 dark:text-stone-200 dark:hover:bg-stone-600"
-                                      >
-                                        复制
-                                      </button>
-                                    </div>
-                                    <div className="break-all font-mono text-[10px] leading-4 text-stone-600 dark:text-stone-300">
-                                      {machineId || licenseStatus?.machine_id || '读取中...'}
-                                    </div>
                                   </div>
 
                                   <div className="grid grid-cols-1 gap-1.5 text-[11px]">
@@ -29347,27 +29307,11 @@ useEffect(() => {
                                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                                     <button
                                       type="button"
-                                      onClick={() => void importLicenseFile()}
-                                      disabled={isLicenseLoading}
-                                      className="rounded-[13px] bg-blue-500 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-blue-600 disabled:cursor-wait disabled:bg-stone-200 disabled:text-stone-400 dark:disabled:bg-stone-700"
-                                    >
-                                      导入授权
-                                    </button>
-                                    <button
-                                      type="button"
                                       onClick={() => void refreshLicenseStatus(false)}
                                       disabled={isLicenseLoading}
                                       className="rounded-[13px] border border-stone-200 bg-white/75 px-3 py-1.5 text-[10px] font-bold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300 dark:hover:bg-stone-800"
                                     >
                                       刷新
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => void removeLicenseFile()}
-                                      disabled={isLicenseLoading}
-                                      className="rounded-[13px] border border-red-100 bg-red-50 px-3 py-1.5 text-[10px] font-bold text-red-600 transition-colors hover:bg-red-100 disabled:cursor-wait disabled:opacity-55 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15"
-                                    >
-                                      移除
                                     </button>
                                   </div>
                                 </div>

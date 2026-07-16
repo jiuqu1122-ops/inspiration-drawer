@@ -165,6 +165,9 @@ pub fn resolve_effective_api_profile_from_content_with_date(
     today: Option<NaiveDate>,
     public_key_b64: Option<&str>,
 ) -> Result<EffectiveApiProfile, String> {
+    if !settings.api_key.trim().is_empty() && !settings.base_url.trim().is_empty() {
+        return Ok(user_settings_to_effective(settings));
+    }
     let Some(content) = license_content.filter(|value| !value.trim().is_empty()) else {
         return Ok(user_settings_to_effective(settings));
     };
@@ -316,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_managed_license_uses_license_api() {
+    fn local_api_is_preferred_over_legacy_managed_license() {
         let license = managed_license("machine-a", "2099-01-01");
         let profile = resolve_effective_api_profile_from_content_with_date(
             Some(&license),
@@ -328,11 +331,28 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(profile.source, "user_settings");
+        assert_eq!(profile.api_key, "sk-byok");
+        assert!(profile.editable);
+    }
+
+    #[test]
+    fn managed_license_is_used_when_no_local_api_is_configured() {
+        let license = managed_license("machine-a", "2099-01-01");
+        let mut local = settings();
+        local.api_key.clear();
+        let profile = resolve_effective_api_profile_from_content_with_date(
+            Some(&license),
+            "machine-a",
+            local,
+            ApiProfileScope::Agent,
+            Some(NaiveDate::from_ymd_opt(2026, 7, 12).unwrap()),
+            Some(&public_key()),
+        )
+        .unwrap();
+
         assert_eq!(profile.source, "license_managed");
-        assert_eq!(profile.gateway_kind, AiGatewayKind::Xais);
         assert_eq!(profile.api_key, "sk-managed");
-        assert_eq!(profile.base_url, "https://api.example.com/v1");
-        assert_eq!(profile.model, "managed-model");
         assert!(!profile.editable);
     }
 
@@ -385,9 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_license_machine_mismatch_does_not_fallback_to_byok() {
+    fn local_api_remains_available_when_legacy_managed_license_is_for_another_machine() {
         let license = managed_license("machine-a", "2099-01-01");
-        let err = resolve_effective_api_profile_from_content_with_date(
+        let profile = resolve_effective_api_profile_from_content_with_date(
             Some(&license),
             "machine-b",
             settings(),
@@ -395,16 +415,15 @@ mod tests {
             Some(NaiveDate::from_ymd_opt(2026, 7, 12).unwrap()),
             Some(&public_key()),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err.contains("不能回退"));
-        assert!(err.contains("本机"));
+        assert_eq!(profile.source, "user_settings");
     }
 
     #[test]
-    fn expired_managed_license_does_not_fallback_to_byok() {
+    fn local_api_remains_available_when_legacy_managed_license_is_expired() {
         let license = managed_license("machine-a", "2025-01-01");
-        let err = resolve_effective_api_profile_from_content_with_date(
+        let profile = resolve_effective_api_profile_from_content_with_date(
             Some(&license),
             "machine-a",
             settings(),
@@ -412,9 +431,8 @@ mod tests {
             Some(NaiveDate::from_ymd_opt(2026, 7, 12).unwrap()),
             Some(&public_key()),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err.contains("过期"));
-        assert!(err.contains("不能回退"));
+        assert_eq!(profile.source, "user_settings");
     }
 }

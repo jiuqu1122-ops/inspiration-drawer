@@ -17,14 +17,41 @@ const CLOUD_API_BASE_URL: &str = "https://api.unmind.art";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TrialRegistrationRequest<'a> {
-    display_name: &'a str,
+struct EmailCodeRequest<'a> {
+    email: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailCodeChallenge {
+    challenge_id: String,
+    expires_in: u64,
+    resend_after: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmailVerificationRequest<'a> {
+    email: &'a str,
+    challenge_id: &'a str,
+    code: &'a str,
     machine_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_license: Option<&'a str>,
     app_version: &'a str,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudLicenseSyncRequest<'a> {
+    license: &'a str,
+    machine_id: &'a str,
+}
+
 #[derive(Deserialize)]
-struct TrialRegistrationResponse {
+struct EmailVerificationResponse {
     license: String,
 }
 
@@ -70,18 +97,48 @@ fn validate_display_name(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-async fn request_trial_license(display_name: &str, machine_id: &str) -> Result<String, String> {
+fn validate_email(value: &str) -> Result<String, String> {
+    let email = value.trim().to_ascii_lowercase();
+    if email.len() > 254
+        || !email.contains('@')
+        || email.starts_with('@')
+        || email.ends_with('@')
+        || email.chars().any(char::is_control)
+    {
+        return Err("invalid_email: 请输入有效的邮箱地址".to_string());
+    }
+    Ok(email)
+}
+
+fn cloud_error(code: &str, fallback: &str) -> String {
+    let localized_message = match code {
+        "email_delivery_unavailable" => "验证码邮件服务尚未配置，请联系管理员",
+        "invalid_email_code" => "验证码错误或已经过期",
+        "email_code_reused" => "验证码已经使用，请重新获取",
+        "automatic_license_unavailable" => "云端授权签发尚未开通，请联系管理员",
+        "display_name_required" => "首次注册需要填写 2 到 32 个字符的用户名",
+        "account_binding_conflict" => "邮箱、旧授权或本机已绑定到其他账户",
+        "device_already_bound" => "本机已绑定到其他邮箱账户",
+        "license_expired" | "expired" => "账户授权已经到期，请联系管理员续期",
+        "license_revoked" => "账户授权已被停用，请联系管理员",
+        "account_disabled" => "当前账户已被停用，请联系管理员",
+        "rate_limit_exceeded" => "请求过于频繁，请稍后再试",
+        _ => fallback,
+    };
+    format!("{code}: {localized_message}")
+}
+
+async fn post_cloud<T: for<'de> Deserialize<'de>>(
+    path: &str,
+    request_body: &impl Serialize,
+) -> Result<T, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
     let response = client
-        .post(format!("{CLOUD_API_BASE_URL}/v1/auth/trial/register"))
-        .json(&TrialRegistrationRequest {
-            display_name,
-            machine_id,
-            app_version: env!("CARGO_PKG_VERSION"),
-        })
+        .post(format!("{CLOUD_API_BASE_URL}{path}"))
+        .json(request_body)
         .send()
         .await
         .map_err(|err| format!("cloud_unavailable: 无法连接授权服务器：{err}"))?;
@@ -95,24 +152,14 @@ async fn request_trial_license(display_name: &str, machine_id: &str) -> Result<S
         let code = parsed
             .as_ref()
             .and_then(|value| value.error.as_deref())
-            .unwrap_or("trial_registration_failed");
+            .unwrap_or("cloud_request_failed");
         let message = parsed
             .as_ref()
             .and_then(|value| value.message.as_deref())
-            .unwrap_or("自动试用注册失败");
-        let localized_message = match code {
-            "automatic_trial_unavailable" => "自动试用尚未开通，请联系管理员",
-            "existing_license_requires_import" => "此设备已有授权记录，请导入原授权或联系管理员续期",
-            "license_expired" | "expired" => "本机试用已经到期，请联系管理员续期",
-            "license_revoked" => "本机授权已被停用，请联系管理员",
-            "account_disabled" => "当前账户已被停用，请联系管理员",
-            "rate_limit_exceeded" => "请求过于频繁，请稍后再试",
-            _ => message,
-        };
-        return Err(format!("{code}: {localized_message}"));
+            .unwrap_or("云端请求失败");
+        return Err(cloud_error(code, message));
     }
-    serde_json::from_str::<TrialRegistrationResponse>(&body)
-        .map(|value| value.license)
+    serde_json::from_str::<T>(&body)
         .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
 }
 
@@ -146,23 +193,57 @@ pub fn get_license_status(app_handle: tauri::AppHandle) -> Result<LicenseStatus,
 }
 
 #[tauri::command]
-pub async fn register_trial(
-    app_handle: tauri::AppHandle,
-    display_name: String,
-) -> Result<LicenseStatus, String> {
-    let display_name = validate_display_name(&display_name)?;
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
-    let current = read_license_content(&app_handle)?;
-    let current_status = status_from_content(current.as_deref(), machine_id.clone());
-    if current_status.valid {
-        return Ok(current_status);
-    }
-    let license_content = request_trial_license(&display_name, &machine_id).await?;
-    verify_and_save_cloud_license(&app_handle, machine_id, license_content)
+pub async fn request_email_verification(email: String) -> Result<EmailCodeChallenge, String> {
+    let email = validate_email(&email)?;
+    post_cloud(
+        "/v1/auth/email/send-code",
+        &EmailCodeRequest { email: &email },
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn sync_server_license(
+pub async fn verify_email_registration(
+    app_handle: tauri::AppHandle,
+    email: String,
+    challenge_id: String,
+    code: String,
+    display_name: Option<String>,
+) -> Result<LicenseStatus, String> {
+    let email = validate_email(&email)?;
+    let display_name = match display_name {
+        Some(value) if !value.trim().is_empty() => Some(validate_display_name(&value)?),
+        _ => None,
+    };
+    let code = code.trim();
+    if code.len() != 6 || !code.chars().all(|character| character.is_ascii_digit()) {
+        return Err("invalid_email_code: 请输入 6 位数字验证码".to_string());
+    }
+    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let current = read_license_content(&app_handle)?;
+    let legacy_license = current.as_deref().filter(|content| {
+        decode_license_payload_unverified(content).is_some_and(|payload| {
+            payload.license_id.is_none() && payload.machine_id.trim() == machine_id
+        })
+    });
+    let response = post_cloud::<EmailVerificationResponse>(
+        "/v1/auth/email/verify",
+        &EmailVerificationRequest {
+            email: &email,
+            challenge_id: challenge_id.trim(),
+            code,
+            machine_id: &machine_id,
+            display_name: display_name.as_deref(),
+            legacy_license,
+            app_version: env!("CARGO_PKG_VERSION"),
+        },
+    )
+    .await?;
+    verify_and_save_cloud_license(&app_handle, machine_id, response.license)
+}
+
+#[tauri::command]
+pub async fn sync_email_license(
     app_handle: tauri::AppHandle,
 ) -> Result<Option<LicenseStatus>, String> {
     let Some(current) = read_license_content(&app_handle)? else {
@@ -171,13 +252,37 @@ pub async fn sync_server_license(
     let Some(payload) = decode_license_payload_unverified(&current) else {
         return Ok(None);
     };
-    if !matches!(payload.license_id.as_deref(), Some(value) if value.starts_with("trial_")) {
+    if payload.license_id.is_none() {
         return Ok(None);
     }
 
     let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
-    let license_content = request_trial_license(&payload.customer, &machine_id).await?;
-    verify_and_save_cloud_license(&app_handle, machine_id, license_content).map(Some)
+    let response = post_cloud::<EmailVerificationResponse>(
+        "/v1/auth/email/sync",
+        &CloudLicenseSyncRequest {
+            license: &current,
+            machine_id: &machine_id,
+        },
+    )
+    .await;
+    match response {
+        Ok(response) => {
+            verify_and_save_cloud_license(&app_handle, machine_id, response.license).map(Some)
+        }
+        Err(error)
+            if error.starts_with("account_disabled:")
+                || error.starts_with("license_expired:")
+                || error.starts_with("license_revoked:") =>
+        {
+            let path = license_path(&app_handle)?;
+            if path.exists() {
+                fs::remove_file(path)
+                    .map_err(|err| format!("io_error: 无法移除失效授权文件：{err}"))?;
+            }
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[tauri::command]
@@ -240,7 +345,7 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_display_name;
+    use super::{validate_display_name, validate_email};
 
     #[test]
     fn validates_trial_display_names() {
@@ -250,5 +355,14 @@ mod tests {
         );
         assert!(validate_display_name("a").is_err());
         assert!(validate_display_name("a\nb").is_err());
+    }
+
+    #[test]
+    fn validates_registration_emails() {
+        assert_eq!(
+            validate_email(" Designer@Example.COM ").unwrap(),
+            "designer@example.com"
+        );
+        assert!(validate_email("not-an-email").is_err());
     }
 }
