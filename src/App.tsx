@@ -27715,7 +27715,7 @@ useEffect(() => {
                       inputMode="numeric"
                       autoComplete="one-time-code"
                       placeholder={emailChallengeId ? '000000' : '发送验证码后在这里填写'}
-                      className="h-12 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-center font-mono text-xl font-black tracking-[0.28em] text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-400 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100 dark:disabled:bg-stone-900 dark:disabled:text-stone-600"
+                      className="h-11 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-sm font-bold text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-400 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100 dark:disabled:bg-stone-900 dark:disabled:text-stone-600"
                     />
                   </label>
 
