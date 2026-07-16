@@ -925,6 +925,7 @@ const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
 const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
 const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
 const CANVAS_AI_OUTPUT_CACHE_STALE_MS = 75_000;
+const GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS = [1_200, 3_200];
 const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 1;
 const CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE = 3;
 const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 90;
@@ -8633,11 +8634,31 @@ function MainApp() {
         options?.onOutputCachePatch?.(item.id, Array.from(sourceSet), patch);
       };
 
-      invoke<string>('cache_web_image', {
-        url: source,
-        name: item.name || item.content || AI_GENERATED_FOLDER_NAME,
-        dir: latestCacheDir || undefined,
-      })
+      const cacheGeneratedImage = async () => {
+        let lastError: unknown = new Error('网页图片缓存没有返回文件路径');
+        const retryDelays = /^https?:\/\//i.test(source)
+          ? GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS
+          : [];
+        for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+          try {
+            const cachedPath = await invoke<string>('cache_web_image', {
+              url: source,
+              name: item.name || item.content || AI_GENERATED_FOLDER_NAME,
+              dir: latestCacheDir || undefined,
+            });
+            if (cachedPath) return cachedPath;
+            lastError = new Error('网页图片缓存没有返回文件路径');
+          } catch (err) {
+            lastError = err;
+          }
+          if (attempt < retryDelays.length) {
+            await new Promise<void>(resolve => window.setTimeout(resolve, retryDelays[attempt]));
+          }
+        }
+        throw lastError;
+      };
+
+      cacheGeneratedImage()
         .then((cachedPath) => {
           if (!cachedPath) {
             generatedImageCachePendingIdsRef.current.delete(item.id);
@@ -10918,7 +10939,7 @@ function MainApp() {
   );
 
   const getCanvasAiOutputThumbnailSource = (output?: CanvasAiGeneratedOutput | null) => (
-    output?.thumbnail || (output?.cacheStatus === 'pending' ? '' : getCanvasAiOutputDisplaySource(output))
+    output?.thumbnail || getCanvasAiOutputDisplaySource(output)
   );
 
   const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (

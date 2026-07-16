@@ -669,9 +669,43 @@ fn download_url_to_file_with_timeout(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<Option<String>, String> {
-    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let first_result = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)
+        .and_then(|client| download_url_to_file_with_client(&client, url, out_path));
+    match first_result {
+        Ok(content_type) => Ok(content_type),
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+                && effective_proxy(Some(app_handle), explicit_proxy).is_some();
+            if !can_retry_direct {
+                return Err(first_err);
+            }
+
+            let _ = fs::remove_file(out_path);
+            let _ = fs::remove_file(out_path.with_extension("download.tmp"));
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            download_url_to_file_with_client(&direct_client, url, out_path).map_err(|second_err| {
+                format!(
+                    "{}；无代理直连重试也失败：{}",
+                    first_err, second_err
+                )
+            })
+        }
+    }
+}
+
+fn download_url_to_file_with_client(
+    client: &Client,
+    url: &str,
+    out_path: &PathBuf,
+) -> Result<Option<String>, String> {
     let mut response = client
         .get(url)
+        .header(
+            reqwest::header::ACCEPT,
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,video/*,*/*;q=0.8",
+        )
         .send()
         .map_err(|e| format!("下载请求失败：{}", e))?;
 
@@ -685,11 +719,16 @@ fn download_url_to_file_with_timeout(
         .map(|value| value.to_string());
 
     let tmp_path = out_path.with_extension("download.tmp");
-    {
+    let write_result = (|| -> Result<(), String> {
         let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
         response
             .copy_to(&mut file)
             .map_err(|e| format!("写入下载文件失败：{}", e))?;
+        Ok(())
+    })();
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
     }
 
     fs::rename(&tmp_path, out_path)
