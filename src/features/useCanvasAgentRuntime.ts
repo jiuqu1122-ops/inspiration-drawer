@@ -286,14 +286,16 @@ const resolveAgentPlanningAvailability = (
 
   const hasBaseUrl = !!settings.apiBaseUrl.trim();
   const hasModel = !!settings.apiModel.trim();
-  const canPlanWorkflow = settings.hasApiKey && hasBaseUrl && hasModel;
+  const isCloudWallet = settings.apiCredentialSource === 'cloud_wallet'
+    || settings.apiProvider === 'unmind-wallet';
+  const canPlanWorkflow = (settings.hasApiKey || isCloudWallet) && hasBaseUrl && hasModel;
   return {
     provider: settings.provider,
     modelLabel: settings.apiModel.trim() || 'API 模型',
     canPlanWorkflow,
     reason: canPlanWorkflow
       ? undefined
-      : !settings.hasApiKey
+      : !settings.hasApiKey && !isCloudWallet
         ? '未配置 Agent API Key'
         : !hasBaseUrl
           ? '未配置 Agent API Base URL'
@@ -2484,6 +2486,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       codexThreadId: undefined,
       codexThreadKey: undefined,
     })));
+    if (saved.apiCredentialSource === 'cloud_wallet' || saved.apiProvider === 'unmind-wallet') {
+      return saved;
+    }
     const mode = saved.provider === 'codex' ? 'chatgpt' : 'api';
     try {
       let status = await invoke<CodexRuntimeStatus>('agent_codex_status');

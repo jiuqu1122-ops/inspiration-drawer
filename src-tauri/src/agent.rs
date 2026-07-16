@@ -97,11 +97,11 @@ impl Default for AgentSettingsStored {
     fn default() -> Self {
         Self {
             provider: "openai-compatible".to_string(),
-            api_gateway_kind: Some(AiGatewayKind::OpenAiCompatible),
-            api_provider: "openai-compatible".to_string(),
-            api_base_url: "https://api.openai.com/v1".to_string(),
+            api_gateway_kind: Some(AiGatewayKind::Custom),
+            api_provider: "unmind-wallet".to_string(),
+            api_base_url: "https://api.unmind.art/v1".to_string(),
             api_key: String::new(),
-            api_model: "gpt-4o-mini".to_string(),
+            api_model: "unmind-agent".to_string(),
             api_headers: BTreeMap::new(),
             codex_executable: "codex".to_string(),
             codex_model: String::new(),
@@ -207,6 +207,20 @@ fn public_settings_from_stored(
             public.api_key_last4 = None;
             public.api_error = Some(error);
         }
+    }
+    if normalize_provider(&settings.provider) == "openai-compatible"
+        && stored_api_provider(settings).eq_ignore_ascii_case("unmind-wallet")
+    {
+        public.api_gateway_kind = AiGatewayKind::Custom;
+        public.api_provider = "unmind-wallet".to_string();
+        public.api_base_url = "https://api.unmind.art/v1".to_string();
+        public.api_model = "unmind-agent".to_string();
+        public.api_headers.clear();
+        public.has_api_key = true;
+        public.api_editable = false;
+        public.api_credential_source = "cloud_wallet".to_string();
+        public.api_key_last4 = None;
+        public.api_error = None;
     }
     public
 }
@@ -670,7 +684,17 @@ fn input_changes_stored_api(current: &AgentSettingsStored, input: &AgentSettings
 
 #[tauri::command]
 pub fn agent_load_settings(app_handle: tauri::AppHandle) -> AgentSettingsPublic {
-    let settings = read_settings(&app_handle);
+    let mut settings = read_settings(&app_handle);
+    if normalize_provider(&settings.provider) == "openai-compatible"
+        && !stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet")
+    {
+        settings.api_gateway_kind = Some(AiGatewayKind::Custom);
+        settings.api_provider = "unmind-wallet".to_string();
+        settings.api_base_url = "https://api.unmind.art/v1".to_string();
+        settings.api_model = "unmind-agent".to_string();
+        settings.api_headers.clear();
+        let _ = write_settings(&app_handle, &settings);
+    }
     public_settings_from_stored(&app_handle, &settings)
 }
 
@@ -967,6 +991,9 @@ pub async fn agent_openai_chat(
     request: AgentOpenAiChatRequest,
 ) -> Result<AgentOpenAiChatResult, String> {
     let settings = read_settings(&app_handle);
+    if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
+        return agent_wallet_chat(app_handle, request).await;
+    }
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     let cancellations = state.openai_cancellations.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1102,6 +1129,80 @@ pub async fn agent_openai_chat(
     })
     .await
     .map_err(|error| format!("Agent API 后台任务失败：{}", error))?
+}
+
+async fn agent_wallet_chat(
+    app_handle: tauri::AppHandle,
+    request: AgentOpenAiChatRequest,
+) -> Result<AgentOpenAiChatResult, String> {
+    let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5 * 60))
+        .build()
+        .map_err(|error| format!("无法初始化钱包 Agent 连接：{error}"))?;
+    let response = client
+        .post("https://api.unmind.art/v1/ai/chat/completions")
+        .bearer_auth(access_token)
+        .json(&json!({
+            "clientRequestId": request.request_id,
+            "messages": request.messages,
+            "tools": request.tools,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("钱包 Agent 请求失败：{error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("读取钱包 Agent 响应失败：{error}"))?;
+    if !status.is_success() {
+        let message = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| preview_response_text(&text));
+        return Err(format!("钱包 Agent HTTP {status}：{message}"));
+    }
+
+    let mut content = String::new();
+    let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
+    let mut finish_reason = None;
+    parse_openai_buffered_text(
+        &text,
+        &mut content,
+        &mut tool_calls,
+        &mut finish_reason,
+        &app_handle,
+        &request.request_id,
+    )?;
+    let tool_calls = tool_calls
+        .into_values()
+        .map(|value| OpenAiToolCallResult {
+            id: if value.id.is_empty() {
+                format!("call_{}", uuid_like_id())
+            } else {
+                value.id
+            },
+            name: value.name,
+            arguments: value.arguments,
+        })
+        .collect();
+    let result = AgentOpenAiChatResult {
+        request_id: request.request_id.clone(),
+        content,
+        tool_calls,
+        finish_reason,
+    };
+    let _ = app_handle.emit(
+        "agent-openai-stream",
+        json!({ "requestId": request.request_id, "kind": "completed" }),
+    );
+    Ok(result)
 }
 
 fn uuid_like_id() -> String {

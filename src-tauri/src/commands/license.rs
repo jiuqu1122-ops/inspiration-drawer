@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,13 @@ use crate::license::{
 
 const LICENSE_FILE_NAME: &str = "license.json";
 const CLOUD_API_BASE_URL: &str = "https://api.unmind.art";
+
+struct CachedCloudToken {
+    value: String,
+    expires_at: Instant,
+}
+
+static CLOUD_TOKEN_CACHE: OnceLock<Mutex<Option<CachedCloudToken>>> = OnceLock::new();
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,8 +59,61 @@ struct CloudLicenseSyncRequest<'a> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EmailVerificationResponse {
     license: String,
+    access_token: String,
+    account: CloudAccountResponse,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudAccountResponse {
+    user: CloudUserResponse,
+    wallet: Option<CloudWalletSummary>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudUserResponse {
+    email: Option<String>,
+    display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudWalletSummary {
+    available_credits: String,
+    reserved_credits: String,
+    lifetime_granted: String,
+    lifetime_consumed: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccountSummary {
+    email: Option<String>,
+    display_name: Option<String>,
+    wallet: CloudWalletSummary,
+}
+
+#[derive(Serialize)]
+struct CreditRedemptionRequest<'a> {
+    code: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreditRedemptionResponse {
+    redeemed_credits: String,
+    wallet: CloudWalletSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditRedemptionResult {
+    redeemed_credits: String,
+    account: CloudAccountSummary,
 }
 
 #[derive(Deserialize)]
@@ -161,6 +222,101 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
     }
     serde_json::from_str::<T>(&body)
         .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
+}
+
+async fn post_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
+    path: &str,
+    access_token: &str,
+    request_body: &impl Serialize,
+) -> Result<T, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
+    let response = client
+        .post(format!("{CLOUD_API_BASE_URL}{path}"))
+        .bearer_auth(access_token)
+        .json(request_body)
+        .send()
+        .await
+        .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    if !status.is_success() {
+        let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let code = parsed
+            .as_ref()
+            .and_then(|value| value.error.as_deref())
+            .unwrap_or("cloud_request_failed");
+        let message = parsed
+            .as_ref()
+            .and_then(|value| value.message.as_deref())
+            .unwrap_or("云端请求失败");
+        return Err(cloud_error(code, message));
+    }
+    serde_json::from_str::<T>(&body)
+        .map_err(|_| "cloud_invalid_response: 额度服务器返回格式无效".to_string())
+}
+
+fn summarize_cloud_account(
+    response: &EmailVerificationResponse,
+) -> Result<CloudAccountSummary, String> {
+    let wallet = response
+        .account
+        .wallet
+        .clone()
+        .ok_or_else(|| "cloud_invalid_response: 当前账号没有钱包".to_string())?;
+    Ok(CloudAccountSummary {
+        email: response.account.user.email.clone(),
+        display_name: response.account.user.display_name.clone(),
+        wallet,
+    })
+}
+
+async fn sync_cloud_account(
+    app_handle: &tauri::AppHandle,
+) -> Result<EmailVerificationResponse, String> {
+    let current = read_license_content(app_handle)?
+        .ok_or_else(|| "license_missing: 请先完成邮箱注册或登录".to_string())?;
+    let payload = decode_license_payload_unverified(&current)
+        .ok_or_else(|| "malformed_license: 本地授权格式无效".to_string())?;
+    if payload.license_id.is_none() {
+        return Err("cloud_account_required: 请先完成邮箱注册或登录".to_string());
+    }
+    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let response = post_cloud::<EmailVerificationResponse>(
+        "/v1/auth/email/sync",
+        &CloudLicenseSyncRequest {
+            license: &current,
+            machine_id: &machine_id,
+        },
+    )
+    .await?;
+    verify_and_save_cloud_license(app_handle, machine_id, response.license.clone())?;
+    Ok(response)
+}
+
+pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<String, String> {
+    let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard
+            .as_ref()
+            .filter(|cached| cached.expires_at > Instant::now())
+        {
+            return Ok(cached.value.clone());
+        }
+    }
+    let access_token = sync_cloud_account(app_handle).await?.access_token;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedCloudToken {
+            value: access_token.clone(),
+            expires_at: Instant::now() + Duration::from_secs(12 * 60),
+        });
+    }
+    Ok(access_token)
 }
 
 fn verify_and_save_cloud_license(
@@ -283,6 +439,38 @@ pub async fn sync_email_license(
         }
         Err(error) => Err(error),
     }
+}
+
+#[tauri::command]
+pub async fn get_cloud_account(
+    app_handle: tauri::AppHandle,
+) -> Result<CloudAccountSummary, String> {
+    let response = sync_cloud_account(&app_handle).await?;
+    summarize_cloud_account(&response)
+}
+
+#[tauri::command]
+pub async fn redeem_credit_code(
+    app_handle: tauri::AppHandle,
+    code: String,
+) -> Result<CreditRedemptionResult, String> {
+    let code = code.trim();
+    if code.len() < 10 || code.len() > 64 {
+        return Err("invalid_code: 兑换码格式不正确".to_string());
+    }
+    let synced = sync_cloud_account(&app_handle).await?;
+    let redeemed = post_cloud_with_bearer::<CreditRedemptionResponse>(
+        "/v1/wallet/redeem",
+        &synced.access_token,
+        &CreditRedemptionRequest { code },
+    )
+    .await?;
+    let mut account = summarize_cloud_account(&synced)?;
+    account.wallet = redeemed.wallet;
+    Ok(CreditRedemptionResult {
+        redeemed_credits: redeemed.redeemed_credits,
+        account,
+    })
 }
 
 #[tauri::command]

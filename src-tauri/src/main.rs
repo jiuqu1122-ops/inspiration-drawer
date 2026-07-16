@@ -15689,6 +15689,8 @@ fn main() {
             commands::license::request_email_verification,
             commands::license::verify_email_registration,
             commands::license::sync_email_license,
+            commands::license::get_cloud_account,
+            commands::license::redeem_credit_code,
             commands::license::import_license,
             commands::license::remove_license,
             commands::license::check_feature,

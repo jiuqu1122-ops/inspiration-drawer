@@ -577,6 +577,24 @@ type LicenseStatus = {
   error_code?: LicenseErrorCode | null;
 };
 
+type CloudWalletSummary = {
+  availableCredits: string;
+  reservedCredits: string;
+  lifetimeGranted: string;
+  lifetimeConsumed: string;
+};
+
+type CloudAccountSummary = {
+  email?: string | null;
+  displayName?: string | null;
+  wallet: CloudWalletSummary;
+};
+
+type CreditRedemptionResult = {
+  redeemedCredits: string;
+  account: CloudAccountSummary;
+};
+
 const LICENSE_STATE_LABELS: Record<LicenseState, string> = {
   unlicensed: '未授权',
   trial: '高级版',
@@ -595,13 +613,6 @@ type EmailCodeChallenge = {
   challengeId: string;
   expiresIn: number;
   resendAfter: number;
-};
-
-const LICENSE_FEATURE_LABELS: Record<string, string> = {
-  hd_export: '高清导出',
-  batch_render: '批量处理',
-  commercial_export: '商用导出',
-  '*': '全部功能',
 };
 
 const formatLicenseCommandError = (err: unknown) => (
@@ -4626,6 +4637,7 @@ function MainApp() {
         isPointerInsideDrawerRef.current = isCursorInside;
         if (
           !isCursorInside
+          && !licenseGateActiveRef.current
           && !isPinnedRef.current
           && !isCanvasModeRef.current
           && !showLaunchIntroRef.current
@@ -5456,6 +5468,11 @@ function MainApp() {
   const [emailRegistrationError, setEmailRegistrationError] = useState('');
   const [isEmailCodeSending, setIsEmailCodeSending] = useState(false);
   const [isEmailVerifying, setIsEmailVerifying] = useState(false);
+  const [cloudAccount, setCloudAccount] = useState<CloudAccountSummary | null>(null);
+  const [isCloudAccountLoading, setIsCloudAccountLoading] = useState(false);
+  const [creditRedemptionCode, setCreditRedemptionCode] = useState('');
+  const [creditRedemptionError, setCreditRedemptionError] = useState('');
+  const [isRedeemingCredits, setIsRedeemingCredits] = useState(false);
   const licenseGateActiveRef = useRef(true);
 
   const [shortcut, setShortcut] = useState('Alt+G');
@@ -5604,6 +5621,44 @@ function MainApp() {
     }
   };
 
+  const refreshCloudAccount = async (silent = false) => {
+    setIsCloudAccountLoading(true);
+    try {
+      const account = await invoke<CloudAccountSummary>('get_cloud_account');
+      setCloudAccount(account);
+      await refreshLicenseStatus(true);
+      if (!silent) showToast('账户余额已刷新');
+      return account;
+    } catch (err) {
+      console.error('读取云端账户失败:', err);
+      if (!silent) showToast(formatLicenseCommandError(err));
+      throw err;
+    } finally {
+      setIsCloudAccountLoading(false);
+    }
+  };
+
+  const redeemCloudCredits = async () => {
+    const code = creditRedemptionCode.trim();
+    if (code.length < 10) {
+      setCreditRedemptionError('请输入有效的额度兑换码');
+      return;
+    }
+    try {
+      setIsRedeemingCredits(true);
+      setCreditRedemptionError('');
+      const result = await invoke<CreditRedemptionResult>('redeem_credit_code', { code });
+      setCloudAccount(result.account);
+      setCreditRedemptionCode('');
+      showToast(`兑换成功，已增加 ${result.redeemedCredits} 额度`);
+    } catch (err) {
+      console.error('兑换额度失败:', err);
+      setCreditRedemptionError(formatLicenseCommandError(err));
+    } finally {
+      setIsRedeemingCredits(false);
+    }
+  };
+
   const verifyEmailAccount = async () => {
     const email = registrationEmail.trim().toLowerCase();
     const displayName = registrationDisplayName.trim();
@@ -5633,6 +5688,7 @@ function MainApp() {
       setLicenseStatus(nextStatus);
       setEmailVerificationCode('');
       setEmailChallengeId('');
+      await refreshCloudAccount(true);
       showToast('邮箱验证成功，高级版授权已同步');
     } catch (err) {
       console.error('邮箱注册或登录失败:', err);
@@ -6082,6 +6138,10 @@ function MainApp() {
       : canvasAiXaisBalance.status === 'error'
         ? canvasAiXaisBalance.message || '查询余额失败'
         : '点击查询当前 Gateway 余额';
+  const localXaisApiKey = (canvasAiProvider === 'xais-chat'
+    ? canvasAiApiKey
+    : getStoredCanvasAiApiKey('xais-chat')).trim();
+  const hasLocalXaisAccount = localXaisApiKey.length > 0;
 
   useEffect(() => {
     setCanvasAiXaisBalance(prev => (
@@ -6288,6 +6348,40 @@ function MainApp() {
     return `硅基流动 ${aiApiModel || '视觉模型'}`;
   };
 
+  const checkLocalXaisBalance = async () => {
+    if (!localXaisApiKey) {
+      setCanvasAiXaisBalance({ status: 'idle' });
+      return;
+    }
+    setCanvasAiXaisBalance({ status: 'loading' });
+    try {
+      const result = await invoke<{ available: boolean; display: string; expiresAt?: number | null; unsupportedReason?: string | null }>('query_canvas_api_balance', {
+        endpoint: getStoredCanvasAiEndpoint('xais-chat'),
+        apiKey: localXaisApiKey,
+        gatewayKind: 'xais',
+        provider: getStoredCanvasAiApiProvider('xais-chat') || 'xais-chat',
+        model: '',
+        headers: parseCanvasAiHeaders(getStoredCanvasAiHeadersText('xais-chat')),
+      });
+      const message = result.available
+        ? result.display
+        : result.unsupportedReason || result.display || '该 XAIS 账号未提供余额接口';
+      setCanvasAiXaisBalance({ status: 'success', message, checkedAt: Date.now() });
+      return message;
+    } catch (err: any) {
+      const message = String(err?.message || err || '查询 XAIS 余额失败');
+      setCanvasAiXaisBalance({ status: 'error', message });
+      throw err;
+    }
+  };
+
+  const refreshVisibleBalances = async () => {
+    const tasks: Promise<unknown>[] = [refreshCloudAccount(true)];
+    if (hasLocalXaisAccount) tasks.push(checkLocalXaisBalance());
+    await Promise.allSettled(tasks);
+    showToast('额度信息已刷新');
+  };
+
 
   useEffect(() => {
     // 旧版 edge 会写 drawer_startup_preview_pending_at 来触发启动预览。
@@ -6313,11 +6407,7 @@ function MainApp() {
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
     invoke('set_topmost', { topmost: true }).catch(()=>{});
     void refreshLicenseStatus(true);
-    void invoke<LicenseStatus | null>('sync_email_license')
-      .then((nextStatus) => {
-        if (!nextStatus) return;
-        setLicenseStatus(nextStatus);
-      })
+    void refreshCloudAccount(true)
       .catch((err) => {
         console.warn('云端授权同步失败，将按当前本地授权状态继续:', err);
         void refreshLicenseStatus(true);
@@ -6879,7 +6969,7 @@ function MainApp() {
       setShowTextInput(false);
       setIsSearchActive(false);
       setShowSettings(true);
-      setActiveSettingCategory('ai');
+      setActiveSettingCategory('ai-overview');
       setShowFolderModal(false);
       setShowMoveFolderModal(false);
       setIsOpen(true);
@@ -9167,6 +9257,7 @@ function MainApp() {
             !isPointerInsideDrawerRef.current &&
             !isPanelInteractionHeld &&
             !drawerAutoCloseBlockRef.current &&
+            !licenseGateActiveRef.current &&
             !isTextEntryActive()
           ) {
             setIsOpen(false);
@@ -9184,8 +9275,9 @@ function MainApp() {
 
     listen('drawer-closed', () => {
       // 启动欢迎/更新日志弹窗还在时，不响应自动关闭事件。
-      if (showLaunchIntroRef.current || isSplashVisibleRef.current || showUpdateLogRef.current) {
+      if (licenseGateActiveRef.current || showLaunchIntroRef.current || isSplashVisibleRef.current || showUpdateLogRef.current) {
         setIsOpen(true);
+        setDrawerState('open');
         return;
       }
 
@@ -20630,7 +20722,7 @@ function MainApp() {
     listen('native-drag-leave', () => {
       setExternalDragActive(false);
       if (isCanvasModeRef.current) return;
-      if (!isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
+      if (!licenseGateActiveRef.current && !isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
     }).then(f => unlistenNativeDragLeave = f);
 
     listen('native-drop', (event: any) => {
@@ -20717,7 +20809,7 @@ function MainApp() {
       } else if (type === 'leave') {
         setExternalDragActive(false);
         if (isCanvasModeRef.current) return;
-        if (!isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
+        if (!licenseGateActiveRef.current && !isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
       } else if (type === 'drop') {
         setExternalDragActive(false);
         if (stateRef.current.isAntiTouchMode) return;
@@ -23274,6 +23366,7 @@ useEffect(() => {
   }, [canvasWorkflowSaveDraft]);
 
   const shouldBlockAutoClose = () => (
+    licenseGateActiveRef.current ||
     Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
@@ -23297,6 +23390,7 @@ useEffect(() => {
   );
 
   const shouldBlockIdleAutoClose = () => (
+    licenseGateActiveRef.current ||
     Date.now() < drawerPanelInteractionHoldUntilRef.current ||
     isDraggingTitleRef.current ||
     startupAutoCloseSuppressedRef.current ||
@@ -26336,6 +26430,26 @@ useEffect(() => {
     onNotice: showToast,
   });
 
+  const switchAgentFundingSource = async (source: 'wallet' | 'codex') => {
+    try {
+      await canvasAgent.saveSettings({
+        ...canvasAgent.settings,
+        provider: source === 'codex' ? 'codex' : 'openai-compatible',
+        ...(source === 'wallet' ? {
+          apiGatewayKind: 'custom' as const,
+          apiProvider: 'unmind-wallet',
+          apiBaseUrl: 'https://api.unmind.art/v1',
+          apiModel: 'unmind-agent',
+          apiHeaders: {},
+          clearApiKey: true,
+        } : {}),
+      });
+      showToast(source === 'codex' ? 'Agent 已切换到 GPT 登录' : 'Agent 已切换到授权钱包额度');
+    } catch (err) {
+      showToast(String(err));
+    }
+  };
+
   const setCanvasTextAgentRunning = (canvasId: string, running: boolean) => {
     setCanvasTextAgentRunningIds(prev => {
       const exists = prev.includes(canvasId);
@@ -27006,6 +27120,25 @@ useEffect(() => {
   useEffect(() => {
     if (!isLicenseGateActive) return;
 
+    isPointerInsideDrawerRef.current = true;
+    startupAutoCloseSuppressedRef.current = true;
+    setIsOpen(true);
+    setDrawerState('open');
+    clearIdleAutoClose();
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    if (startupAutoCloseTimerRef.current) {
+      clearTimeout(startupAutoCloseTimerRef.current);
+      startupAutoCloseTimerRef.current = null;
+    }
+    void invoke('open_drawer', {
+      width: drawerWidthRef.current,
+      height: drawerHeightRef.current,
+      mode: triggerModeRef.current,
+    }).catch(() => {});
+
     const blockWhenOutsideLicenseGate = (event: Event) => {
       const target = event.target;
       if (target instanceof Element && target.closest('[data-license-gate="true"]')) return;
@@ -27630,9 +27763,11 @@ useEffect(() => {
             exit={{ opacity: 0 }}
             transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
             className="absolute inset-0 z-[100000] flex items-center justify-center rounded-[30px] bg-stone-100/78 p-5 text-stone-900 shadow-inner backdrop-blur-md dark:bg-stone-950/74 dark:text-stone-50 pointer-events-auto"
-            onPointerDown={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerDown={(event) => { keepDrawerOpenByPointer(); event.stopPropagation(); }}
+            onMouseDown={(event) => { keepDrawerOpenByPointer(); event.stopPropagation(); }}
+            onClick={(event) => { keepDrawerOpenByPointer(); event.stopPropagation(); }}
           >
             <motion.div
               initial={{ scale: 0.96, y: 10 }}
@@ -28911,10 +29046,97 @@ useEffect(() => {
                         </div>
 
                         <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'ai' ? '' : 'ai')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
-                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Sparkles className="w-4 h-4 text-amber-500"/> AI 设置</span>
-                            <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'ai' ? 'rotate-180' : ''}`} />
+                          <button onClick={() => setActiveSettingCategory(prev => prev === 'ai-overview' ? '' : 'ai-overview')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Sparkles className="w-4 h-4 text-blue-500"/> AI 与额度</span>
+                            <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'ai-overview' ? 'rotate-180' : ''}`} />
                           </button>
+                          <AnimatePresence>
+                            {activeSettingCategory === 'ai-overview' && (
+                              <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
+                                <div className="flex flex-col gap-2.5 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
+                                  <div className="grid gap-2 sm:grid-cols-2">
+                                    <div className="rounded-[16px] border border-blue-100 bg-blue-50/60 px-3 py-2.5 dark:border-blue-400/20 dark:bg-blue-400/10">
+                                      <div className="text-[10px] font-black text-blue-700 dark:text-blue-200">授权钱包余额</div>
+                                      <div className="mt-1 text-xl font-black tabular-nums text-stone-900 dark:text-white">
+                                        {isCloudAccountLoading ? '…' : cloudAccount?.wallet.availableCredits ?? '—'}
+                                      </div>
+                                      <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">
+                                        {cloudAccount?.displayName || licenseStatus?.customer || '邮箱账号钱包'}
+                                      </div>
+                                    </div>
+                                    {hasLocalXaisAccount && (
+                                      <div className="rounded-[16px] border border-cyan-100 bg-cyan-50/60 px-3 py-2.5 dark:border-cyan-400/20 dark:bg-cyan-400/10">
+                                        <div className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">本地 XAIS 余额</div>
+                                        <div className={`mt-1 min-h-7 text-[12px] font-black leading-5 ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-stone-900 dark:text-white'}`}>
+                                          {canvasAiXaisBalanceText}
+                                        </div>
+                                        <div className="mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">仅在本机查询，密钥不会上传</div>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => void refreshVisibleBalances()}
+                                    disabled={isCloudAccountLoading || canvasAiXaisBalance.status === 'loading'}
+                                    className="flex h-8 items-center justify-center gap-1.5 rounded-[13px] border border-blue-100 bg-white/80 text-[10px] font-black text-blue-700 transition hover:bg-blue-50 disabled:cursor-wait disabled:opacity-55 dark:border-blue-400/20 dark:bg-stone-950/30 dark:text-blue-200 dark:hover:bg-blue-400/10"
+                                  >
+                                    <RefreshCw className={`h-3.5 w-3.5 ${(isCloudAccountLoading || canvasAiXaisBalance.status === 'loading') ? 'animate-spin' : ''}`} />
+                                    查询全部额度
+                                  </button>
+
+                                  <div className="grid gap-2 rounded-[18px] border border-stone-200/80 bg-white/70 px-3 py-2.5 dark:border-stone-700 dark:bg-stone-950/30">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-[11px] font-black text-stone-700 dark:text-stone-200">Agent 使用方式</span>
+                                      <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${canvasAgent.settings.provider === 'codex' ? 'bg-violet-100 text-violet-700 dark:bg-violet-400/15 dark:text-violet-200' : 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200'}`}>
+                                        {canvasAgent.settings.provider === 'codex' ? 'GPT 登录' : '钱包额度'}
+                                      </span>
+                                    </div>
+                                    <select
+                                      value={canvasAgent.settings.provider === 'codex' ? 'codex' : 'wallet'}
+                                      onChange={event => void switchAgentFundingSource(event.target.value === 'codex' ? 'codex' : 'wallet')}
+                                      disabled={canvasAgent.settingsLoading}
+                                      className="w-full rounded-[13px] border border-stone-200 bg-white px-3 py-2 text-[11px] font-bold text-stone-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-200/50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
+                                    >
+                                      <option value="wallet">使用授权钱包余额</option>
+                                      <option value="codex">使用 GPT / ChatGPT 登录</option>
+                                    </select>
+                                    <div className="text-[10px] leading-4 text-stone-400 dark:text-stone-500">
+                                      钱包模式由 api.unmind.art 统一计费；GPT 登录使用用户自己的 ChatGPT / Codex 账号。
+                                    </div>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => void canvasAgent.startCodexLogin('chatgpt')}
+                                        disabled={canvasAgent.settingsLoading}
+                                        className="rounded-[12px] bg-violet-600 px-3 py-1.5 text-[10px] font-black text-white transition hover:bg-violet-700 disabled:opacity-50"
+                                      >
+                                        {canvasAgent.codexStatus?.authenticated ? '重新登录 GPT' : '登录 GPT'}
+                                      </button>
+                                      {canvasAgent.codexStatus?.authenticated && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void canvasAgent.logoutCodex()}
+                                          className="rounded-[12px] border border-stone-200 bg-white px-3 py-1.5 text-[10px] font-bold text-stone-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+                                        >退出 GPT</button>
+                                      )}
+                                      {(canvasAgent.codexLoginInfo?.authUrl || canvasAgent.codexLoginInfo?.verificationUrl) && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void canvasAgent.openCodexLoginUrl(canvasAgent.codexLoginInfo?.authUrl || canvasAgent.codexLoginInfo?.verificationUrl || '')}
+                                          className="rounded-[12px] border border-violet-100 bg-violet-50 px-3 py-1.5 text-[10px] font-bold text-violet-700 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-200"
+                                        >打开登录页面</button>
+                                      )}
+                                    </div>
+                                    {canvasAgent.codexLoginInfo?.userCode && (
+                                      <div className="rounded-[12px] bg-violet-50 px-3 py-2 text-[10px] font-bold text-violet-700 dark:bg-violet-400/10 dark:text-violet-200">
+                                        设备码：<span className="font-mono text-xs">{canvasAgent.codexLoginInfo.userCode}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                           <AnimatePresence>
                             {activeSettingCategory === 'ai' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
@@ -29256,8 +29478,8 @@ useEffect(() => {
 
                                   <div className="grid grid-cols-1 gap-1.5 text-[11px]">
                                     <div className="flex items-center justify-between gap-3">
-                                      <span className="text-stone-500 dark:text-stone-400">客户</span>
-                                      <span className="min-w-0 truncate font-bold text-stone-700 dark:text-stone-200">{licenseStatus?.customer || '-'}</span>
+                                      <span className="text-stone-500 dark:text-stone-400">用户名</span>
+                                      <span className="min-w-0 truncate font-bold text-stone-700 dark:text-stone-200">{cloudAccount?.displayName || licenseStatus?.customer || '-'}</span>
                                     </div>
                                     <div className="flex items-center justify-between gap-3">
                                       <span className="text-stone-500 dark:text-stone-400">版本</span>
@@ -29269,51 +29491,45 @@ useEffect(() => {
                                     </div>
                                   </div>
 
-                                  {licenseStatus?.ai_access?.mode === 'license_managed' && (
-                                    <div className="grid gap-1.5 rounded-[16px] border border-cyan-100 bg-cyan-50/45 px-3 py-2 text-[10px] dark:border-cyan-400/20 dark:bg-cyan-400/8">
-                                      <div className="font-black text-cyan-800 dark:text-cyan-100">配置来源：高级版设备授权</div>
-                                      <div className="flex justify-between gap-2"><span>Agent Gateway</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_gateway_kind || '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Agent API</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_gateway_kind === 'xais' ? licenseStatus.ai_access.managed_provider || '-' : `${licenseStatus.ai_access.managed_base_url || '-'} · ${licenseStatus.ai_access.managed_provider || '-'}`}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Agent 模型</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.managed_model || '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Agent Key</span><span className="font-bold">{licenseStatus.ai_access.api_key_last4 ? `****${licenseStatus.ai_access.api_key_last4}` : '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Canvas Gateway</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_gateway_kind || '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Canvas API</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_gateway_kind === 'xais' ? licenseStatus.ai_access.canvas_provider || '-' : `${licenseStatus.ai_access.canvas_base_url || '-'} · ${licenseStatus.ai_access.canvas_provider || '-'}`}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Canvas 模型</span><span className="truncate text-right font-bold">{licenseStatus.ai_access.canvas_model || '-'}</span></div>
-                                      <div className="flex justify-between gap-2"><span>Canvas Key</span><span className="font-bold">{licenseStatus.ai_access.canvas_api_key_last4 ? `****${licenseStatus.ai_access.canvas_api_key_last4}` : '-'}</span></div>
+                                  <div className="grid gap-2 rounded-[16px] border border-blue-100 bg-blue-50/55 px-3 py-2.5 dark:border-blue-400/20 dark:bg-blue-400/10">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="flex items-center gap-1.5 text-[10px] font-black text-blue-800 dark:text-blue-100">
+                                        <Wallet className="h-3.5 w-3.5" /> 授权钱包余额
+                                      </span>
+                                      <span className="text-sm font-black tabular-nums text-blue-700 dark:text-blue-100">
+                                        {isCloudAccountLoading ? '读取中…' : cloudAccount?.wallet.availableCredits ?? '—'}
+                                      </span>
                                     </div>
-                                  )}
-
-                                  <div className="flex flex-col gap-1.5">
-                                    <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400">功能</span>
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {(licenseStatus?.features || []).length > 0 ? (
-                                        (licenseStatus?.features || []).map(feature => (
-                                          <span key={feature} className="rounded-full border border-stone-200 bg-white/70 px-2 py-0.5 text-[10px] font-bold text-stone-600 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300">
-                                            {LICENSE_FEATURE_LABELS[feature] || feature}
-                                          </span>
-                                        ))
-                                      ) : (
-                                        <span className="text-[10px] text-stone-400 dark:text-stone-500">-</span>
-                                      )}
+                                    {cloudAccount?.email && (
+                                      <div className="truncate text-[10px] text-blue-600/80 dark:text-blue-200/75">{cloudAccount.email}</div>
+                                    )}
+                                    <div className="flex gap-1.5">
+                                      <input
+                                        value={creditRedemptionCode}
+                                        onChange={event => {
+                                          setCreditRedemptionCode(event.target.value.toUpperCase());
+                                          setCreditRedemptionError('');
+                                        }}
+                                        onKeyDown={event => {
+                                          if (event.key === 'Enter' && !isRedeemingCredits) void redeemCloudCredits();
+                                        }}
+                                        placeholder="输入额度兑换码"
+                                        className="min-w-0 flex-1 rounded-[12px] border border-blue-100 bg-white/80 px-3 py-1.5 text-[11px] font-semibold text-stone-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-200/55 dark:border-blue-400/20 dark:bg-stone-950/35 dark:text-stone-100"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => void redeemCloudCredits()}
+                                        disabled={isRedeemingCredits || creditRedemptionCode.trim().length < 10}
+                                        className="shrink-0 rounded-[12px] bg-blue-600 px-3 py-1.5 text-[10px] font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
+                                      >
+                                        {isRedeemingCredits ? '兑换中' : '兑换'}
+                                      </button>
                                     </div>
+                                    {creditRedemptionError && (
+                                      <div className="text-[10px] leading-4 text-red-500 dark:text-red-300">{creditRedemptionError}</div>
+                                    )}
                                   </div>
 
-                                  {licenseStatus?.message && (
-                                    <div className="rounded-[14px] border border-stone-200 bg-white/70 px-3 py-2 text-[10px] leading-4 text-stone-500 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300">
-                                      {licenseStatus.message}
-                                    </div>
-                                  )}
-
-                                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => void refreshLicenseStatus(false)}
-                                      disabled={isLicenseLoading}
-                                      className="rounded-[13px] border border-stone-200 bg-white/75 px-3 py-1.5 text-[10px] font-bold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-wait disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900/35 dark:text-stone-300 dark:hover:bg-stone-800"
-                                    >
-                                      刷新
-                                    </button>
-                                  </div>
                                 </div>
                               </motion.div>
                             )}
