@@ -6348,10 +6348,14 @@ function MainApp() {
     invoke('get_local_ip').then((res: any) => setLocalIP(String(res || ''))).catch(()=>{});
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
     invoke('set_topmost', { topmost: true }).catch(()=>{});
-    setIsLicenseLoading(true);
+    void refreshLicenseStatus(true);
     void invoke<LicenseStatus | null>('sync_server_license')
-      .catch((err) => console.warn('同步服务器授权失败，将继续使用本地授权:', err))
-      .finally(() => void refreshLicenseStatus(true));
+      .then((nextStatus) => {
+        if (!nextStatus) return;
+        setLicenseStatus(nextStatus);
+        setMachineId(nextStatus.machine_id);
+      })
+      .catch((err) => console.warn('同步服务器授权失败，将继续使用本地授权:', err));
   }, []);
 
   const handleOpenTextInput = () => { setIsDrawerAgentOpen(false); setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
