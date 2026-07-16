@@ -100,7 +100,16 @@ async fn request_trial_license(display_name: &str, machine_id: &str) -> Result<S
             .as_ref()
             .and_then(|value| value.message.as_deref())
             .unwrap_or("自动试用注册失败");
-        return Err(format!("{code}: {message}"));
+        let localized_message = match code {
+            "automatic_trial_unavailable" => "自动试用尚未开通，请联系管理员",
+            "existing_license_requires_import" => "此设备已有授权记录，请导入原授权或联系管理员续期",
+            "license_expired" | "expired" => "本机试用已经到期，请联系管理员续期",
+            "license_revoked" => "本机授权已被停用，请联系管理员",
+            "account_disabled" => "当前账户已被停用，请联系管理员",
+            "rate_limit_exceeded" => "请求过于频繁，请稍后再试",
+            _ => message,
+        };
+        return Err(format!("{code}: {localized_message}"));
     }
     serde_json::from_str::<TrialRegistrationResponse>(&body)
         .map(|value| value.license)
