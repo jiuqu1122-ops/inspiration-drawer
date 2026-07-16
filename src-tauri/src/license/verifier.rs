@@ -173,7 +173,6 @@ fn validate_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::license::generator::{generate_license, LicenseGeneratorInput};
     use crate::license::types::{
         AiCredentialMode, AiGatewayKind, LicenseAiAccess, LicenseEdition, ManagedApiProfile,
     };
@@ -274,36 +273,6 @@ mod tests {
         let result = check_feature_from_status(status, "batch_render");
         assert!(!result.allowed);
         assert!(result.message.unwrap().contains("功能未授权"));
-    }
-
-    #[test]
-    fn generated_license_matches_supplied_signing_key() {
-        let signing_key = SigningKey::from_bytes(&[11u8; 32]);
-        let private_key_b64 = general_purpose::STANDARD.encode(signing_key.to_bytes());
-        let public_key_b64 =
-            general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes());
-        let generated = generate_license(LicenseGeneratorInput {
-            private_key: private_key_b64,
-            machine_id: "machine-fixed".to_string(),
-            customer: "unmind".to_string(),
-            edition: "pro".to_string(),
-            expire_at: "2027-06-18".to_string(),
-            features: vec!["*".to_string()],
-            product: Some(PRODUCT_NAME.to_string()),
-            ai_access: None,
-        })
-        .unwrap();
-
-        assert_eq!(generated.public_key_b64, public_key_b64);
-        let payload = verify_license_content_with_key(
-            &generated.license_json,
-            "machine-fixed",
-            &public_key_b64,
-            NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(payload.customer, "unmind");
-        assert_eq!(payload.features, vec!["*".to_string()]);
     }
 
     #[test]

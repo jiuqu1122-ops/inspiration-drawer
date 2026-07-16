@@ -226,9 +226,8 @@ pub fn resolve_effective_canvas_api_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::license::generator::{generate_license, LicenseGeneratorInput};
     use crate::license::types::{LicenseAiAccess, PRODUCT_NAME};
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn settings() -> StoredApiSettings {
         StoredApiSettings {
@@ -241,25 +240,20 @@ mod tests {
         }
     }
 
-    fn private_key() -> String {
-        let signing_key = SigningKey::from_bytes(&[37u8; 32]);
-        general_purpose::STANDARD.encode(signing_key.to_bytes())
-    }
-
     fn public_key() -> String {
         let signing_key = SigningKey::from_bytes(&[37u8; 32]);
         general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes())
     }
 
     fn managed_license(machine_id: &str, expire_at: &str) -> String {
-        generate_license(LicenseGeneratorInput {
-            private_key: private_key(),
-            machine_id: machine_id.to_string(),
+        let signing_key = SigningKey::from_bytes(&[37u8; 32]);
+        let payload = LicensePayload {
+            product: PRODUCT_NAME.to_string(),
             customer: "managed".to_string(),
-            edition: "enterprise".to_string(),
-            expire_at: expire_at.to_string(),
+            machine_id: machine_id.to_string(),
+            edition: LicenseEdition::Enterprise,
             features: vec!["*".to_string()],
-            product: Some(PRODUCT_NAME.to_string()),
+            expire_at: expire_at.to_string(),
             ai_access: Some(LicenseAiAccess {
                 mode: AiCredentialMode::LicenseManaged,
                 allow_user_api: false,
@@ -280,9 +274,14 @@ mod tests {
                     headers: BTreeMap::new(),
                 }),
             }),
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let signature = signing_key.sign(&payload_bytes);
+        serde_json::to_string(&LicenseFile {
+            payload: general_purpose::STANDARD.encode(payload_bytes),
+            signature: general_purpose::STANDARD.encode(signature.to_bytes()),
         })
         .unwrap()
-        .license_json
     }
 
     #[test]

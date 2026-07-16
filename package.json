@@ -6,11 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "license-generator:frontend": "tsc && vite build --config vite.generator.config.ts",
-    "license-generator:dev": "tauri dev --config src-tauri/tauri.generator.conf.json --features license-generator-app -- --bin license-generator-app",
-    "license-generator:build": "node scripts/build-license-generator.mjs",
-    "license-generator:bundle": "tauri build --config src-tauri/tauri.generator.conf.json --features license-generator-app -- --bin license-generator-app",
-    "license-generator:open": "npm run license-generator:build && start \"\" \"src-tauri\\target\\generator\\license-generator-app.exe\"",
     "updater:release": "node scripts/build-github-release.mjs",
     "updater:prepare": "node scripts/prepare-github-release.mjs",
     "updater:sync:gitee": "node scripts/sync-gitee-release.mjs",

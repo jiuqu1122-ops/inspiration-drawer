@@ -8,14 +8,6 @@ default-run = "inspiration-drawer"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-license-generator-app = []
-
-[[bin]]
-name = "license-generator-app"
-path = "src/bin/license-generator-app.rs"
-required-features = ["license-generator-app"]
-
 [build-dependencies]
 tauri-build = { version = "2.0.0", features = [] }
 
@@ -32,7 +24,6 @@ url = "2"
 zip = "4.6.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
 time = { version = "0.3", features = ["formatting"] }
 screenshots = "0.8"        # 截屏引擎
 base64 = "0.22"            # Base64 编码
@@ -80,9 +71,3 @@ strip = true
 lto = "thin"
 panic = "abort"
 codegen-units = 1
-
-[profile.generator]
-inherits = "dev"
-debug-assertions = true
-strip = true
-opt-level = 0

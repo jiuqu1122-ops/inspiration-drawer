@@ -1,5 +1,3 @@
-#[allow(dead_code)]
-pub mod generator;
 pub mod machine_id;
 pub mod types;
 pub mod verifier;

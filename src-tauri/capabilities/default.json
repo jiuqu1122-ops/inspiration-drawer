@@ -14,8 +14,7 @@
     "note_6",
     "note_7",
     "note_8",
-    "note_*",
-    "license_generator"
+    "note_*"
   ],
   "permissions": [
     "core:default",
