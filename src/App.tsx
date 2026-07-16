@@ -5444,6 +5444,9 @@ function MainApp() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [isLicenseLoading, setIsLicenseLoading] = useState(false);
   const [licenseInputText, setLicenseInputText] = useState('');
+  const [trialDisplayName, setTrialDisplayName] = useState('');
+  const [trialRegistrationError, setTrialRegistrationError] = useState('');
+  const [isTrialRegistering, setIsTrialRegistering] = useState(false);
   const licenseGateActiveRef = useRef(true);
 
   const [shortcut, setShortcut] = useState('Alt+G');
@@ -5650,6 +5653,30 @@ function MainApp() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({ isOpen: false, title: '', message: '', onConfirm: () => {} });
   const closeConfirmDialog = () => {
     setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+  };
+
+  const registerTrialAccount = async () => {
+    const displayName = trialDisplayName.trim();
+    const displayNameLength = Array.from(displayName).length;
+    if (displayNameLength < 2 || displayNameLength > 32) {
+      setTrialRegistrationError('用户名需要填写 2 到 32 个字符');
+      return;
+    }
+
+    try {
+      setIsTrialRegistering(true);
+      setTrialRegistrationError('');
+      const nextStatus = await invoke<LicenseStatus>('register_trial', { displayName });
+      setLicenseStatus(nextStatus);
+      setMachineId(nextStatus.machine_id);
+      setTrialDisplayName('');
+      showToast('注册成功，30 天试用已开通');
+    } catch (err) {
+      console.error('自动试用注册失败:', err);
+      setTrialRegistrationError(formatLicenseCommandError(err));
+    } finally {
+      setIsTrialRegistering(false);
+    }
   };
   const textInputDialogResolverRef = useRef<((value: string | null) => void) | null>(null);
   const textInputDialogInputRef = useRef<HTMLInputElement | null>(null);
@@ -6321,7 +6348,10 @@ function MainApp() {
     invoke('get_local_ip').then((res: any) => setLocalIP(String(res || ''))).catch(()=>{});
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
     invoke('set_topmost', { topmost: true }).catch(()=>{});
-    void refreshLicenseStatus(true);
+    setIsLicenseLoading(true);
+    void invoke<LicenseStatus | null>('sync_server_license')
+      .catch((err) => console.warn('同步服务器授权失败，将继续使用本地授权:', err))
+      .finally(() => void refreshLicenseStatus(true));
   }, []);
 
   const handleOpenTextInput = () => { setIsDrawerAgentOpen(false); setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
@@ -26987,16 +27017,21 @@ useEffect(() => {
   const canvasWorkflowEditingAiCount = canvasWorkflowEditingTemplate?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0;
   const isLicenseUnlocked = licenseStatus?.valid === true;
   const isLicenseGateActive = !isLicenseUnlocked;
+  const canRegisterTrial = licenseStatus?.error_code === 'not_licensed';
   licenseGateActiveRef.current = isLicenseGateActive;
   const licenseGateState = licenseStatus?.state || 'unlicensed';
   const licenseGateTitle = isLicenseLoading && !licenseStatus
     ? '正在读取授权'
     : isLicenseUnlocked
       ? '授权有效'
-      : LICENSE_STATE_LABELS[licenseGateState] || '未授权';
+      : canRegisterTrial
+        ? '注册 30 天免费试用'
+        : LICENSE_STATE_LABELS[licenseGateState] || '未授权';
   const licenseGateMessage = isLicenseLoading && !licenseStatus
     ? '正在读取本机授权状态，请稍候。'
-    : licenseStatus?.message || '请导入有效 license 后使用抽屉。';
+    : canRegisterTrial
+      ? '输入一个用于后台识别的用户名，程序会自动绑定本机并开通试用。'
+      : licenseStatus?.message || '请导入有效 license 后使用抽屉。';
 
   useEffect(() => {
     if (!isLicenseGateActive) return;
@@ -27634,7 +27669,7 @@ useEffect(() => {
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.96, y: 10 }}
               transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
-              className="w-full max-w-[430px] rounded-[24px] border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-800 dark:bg-stone-900"
+              className="max-h-[calc(100%_-_24px)] w-full max-w-[430px] overflow-y-auto rounded-[24px] border border-stone-200 bg-white p-5 shadow-2xl dark:border-stone-800 dark:bg-stone-900"
             >
               <div className="flex items-start gap-3">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-stone-900 text-white dark:bg-white dark:text-stone-950">
@@ -27646,9 +27681,52 @@ useEffect(() => {
                 </div>
               </div>
 
-              <div className="mt-4 rounded-[14px] border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-black text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
-                请联系开发者取得授权 <span className="font-mono">VX:jiuquz</span>
-              </div>
+              {canRegisterTrial ? (
+                <div className="mt-4 rounded-[14px] border border-blue-200 bg-blue-50 px-3 py-2 text-center text-[11px] font-black text-blue-700 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-100">
+                  每台设备只能领取一次，卸载重装不会重置试用时间
+                </div>
+              ) : (
+                <div className="mt-4 rounded-[14px] border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-black text-amber-800 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
+                  请联系开发者处理授权 <span className="font-mono">VX:jiuquz</span>
+                </div>
+              )}
+
+              {canRegisterTrial && (
+                <div className="mt-4 rounded-[16px] border border-blue-100 bg-blue-50/70 p-3 dark:border-blue-400/20 dark:bg-blue-400/10">
+                  <label className="grid gap-2">
+                    <span className="text-[11px] font-black text-stone-600 dark:text-stone-300">用户名</span>
+                    <input
+                      value={trialDisplayName}
+                      onChange={(event) => {
+                        setTrialDisplayName(event.target.value);
+                        if (trialRegistrationError) setTrialRegistrationError('');
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !isTrialRegistering) void registerTrialAccount();
+                      }}
+                      maxLength={32}
+                      autoComplete="name"
+                      placeholder="例如：张三设计"
+                      className="h-11 w-full rounded-[14px] border border-blue-100 bg-white px-3 text-sm font-bold text-stone-800 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-blue-400/20 dark:bg-stone-950 dark:text-stone-100"
+                    />
+                    <small className="text-[10px] leading-4 text-stone-500 dark:text-stone-400">仅用于账户识别，无需填写真实姓名</small>
+                  </label>
+                  {trialRegistrationError && (
+                    <div className="mt-2 rounded-[12px] bg-red-50 px-3 py-2 text-[10px] font-bold leading-4 text-red-600 dark:bg-red-400/10 dark:text-red-200">
+                      {trialRegistrationError}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void registerTrialAccount()}
+                    disabled={isTrialRegistering || isLicenseLoading}
+                    className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-[14px] bg-blue-600 text-xs font-black text-white transition-colors hover:bg-blue-500 disabled:cursor-wait disabled:bg-stone-300 dark:disabled:bg-stone-700"
+                  >
+                    <Check className="h-4 w-4" />
+                    {isTrialRegistering ? '正在注册…' : '注册并开始 30 天试用'}
+                  </button>
+                </div>
+              )}
 
               <div className="mt-4 rounded-[16px] border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-950/60">
                 <div className="mb-1 flex items-center justify-between gap-2">
@@ -27669,7 +27747,7 @@ useEffect(() => {
               </div>
 
               <label className="mt-4 grid gap-2">
-                <span className="text-[11px] font-black text-stone-500 dark:text-stone-400">粘贴 license 内容</span>
+                <span className="text-[11px] font-black text-stone-500 dark:text-stone-400">{canRegisterTrial ? '已有授权？粘贴 License 内容' : '粘贴 License 内容'}</span>
                 <textarea
                   value={licenseInputText}
                   onChange={(event) => setLicenseInputText(event.target.value)}

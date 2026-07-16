@@ -248,6 +248,7 @@ mod tests {
     fn managed_license(machine_id: &str, expire_at: &str) -> String {
         let signing_key = SigningKey::from_bytes(&[37u8; 32]);
         let payload = LicensePayload {
+            license_id: None,
             product: PRODUCT_NAME.to_string(),
             customer: "managed".to_string(),
             machine_id: machine_id.to_string(),
@@ -354,6 +355,7 @@ mod tests {
     #[test]
     fn canvas_reuses_managed_profile_when_legacy_license_has_no_canvas_profile() {
         let payload = LicensePayload {
+            license_id: None,
             product: PRODUCT_NAME.to_string(),
             customer: "legacy-managed".to_string(),
             machine_id: "machine-a".to_string(),

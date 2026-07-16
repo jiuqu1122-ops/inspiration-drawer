@@ -182,6 +182,8 @@ pub struct LicenseAiAccessSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LicensePayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_id: Option<String>,
     pub product: String,
     pub customer: String,
     pub machine_id: String,

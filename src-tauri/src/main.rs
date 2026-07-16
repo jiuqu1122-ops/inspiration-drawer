@@ -15689,6 +15689,8 @@ fn main() {
             save_dropped_file,
             commands::license::get_machine_id,
             commands::license::get_license_status,
+            commands::license::register_trial,
+            commands::license::sync_server_license,
             commands::license::import_license,
             commands::license::remove_license,
             commands::license::check_feature,

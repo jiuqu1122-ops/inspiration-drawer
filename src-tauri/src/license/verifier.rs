@@ -183,6 +183,7 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
         let public_key_b64 = general_purpose::STANDARD.encode(verifying_key.to_bytes());
         let payload = LicensePayload {
+            license_id: None,
             product: PRODUCT_NAME.to_string(),
             customer: "测试客户".to_string(),
             machine_id: machine_id.to_string(),
@@ -313,6 +314,7 @@ mod tests {
         let public_key_b64 =
             general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes());
         let payload = LicensePayload {
+            license_id: None,
             product: PRODUCT_NAME.to_string(),
             customer: "managed".to_string(),
             machine_id: "machine-managed".to_string(),
