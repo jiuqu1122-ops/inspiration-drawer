@@ -116,6 +116,30 @@ pub struct CreditRedemptionResult {
     account: CloudAccountSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageGenerationRequest {
+    client_request_id: String,
+    provider: Option<String>,
+    model: String,
+    prompt: String,
+    negative_prompt: Option<String>,
+    input_images: Vec<String>,
+    aspect_ratio: String,
+    resolution: Option<String>,
+    output_format: String,
+    count: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageGenerationResult {
+    images: Vec<String>,
+    provider: String,
+    model: String,
+    charged_credits: String,
+}
+
 #[derive(Deserialize)]
 struct CloudApiError {
     error: Option<String>,
@@ -229,8 +253,17 @@ async fn post_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     access_token: &str,
     request_body: &impl Serialize,
 ) -> Result<T, String> {
+    post_cloud_with_bearer_timeout(path, access_token, request_body, Duration::from_secs(20)).await
+}
+
+async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
+    path: &str,
+    access_token: &str,
+    request_body: &impl Serialize,
+    timeout: Duration,
+) -> Result<T, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(timeout)
         .build()
         .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
     let response = client
@@ -471,6 +504,41 @@ pub async fn redeem_credit_code(
         redeemed_credits: redeemed.redeemed_credits,
         account,
     })
+}
+
+#[tauri::command]
+pub async fn generate_cloud_images(
+    app_handle: tauri::AppHandle,
+    request: CloudImageGenerationRequest,
+) -> Result<CloudImageGenerationResult, String> {
+    let client_request_id = request.client_request_id.trim();
+    let model = request.model.trim();
+    let prompt = request.prompt.trim();
+    if client_request_id.len() < 8 || client_request_id.len() > 128 {
+        return Err("invalid_request: 生图请求 ID 无效".to_string());
+    }
+    if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
+        return Err("invalid_request: 生图模型或提示词无效".to_string());
+    }
+    if !(1..=4).contains(&request.count) || request.input_images.len() > 8 {
+        return Err("invalid_request: 生图数量或参考图数量无效".to_string());
+    }
+    if request
+        .input_images
+        .iter()
+        .any(|value| value.len() > 12_000_000)
+    {
+        return Err("invalid_request: 单张参考图数据过大".to_string());
+    }
+
+    let access_token = cloud_access_token(&app_handle).await?;
+    post_cloud_with_bearer_timeout::<CloudImageGenerationResult>(
+        "/v1/ai/images/generations",
+        &access_token,
+        &request,
+        Duration::from_secs(6 * 60),
+    )
+    .await
 }
 
 #[tauri::command]

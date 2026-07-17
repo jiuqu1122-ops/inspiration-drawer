@@ -17334,6 +17334,10 @@ function MainApp() {
       : (mediaType === 'video' && provider === 'new-api'
         ? canvasAiNewApiVideoKey.trim() || providerApiKey.trim()
         : providerApiKey.trim());
+    const useCloudWallet = mediaType === 'image'
+      && !isCanvasAiLicenseManaged
+      && !apiKey
+      && Boolean(cloudAccount);
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
@@ -17353,8 +17357,10 @@ function MainApp() {
       }
       return [] as CanvasAiGeneratedOutput[];
     }
-    if (!apiKey && !isCanvasAiLicenseManaged) {
-      const errorSummary = '请先在 AI 设置里填写 API Key';
+    if (!apiKey && !isCanvasAiLicenseManaged && !useCloudWallet) {
+      const errorSummary = mediaType === 'image'
+        ? '请先完成邮箱登录并确认授权钱包有可用额度'
+        : '当前视频生成尚未接入授权钱包';
       (options.forceUpdateAi || options.updateAi)({ status: 'error', error: errorSummary });
       if (options.showResultToast !== false) {
         showToast(`${resultLabel}生成失败：${errorSummary}`);
@@ -17447,6 +17453,7 @@ function MainApp() {
       let generateOptions = {
         provider,
         apiKey,
+        cloudWallet: useCloudWallet,
         gatewayKind: isCanvasAiLicenseManaged
           ? effectiveCanvasAiGatewayKind
           : canvasAiGatewayKindForProvider(provider),
@@ -17744,7 +17751,7 @@ function MainApp() {
         }
       };
 
-      if (provider === 'new-api' && mediaType === 'image') {
+      if (mediaType === 'image' && (provider === 'new-api' || useCloudWallet)) {
         await runNewApiImageBatch();
       } else {
         await Promise.all(
@@ -17783,6 +17790,7 @@ function MainApp() {
           error: lastPartialError ? getCanvasAiErrorSummary(lastPartialError instanceof Error ? lastPartialError.message : String(lastPartialError)) : undefined,
         });
       }
+      if (useCloudWallet) void refreshCloudAccount(true);
       return generatedOutputs;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

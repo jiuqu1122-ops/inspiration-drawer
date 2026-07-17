@@ -135,6 +135,7 @@ export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
 
 export type CanvasAiBaseImageOptions = {
   apiKey: string;
+  cloudWallet?: boolean;
   gatewayKind?: AiGatewayKind;
   apiProvider?: string;
   licenseManaged?: boolean;
@@ -147,6 +148,39 @@ export type CanvasAiBaseImageOptions = {
   outputFormat?: string;
   count?: number;
   headers?: Record<string, string>;
+};
+
+type CloudImageGenerationResult = {
+  images: string[];
+  provider: string;
+  model: string;
+  chargedCredits: string;
+};
+
+const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
+  const clientRequestId = options.clientRequestId?.trim()
+    || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    const result = await invoke<CloudImageGenerationResult>('generate_cloud_images', {
+      request: {
+        clientRequestId,
+        provider: options.provider,
+        model: String(options.model || '').trim(),
+        prompt: options.prompt.trim(),
+        negativePrompt: options.negativePrompt?.trim() || undefined,
+        inputImages: (options.inputImages || []).filter(Boolean).slice(0, 8),
+        aspectRatio: normalizeImageAspectRatio(options.aspectRatio),
+        resolution: options.resolution?.trim() || undefined,
+        outputFormat: normalizeOutputFormat(options.outputFormat),
+        count: Math.max(1, Math.min(4, Math.round(options.count || 1))),
+      },
+    });
+    const images = Array.from(new Set(result.images.map(value => value.trim()).filter(Boolean)));
+    if (images.length === 0) throw new Error('授权钱包渠道没有返回图片数据');
+    return images;
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
 };
 
 export type CanvasAiVideoInputMode = 'REF' | 'FLF';
@@ -2011,6 +2045,7 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
+  if (options.cloudWallet) return generateCloudWalletImages(options);
   if (options.provider === 'xais-chat') return generateXaisChatImages(options);
   if (options.provider === 'new-api') return generateNewApiImages(options);
   return generateOpenAiCompatibleImages(options);
