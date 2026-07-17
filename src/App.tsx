@@ -595,6 +595,14 @@ type CloudImageModelsResult = {
   provider: string;
   defaultModel?: string | null;
   models: string[];
+  channels?: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    defaultModel?: string | null;
+    models: string[];
+    error?: string | null;
+  }>;
 };
 
 type CreditRedemptionResult = {
@@ -3112,12 +3120,13 @@ const canvasAiModelChoiceValue = (
   source: CanvasAiCredentialSource,
   provider: CanvasAiProvider,
   model: string,
-) => JSON.stringify([source, provider, model]);
+  providerChannelId?: string,
+) => JSON.stringify([source, provider, model, providerChannelId || '']);
 const parseCanvasAiModelChoiceValue = (value: string) => {
   try {
     const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed) || parsed.length !== 3) return null;
-    const [source, provider, model] = parsed;
+    if (!Array.isArray(parsed) || (parsed.length !== 3 && parsed.length !== 4)) return null;
+    const [source, provider, model, providerChannelId] = parsed;
     if (source !== 'wallet' && source !== 'local') return null;
     if (!CANVAS_AI_PROVIDER_VALUES.includes(provider as CanvasAiProvider)) return null;
     if (typeof model !== 'string' || !model.trim()) return null;
@@ -3125,6 +3134,9 @@ const parseCanvasAiModelChoiceValue = (value: string) => {
       source: source as CanvasAiCredentialSource,
       provider: provider as CanvasAiProvider,
       model: model.trim(),
+      providerChannelId: typeof providerChannelId === 'string' && providerChannelId.trim()
+        ? providerChannelId.trim()
+        : undefined,
     };
   } catch {
     return null;
@@ -6043,10 +6055,11 @@ function MainApp() {
       source: CanvasAiCredentialSource,
       provider: CanvasAiProvider,
       rawModel: string,
+      channel?: { id: string; name: string },
     ) => {
       const model = rawModel.trim();
       if (!model) return;
-      const value = canvasAiModelChoiceValue(source, provider, model);
+      const value = canvasAiModelChoiceValue(source, provider, model, channel?.id);
       if (seen.has(value)) return;
       seen.add(value);
       const label = provider === 'new-api'
@@ -6062,14 +6075,22 @@ function MainApp() {
           ? `使用本地额度${modelIdHint}`
           : `使用授权钱包额度${modelIdHint}`,
         meta: source === 'local' ? '本地额度' : '钱包',
-        section: source === 'local' ? '本地 API' : '授权钱包',
-        sectionHint: source === 'local' ? '消耗本地 API 余额' : '消耗钱包额度',
+        section: source === 'local' ? '本地 API' : `授权钱包 · ${channel?.name || '默认渠道'}`,
+        sectionHint: source === 'local' ? '消耗本地 API 余额' : `渠道：${channel?.name || '默认渠道'}`,
       });
     };
 
     if (canvasAiCloudImageModels) {
-      const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-      canvasAiCloudImageModels.models.forEach(model => addModel('wallet', provider, model));
+      const channels = canvasAiCloudImageModels.channels || [];
+      if (channels.length > 0) {
+        channels.forEach(channel => {
+          const provider = canvasAiProviderForCloudKind(channel.provider);
+          channel.models.forEach(model => addModel('wallet', provider, model, channel));
+        });
+      } else {
+        const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
+        canvasAiCloudImageModels.models.forEach(model => addModel('wallet', provider, model));
+      }
     }
 
     const localModelSources: Array<{ provider: CanvasAiProvider; models: string[] }> = [
@@ -6099,9 +6120,16 @@ function MainApp() {
     provider: CanvasAiProvider,
     model: string,
     source?: CanvasAiCredentialSource,
+    providerChannelId?: string,
   ): CanvasAiCredentialSource => {
     if (source) return source;
     if (!canvasAiCloudImageModels) return 'local';
+    if (providerChannelId) {
+      const channel = canvasAiCloudImageModels.channels?.find(item => item.id === providerChannelId);
+      return channel && canvasAiProviderForCloudKind(channel.provider) === provider && channel.models.includes(model)
+        ? 'wallet'
+        : 'local';
+    }
     const cloudProvider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
     return cloudProvider === provider && canvasAiCloudImageModels.models.includes(model)
       ? 'wallet'
@@ -6112,9 +6140,10 @@ function MainApp() {
     provider: CanvasAiProvider,
     model: string,
     source?: CanvasAiCredentialSource,
+    providerChannelId?: string,
   ) => {
-    const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source);
-    const selectedValue = canvasAiModelChoiceValue(resolvedSource, provider, model);
+    const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source, providerChannelId);
+    const selectedValue = canvasAiModelChoiceValue(resolvedSource, provider, model, providerChannelId);
     if (canvasAiUnifiedImageModelOptions.some(option => option.value === selectedValue)) {
       return canvasAiUnifiedImageModelOptions;
     }
@@ -6355,11 +6384,23 @@ function MainApp() {
     try {
       let detectedProvider = provider;
       let detectedDefaultModel = '';
+      let detectedChannels: NonNullable<CloudImageModelsResult['channels']> = [];
       const successfulModels = canvasAiUsesCloudImageModels
         ? await (async () => {
           const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', { provider });
           detectedProvider = canvasAiProviderForCloudKind(result.provider);
           detectedDefaultModel = String(result.defaultModel || '').trim();
+          detectedChannels = (result.channels || []).map(channel => {
+            const channelProvider = canvasAiProviderForCloudKind(channel.provider);
+            const models = channelProvider === 'xais-chat'
+              ? sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set((channel.models || [])
+                .map(model => normalizeXaisImage2Model(model.trim()))
+                .filter(Boolean))))
+              : sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set((channel.models || [])
+                .map(model => model.trim())
+                .filter(Boolean))));
+            return { ...channel, provider: channelProvider, models };
+          });
           return result.models || [];
         })()
         : await (async () => {
@@ -6388,6 +6429,7 @@ function MainApp() {
           provider: detectedProvider,
           defaultModel: detectedDefaultModel || null,
           models: normalized,
+          channels: detectedChannels,
         });
       } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
@@ -6407,13 +6449,23 @@ function MainApp() {
         ? preferredDefaultModel
         : (preferredImageModel || normalized[0] || preferredDefaultModel);
       const nextVideoModel = normalized.find(isLikelyNewApiVideoModel) || normalized[0] || '';
+      const defaultChannel = detectedChannels.find(channel => (
+        !channel.error && channel.models.includes(nextDefaultModel)
+      )) || detectedChannels.find(channel => !channel.error && channel.models.length > 0);
       if (normalized.length > 0) {
         updateCanvasItemsImmediate(prev => prev.map(item => {
           const itemProvider = normalizeCanvasAiProvider(item.ai?.provider || canvasAiProvider);
+          const itemChannel = item.ai?.providerChannelId
+            ? detectedChannels.find(channel => channel.id === item.ai?.providerChannelId)
+            : undefined;
+          const hasValidWalletSelection = Boolean(itemChannel
+            && canvasAiProviderForCloudKind(itemChannel.provider) === itemProvider
+            && item.ai?.model
+            && itemChannel.models.includes(item.ai.model));
           const needsImageModel = item.ai?.type === 'image-generator'
             && (canvasAiUsesCloudImageModels
               ? item.ai?.credentialSource !== 'local'
-                && (itemProvider !== detectedProvider || !item.ai.model || !normalized.includes(item.ai.model))
+                && !hasValidWalletSelection
               : itemProvider === detectedProvider
                 && (!item.ai.model || !normalized.includes(item.ai.model)));
           const needsVideoModel = !canvasAiUsesCloudImageModels
@@ -6426,11 +6478,16 @@ function MainApp() {
               ...item,
               ai: {
                 ...item.ai!,
-                ...(needsImageModel && canvasAiUsesCloudImageModels ? {
-                  provider: detectedProvider,
+                ...(needsImageModel && canvasAiUsesCloudImageModels && defaultChannel ? {
+                  provider: canvasAiProviderForCloudKind(defaultChannel.provider),
+                  providerChannelId: defaultChannel.id,
                   credentialSource: 'wallet' as const,
                 } : {}),
-                model: needsVideoModel ? nextVideoModel : nextDefaultModel,
+                model: needsVideoModel
+                  ? nextVideoModel
+                  : defaultChannel?.models.includes(nextDefaultModel)
+                    ? nextDefaultModel
+                    : defaultChannel?.models[0] || nextDefaultModel,
               },
             };
         }));
@@ -17504,15 +17561,14 @@ function MainApp() {
         requestedProvider,
         getCanvasAiResolvedModel(requestedProvider, target.ai.model, mediaType),
         target.ai?.credentialSource,
+        target.ai?.providerChannelId,
       )
       : undefined;
     const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
       && !isCanvasAiLicenseManaged
       && Boolean(cloudAccount)
       && (mediaType !== 'image' || imageCredentialSource !== 'local');
-    const provider = useCloudWallet && mediaType === 'image' && cloudCanvasAiProvider
-      ? cloudCanvasAiProvider
-      : isCanvasAiLicenseManaged ? effectiveCanvasAiProvider : requestedProvider;
+    const provider = isCanvasAiLicenseManaged ? effectiveCanvasAiProvider : requestedProvider;
     const providerApiKey = provider === canvasAiProvider
       ? canvasAiApiKey
       : getStoredCanvasAiApiKey(provider);
@@ -17637,6 +17693,9 @@ function MainApp() {
         provider,
         apiKey,
         cloudWallet: useCloudWallet,
+        providerChannelId: useCloudWallet && mediaType === 'image'
+          ? target.ai?.providerChannelId
+          : undefined,
         gatewayKind: isCanvasAiLicenseManaged
           ? effectiveCanvasAiGatewayKind
           : canvasAiGatewayKindForProvider(provider),
@@ -31306,9 +31365,11 @@ useEffect(() => {
                                                   canvasAiItemProvider,
                                                   canvasAiItemModel,
                                                   canvasItem.ai?.credentialSource,
+                                                  canvasItem.ai?.providerChannelId,
                                                 ),
                                                 canvasAiItemProvider,
                                                 canvasAiItemModel,
+                                                canvasItem.ai?.providerChannelId,
                                               )
                                               : canvasAiItemModel}
                                             options={canvasAiMediaType === 'image'
@@ -31316,6 +31377,7 @@ useEffect(() => {
                                                 canvasAiItemProvider,
                                                 canvasAiItemModel,
                                                 canvasItem.ai?.credentialSource,
+                                                canvasItem.ai?.providerChannelId,
                                               )
                                               : getCanvasAiModelOptionsForProvider(canvasAiItemProvider, canvasAiMediaType)}
                                             onChange={(value) => {
@@ -31328,6 +31390,7 @@ useEffect(() => {
                                                 ...(choice ? {
                                                   provider,
                                                   credentialSource: choice.source,
+                                                  providerChannelId: choice.providerChannelId,
                                                 } : {}),
                                                 model,
                                                 imageProtocol: undefined,

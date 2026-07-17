@@ -122,6 +122,8 @@ pub struct CloudImageGenerationRequest {
     client_request_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_channel_id: Option<String>,
     model: String,
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +151,19 @@ pub struct CloudImageModelsResponse {
     provider: String,
     default_model: Option<String>,
     models: Vec<String>,
+    #[serde(default)]
+    channels: Vec<CloudImageModelChannel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageModelChannel {
+    id: String,
+    name: String,
+    provider: String,
+    default_model: Option<String>,
+    models: Vec<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -136,6 +136,7 @@ export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
 export type CanvasAiBaseImageOptions = {
   apiKey: string;
   cloudWallet?: boolean;
+  providerChannelId?: string;
   gatewayKind?: AiGatewayKind;
   apiProvider?: string;
   licenseManaged?: boolean;
@@ -172,6 +173,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
       request: {
         clientRequestId,
         provider: options.provider,
+        providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,

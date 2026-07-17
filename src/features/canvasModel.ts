@@ -86,6 +86,7 @@ export type CanvasRifeEngineProgress = {
 export type CanvasAiItemData = {
   type: CanvasAiItemType;
   provider?: CanvasAiProvider;
+  providerChannelId?: string;
   credentialSource?: CanvasAiCredentialSource;
   endpoint?: string;
   model?: string;
