@@ -252,6 +252,22 @@ fn cloud_error(code: &str, fallback: &str) -> String {
     format!("{code}: {localized_message}")
 }
 
+fn cloud_http_fallback(status: reqwest::StatusCode, body: &str) -> String {
+    let compact = body
+        .replace(['\r', '\n', '\t'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let detail = if compact.starts_with('<') {
+        "代理服务器返回了非 JSON 错误".to_string()
+    } else if compact.is_empty() {
+        "服务器没有返回错误正文".to_string()
+    } else {
+        compact.chars().take(500).collect::<String>()
+    };
+    format!("云端请求失败（HTTP {}）：{detail}", status.as_u16())
+}
+
 async fn post_cloud<T: for<'de> Deserialize<'de>>(
     path: &str,
     request_body: &impl Serialize,
@@ -273,6 +289,7 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
         .map_err(|err| format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"))?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let fallback = cloud_http_fallback(status, &body);
         let code = parsed
             .as_ref()
             .and_then(|value| value.error.as_deref())
@@ -280,7 +297,7 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
         let message = parsed
             .as_ref()
             .and_then(|value| value.message.as_deref())
-            .unwrap_or("云端请求失败");
+            .unwrap_or(&fallback);
         return Err(cloud_error(code, message));
     }
     serde_json::from_str::<T>(&body)
@@ -319,6 +336,7 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
         .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let fallback = cloud_http_fallback(status, &body);
         let code = parsed
             .as_ref()
             .and_then(|value| value.error.as_deref())
@@ -326,7 +344,7 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
         let message = parsed
             .as_ref()
             .and_then(|value| value.message.as_deref())
-            .unwrap_or("云端请求失败");
+            .unwrap_or(&fallback);
         return Err(cloud_error(code, message));
     }
     serde_json::from_str::<T>(&body)
