@@ -951,6 +951,11 @@ const collectImageStrings = (value: unknown, output: string[] = []): string[] =>
 
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
+    const inlineMime = record.mime_type ?? record.mimeType;
+    const inlineData = record.data;
+    if (typeof inlineMime === 'string' && inlineMime.startsWith('image/') && typeof inlineData === 'string') {
+      output.push(`data:${inlineMime};base64,${inlineData.replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')}`);
+    }
     for (const [key, nested] of Object.entries(record)) {
       const normalizedKey = key.toLowerCase();
       if (typeof nested === 'string') {
@@ -1839,6 +1844,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
           ...imageParams,
           ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
           messages: [{ role: 'user', content: chatContent }],
+          modalities: ['text', 'image'],
           stream: false,
           max_tokens: 8192,
         },
