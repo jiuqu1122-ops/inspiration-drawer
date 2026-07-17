@@ -134,6 +134,7 @@ import {
   CANVAS_MIN_SCALE,
   type CanvasFolderImportPrompt,
   type CanvasAiGeneratedOutput,
+  type CanvasAiCredentialSource,
   type CanvasAiProvider,
   type CanvasImageItem,
   type CanvasItemBox,
@@ -588,6 +589,12 @@ type CloudAccountSummary = {
   email?: string | null;
   displayName?: string | null;
   wallet: CloudWalletSummary;
+};
+
+type CloudImageModelsResult = {
+  provider: string;
+  defaultModel?: string | null;
+  models: string[];
 };
 
 type CreditRedemptionResult = {
@@ -3095,6 +3102,34 @@ const canvasAiProviderForGateway = (
   }
   return normalizeCanvasAiProvider(provider);
 };
+const canvasAiProviderForCloudKind = (provider?: string | null): CanvasAiProvider => {
+  const normalized = String(provider || '').trim().toUpperCase();
+  if (normalized === 'NEW_API') return 'new-api';
+  if (normalized === 'XAIS') return 'xais-chat';
+  return normalizeCanvasAiProvider(provider);
+};
+const canvasAiModelChoiceValue = (
+  source: CanvasAiCredentialSource,
+  provider: CanvasAiProvider,
+  model: string,
+) => JSON.stringify([source, provider, model]);
+const parseCanvasAiModelChoiceValue = (value: string) => {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 3) return null;
+    const [source, provider, model] = parsed;
+    if (source !== 'wallet' && source !== 'local') return null;
+    if (!CANVAS_AI_PROVIDER_VALUES.includes(provider as CanvasAiProvider)) return null;
+    if (typeof model !== 'string' || !model.trim()) return null;
+    return {
+      source: source as CanvasAiCredentialSource,
+      provider: provider as CanvasAiProvider,
+      model: model.trim(),
+    };
+  } catch {
+    return null;
+  }
+};
 const getStoredCanvasAiProvider = () => {
   const storedProvider = localStorage.getItem(CANVAS_AI_PROVIDER_STORAGE_KEY);
   return normalizeCanvasAiProvider(storedProvider);
@@ -4139,6 +4174,7 @@ function MainApp() {
   const [canvasAiOpenAiModels, setCanvasAiOpenAiModels] = useState<string[]>(() => readStoredCanvasAiOpenAiModels());
   const [canvasAiNewApiModels, setCanvasAiNewApiModels] = useState<string[]>(() => readStoredCanvasAiNewApiModels());
   const [canvasAiXaisModels, setCanvasAiXaisModels] = useState<string[]>(() => readStoredCanvasAiXaisModels());
+  const [canvasAiCloudImageModels, setCanvasAiCloudImageModels] = useState<CloudImageModelsResult | null>(null);
   const [isRefreshingCanvasAiOpenAiModels, setIsRefreshingCanvasAiOpenAiModels] = useState(false);
   const [isTestingCanvasAiConnection, setIsTestingCanvasAiConnection] = useState(false);
   const [canvasAiOpenAiModelError, setCanvasAiOpenAiModelError] = useState('');
@@ -6000,6 +6036,105 @@ function MainApp() {
     }));
   }, [canvasAiXaisModels, canvasItems]);
 
+  const canvasAiUnifiedImageModelOptions = useMemo<RoundedSelectOption[]>(() => {
+    const options: RoundedSelectOption[] = [];
+    const seen = new Set<string>();
+    const addModel = (
+      source: CanvasAiCredentialSource,
+      provider: CanvasAiProvider,
+      rawModel: string,
+    ) => {
+      const model = rawModel.trim();
+      if (!model) return;
+      const value = canvasAiModelChoiceValue(source, provider, model);
+      if (seen.has(value)) return;
+      seen.add(value);
+      const label = provider === 'new-api'
+        ? getNewApiImageModelDisplayName(model)
+        : provider === 'xais-chat'
+          ? getXaisImageModelDisplayName(model)
+          : model;
+      const modelIdHint = label !== model ? ` · 模型 ID：${model}` : '';
+      options.push({
+        value,
+        label,
+        hint: source === 'local'
+          ? `使用本地额度${modelIdHint}`
+          : `使用授权钱包额度${modelIdHint}`,
+        meta: source === 'local' ? '本地额度' : '钱包',
+        section: source === 'local' ? '本地 API' : '授权钱包',
+        sectionHint: source === 'local' ? '消耗本地 API 余额' : '消耗钱包额度',
+      });
+    };
+
+    if (canvasAiCloudImageModels) {
+      const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
+      canvasAiCloudImageModels.models.forEach(model => addModel('wallet', provider, model));
+    }
+
+    const localModelSources: Array<{ provider: CanvasAiProvider; models: string[] }> = [
+      { provider: 'new-api', models: canvasAiNewApiModels },
+      { provider: 'xais-chat', models: canvasAiXaisModels },
+      { provider: 'openai-compatible', models: canvasAiOpenAiModels },
+      { provider: 'custom', models: canvasAiOpenAiModels },
+    ];
+    localModelSources.forEach(({ provider, models }) => {
+      const apiKey = provider === canvasAiProvider
+        ? canvasAiApiKey.trim()
+        : getStoredCanvasAiApiKey(provider).trim();
+      if (!apiKey) return;
+      models.forEach(model => addModel('local', provider, model));
+    });
+    return options;
+  }, [
+    canvasAiApiKey,
+    canvasAiCloudImageModels,
+    canvasAiNewApiModels,
+    canvasAiOpenAiModels,
+    canvasAiProvider,
+    canvasAiXaisModels,
+  ]);
+
+  const getCanvasAiImageCredentialSource = (
+    provider: CanvasAiProvider,
+    model: string,
+    source?: CanvasAiCredentialSource,
+  ): CanvasAiCredentialSource => {
+    if (source) return source;
+    if (!canvasAiCloudImageModels) return 'local';
+    const cloudProvider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
+    return cloudProvider === provider && canvasAiCloudImageModels.models.includes(model)
+      ? 'wallet'
+      : 'local';
+  };
+
+  const getCanvasAiUnifiedImageModelOptions = (
+    provider: CanvasAiProvider,
+    model: string,
+    source?: CanvasAiCredentialSource,
+  ) => {
+    const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source);
+    const selectedValue = canvasAiModelChoiceValue(resolvedSource, provider, model);
+    if (canvasAiUnifiedImageModelOptions.some(option => option.value === selectedValue)) {
+      return canvasAiUnifiedImageModelOptions;
+    }
+    const label = provider === 'new-api'
+      ? getNewApiImageModelDisplayName(model)
+      : provider === 'xais-chat'
+        ? getXaisImageModelDisplayName(model)
+        : model;
+    return [
+      ...canvasAiUnifiedImageModelOptions,
+      {
+        value: selectedValue,
+        label,
+        hint: resolvedSource === 'local' ? '使用本地额度' : '使用授权钱包额度',
+        meta: resolvedSource === 'local' ? '本地额度' : '钱包',
+        section: resolvedSource === 'local' ? '本地 API' : '授权钱包',
+      },
+    ];
+  };
+
   const getCanvasAiModelOptionsForProvider = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
     mediaType === 'video'
       ? provider === 'new-api' ? canvasAiNewApiVideoModelOptions : XAIS_CHAT_VIDEO_MODEL_OPTIONS
@@ -6015,14 +6150,10 @@ function MainApp() {
     const trimmed = String(model || '').trim();
     if (provider === 'xais-chat' && mediaType === 'video') return XAIS_CHAT_VIDEO_MODEL_DEFAULT;
     if (provider === 'xais-chat' && mediaType === 'image') {
-      const normalized = normalizeXaisImage2Model(trimmed || getCanvasAiDefaultModel(provider, mediaType));
-      return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized)
-        ? normalized
-        : XAIS_CHAT_IMAGE_MODEL_DEFAULT;
+      return normalizeXaisImage2Model(trimmed || getCanvasAiDefaultModel(provider, mediaType));
     }
     if (provider === 'new-api' && mediaType === 'image') {
-      const remoteModels = canvasAiNewApiModels.map(value => value.trim()).filter(Boolean);
-      if (remoteModels.length > 0 && (!trimmed || !remoteModels.includes(trimmed))) return remoteModels[0];
+      return trimmed || getCanvasAiDefaultModel(provider, mediaType);
     }
     if (provider === 'new-api' && mediaType === 'video') {
       const remoteModels = canvasAiNewApiModels.map(value => value.trim()).filter(Boolean);
@@ -6097,7 +6228,9 @@ function MainApp() {
   }, [canvasWorkflowTemplates]);
   const licenseAiAccess = licenseStatus?.valid ? licenseStatus.ai_access : null;
   const isAgentAiLicenseManaged = licenseAiAccess?.mode === 'license_managed';
-  const isCanvasAiLicenseManaged = !canvasAiApiKey.trim()
+  const canvasAiUsesCloudImageModels = Boolean(cloudAccount);
+  const isCanvasAiLicenseManaged = !cloudAccount
+    && !canvasAiApiKey.trim()
     && licenseAiAccess?.mode === 'license_managed'
     && !!licenseAiAccess.canvas_provider
     && !!licenseAiAccess.canvas_base_url
@@ -6106,7 +6239,12 @@ function MainApp() {
     licenseAiAccess?.canvas_gateway_kind,
     licenseAiAccess?.canvas_provider,
   );
-  const effectiveCanvasAiProvider = isCanvasAiLicenseManaged ? managedCanvasAiProvider : canvasAiProvider;
+  const cloudCanvasAiProvider = canvasAiCloudImageModels
+    ? canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider)
+    : null;
+  const effectiveCanvasAiProvider = canvasAiUsesCloudImageModels && cloudCanvasAiProvider
+    ? cloudCanvasAiProvider
+    : isCanvasAiLicenseManaged ? managedCanvasAiProvider : canvasAiProvider;
   const effectiveCanvasAiGatewayKind = isCanvasAiLicenseManaged
     ? licenseAiAccess?.canvas_gateway_kind || canvasAiGatewayKindForProvider(managedCanvasAiProvider)
     : canvasAiGatewayKindForProvider(canvasAiProvider);
@@ -6122,15 +6260,20 @@ function MainApp() {
   const canvasAiHasApiCredential = isCanvasAiLicenseManaged || !!canvasAiApiKey.trim();
   const canvasAiHasModelCredential = canvasAiHasApiCredential
     || (effectiveCanvasAiProvider === 'new-api' && !!canvasAiNewApiVideoKey.trim());
+  const canvasAiCanRefreshModels = canvasAiUsesCloudImageModels || (
+    Boolean((effectiveCanvasAiEndpoint || canvasAiEndpoint).trim()) && canvasAiHasModelCredential
+  );
   const managedCanvasAiProviderLabel = `高级版授权 · ${licenseAiAccess?.canvas_gateway_kind || managedCanvasAiProvider}`;
-  const canvasAiRemoteModelCount = effectiveCanvasAiProvider === 'xais-chat'
+  const canvasAiRemoteModelCount = canvasAiUsesCloudImageModels
+    ? canvasAiCloudImageModels?.models.length || 0
+    : effectiveCanvasAiProvider === 'xais-chat'
     ? canvasAiXaisModels.length
     : effectiveCanvasAiProvider === 'new-api'
       ? canvasAiNewApiModels.length
     : canvasAiOpenAiModels.length;
   const canvasAiRemoteModelEmptyHint = effectiveCanvasAiProvider === 'xais-chat'
-    ? '填入 Key 后自动读取 /v1/models'
-    : '填入 Key 和 URL 后自动刷新';
+    ? canvasAiUsesCloudImageModels ? '从授权钱包生图渠道读取模型' : '填入 Key 后自动读取 /v1/models'
+    : canvasAiUsesCloudImageModels ? '从授权钱包生图渠道读取模型' : '填入 Key 和 URL 后自动刷新';
   const canvasAiXaisBalanceText = canvasAiXaisBalance.status === 'success'
     ? canvasAiXaisBalance.message || '余额已读取'
     : canvasAiXaisBalance.status === 'loading'
@@ -6202,41 +6345,62 @@ function MainApp() {
           canvasAiApiKey.trim(),
           ...(provider === 'new-api' ? [canvasAiNewApiVideoKey.trim()] : []),
         ].filter(Boolean)));
-    if (!endpoint || (apiKeys.length === 0 && !isCanvasAiLicenseManaged)) return;
-    const keySignature = isCanvasAiLicenseManaged ? 'managed' : apiKeys.join('\n');
+    if (!canvasAiUsesCloudImageModels && (!endpoint || (apiKeys.length === 0 && !isCanvasAiLicenseManaged))) return;
+    const keySignature = canvasAiUsesCloudImageModels
+      ? 'cloud-wallet-image-models'
+      : isCanvasAiLicenseManaged ? 'managed' : apiKeys.join('\n');
     canvasAiModelRefreshSignatureRef.current = `${provider}\n${effectiveCanvasAiGatewayKind}\n${effectiveCanvasAiApiProvider}\n${endpoint}\n${keySignature}\n${effectiveCanvasAiModel}\n${canvasAiHeadersText}`;
     setIsRefreshingCanvasAiOpenAiModels(true);
     setCanvasAiOpenAiModelError('');
     try {
-      const modelResults = await Promise.allSettled(apiKeys.map(apiKey => invoke<string[]>('get_openai_compatible_models', {
-        endpoint,
-        apiKey,
-        gatewayKind: effectiveCanvasAiGatewayKind,
-        provider: effectiveCanvasAiApiProvider,
-        model: effectiveCanvasAiModel,
-        headers: isCanvasAiLicenseManaged ? undefined : parseCanvasAiHeaders(canvasAiHeadersText),
-      })));
-      const successfulModels = modelResults.flatMap(result => result.status === 'fulfilled' ? result.value || [] : []);
-      if (successfulModels.length === 0 && modelResults.some(result => result.status === 'rejected')) {
-        const failure = modelResults.find(result => result.status === 'rejected');
-        throw failure && failure.status === 'rejected' ? failure.reason : new Error('模型列表为空');
-      }
+      let detectedProvider = provider;
+      let detectedDefaultModel = '';
+      const successfulModels = canvasAiUsesCloudImageModels
+        ? await (async () => {
+          const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', { provider });
+          detectedProvider = canvasAiProviderForCloudKind(result.provider);
+          detectedDefaultModel = String(result.defaultModel || '').trim();
+          return result.models || [];
+        })()
+        : await (async () => {
+          const modelResults = await Promise.allSettled(apiKeys.map(apiKey => invoke<string[]>('get_openai_compatible_models', {
+            endpoint,
+            apiKey,
+            gatewayKind: effectiveCanvasAiGatewayKind,
+            provider: effectiveCanvasAiApiProvider,
+            model: effectiveCanvasAiModel,
+            headers: isCanvasAiLicenseManaged ? undefined : parseCanvasAiHeaders(canvasAiHeadersText),
+          })));
+          const models = modelResults.flatMap(result => result.status === 'fulfilled' ? result.value || [] : []);
+          if (models.length === 0 && modelResults.some(result => result.status === 'rejected')) {
+            const failure = modelResults.find(result => result.status === 'rejected');
+            throw failure && failure.status === 'rejected' ? failure.reason : new Error('模型列表为空');
+          }
+          return models;
+        })();
       const rawModels = successfulModels.map(model => model.trim()).filter(Boolean);
-      const normalized = provider === 'xais-chat'
-        ? sortCanvasAiModelsForProvider(provider, Array.from(new Set(rawModels
-            .map(model => normalizeXaisImage2Model(model))
-            .filter(model => XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === model)))))
-        : sortCanvasAiModelsForProvider(provider, Array.from(new Set(rawModels)));
-      if (provider === 'xais-chat') {
+      const normalized = detectedProvider === 'xais-chat'
+        ? sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels
+            .map(model => normalizeXaisImage2Model(model)))))
+        : sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels)));
+      if (canvasAiUsesCloudImageModels) {
+        setCanvasAiCloudImageModels({
+          provider: detectedProvider,
+          defaultModel: detectedDefaultModel || null,
+          models: normalized,
+        });
+      } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
-      } else if (provider === 'new-api') {
+      } else if (detectedProvider === 'new-api') {
         setCanvasAiNewApiModels(normalized);
       } else {
         setCanvasAiOpenAiModels(normalized);
       }
-      localStorage.setItem(getCanvasAiRemoteStorageKey(provider), JSON.stringify(normalized));
-      const preferredDefaultModel = getCanvasAiDefaultModel(provider);
-      const preferredImageModel = isOpenAiLikeCanvasAiProvider(provider)
+      if (!canvasAiUsesCloudImageModels) {
+        localStorage.setItem(getCanvasAiRemoteStorageKey(detectedProvider), JSON.stringify(normalized));
+      }
+      const preferredDefaultModel = detectedDefaultModel || getCanvasAiDefaultModel(detectedProvider);
+      const preferredImageModel = isOpenAiLikeCanvasAiProvider(detectedProvider)
         ? normalized.find(isCanvasAiLikelyOpenAiImageModel)
         : '';
       const nextDefaultModel = normalized.includes(preferredDefaultModel)
@@ -6247,9 +6411,13 @@ function MainApp() {
         updateCanvasItemsImmediate(prev => prev.map(item => {
           const itemProvider = normalizeCanvasAiProvider(item.ai?.provider || canvasAiProvider);
           const needsImageModel = item.ai?.type === 'image-generator'
-            && itemProvider === provider
-            && (!item.ai.model || !normalized.includes(item.ai.model));
-          const needsVideoModel = provider === 'new-api'
+            && (canvasAiUsesCloudImageModels
+              ? item.ai?.credentialSource !== 'local'
+                && (itemProvider !== detectedProvider || !item.ai.model || !normalized.includes(item.ai.model))
+              : itemProvider === detectedProvider
+                && (!item.ai.model || !normalized.includes(item.ai.model)));
+          const needsVideoModel = !canvasAiUsesCloudImageModels
+            && detectedProvider === 'new-api'
             && item.ai?.type === 'video-generator'
             && itemProvider === 'new-api'
             && (!item.ai.model || !normalized.includes(item.ai.model));
@@ -6258,6 +6426,10 @@ function MainApp() {
               ...item,
               ai: {
                 ...item.ai!,
+                ...(needsImageModel && canvasAiUsesCloudImageModels ? {
+                  provider: detectedProvider,
+                  credentialSource: 'wallet' as const,
+                } : {}),
                 model: needsVideoModel ? nextVideoModel : nextDefaultModel,
               },
             };
@@ -6286,18 +6458,20 @@ function MainApp() {
           ...(effectiveCanvasAiProvider === 'new-api' ? [canvasAiNewApiVideoKey.trim()] : []),
         ].filter(Boolean)));
     const endpoint = getCanvasAiEndpointForModels(effectiveCanvasAiProvider, effectiveCanvasAiEndpoint || canvasAiEndpoint).trim();
-    if ((apiKeys.length === 0 && !isCanvasAiLicenseManaged) || !endpoint) {
+    if (!canvasAiUsesCloudImageModels && ((apiKeys.length === 0 && !isCanvasAiLicenseManaged) || !endpoint)) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
-    const signature = `${effectiveCanvasAiProvider}\n${effectiveCanvasAiGatewayKind}\n${effectiveCanvasAiApiProvider}\n${endpoint}\n${apiKeys.join('\n')}\n${effectiveCanvasAiModel}\n${canvasAiHeadersText}`;
+    const signature = canvasAiUsesCloudImageModels
+      ? `${effectiveCanvasAiProvider}\ncloud-wallet-image-models`
+      : `${effectiveCanvasAiProvider}\n${effectiveCanvasAiGatewayKind}\n${effectiveCanvasAiApiProvider}\n${endpoint}\n${apiKeys.join('\n')}\n${effectiveCanvasAiModel}\n${canvasAiHeadersText}`;
     if (canvasAiModelRefreshSignatureRef.current === signature) return;
     const timer = window.setTimeout(() => {
       canvasAiModelRefreshSignatureRef.current = signature;
       void refreshCanvasAiOpenAiModels(true);
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [isCanvasMode, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged]);
+  }, [isCanvasMode, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
 
   const getAiAnalysisConfig = (): AiAnalysisConfig => ({
     provider: aiApiProvider,
@@ -17325,7 +17499,20 @@ function MainApp() {
     const requestedProvider = normalizeCanvasAiProvider(
       target.ai.provider || (mediaType === 'video' ? 'xais-chat' : canvasAiProvider)
     );
-    const provider = isCanvasAiLicenseManaged ? effectiveCanvasAiProvider : requestedProvider;
+    const imageCredentialSource = mediaType === 'image'
+      ? getCanvasAiImageCredentialSource(
+        requestedProvider,
+        getCanvasAiResolvedModel(requestedProvider, target.ai.model, mediaType),
+        target.ai?.credentialSource,
+      )
+      : undefined;
+    const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
+      && !isCanvasAiLicenseManaged
+      && Boolean(cloudAccount)
+      && (mediaType !== 'image' || imageCredentialSource !== 'local');
+    const provider = useCloudWallet && mediaType === 'image' && cloudCanvasAiProvider
+      ? cloudCanvasAiProvider
+      : isCanvasAiLicenseManaged ? effectiveCanvasAiProvider : requestedProvider;
     const providerApiKey = provider === canvasAiProvider
       ? canvasAiApiKey
       : getStoredCanvasAiApiKey(provider);
@@ -17334,9 +17521,6 @@ function MainApp() {
       : (mediaType === 'video' && provider === 'new-api'
         ? canvasAiNewApiVideoKey.trim() || providerApiKey.trim()
         : providerApiKey.trim());
-    const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
-      && !isCanvasAiLicenseManaged
-      && Boolean(cloudAccount);
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
@@ -29259,7 +29443,7 @@ useEffect(() => {
                                             <button
                                               type="button"
                                               onClick={() => refreshCanvasAiOpenAiModels(false)}
-                                              disabled={isRefreshingCanvasAiOpenAiModels || !(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasModelCredential}
+                                              disabled={isRefreshingCanvasAiOpenAiModels || !canvasAiCanRefreshModels}
                                               className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-bold text-cyan-700 disabled:opacity-45 dark:bg-cyan-900/35 dark:text-cyan-200"
                                             >
                                               {isRefreshingCanvasAiOpenAiModels ? '刷新中' : '刷新模型'}
@@ -31080,6 +31264,7 @@ useEffect(() => {
                                             </>
                                           ) : (
                                             <>
+                                          {canvasAiMediaType === 'video' && (
                                           <RoundedSelect
                                             data-no-drag="true"
                                             value={canvasAiItemProvider}
@@ -31111,19 +31296,39 @@ useEffect(() => {
                                             menuMinWidth={190}
                                             menuScale={canvasAiNodeScale || 1}
                                           />
+                                          )}
                                           <RoundedSelect
                                             data-no-drag="true"
                                             data-canvas-edit-control="true"
-                                            value={canvasAiMediaType === 'image' && canvasAiItemProvider === 'xais-chat'
-                                              ? normalizeXaisImage2Model(canvasAiItemModel)
+                                            value={canvasAiMediaType === 'image'
+                                              ? canvasAiModelChoiceValue(
+                                                getCanvasAiImageCredentialSource(
+                                                  canvasAiItemProvider,
+                                                  canvasAiItemModel,
+                                                  canvasItem.ai?.credentialSource,
+                                                ),
+                                                canvasAiItemProvider,
+                                                canvasAiItemModel,
+                                              )
                                               : canvasAiItemModel}
-                                            options={getCanvasAiModelOptionsForProvider(canvasAiItemProvider, canvasAiMediaType)}
+                                            options={canvasAiMediaType === 'image'
+                                              ? getCanvasAiUnifiedImageModelOptions(
+                                                canvasAiItemProvider,
+                                                canvasAiItemModel,
+                                                canvasItem.ai?.credentialSource,
+                                              )
+                                              : getCanvasAiModelOptionsForProvider(canvasAiItemProvider, canvasAiMediaType)}
                                             onChange={(value) => {
-                                              const provider = canvasAiItemProvider;
-                                              const model = canvasAiMediaType === 'image' && provider === 'xais-chat'
-                                                ? normalizeXaisImage2Model(value)
-                                                : value;
+                                              const choice = canvasAiMediaType === 'image'
+                                                ? parseCanvasAiModelChoiceValue(value)
+                                                : null;
+                                              const provider = choice?.provider || canvasAiItemProvider;
+                                              const model = choice?.model || value;
                                               updateCanvasAiGeneratorData(canvasItem.id, {
+                                                ...(choice ? {
+                                                  provider,
+                                                  credentialSource: choice.source,
+                                                } : {}),
                                                 model,
                                                 imageProtocol: undefined,
                                                 aspectRatio: normalizeCanvasAiAspectRatioForModel(
@@ -32152,7 +32357,7 @@ useEffect(() => {
                                 onPointerDown={stopCanvasEditEvent}
                                 onMouseDown={stopCanvasEditEvent}
                                 onClick={() => refreshCanvasAiOpenAiModels(false)}
-                                disabled={isRefreshingCanvasAiOpenAiModels || !(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasModelCredential}
+                                disabled={isRefreshingCanvasAiOpenAiModels || !canvasAiCanRefreshModels}
                                 className="h-[30px] shrink-0 rounded-[13px] bg-cyan-100 px-2 text-[10px] font-bold text-cyan-700 disabled:opacity-45 dark:bg-cyan-900/35 dark:text-cyan-200"
                               >
                                 {isRefreshingCanvasAiOpenAiModels ? '刷新中' : '模型'}

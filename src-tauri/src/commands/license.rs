@@ -120,12 +120,15 @@ pub struct CreditRedemptionResult {
 #[serde(rename_all = "camelCase")]
 pub struct CloudImageGenerationRequest {
     client_request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     model: String,
     prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     negative_prompt: Option<String>,
     input_images: Vec<String>,
     aspect_ratio: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
     output_format: String,
     count: u8,
@@ -142,15 +145,27 @@ pub struct CloudImageGenerationResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CloudImageModelsResponse {
+    provider: String,
+    default_model: Option<String>,
+    models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudVideoGenerationRequest {
     client_request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     model: String,
     prompt: String,
     input_images: Vec<String>,
     aspect_ratio: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     input_mode: Option<String>,
     count: u8,
 }
@@ -563,6 +578,57 @@ pub async fn generate_cloud_images(
         Duration::from_secs(6 * 60),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn get_cloud_image_models(
+    app_handle: tauri::AppHandle,
+    provider: Option<String>,
+) -> Result<CloudImageModelsResponse, String> {
+    // Kept for compatibility with older frontends. The wallet backend owns
+    // IMAGE channel selection, so the client provider must not constrain it.
+    let _ = provider;
+    let access_token = cloud_access_token(&app_handle).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
+    let request = client
+        .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
+        .bearer_auth(access_token);
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("cloud_unavailable: 无法连接生图模型服务：{error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("cloud_invalid_response: 无法读取生图模型：{error}"))?;
+    if !status.is_success() {
+        let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let code = parsed
+            .as_ref()
+            .and_then(|value| value.error.as_deref())
+            .unwrap_or("cloud_request_failed");
+        let message = parsed
+            .as_ref()
+            .and_then(|value| value.message.as_deref())
+            .unwrap_or("读取生图模型失败");
+        return Err(cloud_error(code, message));
+    }
+    let mut parsed = serde_json::from_str::<CloudImageModelsResponse>(&body)
+        .map_err(|_| "cloud_invalid_response: 生图模型列表格式无效".to_string())?;
+    let mut models = parsed
+        .models
+        .drain(..)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    parsed.models = models;
+    Ok(parsed)
 }
 
 #[tauri::command]
