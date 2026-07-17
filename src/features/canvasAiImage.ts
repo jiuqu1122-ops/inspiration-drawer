@@ -157,6 +157,13 @@ type CloudImageGenerationResult = {
   chargedCredits: string;
 };
 
+type CloudVideoGenerationResult = {
+  results: unknown[];
+  provider: string;
+  model: string;
+  chargedCredits: string;
+};
+
 const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -178,6 +185,58 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     const images = Array.from(new Set(result.images.map(value => value.trim()).filter(Boolean)));
     if (images.length === 0) throw new Error('授权钱包渠道没有返回图片数据');
     return images;
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
+  }
+};
+
+const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
+  const clientRequestId = options.clientRequestId?.trim()
+    || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const provider = options.provider === 'xais-chat' ? 'xais-chat' : 'new-api';
+  const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  try {
+    const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
+      request: {
+        clientRequestId,
+        provider,
+        model: String(options.model || '').trim(),
+        prompt: options.prompt.trim(),
+        inputImages: (options.inputImages || []).filter(Boolean).slice(0, provider === 'xais-chat' ? 13 : 8),
+        aspectRatio: String(options.aspectRatio || '16:9'),
+        resolution: options.resolution?.trim() || undefined,
+        duration: options.duration,
+        inputMode: options.inputMode,
+        count: requestCount,
+      },
+    });
+    const output: string[] = [];
+    const taskIds: string[] = [];
+    for (const item of result.results || []) {
+      output.push(...collectVideoStrings(item));
+      const taskId = getTaskIdFromResponse(item);
+      if (taskId) taskIds.push(taskId);
+    }
+    if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
+    if (taskIds.length === 0) throw new Error('云端视频渠道没有返回任务 ID 或视频地址');
+    const deadline = Date.now() + 25 * 60 * 1000;
+    for (const taskId of Array.from(new Set(taskIds))) {
+      let lastStatus: unknown = null;
+      while (Date.now() < deadline) {
+        await delay(2500);
+        lastStatus = await invoke<unknown>('get_cloud_video_status', { taskId, provider });
+        output.push(...collectVideoStrings(lastStatus));
+        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
+        const state = getNewApiVideoTaskState(lastStatus);
+        if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+          throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
+        }
+      }
+      const failure = getNewApiVideoFailureMessage(lastStatus);
+      if (failure) throw new Error(failure);
+    }
+    if (output.length === 0) throw new Error('云端视频任务超时或没有返回视频地址');
+    return Array.from(new Set(output)).slice(0, requestCount);
   } catch (error) {
     throw new Error(getErrorMessage(error));
   }
@@ -2052,6 +2111,7 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
+  if (options.cloudWallet) return generateCloudWalletVideos(options);
   if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);
   if (options.provider === 'new-api') return generateNewApiVideos(options);
   throw new Error(`当前 Gateway 不支持视频生成：${options.provider}`);

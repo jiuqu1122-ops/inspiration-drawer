@@ -140,6 +140,30 @@ pub struct CloudImageGenerationResult {
     charged_credits: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudVideoGenerationRequest {
+    client_request_id: String,
+    provider: Option<String>,
+    model: String,
+    prompt: String,
+    input_images: Vec<String>,
+    aspect_ratio: String,
+    resolution: Option<String>,
+    duration: Option<f64>,
+    input_mode: Option<String>,
+    count: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudVideoGenerationResult {
+    results: Vec<serde_json::Value>,
+    provider: String,
+    model: String,
+    charged_credits: String,
+}
+
 #[derive(Deserialize)]
 struct CloudApiError {
     error: Option<String>,
@@ -539,6 +563,72 @@ pub async fn generate_cloud_images(
         Duration::from_secs(6 * 60),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn generate_cloud_videos(
+    app_handle: tauri::AppHandle,
+    request: CloudVideoGenerationRequest,
+) -> Result<CloudVideoGenerationResult, String> {
+    let client_request_id = request.client_request_id.trim();
+    let model = request.model.trim();
+    let prompt = request.prompt.trim();
+    if client_request_id.len() < 8 || client_request_id.len() > 128 {
+        return Err("invalid_request: 视频请求 ID 无效".to_string());
+    }
+    if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
+        return Err("invalid_request: 视频模型或提示词无效".to_string());
+    }
+    if !(1..=4).contains(&request.count) || request.input_images.len() > 13 {
+        return Err("invalid_request: 视频数量或参考素材数量无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    post_cloud_with_bearer_timeout::<CloudVideoGenerationResult>(
+        "/v1/ai/videos",
+        &access_token,
+        &request,
+        Duration::from_secs(6 * 60),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_cloud_video_status(
+    app_handle: tauri::AppHandle,
+    task_id: String,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() || task_id.len() > 256 || !task_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':')) {
+        return Err("invalid_request: 视频任务 ID 无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
+    let mut request = client
+        .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
+        .bearer_auth(access_token);
+    if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
+        request = request.query(&[("provider", provider)]);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("cloud_unavailable: 无法连接额度服务器：{error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("cloud_invalid_response: 无法读取视频状态：{error}"))?;
+    if !status.is_success() {
+        let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let code = parsed.as_ref().and_then(|value| value.error.as_deref()).unwrap_or("cloud_request_failed");
+        let message = parsed.as_ref().and_then(|value| value.message.as_deref()).unwrap_or("视频状态查询失败");
+        return Err(cloud_error(code, message));
+    }
+    serde_json::from_str(&body).map_err(|_| "cloud_invalid_response: 视频状态格式无效".to_string())
 }
 
 #[tauri::command]

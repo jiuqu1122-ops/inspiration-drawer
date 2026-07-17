@@ -15692,6 +15692,8 @@ fn main() {
             commands::license::get_cloud_account,
             commands::license::redeem_credit_code,
             commands::license::generate_cloud_images,
+            commands::license::generate_cloud_videos,
+            commands::license::get_cloud_video_status,
             commands::license::import_license,
             commands::license::remove_license,
             commands::license::check_feature,

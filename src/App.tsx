@@ -17334,9 +17334,8 @@ function MainApp() {
       : (mediaType === 'video' && provider === 'new-api'
         ? canvasAiNewApiVideoKey.trim() || providerApiKey.trim()
         : providerApiKey.trim());
-    const useCloudWallet = mediaType === 'image'
+    const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
       && !isCanvasAiLicenseManaged
-      && !apiKey
       && Boolean(cloudAccount);
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
