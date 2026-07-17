@@ -288,6 +288,7 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
     request_body: &impl Serialize,
 ) -> Result<T, String> {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
@@ -334,6 +335,7 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     timeout: Duration,
 ) -> Result<T, String> {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(timeout)
         .build()
         .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
@@ -623,6 +625,7 @@ pub async fn get_cloud_image_models(
     let _ = provider;
     let access_token = cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
@@ -703,6 +706,7 @@ pub async fn get_cloud_video_status(
     }
     let access_token = cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
