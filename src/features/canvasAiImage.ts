@@ -1844,7 +1844,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
           ...imageParams,
           ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
           messages: [{ role: 'user', content: chatContent }],
-          modalities: ['text', 'image'],
+          modalities: ['image'],
           stream: false,
           max_tokens: 8192,
         },
