@@ -17831,10 +17831,9 @@ function MainApp() {
       const requestModel = isCanvasAiLicenseManaged && effectiveCanvasAiModel
         ? effectiveCanvasAiModel
         : getCanvasAiResolvedModel(provider, target.ai.model, mediaType);
-      const walletImageCandidateProviders = mediaType === 'image' && useCloudWallet
-        ? new Set((target.ai?.providerCandidates || []).map(candidate => candidate.provider))
-        : new Set<CanvasAiProvider>();
-      const usePortableWalletReferences = walletImageCandidateProviders.size > 1;
+      const usePortableWalletReferences = mediaType === 'image'
+        && useCloudWallet
+        && (target.ai?.providerCandidates?.length || 0) > 1;
       const isXaisWorkerRequest = provider === 'xais-chat'
         && (mediaType === 'video' || isCanvasAiXaisWorkerModel(requestModel));
       const xaisReferenceFormat: 'any' | 'jpeg' = !usePortableWalletReferences
@@ -17850,7 +17849,9 @@ function MainApp() {
       const preparedInputs = await getCanvasImageInputsForNode(
         target,
         inputMode,
-        isXaisWorkerRequest ? 'remote-only' : useDirectReferenceImages ? 'direct' : 'auto',
+        usePortableWalletReferences || isXaisWorkerRequest
+          ? 'remote-only'
+          : useDirectReferenceImages ? 'direct' : 'auto',
         getSourceItems(),
         xaisReferenceFormat
       );
