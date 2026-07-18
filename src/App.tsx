@@ -1018,6 +1018,7 @@ const CANVAS_AI_DEFAULT_IMAGE_RESOLUTION = '2k';
 const CANVAS_AI_DEFAULT_VIDEO_DURATION = 15;
 const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
 const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
+const CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS = 5 * 60 * 1000;
 const CANVAS_AI_NEW_API_STUCK_TIMEOUT_MS = (NEW_API_IMAGE_REQUEST_TIMEOUT_SECS + 30) * 1000;
 const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
 const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
@@ -18280,13 +18281,13 @@ function MainApp() {
       return [] as CanvasAiGeneratedOutput[];
     } finally {
       if (temporaryReferenceShares.length > 0) {
-        if (mediaType === 'video') {
-          window.setTimeout(() => {
-            void stopTemporaryReferenceShares(temporaryReferenceShares);
-          }, CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS);
-        } else {
-          void stopTemporaryReferenceShares(temporaryReferenceShares);
-        }
+        const keepaliveMs = mediaType === 'video'
+          ? CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS
+          : CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS;
+        const sharesToStop = [...temporaryReferenceShares];
+        window.setTimeout(() => {
+          void stopTemporaryReferenceShares(sharesToStop);
+        }, keepaliveMs);
       }
     }
   };
