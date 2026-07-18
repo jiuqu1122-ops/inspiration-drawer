@@ -135,6 +135,8 @@ describe('unified wallet image model families', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_unavailable'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('上游算力紧张，请稍后再试'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('service overloaded: no available worker'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, operation copy failed: source path does not exist'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, internal server error'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('channel returned no image data'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
