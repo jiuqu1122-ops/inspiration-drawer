@@ -8288,6 +8288,31 @@ function MainApp() {
   };
 
   const testCanvasAiConnection = async () => {
+    if (canvasAiUsesCloudImageModels) {
+      setIsTestingCanvasAiConnection(true);
+      try {
+        const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', {
+          provider: effectiveCanvasAiProvider,
+        });
+        const channels = result.channels || [];
+        const successfulChannels = channels.filter(channel => !channel.error);
+        const models = Array.from(new Set((channels.length > 0
+          ? successfulChannels.flatMap(channel => channel.models || [])
+          : result.models || []).map(model => model.trim()).filter(Boolean)));
+        if (channels.length > 0 && successfulChannels.length === 0) {
+          throw new Error(channels.map(channel => `${channel.name}：${channel.error || '读取失败'}`).join('；'));
+        }
+        setCanvasAiCloudImageModels({ ...result, models });
+        showToast(channels.length > 0
+          ? `连接成功，读取到 ${successfulChannels.length}/${channels.length} 条生图渠道、${models.length} 个模型`
+          : `连接成功，读取到 ${models.length} 个模型`);
+      } catch (error) {
+        showToast(`授权钱包渠道测试失败：${String(error)}`);
+      } finally {
+        setIsTestingCanvasAiConnection(false);
+      }
+      return;
+    }
     const endpoint = getCanvasAiEndpointForModels(
       effectiveCanvasAiProvider,
       effectiveCanvasAiEndpoint || canvasAiEndpoint,
@@ -29494,7 +29519,7 @@ useEffect(() => {
                                             <button
                                               type="button"
                                               onClick={() => void testCanvasAiConnection()}
-                                              disabled={isTestingCanvasAiConnection || !(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential}
+                                              disabled={isTestingCanvasAiConnection || (!canvasAiUsesCloudImageModels && (!(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential))}
                                               className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700 disabled:opacity-45 dark:bg-violet-400/15 dark:text-violet-100"
                                             >
                                               {isTestingCanvasAiConnection ? '测试中' : '测试连接'}
@@ -32106,7 +32131,7 @@ useEffect(() => {
                                 onPointerDown={stopCanvasEditEvent}
                                 onMouseDown={stopCanvasEditEvent}
                                 onClick={() => void testCanvasAiConnection()}
-                                disabled={isTestingCanvasAiConnection || !(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential}
+                                disabled={isTestingCanvasAiConnection || (!canvasAiUsesCloudImageModels && (!(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential))}
                                 className="h-[30px] shrink-0 rounded-[13px] bg-violet-100 px-2 text-[10px] font-bold text-violet-700 disabled:opacity-45 dark:bg-violet-400/15 dark:text-violet-100"
                                 title="测试连接"
                               >
