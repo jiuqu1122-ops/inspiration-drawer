@@ -1038,6 +1038,14 @@ export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
   return /(?:insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|(?:provided|reference|input) image is not valid|invalid (?:provided|reference|input) image|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|operation copy failed|copy operation failed|source path does not exist|no such file|file (?:does not exist|not found)|余额不足|额度不足|渠道不可用|渠道鉴权失败|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满|源文件不存在|文件(?:复制失败|不存在|未找到))/i.test(message);
 };
 
+export const shouldRetrySameCanvasAiImageCandidate = (error: unknown) => {
+  const message = getErrorMessage(error).trim();
+  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
+  const status = statusMatch ? Number(statusMatch[1]) : 0;
+  if ([429, 503, 529].includes(status)) return true;
+  return /(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满/i.test(message);
+};
+
 export const getXaisImageModelDisplayName = (model?: string | null) => {
   const family = getCanvasAiImageModelFamily('xais-chat', model);
   if (family) return imageFamilyLabel(family);
@@ -2311,27 +2319,37 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
     );
     let lastError: unknown = null;
     for (const candidate of candidates) {
-      try {
-        const runtime = options.providerRuntime?.[candidate.provider];
-        return await generateCanvasAiProviderImages({
-          ...options,
-          provider: candidate.provider,
-          model: candidate.model,
-          providerChannelId: candidate.providerChannelId,
-          cloudWallet: candidate.source === 'wallet',
-          apiKey: runtime?.apiKey ?? options.apiKey,
-          endpoint: runtime?.endpoint ?? options.endpoint,
-          headers: runtime?.headers ?? options.headers,
-          apiProvider: runtime?.apiProvider ?? options.apiProvider,
-          gatewayKind: runtime?.gatewayKind ?? options.gatewayKind,
-          licenseManaged: runtime?.licenseManaged ?? options.licenseManaged,
-          providerCandidates: undefined,
-        });
-      } catch (error) {
-        if (!shouldTryNextCanvasAiImageCandidate(error)) throw error;
-        lastError = error;
-        console.warn('Canvas AI model candidate failed, trying next candidate', candidate, error);
+      let candidateError: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const runtime = options.providerRuntime?.[candidate.provider];
+          return await generateCanvasAiProviderImages({
+            ...options,
+            provider: candidate.provider,
+            model: candidate.model,
+            providerChannelId: candidate.providerChannelId,
+            cloudWallet: candidate.source === 'wallet',
+            apiKey: runtime?.apiKey ?? options.apiKey,
+            endpoint: runtime?.endpoint ?? options.endpoint,
+            headers: runtime?.headers ?? options.headers,
+            apiProvider: runtime?.apiProvider ?? options.apiProvider,
+            gatewayKind: runtime?.gatewayKind ?? options.gatewayKind,
+            licenseManaged: runtime?.licenseManaged ?? options.licenseManaged,
+            providerCandidates: undefined,
+          });
+        } catch (error) {
+          candidateError = error;
+          if (attempt === 0 && shouldRetrySameCanvasAiImageCandidate(error)) {
+            console.warn('Canvas AI preferred channel is temporarily busy; retrying the same channel', candidate, error);
+            await delay(1_200);
+            continue;
+          }
+          break;
+        }
       }
+      if (!shouldTryNextCanvasAiImageCandidate(candidateError)) throw candidateError;
+      lastError = candidateError;
+      console.warn('Canvas AI model candidate failed, trying next candidate', candidate, candidateError);
     }
     throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
   }

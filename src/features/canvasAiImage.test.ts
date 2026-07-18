@@ -25,6 +25,7 @@ import {
   normalizeNewApiBaseEndpoint,
   selectCanvasAiImageCandidatesForResolution,
   sortCanvasAiImageCandidatesByChannelPriority,
+  shouldRetrySameCanvasAiImageCandidate,
   shouldTryNextCanvasAiImageCandidate,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
@@ -155,6 +156,14 @@ describe('unified wallet image model families', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, internal server error'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('channel returned no image data'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
+  });
+
+  it('retries a temporarily busy preferred channel before falling back', () => {
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 429: rate limit exceeded'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('status_code=503, service unavailable'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('上游算力紧张，请稍后再试'))).toBe(true);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('HTTP 402: insufficient credits'))).toBe(false);
+    expect(shouldRetrySameCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
 
   it('routes GPT Image 2 and GPT Image 2 H to their matching XAIS clarity variants', () => {
