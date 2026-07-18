@@ -23,6 +23,13 @@ export type CanvasImageItem = {
 export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'custom';
 export type CanvasAiCredentialSource = 'wallet' | 'local';
 
+export type CanvasAiModelCandidate = {
+  source: CanvasAiCredentialSource;
+  provider: CanvasAiProvider;
+  model: string;
+  providerChannelId?: string;
+};
+
 export type CanvasAiMediaType = 'image' | 'video';
 
 export type NewApiImageProtocol =
@@ -88,6 +95,7 @@ export type CanvasAiItemData = {
   provider?: CanvasAiProvider;
   providerChannelId?: string;
   credentialSource?: CanvasAiCredentialSource;
+  providerCandidates?: CanvasAiModelCandidate[];
   endpoint?: string;
   model?: string;
   imageProtocol?: NewApiImageProtocol;

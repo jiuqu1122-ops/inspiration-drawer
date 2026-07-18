@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AiGatewayKind } from './agentModel';
-import type { NewApiImageProtocol } from './canvasModel';
+import type { CanvasAiModelCandidate, NewApiImageProtocol } from './canvasModel';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -137,6 +137,15 @@ export type CanvasAiBaseImageOptions = {
   apiKey: string;
   cloudWallet?: boolean;
   providerChannelId?: string;
+  providerCandidates?: CanvasAiModelCandidate[];
+  providerRuntime?: Record<string, {
+    apiKey?: string;
+    endpoint?: string;
+    headers?: Record<string, string>;
+    apiProvider?: string;
+    gatewayKind?: AiGatewayKind;
+    licenseManaged?: boolean;
+  }>;
   gatewayKind?: AiGatewayKind;
   apiProvider?: string;
   licenseManaged?: boolean;
@@ -202,6 +211,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       request: {
         clientRequestId,
         provider,
+        providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
         inputImages: (options.inputImages || []).filter(Boolean).slice(0, provider === 'xais-chat' ? 13 : 8),
@@ -230,6 +240,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
           taskId,
           provider,
           clientRequestId,
+          providerChannelId: options.providerChannelId?.trim() || undefined,
         });
         output.push(...collectVideoStrings(lastStatus));
         if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
@@ -2116,6 +2127,32 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
+  if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 1) {
+    let lastError: unknown = null;
+    for (const candidate of options.providerCandidates) {
+      try {
+        const runtime = options.providerRuntime?.[candidate.provider];
+        return await generateCanvasAiProviderImages({
+          ...options,
+          provider: candidate.provider,
+          model: candidate.model,
+          providerChannelId: candidate.providerChannelId,
+          cloudWallet: candidate.source === 'wallet',
+          apiKey: runtime?.apiKey ?? options.apiKey,
+          endpoint: runtime?.endpoint ?? options.endpoint,
+          headers: runtime?.headers ?? options.headers,
+          apiProvider: runtime?.apiProvider ?? options.apiProvider,
+          gatewayKind: runtime?.gatewayKind ?? options.gatewayKind,
+          licenseManaged: runtime?.licenseManaged ?? options.licenseManaged,
+          providerCandidates: undefined,
+        });
+      } catch (error) {
+        lastError = error;
+        console.warn('Canvas AI model candidate failed, trying next candidate', candidate, error);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
+  }
   if (options.cloudWallet) return generateCloudWalletImages(options);
   if (options.provider === 'xais-chat') return generateXaisChatImages(options);
   if (options.provider === 'new-api') return generateNewApiImages(options);
@@ -2123,6 +2160,32 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
+  if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 1) {
+    let lastError: unknown = null;
+    for (const candidate of options.providerCandidates) {
+      try {
+        const runtime = options.providerRuntime?.[candidate.provider];
+        return await generateCanvasAiProviderVideos({
+          ...options,
+          provider: candidate.provider,
+          model: candidate.model,
+          providerChannelId: candidate.providerChannelId,
+          cloudWallet: candidate.source === 'wallet',
+          apiKey: runtime?.apiKey ?? options.apiKey,
+          endpoint: runtime?.endpoint ?? options.endpoint,
+          headers: runtime?.headers ?? options.headers,
+          apiProvider: runtime?.apiProvider ?? options.apiProvider,
+          gatewayKind: runtime?.gatewayKind ?? options.gatewayKind,
+          licenseManaged: runtime?.licenseManaged ?? options.licenseManaged,
+          providerCandidates: undefined,
+        });
+      } catch (error) {
+        lastError = error;
+        console.warn('Canvas AI video candidate failed, trying next candidate', candidate, error);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
+  }
   if (options.cloudWallet) return generateCloudWalletVideos(options);
   if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);
   if (options.provider === 'new-api') return generateNewApiVideos(options);

@@ -172,6 +172,8 @@ pub struct CloudVideoGenerationRequest {
     client_request_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_channel_id: Option<String>,
     model: String,
     prompt: String,
     input_images: Vec<String>,
@@ -700,6 +702,7 @@ pub async fn get_cloud_video_status(
     task_id: String,
     provider: Option<String>,
     client_request_id: Option<String>,
+    provider_channel_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let task_id = task_id.trim();
     if task_id.is_empty() || task_id.len() > 256 || !task_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':')) {
@@ -719,6 +722,9 @@ pub async fn get_cloud_video_status(
     }
     if let Some(client_request_id) = client_request_id.filter(|value| !value.trim().is_empty()) {
         request = request.query(&[("clientRequestId", client_request_id)]);
+    }
+    if let Some(provider_channel_id) = provider_channel_id.filter(|value| !value.trim().is_empty()) {
+        request = request.query(&[("providerChannelId", provider_channel_id)]);
     }
     let response = request
         .send()
