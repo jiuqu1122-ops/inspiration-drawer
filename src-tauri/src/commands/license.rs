@@ -612,7 +612,7 @@ pub async fn generate_cloud_images(
         "/v1/ai/images/generations",
         &access_token,
         &request,
-        Duration::from_secs(6 * 60),
+        Duration::from_secs(12 * 60),
     )
     .await
 }
