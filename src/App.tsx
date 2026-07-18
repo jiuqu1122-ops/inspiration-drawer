@@ -15103,16 +15103,16 @@ function MainApp() {
 
     const attempts = preference === 'hosted-first'
       ? [
-        { label: 'Tmpfiles', run: publishViaTmpfiles },
         { label: 'Litterbox', run: publishViaLitterbox },
-        { label: 'R2', run: publishViaR2 },
         { label: 'cloudflared', run: publishViaCloudflared },
+        { label: 'R2', run: publishViaR2 },
+        { label: 'Tmpfiles', run: publishViaTmpfiles },
       ]
       : [
         { label: 'cloudflared', run: publishViaCloudflared },
-        { label: 'Tmpfiles', run: publishViaTmpfiles },
         { label: 'Litterbox', run: publishViaLitterbox },
         { label: 'R2', run: publishViaR2 },
+        { label: 'Tmpfiles', run: publishViaTmpfiles },
       ];
     const errors: Array<{ label: string; error: unknown }> = [];
     for (const attempt of attempts) {
@@ -15251,7 +15251,7 @@ function MainApp() {
         try {
           const published = await publishLocalAiInputs(
             localSources,
-            referenceFormat === 'jpeg' ? 'cloudflared-first' : 'hosted-first'
+            'cloudflared-first'
           );
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
