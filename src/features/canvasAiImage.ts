@@ -39,8 +39,6 @@ export const XAIS_CHAT_IMAGE_MODEL_OPTIONS = [
   { value: 'Xais Nano2_2K', label: 'Nano Banana 2 2K' },
   { value: 'Xais Nano2_4K', label: 'Nano Banana 2 4K' },
   { value: 'Xais Nano_Lite_1K', label: 'Nano Banana Lite 1K' },
-  { value: 'Xais Nano Pro_4K_png', label: 'Nano Banana Pro 4K png' },
-  { value: 'Xais Nano2_4K_png', label: 'Nano Banana 2 4K png' },
   { value: 'Xais img2_1k', label: 'Image2 1K' },
   { value: 'Xais Img2_2K', label: 'Image2 2K' },
   { value: 'Xais Img2_4K', label: 'Image2 4K' },
@@ -67,7 +65,7 @@ export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
 export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
 
 export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
-export type CanvasAiImageResolution = '2k' | '4k';
+export type CanvasAiImageResolution = '1k' | '2k' | '4k';
 
 const toImageModelToken = (model?: string | null) => (
   String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
@@ -117,16 +115,20 @@ export const isLikelyNewApiVideoModel = (model?: string | null) => {
 };
 
 export const normalizeCanvasAiImageResolution = (resolution?: string | null): CanvasAiImageResolution => (
-  String(resolution || '').trim().toLowerCase() === '4k' ? '4k' : '2k'
+  String(resolution || '').trim().toLowerCase() === '1k'
+    ? '1k'
+    : String(resolution || '').trim().toLowerCase() === '4k' ? '4k' : '2k'
 );
 
 export const supportsCanvasAiImageResolution = (
   provider?: string | null,
   model?: string | null,
 ) => {
-  if (provider === 'xais-chat') return false;
-  if (isGptImage2LikeModel(model)) return true;
-  return provider === 'new-api' && supportsNewApiImageFamilyResolution(model);
+  const family = getCanvasAiImageModelFamily(provider, model);
+  return family === 'nano-banana-pro'
+    || family === 'nano-banana-2'
+    || family === 'gpt-image-2'
+    || family === 'gpt-image-2-h';
 };
 
 export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
@@ -864,7 +866,134 @@ export const resolveXaisImageRequestModel = (model?: string | null) => {
   return XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL[normalized] || normalized || XAIS_CHAT_IMAGE_MODEL_DEFAULT;
 };
 
+export type CanvasAiImageModelFamily =
+  | 'nano-banana-pro'
+  | 'nano-banana-2'
+  | 'nano-banana-lite'
+  | 'gpt-image-2'
+  | 'gpt-image-2-h';
+
+const xaisModelTokens = (model?: string | null) => ({
+  raw: toXaisModelToken(model),
+  request: toXaisModelToken(resolveXaisImageRequestModel(model)),
+});
+
+export const getCanvasAiImageModelFamily = (
+  provider?: string | null,
+  model?: string | null,
+): CanvasAiImageModelFamily | null => {
+  if (provider === 'new-api') {
+    const newApiFamily = getNewApiImageModelFamily(model);
+    if (newApiFamily) return newApiFamily;
+    const token = toImageModelToken(model);
+    if (token.includes('nanobananapro')) return 'nano-banana-pro';
+    if (token.includes('nanobanana2')) return 'nano-banana-2';
+    if (token.includes('nanobananalite')) return 'nano-banana-lite';
+  }
+  if (isGptImage2LikeModel(model)) return 'gpt-image-2';
+  if (provider !== 'xais-chat') return null;
+
+  const { raw, request } = xaisModelTokens(model);
+  const combined = `${raw}|${request}`;
+  const isImage2High = /(?:img2|image2)(?:2k|4k)(?:h|hq|high|highquality)(?:$|\|)/i.test(combined)
+    || /xais(?:img2|image2)(?:2k|4k)h/i.test(combined);
+  if (isImage2High) return 'gpt-image-2-h';
+  if (/(?:img2|image2)(?:1k|2k|4k)/i.test(combined)) return 'gpt-image-2';
+  if (/(?:nanobananapro|bananapro|nanopro)/i.test(combined)) return 'nano-banana-pro';
+  if (/(?:nanobanana2|banana2|nano2)/i.test(combined)) return 'nano-banana-2';
+  if (/(?:nanobananalite|bananalite|nanolite)/i.test(combined)) return 'nano-banana-lite';
+  return null;
+};
+
+const imageFamilyLabel = (family: CanvasAiImageModelFamily) => {
+  if (family === 'nano-banana-pro') return 'Nano Banana Pro';
+  if (family === 'nano-banana-2') return 'Nano Banana 2';
+  if (family === 'nano-banana-lite') return 'Nano Banana Lite 1K';
+  if (family === 'gpt-image-2-h') return 'GPT Image 2 H';
+  return 'GPT Image 2';
+};
+
+export const getCanvasAiPublicImageModelName = (
+  provider?: string | null,
+  model?: string | null,
+) => {
+  const family = getCanvasAiImageModelFamily(provider, model);
+  return family ? imageFamilyLabel(family) : null;
+};
+
+export const isHiddenCanvasAiImageModel = (provider?: string | null, model?: string | null) => {
+  if (provider !== 'xais-chat') return false;
+  const { raw, request } = xaisModelTokens(model);
+  return raw.includes('png') || /nanobanana(?:pro|2)4k5$/i.test(request);
+};
+
+export const isCanvasAiPublicImageModel = (
+  provider?: string | null,
+  model?: string | null,
+) => Boolean(
+  getCanvasAiPublicImageModelName(provider, model)
+  && !isLikelyNewApiVideoModel(model)
+  && !isHiddenCanvasAiImageModel(provider, model),
+);
+
+const xaisImageModelResolution = (model?: string | null): CanvasAiImageResolution | null => {
+  const { raw, request } = xaisModelTokens(model);
+  const combined = `${raw}|${request}`;
+  if (combined.includes('1k')) return '1k';
+  if (combined.includes('4k')) return '4k';
+  if (combined.includes('2k')) return '2k';
+  return null;
+};
+
+export const getCanvasAiImageResolutionValues = (
+  provider?: string | null,
+  model?: string | null,
+): CanvasAiImageResolution[] => {
+  const family = getCanvasAiImageModelFamily(provider, model);
+  if (family === 'gpt-image-2') return ['1k', '2k', '4k'];
+  if (family === 'nano-banana-pro' || family === 'nano-banana-2' || family === 'gpt-image-2-h') {
+    return ['2k', '4k'];
+  }
+  return [];
+};
+
+export const normalizeCanvasAiImageResolutionForModel = (
+  provider?: string | null,
+  model?: string | null,
+  resolution?: string | null,
+) => {
+  const allowed = getCanvasAiImageResolutionValues(provider, model);
+  const normalized = normalizeCanvasAiImageResolution(resolution);
+  if (allowed.includes(normalized)) return normalized;
+  return allowed.includes('2k') ? '2k' : allowed[0] ?? normalized;
+};
+
+export const selectCanvasAiImageCandidatesForResolution = (
+  candidates: CanvasAiModelCandidate[],
+  resolution?: string | null,
+) => {
+  const visible = candidates.filter(candidate => !isHiddenCanvasAiImageModel(candidate.provider, candidate.model));
+  const routes = new Map<string, CanvasAiModelCandidate[]>();
+  for (const candidate of visible) {
+    const key = [candidate.source, candidate.provider, candidate.providerChannelId || ''].join('|');
+    const route = routes.get(key) || [];
+    route.push(candidate);
+    routes.set(key, route);
+  }
+
+  const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  return Array.from(routes.values()).flatMap(route => {
+    const first = route[0];
+    if (!first) return [];
+    if (first.provider !== 'xais-chat') return [first];
+    const exact = route.find(candidate => xaisImageModelResolution(candidate.model) === normalizedResolution);
+    return [exact ?? first];
+  });
+};
+
 export const getXaisImageModelDisplayName = (model?: string | null) => {
+  const family = getCanvasAiImageModelFamily('xais-chat', model);
+  if (family) return imageFamilyLabel(family);
   const normalized = normalizeXaisImage2Model(model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
   const optionLabel = XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => option.value === normalized)?.label;
   if (optionLabel) return optionLabel;
@@ -2127,9 +2256,13 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 };
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
-  if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 1) {
+  if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 0) {
+    const candidates = selectCanvasAiImageCandidatesForResolution(
+      options.providerCandidates,
+      options.resolution,
+    );
     let lastError: unknown = null;
-    for (const candidate of options.providerCandidates) {
+    for (const candidate of candidates) {
       try {
         const runtime = options.providerRuntime?.[candidate.provider];
         return await generateCanvasAiProviderImages({
