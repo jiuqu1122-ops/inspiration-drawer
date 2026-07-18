@@ -17831,9 +17831,14 @@ function MainApp() {
       const requestModel = isCanvasAiLicenseManaged && effectiveCanvasAiModel
         ? effectiveCanvasAiModel
         : getCanvasAiResolvedModel(provider, target.ai.model, mediaType);
+      const walletImageCandidateProviders = mediaType === 'image' && useCloudWallet
+        ? new Set((target.ai?.providerCandidates || []).map(candidate => candidate.provider))
+        : new Set<CanvasAiProvider>();
+      const usePortableWalletReferences = walletImageCandidateProviders.size > 1;
       const isXaisWorkerRequest = provider === 'xais-chat'
         && (mediaType === 'video' || isCanvasAiXaisWorkerModel(requestModel));
-      const xaisReferenceFormat: 'any' | 'jpeg' = mediaType !== 'video' && provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel)
+      const xaisReferenceFormat: 'any' | 'jpeg' = !usePortableWalletReferences
+        && mediaType !== 'video' && provider === 'xais-chat' && isCanvasAiXaisWorkerModel(requestModel)
         ? 'jpeg'
         : 'any';
       const useDirectReferenceImages = isOpenAiLikeCanvasAiProvider(provider)

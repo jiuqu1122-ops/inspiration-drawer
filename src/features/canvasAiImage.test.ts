@@ -24,6 +24,7 @@ import {
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
   selectCanvasAiImageCandidatesForResolution,
+  shouldTryNextCanvasAiImageCandidate,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
 
@@ -126,6 +127,14 @@ describe('unified wallet image model families', () => {
       expect.objectContaining({ providerChannelId: 'primary', model: 'gemini-3-pro-image' }),
       expect.objectContaining({ providerChannelId: 'fallback', model: 'Xais Nano Pro_4K' }),
     ]);
+  });
+
+  it('only fails over after an explicit rejection', () => {
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_unavailable'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('channel returned no image data'))).toBe(false);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
 
   it('routes GPT Image 2 and GPT Image 2 H to their matching XAIS clarity variants', () => {

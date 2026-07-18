@@ -991,6 +991,14 @@ export const selectCanvasAiImageCandidatesForResolution = (
   });
 };
 
+export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
+  const message = getErrorMessage(error).trim();
+  const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
+  const status = statusMatch ? Number(statusMatch[1]) : 0;
+  if ([400, 401, 402, 403, 404, 422, 429].includes(status)) return true;
+  return /(?:insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|余额不足|额度不足|渠道不可用|渠道鉴权失败)/i.test(message);
+};
+
 export const getXaisImageModelDisplayName = (model?: string | null) => {
   const family = getCanvasAiImageModelFamily('xais-chat', model);
   if (family) return imageFamilyLabel(family);
@@ -2280,6 +2288,7 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
           providerCandidates: undefined,
         });
       } catch (error) {
+        if (!shouldTryNextCanvasAiImageCandidate(error)) throw error;
         lastError = error;
         console.warn('Canvas AI model candidate failed, trying next candidate', candidate, error);
       }
