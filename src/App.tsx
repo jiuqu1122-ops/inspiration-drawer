@@ -15180,7 +15180,8 @@ function MainApp() {
     mode: 'stable' | 'remote-first' = 'stable',
     delivery: 'auto' | 'direct' | 'remote-only' = 'auto',
     sourceItems: CanvasImageItem[] = canvasItemsRef.current,
-    referenceFormat: 'any' | 'jpeg' = 'any'
+    referenceFormat: 'any' | 'jpeg' = 'any',
+    publicationPreference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first'
   ) => {
     const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
     const inputMode = isOpenAiLikeCanvasAiProvider(provider) ? 'stable' : mode;
@@ -15252,7 +15253,7 @@ function MainApp() {
         try {
           const published = await publishLocalAiInputs(
             localSources,
-            'cloudflared-first'
+            publicationPreference
           );
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
@@ -17854,7 +17855,8 @@ function MainApp() {
           ? 'remote-only'
           : useDirectReferenceImages ? 'direct' : 'auto',
         getSourceItems(),
-        xaisReferenceFormat
+        xaisReferenceFormat,
+        usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first'
       );
       let inputImages = preparedInputs.images;
       let negativePrompt: string | undefined;
@@ -17994,9 +17996,9 @@ function MainApp() {
       };
 
       const retryWithFreshRemoteInputs = async (cause: unknown) => {
-        if (!isXaisWorkerRequest || generatedOutputs.length > 0 || xaisReferenceRetryCount >= 3) return false;
+        if ((!isXaisWorkerRequest && !usePortableWalletReferences) || generatedOutputs.length > 0 || xaisReferenceRetryCount >= 3) return false;
         const message = cause instanceof Error ? cause.message : String(cause || '');
-        if (!/(?:Failed to download media|DownloadFailed|Bad Gateway|fetch-object|CreateAsset|InvalidParameter\.Name|Name must be no more|Invalid image file|image file or mode|Bad request to openai|trycloudflare|cloudflared|Cloudflare Tunnel)/i.test(message)) {
+        if (!/(?:Failed to download media|DownloadFailed|Bad Gateway|fetch-object|CreateAsset|InvalidParameter\.Name|Name must be no more|Invalid image file|image file or mode|Bad request to openai|reference (?:image HTTP|URL did not return an image)|trycloudflare|cloudflared|Cloudflare Tunnel)/i.test(message)) {
           return false;
         }
         xaisReferenceRetryCount += 1;
@@ -18011,7 +18013,8 @@ function MainApp() {
             inputMode,
             'remote-only',
             getSourceItems(),
-            xaisReferenceFormat
+            xaisReferenceFormat,
+            usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first'
           );
           if (freshInputs.images.length === 0) return false;
           inputImages = freshInputs.images;
@@ -18132,35 +18135,42 @@ function MainApp() {
           error: undefined,
         })), { status: 'working', error: undefined });
         try {
-          const batch = await generateCanvasAiProviderImages({
-            ...generateOptions,
-            count: requestedCount,
-          });
-          responseReceivedAt = Date.now();
-          returnedCount = batch.length;
-          responseKinds = Array.from(new Set(batch.map(source => (
-            /^data:image\//i.test(source) ? 'base64' : /^https?:\/\//i.test(source) ? 'url' : 'other'
-          )))).join(',');
-          const freshUrls = Array.from(new Set(batch.map(url => url.trim()).filter(Boolean)))
-            .filter(url => !seenGeneratedUrls.has(url))
-            .slice(0, requestedCount);
-          if (freshUrls.length === 0) throw new Error('接口没有返回新的图片数据');
-          for (const [index, freshUrl] of freshUrls.entries()) {
-            seenGeneratedUrls.add(freshUrl);
-            await placeGeneratedMedia(freshUrl, index);
+          while (true) {
+            try {
+              const batch = await generateCanvasAiProviderImages({
+                ...generateOptions,
+                count: requestedCount,
+              });
+              responseReceivedAt = Date.now();
+              returnedCount = batch.length;
+              responseKinds = Array.from(new Set(batch.map(source => (
+                /^data:image\//i.test(source) ? 'base64' : /^https?:\/\//i.test(source) ? 'url' : 'other'
+              )))).join(',');
+              const freshUrls = Array.from(new Set(batch.map(url => url.trim()).filter(Boolean)))
+                .filter(url => !seenGeneratedUrls.has(url))
+                .slice(0, requestedCount);
+              if (freshUrls.length === 0) throw new Error('接口没有返回新的图片数据');
+              for (const [index, freshUrl] of freshUrls.entries()) {
+                seenGeneratedUrls.add(freshUrl);
+                await placeGeneratedMedia(freshUrl, index);
+              }
+              if (freshUrls.length < requestedCount) {
+                lastPartialError = new Error(`接口只返回了 ${freshUrls.length}/${requestedCount} 张图片`);
+              }
+              break;
+            } catch (error) {
+              if (await retryWithFreshRemoteInputs(error)) continue;
+              lastPartialError = error;
+              slotErrors[0] = error;
+              const failedAt = Date.now();
+              const errorSummary = getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error));
+              setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
+                ? output
+                : { ...output, status: 'error' as const, error: errorSummary, generatedAt: output.generatedAt || failedAt }
+              ), { status: 'working', error: undefined, generatedAt: failedAt });
+              break;
+            }
           }
-          if (freshUrls.length < requestedCount) {
-            lastPartialError = new Error(`接口只返回了 ${freshUrls.length}/${requestedCount} 张图片`);
-          }
-        } catch (error) {
-          lastPartialError = error;
-          slotErrors[0] = error;
-          const failedAt = Date.now();
-          const errorSummary = getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error));
-          setCanvasAiOutputs(currentOutputs.map(output => output.status === 'success'
-            ? output
-            : { ...output, status: 'error' as const, error: errorSummary, generatedAt: output.generatedAt || failedAt }
-          ), { status: 'working', error: undefined, generatedAt: failedAt });
         } finally {
           const finishedAt = Date.now();
           console.info('[newapi_image_client_timing]', {
@@ -29530,7 +29540,12 @@ useEffect(() => {
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
                                 <div className="flex flex-col gap-2.5 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
                                   <div className="grid gap-2 sm:grid-cols-2">
-                                    <div className="rounded-[16px] border border-blue-100 bg-blue-50/60 px-3 py-2.5 dark:border-blue-400/20 dark:bg-blue-400/10">
+                                    <button
+                                      type="button"
+                                      onClick={() => setCanvasAiCredentialSource('wallet')}
+                                      aria-pressed={canvasAiCredentialSource === 'wallet'}
+                                      className={`rounded-[16px] border px-3 py-2.5 text-left transition ${canvasAiCredentialSource === 'wallet' ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200/70 dark:border-blue-300 dark:bg-blue-400/15 dark:ring-blue-400/20' : 'border-blue-100 bg-blue-50/60 hover:border-blue-300 dark:border-blue-400/20 dark:bg-blue-400/10'}`}
+                                    >
                                       <div className="text-[10px] font-black text-blue-700 dark:text-blue-200">授权钱包余额</div>
                                       <div className="mt-1 text-xl font-black tabular-nums text-stone-900 dark:text-white">
                                         {isCloudAccountLoading ? '…' : cloudAccount?.wallet.availableCredits ?? '—'}
@@ -29538,16 +29553,19 @@ useEffect(() => {
                                       <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">
                                         {cloudAccount?.displayName || licenseStatus?.customer || '邮箱账号钱包'}
                                       </div>
-                                    </div>
-                                    {hasLocalXaisAccount && (
-                                      <div className="rounded-[16px] border border-cyan-100 bg-cyan-50/60 px-3 py-2.5 dark:border-cyan-400/20 dark:bg-cyan-400/10">
-                                        <div className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">本地 XAIS 余额</div>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCanvasAiCredentialSource('local')}
+                                      aria-pressed={canvasAiCredentialSource === 'local'}
+                                      className={`rounded-[16px] border px-3 py-2.5 text-left transition ${canvasAiCredentialSource === 'local' ? 'border-cyan-500 bg-cyan-50 ring-2 ring-cyan-200/70 dark:border-cyan-300 dark:bg-cyan-400/15 dark:ring-cyan-400/20' : 'border-cyan-100 bg-cyan-50/60 hover:border-cyan-300 dark:border-cyan-400/20 dark:bg-cyan-400/10'}`}
+                                    >
+                                        <div className="text-[10px] font-black text-cyan-700 dark:text-cyan-200">本地 API 额度</div>
                                         <div className={`mt-1 min-h-7 text-[12px] font-black leading-5 ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-stone-900 dark:text-white'}`}>
-                                          {canvasAiXaisBalanceText}
+                                          {hasLocalXaisAccount ? canvasAiXaisBalanceText : '使用本机已配置的 API'}
                                         </div>
-                                        <div className="mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">仅在本机查询，密钥不会上传</div>
-                                      </div>
-                                    )}
+                                        <div className="mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">{hasLocalXaisAccount ? 'XAIS 余额仅在本机查询，密钥不会上传' : '点击后使用本地 API 配置'}</div>
+                                    </button>
                                   </div>
                                   <button
                                     type="button"
@@ -29564,16 +29582,8 @@ useEffect(() => {
                                       <span className="text-[11px] font-black text-stone-700 dark:text-stone-200">生图 / 视频额度来源</span>
                                       <span className="text-[10px] text-stone-400">画布节点会同步过滤模型</span>
                                     </div>
-                                    <select
-                                      value={canvasAiCredentialSource}
-                                      onChange={event => setCanvasAiCredentialSource(event.target.value === 'local' ? 'local' : 'wallet')}
-                                      className="w-full rounded-[13px] border border-blue-100 bg-white px-3 py-2 text-[11px] font-bold text-stone-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-200/50 dark:border-blue-400/20 dark:bg-stone-900 dark:text-stone-100"
-                                    >
-                                      <option value="wallet">使用授权钱包额度</option>
-                                      <option value="local">使用本地 API 额度</option>
-                                    </select>
                                     <div className="text-[10px] leading-4 text-stone-400 dark:text-stone-500">
-                                      同名模型会合并；调用失败时会自动尝试该来源下的其它可用渠道。
+                                      点击上方余额卡片即可切换来源；同名模型会合并，调用失败时会自动尝试该来源下的其它可用渠道。
                                     </div>
                                   </div>
 

@@ -388,16 +388,17 @@ export function AgentSettingsSection({
                   <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
                     模型
                     <div className="flex gap-1.5">
-                      <input
+                      <select
                         value={draft.apiModel}
                         onChange={event => setDraft(current => ({ ...current, apiModel: event.target.value }))}
-                        list="agent-model-options"
-                        placeholder="模型 ID"
                         className="min-w-0 flex-1 rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
-                      />
-                      <datalist id="agent-model-options">
-                        {models.map(model => <option key={model} value={model} />)}
-                      </datalist>
+                      >
+                        {!draft.apiModel && <option value="">请先读取模型</option>}
+                        {draft.apiModel && !models.includes(draft.apiModel) && (
+                          <option value={draft.apiModel}>{draft.apiModel}（当前）</option>
+                        )}
+                        {models.map(model => <option key={model} value={model}>{model}</option>)}
+                      </select>
                       <button
                         type="button"
                         onClick={() => void testConnection()}
