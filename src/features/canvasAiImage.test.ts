@@ -4,18 +4,27 @@ import {
   NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
+  getCanvasAiImageModelFamily,
+  getCanvasAiPublicImageModelName,
+  getCanvasAiImageResolutionValues,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
   getNewApiVideoDimensions,
+  getXaisImageModelDisplayName,
   formatNewApiVideoFailureMessage,
   gptImage2SizeFromAspectRatio,
   isLikelyNewApiVideoModel,
   isNewApiImageProtocolUnsupportedError,
+  isHiddenCanvasAiImageModel,
+  isCanvasAiPublicImageModel,
   newApiImageRequestParams,
   newApiVideoRequestParams,
   normalizeCanvasAiImageResolution,
+  normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
+  selectCanvasAiImageCandidatesForResolution,
+  shouldTryNextCanvasAiImageCandidate,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
 
@@ -63,6 +72,95 @@ describe('NewAPI image model mapping', () => {
   });
 });
 
+describe('unified wallet image model families', () => {
+  it('merges XAIS resolution variants into the public model families', () => {
+    expect(getXaisImageModelDisplayName('Xais Nano Pro_2K')).toBe('Nano Banana Pro');
+    expect(getXaisImageModelDisplayName('Nano_Banana_Pro_4K_0')).toBe('Nano Banana Pro');
+    expect(getXaisImageModelDisplayName('Xais Nano2_4K')).toBe('Nano Banana 2');
+    expect(getXaisImageModelDisplayName('Xais img2_1k')).toBe('GPT Image 2');
+    expect(getXaisImageModelDisplayName('Xais Img2_4K')).toBe('GPT Image 2');
+    expect(getXaisImageModelDisplayName('Xais_Img2_2K_H')).toBe('GPT Image 2 H');
+  });
+
+  it('removes the dedicated XAIS png model aliases from the model picker', () => {
+    expect(isHiddenCanvasAiImageModel('xais-chat', 'Xais Nano Pro_4K_png')).toBe(true);
+    expect(isHiddenCanvasAiImageModel('xais-chat', 'Nano_Banana_2_4K_5')).toBe(true);
+    expect(isHiddenCanvasAiImageModel('xais-chat', 'Xais Nano Pro_4K')).toBe(false);
+  });
+
+  it('only exposes unified public image names in the image model picker', () => {
+    expect(getCanvasAiPublicImageModelName('new-api', 'gemini-3-pro-image')).toBe('Nano Banana Pro');
+    expect(getCanvasAiPublicImageModelName('xais-chat', 'Xais Img2_4K')).toBe('GPT Image 2');
+    expect(isCanvasAiPublicImageModel('new-api', 'seedance-2.0')).toBe(false);
+    expect(isCanvasAiPublicImageModel('new-api', 'raw-upstream-model-id')).toBe(false);
+    expect(isCanvasAiPublicImageModel('xais-chat', 'Xais Nano Pro_4K_png')).toBe(false);
+    expect(isCanvasAiPublicImageModel('xais-chat', 'Xais Nano2_2K')).toBe(true);
+  });
+
+  it('exposes the expected clarity choices for each unified family', () => {
+    expect(getCanvasAiImageResolutionValues('xais-chat', 'Xais Nano Pro_2K')).toEqual(['2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('xais-chat', 'Xais Nano2_4K')).toEqual(['2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('xais-chat', 'Xais img2_1k')).toEqual(['1k', '2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('xais-chat', 'Xais_Img2_2K_H')).toEqual(['2k', '4k']);
+    expect(normalizeCanvasAiImageResolutionForModel('xais-chat', 'Xais Nano Pro_2K', '1k')).toBe('2k');
+  });
+
+  it('keeps channel priority while selecting the XAIS model matching clarity', () => {
+    const candidates = [
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'primary', model: 'Xais Nano Pro_2K' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'primary', model: 'Xais Nano Pro_4K' },
+      { source: 'wallet' as const, provider: 'new-api' as const, providerChannelId: 'fallback', model: 'gemini-3-pro-image' },
+    ];
+    expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k')).toEqual([
+      expect.objectContaining({ providerChannelId: 'primary', model: 'Xais Nano Pro_4K' }),
+      expect.objectContaining({ providerChannelId: 'fallback', model: 'gemini-3-pro-image' }),
+    ]);
+  });
+
+  it('keeps NewAPI first when its channel priority is higher than XAIS', () => {
+    const candidates = [
+      { source: 'wallet' as const, provider: 'new-api' as const, providerChannelId: 'primary', model: 'gemini-3-pro-image' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'fallback', model: 'Xais Nano Pro_2K' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'fallback', model: 'Xais Nano Pro_4K' },
+    ];
+    expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k')).toEqual([
+      expect.objectContaining({ providerChannelId: 'primary', model: 'gemini-3-pro-image' }),
+      expect.objectContaining({ providerChannelId: 'fallback', model: 'Xais Nano Pro_4K' }),
+    ]);
+  });
+
+  it('only fails over after an explicit rejection', () => {
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_unavailable'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('channel returned no image data'))).toBe(false);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
+  });
+
+  it('routes GPT Image 2 and GPT Image 2 H to their matching XAIS clarity variants', () => {
+    const standard = [
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'xais', model: 'Xais img2_1k' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'xais', model: 'Xais Img2_2K' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'xais', model: 'Xais Img2_4K' },
+      { source: 'wallet' as const, provider: 'new-api' as const, providerChannelId: 'newapi', model: 'gpt-image-2' },
+    ];
+    expect(selectCanvasAiImageCandidatesForResolution(standard, '1k')[0]?.model).toBe('Xais img2_1k');
+    expect(selectCanvasAiImageCandidatesForResolution(standard, '4k')[0]?.model).toBe('Xais Img2_4K');
+
+    const highQuality = [
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'xais-h', model: 'Xais Img2_2K(高画质)' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'xais-h', model: 'Xais Img2_4K(高画质)' },
+    ];
+    expect(selectCanvasAiImageCandidatesForResolution(highQuality, '4k')[0]?.model)
+      .toBe('Xais Img2_4K(高画质)');
+  });
+
+  it('recognizes the shared family without changing provider-specific model IDs', () => {
+    expect(getCanvasAiImageModelFamily('new-api', 'gemini-3-pro-image')).toBe('nano-banana-pro');
+    expect(getCanvasAiImageModelFamily('xais-chat', 'Image2_2K')).toBe('gpt-image-2');
+  });
+});
+
 describe('image resolution routing', () => {
   it('enables 2K/4K for NewAPI Gemini image families and GPT Image 2', () => {
     expect(supportsCanvasAiImageResolution('new-api', 'gemini-3-pro-image')).toBe(true);
@@ -72,14 +170,16 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('openai-compatible', 'gptimage2')).toBe(true);
   });
 
-  it('leaves XAIS and unrelated image models unchanged', () => {
-    expect(supportsCanvasAiImageResolution('xais-chat', 'Xais Nano Pro_2K')).toBe(false);
-    expect(supportsCanvasAiImageResolution('xais-chat', 'gpt-image-2')).toBe(false);
+  it('enables clarity routing for XAIS families and leaves unrelated models unchanged', () => {
+    expect(supportsCanvasAiImageResolution('xais-chat', 'Xais Nano Pro_2K')).toBe(true);
+    expect(supportsCanvasAiImageResolution('xais-chat', 'Xais img2_1k')).toBe(true);
+    expect(supportsCanvasAiImageResolution('xais-chat', 'gpt-image-2')).toBe(true);
     expect(supportsCanvasAiImageResolution('new-api', 'gpt-image-1')).toBe(false);
     expect(supportsCanvasAiImageResolution('new-api', 'gemini-lite-image')).toBe(false);
   });
 
   it('normalizes resolution casing and calculates GPT Image 2 sizes', () => {
+    expect(normalizeCanvasAiImageResolution('1K')).toBe('1k');
     expect(normalizeCanvasAiImageResolution('4K')).toBe('4k');
     expect(normalizeCanvasAiImageResolution(undefined)).toBe('2k');
     expect(gptImage2SizeFromAspectRatio('16:9', '2K')).toBe('1920x1088');
