@@ -6291,7 +6291,12 @@ function MainApp() {
   };
 
   const getCanvasAiModelOptionsForProvider = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
-    mediaType === 'video'
+    mediaType === 'video' && canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels
+      ? Array.from(new Set((canvasAiCloudImageModels.channels || [])
+        .filter(channel => canvasAiProviderForCloudKind(channel.provider) === provider)
+        .flatMap(channel => channel.models.map(model => model.trim()).filter(Boolean))))
+        .map(value => ({ value, label: value }))
+      : mediaType === 'video'
       ? provider === 'new-api' ? canvasAiNewApiVideoModelOptions : XAIS_CHAT_VIDEO_MODEL_OPTIONS
       : provider === 'xais-chat'
       ? canvasAiXaisModelOptions
