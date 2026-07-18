@@ -24,6 +24,7 @@ import {
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
   selectCanvasAiImageCandidatesForResolution,
+  sortCanvasAiImageCandidatesByChannelPriority,
   shouldTryNextCanvasAiImageCandidate,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
@@ -127,6 +128,20 @@ describe('unified wallet image model families', () => {
       expect.objectContaining({ providerChannelId: 'primary', model: 'gemini-3-pro-image' }),
       expect.objectContaining({ providerChannelId: 'fallback', model: 'Xais Nano Pro_4K' }),
     ]);
+  });
+
+  it('applies the latest server channel priority to cached node candidates', () => {
+    const candidates = [
+      { source: 'wallet' as const, provider: 'new-api' as const, providerChannelId: 'old-first', model: 'gemini-3-pro-image' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'new-first', model: 'Xais Nano Pro_2K' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, providerChannelId: 'new-first', model: 'Xais Nano Pro_4K' },
+    ];
+    expect(sortCanvasAiImageCandidatesByChannelPriority(candidates, ['new-first', 'old-first']))
+      .toEqual([
+        expect.objectContaining({ providerChannelId: 'new-first', model: 'Xais Nano Pro_2K' }),
+        expect.objectContaining({ providerChannelId: 'new-first', model: 'Xais Nano Pro_4K' }),
+        expect.objectContaining({ providerChannelId: 'old-first', model: 'gemini-3-pro-image' }),
+      ]);
   });
 
   it('only fails over after an explicit rejection', () => {

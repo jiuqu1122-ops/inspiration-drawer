@@ -991,6 +991,45 @@ export const selectCanvasAiImageCandidatesForResolution = (
   });
 };
 
+export const sortCanvasAiImageCandidatesByChannelPriority = (
+  candidates: CanvasAiModelCandidate[],
+  orderedChannelIds: string[],
+) => {
+  const priority = new Map(orderedChannelIds.map((id, index) => [id, index]));
+  return candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((left, right) => {
+      const leftPriority = left.candidate.providerChannelId
+        ? priority.get(left.candidate.providerChannelId) ?? Number.MAX_SAFE_INTEGER
+        : Number.MAX_SAFE_INTEGER;
+      const rightPriority = right.candidate.providerChannelId
+        ? priority.get(right.candidate.providerChannelId) ?? Number.MAX_SAFE_INTEGER
+        : Number.MAX_SAFE_INTEGER;
+      return leftPriority - rightPriority || left.index - right.index;
+    })
+    .map(({ candidate }) => candidate);
+};
+
+const refreshWalletImageCandidatePriority = async (candidates: CanvasAiModelCandidate[]) => {
+  if (candidates.filter(candidate => candidate.source === 'wallet' && candidate.providerChannelId).length < 2) {
+    return candidates;
+  }
+  try {
+    const result = await invoke<{ channels?: Array<{ id?: string }> }>('get_cloud_image_models', {
+      provider: null,
+    });
+    const orderedChannelIds = (result.channels || [])
+      .map(channel => String(channel.id || '').trim())
+      .filter(Boolean);
+    return orderedChannelIds.length > 0
+      ? sortCanvasAiImageCandidatesByChannelPriority(candidates, orderedChannelIds)
+      : candidates;
+  } catch (error) {
+    console.warn('Unable to refresh wallet image channel priority; using the current route order.', error);
+    return candidates;
+  }
+};
+
 export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
   const message = getErrorMessage(error).trim();
   const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
@@ -2265,8 +2304,9 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 
 export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptions): Promise<string[]> => {
   if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 0) {
+    const prioritizedCandidates = await refreshWalletImageCandidatePriority(options.providerCandidates);
     const candidates = selectCanvasAiImageCandidatesForResolution(
-      options.providerCandidates,
+      prioritizedCandidates,
       options.resolution,
     );
     let lastError: unknown = null;
