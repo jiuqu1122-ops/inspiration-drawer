@@ -699,6 +699,7 @@ pub async fn get_cloud_video_status(
     app_handle: tauri::AppHandle,
     task_id: String,
     provider: Option<String>,
+    client_request_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let task_id = task_id.trim();
     if task_id.is_empty() || task_id.len() > 256 || !task_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':')) {
@@ -715,6 +716,9 @@ pub async fn get_cloud_video_status(
         .bearer_auth(access_token);
     if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
         request = request.query(&[("provider", provider)]);
+    }
+    if let Some(client_request_id) = client_request_id.filter(|value| !value.trim().is_empty()) {
+        request = request.query(&[("clientRequestId", client_request_id)]);
     }
     let response = request
         .send()

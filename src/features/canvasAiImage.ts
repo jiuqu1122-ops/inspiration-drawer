@@ -226,7 +226,11 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       let lastStatus: unknown = null;
       while (Date.now() < deadline) {
         await delay(2500);
-        lastStatus = await invoke<unknown>('get_cloud_video_status', { taskId, provider });
+        lastStatus = await invoke<unknown>('get_cloud_video_status', {
+          taskId,
+          provider,
+          clientRequestId,
+        });
         output.push(...collectVideoStrings(lastStatus));
         if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
         const state = getNewApiVideoTaskState(lastStatus);
