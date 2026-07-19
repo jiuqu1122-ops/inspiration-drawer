@@ -214,7 +214,7 @@ fn public_settings_from_stored(
         public.api_gateway_kind = AiGatewayKind::Custom;
         public.api_provider = "unmind-wallet".to_string();
         public.api_base_url = "https://api.unmind.art/v1".to_string();
-        public.api_model = "unmind-agent".to_string();
+        public.api_model = normalize_api_model(&settings.api_model);
         public.api_headers.clear();
         public.has_api_key = true;
         public.api_editable = false;
@@ -655,7 +655,6 @@ fn input_changes_managed_api(profile: &EffectiveApiProfile, input: &AgentSetting
     input_gateway != profile.gateway_kind
         || normalize_api_provider(&input.api_provider, input_gateway) != profile.provider
         || (input_base != profile_base && input_base != redacted_base)
-        || normalize_api_model(&input.api_model) != normalize_api_model(&profile.model)
         || (!input.api_headers.is_empty()
             && sanitize_api_headers(input.api_headers.clone()) != profile.headers)
 }
@@ -691,7 +690,9 @@ pub fn agent_load_settings(app_handle: tauri::AppHandle) -> AgentSettingsPublic 
         settings.api_gateway_kind = Some(AiGatewayKind::Custom);
         settings.api_provider = "unmind-wallet".to_string();
         settings.api_base_url = "https://api.unmind.art/v1".to_string();
-        settings.api_model = "unmind-agent".to_string();
+        if settings.api_model.trim().is_empty() {
+            settings.api_model = "unmind-agent".to_string();
+        }
         settings.api_headers.clear();
         let _ = write_settings(&app_handle, &settings);
     }
@@ -712,7 +713,7 @@ pub fn agent_save_settings(
     {
         if input_changes_managed_api(profile, &input) {
             return Err(
-                "高级版授权已托管 Agent API，不能修改 Gateway、Provider、Base URL、API Key、模型或 Headers"
+                "高级版授权已托管 Agent API，不能修改 Gateway、Provider、Base URL、API Key 或 Headers；模型可在设置中选择"
                     .to_string(),
             );
         }
@@ -720,6 +721,7 @@ pub fn agent_save_settings(
             return Err("高级版必须使用设备授权中的托管 Agent API".to_string());
         }
         current.provider = "openai-compatible".to_string();
+        current.api_model = normalize_api_model(&input.api_model);
     } else if let Err(error) = &resolved_profile {
         if error.contains("不能回退") && input_changes_stored_api(&current, &input) {
             return Err("高级版授权当前无效，不能修改 Agent API 设置或回退到 BYOK".to_string());
@@ -770,6 +772,8 @@ pub struct AgentOpenAiChatRequest {
     messages: Vec<Value>,
     #[serde(default)]
     tools: Vec<Value>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -782,6 +786,8 @@ pub struct AgentInspirationAnalysisRequest {
     #[serde(default)]
     user_notes: Vec<String>,
     existing_profile: Option<Value>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[tauri::command]
@@ -803,6 +809,7 @@ pub async fn agent_analyze_inspiration(
             "userTags": request.user_tags,
             "userNotes": request.user_notes,
             "existingProfile": request.existing_profile,
+            "model": request.model,
         }))
         .send()
         .await
@@ -1194,6 +1201,7 @@ async fn agent_wallet_chat(
             "clientRequestId": request.request_id,
             "messages": request.messages,
             "tools": request.tools,
+            "model": request.model,
         }))
         .send()
         .await
@@ -1277,6 +1285,31 @@ pub fn agent_cancel_openai(
 #[tauri::command]
 pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
     let settings = read_settings(&app_handle);
+    if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
+        let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(90))
+            .build()
+            .map_err(|error| format!("无法初始化钱包模型连接：{error}"))?;
+        let response = client
+            .get("https://api.unmind.art/v1/ai/models")
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| format!("钱包模型列表请求失败：{error}"))?;
+        let status = response.status();
+        let value = response.json::<Value>().await.map_err(|error| format!("读取钱包模型列表失败：{error}"))?;
+        if !status.is_success() {
+            return Err(format!("钱包模型列表 HTTP {status}"));
+        }
+        return Ok(value.get("models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect());
+    }
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     tauri::async_runtime::spawn_blocking(move || {
         let client = crate::build_http_client(Some(&app_handle), None, 90)?;

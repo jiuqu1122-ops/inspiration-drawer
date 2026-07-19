@@ -187,7 +187,12 @@ pub fn resolve_effective_api_profile_from_content_with_date(
     }
     .map_err(|err| managed_license_error(err))?;
 
-    managed_payload_to_effective(verified, scope)
+    let mut profile = managed_payload_to_effective(verified, scope)?;
+    let selected_model = settings.model.trim();
+    if !selected_model.is_empty() && !selected_model.eq_ignore_ascii_case("unmind-agent") {
+        profile.model = selected_model.to_string();
+    }
+    Ok(profile)
 }
 
 fn managed_license_error(err: LicenseError) -> String {

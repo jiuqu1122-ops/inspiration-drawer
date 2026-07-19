@@ -4087,6 +4087,7 @@ function MainApp() {
   const inspirationAnalysisJobsRef = useRef(new Map<string, InspirationAnalysisJob>());
   const autoInspirationAnalysisAttemptedRef = useRef(new Set<string>());
   const autoInspirationAnalysisRunningRef = useRef(false);
+  const agentModelRef = useRef('unmind-agent');
   const foldersRef = useRef<Folder[]>([]);
   const hasRestoredNonEmptyFoldersRef = useRef(false);
   const activeFolderIdStateRef = useRef<string>('all');
@@ -24897,6 +24898,7 @@ useEffect(() => {
         existingProfile,
         userTags: input.userTags || [],
         userNotes,
+        model: agentModelRef.current,
       },
     });
     const profile = normalizeInspirationProfile(result, {
@@ -26012,6 +26014,16 @@ useEffect(() => {
         const referenceImageNodeIds = Array.isArray(args.referenceImageNodeIds)
           ? args.referenceImageNodeIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
           : [];
+        const inspirationReferenceNodeIds = Array.isArray(args.inspirationReferences)
+          ? args.inspirationReferences.flatMap(reference => {
+            if (!reference || typeof reference !== 'object' || Array.isArray(reference)) return [];
+            const itemId = String((reference as Record<string, unknown>).itemId || '').trim();
+            if (!itemId) return [];
+            return canvasItemsRef.current
+              .filter(item => item.id === itemId || item.item.sourceItemId === itemId)
+              .map(item => item.id);
+          })
+          : [];
         const referenceRoles = Array.isArray(args.referenceRoles)
           ? args.referenceRoles
             .map(role => {
@@ -26037,6 +26049,7 @@ useEffect(() => {
         const requestedInputCandidates = [
           ...(Array.isArray(args.inputIds) ? args.inputIds.map(String) : []),
           ...(Array.isArray(args.selectedReferenceImageNodeIds) ? args.selectedReferenceImageNodeIds.map(String) : []),
+          ...inspirationReferenceNodeIds,
           ...collectAgentBoundNodeIds(inputBindingsArg.product_reference_image),
         ];
         const requestedInputs = Array.from(new Set(requestedInputCandidates))
@@ -27085,6 +27098,7 @@ useEffect(() => {
     },
     onNotice: showToast,
   });
+  agentModelRef.current = canvasAgent.settings.apiModel;
 
   const switchAgentFundingSource = async (source: 'wallet' | 'codex') => {
     try {

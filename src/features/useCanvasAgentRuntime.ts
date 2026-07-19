@@ -1226,6 +1226,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           requestId,
           messages: providerMessages,
           tools: CANVAS_AGENT_TOOL_DEFINITIONS,
+          model: settingsRef.current.apiModel,
         },
       });
       activeStream = activeOpenAiRequestsRef.current.get(requestId);
@@ -1616,6 +1617,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
           requestId,
           messages: plannerMessages,
           tools: [],
+          model: settingsRef.current.apiModel,
         },
       });
       raw = String(result.content || '').trim();
