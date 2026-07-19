@@ -2,6 +2,7 @@ import type { AgentCanvasContext } from '../../agentModel';
 import type { AppAgentCommand, LegacyAgentAction } from './commandTypes';
 import {
   applyCreativeGeneratorDefaults,
+  applyCreativeWorkflowDefaults,
   isCreativeLikeRequest,
   isCreativeEditRequest,
   parseCreativeDimensions,
@@ -168,8 +169,10 @@ export function repairLegacyAgentAction(
   action: LegacyAgentAction,
   userText = '',
 ): LegacyAgentAction {
-  if (action.tool !== 'canvas_create_generator') return action;
-  const repaired = applyCreativeGeneratorDefaults(action.arguments || {}, userText);
+  if (action.tool !== 'canvas_create_generator' && action.tool !== 'canvas_create_workflow') return action;
+  const repaired = action.tool === 'canvas_create_generator'
+    ? applyCreativeGeneratorDefaults(action.arguments || {}, userText)
+    : applyCreativeWorkflowDefaults(action.arguments || {}, userText);
   return { ...action, arguments: repaired };
 }
 
@@ -199,6 +202,26 @@ export function validateLegacyAgentAction(
     if (typeof args.folderId === 'string' && args.folderId && folderIds.size > 0 && !folderIds.has(args.folderId)) {
       errors.push(`folderId does not exist: ${args.folderId}`);
     }
+  }
+
+  if (action.tool === 'drawer_search_inspirations') {
+    if (!String(args.query || '').trim()) errors.push('drawer inspiration query is required.');
+    if (!args.projectBrief || (typeof args.projectBrief !== 'string' && typeof args.projectBrief !== 'object')) {
+      errors.push('drawer inspiration projectBrief is required.');
+    }
+    validateIds(asStringArray(args.folderIds), folderIds, 'folderId', errors);
+  }
+
+  if (action.tool === 'analyze_inspiration') {
+    if (!String(args.itemId || '').trim()) errors.push('inspiration itemId is required.');
+  }
+
+  if (action.tool === 'analyze_inspirations_batch') {
+    if (asStringArray(args.itemIds).length === 0) errors.push('inspiration batch itemIds are required.');
+  }
+
+  if (action.tool === 'get_inspiration_analysis_job' && !String(args.jobId || '').trim()) {
+    errors.push('inspiration analysis jobId is required.');
   }
 
   if (action.tool === 'calendar_manage') {

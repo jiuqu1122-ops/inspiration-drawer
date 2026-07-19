@@ -1,5 +1,6 @@
 // src/types/index.ts
 import { LucideIcon } from 'lucide-react';
+import type { InspirationProfile } from '../features/appAgent/inspirationMemory/types';
 
 export type Folder = { 
   id: string; 
@@ -62,6 +63,7 @@ export type BufferItem = {
   pageUrl?: string;
   originalUrl?: string;
   alchemy?: AlchemyData;
+  inspirationProfile?: InspirationProfile;
 };
 
 

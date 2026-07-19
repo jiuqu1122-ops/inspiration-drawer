@@ -1,6 +1,7 @@
 import type { AgentCanvasContext } from './agentModel';
 import { buildAppAgentSystemPrompt } from './appAgent/kernel/appAgentPrompt';
 import { IMAGE_RULE_KEYS } from './appAgent/imageQuality/imageRuleCapsules';
+import { INSPIRATION_REFERENCE_ROLES } from './appAgent/inspirationMemory/types';
 
 type ToolDefinition = {
   type: 'function';
@@ -157,6 +158,37 @@ const CONTEXT_SCOPES = [
 
 const IMAGE_REFERENCE_ROLES = ['BASE', 'STYLE_REF', 'LAYOUT_REF', 'SUBJECT_REF', 'NONE'] as const;
 
+const INSPIRATION_REFERENCE_SCHEMA = objectSchema({
+  itemId: { type: 'string' },
+  role: { type: 'string', enum: INSPIRATION_REFERENCE_ROLES },
+  reason: { type: 'string' },
+  matchedFeatures: { type: 'array', items: { type: 'string' } },
+  confidence: { type: ['number', 'null'] },
+}, ['itemId', 'role', 'reason']);
+
+const DRAWER_SEARCH_INSPIRATIONS_PROPERTIES = {
+  query: { type: 'string' },
+  projectBrief: { anyOf: [{ type: 'string' }, { type: 'object', additionalProperties: true }] },
+  referenceRole: { type: ['string', 'null'], enum: [...INSPIRATION_REFERENCE_ROLES, null] },
+  folderIds: { type: 'array', items: { type: 'string' } },
+  topK: { type: ['number', 'null'], minimum: 1, maximum: 20 },
+};
+
+const ANALYZE_INSPIRATION_PROPERTIES = {
+  itemId: { type: 'string' },
+  imageSource: { type: ['string', 'null'] },
+  existingProfile: { type: ['object', 'null'], additionalProperties: true },
+  userTags: { type: 'array', items: { type: 'string' } },
+  userNotes: { type: 'array', items: { type: 'string' } },
+  forceRefresh: { type: ['boolean', 'null'] },
+};
+
+const ANALYZE_INSPIRATIONS_BATCH_PROPERTIES = {
+  itemIds: { type: 'array', items: { type: 'string' } },
+  forceRefresh: { type: ['boolean', 'null'] },
+  priority: { type: ['string', 'null'], enum: ['low', 'normal', 'high', null] },
+};
+
 const GENERATOR_REFERENCE_ROLE_SCHEMA = objectSchema({
   nodeId: { type: 'string' },
   role: { type: 'string', enum: IMAGE_REFERENCE_ROLES },
@@ -209,6 +241,7 @@ const CANVAS_CREATE_GENERATOR_PROPERTIES = {
   toolHint: { type: ['string', 'null'] },
   skillMeta: GENERATOR_SKILL_META_SCHEMA,
   imagePolicy: IMAGE_POLICY_SCHEMA,
+  inspirationReferences: { type: 'array', items: INSPIRATION_REFERENCE_SCHEMA },
 };
 
 const WORKFLOW_STEP_SCHEMA = {
@@ -287,6 +320,7 @@ const CANVAS_CREATE_WORKFLOW_PROPERTIES = {
   autoRun: { type: 'boolean' },
   inputs: { type: 'array', items: WORKFLOW_INPUT_SCHEMA },
   steps: { type: 'array', items: WORKFLOW_STEP_SCHEMA },
+  inspirationReferences: { type: 'array', items: INSPIRATION_REFERENCE_SCHEMA },
   metadata: { type: 'object', additionalProperties: true },
   workflowDefinition: WORKFLOW_DEFINITION_SCHEMA,
 };
@@ -325,6 +359,38 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
       name: 'app_navigate',
       description: '执行全局界面导航、搜索、入口和窗口操作。',
       parameters: objectSchema(APP_NAVIGATION_PROPERTIES, ['action']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_inspiration',
+      description: '使用当前 Agent LLM API 分析一张抽屉图片并把结构化 InspirationProfile 写回素材。',
+      parameters: objectSchema(ANALYZE_INSPIRATION_PROPERTIES, ['itemId']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_inspirations_batch',
+      description: '创建后台批量图片分析任务，使用当前 Agent LLM API 为历史素材补全 InspirationProfile。',
+      parameters: objectSchema(ANALYZE_INSPIRATIONS_BATCH_PROPERTIES, ['itemIds']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_inspiration_analysis_job',
+      description: '查询批量 InspirationProfile 分析任务的进度和错误。',
+      parameters: objectSchema({ jobId: { type: 'string' } }, ['jobId']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'drawer_search_inspirations',
+      description: '根据项目需求检索用户长期收藏的图片灵感，并返回推荐参考角色、原因和匹配特征。',
+      parameters: objectSchema(DRAWER_SEARCH_INSPIRATIONS_PROPERTIES, ['query', 'projectBrief']),
     },
   },
   {
@@ -559,6 +625,42 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
             properties: {
               tool: { type: 'string', enum: ['app_navigate'] },
               arguments: objectSchema(APP_NAVIGATION_PROPERTIES, ['action', 'tab', 'folderId', 'query']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['analyze_inspiration'] },
+              arguments: objectSchema(ANALYZE_INSPIRATION_PROPERTIES, ['itemId', 'imageSource', 'existingProfile', 'userTags', 'userNotes', 'forceRefresh']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['analyze_inspirations_batch'] },
+              arguments: objectSchema(ANALYZE_INSPIRATIONS_BATCH_PROPERTIES, ['itemIds', 'forceRefresh', 'priority']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['get_inspiration_analysis_job'] },
+              arguments: objectSchema({ jobId: { type: 'string' } }, ['jobId']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['drawer_search_inspirations'] },
+              arguments: objectSchema(DRAWER_SEARCH_INSPIRATIONS_PROPERTIES, ['query', 'projectBrief', 'referenceRole', 'folderIds', 'topK']),
             },
             required: ['tool', 'arguments'],
             additionalProperties: false,
@@ -822,7 +924,7 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
   additionalProperties: false,
 };
 
-const READ_ONLY_TOOLS = new Set(['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context']);
+const READ_ONLY_TOOLS = new Set(['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context', 'drawer_search_inspirations', 'get_inspiration_analysis_job']);
 
 export const isCanvasAgentToolReadOnly = (name: string) => READ_ONLY_TOOLS.has(name);
 
@@ -846,6 +948,10 @@ export const getCanvasAgentToolLabel = (name: string) => ({
   app_ui_interact: '复刻界面操作',
   app_navigate: '操作软件界面',
   drawer_manage: '操作灵感抽屉',
+  drawer_search_inspirations: '检索灵感抽屉',
+  analyze_inspiration: '分析灵感图片',
+  analyze_inspirations_batch: '批量分析灵感图片',
+  get_inspiration_analysis_job: '查询灵感分析进度',
   canvas_manage: '操作画布节点',
   calendar_manage: '操作日历日程',
   canvas_get_context: '读取画布',

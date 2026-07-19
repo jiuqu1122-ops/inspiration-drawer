@@ -2,6 +2,7 @@ import type { AppAgentSkill, ContextScope, SkillMatchInput } from './types';
 import { createSkillMatch, noSkillMatch } from './types';
 import { findKeywordHits, normalizeSkillText, uniqueStrings } from './skillUtils';
 import { parseWorkflowBuilderIntent } from './workflowBuilderSkill';
+import type { DesignReferencePlan, DesignReferencePlanItem } from '../inspirationMemory/types';
 
 export type CreativeImageRole = 'BASE' | 'STYLE_REF' | 'LAYOUT_REF' | 'SUBJECT_REF' | 'NONE';
 
@@ -56,6 +57,17 @@ export interface CreativeBrief {
   requiresStoryboardFirst: boolean;
   requiresStrategyFirst: boolean;
   generatorPrompt: string;
+  projectBrief: ProjectBrief;
+}
+
+export interface ProjectBrief {
+  productType: string;
+  targetUsers: string[];
+  styleKeywords: string[];
+  materialPreferences: string[];
+  colorPreferences: string[];
+  prohibitedDirections: string[];
+  outputGoals: string[];
 }
 
 export interface CreativeGeneratorValidationInput {
@@ -457,6 +469,108 @@ export function inferProductDesignContext(userText: string): ProductDesignContex
   };
 }
 
+const collectBriefTerms = (text: string, rules: Array<[RegExp, string]>) => (
+  uniqueStrings(rules.filter(([pattern]) => pattern.test(text)).map(([, label]) => label))
+);
+
+export function extractProjectBrief(userText: string, product = inferProductDesignContext(userText)): ProjectBrief {
+  const text = normalizeSkillText(userText);
+  return {
+    productType: product.category,
+    targetUsers: collectBriefTerms(text, [
+      [/(儿童|孩子|亲子|kids?)/i, '儿童/家庭用户'],
+      [/(年轻|青年|gen\s*z)/i, '年轻用户'],
+      [/(专业|设计师|摄影师|工程师|professional)/i, '专业用户'],
+      [/(户外|露营|旅行|outdoor|travel)/i, '移动/户外用户'],
+      [/(老人|长辈|senior)/i, '银发用户'],
+    ]),
+    styleKeywords: collectBriefTerms(text, [
+      [/(温暖|warm)/i, '温暖'], [/(复古|retro|vintage)/i, '复古'],
+      [/(极简|minimal)/i, '极简'], [/(科技|tech)/i, '科技'],
+      [/(高级|premium)/i, '高级'], [/(轻量|lightweight)/i, '轻量'],
+      [/(自然|natural)/i, '自然'], [/(可爱|cute)/i, '可爱'],
+    ]),
+    materialPreferences: collectBriefTerms(text, [
+      [/(铝|金属|metal|aluminum)/i, '金属/铝'], [/(木|wood)/i, '木材'],
+      [/(塑料|plastic)/i, '塑料'], [/(玻璃|glass)/i, '玻璃'],
+      [/(织物|布料|fabric)/i, '织物'], [/(陶瓷|ceramic)/i, '陶瓷'],
+      [/(磨砂|matte)/i, '磨砂表面'],
+    ]),
+    colorPreferences: collectBriefTerms(text, [
+      [/(暖白|米白|warm white)/i, '暖白/米白'], [/(黑|black)/i, '黑色'],
+      [/(白|white)/i, '白色'], [/(灰|gray|grey)/i, '灰色'],
+      [/(红|red)/i, '红色'], [/(蓝|blue)/i, '蓝色'], [/(绿|green)/i, '绿色'],
+    ]),
+    prohibitedDirections: uniqueStrings([
+      ...collectBriefTerms(text, [
+        [/(不要|避免|禁止).{0,12}(科技|发光|炫光)/i, '避免泛科技感和发光装饰'],
+        [/(不要|避免|禁止).{0,12}(复杂|切线|装饰)/i, '避免复杂切线和装饰噪声'],
+        [/(不要|避免|禁止).{0,12}(碳纤维|carbon)/i, '避免碳纤维'],
+      ]),
+      ...product.risks.filter(risk => /避免|不得|禁止/.test(risk)),
+    ]),
+    outputGoals: uniqueStrings([
+      product.goal,
+      ...collectBriefTerms(text, [
+        [/(效果图|渲染|render)/i, '产品效果图'], [/(方案|方向|concept)/i, '概念方案'],
+        [/(cmf|配色|材质)/i, 'CMF 方案'], [/(工作流|workflow)/i, '设计工作流'],
+        [/(分镜|storyboard)/i, '视觉分镜'], [/(视频|video)/i, '视频'],
+      ]),
+    ]),
+  };
+}
+
+export const normalizeDesignReferencePlan = (value: unknown): DesignReferencePlan => {
+  const references = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).references)
+      ? (value as Record<string, unknown>).references as unknown[]
+      : [];
+  return {
+    references: references.flatMap(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const record = item as Record<string, unknown>;
+      const itemId = String(record.itemId || '').trim();
+      const role = String(record.role || record.recommendedRole || '').trim() as DesignReferencePlanItem['role'];
+      const reason = String(record.reason || '').trim();
+      if (!itemId || !role || !reason) return [];
+      return [{
+        itemId,
+        role,
+        reason,
+        matchedFeatures: Array.isArray(record.matchedFeatures) ? record.matchedFeatures.map(String).filter(Boolean) : undefined,
+        confidence: Number.isFinite(Number(record.confidence)) ? Number(record.confidence) : undefined,
+      }];
+    }).slice(0, 8),
+  };
+};
+
+export function buildReferenceContextPrompt(
+  originalRequest: string,
+  projectBrief: ProjectBrief,
+  plan: DesignReferencePlan,
+) {
+  return [
+    'Original Request:',
+    originalRequest.trim(),
+    '',
+    'Design Brief:',
+    JSON.stringify(projectBrief),
+    '',
+    'Selected Inspiration References:',
+    ...(plan.references.length > 0
+      ? plan.references.map((reference, index) => [
+        `${index + 1}. itemId: ${reference.itemId}`,
+        `Role: ${reference.role}`,
+        `Reason: ${reference.reason}`,
+      ].join('\n'))
+      : ['None selected.']),
+    '',
+    'Reference Roles:',
+    plan.references.map(reference => `${reference.itemId}=${reference.role}`).join(', ') || 'None',
+  ].join('\n');
+}
+
 export function parseCreativeToolHint(userText: string, mediaType: 'image' | 'video'): string | undefined {
   const lower = normalizeSkillText(userText).replace(/nano\s*banana/g, 'nanobanana');
   const type = mediaType === 'video' ? 'video' : 'image';
@@ -514,6 +628,7 @@ export function buildCreativeGeneratorPrompt(brief: Omit<CreativeBrief, 'generat
     brief.dimensions.aspectRatio ? `Aspect ratio: ${brief.dimensions.aspectRatio}.` : '',
     brief.dimensions.resolution ? `Resolution: ${brief.dimensions.resolution}.` : '',
     buildOriginalRequestLine(brief.originalRequest),
+    `Design Brief: ${JSON.stringify(brief.projectBrief)}`,
   ].filter(Boolean);
   return lines.join('\n');
 }
@@ -563,6 +678,7 @@ export function extractCreativeBrief(input: SkillMatchInput, imageIds?: string[]
     toolHint,
     requiresStoryboardFirst,
     requiresStrategyFirst,
+    projectBrief: extractProjectBrief(originalRequest, product),
   };
   return {
     ...promptInput,
@@ -609,7 +725,7 @@ export function applyCreativeGeneratorDefaults(
   args: Record<string, unknown>,
   userText: string,
 ): Record<string, unknown> {
-  if (!isCreativeLikeRequest(userText)) return args;
+  if (!isCreativeLikeRequest(userText) && !inferProductDesignContext(userText).isProductTask) return args;
   const brief = extractCreativeBrief({
     userText,
     hasSelectedImages: Array.isArray(args.inputIds) && args.inputIds.length > 0,
@@ -620,9 +736,16 @@ export function applyCreativeGeneratorDefaults(
   const promptWithOriginal = /Original request:\s*"/.test(prompt)
     ? prompt
     : `${prompt}\n${buildOriginalRequestLine(userText)}`;
+  const inspirationPlan = normalizeDesignReferencePlan(args.inspirationReferences);
+  const referenceContext = inspirationPlan.references.length > 0
+    ? buildReferenceContextPrompt(userText, brief.projectBrief, inspirationPlan)
+    : '';
+  const promptWithContext = referenceContext && !/Selected Inspiration References:/i.test(promptWithOriginal)
+    ? `${promptWithOriginal}\n\n${referenceContext}`
+    : promptWithOriginal;
   return {
     ...args,
-    prompt: promptWithOriginal,
+    prompt: promptWithContext,
     ...(brief.dimensions.aspectRatio && !args.aspectRatio ? { aspectRatio: brief.dimensions.aspectRatio } : {}),
     ...(brief.dimensions.targetSize && !args.targetSize ? { targetSize: brief.dimensions.targetSize } : {}),
     ...(brief.dimensions.resolution && !args.resolution ? { resolution: brief.dimensions.resolution } : {}),
@@ -634,6 +757,56 @@ export function applyCreativeGeneratorDefaults(
       fidelity: brief.fidelity,
       productCategory: brief.product.category,
       focus: brief.product.focus,
+      projectBrief: brief.projectBrief,
+      designReferencePlan: inspirationPlan,
+    },
+  };
+}
+
+export function applyCreativeWorkflowDefaults(
+  args: Record<string, unknown>,
+  userText: string,
+): Record<string, unknown> {
+  const plan = normalizeDesignReferencePlan(args.inspirationReferences);
+  if (plan.references.length === 0) return args;
+  const brief = extractCreativeBrief({ userText });
+  const contextBlock = buildReferenceContextPrompt(userText, brief.projectBrief, plan);
+  const patchSteps = (steps: unknown) => Array.isArray(steps) ? steps.map(step => {
+    if (!step || typeof step !== 'object' || Array.isArray(step)) return step;
+    const record = step as Record<string, unknown>;
+    const type = String(record.type || record.kind || '').toLowerCase();
+    if (!/(generator|image|video)/.test(type)) return step;
+    const prompt = String(record.prompt || '').trim();
+    return {
+      ...record,
+      prompt: /Selected Inspiration References:/i.test(prompt)
+        ? prompt
+        : `${prompt || brief.generatorPrompt}\n\n${contextBlock}`,
+    };
+  }) : steps;
+  const workflowDefinition = args.workflowDefinition && typeof args.workflowDefinition === 'object' && !Array.isArray(args.workflowDefinition)
+    ? args.workflowDefinition as Record<string, unknown>
+    : null;
+  return {
+    ...args,
+    steps: patchSteps(args.steps),
+    ...(workflowDefinition ? {
+      workflowDefinition: {
+        ...workflowDefinition,
+        steps: patchSteps(workflowDefinition.steps),
+        metadata: {
+          ...(workflowDefinition.metadata && typeof workflowDefinition.metadata === 'object'
+            ? workflowDefinition.metadata as Record<string, unknown>
+            : {}),
+          projectBrief: brief.projectBrief,
+          designReferencePlan: plan,
+        },
+      },
+    } : {}),
+    metadata: {
+      ...(args.metadata && typeof args.metadata === 'object' ? args.metadata as Record<string, unknown> : {}),
+      projectBrief: brief.projectBrief,
+      designReferencePlan: plan,
     },
   };
 }
@@ -650,7 +823,7 @@ export const creativeProductDesignSkill: AppAgentSkill = {
   },
   getRequiredContext: (input): ContextScope[] => {
     const scopes: ContextScope[] = ['canvas'];
-    if (mentionsDrawerMaterialContext(input.userText)) scopes.push('drawer');
+    if (mentionsDrawerMaterialContext(input.userText) || inferProductDesignContext(input.userText).isProductTask) scopes.push('drawer');
     return scopes;
   },
   buildPromptPatch: input => {
@@ -668,9 +841,15 @@ export const creativeProductDesignSkill: AppAgentSkill = {
         dimensions: brief.dimensions,
         imageRoles: brief.imageRoles,
         toolHint: brief.toolHint,
+        projectBrief: brief.projectBrief,
       })}`,
       'Rules:',
       '- If workflow-builder-skill detects workflow creation or multi-output intent, treat CMF/detail/scene/storyboard terms as separate workflow nodes, not as one global CMF task.',
+      '- Before creating generators or workflows for a product design request, extract Project Brief fields (productType, targetUsers, styleKeywords, materialPreferences, colorPreferences, prohibitedDirections, outputGoals), then call drawer_search_inspirations with that brief.',
+      '- InspirationProfile analysis uses the configured Agent LLM API. When relevant drawer images lack structured profiles and analysis is explicitly requested or needed for a durable library update, use analyze_inspiration or analyze_inspirations_batch; do not use legacy CMF/alchemy data.',
+      '- Convert drawer_search_inspirations results into a Design Reference Plan. Pass chosen entries through inspirationReferences and explain itemId, role and reason. Do not invent itemId.',
+      '- Use retrieved drawer images only when relevant. Add chosen drawer items to canvas before connecting them to generators; preserve existing deterministic command and workflow input rules.',
+      '- Generator and workflow prompts must include Original Request, Design Brief, Selected Inspiration References and Reference Roles.',
       '- For industrial design review workflows, use product_reference_image as a reference_image_bridge that accepts external images and forwards the same visual reference to strategy and all generators.',
       '- For every image/video generator or edit prompt, include `Original request: "用户原话"` exactly with the user request.',
       '- Assign image roles before tool calls: BASE -> sourceImageNodeId/source_image_url; STYLE_REF/LAYOUT_REF/SUBJECT_REF -> referenceImageNodeIds/reference_image_urls; NONE is not passed.',

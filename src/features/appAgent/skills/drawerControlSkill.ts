@@ -28,6 +28,7 @@ export const drawerControlSkill: AppAgentSkill = {
   buildPromptPatch: () => [
     'Active skill: drawer-control-skill.',
     'Use drawer_manage for material, folder, selection, note and add-to-canvas operations.',
+    'Use drawer_search_inspirations for read-only project-aware retrieval across long-term image collections.',
     'Delete folder/items are destructive and must be confirmed by the app permission gate.',
     'Use IDs from drawer.items and drawer.folders only; never invent itemId or folderId.',
   ].join('\n'),

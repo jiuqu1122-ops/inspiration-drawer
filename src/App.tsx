@@ -66,6 +66,14 @@ import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/app
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
+  INSPIRATION_REFERENCE_ROLES,
+  normalizeInspirationProfile,
+  searchDrawerInspirations,
+  type DrawerSearchInspirationsInput,
+  type InspirationAnalysisJob,
+  type InspirationProfile,
+} from './features/appAgent/inspirationMemory';
+import {
   type ImagePolicy,
   type ImageRuleKey,
   type ImageRuleState,
@@ -4076,6 +4084,9 @@ function MainApp() {
   const [activeFolderId, setActiveFolderId] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<DrawerTabType>('all');
   const itemsRef = useRef<BufferItem[]>([]);
+  const inspirationAnalysisJobsRef = useRef(new Map<string, InspirationAnalysisJob>());
+  const autoInspirationAnalysisAttemptedRef = useRef(new Set<string>());
+  const autoInspirationAnalysisRunningRef = useRef(false);
   const foldersRef = useRef<Folder[]>([]);
   const hasRestoredNonEmptyFoldersRef = useRef(false);
   const activeFolderIdStateRef = useRef<string>('all');
@@ -24857,6 +24868,117 @@ useEffect(() => {
     return prepared;
   };
 
+  const analyzeDrawerInspirationWithLlm = async (input: {
+    itemId: string;
+    imageSource?: string;
+    existingProfile?: InspirationProfile;
+    userTags?: string[];
+    userNotes?: string[];
+    forceRefresh?: boolean;
+  }): Promise<InspirationProfile> => {
+    const item = itemsRef.current.find(candidate => candidate.id === input.itemId);
+    if (!item) throw new Error(`灵感素材不存在：${input.itemId}`);
+    if (item.type !== 'image') throw new Error('只有图片素材可以建立 InspirationProfile');
+    if (item.inspirationProfile && !input.forceRefresh && !input.existingProfile) return item.inspirationProfile;
+    const rawSource = String(input.imageSource || item.url || item.thumbnail
+      || (item.path ? convertFileSrc(item.path) : '') || item.sourceUrl || item.originalUrl || '').trim();
+    if (!rawSource) throw new Error('图片素材没有可读取的图像来源');
+    let modelSource = rawSource;
+    if (!/^https?:\/\//i.test(modelSource) || /asset\.localhost|localhost|127\.0\.0\.1/i.test(modelSource)) {
+      modelSource = await imageSourceToModelDataUrl(modelSource);
+    }
+    if (!/^data:image\/|^https?:\/\//i.test(modelSource)) throw new Error('图片无法转换为 LLM 可读取的来源');
+    const existingProfile = input.existingProfile || item.inspirationProfile;
+    const userNotes = input.userNotes || item.remarks || (item.remark ? [item.remark] : []);
+    const result = await invoke<unknown>('agent_analyze_inspiration', {
+      request: {
+        itemId: item.id,
+        imageSource: modelSource,
+        existingProfile,
+        userTags: input.userTags || [],
+        userNotes,
+      },
+    });
+    const profile = normalizeInspirationProfile(result, {
+      itemId: item.id,
+      existingProfile,
+      userTags: input.userTags,
+      userNotes,
+    });
+    const nextItems = itemsRef.current.map(candidate => candidate.id === item.id
+      ? { ...candidate, inspirationProfile: profile }
+      : candidate);
+    itemsRef.current = nextItems;
+    setItems(nextItems);
+    return profile;
+  };
+
+  const startDrawerInspirationAnalysisBatch = (input: {
+    itemIds: string[];
+    forceRefresh?: boolean;
+    priority?: 'low' | 'normal' | 'high';
+  }) => {
+    const itemIds = Array.from(new Set(input.itemIds.map(String).filter(Boolean))).filter(itemId => (
+      itemsRef.current.some(item => item.id === itemId && item.type === 'image')
+    ));
+    if (itemIds.length === 0) throw new Error('批量分析没有有效的图片素材');
+    const jobId = `inspiration_job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const createdAt = Date.now();
+    inspirationAnalysisJobsRef.current.set(jobId, {
+      jobId,
+      status: 'queued',
+      completed: 0,
+      total: itemIds.length,
+      errors: [],
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const patchJob = (patch: Partial<InspirationAnalysisJob>) => {
+      const current = inspirationAnalysisJobsRef.current.get(jobId);
+      if (current) inspirationAnalysisJobsRef.current.set(jobId, { ...current, ...patch, updatedAt: Date.now() });
+    };
+    void (async () => {
+      patchJob({ status: 'running' });
+      for (const itemId of itemIds) {
+        patchJob({ currentItemId: itemId });
+        try {
+          await analyzeDrawerInspirationWithLlm({ itemId, forceRefresh: input.forceRefresh });
+        } catch (error) {
+          const current = inspirationAnalysisJobsRef.current.get(jobId);
+          patchJob({ errors: [...(current?.errors || []), { itemId, error: error instanceof Error ? error.message : String(error) }] });
+        } finally {
+          const current = inspirationAnalysisJobsRef.current.get(jobId);
+          patchJob({ completed: Math.min(itemIds.length, (current?.completed || 0) + 1) });
+        }
+      }
+      const completedJob = inspirationAnalysisJobsRef.current.get(jobId);
+      patchJob({
+        status: completedJob?.errors.length === itemIds.length ? 'failed' : 'completed',
+        currentItemId: undefined,
+      });
+    })();
+    return { jobId };
+  };
+
+  useEffect(() => {
+    if (autoInspirationAnalysisRunningRef.current) return;
+    const nextItem = items.find(item => (
+      item.type === 'image'
+      && !item.inspirationProfile
+      && !autoInspirationAnalysisAttemptedRef.current.has(item.id)
+      && Boolean(item.url || item.thumbnail || item.path || item.sourceUrl || item.originalUrl)
+    ));
+    if (!nextItem) return;
+    autoInspirationAnalysisAttemptedRef.current.add(nextItem.id);
+    autoInspirationAnalysisRunningRef.current = true;
+    void analyzeDrawerInspirationWithLlm({ itemId: nextItem.id })
+      .catch(error => console.warn('灵感素材自动分析失败:', nextItem.id, error))
+      .finally(() => {
+        autoInspirationAnalysisRunningRef.current = false;
+        setItems(current => [...current]);
+      });
+  }, [items]);
+
   const canvasAgent = useCanvasAgentRuntime({
     getContext: () => {
       const surface = isCanvasModeRef.current ? 'canvas' : 'drawer';
@@ -24932,6 +25054,7 @@ useEffect(() => {
             folderId: item.folderId,
             quickAccess: item.isQuickAccess,
             remarks: item.remarks || (item.remark ? [item.remark] : undefined),
+            inspirationProfile: item.inspirationProfile,
           })),
         },
       };
@@ -25110,6 +25233,53 @@ useEffect(() => {
         }
         return preflight;
       };
+      if (name === 'analyze_inspiration') {
+        return analyzeDrawerInspirationWithLlm({
+          itemId: String(args.itemId || '').trim(),
+          imageSource: String(args.imageSource || '').trim() || undefined,
+          existingProfile: args.existingProfile && typeof args.existingProfile === 'object'
+            ? args.existingProfile as InspirationProfile
+            : undefined,
+          userTags: Array.isArray(args.userTags) ? args.userTags.map(String).filter(Boolean) : undefined,
+          userNotes: Array.isArray(args.userNotes) ? args.userNotes.map(String).filter(Boolean) : undefined,
+          forceRefresh: args.forceRefresh === true,
+        });
+      }
+      if (name === 'analyze_inspirations_batch') {
+        return startDrawerInspirationAnalysisBatch({
+          itemIds: Array.isArray(args.itemIds) ? args.itemIds.map(String).filter(Boolean) : [],
+          forceRefresh: args.forceRefresh === true,
+          priority: ['low', 'high'].includes(String(args.priority))
+            ? String(args.priority) as 'low' | 'high'
+            : 'normal',
+        });
+      }
+      if (name === 'get_inspiration_analysis_job') {
+        const jobId = String(args.jobId || '').trim();
+        const job = inspirationAnalysisJobsRef.current.get(jobId);
+        if (!job) throw new Error(`灵感分析任务不存在：${jobId}`);
+        return job;
+      }
+      if (name === 'drawer_search_inspirations') {
+        const query = String(args.query || '').trim();
+        if (!query) throw new Error('灵感检索 query 不能为空');
+        const role = String(args.referenceRole || '').trim();
+        if (role && !INSPIRATION_REFERENCE_ROLES.includes(role as typeof INSPIRATION_REFERENCE_ROLES[number])) {
+          throw new Error(`不支持的参考角色：${role}`);
+        }
+        const folderIds = Array.isArray(args.folderIds) ? args.folderIds.map(String).filter(Boolean) : [];
+        const missingFolderId = folderIds.find(folderId => !foldersRef.current.some(folder => folder.id === folderId));
+        if (missingFolderId) throw new Error(`文件夹不存在：${missingFolderId}`);
+        return searchDrawerInspirations(itemsRef.current, {
+          query,
+          projectBrief: args.projectBrief && typeof args.projectBrief === 'object'
+            ? args.projectBrief as Record<string, unknown>
+            : String(args.projectBrief || ''),
+          referenceRole: role ? role as DrawerSearchInspirationsInput['referenceRole'] : undefined,
+          folderIds,
+          topK: Number(args.topK) || undefined,
+        });
+      }
       if (name === 'app_get_context') {
         const requestedScopes = Array.isArray(args.scopes)
           ? args.scopes.map(String).filter(Boolean)
@@ -25163,6 +25333,7 @@ useEffect(() => {
               name: item.name || item.content || '未命名素材',
               folderId: item.folderId,
               quickAccess: item.isQuickAccess,
+              inspirationProfile: item.inspirationProfile,
             })),
             folders: foldersRef.current.slice(0, 120).map(folder => ({
               id: folder.id,

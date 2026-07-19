@@ -772,6 +772,53 @@ pub struct AgentOpenAiChatRequest {
     tools: Vec<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInspirationAnalysisRequest {
+    item_id: String,
+    image_source: String,
+    #[serde(default)]
+    user_tags: Vec<String>,
+    #[serde(default)]
+    user_notes: Vec<String>,
+    existing_profile: Option<Value>,
+}
+
+#[tauri::command]
+pub async fn agent_analyze_inspiration(
+    app_handle: tauri::AppHandle,
+    request: AgentInspirationAnalysisRequest,
+) -> Result<Value, String> {
+    let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5 * 60))
+        .build()
+        .map_err(|error| format!("无法初始化灵感自动分析连接：{error}"))?;
+    let response = client
+        .post("https://api.unmind.art/v1/ai/inspirations/analyze")
+        .bearer_auth(access_token)
+        .json(&json!({
+            "itemId": request.item_id,
+            "imageSource": request.image_source,
+            "userTags": request.user_tags,
+            "userNotes": request.user_notes,
+            "existingProfile": request.existing_profile,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("灵感自动分析请求失败：{error}"))?;
+    let status = response.status();
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("读取灵感自动分析响应失败：{error}"))?;
+    if !status.is_success() {
+        let message = value.get("message").and_then(Value::as_str).unwrap_or("服务暂不可用");
+        return Err(format!("灵感自动分析 HTTP {status}：{message}"));
+    }
+    Ok(value.get("profile").cloned().unwrap_or(value))
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiToolCallResult {

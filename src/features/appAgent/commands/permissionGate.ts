@@ -12,7 +12,8 @@ export function getLegacyActionRiskLevel(action: LegacyAgentAction): RiskLevel {
   const args = action.arguments || {};
   const tool = action.tool;
   const toolAction = String(args.action || '');
-  if (['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context'].includes(tool)) return 'read';
+  if (['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context', 'drawer_search_inspirations', 'get_inspiration_analysis_job'].includes(tool)) return 'read';
+  if (tool === 'analyze_inspiration' || tool === 'analyze_inspirations_batch') return 'safe_write';
   if (tool === 'app_ui_interact') return 'safe_write';
   if (tool === 'drawer_manage' && ['delete_items', 'delete_folder'].includes(toolAction)) return 'destructive';
   if (tool === 'calendar_manage' && ['delete_schedule'].includes(toolAction)) return 'destructive';

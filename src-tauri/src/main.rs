@@ -15597,6 +15597,7 @@ fn main() {
             agent::agent_load_settings,
             agent::agent_save_settings,
             agent::agent_openai_chat,
+            agent::agent_analyze_inspiration,
             agent::agent_cancel_openai,
             agent::agent_list_openai_models,
             agent::agent_test_api_connection,

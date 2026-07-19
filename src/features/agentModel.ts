@@ -271,6 +271,7 @@ export type AgentCanvasContext = {
       folderId?: string;
       quickAccess?: boolean;
       remarks?: string[];
+      inspirationProfile?: import('./appAgent/inspirationMemory/types').InspirationProfile;
     }>;
   };
 };
