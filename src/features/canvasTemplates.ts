@@ -3,6 +3,7 @@ import type {
   CanvasAiProvider,
   CanvasImageItem,
   CanvasItemBox,
+  DesignAgentConfig,
 } from './canvasModel';
 import { getCanvasAiNodeAutoSize } from './canvasAiNodeLayout';
 import {
@@ -23,6 +24,7 @@ export type CanvasWorkflowNodeTemplate = {
   inputs?: string[];
   fixedInput?: boolean;
   textMode?: CanvasImageItem['textMode'];
+  designAgentConfig?: DesignAgentConfig;
   acceptsExternalInputs?: boolean;
   externalInputTypes?: Array<'image' | 'text' | 'video'>;
   outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
@@ -298,6 +300,11 @@ export const PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW: CanvasWorkflowTempla
       inputs: ['product_refs'],
       fixedInput: false,
       textMode: 'agent',
+      designAgentConfig: {
+        agentRole: 'design_strategist',
+        outputArtifactType: 'DesignStrategy',
+        thinkingMode: 'analysis',
+      },
       acceptsExternalInputs: false,
       outputType: 'text',
     },

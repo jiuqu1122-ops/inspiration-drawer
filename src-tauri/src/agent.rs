@@ -208,7 +208,8 @@ fn public_settings_from_stored(
             public.api_error = Some(error);
         }
     }
-    if normalize_provider(&settings.provider) == "openai-compatible"
+    if !crate::ai_credentials::is_byok_unlocked(&app_handle)
+        && normalize_provider(&settings.provider) == "openai-compatible"
         && stored_api_provider(settings).eq_ignore_ascii_case("unmind-wallet")
     {
         public.api_gateway_kind = AiGatewayKind::Custom;
@@ -684,7 +685,8 @@ fn input_changes_stored_api(current: &AgentSettingsStored, input: &AgentSettings
 #[tauri::command]
 pub fn agent_load_settings(app_handle: tauri::AppHandle) -> AgentSettingsPublic {
     let mut settings = read_settings(&app_handle);
-    if normalize_provider(&settings.provider) == "openai-compatible"
+    if !crate::ai_credentials::is_byok_unlocked(&app_handle)
+        && normalize_provider(&settings.provider) == "openai-compatible"
         && !stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet")
     {
         settings.api_gateway_kind = Some(AiGatewayKind::Custom);
@@ -697,6 +699,24 @@ pub fn agent_load_settings(app_handle: tauri::AppHandle) -> AgentSettingsPublic 
         let _ = write_settings(&app_handle, &settings);
     }
     public_settings_from_stored(&app_handle, &settings)
+}
+
+#[tauri::command]
+pub fn get_byok_unlock_status(app_handle: tauri::AppHandle) -> bool {
+    crate::ai_credentials::is_byok_unlocked(&app_handle)
+}
+
+#[tauri::command]
+pub fn activate_byok_unlock(
+    app_handle: tauri::AppHandle,
+    code: String,
+) -> Result<bool, String> {
+    crate::ai_credentials::activate_byok_unlock(&app_handle, &code)
+}
+
+#[tauri::command]
+pub fn deactivate_byok_unlock(app_handle: tauri::AppHandle) -> Result<(), String> {
+    crate::ai_credentials::deactivate_byok_unlock(&app_handle)
 }
 
 #[tauri::command]

@@ -1,5 +1,6 @@
 import type { DetailPageRenderMode, DetailPageSpec, DetailPageStatus } from '../pageLayout/detailPageLayoutTypes';
 import type { ImagePolicy } from '../imageQuality/imageRuleCapsules';
+import type { DesignAgentConfig } from '../../canvasModel';
 
 export type WorkflowLanguage = 'follow_user' | 'zh-CN' | 'en' | 'bilingual';
 
@@ -31,6 +32,7 @@ export interface WorkflowOutputSpec {
   imageTextLanguage?: WorkflowLanguage;
   renderMode?: DetailPageRenderMode;
   imagePolicy?: ImagePolicy;
+  designAgentConfig?: DesignAgentConfig;
 }
 
 export interface WorkflowRecipeDraft {
@@ -50,6 +52,7 @@ export interface WorkflowRecipeDraft {
     mode: 'enabled' | 'disabled';
     title: string;
     prompt: string;
+    designAgentConfig?: DesignAgentConfig;
   };
   outputs: WorkflowOutputSpec[];
   metadata: {

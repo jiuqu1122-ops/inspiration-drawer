@@ -31,6 +31,7 @@ import {
   type CodexRateLimits,
   type CodexRateLimitWindow,
   type CodexRuntimeStatus,
+  type WorkflowResultCardData,
 } from './agentModel';
 import {
   CANVAS_AGENT_ACTION_SCHEMA,
@@ -982,12 +983,38 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
   const updateToolCalls = useCallback((run: PendingToolRun) => {
     patchMessage(run.conversationId, run.assistantMessageId, message => ({
       ...message,
+      type: 'tool',
       toolCalls: run.calls.map(call => ({ ...call })),
       status: run.calls.some(call => call.status === 'awaiting-approval' || call.status === 'running')
         ? 'streaming'
         : message.status,
     }));
   }, [patchMessage]);
+
+  const appendWorkflowResult = useCallback((result: WorkflowResultCardData) => {
+    const preferredConversationId = activeRequestRef.current?.conversationId
+      || activeConversationIdRef.current;
+    const conversationId = conversationsRef.current.some(item => item.id === preferredConversationId)
+      ? preferredConversationId
+      : conversationsRef.current[0]?.id;
+    if (!conversationId) return;
+    const timestamp = Date.now();
+    const resultMessage: AgentChatMessage = {
+      id: createAgentId('agent-workflow-result'),
+      role: 'agent',
+      type: 'workflow_result',
+      content: result.summary,
+      timestamp,
+      status: result.status === 'error' ? 'error' : 'completed',
+      error: result.error,
+      workflowResult: result,
+    };
+    patchConversation(conversationId, conversation => ({
+      ...conversation,
+      updatedAt: timestamp,
+      messages: [...conversation.messages, resultMessage],
+    }));
+  }, [patchConversation]);
 
   const executeToolCall = useCallback(async (run: PendingToolRun, call: AgentToolCall) => {
     call.status = 'running';
@@ -1047,6 +1074,26 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     }
 
     if (run.provider !== 'openai-compatible' || !run.providerMessages) {
+      const pendingInspirationCandidates = Array.from(new Map(run.calls.flatMap(call => {
+        const result = call.result && typeof call.result === 'object' && !Array.isArray(call.result)
+          ? call.result as Record<string, unknown>
+          : {};
+        return Array.isArray(result.inspirationCandidates)
+          ? result.inspirationCandidates.filter(candidate => (
+            candidate && typeof candidate === 'object'
+            && String((candidate as Record<string, unknown>).state || '') === 'candidate'
+          )) as Array<Record<string, unknown>>
+          : [];
+      }).map(candidate => [String(candidate.itemId || ''), candidate])).values());
+      const inspirationConfirmationText = pendingInspirationCandidates.length > 0
+        ? [
+          '找到以下灵感候选，需要你确认后才会作为生成参考：',
+          ...pendingInspirationCandidates.slice(0, 8).map((candidate, index) => (
+            `${index + 1}. ${String(candidate.itemId || '')} · ${Math.round(Number(candidate.confidence || 0) * 100)}% · ${String(candidate.referenceRole || '')}\n${String(candidate.reason || '')}`
+          )),
+          '回复要采用的 itemId；未确认的候选不会接入生成节点。',
+        ].join('\n')
+        : '';
       finishThinkingSteps(
         run.conversationId,
         run.assistantMessageId,
@@ -1054,6 +1101,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       );
       patchMessage(run.conversationId, run.assistantMessageId, message => ({
         ...message,
+        ...(inspirationConfirmationText ? { content: inspirationConfirmationText } : {}),
         status: run.calls.some(call => call.status === 'error') ? 'error' : 'completed',
       }));
       setBusy(false);
@@ -2140,6 +2188,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     const userMessage: AgentChatMessage = {
       id: createAgentId('agent-user'),
       role: 'user',
+      type: 'text',
       content: text,
       timestamp: Date.now(),
       status: 'completed',
@@ -2150,6 +2199,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     const assistantMessage: AgentChatMessage = {
       id: assistantMessageId,
       role: 'agent',
+      type: 'text',
       content: '',
       timestamp: Date.now() + 1,
       status: 'streaming',
@@ -2617,6 +2667,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     cancelCurrent,
     retryLast,
     resolveToolCall,
+    appendWorkflowResult,
     newConversation,
     selectConversation,
     deleteConversation,

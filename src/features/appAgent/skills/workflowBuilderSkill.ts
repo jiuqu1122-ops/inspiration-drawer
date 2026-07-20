@@ -362,6 +362,8 @@ export const workflowBuilderSkill: AppAgentSkill = {
     'Detail-page requests route to ecommerce-detail-page/product-detail-page draft and must not default to industrial-design-review.',
     'When creating or editing workflow drafts, preserve user generation settings: aspect ratio, target size, clarity/resolution (1K/2K/4K/1080p), provider and model. Default detail-page and storyboard/animation-storyboard workflows to Image2 when no model is requested; default all other workflows to Nano.',
     'Do not add a strategy/text-agent step by default. Only add it when the user explicitly asks to analyze the product first or asks for a strategy-first workflow.',
+    'When an industrial-design workflow explicitly includes requirement breakdown, inspiration analysis, strategy, review, or delivery writing, preserve each stage as a text_agent with designAgentConfig and connect it through inputStepIds. Do not collapse the stages into one prompt.',
+    'Use image_generator nodes only for visual concept execution; Design Agent text nodes own design reasoning and text artifacts.',
     'Supported deterministic intents: create_workflow, create_workflow_nodes, create_industrial_design_review_workflow, and run_workflow.',
     'Use canvas_apply_workflow for existing workflows and canvas_create_workflow only when the user asks for reusable or multi-stage workflows.',
     'Workflow steps must be compact, non-empty and connected by inputStepIds when later steps depend on earlier ones.',

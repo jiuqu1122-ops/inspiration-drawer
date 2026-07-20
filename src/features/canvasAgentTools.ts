@@ -158,12 +158,38 @@ const CONTEXT_SCOPES = [
 
 const IMAGE_REFERENCE_ROLES = ['BASE', 'STYLE_REF', 'LAYOUT_REF', 'SUBJECT_REF', 'NONE'] as const;
 
+const DESIGN_AGENT_ROLE_VALUES = [
+  'requirement_analyzer',
+  'inspiration_analyzer',
+  'design_strategist',
+  'design_reviewer',
+  'presentation_writer',
+  'general',
+] as const;
+const DESIGN_AGENT_ARTIFACT_VALUES = [
+  'DesignBrief',
+  'ResearchReport',
+  'InspirationAnalysis',
+  'DesignStrategy',
+  'DesignReview',
+  'PromptPackage',
+  'Document',
+] as const;
+const DESIGN_AGENT_THINKING_MODE_VALUES = ['analysis', 'generation', 'review'] as const;
+
+const DESIGN_AGENT_CONFIG_SCHEMA = objectSchema({
+  agentRole: { type: ['string', 'null'], enum: [...DESIGN_AGENT_ROLE_VALUES, null] },
+  outputArtifactType: { type: ['string', 'null'], enum: [...DESIGN_AGENT_ARTIFACT_VALUES, null] },
+  thinkingMode: { type: ['string', 'null'], enum: [...DESIGN_AGENT_THINKING_MODE_VALUES, null] },
+});
+
 const INSPIRATION_REFERENCE_SCHEMA = objectSchema({
   itemId: { type: 'string' },
   role: { type: 'string', enum: INSPIRATION_REFERENCE_ROLES },
   reason: { type: 'string' },
   matchedFeatures: { type: 'array', items: { type: 'string' } },
   confidence: { type: ['number', 'null'] },
+  state: { type: ['string', 'null'], enum: ['candidate', 'selected', 'rejected', null] },
 }, ['itemId', 'role', 'reason']);
 
 const DRAWER_SEARCH_INSPIRATIONS_PROPERTIES = {
@@ -171,7 +197,7 @@ const DRAWER_SEARCH_INSPIRATIONS_PROPERTIES = {
   projectBrief: { anyOf: [{ type: 'string' }, { type: 'object', additionalProperties: true }] },
   referenceRole: { type: ['string', 'null'], enum: [...INSPIRATION_REFERENCE_ROLES, null] },
   folderIds: { type: 'array', items: { type: 'string' } },
-  topK: { type: ['number', 'null'], minimum: 1, maximum: 20 },
+  topK: { type: ['number', 'null'], minimum: 1, maximum: 8 },
 };
 
 const ANALYZE_INSPIRATION_PROPERTIES = {
@@ -272,6 +298,7 @@ const WORKFLOW_STEP_SCHEMA = {
     outputFormat: { type: ['string', 'null'] },
     count: { type: ['number', 'null'] },
     toolHint: { type: ['string', 'null'] },
+    designAgentConfig: DESIGN_AGENT_CONFIG_SCHEMA,
     skillMeta: { type: 'object', additionalProperties: true },
     imagePolicy: IMAGE_POLICY_SCHEMA,
   },
@@ -481,6 +508,7 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
         prompt: { type: 'string' },
         inputIds: { type: 'array', items: { type: 'string' } },
         autoRun: { type: 'boolean' },
+        designAgentConfig: DESIGN_AGENT_CONFIG_SCHEMA,
       }, ['prompt']),
     },
   },
@@ -959,8 +987,8 @@ export const getCanvasAgentToolLabel = (name: string) => ({
   canvas_create_media_tool: '创建媒体处理节点',
   canvas_create_preset: '创建节点预设',
   canvas_add_text: '添加文字节点',
-  canvas_create_text_agent: '创建 Agent 文字节点',
-  canvas_run_text_agent: '运行 Agent 文字节点',
+  canvas_create_text_agent: '创建 Design Agent 节点',
+  canvas_run_text_agent: '运行 Design Agent 节点',
   canvas_apply_workflow: '应用工作流',
   canvas_create_workflow: '创建工作流',
   canvas_create_workflow_draft: '创建工作流草稿',

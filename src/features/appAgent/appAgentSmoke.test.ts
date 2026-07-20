@@ -295,6 +295,8 @@ export function runAppAgentSmokeTests() {
   const strategyEnabledGenerators = strategyEnabledSteps.filter(step => step.type === 'image_generator');
   assert(strategyEnabledDefinition?.strategyStepMode === 'enabled', 'explicit analysis workflow should enable strategy step');
   assert(strategyEnabledSteps.some(step => step.id === 'industrial_design_review_strategy' && step.type === 'text_agent'), 'explicit analysis workflow should include strategy text-agent');
+  const designStrategyStep = strategyEnabledSteps.find(step => step.id === 'industrial_design_review_strategy');
+  assert((designStrategyStep?.designAgentConfig as Record<string, unknown> | undefined)?.agentRole === 'design_strategist', 'strategy text-agent should carry Design Agent role config');
   assert(strategyEnabledGenerators.every(step => Array.isArray(step.visualInputStepIds) && step.visualInputStepIds.includes('product_reference_image')), 'strategy enabled generators should keep direct product visual input');
   assert(strategyEnabledGenerators.every(step => Array.isArray(step.textInputStepIds) && step.textInputStepIds.includes('industrial_design_review_strategy')), 'strategy enabled generators should reference strategy as text input');
 
@@ -1247,6 +1249,16 @@ export function runWorkflowPlanningRouteSmokeTests() {
     proposal,
     userText: 'design a portfolio workflow',
   });
+  const noisyProposal = parseWorkflowDraftProposal(
+    `Here is the proposal:\n\n\`\`\`json\n${JSON.stringify({
+      name: 'Noisy proposal',
+      inputs: [{ id: 'product_reference_image', type: 'image' }],
+      outputs: [{ id: 'hero', type: 'image_generator', prompt: 'hero' }],
+    })}\n\`\`\`\nI kept the output editable.`,
+  );
+  assert(noisyProposal.name === 'Noisy proposal', 'Workflow proposal: should extract JSON from model preamble and trailing note');
+  const trailingCommaProposal = parseWorkflowDraftProposal('{"name":"Trailing comma","inputs":[],"outputs":[],}');
+  assert(trailingCommaProposal.name === 'Trailing comma', 'Workflow proposal: should tolerate trailing commas');
   assert(draft.outputs.length === 2, 'Workflow proposal: should create two outputs');
   assert(new Set(draft.outputs.map(output => output.id)).size === 2, 'Workflow proposal: output ids should be unique');
   assert(draft.outputs.every(output => output.prompt.includes('Original request:')), 'Workflow proposal: prompts should include Original request');

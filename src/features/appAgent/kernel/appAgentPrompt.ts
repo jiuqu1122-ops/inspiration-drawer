@@ -11,11 +11,12 @@ export const APP_AGENT_TOOL_MANIFEST_PROMPT = [
   '- app_get_context: read compact scoped context; pass scopes instead of assuming full app context.',
   '- app_navigate: global navigation, search, settings, notes, calendar and window actions.',
   '- drawer_manage: drawer materials, folders, selections and notes.',
-  '- drawer_search_inspirations: retrieve semantically relevant long-term drawer images for a project brief and assign design reference roles.',
-  '- analyze_inspiration/analyze_inspirations_batch/get_inspiration_analysis_job: build and maintain InspirationProfile data with the configured Agent LLM API.',
+  '- drawer_search_inspirations: metadata-only retrieval of at most 8 compact candidates. Respect candidate/selected/rejected state and confidence thresholds.',
+  '- analyze_inspiration/analyze_inspirations_batch/get_inspiration_analysis_job: explicit library-maintenance tools only; never call them during an ordinary creative request.',
   '- calendar_manage: calendar schedule actions.',
   '- canvas_manage: existing canvas node operations.',
-  '- canvas_create_text_agent/canvas_create_generator/canvas_create_media_tool/canvas_create_workflow: create canvas execution nodes.',
+  '- canvas_create_text_agent: create a Design Agent Node; set designAgentConfig for requirement, inspiration, strategy, review, presentation, or general text assets.',
+  '- canvas_create_generator/canvas_create_media_tool/canvas_create_workflow: create visual execution nodes and workflows.',
   '- app_ui_interact: last-resort visible UI fallback; always confirmed.',
 ].join('\n');
 

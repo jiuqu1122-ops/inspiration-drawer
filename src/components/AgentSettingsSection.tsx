@@ -13,7 +13,7 @@ import {
   Server,
   Wallet,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentApiBalanceResult,
   AgentApiConnectionResult,
@@ -72,6 +72,7 @@ export function AgentSettingsSection({
   const [working, setWorking] = useState('');
   const [message, setMessage] = useState('');
   const [balanceText, setBalanceText] = useState('');
+  const modelsRequestedRef = useRef(false);
   const apiLockedByLicense = forceApiLockedByLicense || draft.apiEditable === false;
   const effectiveProvider = draft.provider;
   const hideXaisBaseUrl = draft.apiGatewayKind === 'xais';
@@ -93,6 +94,21 @@ export function AgentSettingsSection({
   useEffect(() => {
     if (expanded && !codexStatus) void onRefreshCodexStatus().catch(() => {});
   }, [codexStatus, expanded, onRefreshCodexStatus]);
+
+  useEffect(() => {
+    if (!draft.hasApiKey) {
+      modelsRequestedRef.current = false;
+      return;
+    }
+    if (!expanded || modelsRequestedRef.current) return;
+    modelsRequestedRef.current = true;
+    setWorking('models');
+    setMessage('');
+    void onListModels()
+      .then(values => setModels(values))
+      .catch(error => setMessage(String(error)))
+      .finally(() => setWorking(''));
+  }, [draft.hasApiKey, expanded, onListModels]);
 
   const statusLabel = useMemo(() => {
     if (!codexStatus) return '未检查';
@@ -275,32 +291,19 @@ export function AgentSettingsSection({
                       <div className="flex justify-between gap-2"><span>Gateway</span><span className="truncate text-right">{gatewayLabel}</span></div>
                       {!hideXaisBaseUrl && <div className="flex justify-between gap-2"><span>Base URL</span><span className="truncate text-right">{draft.apiBaseUrl || '-'}</span></div>}
                       <div className="flex justify-between gap-2"><span>Provider</span><span className="truncate text-right">{draft.apiProvider || '-'}</span></div>
-                      <div className="flex justify-between gap-2"><span>模型</span><span className="truncate text-right">{draft.apiModel || '-'}</span></div>
                     </div>
-                     <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
-                       LLM 模型
-                       <div className="flex gap-1.5">
-                         <select
-                           value={draft.apiModel}
-                           onChange={event => setDraft(current => ({ ...current, apiModel: event.target.value }))}
-                           className="min-w-0 flex-1 rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
-                         >
-                           {!draft.apiModel && <option value="">请先刷新模型</option>}
-                           {draft.apiModel && !models.includes(draft.apiModel) && <option value={draft.apiModel}>{draft.apiModel}（当前）</option>}
-                           {models.map(model => <option key={model} value={model}>{model}</option>)}
-                         </select>
-                         <button
-                           type="button"
-                           onClick={() => void refreshModels()}
-                           disabled={!!working || !draft.hasApiKey}
-                           className="flex items-center gap-1 rounded-[12px] bg-blue-100 px-2.5 py-1.5 text-[10px] font-black text-blue-700 disabled:opacity-50 dark:bg-blue-400/15 dark:text-blue-100"
-                         >
-                           <RefreshCw className={`h-3 w-3 ${working === 'models' ? 'animate-spin' : ''}`} />
-                           {working === 'models' ? '读取中' : '刷新模型'}
-                         </button>
-                       </div>
-                       <span className="text-[9px] font-medium leading-4 text-blue-700/70 dark:text-blue-100/60">模型选择会同步用于 Agent 对话、工作流规划和灵感图片分析。</span>
-                     </label>
+                    <label className="flex flex-col gap-1 text-[10px] font-bold text-stone-500 dark:text-stone-400">
+                      LLM 模型
+                      <select
+                        value={draft.apiModel}
+                        onChange={event => setDraft(current => ({ ...current, apiModel: event.target.value }))}
+                        className="w-full rounded-[13px] border border-blue-100 bg-white/85 px-2.5 py-1.5 text-xs font-medium text-stone-700 outline-none dark:border-blue-400/20 dark:bg-stone-900/45 dark:text-stone-200"
+                      >
+                        {!draft.apiModel && <option value="">{working === 'models' ? '读取模型中…' : '暂无可用模型'}</option>}
+                        {draft.apiModel && !models.includes(draft.apiModel) && <option value={draft.apiModel}>{draft.apiModel}（当前）</option>}
+                        {models.map(model => <option key={model} value={model}>{model}</option>)}
+                      </select>
+                    </label>
                      {draft.apiError && (
                       <div className="rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] leading-4 text-red-600 dark:bg-red-400/10 dark:text-red-200">
                         {draft.apiError}
@@ -315,15 +318,6 @@ export function AgentSettingsSection({
                       >
                         {working === 'connection' ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
                         测试连接
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void refreshModels()}
-                        disabled={!!working || !draft.hasApiKey}
-                        className="flex items-center gap-1 rounded-[12px] bg-blue-100 px-2.5 py-1.5 text-[10px] font-black text-blue-700 disabled:opacity-50 dark:bg-blue-400/15 dark:text-blue-100"
-                      >
-                        <RefreshCw className={`h-3 w-3 ${working === 'models' ? 'animate-spin' : ''}`} />
-                        {working === 'models' ? '读取中' : '刷新模型'}
                       </button>
                       <button
                         type="button"

@@ -31,7 +31,6 @@ import BufferItemCard from './components/BufferItemCard';
 import { CanvasAgentSidebar } from './components/CanvasAgentSidebar';
 import { DrawerAgentPanel } from './components/DrawerAgentPanel';
 import { DoodleBrushCursor } from './components/DoodleBrushCursor';
-import { AgentSettingsSection } from './components/AgentSettingsSection';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
 import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSelect';
@@ -60,16 +59,32 @@ import {
 import { clamp } from './features/common';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
-import { isBuiltInAgentSystemPrompt, type AgentCanvasSelectionItem, type AgentCanvasVisualReference, type AgentSendOptions, type AiGatewayKind } from './features/agentModel';
+import {
+  isBuiltInAgentSystemPrompt,
+  type AgentCanvasSelectionItem,
+  type AgentCanvasVisualReference,
+  type AgentSendOptions,
+  type AiGatewayKind,
+  type WorkflowResultCardData,
+  type WorkflowResultMedia,
+  type WorkflowResultReference,
+} from './features/agentModel';
+import { buildWorkflowResultCardData } from './features/workflowResult';
 import { resolveWorkflowInputs } from './features/appAgent/commands/workflowInputResolver';
 import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/appAgentKernel';
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
   INSPIRATION_REFERENCE_ROLES,
+  applyInspirationCandidateRanking,
+  buildInspirationCandidateRankingPrompt,
+  buildInspirationAnalysisPrompt,
+  extractJsonObject,
   normalizeInspirationProfile,
   searchDrawerInspirations,
+  shouldRankInspirationCandidates,
   type DrawerSearchInspirationsInput,
+  type InspirationCandidate,
   type InspirationAnalysisJob,
   type InspirationProfile,
 } from './features/appAgent/inspirationMemory';
@@ -145,10 +160,21 @@ import {
   type CanvasAiCredentialSource,
   type CanvasAiModelCandidate,
   type CanvasAiProvider,
+  type DesignAgentConfig,
   type CanvasImageItem,
   type CanvasItemBox,
   type CanvasResizeCorner,
 } from './features/canvasModel';
+import {
+  DESIGN_AGENT_ARTIFACT_LABELS,
+  DESIGN_AGENT_ARTIFACT_TYPES,
+  DESIGN_AGENT_ROLE_LABELS,
+  DESIGN_AGENT_ROLES,
+  DESIGN_AGENT_THINKING_MODE_LABELS,
+  DESIGN_AGENT_THINKING_MODES,
+  buildDesignAgentSystemPrompt,
+  normalizeDesignAgentConfig,
+} from './features/designAgentNode';
 import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './features/canvasTemplates';
 import {
   claimCanvasAiRun,
@@ -366,6 +392,7 @@ type CanvasWorkflowNodeTemplate = {
   inputs?: string[];
   fixedInput?: boolean;
   textMode?: CanvasImageItem['textMode'];
+  designAgentConfig?: DesignAgentConfig;
   acceptsExternalInputs?: boolean;
   externalInputTypes?: Array<'image' | 'text' | 'video'>;
   outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
@@ -518,6 +545,7 @@ type AgentOpenAiChatResult = {
   finishReason?: string;
 };
 
+const AUTO_INSPIRATION_ANALYSIS_ENABLED = false;
 const DRAWER_UNDO_LIMIT = 8;
 type CanvasUndoSnapshot = {
   items: CanvasImageItem[];
@@ -1154,6 +1182,18 @@ const CANVAS_AI_NODE_SELECT_MENU_CLASS = '!border-stone-200/80 !bg-white/98 !tex
 const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-600 hover:!bg-stone-100 hover:!text-stone-950 dark:!text-white/78 dark:hover:!bg-white/10 dark:hover:!text-white';
 const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-stone-900 !text-white dark:!bg-white/14 dark:!text-white';
 const CANVAS_AI_PANEL_SELECT_CLASS = 'h-[34px] w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 text-xs font-medium text-stone-700 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:hover:bg-stone-900/70';
+const DESIGN_AGENT_ROLE_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_ROLES.map(value => ({
+  value,
+  label: DESIGN_AGENT_ROLE_LABELS[value],
+}));
+const DESIGN_AGENT_ARTIFACT_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_ARTIFACT_TYPES.map(value => ({
+  value,
+  label: DESIGN_AGENT_ARTIFACT_LABELS[value],
+}));
+const DESIGN_AGENT_THINKING_MODE_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_THINKING_MODES.map(value => ({
+  value,
+  label: DESIGN_AGENT_THINKING_MODE_LABELS[value],
+}));
 const DRAWER_TOOL_BUTTON_BASE_CLASS = 'p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400';
 const DRAWER_FOLDER_TONES = [
   {
@@ -1774,6 +1814,11 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
         inputs: ['product_refs'],
         fixedInput: false,
         textMode: 'agent',
+        designAgentConfig: {
+          agentRole: 'design_strategist',
+          outputArtifactType: 'DesignStrategy',
+          thinkingMode: 'analysis',
+        },
         outputType: 'text',
       } as CanvasWorkflowNodeTemplate,
       ] : []),
@@ -1856,7 +1901,7 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
       || type === 'reference-image-bridge'
       || step.bridgeType === 'reference_image';
   });
-  const strategyStep = stepRecords.find(step => String(step.type || step.kind || '').toLowerCase() === 'text_agent');
+  const explicitTextSteps = stepRecords.filter(step => String(step.type || step.kind || '').toLowerCase() === 'text_agent');
   const strategyStepRequested = strategyStepMode === 'enabled'
     || (strategyStepMode !== 'disabled' && doesWorkflowExplicitlyRequestProductAnalysis(
       definition.name,
@@ -1868,20 +1913,27 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
       metadata.userRequest,
       metadata.prompt
     ));
-  const effectiveStrategyStep = strategyStepRequested
-    ? strategyStep || {
+  const textAgentSteps = explicitTextSteps.length > 0
+    ? explicitTextSteps
+    : strategyStepRequested
+      ? [{
       id: 'industrial_design_review_strategy',
       title: '工业设计评审策略',
       prompt: 'Analyze the connected PRODUCT_REF images and write a compact industrial design review strategy before image generation.',
-    }
-    : null;
+      designAgentConfig: {
+        agentRole: 'design_strategist',
+        outputArtifactType: 'DesignStrategy',
+        thinkingMode: 'analysis',
+      },
+    }]
+      : [];
   const generatorSteps = stepRecords.filter(step => /image[-_]?generator/.test(String(step.type || step.kind || '').toLowerCase()));
   if (!label || generatorSteps.length === 0) return null;
 
   const productInputId = 'product_reference_image';
-  const strategyStepId = effectiveStrategyStep
-    ? String(effectiveStrategyStep.id || 'industrial_design_review_strategy')
-    : '';
+  const textAgentStepIds = new Set(textAgentSteps.map((step, index) => String(step.id || `design_agent_${index + 1}`)));
+  const generatorStepIds = new Set(generatorSteps.map((step, index) => String(step.id || `industrial_review_output_${index + 1}`)));
+  const declaredStepIds = new Set([productInputId, ...textAgentStepIds, ...generatorStepIds]);
   const workflowNodes: CanvasWorkflowNodeTemplate[] = [
     {
       id: productInputId,
@@ -1907,49 +1959,61 @@ const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
     },
   ];
 
-  if (effectiveStrategyStep && strategyStepId) {
-    const prompt = String(effectiveStrategyStep.prompt || effectiveStrategyStep.title || 'Industrial design review strategy').trim();
+  textAgentSteps.forEach((step, index) => {
+    const stepId = String(step.id || `design_agent_${index + 1}`);
+    const title = String(step.title || step.label || DESIGN_AGENT_ROLE_LABELS[normalizeDesignAgentConfig(step.designAgentConfig).agentRole] || `Design Agent ${index + 1}`).trim();
+    const prompt = String(step.prompt || title).trim();
+    const requestedInputs = Array.isArray(step.inputStepIds)
+      ? step.inputStepIds.map(String).filter(id => id !== stepId && declaredStepIds.has(id))
+      : [];
     workflowNodes.push({
-      id: strategyStepId,
-      x: 420,
-      y: 0,
+      id: stepId,
+      x: 420 + index * 480,
+      y: index % 2 === 0 ? 0 : 300,
       width: 440,
-      height: 240,
+      height: 260,
       item: {
-        id: strategyStepId,
+        id: stepId,
         type: 'text',
         content: prompt,
-        name: String(effectiveStrategyStep.title || '工业设计评审策略').slice(0, 80),
-        remark: 'Internal text strategy step; visual references still fan out directly to generators.',
+        name: title.slice(0, 80),
         createdAt: 0,
         isQuickAccess: false,
       },
-      inputs: [productInputId],
+      inputs: requestedInputs.length > 0 ? requestedInputs : [productInputId],
       fixedInput: false,
       textMode: 'agent',
+      designAgentConfig: normalizeDesignAgentConfig(step.designAgentConfig),
       outputType: 'text',
     });
-  }
+  });
 
-  const generatorX = strategyStepId ? 960 : 420;
+  const generatorX = textAgentSteps.length > 0 ? 480 + textAgentSteps.length * 480 : 420;
   generatorSteps.forEach((step, index) => {
     const title = String(step.title || step.label || step.id || `Review output ${index + 1}`).trim();
     const prompt = String(step.prompt || title).trim();
+    const rawInputStepIds = Array.isArray(step.inputStepIds)
+      ? step.inputStepIds.map(String).filter(id => declaredStepIds.has(id))
+      : [];
     const rawVisualInputIds = Array.isArray(step.visualInputStepIds)
       ? step.visualInputStepIds.map(String).filter(Boolean)
-      : [];
-    const visualInputIds = rawVisualInputIds.includes(productInputId) || rawVisualInputIds.length > 0
-      ? rawVisualInputIds
-      : [productInputId];
+      : rawInputStepIds.filter(id => id === productInputId || generatorStepIds.has(id));
+    const requiresReferenceImages = step.requiresReferenceImages !== false;
+    const visualInputIds = Array.from(new Set([
+      ...(requiresReferenceImages ? [productInputId] : []),
+      ...rawVisualInputIds.filter(id => id === productInputId || generatorStepIds.has(id)),
+    ]));
     const rawTextInputIds = Array.isArray(step.textInputStepIds)
       ? step.textInputStepIds.map(String).filter(Boolean)
-      : [];
-    const strategyTextInputIds = rawTextInputIds.filter(inputId => inputId === strategyStepId);
-    const textInputIds = strategyStepId
-      ? (strategyTextInputIds.length > 0 ? strategyTextInputIds : [strategyStepId])
-      : [];
+      : rawInputStepIds.filter(id => textAgentStepIds.has(id));
+    const matchedTextInputIds = rawTextInputIds.filter(inputId => textAgentStepIds.has(inputId));
+    const textInputIds = matchedTextInputIds.length > 0
+      ? matchedTextInputIds
+      : textAgentSteps.length === 1
+        ? Array.from(textAgentStepIds)
+        : [];
     const inputs = Array.from(new Set([
-      ...(visualInputIds.includes(productInputId) ? visualInputIds : [productInputId, ...visualInputIds]),
+      ...visualInputIds,
       ...textInputIds,
     ]));
     const requestedAspectRatio = String(step.aspectRatio || metadata.aspectRatio || '').trim();
@@ -2911,6 +2975,9 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         : node.textMode === 'agent' || (inferredExternalImageInput && itemType === 'text' && !rawAi)
           ? 'agent'
           : undefined,
+      designAgentConfig: node.designAgentConfig
+        ? normalizeDesignAgentConfig(node.designAgentConfig)
+        : undefined,
       acceptsExternalInputs,
       externalInputTypes,
       outputType: node.outputType === 'image'
@@ -4085,6 +4152,7 @@ function MainApp() {
   const [activeTab, setActiveTab] = useState<DrawerTabType>('all');
   const itemsRef = useRef<BufferItem[]>([]);
   const inspirationAnalysisJobsRef = useRef(new Map<string, InspirationAnalysisJob>());
+  const inspirationRetrievalCacheRef = useRef(new Map<string, { createdAt: number; candidates: InspirationCandidate[] }>());
   const autoInspirationAnalysisAttemptedRef = useRef(new Set<string>());
   const autoInspirationAnalysisRunningRef = useRef(false);
   const agentModelRef = useRef('unmind-agent');
@@ -4228,6 +4296,7 @@ function MainApp() {
   const [isCanvasAiPanelOpen, setIsCanvasAiPanelOpen] = useState(false);
   const [canvasAiProvider, setCanvasAiProvider] = useState<CanvasAiProvider>(() => getStoredCanvasAiProvider());
   const [canvasAiCredentialSource, setCanvasAiCredentialSource] = useState<CanvasAiCredentialSource>(() => getStoredCanvasAiCredentialSource());
+  const [isByokUnlocked, setIsByokUnlocked] = useState(false);
   const [canvasAiApiKey, setCanvasAiApiKey] = useState(() => getStoredCanvasAiApiKey(getStoredCanvasAiProvider()));
   const [canvasAiNewApiVideoKey, setCanvasAiNewApiVideoKey] = useState(() => (
     localStorage.getItem(CANVAS_AI_NEW_API_VIDEO_KEY_STORAGE_KEY) || ''
@@ -4243,6 +4312,19 @@ function MainApp() {
   const [isTestingCanvasAiConnection, setIsTestingCanvasAiConnection] = useState(false);
   const [canvasAiOpenAiModelError, setCanvasAiOpenAiModelError] = useState('');
   const [canvasAiXaisBalance, setCanvasAiXaisBalance] = useState<CanvasAiXaisBalanceState>({ status: 'idle' });
+
+  useEffect(() => {
+    let active = true;
+    void invoke<boolean>('get_byok_unlock_status')
+      .then(unlocked => {
+        if (!active) return;
+        setIsByokUnlocked(unlocked);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
   const [customCanvasAiPromptPresets, setCustomCanvasAiPromptPresets] = useState<CanvasAiPromptPreset[]>(() => readCustomCanvasAiPromptPresets());
   const [customCanvasWorkflows, setCustomCanvasWorkflows] = useState<CanvasWorkflowTemplate[]>(() => readCustomCanvasWorkflows());
   const [hiddenBuiltInCanvasAiPromptPresetIds, setHiddenBuiltInCanvasAiPromptPresetIds] = useState<string[]>(() => readCanvasTemplateHiddenIds(CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY));
@@ -4269,6 +4351,7 @@ function MainApp() {
   const isSwitchingCanvasRef = useRef(false);
   const canvasItemsRef = useRef<CanvasImageItem[]>([]);
   const canvasSelectedIdsRef = useRef<string[]>([]);
+  const workflowResultPublisherRef = useRef<(result: WorkflowResultCardData) => void>(() => {});
   const canvasWorkflowSingleEditGroupIdsRef = useRef<Set<string>>(new Set());
   const canvasScaleRef = useRef(1);
   const canvasSizeRef = useRef({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
@@ -5545,7 +5628,7 @@ function MainApp() {
   };
 
   const [showSettings, setShowSettings] = useState(false);
-  const [activeSettingCategory, setActiveSettingCategory] = useState<string>('appearance');
+  const [activeSettingCategory, setActiveSettingCategory] = useState<string>('ai-overview');
   const [showHelp, setShowHelp] = useState(false);
   const [showAboutSoftware, setShowAboutSoftware] = useState(false);
   const [showStoragePath, setShowStoragePath] = useState(false);
@@ -5743,13 +5826,21 @@ function MainApp() {
 
   const redeemCloudCredits = async () => {
     const code = creditRedemptionCode.trim();
-    if (code.length < 10) {
+    if (code.length < 10 && code.trim().toLowerCase() !== 'undesign') {
       setCreditRedemptionError('请输入有效的额度兑换码');
       return;
     }
     try {
       setIsRedeemingCredits(true);
       setCreditRedemptionError('');
+      const unlocked = await invoke<boolean>('activate_byok_unlock', { code }).catch(() => false);
+      if (unlocked) {
+        setIsByokUnlocked(true);
+        setCanvasAiCredentialSource('local');
+        setCreditRedemptionCode('');
+        await canvasAgent.refreshSettings().catch(() => {});
+        return;
+      }
       const result = await invoke<CreditRedemptionResult>('redeem_credit_code', { code });
       setCloudAccount(result.account);
       setCreditRedemptionCode('');
@@ -5759,6 +5850,17 @@ function MainApp() {
       setCreditRedemptionError(formatLicenseCommandError(err));
     } finally {
       setIsRedeemingCredits(false);
+    }
+  };
+
+  const cancelByokCustomization = async () => {
+    try {
+      await invoke('deactivate_byok_unlock');
+      setIsByokUnlocked(false);
+      setCanvasAiCredentialSource('wallet');
+      await canvasAgent.refreshSettings().catch(() => {});
+    } catch (err) {
+      showToast(String(err));
     }
   };
 
@@ -6444,9 +6546,9 @@ function MainApp() {
     });
   }, [canvasWorkflowTemplates]);
   const licenseAiAccess = licenseStatus?.valid ? licenseStatus.ai_access : null;
-  const isAgentAiLicenseManaged = licenseAiAccess?.mode === 'license_managed';
   const canvasAiUsesCloudImageModels = canvasAiCredentialSource === 'wallet' && Boolean(cloudAccount);
-  const isCanvasAiLicenseManaged = !cloudAccount
+  const isCanvasAiLicenseManaged = !isByokUnlocked
+    && !cloudAccount
     && !canvasAiApiKey.trim()
     && licenseAiAccess?.mode === 'license_managed'
     && !!licenseAiAccess.canvas_provider
@@ -11637,7 +11739,7 @@ function MainApp() {
     isCanvasWorkflowReferenceBridge(canvasItem)
       ? canvasItem?.workflowBridge?.label || canvasItem?.item.name || '参考图桥接'
       : isCanvasAgentTextTarget(canvasItem)
-      ? 'Agent 文字节点'
+      ? `Design Agent · ${DESIGN_AGENT_ROLE_LABELS[normalizeDesignAgentConfig(canvasItem?.designAgentConfig).agentRole]}`
       : canvasItem?.ai?.type === 'workflow'
         ? canvasItem.ai?.presetLabel || canvasItem.item.name || '工作流模块'
         : getCanvasAiNodeTitle(canvasItem?.ai)
@@ -13493,6 +13595,24 @@ function MainApp() {
       canvasItem.id === canvasId && canvasItem.item.type === 'text' && !canvasItem.ai
         ? { ...canvasItem, textMode: mode }
         : canvasItem
+    )));
+  };
+
+  const setCanvasDesignAgentConfig = (canvasId: string, config: DesignAgentConfig) => {
+    const normalized = normalizeDesignAgentConfig(config);
+    const current = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!current || !isCanvasAgentTextTarget(current)) return;
+    const previous = normalizeDesignAgentConfig(current.designAgentConfig);
+    if (
+      previous.agentRole === normalized.agentRole
+      && previous.outputArtifactType === normalized.outputArtifactType
+      && previous.thinkingMode === normalized.thinkingMode
+    ) return;
+    pushCanvasUndoSnapshot('更新 Design Agent 配置');
+    updateCanvasItemsImmediate(items => items.map(item => (
+      item.id === canvasId && isCanvasAgentTextTarget(item)
+        ? { ...item, designAgentConfig: normalized }
+        : item
     )));
   };
 
@@ -16181,6 +16301,9 @@ function MainApp() {
           ...(shouldAttachExternalInputs ? externalInputIds : []),
         ])),
         textMode: isAgentTextNode ? 'agent' : node.textMode,
+        designAgentConfig: isAgentTextNode
+          ? normalizeDesignAgentConfig(node.designAgentConfig)
+          : undefined,
         workflowBridge: isExternalInputPort
           ? {
             type: 'reference-image' as const,
@@ -16358,6 +16481,9 @@ function MainApp() {
         inputs: internalInputs,
         fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
+        designAgentConfig: item.designAgentConfig
+          ? normalizeDesignAgentConfig(item.designAgentConfig)
+          : undefined,
         acceptsExternalInputs,
         ai: item.ai
           ? {
@@ -16738,6 +16864,9 @@ function MainApp() {
         inputs: internalInputs,
         fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
+        designAgentConfig: item.designAgentConfig
+          ? normalizeDesignAgentConfig(item.designAgentConfig)
+          : originalNode?.designAgentConfig,
         acceptsExternalInputs,
         externalInputTypes: acceptsExternalInputs ? originalNode?.externalInputTypes : undefined,
         outputType: originalNode?.outputType,
@@ -17762,17 +17891,48 @@ function MainApp() {
       clientRequestId?: string;
     }
   ) => {
-    if (!isCanvasAiGeneratorType(target.ai?.type)) return [] as CanvasAiGeneratedOutput[];
+    const targetAi = target.ai;
+    if (!isCanvasAiGeneratorType(targetAi?.type)) return [] as CanvasAiGeneratedOutput[];
 
     const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
 
-    const mediaType = getCanvasAiMediaType(target.ai);
-    const requestedProvider = normalizeCanvasAiProvider(
-      target.ai.provider || (mediaType === 'video' ? 'xais-chat' : canvasAiProvider)
-    );
+    const mediaType = getCanvasAiMediaType(targetAi);
+    // A generator node can retain provider fields from an earlier selection. Re-resolve
+    // image requests against the currently selected source so choosing the wallet can
+    // never accidentally reuse a local-API candidate.
     const imageCredentialSource = mediaType === 'image'
       ? canvasAiCredentialSource
       : undefined;
+    const targetProvider = normalizeCanvasAiProvider(targetAi.provider || '');
+    const sourceChoices = mediaType === 'image'
+      ? canvasAiUnifiedImageModelOptions
+        .map(option => parseCanvasAiModelChoiceValue(option.value))
+        .filter((choice): choice is NonNullable<ReturnType<typeof parseCanvasAiModelChoiceValue>> => (
+          Boolean(choice && choice.source === imageCredentialSource)
+        ))
+      : [];
+    const matchingSourceChoice = sourceChoices.find(choice => (
+      choice.provider === targetProvider
+      && choice.model === targetAi.model
+    )) || sourceChoices.find(choice => (
+      choice.providerCandidates?.some(candidate => (
+        candidate.provider === targetProvider && candidate.model === targetAi.model
+      ))
+    )) || sourceChoices[0];
+    const activeSourceCandidate = matchingSourceChoice?.providerCandidates?.find(candidate => (
+      candidate.source === imageCredentialSource
+      && candidate.provider === targetProvider
+      && candidate.model === targetAi.model
+    )) || matchingSourceChoice?.providerCandidates?.find(candidate => candidate.source === imageCredentialSource);
+    const requestedProvider = normalizeCanvasAiProvider(
+      activeSourceCandidate?.provider
+      || matchingSourceChoice?.provider
+      || targetAi.provider
+      || (mediaType === 'video' ? 'xais-chat' : canvasAiProvider)
+    );
+    const selectedModel = activeSourceCandidate?.model || matchingSourceChoice?.model || targetAi.model;
+    const selectedProviderCandidates = (matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
+      .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource);
     const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
       && !isCanvasAiLicenseManaged
       && Boolean(cloudAccount)
@@ -17787,12 +17947,12 @@ function MainApp() {
         ? canvasAiNewApiVideoKey.trim() || providerApiKey.trim()
         : providerApiKey.trim());
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
-    const manualPrompt = (target.item.content || (target.ai.presetPrompt ? '' : target.ai.prompt || '')).trim();
+    const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
     const textInputPrompts = getCanvasTextInputsForNode(target, getSourceItems());
     const promptParts = [
       ...textInputPrompts,
-      target.ai.presetPrompt || '',
+      targetAi.presetPrompt || '',
       manualPrompt,
     ].map(text => text.trim()).filter(Boolean);
     let prompt = promptParts.join('\n\n');
@@ -17844,10 +18004,10 @@ function MainApp() {
     try {
       const requestModel = isCanvasAiLicenseManaged && effectiveCanvasAiModel
         ? effectiveCanvasAiModel
-        : getCanvasAiResolvedModel(provider, target.ai.model, mediaType);
+        : getCanvasAiResolvedModel(provider, selectedModel, mediaType);
       const usePortableWalletReferences = mediaType === 'image'
         && useCloudWallet
-        && (target.ai?.providerCandidates?.length || 0) > 1;
+        && (targetAi.providerCandidates?.length || 0) > 1;
       const isXaisWorkerRequest = provider === 'xais-chat'
         && (mediaType === 'video' || isCanvasAiXaisWorkerModel(requestModel));
       const xaisReferenceFormat: 'any' | 'jpeg' = !usePortableWalletReferences
@@ -17876,25 +18036,25 @@ function MainApp() {
       const imageProtocol = mediaType === 'image' && provider === 'new-api'
         ? getDefaultNewApiImageProtocol(requestModel, inputImages.length > 0)
         : undefined;
-      if (imageProtocol && target.ai.imageProtocol !== imageProtocol) {
+      if (imageProtocol && targetAi.imageProtocol !== imageProtocol) {
         options.updateAi({ imageProtocol });
       }
       if (mediaType === 'image') {
         const hasReferenceImage = inputImages.length > 0 || (target.inputs || []).length > 0;
         const finalPrompt = buildFinalImagePrompt({
           textInputs: textInputPrompts,
-          presetPrompt: target.ai.presetPrompt || '',
+          presetPrompt: targetAi.presetPrompt || '',
           userPrompt: manualPrompt,
-          qualityProfile: typeof target.ai.skillMeta?.qualityProfileId === 'string'
-            ? target.ai.skillMeta.qualityProfileId
+          qualityProfile: typeof targetAi.skillMeta?.qualityProfileId === 'string'
+            ? targetAi.skillMeta.qualityProfileId
             : '',
           rules: getCanvasImageRuleState(target, hasReferenceImage),
           nodeType: {
             mediaType: 'image',
             hasReferenceImage,
-            nodeRole: typeof target.ai.skillMeta?.workflowOutputType === 'string'
-              ? target.ai.skillMeta.workflowOutputType
-              : target.ai.presetLabel || target.item.name,
+            nodeRole: typeof targetAi.skillMeta?.workflowOutputType === 'string'
+              ? targetAi.skillMeta.workflowOutputType
+              : targetAi.presetLabel || target.item.name,
           },
         });
         if (canvasAiProviderSupportsNegativePrompt(provider) && finalPrompt.negativeConstraints.length > 0) {
@@ -17904,7 +18064,7 @@ function MainApp() {
           prompt = finalPrompt.prompt || prompt;
         }
       }
-      const requestedCount = currentOutputs.length || clamp(Math.round(Number(target.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
+      const requestedCount = currentOutputs.length || clamp(Math.round(Number(targetAi.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
       const providerRuntime = (runtimeProvider: CanvasAiProvider) => {
         const runtimeKey = runtimeProvider === canvasAiProvider ? canvasAiApiKey.trim() : getStoredCanvasAiApiKey(runtimeProvider).trim();
         try {
@@ -17924,10 +18084,10 @@ function MainApp() {
         apiKey,
         cloudWallet: useCloudWallet,
         providerChannelId: useCloudWallet
-          ? target.ai?.providerChannelId
+          ? activeSourceCandidate?.providerChannelId || matchingSourceChoice?.providerChannelId || targetAi.providerChannelId
           : undefined,
-        providerCandidates: target.ai?.providerCandidates && target.ai.providerCandidates.length > 1
-          ? target.ai.providerCandidates
+        providerCandidates: selectedProviderCandidates.length > 1
+          ? selectedProviderCandidates
           : undefined,
         providerRuntime: {
           'new-api': providerRuntime('new-api'),
@@ -17961,11 +18121,11 @@ function MainApp() {
             ? canvasAiHeadersText
             : getStoredCanvasAiHeadersText(provider)),
         inputImages,
-        aspectRatio: target.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        resolution: mediaType === 'video' ? target.ai.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION : target.ai.resolution,
-        outputFormat: target.ai.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
-        duration: target.ai.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION,
-        inputMode: target.ai.videoInputMode || 'REF',
+        aspectRatio: targetAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+        resolution: mediaType === 'video' ? targetAi.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION : targetAi.resolution,
+        outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+        duration: targetAi.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION,
+        inputMode: targetAi.videoInputMode || 'REF',
         count: 1,
       };
       const generatedOutputs: CanvasAiGeneratedOutput[] = [];
@@ -19167,6 +19327,121 @@ function MainApp() {
       };
     });
     const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeSnapshots(workflow, runtimeItems, runtime.idMap);
+    const publishWorkflowResult = (
+      status: WorkflowResultCardData['status'],
+      outputs: CanvasAiGeneratedOutput[],
+      error?: string,
+    ) => {
+      const textAssets = workflow.nodes.flatMap(node => {
+        const runtimeId = runtime.idMap.get(node.id);
+        const runtimeItem = runtimeItems.find(item => item.id === runtimeId);
+        if (!runtimeItem || !isCanvasAgentTextTarget(runtimeItem)) return [];
+        const content = String(runtimeItem.item.remark || '').trim();
+        if (!content) return [];
+        return [{
+          nodeId: node.id,
+          title: node.item.name || runtimeItem.item.name || 'Design Agent 成果',
+          content,
+          designAgentConfig: node.designAgentConfig || runtimeItem.designAgentConfig,
+        }];
+      });
+
+      const inputCanvasItems = (moduleNode.inputs || [])
+        .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+        .filter((item): item is CanvasImageItem => !!item);
+      const referenceRoles = new Map<string, string>();
+      runtimeItems.forEach(runtimeItem => {
+        (runtimeItem.ai?.referenceRoles || []).forEach(reference => {
+          if (reference.role !== 'NONE') referenceRoles.set(reference.nodeId, reference.role);
+        });
+      });
+      const getDrawerReferencePreview = (item?: BufferItem) => item
+        ? item.thumbnail
+          || item.url
+          || (item.path ? convertFileSrc(item.path) : '')
+          || item.sourceUrl
+          || item.originalUrl
+          || ''
+        : '';
+      const getCanvasReferencePreview = (item?: CanvasImageItem) => {
+        if (!item) return '';
+        const generatedOutput = getCanvasAiSuccessfulOutputs(item)[0];
+        return generatedOutput
+          ? getCanvasAiOutputThumbnailSource(generatedOutput)
+          : item.item.thumbnail || getCanvasItemDisplaySource(item.item);
+      };
+
+      const plannedReferences: WorkflowResultReference[] = runtimeItems.flatMap(runtimeItem => {
+        const plan = runtimeItem.ai?.skillMeta?.designReferencePlan;
+        const references = plan && typeof plan === 'object' && !Array.isArray(plan)
+          ? (plan as Record<string, unknown>).references
+          : undefined;
+        if (!Array.isArray(references)) return [];
+        return references.flatMap((value, index) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+          const reference = value as Record<string, unknown>;
+          const itemId = String(reference.itemId || '').trim();
+          if (!itemId) return [];
+          const drawerItem = itemsRef.current.find(item => item.id === itemId);
+          const canvasItem = canvasItemsRef.current.find(item => (
+            item.id === itemId || item.item.id === itemId || item.item.sourceItemId === itemId
+          ));
+          return [{
+            id: `${runtimeItem.id}:planned-reference:${itemId}:${index}`,
+            nodeId: canvasItem?.id,
+            itemId,
+            name: drawerItem?.name || canvasItem?.item.name || `灵感参考 ${index + 1}`,
+            thumbnail: getDrawerReferencePreview(drawerItem) || getCanvasReferencePreview(canvasItem),
+            role: String(reference.role || reference.referenceRole || '').trim() || undefined,
+            reason: String(reference.reason || '').trim() || undefined,
+          } satisfies WorkflowResultReference];
+        });
+      });
+      const externalReferences: WorkflowResultReference[] = inputCanvasItems.flatMap((inputItem, index) => {
+        const output = getCanvasAiSuccessfulOutputs(inputItem)[0];
+        const isVisual = inputItem.item.type === 'image'
+          || inputItem.item.type === 'video'
+          || Boolean(output && getCanvasAiOutputDisplaySource(output));
+        if (!isVisual) return [];
+        const sourceItemId = inputItem.item.sourceItemId || inputItem.item.id;
+        return [{
+          id: `${targetId}:external-reference:${inputItem.id}`,
+          nodeId: inputItem.id,
+          itemId: sourceItemId,
+          name: inputItem.item.name || `工作流参考 ${index + 1}`,
+          thumbnail: getCanvasReferencePreview(inputItem),
+          role: referenceRoles.get(inputItem.id),
+          reason: '作为本次工作流的视觉输入',
+        } satisfies WorkflowResultReference];
+      });
+      const generationResults: WorkflowResultMedia[] = outputs
+        .filter(output => output.status === 'success' && !!getCanvasAiOutputDisplaySource(output))
+        .map((output, index) => ({
+          id: output.id || `${targetId}:output:${index}`,
+          nodeId: output.nodeId,
+          name: output.name || output.nodeLabel || `生成结果 ${index + 1}`,
+          mediaType: output.mediaType === 'video' ? 'video' : 'image',
+          thumbnail: getCanvasAiOutputThumbnailSource(output),
+          url: getCanvasAiOutputDisplaySource(output),
+          status: 'success',
+        }));
+      const completedSteps = Array.from(runStatus.values()).filter(runState => runState === 'success').length;
+      const result = buildWorkflowResultCardData({
+        workflowId: workflow.id,
+        workflowNodeId: targetId,
+        workflowName: workflow.label,
+        status,
+        completedAt: Date.now(),
+        completedSteps,
+        totalSteps: runOrder.length,
+        textAssets,
+        inspirationReferences: [...plannedReferences, ...externalReferences],
+        generationResults,
+        error,
+      });
+      workflowResultPublisherRef.current(result);
+      return result;
+    };
 
     updateCanvasAiGeneratorData(targetId, {
       status: 'working',
@@ -19344,11 +19619,14 @@ function MainApp() {
     const finalOutputs = collectModuleOutputs('error', failedIds.size > 0 ? '内部节点生成失败' : '没有生成这个输出');
     const finalSuccessCount = finalOutputs.filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output)).length;
     if (failedIds.size > 0 || finalSuccessCount < outputSlots.length) {
+      const workflowError = failedIds.size > 0
+        ? `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}`
+        : '部分终端输出没有生成';
       updateCanvasAiGeneratorData(targetId, {
         outputs: finalOutputs,
         workflowRuntime: getRuntimeSnapshots(),
         status: 'error',
-        error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}` : '部分终端输出没有生成',
+        error: workflowError,
         generatedAt: Date.now(),
       });
       showToast(failedIds.size > 0
@@ -19362,7 +19640,7 @@ function MainApp() {
         requestedCount: outputSlots.length,
         error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败/跳过` : '部分终端输出没有生成',
       });
-      return;
+      return publishWorkflowResult(finalSuccessCount > 0 || completedCount > 0 ? 'partial' : 'error', finalOutputs, workflowError);
     }
     updateCanvasAiGeneratorData(targetId, {
       outputs: finalOutputs,
@@ -19379,6 +19657,7 @@ function MainApp() {
       generatedCount: finalSuccessCount,
       requestedCount: outputSlots.length,
     });
+    return publishWorkflowResult('success', finalOutputs);
   };
 
   const generateCanvasWorkflowModuleNode = async (targetId: string) => {
@@ -24891,16 +25170,35 @@ useEffect(() => {
     if (!/^data:image\/|^https?:\/\//i.test(modelSource)) throw new Error('图片无法转换为 LLM 可读取的来源');
     const existingProfile = input.existingProfile || item.inspirationProfile;
     const userNotes = input.userNotes || item.remarks || (item.remark ? [item.remark] : []);
-    const result = await invoke<unknown>('agent_analyze_inspiration', {
+    // Inspiration analysis uses the same configurable Agent LLM as the rest of the
+    // Agent. This keeps it independent from image-generation channels and quota.
+    const analysisPrompt = buildInspirationAnalysisPrompt({
+      itemId: item.id,
+      existingProfile,
+      userTags: input.userTags || [],
+      userNotes,
+    });
+    const requestId = `inspiration_analysis_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const chatResult = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
       request: {
-        itemId: item.id,
-        imageSource: modelSource,
-        existingProfile,
-        userTags: input.userTags || [],
-        userNotes,
+        requestId,
         model: agentModelRef.current,
+        messages: [
+          {
+            role: 'system',
+            content: '你是灵感抽屉的视觉分析助手。严格按照用户要求只返回一个 JSON 对象，不要使用 Markdown 代码围栏或额外说明。',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: analysisPrompt },
+              { type: 'image_url', image_url: { url: modelSource, detail: 'low' } },
+            ],
+          },
+        ],
       },
     });
+    const result = extractJsonObject(String(chatResult.content || ''));
     const profile = normalizeInspirationProfile(result, {
       itemId: item.id,
       existingProfile,
@@ -24911,6 +25209,7 @@ useEffect(() => {
       ? { ...candidate, inspirationProfile: profile }
       : candidate);
     itemsRef.current = nextItems;
+    inspirationRetrievalCacheRef.current.clear();
     setItems(nextItems);
     return profile;
   };
@@ -24962,8 +25261,60 @@ useEffect(() => {
     return { jobId };
   };
 
+  const retrieveDrawerInspirationCandidates = async (
+    input: DrawerSearchInspirationsInput,
+  ): Promise<InspirationCandidate[]> => {
+    const cacheKey = JSON.stringify({
+      query: input.query.trim().toLowerCase(),
+      projectBrief: input.projectBrief,
+      referenceRole: input.referenceRole || '',
+      folderIds: [...(input.folderIds || [])].sort(),
+      topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
+      itemCount: itemsRef.current.length,
+    });
+    const cached = inspirationRetrievalCacheRef.current.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < 5 * 60 * 1000) return cached.candidates;
+    const candidates = searchDrawerInspirations(itemsRef.current, {
+      ...input,
+      topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
+    });
+    if (!shouldRankInspirationCandidates(candidates)) {
+      inspirationRetrievalCacheRef.current.set(cacheKey, { createdAt: Date.now(), candidates });
+      return candidates;
+    }
+    try {
+      const requestId = `inspiration_rank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
+        request: {
+          requestId,
+          model: agentModelRef.current,
+          messages: [
+            {
+              role: 'system',
+              content: 'Rank compact inspiration metadata. Return JSON only. Never request or analyze the source images.',
+            },
+            {
+              role: 'user',
+              content: buildInspirationCandidateRankingPrompt(input.query, candidates),
+            },
+          ],
+        },
+      });
+      const ranked = applyInspirationCandidateRanking(
+        candidates,
+        extractJsonObject(String(result.content || '')),
+      );
+      inspirationRetrievalCacheRef.current.set(cacheKey, { createdAt: Date.now(), candidates: ranked });
+      return ranked;
+    } catch (error) {
+      console.warn('灵感候选轻量排序失败，保留本地 metadata 结果:', error);
+      inspirationRetrievalCacheRef.current.set(cacheKey, { createdAt: Date.now(), candidates });
+      return candidates;
+    }
+  };
+
   useEffect(() => {
-    if (autoInspirationAnalysisRunningRef.current) return;
+    if (!AUTO_INSPIRATION_ANALYSIS_ENABLED || autoInspirationAnalysisRunningRef.current) return;
     const nextItem = items.find(item => (
       item.type === 'image'
       && !item.inspirationProfile
@@ -25272,14 +25623,14 @@ useEffect(() => {
         const folderIds = Array.isArray(args.folderIds) ? args.folderIds.map(String).filter(Boolean) : [];
         const missingFolderId = folderIds.find(folderId => !foldersRef.current.some(folder => folder.id === folderId));
         if (missingFolderId) throw new Error(`文件夹不存在：${missingFolderId}`);
-        return searchDrawerInspirations(itemsRef.current, {
+        return await retrieveDrawerInspirationCandidates({
           query,
           projectBrief: args.projectBrief && typeof args.projectBrief === 'object'
             ? args.projectBrief as Record<string, unknown>
             : String(args.projectBrief || ''),
           referenceRole: role ? role as DrawerSearchInspirationsInput['referenceRole'] : undefined,
           folderIds,
-          topK: Number(args.topK) || undefined,
+          topK: Math.min(8, Math.max(1, Number(args.topK) || 8)),
         });
       }
       if (name === 'app_get_context') {
@@ -26011,19 +26362,94 @@ useEffect(() => {
           && canvasItemsRef.current.some(item => item.id === args.sourceImageNodeId)
           ? args.sourceImageNodeId
           : null;
-        const referenceImageNodeIds = Array.isArray(args.referenceImageNodeIds)
+        const explicitReferenceImageNodeIds = Array.isArray(args.referenceImageNodeIds)
           ? args.referenceImageNodeIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
           : [];
-        const inspirationReferenceNodeIds = Array.isArray(args.inspirationReferences)
-          ? args.inspirationReferences.flatMap(reference => {
-            if (!reference || typeof reference !== 'object' || Array.isArray(reference)) return [];
-            const itemId = String((reference as Record<string, unknown>).itemId || '').trim();
-            if (!itemId) return [];
-            return canvasItemsRef.current
-              .filter(item => item.id === itemId || item.item.sourceItemId === itemId)
-              .map(item => item.id);
+        const inspirationSearch = args.inspirationSearch && typeof args.inspirationSearch === 'object' && !Array.isArray(args.inspirationSearch)
+          ? args.inspirationSearch as Record<string, unknown>
+          : null;
+        const inspirationSearchQuery = String(inspirationSearch?.query || '').trim();
+        const inspirationSearchBrief = inspirationSearch?.projectBrief && typeof inspirationSearch.projectBrief === 'object'
+          ? inspirationSearch.projectBrief as Record<string, unknown>
+          : String(inspirationSearch?.projectBrief || '');
+        const inspirationCandidates = mediaType === 'image' && inspirationSearchQuery
+          ? await retrieveDrawerInspirationCandidates({
+            query: inspirationSearchQuery,
+            projectBrief: inspirationSearchBrief,
+            topK: Math.min(8, Math.max(1, Number(inspirationSearch?.topK) || 8)),
           })
           : [];
+        const inspirationMatches = inspirationCandidates.filter(candidate => candidate.state === 'selected');
+        const inspirationReferenceNodeIdsByMatch: Array<string | undefined> = [];
+        for (const match of inspirationMatches) {
+          try {
+            const sourceItem = itemsRef.current.find(item => item.id === match.itemId);
+            if (AUTO_INSPIRATION_ANALYSIS_ENABLED && sourceItem && !sourceItem.inspirationProfile) {
+              await analyzeDrawerInspirationWithLlm({ itemId: match.itemId });
+            }
+          } catch (error) {
+            console.warn('生成前灵感图分析失败:', match.itemId, error);
+          }
+          const nodeId = await createDrawerImageCanvasNode(match.itemId, undefined, {
+            reuseExisting: true,
+            select: false,
+            toast: false,
+            label: 'Agent 相关灵感参考图',
+          });
+          inspirationReferenceNodeIdsByMatch.push(nodeId || undefined);
+        }
+        const inspirationReferenceNodeIdsFromSearch = inspirationReferenceNodeIdsByMatch.filter(
+          (nodeId): nodeId is string => !!nodeId
+        );
+        const inspirationReferenceItemIds = Array.isArray(args.inspirationReferences)
+          ? args.inspirationReferences.flatMap(reference => {
+            if (!reference || typeof reference !== 'object' || Array.isArray(reference)) return [];
+            const record = reference as Record<string, unknown>;
+            const state = String(record.state || '').trim();
+            if (state && state !== 'selected') return [];
+            const itemId = String(record.itemId || '').trim();
+            return itemId ? [itemId] : [];
+          })
+          : [];
+        const inspirationReferenceNodeIdsFromArgs: string[] = [];
+        for (const itemId of inspirationReferenceItemIds) {
+          const existingNodeIds = canvasItemsRef.current
+            .filter(item => item.id === itemId || item.item.sourceItemId === itemId)
+            .map(item => item.id);
+          if (existingNodeIds.length > 0) {
+            inspirationReferenceNodeIdsFromArgs.push(...existingNodeIds);
+            continue;
+          }
+          if (!itemsRef.current.some(item => item.id === itemId && item.type === 'image')) continue;
+          const nodeId = await createDrawerImageCanvasNode(itemId, undefined, {
+            reuseExisting: true,
+            select: false,
+            toast: false,
+            label: 'Agent 灵感参考图',
+          });
+          if (nodeId) inspirationReferenceNodeIdsFromArgs.push(nodeId);
+        }
+        const pendingInspirationCandidates = inspirationCandidates.filter(candidate => candidate.state === 'candidate');
+        if (
+          pendingInspirationCandidates.length > 0
+          && inspirationMatches.length === 0
+          && inspirationReferenceItemIds.length === 0
+        ) {
+          return {
+            skipped: true,
+            requiresInspirationConfirmation: true,
+            inspirationCandidates,
+            selectedInspirationItemIds: [],
+          };
+        }
+        const inspirationReferenceNodeIds = Array.from(new Set([
+          ...inspirationReferenceNodeIdsFromSearch,
+          ...inspirationReferenceNodeIdsFromArgs,
+        ]));
+        const referenceImageNodeIds = Array.from(new Set([
+          ...explicitReferenceImageNodeIds,
+          ...inspirationReferenceNodeIdsFromSearch,
+        ]));
         const referenceRoles = Array.isArray(args.referenceRoles)
           ? args.referenceRoles
             .map(role => {
@@ -26040,7 +26466,20 @@ useEffect(() => {
             })
             .filter((role): role is NonNullable<typeof role> => !!role)
           : [];
-        const roleInputIds = referenceRoles
+        const searchReferenceRoles = inspirationMatches.flatMap((match, index) => {
+          const nodeId = inspirationReferenceNodeIdsByMatch[index];
+          if (!nodeId) return [];
+          const role = match.recommendedRole === 'MOOD_REF'
+            ? 'LAYOUT_REF'
+            : match.recommendedRole === 'SUBJECT_REF'
+              ? 'SUBJECT_REF'
+              : 'STYLE_REF';
+          return [{ nodeId, role } as const];
+        });
+        const mergedReferenceRoles = Array.from(new Map(
+          [...referenceRoles, ...searchReferenceRoles].map(role => [role.nodeId, role])
+        ).values());
+        const roleInputIds = mergedReferenceRoles
           .filter(role => role.role !== 'NONE')
           .map(role => role.nodeId);
         const inputBindingsArg = args.inputBindings && typeof args.inputBindings === 'object' && !Array.isArray(args.inputBindings)
@@ -26073,6 +26512,22 @@ useEffect(() => {
           : getCanvasDropPosition(0);
         const node = buildCanvasAiGeneratorNode(pos, preset, inputIds, mediaType);
         const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+        const inspirationContext = inspirationMatches.length > 0
+          ? [
+            'Selected Inspiration References:',
+            ...inspirationMatches.map((match, index) => [
+              `${index + 1}. itemId: ${match.itemId}`,
+              `Role: ${match.recommendedRole}`,
+              `Reason: ${match.reason}`,
+              match.matchedFeatures.length > 0 ? `Matched features: ${match.matchedFeatures.join(', ')}` : '',
+            ].filter(Boolean).join('\n')),
+            'Reference Roles:',
+            inspirationMatches.map(match => `${match.itemId}=${match.recommendedRole}`).join(', '),
+          ].join('\n')
+          : '';
+        const enrichedPrompt = inspirationContext && !/Selected Inspiration References:/i.test(prompt)
+          ? `${prompt}\n\n${inspirationContext}`.trim()
+          : prompt;
         const requestedAspectRatio = typeof args.aspectRatio === 'string' ? args.aspectRatio.trim() : '';
         const requestedTargetSize = typeof args.targetSize === 'string' ? args.targetSize.trim() : '';
         const requestedResolution = typeof args.resolution === 'string' ? args.resolution.trim() : '';
@@ -26080,14 +26535,37 @@ useEffect(() => {
         const requestedSkillMeta = args.skillMeta && typeof args.skillMeta === 'object' && !Array.isArray(args.skillMeta)
           ? args.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
           : undefined;
+        const effectiveSkillMeta = inspirationCandidates.length > 0
+          ? {
+            ...(requestedSkillMeta || {}),
+            inspirationCandidates: inspirationCandidates.map(candidate => ({
+              itemId: candidate.itemId,
+              state: candidate.state,
+              confidence: candidate.confidence,
+              referenceRole: candidate.recommendedRole,
+              reason: candidate.reason,
+              llmRanked: candidate.llmRanked === true,
+              llmRecommended: candidate.llmRecommended,
+            })),
+            designReferencePlan: {
+              references: inspirationMatches.map(match => ({
+                itemId: match.itemId,
+                role: match.recommendedRole,
+                reason: match.reason,
+                matchedFeatures: match.matchedFeatures,
+                confidence: match.confidence,
+              })),
+            },
+          }
+          : requestedSkillMeta;
         const requestedImagePolicy = mediaType === 'image' ? getImagePolicyFromRecord(args.imagePolicy) : null;
         const nextAiPatch: Partial<NonNullable<CanvasImageItem['ai']>> = {
           ...(sourceImageNodeId ? { sourceImageNodeId } : {}),
           ...(referenceImageNodeIds.length > 0 ? { referenceImageNodeIds } : {}),
-          ...(referenceRoles.length > 0 ? { referenceRoles } : {}),
+          ...(mergedReferenceRoles.length > 0 ? { referenceRoles: mergedReferenceRoles } : {}),
           ...(requestedTargetSize ? { targetSize: requestedTargetSize } : {}),
           ...(requestedToolHint ? { toolHint: requestedToolHint } : {}),
-          ...(requestedSkillMeta ? { skillMeta: requestedSkillMeta } : {}),
+          ...(effectiveSkillMeta ? { skillMeta: effectiveSkillMeta } : {}),
           ...(requestedResolution ? { resolution: requestedResolution } : {}),
         };
         const aspectSource = requestedAspectRatio || requestedTargetSize;
@@ -26095,13 +26573,13 @@ useEffect(() => {
           nextAiPatch.aspectRatio = normalizeCanvasAiAspectRatioForModel(node.ai?.model, aspectSource);
         }
         node.ai = { ...node.ai!, ...nextAiPatch };
-        if (prompt) {
+        if (enrichedPrompt) {
           node.item = {
             ...node.item,
-            content: prompt,
-            name: prompt.split(/\r?\n/)[0]?.slice(0, 24) || node.item.name,
+            content: enrichedPrompt,
+            name: enrichedPrompt.split(/\r?\n/)[0]?.slice(0, 24) || node.item.name,
           };
-          node.ai = { ...node.ai!, prompt };
+          node.ai = { ...node.ai!, prompt: enrichedPrompt };
         }
         if (requestedImagePolicy) {
           node.ai = {
@@ -26142,6 +26620,9 @@ useEffect(() => {
           autoRun,
           status: latestNode?.ai?.status,
           outputCount: latestNode?.ai?.outputs?.length || 0,
+          inspirationCandidates,
+          requiresInspirationConfirmation: inspirationCandidates.some(candidate => candidate.state === 'candidate'),
+          selectedInspirationItemIds: inspirationMatches.map(match => match.itemId),
         };
       }
 
@@ -26297,6 +26778,7 @@ useEffect(() => {
       if (name === 'canvas_create_text_agent') {
         const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
         if (!prompt) throw new Error('文字 Agent 节点需要需求 prompt');
+        const designAgentConfig = normalizeDesignAgentConfig(args.designAgentConfig);
         const requestedInputs = Array.isArray(args.inputIds)
           ? args.inputIds.map(String).filter(id => {
             const item = canvasItemsRef.current.find(canvasItem => canvasItem.id === id);
@@ -26328,6 +26810,7 @@ useEffect(() => {
           },
           inputs: inputIds,
           textMode: 'agent',
+          designAgentConfig,
           x: Math.max(24, pos.x),
           y: Math.max(24, pos.y),
           width: 560,
@@ -26343,6 +26826,7 @@ useEffect(() => {
           nodeId: node.id,
           inputIds,
           autoRun: args.autoRun === true,
+          designAgentConfig,
           outputLength: latest?.item.remark?.length || 0,
         };
       }
@@ -26865,7 +27349,10 @@ useEffect(() => {
         let previousConnectableId = '';
         rawSteps.forEach((stepValue, index) => {
           const step = stepValue && typeof stepValue === 'object' ? stepValue as Record<string, unknown> : {};
-          const kind = step.kind === 'text' ? 'text' : 'image-generator';
+          const rawStepType = String(step.type || step.kind || '').toLowerCase();
+          const kind = rawStepType === 'text' || rawStepType === 'text_agent' || rawStepType === 'text-agent'
+            ? 'text'
+            : 'image-generator';
           const stepId = makeStepId(step.id, index);
           const stepLabel = (typeof step.label === 'string' && step.label.trim() ? step.label.trim() : '步骤 ' + (index + 1)).slice(0, 32);
           const prompt = typeof step.prompt === 'string' && step.prompt.trim()
@@ -26897,7 +27384,9 @@ useEffect(() => {
               inputs,
               fixedInput: true,
               textMode: 'agent',
+              designAgentConfig: normalizeDesignAgentConfig(step.designAgentConfig),
               acceptsExternalInputs: inputs.length === 0,
+              outputType: 'text',
             });
             previousConnectableId = stepId;
             return;
@@ -27098,13 +27587,52 @@ useEffect(() => {
     },
     onNotice: showToast,
   });
+  workflowResultPublisherRef.current = canvasAgent.appendWorkflowResult;
+  const [agentModels, setAgentModels] = useState<string[]>([]);
+  const [agentModelsLoading, setAgentModelsLoading] = useState(false);
+  const [agentCustomProvider, setAgentCustomProvider] = useState('openai-compatible');
+  const [agentCustomBaseUrl, setAgentCustomBaseUrl] = useState('https://api.openai.com/v1');
+  const [agentCustomApiKey, setAgentCustomApiKey] = useState('');
+  const [agentCustomSaving, setAgentCustomSaving] = useState(false);
+  const agentModelsRequestedRef = useRef(false);
+
+  useEffect(() => {
+    if (canvasAgent.settings.provider === 'codex') {
+      agentModelsRequestedRef.current = false;
+      return;
+    }
+    if (canvasAgent.settingsLoading || activeSettingCategory !== 'ai-overview' || agentModelsRequestedRef.current) return;
+    agentModelsRequestedRef.current = true;
+    setAgentModelsLoading(true);
+    void canvasAgent.listOpenAiModels()
+      .then(models => setAgentModels(Array.from(new Set((models || []).map(model => model.trim()).filter(Boolean)))))
+      .catch(error => console.warn('读取 Agent 模型列表失败:', error))
+      .finally(() => setAgentModelsLoading(false));
+  }, [activeSettingCategory, canvasAgent.listOpenAiModels, canvasAgent.settingsLoading, canvasAgent.settings.provider]);
+
+  useEffect(() => {
+    if (!isByokUnlocked) return;
+    const currentProvider = canvasAgent.settings.apiProvider.trim();
+    const currentBaseUrl = canvasAgent.settings.apiBaseUrl.trim();
+    if (currentProvider && currentProvider.toLowerCase() !== 'unmind-wallet') {
+      setAgentCustomProvider(currentProvider);
+    }
+    if (currentBaseUrl && !currentBaseUrl.toLowerCase().includes('api.unmind.art')) {
+      setAgentCustomBaseUrl(currentBaseUrl);
+    }
+  }, [canvasAgent.settings.apiBaseUrl, canvasAgent.settings.apiProvider, isByokUnlocked]);
   agentModelRef.current = canvasAgent.settings.apiModel;
 
-  const switchAgentFundingSource = async (source: 'wallet' | 'codex') => {
+  const switchAgentFundingSource = async (source: 'wallet' | 'codex' | 'custom') => {
     try {
       await canvasAgent.saveSettings({
         ...canvasAgent.settings,
         provider: source === 'codex' ? 'codex' : 'openai-compatible',
+        ...(source === 'custom' ? {
+          apiGatewayKind: 'custom' as const,
+          apiProvider: agentCustomProvider.trim() || 'openai-compatible',
+          apiBaseUrl: agentCustomBaseUrl.trim() || 'https://api.openai.com/v1',
+        } : {}),
         ...(source === 'wallet' ? {
           apiGatewayKind: 'custom' as const,
           apiProvider: 'unmind-wallet',
@@ -27114,9 +27642,36 @@ useEffect(() => {
           clearApiKey: true,
         } : {}),
       });
-      showToast(source === 'codex' ? 'Agent 已切换到 GPT 登录' : 'Agent 已切换到授权钱包额度');
+      showToast(source === 'codex' ? 'Agent 已切换到 GPT 登录' : source === 'custom' ? 'Agent 已切换到自定义 API' : 'Agent 已切换到授权钱包额度');
     } catch (err) {
       showToast(String(err));
+    }
+  };
+
+  const saveAgentCustomApi = async () => {
+    const provider = agentCustomProvider.trim() || 'openai-compatible';
+    const baseUrl = agentCustomBaseUrl.trim();
+    if (!baseUrl) {
+      showToast('请填写 Agent API Base URL');
+      return;
+    }
+    try {
+      setAgentCustomSaving(true);
+      await canvasAgent.saveSettings({
+        ...canvasAgent.settings,
+        provider: 'openai-compatible',
+        apiGatewayKind: 'custom',
+        apiProvider: provider,
+        apiBaseUrl: baseUrl,
+        apiKey: agentCustomApiKey.trim() || undefined,
+      });
+      setAgentCustomApiKey('');
+      agentModelsRequestedRef.current = false;
+      showToast('Agent 自定义 API 已保存');
+    } catch (error) {
+      showToast(String(error));
+    } finally {
+      setAgentCustomSaving(false);
     }
   };
 
@@ -27198,14 +27753,16 @@ useEffect(() => {
     const customAgentPrompt = isBuiltInAgentSystemPrompt(canvasAgent.settings.systemPrompt)
       ? ''
       : canvasAgent.settings.systemPrompt.trim();
+    const designAgentPrompt = buildDesignAgentSystemPrompt(latestTarget.designAgentConfig);
     const systemPrompt = [
       customAgentPrompt,
       [
-        '你是画布文字节点的 Agent 执行器。',
+        '你是画布中的 Design Agent Node 执行器。',
         '用户会在当前文字节点里写需求，也可能连接上游文字和参考图。',
         '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
         '如果参考图存在，请把它们作为视觉依据；如果没有参考图，就只根据文字需求完成。',
       ].join('\n'),
+      designAgentPrompt,
     ].filter(Boolean).join('\n\n');
     const promptParts = [
       '当前文字节点需求：\n' + userRequest,
@@ -29741,7 +30298,9 @@ useEffect(() => {
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => setCanvasAiCredentialSource('local')}
+                                      onClick={() => {
+                                        setCanvasAiCredentialSource('local');
+                                      }}
                                       aria-pressed={canvasAiCredentialSource === 'local'}
                                       className={`rounded-[16px] border px-3 py-2.5 text-left transition ${canvasAiCredentialSource === 'local' ? 'border-cyan-500 bg-cyan-50 ring-2 ring-cyan-200/70 dark:border-cyan-300 dark:bg-cyan-400/15 dark:ring-cyan-400/20' : 'border-cyan-100 bg-cyan-50/60 hover:border-cyan-300 dark:border-cyan-400/20 dark:bg-cyan-400/10'}`}
                                     >
@@ -29749,7 +30308,6 @@ useEffect(() => {
                                         <div className={`mt-1 min-h-7 text-[12px] font-black leading-5 ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-stone-900 dark:text-white'}`}>
                                           {hasLocalXaisAccount ? canvasAiXaisBalanceText : '使用本机已配置的 API'}
                                         </div>
-                                        <div className="mt-0.5 text-[10px] text-stone-400 dark:text-stone-500">{hasLocalXaisAccount ? 'XAIS 余额仅在本机查询，密钥不会上传' : '点击后使用本地 API 配置'}</div>
                                     </button>
                                   </div>
                                   <button
@@ -29775,19 +30333,77 @@ useEffect(() => {
                                   <div className="grid gap-2 rounded-[18px] border border-stone-200/80 bg-white/70 px-3 py-2.5 dark:border-stone-700 dark:bg-stone-950/30">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="text-[11px] font-black text-stone-700 dark:text-stone-200">Agent 使用方式</span>
-                                      <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${canvasAgent.settings.provider === 'codex' ? 'bg-violet-100 text-violet-700 dark:bg-violet-400/15 dark:text-violet-200' : 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200'}`}>
-                                        {canvasAgent.settings.provider === 'codex' ? 'GPT 登录' : '钱包额度'}
+                                      <span className={`rounded-full px-2 py-0.5 text-[9px] font-black ${canvasAgent.settings.provider === 'codex' ? 'bg-violet-100 text-violet-700 dark:bg-violet-400/15 dark:text-violet-200' : canvasAgent.settings.apiProvider.toLowerCase() !== 'unmind-wallet' ? 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200' : 'bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200'}`}>
+                                        {canvasAgent.settings.provider === 'codex' ? 'GPT 登录' : canvasAgent.settings.apiProvider.toLowerCase() !== 'unmind-wallet' ? '自定义 API' : '钱包额度'}
                                       </span>
                                     </div>
                                     <select
-                                      value={canvasAgent.settings.provider === 'codex' ? 'codex' : 'wallet'}
-                                      onChange={event => void switchAgentFundingSource(event.target.value === 'codex' ? 'codex' : 'wallet')}
+                                      value={canvasAgent.settings.provider === 'codex'
+                                        ? 'codex'
+                                        : isByokUnlocked && canvasAgent.settings.apiProvider.toLowerCase() !== 'unmind-wallet' ? 'custom' : 'wallet'}
+                                      onChange={event => void switchAgentFundingSource(event.target.value === 'codex' ? 'codex' : event.target.value === 'custom' ? 'custom' : 'wallet')}
                                       disabled={canvasAgent.settingsLoading}
                                       className="w-full rounded-[13px] border border-stone-200 bg-white px-3 py-2 text-[11px] font-bold text-stone-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-200/50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100"
                                     >
                                       <option value="wallet">使用授权钱包余额</option>
                                       <option value="codex">使用 GPT / ChatGPT 登录</option>
+                                      {isByokUnlocked && <option value="custom">使用自定义 API</option>}
                                     </select>
+                                    {canvasAgent.settings.provider !== 'codex' && (
+                                      <label className="flex flex-col gap-1">
+                                        <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400">LLM 模型</span>
+                                        <select
+                                          value={canvasAgent.settings.apiModel || ''}
+                                          onChange={event => {
+                                            const apiModel = event.target.value;
+                                            void canvasAgent.saveSettings({
+                                              ...canvasAgent.settings,
+                                              apiModel,
+                                            }).catch(error => showToast(String(error)));
+                                          }}
+                                          disabled={canvasAgent.settingsLoading}
+                                          className="w-full rounded-[13px] border border-blue-100 bg-white px-3 py-2 text-[11px] font-bold text-stone-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-200/50 dark:border-blue-400/20 dark:bg-stone-900 dark:text-stone-100"
+                                        >
+                                          {!canvasAgent.settings.apiModel && <option value="">{agentModelsLoading ? '读取模型中…' : '暂无可用模型'}</option>}
+                                          {canvasAgent.settings.apiModel && !agentModels.includes(canvasAgent.settings.apiModel) && (
+                                            <option value={canvasAgent.settings.apiModel}>{canvasAgent.settings.apiModel}（当前）</option>
+                                          )}
+                                          {agentModels.map(model => <option key={model} value={model}>{model}</option>)}
+                                        </select>
+                                      </label>
+                                    )}
+                                    {isByokUnlocked && (
+                                      <div className="flex flex-col gap-2 rounded-[15px] border border-amber-200/80 bg-amber-50/55 p-2.5 dark:border-amber-400/20 dark:bg-amber-400/10">
+                                        <div className="text-[10px] font-black text-amber-800 dark:text-amber-100">自定义 Agent API</div>
+                                        <input
+                                          value={agentCustomProvider}
+                                          onChange={event => setAgentCustomProvider(event.target.value)}
+                                          placeholder="Provider，例如 openai-compatible"
+                                          className="w-full rounded-[11px] border border-amber-200 bg-white/85 px-2.5 py-1.5 text-[10px] text-stone-700 outline-none focus:border-amber-400 dark:border-amber-400/25 dark:bg-stone-900/45 dark:text-stone-100"
+                                        />
+                                        <input
+                                          value={agentCustomBaseUrl}
+                                          onChange={event => setAgentCustomBaseUrl(event.target.value)}
+                                          placeholder="API Base URL，例如 https://api.openai.com/v1"
+                                          className="w-full rounded-[11px] border border-amber-200 bg-white/85 px-2.5 py-1.5 text-[10px] text-stone-700 outline-none focus:border-amber-400 dark:border-amber-400/25 dark:bg-stone-900/45 dark:text-stone-100"
+                                        />
+                                        <input
+                                          type="password"
+                                          value={agentCustomApiKey}
+                                          onChange={event => setAgentCustomApiKey(event.target.value)}
+                                          placeholder={canvasAgent.settings.hasApiKey ? 'API Key 已保存，留空保持不变' : 'API Key'}
+                                          className="w-full rounded-[11px] border border-amber-200 bg-white/85 px-2.5 py-1.5 text-[10px] text-stone-700 outline-none focus:border-amber-400 dark:border-amber-400/25 dark:bg-stone-900/45 dark:text-stone-100"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => void saveAgentCustomApi()}
+                                          disabled={agentCustomSaving || canvasAgent.settingsLoading}
+                                          className="h-7 rounded-[11px] bg-amber-500 text-[10px] font-black text-white transition hover:bg-amber-600 disabled:cursor-wait disabled:opacity-50"
+                                        >
+                                          {agentCustomSaving ? '保存中' : '保存自定义 API'}
+                                        </button>
+                                      </div>
+                                    )}
                                     <div className="text-[10px] leading-4 text-stone-400 dark:text-stone-500">
                                       钱包模式由 api.unmind.art 统一计费；GPT 登录使用用户自己的 ChatGPT / Codex 账号。
                                     </div>
@@ -29825,6 +30441,20 @@ useEffect(() => {
                               </motion.div>
                             )}
                           </AnimatePresence>
+                          {isByokUnlocked && (
+                            <>
+                          <button
+                            type="button"
+                            onClick={() => setActiveSettingCategory(prev => prev === 'ai' ? '' : 'ai')}
+                            className="flex w-full items-center justify-between border-t border-stone-100 p-3 text-left transition-colors hover:bg-stone-50 dark:border-stone-700/50 dark:hover:bg-stone-700/50"
+                          >
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200">
+                              <Sparkles className="h-4 w-4 text-cyan-500" />
+                              AI 图像 / 视频
+                              {isByokUnlocked && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-black text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200">自定义 API</span>}
+                            </span>
+                            <ChevronDown className={`h-4 w-4 text-stone-400 transition-transform ${activeSettingCategory === 'ai' ? 'rotate-180' : ''}`} />
+                          </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'ai' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
@@ -30046,25 +30676,6 @@ useEffect(() => {
                                   </div>
                                   </div>
                                   )}
-                                  <AgentSettingsSection
-                                    embedded
-                                    expanded
-                                    settings={canvasAgent.settings}
-                                    loading={canvasAgent.settingsLoading}
-                                    codexStatus={canvasAgent.codexStatus}
-                                    codexInstallProgress={canvasAgent.codexInstallProgress}
-                                    codexLoginInfo={canvasAgent.codexLoginInfo}
-                                    apiLockedByLicense={isAgentAiLicenseManaged && canvasAgent.settings.apiCredentialSource === 'license_managed'}
-                                    onSave={canvasAgent.saveSettings}
-                                    onListModels={canvasAgent.listOpenAiModels}
-                                    onTestConnection={canvasAgent.testAgentApiConnection}
-                                    onQueryBalance={canvasAgent.queryAgentApiBalance}
-                                    onRefreshCodexStatus={canvasAgent.refreshCodexStatus}
-                                    onInstallCodex={canvasAgent.installCodex}
-                                    onStartCodexLogin={canvasAgent.startCodexLogin}
-                                    onOpenCodexLoginUrl={canvasAgent.openCodexLoginUrl}
-                                    onLogoutCodex={canvasAgent.logoutCodex}
-                                  />
                                   <div className="flex flex-col gap-2 rounded-[18px] border border-sky-100 bg-sky-50/50 px-3 py-2.5 dark:border-sky-400/20 dark:bg-sky-400/10">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="flex items-center gap-1.5 text-[11px] font-black text-sky-800 dark:text-sky-100">
@@ -30146,6 +30757,8 @@ useEffect(() => {
                               </motion.div>
                             )}
                           </AnimatePresence>
+                            </>
+                          )}
                         </div>
 
                         <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
@@ -30207,11 +30820,20 @@ useEffect(() => {
                                       <button
                                         type="button"
                                         onClick={() => void redeemCloudCredits()}
-                                        disabled={isRedeemingCredits || creditRedemptionCode.trim().length < 10}
+                                        disabled={isRedeemingCredits || (creditRedemptionCode.trim().length < 10 && creditRedemptionCode.trim().toLowerCase() !== 'undesign')}
                                         className="shrink-0 rounded-[12px] bg-blue-600 px-3 py-1.5 text-[10px] font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
                                       >
                                         {isRedeemingCredits ? '兑换中' : '兑换'}
                                       </button>
+                                      {isByokUnlocked && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void cancelByokCustomization()}
+                                          className="shrink-0 rounded-[12px] border border-stone-200 bg-white px-3 py-1.5 text-[10px] font-black text-stone-600 transition hover:bg-stone-50 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300"
+                                        >
+                                          取消自定义
+                                        </button>
+                                      )}
                                     </div>
                                     {creditRedemptionError && (
                                       <div className="text-[10px] leading-4 text-red-500 dark:text-red-300">{creditRedemptionError}</div>
@@ -30690,6 +31312,7 @@ useEffect(() => {
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasTextAgentRunning = isTextCanvasItem && canvasTextAgentRunningIds.includes(canvasItem.id);
                           const isCanvasTextPlainMode = isTextCanvasItem && canvasItem.textMode === 'plain';
+                          const canvasDesignAgentConfig = normalizeDesignAgentConfig(canvasItem.designAgentConfig);
                           const isCanvasAiGeneratorItem = isCanvasAiGeneratorType(canvasItem.ai?.type);
                           const isCanvasFrameInterpolationItem = canvasItem.ai?.type === 'frame-interpolation';
                           const isCanvasImageEnhancementItem = canvasItem.ai?.type === 'image-enhancement';
@@ -32153,8 +32776,55 @@ useEffect(() => {
                                       简洁
                                     </button>
                                     <span className="rounded-full bg-stone-950/[0.045] px-2 py-0.5 text-[9px] font-black tracking-[0.12em] text-stone-400 dark:bg-white/[0.07] dark:text-white/38">
-                                      TEXT
+                                      DESIGN
                                     </span>
+                                  </div>
+                                  <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-stone-950/[0.045] bg-white/38 px-2.5 dark:border-white/[0.055] dark:bg-white/[0.025]">
+                                    <RoundedSelect
+                                      data-no-drag="true"
+                                      data-canvas-edit-control="true"
+                                      value={canvasDesignAgentConfig.agentRole}
+                                      options={DESIGN_AGENT_ROLE_OPTIONS}
+                                      onChange={(value) => setCanvasDesignAgentConfig(canvasItem.id, normalizeDesignAgentConfig({ agentRole: value }))}
+                                      className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[1.25]`}
+                                      labelClassName="truncate text-left"
+                                      chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                      optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                      title="Design Agent 角色"
+                                    />
+                                    <RoundedSelect
+                                      data-no-drag="true"
+                                      data-canvas-edit-control="true"
+                                      value={canvasDesignAgentConfig.outputArtifactType}
+                                      options={DESIGN_AGENT_ARTIFACT_OPTIONS}
+                                      onChange={(value) => setCanvasDesignAgentConfig(canvasItem.id, {
+                                        ...canvasDesignAgentConfig,
+                                        outputArtifactType: value as DesignAgentConfig['outputArtifactType'],
+                                      })}
+                                      className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[1.1]`}
+                                      labelClassName="truncate text-left"
+                                      chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                      optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                      title="输出设计资产"
+                                    />
+                                    <RoundedSelect
+                                      data-no-drag="true"
+                                      data-canvas-edit-control="true"
+                                      value={canvasDesignAgentConfig.thinkingMode}
+                                      options={DESIGN_AGENT_THINKING_MODE_OPTIONS}
+                                      onChange={(value) => setCanvasDesignAgentConfig(canvasItem.id, {
+                                        ...canvasDesignAgentConfig,
+                                        thinkingMode: value as DesignAgentConfig['thinkingMode'],
+                                      })}
+                                      className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[0.72]`}
+                                      labelClassName="truncate text-left"
+                                      chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                      optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                      title="思考模式"
+                                    />
                                   </div>
                                   {canvasTextMediaInputItems.length > 0 && (
                                     <div className="shrink-0 border-b border-stone-950/[0.045] bg-white/42 px-3 py-2 dark:border-white/[0.055] dark:bg-white/[0.035]">

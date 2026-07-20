@@ -533,6 +533,8 @@ export const normalizeDesignReferencePlan = (value: unknown): DesignReferencePla
       const itemId = String(record.itemId || '').trim();
       const role = String(record.role || record.recommendedRole || '').trim() as DesignReferencePlanItem['role'];
       const reason = String(record.reason || '').trim();
+      const state = String(record.state || '').trim();
+      if (state && state !== 'selected') return [];
       if (!itemId || !role || !reason) return [];
       return [{
         itemId,
@@ -845,10 +847,12 @@ export const creativeProductDesignSkill: AppAgentSkill = {
       })}`,
       'Rules:',
       '- If workflow-builder-skill detects workflow creation or multi-output intent, treat CMF/detail/scene/storyboard terms as separate workflow nodes, not as one global CMF task.',
-      '- Before creating generators or workflows for a product design request, extract Project Brief fields (productType, targetUsers, styleKeywords, materialPreferences, colorPreferences, prohibitedDirections, outputGoals), then call drawer_search_inspirations with that brief.',
-      '- InspirationProfile analysis uses the configured Agent LLM API. When relevant drawer images lack structured profiles and analysis is explicitly requested or needed for a durable library update, use analyze_inspiration or analyze_inspirations_batch; do not use legacy CMF/alchemy data.',
-      '- Convert drawer_search_inspirations results into a Design Reference Plan. Pass chosen entries through inspirationReferences and explain itemId, role and reason. Do not invent itemId.',
-      '- Use retrieved drawer images only when relevant. Add chosen drawer items to canvas before connecting them to generators; preserve existing deterministic command and workflow input rules.',
+      '- Before creating generators or workflows for a product design request, extract Project Brief fields, then call drawer_search_inspirations for a metadata-only search of at most 8 compact candidates.',
+      '- Never call analyze_inspiration or analyze_inspirations_batch for an ordinary creative request. Image analysis is only for an explicit durable-library maintenance request.',
+      '- Candidate policy: confidence > 0.9 is selected automatically; 0.5-0.9 remains candidate and requires user confirmation; below 0.5 is rejected.',
+      '- LLM ranking, when present, receives only the user request and compact candidate summaries. It must not inspect images or expand drawer context.',
+      '- Pass only selected or explicitly confirmed entries through inspirationReferences. Never attach every search result to a generator.',
+      '- Add only selected drawer items to canvas immediately before generation; preserve existing deterministic command and workflow input rules.',
       '- Generator and workflow prompts must include Original Request, Design Brief, Selected Inspiration References and Reference Roles.',
       '- For industrial design review workflows, use product_reference_image as a reference_image_bridge that accepts external images and forwards the same visual reference to strategy and all generators.',
       '- For every image/video generator or edit prompt, include `Original request: "用户原话"` exactly with the user request.',
@@ -859,7 +863,8 @@ export const creativeProductDesignSkill: AppAgentSkill = {
       '- Product visual style must adapt to category, CMF, material, main color, scene and target user; never default to one fixed gray/blue, dark-tech or generic premium template.',
       '- Do not default to tech styling, glow lines, carbon fiber, exposed mechanics or complex cut lines unless requested or visible in references.',
       '- For video/storyboard/multi-scene tasks, create a text-agent storyboard first; video generator autoRun defaults false unless the user explicitly asks to directly generate/run.',
-      '- For complex product design, create a text-agent strategy node before the generator node.',
+      '- For complex product design, create a text-agent strategy node before the generator node and set designAgentConfig to design_strategist / DesignStrategy / analysis.',
+      '- Use Design Agent roles for industrial-design text stages: requirement_analyzer -> inspiration_analyzer -> design_strategist -> design_reviewer -> presentation_writer. Keep visual concept execution in image generators.',
       `Suggested generator prompt base:\n${brief.generatorPrompt}`,
     ].join('\n');
   },

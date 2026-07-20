@@ -174,9 +174,59 @@ export type AgentThinkingStep = {
   completedAt?: number;
 };
 
+export type AgentMessageType = 'text' | 'tool' | 'workflow_result';
+
+export type WorkflowResultStatus = 'success' | 'partial' | 'error';
+
+export type WorkflowResultTextAsset = {
+  nodeId: string;
+  title: string;
+  content: string;
+  agentRole?: string;
+  artifactType?: string;
+};
+
+export type WorkflowResultReference = {
+  id: string;
+  nodeId?: string;
+  itemId?: string;
+  name: string;
+  thumbnail?: string;
+  role?: string;
+  reason?: string;
+};
+
+export type WorkflowResultMedia = {
+  id: string;
+  nodeId?: string;
+  name: string;
+  mediaType: 'image' | 'video';
+  thumbnail?: string;
+  url?: string;
+  status?: 'success' | 'error';
+};
+
+export type WorkflowResultCardData = {
+  workflowId: string;
+  workflowNodeId: string;
+  workflowName: string;
+  status: WorkflowResultStatus;
+  summary: string;
+  completedAt: number;
+  completedSteps: number;
+  totalSteps: number;
+  designStrategy?: WorkflowResultTextAsset;
+  analysisResults: WorkflowResultTextAsset[];
+  inspirationReferences: WorkflowResultReference[];
+  generationResults: WorkflowResultMedia[];
+  nextSteps: string[];
+  error?: string;
+};
+
 export type AgentChatMessage = {
   id: string;
   role: 'user' | 'agent' | 'system';
+  type?: AgentMessageType;
   content: string;
   timestamp: number;
   status?: 'streaming' | 'completed' | 'error' | 'cancelled';
@@ -188,6 +238,7 @@ export type AgentChatMessage = {
   workflowPlanningFailure?: {
     userText: string;
   };
+  workflowResult?: WorkflowResultCardData;
 };
 
 export type AgentConversation = {

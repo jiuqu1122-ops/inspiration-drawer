@@ -32,6 +32,7 @@ import { buildDetailPagePrompt } from '../pageLayout/detailPagePromptBuilder';
 import type { WorkflowOutputSpec, WorkflowRecipeDraft } from '../workflows/workflowRecipeTypes';
 import type { ImagePolicy } from '../imageQuality/imageRuleCapsules';
 import { getDefaultImageRuleState } from '../imageQuality/imageRuleDefaults';
+import type { DesignAgentConfig } from '../../canvasModel';
 
 const createId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -290,13 +291,76 @@ export function convertWorkflowDraftToDefinition(
     required: true,
   };
 
-  const enabledOutputs = draft.outputs.filter(o => o.enabled);
+  const strategyStep: IndustrialReviewWorkflowStep | null = strategyEnabled && draft.strategy
+    ? {
+        id: strategyStepId,
+        type: 'text_agent',
+        title: draft.strategy.title,
+        optional: false,
+        inputStepIds: ['product_reference_image'],
+        outputRole: 'text_strategy',
+        prompt: draft.strategy.prompt,
+        designAgentConfig: draft.strategy.designAgentConfig || {
+          agentRole: 'design_strategist',
+          outputArtifactType: 'DesignStrategy',
+          thinkingMode: 'analysis',
+        },
+      }
+    : null;
 
-  const generatorSteps = enabledOutputs.map((output): Extract<IndustrialReviewWorkflowStep, { type: 'image_generator' }> => {
-    const inputRoles: Record<string, 'visual_reference' | 'text_strategy'> = {
-      product_reference_image: 'visual_reference',
+  const enabledOutputs = draft.outputs.filter(output => output.enabled);
+  const textOutputs = enabledOutputs.filter(output => output.type === 'text_agent');
+  const imageOutputs = enabledOutputs.filter(output => output.type === 'image_generator');
+  const textOutputIds = new Set(textOutputs.map(output => output.id));
+  const imageOutputIds = new Set(imageOutputs.map(output => output.id));
+  const normalizeDependencyId = (id: string) => id === 'strategy' && strategyEnabled ? strategyStepId : id;
+  const knownDependencyIds = new Set([
+    'product_reference_image',
+    ...(strategyEnabled ? [strategyStepId] : []),
+    ...textOutputIds,
+    ...imageOutputIds,
+  ]);
+  const getDependencies = (output: WorkflowOutputSpec) => Array.from(new Set(
+    output.inputRoles
+      .map(normalizeDependencyId)
+      .filter(id => id !== output.id && knownDependencyIds.has(id)),
+  ));
+
+  const designTextSteps = textOutputs.map((output): Extract<IndustrialReviewWorkflowStep, { type: 'text_agent' }> => {
+    const dependencies = getDependencies(output);
+    return {
+      id: output.id,
+      type: 'text_agent',
+      title: output.title,
+      optional: false,
+      inputStepIds: dependencies.length > 0 ? dependencies : ['product_reference_image'],
+      outputRole: output.designAgentConfig?.outputArtifactType || 'Document',
+      prompt: output.prompt,
+      designAgentConfig: output.designAgentConfig,
     };
-    if (strategyEnabled) inputRoles[strategyStepId] = 'text_strategy';
+  });
+
+  const generatorSteps = imageOutputs.map((output): Extract<IndustrialReviewWorkflowStep, { type: 'image_generator' }> => {
+    const requestedDependencies = getDependencies(output);
+    const requestedVisualDependencies = requestedDependencies.filter(id => id === 'product_reference_image' || imageOutputIds.has(id));
+    const requestedTextDependencies = requestedDependencies.filter(id => id === strategyStepId || textOutputIds.has(id));
+    const visualInputStepIds = Array.from(new Set([
+      ...(output.requiresReferenceImages === false ? [] : ['product_reference_image']),
+      ...requestedVisualDependencies,
+    ]));
+    const textInputStepIds = requestedTextDependencies.length > 0
+      ? requestedTextDependencies
+      : strategyEnabled
+        ? [strategyStepId]
+        : [];
+    const inputStepIds = Array.from(new Set([...visualInputStepIds, ...textInputStepIds]));
+    const inputRoles: Record<string, 'visual_reference' | 'visual_output' | 'text_strategy' | 'text_artifact'> = {};
+    visualInputStepIds.forEach(id => {
+      inputRoles[id] = id === 'product_reference_image' ? 'visual_reference' : 'visual_output';
+    });
+    textInputStepIds.forEach(id => {
+      inputRoles[id] = id === strategyStepId ? 'text_strategy' : 'text_artifact';
+    });
 
     return {
       id: output.id,
@@ -304,11 +368,11 @@ export function convertWorkflowDraftToDefinition(
       mediaType: 'image',
       title: output.title,
       outputRole: output.id as WorkflowOutputType,
-      visualInputStepIds: ['product_reference_image'],
-      textInputStepIds: strategyEnabled ? [strategyStepId] : [],
-      inputStepIds: strategyEnabled ? ['product_reference_image', strategyStepId] : ['product_reference_image'],
+      visualInputStepIds,
+      textInputStepIds,
+      inputStepIds,
       inputRoles,
-      requiresReferenceImages: true,
+      requiresReferenceImages: output.requiresReferenceImages !== false,
       optional: output.id === 'storyboard_key_visual',
       prompt: output.prompt,
       aspectRatio: output.aspectRatio || aspectRatio,
@@ -318,7 +382,7 @@ export function convertWorkflowDraftToDefinition(
       model: output.model || null,
       toolHint: null,
       imagePolicy: buildWorkflowOutputImagePolicy(output, {
-        hasReferenceImage: true,
+        hasReferenceImage: visualInputStepIds.length > 0,
         workflowTemplateId: 'industrial-design-review',
       }),
       skillMeta: {
@@ -335,17 +399,22 @@ export function convertWorkflowDraftToDefinition(
     };
   });
 
-  const strategyStep: IndustrialReviewWorkflowStep | null = strategyEnabled && draft.strategy
-    ? {
-        id: strategyStepId,
-        type: 'text_agent',
-        title: draft.strategy.title,
-        optional: false,
-        inputStepIds: ['product_reference_image'],
-        outputRole: 'text_strategy',
-        prompt: draft.strategy.prompt,
-      }
-    : null;
+  const executableSteps: IndustrialReviewWorkflowStep[] = [
+    ...(strategyStep ? [strategyStep] : []),
+    ...designTextSteps,
+    ...generatorSteps,
+  ];
+  const executionOrder: string[][] = [['product_reference_image']];
+  const resolved = new Set(['product_reference_image']);
+  let remaining = [...executableSteps];
+  while (remaining.length > 0) {
+    const ready = remaining.filter(step => step.inputStepIds.every(id => resolved.has(id)));
+    const stage = ready.length > 0 ? ready : remaining;
+    executionOrder.push(stage.map(step => step.id));
+    stage.forEach(step => resolved.add(step.id));
+    const completedIds = new Set(stage.map(step => step.id));
+    remaining = remaining.filter(step => !completedIds.has(step.id));
+  }
 
   return {
     id: createId('industrial-design-review-workflow'),
@@ -364,6 +433,7 @@ export function convertWorkflowDraftToDefinition(
     steps: [
       referenceBridgeStep,
       ...(strategyStep ? [strategyStep] : []),
+      ...designTextSteps,
       ...generatorSteps,
     ],
     metadata: {
@@ -371,7 +441,8 @@ export function convertWorkflowDraftToDefinition(
       skillIds: ['workflow-builder-skill', 'creative-product-design-skill'],
       originalRequest: originalText,
       productCategory: 'product',
-      outputTypes: enabledOutputs.map(o => o.id as WorkflowOutputType),
+      outputTypes: imageOutputs.map(output => output.id as WorkflowOutputType),
+      designArtifactTypes: textOutputs.map(output => output.designAgentConfig?.outputArtifactType || output.id),
       aspectRatio,
       targetSize: enabledOutputs.find(output => output.targetSize)?.targetSize || null,
       resolution: enabledOutputs.find(output => output.resolution)?.resolution || null,
@@ -383,9 +454,7 @@ export function convertWorkflowDraftToDefinition(
       workflowDraft: draft,
       languagePolicy: draft.languagePolicy,
     },
-    executionOrder: strategyEnabled
-      ? [['product_reference_image'], [strategyStepId], generatorSteps.map(step => step.id)]
-      : [['product_reference_image'], generatorSteps.map(step => step.id)],
+    executionOrder,
   };
 }
 
@@ -412,7 +481,7 @@ type EcommerceDetailPageWorkflowStep =
     textInputStepIds: string[];
     inputStepIds: string[];
     inputRoles: Record<string, 'visual_reference'>;
-    requiresReferenceImages: true;
+    requiresReferenceImages: boolean;
     optional?: boolean;
     prompt: string;
     aspectRatio: string;
@@ -576,8 +645,9 @@ type IndustrialReviewWorkflowStep =
     title: string;
     optional?: boolean;
     inputStepIds: string[];
-    outputRole: 'text_strategy';
+    outputRole: string;
     prompt: string;
+    designAgentConfig?: DesignAgentConfig;
   }
   | {
     id: string;
@@ -588,8 +658,8 @@ type IndustrialReviewWorkflowStep =
     visualInputStepIds: string[];
     textInputStepIds: string[];
     inputStepIds: string[];
-    inputRoles: Record<string, 'visual_reference' | 'text_strategy'>;
-    requiresReferenceImages: true;
+    inputRoles: Record<string, 'visual_reference' | 'visual_output' | 'text_strategy' | 'text_artifact'>;
+    requiresReferenceImages: boolean;
     optional?: boolean;
     prompt: string;
     aspectRatio: string;
@@ -693,6 +763,11 @@ const buildIndustrialReviewCanvasNodeFallbackCommands = (
       prompt: buildIndustrialReviewStrategyPrompt(brief, outputTypes),
       inputIds: selectedImageNodeIds,
       autoRun: false,
+      designAgentConfig: {
+        agentRole: 'design_strategist',
+        outputArtifactType: 'DesignStrategy',
+        thinkingMode: 'analysis',
+      },
     }, 'safe_write', 'workflow-builder-skill', {
       stepId: strategyStepId,
       createsNode: true,
@@ -715,6 +790,11 @@ const buildIndustrialReviewCanvasNodeFallbackCommands = (
     commands.push(command('canvas', 'create_generator', {
       mediaType: 'image',
       prompt: output.prompt,
+      inspirationSearch: {
+        query: originalText,
+        projectBrief: brief.projectBrief,
+        topK: 8,
+      },
       inputIds: Array.from(new Set([...(strategyEnabled ? [strategyOutputRef] : []), ...selectedImageNodeIds])),
       referenceImageNodeIds: selectedImageNodeIds,
       referenceRoles,
@@ -1407,6 +1487,17 @@ export function buildAppAgentPlan(input: {
           : buildProductStrategyTextAgentPrompt(brief),
         inputIds: input.context?.selectedIds || [],
         autoRun: false,
+        designAgentConfig: brief.requiresStoryboardFirst
+          ? {
+            agentRole: 'presentation_writer',
+            outputArtifactType: 'Document',
+            thinkingMode: 'generation',
+          }
+          : {
+            agentRole: 'design_strategist',
+            outputArtifactType: 'DesignStrategy',
+            thinkingMode: 'analysis',
+          },
       }, 'safe_write', 'creative-product-design-skill', {
         stepId: textAgentStepId,
         createsNode: true,
@@ -1417,6 +1508,13 @@ export function buildAppAgentPlan(input: {
       commands.push(command('canvas', 'create_generator', {
         mediaType: 'image',
         prompt: buildStoryboardSheetPrompt(brief),
+        ...(!brief.isEdit ? {
+          inspirationSearch: {
+            query: text,
+            projectBrief: brief.projectBrief,
+            topK: 8,
+          },
+        } : {}),
         inputIds: [textAgentOutputRef, ...selectedImageNodeIds],
         referenceImageNodeIds: selectedImageNodeIds,
         autoRun: false,
@@ -1442,6 +1540,13 @@ export function buildAppAgentPlan(input: {
       commands.push(command('canvas', 'create_generator', {
         mediaType: brief.mediaType,
         prompt: brief.generatorPrompt,
+        ...(!brief.isEdit ? {
+          inspirationSearch: {
+            query: text,
+            projectBrief: brief.projectBrief,
+            topK: 8,
+          },
+        } : {}),
         inputIds: Array.from(new Set([
           ...(input.context?.selectedIds || []),
           ...(brief.requiresStrategyFirst ? [textAgentOutputRef] : []),

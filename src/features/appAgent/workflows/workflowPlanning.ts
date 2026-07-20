@@ -13,6 +13,7 @@ import type {
   WorkflowRecipeDraft,
   WorkflowTextPolicy,
 } from './workflowRecipeTypes';
+import { normalizeDesignAgentConfig } from '../../designAgentNode';
 
 export interface WorkflowPlanningRequest {
   userText: string;
@@ -182,6 +183,15 @@ const normalizeStrategy = (
     mode: enabled ? 'enabled' : 'disabled',
     title: asString(value.title, enabled ? '工作流策略' : ''),
     prompt,
+    designAgentConfig: normalizeDesignAgentConfig(
+      isRecord(value.designAgentConfig)
+        ? value.designAgentConfig
+        : {
+          agentRole: 'design_strategist',
+          outputArtifactType: 'DesignStrategy',
+          thinkingMode: 'analysis',
+        },
+    ),
   };
 };
 
@@ -245,6 +255,9 @@ const normalizeOutputs = (input: {
       editable: true,
       uniqueSellingPoint: typeof record.uniqueSellingPoint === 'string' ? record.uniqueSellingPoint : undefined,
       imagePolicy: getRecordImagePolicy(record.imagePolicy) || input.imagePolicy,
+      designAgentConfig: type === 'text_agent'
+        ? normalizeDesignAgentConfig(record.designAgentConfig)
+        : undefined,
     } satisfies WorkflowOutputSpec;
   }).sort((a, b) => a.order - b.order);
 };
@@ -335,21 +348,53 @@ export function workflowDraftProposalToRecipeDraft(input: {
 }
 
 export function parseWorkflowDraftProposal(raw: string): WorkflowDraftProposal {
-  const text = raw.trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-  const candidates = [
-    text,
-    text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1),
-  ].filter(candidate => candidate.trim().startsWith('{') && candidate.trim().endsWith('}'));
+  const text = raw.replace(/^\uFEFF/, '').trim();
+  const candidates: string[] = [];
+  const addCandidate = (candidate: string) => {
+    const value = candidate.trim();
+    if (value.startsWith('{') && value.endsWith('}') && !candidates.includes(value)) candidates.push(value);
+  };
+  addCandidate(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+
+  // Models may add a short preamble or trailing note. Extract balanced JSON
+  // objects while respecting braces inside quoted strings.
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== '{') continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{') depth += 1;
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          addCandidate(text.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
 
   for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (isRecord(parsed)) return parsed as WorkflowDraftProposal;
-    } catch (_) {
-      // Try the next JSON-looking slice.
+    const parseCandidates = [candidate, candidate.replace(/,\s*([}\]])/g, '$1')];
+    for (const parseCandidate of parseCandidates) {
+      try {
+        const parsed = JSON.parse(parseCandidate);
+        if (isRecord(parsed) && Array.isArray(parsed.outputs)) return parsed as WorkflowDraftProposal;
+      } catch (_) {
+        // Try the next JSON-looking candidate without another model request.
+      }
     }
   }
   throw new Error('AI 规划结果不是可解析的 Workflow Draft Proposal JSON');
@@ -398,6 +443,11 @@ export function buildWorkflowDraftProposalMessages(input: {
       prompt: 'string',
       inputRoles: ['input_or_previous_output_id'],
       requiresReferenceImages: true,
+      designAgentConfig: {
+        agentRole: 'requirement_analyzer|inspiration_analyzer|design_strategist|design_reviewer|presentation_writer|general',
+        outputArtifactType: 'DesignBrief|ResearchReport|InspirationAnalysis|DesignStrategy|DesignReview|PromptPackage|Document',
+        thinkingMode: 'analysis|generation|review',
+      },
     }],
     strategy: { enabled: false, mode: 'enabled|disabled', title: 'string', prompt: 'string' },
     executionOrder: [['input_id'], ['output_id']],
@@ -419,6 +469,8 @@ export function buildWorkflowDraftProposalMessages(input: {
         'Design a structured Workflow Draft Proposal for a local app to validate and convert into an editable draft.',
         'The app, not you, will validate schema, de-duplicate IDs, validate input references, append the original request to prompts, and create the draft UI.',
         'Use stable ASCII ids. Keep prompts specific, editable, and implementation-ready. Prefer the user language for visible copy policy.',
+        'For industrial-design workflows, use text_agent outputs as Design Agent Nodes for requirement breakdown, inspiration analysis, strategy, review, and delivery writing. Image generators execute visual concepts; they do not replace analysis nodes.',
+        'Set designAgentConfig on each text_agent. Preserve a clear dependency chain through inputRoles instead of flattening every stage into one prompt.',
         'Required JSON shape:',
         JSON.stringify(schema),
       ].join('\n'),

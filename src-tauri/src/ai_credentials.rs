@@ -16,6 +16,7 @@ use crate::license::types::{
 use crate::license::verifier::{verify_license_content, verify_license_content_with_key};
 
 const LICENSE_FILE_NAME: &str = "license.json";
+const BYOK_UNLOCK_FILE_NAME: &str = "byok_unlock.machine";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiProfileScope {
@@ -49,6 +50,49 @@ fn read_license_content(app_handle: &tauri::AppHandle) -> Result<Option<String>,
     fs::read_to_string(&path)
         .map(Some)
         .map_err(|err| format!("io_error: 无法读取授权文件：{err}"))
+}
+
+fn byok_unlock_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("io_error: 无法获取应用数据目录：{err}"))?;
+    Ok(dir.join(BYOK_UNLOCK_FILE_NAME))
+}
+
+pub fn is_byok_unlocked(app_handle: &tauri::AppHandle) -> bool {
+    let Ok(machine_id) = current_machine_id() else {
+        return false;
+    };
+    byok_unlock_path(app_handle)
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|stored| stored.trim().eq_ignore_ascii_case(machine_id.trim()))
+}
+
+pub fn activate_byok_unlock(
+    app_handle: &tauri::AppHandle,
+    code: &str,
+) -> Result<bool, String> {
+    if !code.trim().eq_ignore_ascii_case("undesign") {
+        return Ok(false);
+    }
+    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let path = byok_unlock_path(app_handle)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("io_error: 无法创建本机配置目录：{err}"))?;
+    }
+    fs::write(path, machine_id).map_err(|err| format!("io_error: 无法保存本机配置：{err}"))?;
+    Ok(true)
+}
+
+pub fn deactivate_byok_unlock(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let path = byok_unlock_path(app_handle)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|err| format!("io_error: 无法取消本机自定义配置：{err}"))?;
+    }
+    Ok(())
 }
 
 pub fn decode_license_payload_unverified(content: &str) -> Option<LicensePayload> {
@@ -210,6 +254,9 @@ pub fn resolve_effective_api_profile(
     app_handle: &tauri::AppHandle,
     settings: StoredApiSettings,
 ) -> Result<EffectiveApiProfile, String> {
+    if is_byok_unlocked(app_handle) {
+        return Ok(user_settings_to_effective(settings));
+    }
     let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
     resolve_effective_api_profile_from_content(content.as_deref(), &machine_id, settings)

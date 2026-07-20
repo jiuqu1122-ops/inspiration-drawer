@@ -2,6 +2,7 @@ import type { BufferItem } from '../../../types';
 import type {
   DrawerInspirationMatch,
   DrawerSearchInspirationsInput,
+  InspirationCandidateState,
   InspirationProfile,
   InspirationReferenceRole,
 } from './types';
@@ -24,24 +25,69 @@ const values = (value: unknown): string[] => Array.isArray(value)
   ? value.map(item => compact(item)).filter(Boolean)
   : compact(value) ? [compact(value)] : [];
 
+export const getInspirationCandidateState = (confidence: number): InspirationCandidateState => (
+  confidence > 0.9 ? 'selected' : confidence >= 0.5 ? 'candidate' : 'rejected'
+);
+
+const localTerms = (text: string, rules: Array<[RegExp, string]>) => (
+  rules.filter(([pattern]) => pattern.test(text)).map(([, label]) => label)
+);
+
+const inferLocalMetadata = (item: BufferItem) => {
+  const text = [item.name, item.content, item.remark, ...(item.remarks || [])].filter(Boolean).join(' ');
+  return {
+    category: localTerms(text, [
+      [/(投影|projector)/i, '投影设备'], [/(咖啡|coffee)/i, '咖啡设备'],
+      [/(灯|lamp|light)/i, '照明'], [/(音箱|speaker|audio)/i, '音频设备'],
+      [/(相机|camera)/i, '影像设备'], [/(椅|桌|柜|furniture)/i, '家具'],
+    ])[0] || '未分类图片',
+    style: localTerms(text, [
+      [/(极简|minimal)/i, '极简'], [/(复古|retro|vintage)/i, '复古'],
+      [/(温暖|warm)/i, '温暖'], [/(工业|industrial)/i, '工业'],
+      [/(自然|organic|natural)/i, '自然'], [/(未来|futuristic)/i, '未来感'],
+      [/(可爱|cute)/i, '可爱'], [/(高级|premium)/i, '高级'],
+    ]),
+    colors: localTerms(text, [
+      [/(暖白|warm white)/i, '暖白'], [/(米白|beige)/i, '米白'],
+      [/(白色|white)/i, '白色'], [/(黑色|black)/i, '黑色'], [/(灰色|gray|grey)/i, '灰色'],
+      [/(蓝色|blue)/i, '蓝色'], [/(红色|red)/i, '红色'], [/(绿色|green)/i, '绿色'],
+    ]),
+    materials: localTerms(text, [
+      [/(铝|金属|aluminum|metal)/i, '金属/铝'], [/(木|wood)/i, '木材'],
+      [/(塑料|plastic)/i, '塑料'], [/(玻璃|glass)/i, '玻璃'],
+      [/(织物|布料|fabric)/i, '织物'], [/(陶瓷|ceramic)/i, '陶瓷'],
+    ]),
+    finishes: localTerms(text, [
+      [/(磨砂|matte)/i, '磨砂'], [/(高光|亮面|gloss)/i, '高光'],
+      [/(拉丝|brushed)/i, '拉丝'], [/(半透明|translucent)/i, '半透明'],
+      [/(亲肤|soft touch)/i, '亲肤涂层'],
+    ]),
+    silhouette: localTerms(text, [
+      [/(圆润|rounded)/i, '圆润'], [/(方正|rectangular|square)/i, '方正'],
+      [/(圆柱|cylindrical)/i, '圆柱'], [/(轻薄|slim)/i, '轻薄'], [/(紧凑|compact)/i, '紧凑'],
+    ]),
+  };
+};
+
 export function createFallbackInspirationProfile(item: BufferItem): InspirationProfile {
   const notes = [...values(item.remark), ...values(item.remarks)];
+  const metadata = inferLocalMetadata(item);
   return {
     itemId: item.id,
     summary: compact(item.content || item.name || '未分析灵感素材'),
     objects: values(item.name),
-    category: compact(item.type),
+    category: metadata.category,
     form: {
-      silhouette: [],
+      silhouette: metadata.silhouette,
       geometry: [],
       proportion: [],
     },
     cmf: {
-      colors: [],
-      materials: [],
-      finishes: [],
+      colors: metadata.colors,
+      materials: metadata.materials,
+      finishes: metadata.finishes,
     },
-    style: [],
+    style: metadata.style,
     interaction: [],
     scene: values(item.content),
     mood: [],
@@ -91,7 +137,7 @@ export function searchDrawerInspirations(
     : JSON.stringify(input.projectBrief || {});
   const queryTokens = Array.from(new Set(normalize(`${input.query} ${briefText}`).split(' ').filter(token => token.length > 1)));
   const folderIds = new Set((input.folderIds || []).filter(Boolean));
-  const topK = Math.max(1, Math.min(20, Math.round(input.topK || 6)));
+  const topK = Math.max(1, Math.min(8, Math.round(input.topK || 8)));
 
   return items
     .filter(item => item.type === 'image')
@@ -126,10 +172,12 @@ export function searchDrawerInspirations(
       const featureReason = matchedFeatures.length > 0 ? matchedFeatures.slice(0, 3).join('、') : profile.summary;
       return {
         itemId: item.id,
+        summary: compact(profile.summary || item.name || item.content),
         reason: `${featureReason || item.name || '该素材'}与项目需求相关，建议作为 ${recommendedRole}。`,
         matchedFeatures,
         recommendedRole,
         confidence: Number(confidence.toFixed(2)),
+        state: getInspirationCandidateState(confidence),
         score,
       };
     })

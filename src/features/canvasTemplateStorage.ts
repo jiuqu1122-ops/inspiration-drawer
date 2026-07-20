@@ -1,6 +1,7 @@
 import type { BufferItem } from '../types';
 import { clamp } from './common';
 import type { CanvasImageItem } from './canvasModel';
+import { normalizeDesignAgentConfig } from './designAgentNode';
 import {
   CANVAS_AI_PROMPT_PRESETS,
   type CanvasAiPromptPreset,
@@ -218,6 +219,9 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         : node.textMode === 'agent' || (inferredExternalImageInput && itemType === 'text' && !rawAi)
           ? 'agent'
           : undefined,
+      designAgentConfig: node.designAgentConfig
+        ? normalizeDesignAgentConfig(node.designAgentConfig)
+        : undefined,
       acceptsExternalInputs,
       externalInputTypes,
       outputType: node.outputType === 'image'

@@ -2,8 +2,13 @@ import type { BufferItem } from '../../../types';
 import { test } from 'vitest';
 import { CANVAS_AGENT_TOOL_DEFINITIONS, isCanvasAgentToolReadOnly } from '../../canvasAgentTools';
 import { applyCreativeGeneratorDefaults, applyCreativeWorkflowDefaults, extractCreativeBrief } from '../skills/creativeProductDesignSkill';
-import { searchDrawerInspirations } from './drawerSemanticRetrieval';
+import { getInspirationCandidateState, searchDrawerInspirations } from './drawerSemanticRetrieval';
 import { buildInspirationAnalysisPrompt, extractJsonObject, normalizeInspirationProfile } from './inspirationAnalysis';
+import {
+  applyInspirationCandidateRanking,
+  buildInspirationCandidateRankingPrompt,
+  shouldRankInspirationCandidates,
+} from './candidateRanking';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -114,6 +119,29 @@ assert(
   'phase 2 inspiration analysis tools should be registered',
 );
 assert(isCanvasAgentToolReadOnly('get_inspiration_analysis_job'), 'analysis job status must be read-only');
+
+assert(matches.length <= 8, 'metadata retrieval should return at most 8 candidates');
+assert(getInspirationCandidateState(0.91) === 'selected', 'confidence above 0.9 should auto-select');
+assert(getInspirationCandidateState(0.5) === 'candidate', 'confidence from 0.5 to 0.9 should require confirmation');
+assert(getInspirationCandidateState(0.49) === 'rejected', 'confidence below 0.5 should be rejected');
+
+const rankingCandidates = [
+  { ...matches[0]!, itemId: 'a', summary: 'warm matte appliance', confidence: 0.8, state: 'candidate' as const },
+  { ...matches[0]!, itemId: 'b', summary: 'dark technical tool', confidence: 0.7, state: 'candidate' as const },
+];
+assert(shouldRankInspirationCandidates(rankingCandidates), 'two medium-confidence candidates should use compact LLM ranking');
+const rankingPrompt = buildInspirationCandidateRankingPrompt('design a warm coffee machine', rankingCandidates);
+assert(rankingPrompt.includes('warm matte appliance'), 'ranking prompt should contain candidate summaries');
+assert(!rankingPrompt.includes('matchedFeatures'), 'ranking prompt should not include expanded profile data');
+const rankedCandidates = applyInspirationCandidateRanking(rankingCandidates, {
+  decisions: [
+    { itemId: 'a', adopt: true, referenceRole: 'CMF_REF', reason: 'warm matte CMF is relevant' },
+    { itemId: 'b', adopt: false, referenceRole: 'FORM_REF', reason: 'style conflicts' },
+  ],
+});
+assert(rankedCandidates[0]?.state === 'candidate', 'LLM recommendation must still wait for user confirmation');
+assert(rankedCandidates[0]?.llmRecommended === true, 'LLM recommendation should be recorded');
+assert(rankedCandidates[1]?.state === 'rejected', 'LLM may reject a medium-confidence candidate');
 
 test('phase 1 inspiration memory assertions', () => {
   assert(matches.length > 0, 'phase 1 inspiration memory assertions should complete');

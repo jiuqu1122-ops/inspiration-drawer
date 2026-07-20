@@ -23,6 +23,7 @@ import type {
   CodexRuntimeStatus,
 } from '../features/agentModel';
 import { getCanvasAgentToolLabel } from '../features/canvasAgentTools';
+import { WorkflowResultCard } from './WorkflowResultCard';
 
 type WorkflowPlanningMode = 'ai' | 'quick';
 
@@ -208,12 +209,18 @@ export function DrawerAgentPanel({
             可以直接说“新建一个产品项目文件夹”“把选中的图片加到画布并创建生图节点”“搜索所有方向盘素材”。Agent 会实际操作软件。
           </div>
         )}
-        {messages.map(message => (
-          <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : ''}>
-            <div className={message.role === 'user'
-              ? 'max-w-[88%] rounded-[18px_18px_6px_18px] bg-blue-500 px-3 py-2 text-[11px] leading-5 text-white shadow-sm'
-              : 'group/message text-[11px] leading-5 text-stone-700 dark:text-stone-200'}>
-              {message.content && <div className="whitespace-pre-wrap select-text">{message.content}</div>}
+        {messages.map(message => {
+          const isWorkflowResult = message.type === 'workflow_result' && !!message.workflowResult;
+          return (
+            <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : ''}>
+              <div className={message.role === 'user'
+                ? 'max-w-[88%] rounded-[18px_18px_6px_18px] bg-blue-500 px-3 py-2 text-[11px] leading-5 text-white shadow-sm'
+                : 'group/message text-[11px] leading-5 text-stone-700 dark:text-stone-200'}>
+              {isWorkflowResult ? (
+                <WorkflowResultCard result={message.workflowResult!} compact />
+              ) : (
+                message.content && <div className="whitespace-pre-wrap select-text">{message.content}</div>
+              )}
               {message.selectionSnapshot && message.selectionSnapshot.length > 0 && (
                 <div className={['mt-1.5 flex flex-wrap gap-1', message.role === 'user' ? 'justify-end' : ''].filter(Boolean).join(' ')}>
                   {message.selectionSnapshot.slice(0, 4).map(item => (
@@ -235,7 +242,7 @@ export function DrawerAgentPanel({
                   )}
                 </div>
               )}
-              {message.error && <div className="mt-1 rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] text-red-600 dark:bg-red-400/10 dark:text-red-200">{message.error}</div>}
+              {!isWorkflowResult && message.error && <div className="mt-1 rounded-[12px] bg-red-50 px-2 py-1.5 text-[9px] text-red-600 dark:bg-red-400/10 dark:text-red-200">{message.error}</div>}
               {message.role !== 'user' && message.workflowPlanningFailure && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <button
@@ -279,9 +286,10 @@ export function DrawerAgentPanel({
                   {copiedId === message.id ? '已复制' : '复制'}
                 </button>
               )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={endRef} />
       </main>
 

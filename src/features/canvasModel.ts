@@ -10,6 +10,7 @@ export type CanvasImageItem = {
   height: number;
   inputs?: string[];
   textMode?: 'agent' | 'plain';
+  designAgentConfig?: DesignAgentConfig;
   ai?: CanvasAiItemData;
   workflowGroup?: unknown;
   workflowBridge?: {
@@ -19,6 +20,30 @@ export type CanvasImageItem = {
     outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
   };
 };
+
+/**
+ * Optional industrial-design behaviour for an existing canvas text Agent node.
+ * Keeping this separate from CanvasAiItemData preserves the legacy text-node
+ * representation (`textMode: 'agent'` with no `ai` object).
+ */
+export interface DesignAgentConfig {
+  agentRole?:
+    | 'requirement_analyzer'
+    | 'inspiration_analyzer'
+    | 'design_strategist'
+    | 'design_reviewer'
+    | 'presentation_writer'
+    | 'general';
+  outputArtifactType?:
+    | 'DesignBrief'
+    | 'ResearchReport'
+    | 'InspirationAnalysis'
+    | 'DesignStrategy'
+    | 'DesignReview'
+    | 'PromptPackage'
+    | 'Document';
+  thinkingMode?: 'analysis' | 'generation' | 'review';
+}
 
 export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'custom';
 export type CanvasAiCredentialSource = 'wallet' | 'local';

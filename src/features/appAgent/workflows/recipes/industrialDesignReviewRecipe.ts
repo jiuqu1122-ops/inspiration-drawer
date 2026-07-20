@@ -197,6 +197,11 @@ export function buildIndustrialDesignReviewDraft(input: {
       mode: input.strategyEnabled ? 'enabled' : 'disabled',
       title: '工业设计评审策略',
       prompt: strategyPrompt,
+      designAgentConfig: {
+        agentRole: 'design_strategist',
+        outputArtifactType: 'DesignStrategy',
+        thinkingMode: 'analysis',
+      },
     },
     outputs,
     metadata: {

@@ -35,6 +35,7 @@ import type {
   CodexRuntimeStatus,
 } from '../features/agentModel';
 import { getCanvasAgentToolLabel } from '../features/canvasAgentTools';
+import { WorkflowResultCard } from './WorkflowResultCard';
 
 type CanvasAgentSidebarProps = {
   width: number;
@@ -589,6 +590,7 @@ export function CanvasAgentSidebar({
           <div className="space-y-5">
             {messages.map(message => {
               const isUser = message.role === 'user';
+              const isWorkflowResult = message.type === 'workflow_result' && !!message.workflowResult;
               const thinkingSteps = !isUser ? (message.thinkingSteps || []) : [];
               const latestThinkingStep = thinkingSteps[thinkingSteps.length - 1];
               const hasActiveThinkingStep = thinkingSteps.some(step => step.status === 'running' || step.status === 'waiting');
@@ -603,9 +605,13 @@ export function CanvasAgentSidebar({
                         {message.status === 'streaming' && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
                       </div>
                     )}
-                    <p className={`select-text whitespace-pre-wrap text-[12px] leading-[1.72] ${isUser ? 'text-white' : 'text-stone-700 dark:text-stone-200'}`}>
-                      {message.content || (message.status === 'streaming' ? '正在思考…' : '')}
-                    </p>
+                    {isWorkflowResult ? (
+                      <WorkflowResultCard result={message.workflowResult!} />
+                    ) : (
+                      <p className={`select-text whitespace-pre-wrap text-[12px] leading-[1.72] ${isUser ? 'text-white' : 'text-stone-700 dark:text-stone-200'}`}>
+                        {message.content || (message.status === 'streaming' ? '正在思考…' : '')}
+                      </p>
+                    )}
 
                     {message.selectionSnapshot && message.selectionSnapshot.length > 0 && (
                       <div className={['mt-2 flex flex-wrap gap-1', isUser ? 'justify-end' : ''].filter(Boolean).join(' ')}>
@@ -730,7 +736,7 @@ export function CanvasAgentSidebar({
                       </div>
                     )}
 
-                    {message.error && <div className="mt-2.5 select-text rounded-[12px] border border-red-100 bg-red-50/80 px-2.5 py-2 text-[9px] leading-4 text-red-600 dark:border-red-400/15 dark:bg-red-400/8 dark:text-red-200">{message.error}</div>}
+                    {!isWorkflowResult && message.error && <div className="mt-2.5 select-text rounded-[12px] border border-red-100 bg-red-50/80 px-2.5 py-2 text-[9px] leading-4 text-red-600 dark:border-red-400/15 dark:bg-red-400/8 dark:text-red-200">{message.error}</div>}
                     {message.workflowPlanningFailure && !isUser && (
                       <div className="mt-2.5 flex flex-wrap gap-1.5">
                         <button

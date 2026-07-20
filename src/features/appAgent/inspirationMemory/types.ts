@@ -40,13 +40,21 @@ export interface DrawerSearchInspirationsInput {
   topK?: number;
 }
 
-export interface DrawerInspirationMatch {
+export type InspirationCandidateState = 'candidate' | 'selected' | 'rejected';
+
+export interface InspirationCandidate {
   itemId: string;
+  summary: string;
   reason: string;
   matchedFeatures: string[];
   recommendedRole: InspirationReferenceRole;
   confidence: number;
+  state: InspirationCandidateState;
+  llmRanked?: boolean;
+  llmRecommended?: boolean;
 }
+
+export type DrawerInspirationMatch = InspirationCandidate;
 
 export interface DesignReferencePlanItem {
   itemId: string;
