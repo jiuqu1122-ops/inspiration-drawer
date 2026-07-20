@@ -1,4 +1,5 @@
 import type {
+  AgentChatMessage,
   WorkflowResultCardData,
   WorkflowResultMedia,
   WorkflowResultReference,
@@ -27,6 +28,26 @@ const WORKFLOW_STAGE_DEFAULT_TITLES: Record<WorkflowResultStage['stage'], string
   concept: '概念生成',
   refinement: '方案深化',
   delivery: '交付整理',
+};
+
+export const upsertWorkflowResultMessage = (
+  messages: AgentChatMessage[],
+  nextMessage: AgentChatMessage,
+) => {
+  const workflowNodeId = nextMessage.workflowResult?.workflowNodeId;
+  if (!workflowNodeId) return [...messages, nextMessage];
+  const existingIndex = messages.findIndex(message => (
+    message.type === 'workflow_result'
+    && message.workflowResult?.workflowNodeId === workflowNodeId
+  ));
+  if (existingIndex < 0) return [...messages, nextMessage];
+  return messages.map((message, index) => index === existingIndex
+    ? {
+      ...nextMessage,
+      id: message.id,
+      timestamp: message.timestamp,
+    }
+    : message);
 };
 
 export type WorkflowResultTextNodeInput = {
@@ -342,7 +363,7 @@ export const normalizeWorkflowResultCardData = (value: unknown): WorkflowResultC
     || Array.isArray(record.inspirationReferences)
     || Array.isArray(record.generationResults);
   if (!hasLegacyPayload && providedStages.length === 0) return null;
-  const status: WorkflowResultStatus = ['success', 'partial', 'error'].includes(String(record.status || ''))
+  const status: WorkflowResultStatus = ['running', 'success', 'partial', 'error'].includes(String(record.status || ''))
     ? record.status as WorkflowResultStatus
     : 'success';
   const textAssets = [...analysisResults, ...(designStrategy ? [designStrategy] : [])];
@@ -409,7 +430,7 @@ const buildFallbackNextSteps = (
   generationResults: WorkflowResultMedia[],
 ) => {
   const next: string[] = [];
-  if (status !== 'success') next.push('检查失败或缺失的节点后重新运行工作流');
+  if (status === 'partial' || status === 'error') next.push('检查失败或缺失的节点后重新运行工作流');
   if (generationResults.some(output => output.status === 'success')) next.push('在画布中比较并筛选生成方案');
   if (assets.some(asset => asset.agentRole === 'design_reviewer' || asset.artifactType === 'DesignReview')) {
     next.push('按方案评审中的优先级继续迭代');
@@ -440,7 +461,13 @@ export const buildWorkflowResultCardData = (
     : buildFallbackNextSteps(input.status, textAssets, generationResults);
   const totalSteps = Math.max(0, Math.round(Number(input.totalSteps) || 0));
   const completedSteps = Math.min(totalSteps, Math.max(0, Math.round(Number(input.completedSteps) || 0)));
-  const statusLabel = input.status === 'success' ? '已完成' : input.status === 'partial' ? '部分完成' : '执行失败';
+  const statusLabel = input.status === 'running'
+    ? '分析中'
+    : input.status === 'success'
+      ? '已完成'
+      : input.status === 'partial'
+        ? '部分完成'
+        : '执行失败';
   const summaryParts = [
     `${statusLabel} ${completedSteps}/${totalSteps} 个步骤`,
     textAssets.length > 0 ? `${textAssets.length} 份文本成果` : '',

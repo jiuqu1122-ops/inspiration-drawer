@@ -1067,10 +1067,10 @@ pub async fn agent_openai_chat(
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
         let mut wallet_request = request;
-        wallet_request.model = Some(resolve_wallet_agent_model(
+        wallet_request.model = resolve_wallet_agent_model(
             wallet_request.model.as_deref(),
             &settings.api_model,
-        ));
+        );
         return agent_wallet_chat(app_handle, wallet_request).await;
     }
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
@@ -1210,14 +1210,19 @@ pub async fn agent_openai_chat(
     .map_err(|error| format!("Agent API 后台任务失败：{}", error))?
 }
 
-fn resolve_wallet_agent_model(requested: Option<&str>, configured: &str) -> String {
+fn resolve_wallet_agent_model(requested: Option<&str>, configured: &str) -> Option<String> {
     let requested = requested.map(str::trim).filter(|value| !value.is_empty());
     let model = requested.unwrap_or_else(|| configured.trim());
     let normalized = normalize_api_model(model);
-    if normalized.is_empty() {
-        "unmind-agent".to_string()
+    if normalized.is_empty()
+        || matches!(
+            normalized.to_ascii_lowercase().as_str(),
+            "unmind-agent" | "auto" | "default" | "recommended"
+        )
+    {
+        None
     } else {
-        normalized
+        Some(normalized)
     }
 }
 
@@ -2200,13 +2205,14 @@ mod tests {
     fn wallet_agent_model_prefers_request_and_falls_back_safely() {
         assert_eq!(
             resolve_wallet_agent_model(Some(" gpt-5.6-sol "), "configured-model"),
-            "gpt-5.6-sol"
+            Some("gpt-5.6-sol".to_string())
         );
         assert_eq!(
             resolve_wallet_agent_model(None, " configured-model "),
-            "configured-model"
+            Some("configured-model".to_string())
         );
-        assert_eq!(resolve_wallet_agent_model(Some("  "), ""), "unmind-agent");
+        assert_eq!(resolve_wallet_agent_model(Some("  "), ""), None);
+        assert_eq!(resolve_wallet_agent_model(Some("unmind-agent"), ""), None);
     }
 
     #[test]

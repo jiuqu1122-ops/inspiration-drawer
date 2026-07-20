@@ -176,7 +176,7 @@ export type AgentThinkingStep = {
 
 export type AgentMessageType = 'text' | 'tool' | 'workflow_result';
 
-export type WorkflowResultStatus = 'success' | 'partial' | 'error';
+export type WorkflowResultStatus = 'running' | 'success' | 'partial' | 'error';
 
 export type WorkflowResultTextAsset = {
   nodeId: string;

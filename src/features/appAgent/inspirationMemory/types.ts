@@ -37,6 +37,7 @@ export interface DrawerSearchInspirationsInput {
   projectBrief: string | Record<string, unknown>;
   referenceRole?: InspirationReferenceRole;
   folderIds?: string[];
+  folderNames?: Record<string, string>;
   topK?: number;
 }
 
@@ -50,6 +51,8 @@ export interface InspirationCandidate {
   recommendedRole: InspirationReferenceRole;
   confidence: number;
   state: InspirationCandidateState;
+  folderId?: string;
+  folderName?: string;
   llmRanked?: boolean;
   llmRecommended?: boolean;
 }

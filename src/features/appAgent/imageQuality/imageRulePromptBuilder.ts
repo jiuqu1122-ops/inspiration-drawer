@@ -32,6 +32,55 @@ export type FinalImagePrompt = {
   ruleFragments: ImageRulePromptFragments;
 };
 
+export const CANVAS_AI_PROMPT_UTF8_BYTE_LIMIT = 48_000;
+const PROMPT_TRUNCATION_MARKER = '\n\n[中间上下文已按请求长度限制压缩]\n\n';
+const promptTextEncoder = new TextEncoder();
+
+export const getPromptUtf8ByteLength = (value: string) => promptTextEncoder.encode(value).byteLength;
+
+const takeUtf8Prefix = (value: string, byteLimit: number) => {
+  let usedBytes = 0;
+  const result: string[] = [];
+  for (const character of value) {
+    const characterBytes = getPromptUtf8ByteLength(character);
+    if (usedBytes + characterBytes > byteLimit) break;
+    result.push(character);
+    usedBytes += characterBytes;
+  }
+  return result.join('');
+};
+
+const takeUtf8Suffix = (value: string, byteLimit: number) => {
+  let usedBytes = 0;
+  const result: string[] = [];
+  const characters = Array.from(value);
+  for (let index = characters.length - 1; index >= 0; index -= 1) {
+    const character = characters[index] || '';
+    const characterBytes = getPromptUtf8ByteLength(character);
+    if (usedBytes + characterBytes > byteLimit) break;
+    result.push(character);
+    usedBytes += characterBytes;
+  }
+  return result.reverse().join('');
+};
+
+export const truncatePromptToUtf8ByteLimit = (
+  value: string,
+  byteLimit = CANVAS_AI_PROMPT_UTF8_BYTE_LIMIT,
+) => {
+  const text = String(value || '').trim();
+  if (!text || getPromptUtf8ByteLength(text) <= byteLimit) return text;
+  const markerBytes = getPromptUtf8ByteLength(PROMPT_TRUNCATION_MARKER);
+  const availableBytes = Math.max(0, byteLimit - markerBytes);
+  const prefixBytes = Math.floor(availableBytes * 0.65);
+  const suffixBytes = availableBytes - prefixBytes;
+  return [
+    takeUtf8Prefix(text, prefixBytes),
+    PROMPT_TRUNCATION_MARKER,
+    takeUtf8Suffix(text, suffixBytes),
+  ].join('');
+};
+
 const PRIORITY_REFERENCE_RULES: ImageRuleKey[] = [
   'product_consistency',
   'no_structure_drift',
@@ -88,15 +137,18 @@ export const buildFinalImagePrompt = (options: FinalImagePromptOptions): FinalIm
   const negativeRuleBlock = ruleFragments.negative.length > 0
     ? `Negative constraints:\n${ruleFragments.negative.map(fragment => `- ${fragment}`).join('\n')}`
     : '';
-  const prompt = compactTextParts([
+  const prompt = truncatePromptToUtf8ByteLimit(compactTextParts([
     ...baseParts,
     positiveRuleBlock,
     negativeRuleBlock,
-  ]).join('\n\n');
+  ]).join('\n\n'));
+  const positivePrompt = truncatePromptToUtf8ByteLimit(
+    compactTextParts([...baseParts, positiveRuleBlock]).join('\n\n'),
+  );
 
   return {
     prompt,
-    positivePrompt: compactTextParts([...baseParts, positiveRuleBlock]).join('\n\n'),
+    positivePrompt,
     negativeConstraints: ruleFragments.negative,
     ruleFragments,
   };

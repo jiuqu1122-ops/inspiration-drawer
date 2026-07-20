@@ -105,6 +105,6 @@ describe('built-in canvas workflows', () => {
       expect(node.ai?.presetPrompt).toMatch(/不调用外部搜索|不打开网页采集器/);
     });
     expect(workflow.nodes.find(node => node.id === INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.development)?.inputs)
-      .not.toContain(INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.concepts);
+      .toContain(INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.concepts);
   });
 });

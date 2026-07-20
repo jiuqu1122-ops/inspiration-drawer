@@ -100,7 +100,10 @@ import {
   resolveImageRuleState,
   type ImageRuleDefaultContext,
 } from './features/appAgent/imageQuality/imageRuleDefaults';
-import { buildFinalImagePrompt } from './features/appAgent/imageQuality/imageRulePromptBuilder';
+import {
+  buildFinalImagePrompt,
+  truncatePromptToUtf8ByteLimit,
+} from './features/appAgent/imageQuality/imageRulePromptBuilder';
 
 type VirtualDropStatus =
   | 'queued'
@@ -188,6 +191,7 @@ import {
   INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID,
   buildIndustrialDesignLocalInspirationContext,
   buildIndustrialDesignRuntimeContextText,
+  shouldTolerateIndustrialDesignDependencyFailure,
   type IndustrialDesignLocalInspirationContext,
 } from './features/workflows/industrialDesignFullProcessWorkflow';
 import {
@@ -2804,6 +2808,8 @@ const CANVAS_AI_PROMPT_PRESET_ADD_VALUE = '__canvas_ai_prompt_preset_add__';
 const CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE = '__canvas_ai_prompt_preset_manage__';
 const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
 const CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_hidden_builtin_prompt_presets';
+const CANVAS_TEXT_AGENT_SYSTEM_PROMPT_UTF8_BYTE_LIMIT = 12_000;
+const CANVAS_TEXT_AGENT_USER_PROMPT_UTF8_BYTE_LIMIT = 24_000;
 const CANVAS_WORKFLOW_SELECT_PLACEHOLDER = '__canvas_workflow_select__';
 const CANVAS_WORKFLOW_SAVE_SELECTION_VALUE = '__canvas_workflow_save_selection__';
 const CANVAS_WORKFLOW_MANAGE_VALUE = '__canvas_workflow_manage__';
@@ -15145,7 +15151,7 @@ function MainApp() {
       if ((inputItem.item.type !== 'text' && inputItem.item.type !== 'file') || inputItem.ai) return;
       const content = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
       if (!content) return;
-      const key = `${inputItem.id}:${content}`;
+      const key = content;
       if (seenTextKeys.has(key)) return;
       seenTextKeys.add(key);
       textInputs.push(content);
@@ -18199,6 +18205,7 @@ function MainApp() {
           prompt = finalPrompt.prompt || prompt;
         }
       }
+      prompt = truncatePromptToUtf8ByteLimit(prompt);
       const requestedCount = currentOutputs.length || clamp(Math.round(Number(targetAi.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
       const providerRuntime = (runtimeProvider: CanvasAiProvider) => {
         const runtimeKey = runtimeProvider === canvasAiProvider ? canvasAiApiKey.trim() : getStoredCanvasAiApiKey(runtimeProvider).trim();
@@ -19461,7 +19468,6 @@ function MainApp() {
     }
 
     let localInspirationContext: IndustrialDesignLocalInspirationContext | null = null;
-    let localInspirationCanvasNodes: Array<{ itemId: string; nodeId: string }> = [];
     let originalProjectRequest = '';
     if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID) {
       const connectedItems = workflowMaterialInputIds
@@ -19483,18 +19489,12 @@ function MainApp() {
       localInspirationContext = buildIndustrialDesignLocalInspirationContext(
         itemsRef.current,
         originalProjectRequest,
-        { excludeItemIds: explicitlyConnectedDrawerIds, topK: 8 },
+        {
+          excludeItemIds: explicitlyConnectedDrawerIds,
+          topK: 8,
+          folders: foldersRef.current,
+        },
       );
-
-      for (const reference of localInspirationContext.references) {
-        const nodeId = await createDrawerImageCanvasNode(reference.itemId, undefined, {
-          reuseExisting: true,
-          select: false,
-          toast: false,
-          label: '工业设计全流程：接入本地灵感',
-        });
-        if (nodeId) localInspirationCanvasNodes.push({ itemId: reference.itemId, nodeId });
-      }
     }
 
     const runtime = instantiateCanvasWorkflowTemplateItems(workflow, { x: moduleNode.x, y: moduleNode.y }, workflowMaterialInputIds);
@@ -19510,7 +19510,6 @@ function MainApp() {
         connectedInputLabels: connectedInputSummary,
         localInspirationContext,
       });
-      const referenceNodeByItemId = new Map(localInspirationCanvasNodes.map(reference => [reference.itemId, reference.nodeId]));
       const designReferencePlan = {
         references: localInspirationContext.references.map(reference => ({
           itemId: reference.itemId,
@@ -19533,28 +19532,10 @@ function MainApp() {
           };
         }
         if (item.ai?.type !== 'image-generator') return item;
-
-        const localReferenceInputs = localInspirationContext?.references
-          .map(reference => referenceNodeByItemId.get(reference.itemId) || '')
-          .filter(Boolean) || [];
-        const localReferenceRoles = (localInspirationContext?.references || []).flatMap(reference => {
-          const nodeId = referenceNodeByItemId.get(reference.itemId);
-          if (!nodeId) return [];
-          return [{
-            nodeId,
-            role: reference.recommendedRole === 'SUBJECT_REF' ? 'SUBJECT_REF' as const : 'STYLE_REF' as const,
-          }];
-        });
-        const referenceRoles = Array.from(new Map([
-          ...(item.ai.referenceRoles || []),
-          ...localReferenceRoles,
-        ].map(reference => [reference.nodeId, reference])).values());
         return {
           ...item,
-          inputs: Array.from(new Set([...(item.inputs || []), ...localReferenceInputs])),
           ai: {
             ...item.ai,
-            ...(referenceRoles.length > 0 ? { referenceRoles } : {}),
             skillMeta: {
               ...(item.ai.skillMeta || {}),
               originalRequest: originalProjectRequest || undefined,
@@ -19615,6 +19596,16 @@ function MainApp() {
       });
       dependencyMap.set(nodeId, dependencies);
     });
+    const templateNodeIdByRuntimeId = new Map(Array.from(runtime.idMap.entries()).map(
+      ([templateNodeId, runtimeNodeId]) => [runtimeNodeId, templateNodeId],
+    ));
+    const isToleratedDependencyFailure = (nodeId: string, dependencyId: string) => (
+      workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID
+      && shouldTolerateIndustrialDesignDependencyFailure(
+        templateNodeIdByRuntimeId.get(nodeId) || nodeId,
+        templateNodeIdByRuntimeId.get(dependencyId) || dependencyId,
+      )
+    );
     const failedIds = new Set<string>();
     const skippedIds = new Set<string>();
     const runtimeErrors = new Map<string, string>();
@@ -19634,6 +19625,16 @@ function MainApp() {
       const summary = getCanvasAiErrorSummary(rawMessage);
       runtimeErrors.set(nodeId, summary);
       return summary;
+    };
+    const getRuntimeFailureSummary = () => {
+      if (failedIds.size <= 0) return '';
+      const firstFailedId = runOrder.find(nodeId => (
+        runStatus.get(nodeId) === 'failed' && runtimeErrors.has(nodeId)
+      ));
+      const firstFailure = firstFailedId
+        ? `${getRuntimeNodeLabel(firstFailedId)}：${runtimeErrors.get(firstFailedId)}`
+        : '';
+      return `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}${firstFailure ? `；首个错误：${firstFailure}` : ''}`;
     };
 
     const getRuntimeSourceItems = () => [
@@ -19713,6 +19714,14 @@ function MainApp() {
           || item.originalUrl
           || ''
         : '';
+      const getDrawerReferenceName = (item?: BufferItem) => {
+        if (!item) return '';
+        const name = String(item.name || '').trim();
+        const summary = String(item.inspirationProfile?.summary || '').trim();
+        return !name || /^(?:ai\s*generated|generated\s*image|ai\s*生成)(?:\s*#?\d+)?$/i.test(name)
+          ? summary || name
+          : name;
+      };
       const getCanvasReferencePreview = (item?: CanvasImageItem) => {
         if (!item) return '';
         const generatedOutput = getCanvasAiSuccessfulOutputs(item)[0];
@@ -19740,7 +19749,7 @@ function MainApp() {
             id: `${runtimeItem.id}:planned-reference:${itemId}:${index}`,
             nodeId: canvasItem?.id,
             itemId,
-            name: drawerItem?.name || canvasItem?.item.name || `灵感参考 ${index + 1}`,
+            name: getDrawerReferenceName(drawerItem) || canvasItem?.item.name || `灵感参考 ${index + 1}`,
             thumbnail: getDrawerReferencePreview(drawerItem) || getCanvasReferencePreview(canvasItem),
             role: String(reference.role || reference.referenceRole || '').trim() || undefined,
             reason: String(reference.reason || '').trim() || undefined,
@@ -19792,6 +19801,11 @@ function MainApp() {
       workflowResultPublisherRef.current(result);
       return result;
     };
+    const publishWorkflowProgress = () => publishWorkflowResult(
+      'running',
+      collectModuleOutputs('working'),
+      getRuntimeFailureSummary() || undefined,
+    );
 
     updateCanvasAiGeneratorData(targetId, {
       status: 'working',
@@ -19855,6 +19869,7 @@ function MainApp() {
             : item
         ));
       }
+      publishWorkflowProgress();
     };
     const runRuntimeNode = async (nodeId: string) => {
       const current = runtimeItems.find(item => item.id === nodeId);
@@ -19862,6 +19877,7 @@ function MainApp() {
         runStatus.set(nodeId, 'failed');
         failedIds.add(nodeId);
         recordRuntimeNodeFailure(nodeId, '内部节点不存在');
+        publishWorkflowProgress();
         return;
       }
       runStatus.set(nodeId, 'running');
@@ -19896,6 +19912,7 @@ function MainApp() {
               error: undefined,
               generatedAt: Date.now(),
             });
+            publishWorkflowProgress();
           } else {
             runStatus.set(nodeId, 'failed');
             failedIds.add(nodeId);
@@ -19905,6 +19922,7 @@ function MainApp() {
                 ? { ...item, item: { ...item.item, remark: `运行失败：${summary}` } }
                 : item
             ));
+            publishWorkflowProgress();
           }
         } catch (error) {
           console.warn('Workflow text node failed', error);
@@ -19916,16 +19934,20 @@ function MainApp() {
               ? { ...item, item: { ...item.item, remark: `运行失败：${summary}` } }
               : item
           ));
+          publishWorkflowProgress();
         }
         return;
       }
       if (current.ai?.type !== 'image-generator') {
         runStatus.set(nodeId, 'success');
+        completedCount += 1;
+        publishWorkflowProgress();
         return;
       }
       if (getCanvasAiSuccessfulOutputs(current).length > 0) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
+        publishWorkflowProgress();
         return;
       }
       await runCanvasAiGeneratorTarget(current, {
@@ -19945,6 +19967,7 @@ function MainApp() {
           error: undefined,
           generatedAt: Date.now(),
         });
+        publishWorkflowProgress();
       } else {
         runStatus.set(nodeId, 'failed');
         failedIds.add(nodeId);
@@ -19954,6 +19977,7 @@ function MainApp() {
             || latest?.ai?.outputs?.find(output => output.status === 'error' && output.error)?.error
             || '图片生成节点没有返回可用结果'
         );
+        publishWorkflowProgress();
       }
     };
 
@@ -19964,13 +19988,19 @@ function MainApp() {
         const dependencies = dependencyMap.get(nodeId) || [];
         if (dependencies.some(inputId => {
           const status = runStatus.get(inputId);
-          return status === 'failed' || status === 'skipped';
+          return (status === 'failed' || status === 'skipped')
+            && !isToleratedDependencyFailure(nodeId, inputId);
         })) {
           markRuntimeNodeSkipped(nodeId);
           changed = true;
           continue;
         }
-        if (dependencies.every(inputId => runStatus.get(inputId) === 'success')) {
+        if (dependencies.every(inputId => {
+          const status = runStatus.get(inputId);
+          return status === 'success'
+            || ((status === 'failed' || status === 'skipped')
+              && isToleratedDependencyFailure(nodeId, inputId));
+        })) {
           runStatus.set(nodeId, 'ready');
           changed = true;
         }
@@ -19989,15 +20019,7 @@ function MainApp() {
       }
     }
 
-    const firstFailedId = runOrder.find(nodeId => (
-      runStatus.get(nodeId) === 'failed' && runtimeErrors.has(nodeId)
-    ));
-    const firstFailure = firstFailedId
-      ? `${getRuntimeNodeLabel(firstFailedId)}：${runtimeErrors.get(firstFailedId)}`
-      : '';
-    const workflowError = failedIds.size > 0
-      ? `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}${firstFailure ? `；首个错误：${firstFailure}` : ''}`
-      : '部分终端输出没有生成';
+    const workflowError = getRuntimeFailureSummary() || '部分终端输出没有生成';
     const finalOutputs = collectModuleOutputs(
       'error',
       failedIds.size > 0 ? workflowError : '没有生成这个输出'
@@ -25647,6 +25669,10 @@ useEffect(() => {
   const retrieveDrawerInspirationCandidates = async (
     input: DrawerSearchInspirationsInput,
   ): Promise<InspirationCandidate[]> => {
+    const folderNames = Object.fromEntries(foldersRef.current.map(folder => [
+      folder.id,
+      getDrawerFolderPathName(foldersRef.current, folder.id) || folder.name,
+    ]));
     const cacheKey = JSON.stringify({
       query: input.query.trim().toLowerCase(),
       projectBrief: input.projectBrief,
@@ -25654,11 +25680,13 @@ useEffect(() => {
       folderIds: [...(input.folderIds || [])].sort(),
       topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
       itemCount: itemsRef.current.length,
+      folderNames,
     });
     const cached = inspirationRetrievalCacheRef.current.get(cacheKey);
     if (cached && Date.now() - cached.createdAt < 5 * 60 * 1000) return cached.candidates;
     const candidates = searchDrawerInspirations(itemsRef.current, {
       ...input,
+      folderNames,
       topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
     });
     if (!shouldRankInspirationCandidates(candidates)) {
@@ -28161,7 +28189,7 @@ useEffect(() => {
       ? ''
       : canvasAgent.settings.systemPrompt.trim();
     const designAgentPrompt = buildDesignAgentSystemPrompt(latestTarget.designAgentConfig);
-    const systemPrompt = [
+    const systemPrompt = truncatePromptToUtf8ByteLimit([
       customAgentPrompt,
       [
         '你是画布中的 Design Agent Node 执行器。',
@@ -28170,19 +28198,27 @@ useEffect(() => {
         '如果参考图存在，请把它们作为视觉依据；如果没有参考图，就只根据文字需求完成。',
       ].join('\n'),
       designAgentPrompt,
-    ].filter(Boolean).join('\n\n');
+    ].filter(Boolean).join('\n\n'), CANVAS_TEXT_AGENT_SYSTEM_PROMPT_UTF8_BYTE_LIMIT);
     const promptParts = [
       '当前文字节点需求：\n' + userRequest,
       upstreamTexts.length > 0 ? upstreamTexts.join('\n\n') : '',
     ].filter(Boolean);
     const requestId = 'canvas_text_agent_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    const selectedAgentModel = agentModelRef.current.trim();
+    const requestedAgentModel = /^(?:unmind-agent|auto|default|recommended)$/i.test(selectedAgentModel)
+      ? undefined
+      : selectedAgentModel || undefined;
+    const userPrompt = truncatePromptToUtf8ByteLimit(
+      promptParts.join('\n\n'),
+      CANVAS_TEXT_AGENT_USER_PROMPT_UTF8_BYTE_LIMIT,
+    );
     const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
       request: {
         requestId,
-        model: agentModelRef.current.trim() || undefined,
+        model: requestedAgentModel,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: buildCanvasTextAgentUserContent(promptParts.join('\n\n'), preparedReferences) },
+          { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences) },
         ],
       },
     });

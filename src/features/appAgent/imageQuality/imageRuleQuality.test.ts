@@ -6,7 +6,11 @@ import type { WorkflowRecipeDraft } from '../workflows/workflowRecipeTypes';
 import { ImageRuleSwitchPanel } from '../../canvas/components/ImageRuleSwitchPanel';
 import { CANVAS_AGENT_ACTION_SCHEMA, CANVAS_AGENT_TOOL_DEFINITIONS } from '../../canvasAgentTools';
 import { getDefaultImageRuleState, getRecommendedImageRuleState } from './imageRuleDefaults';
-import { buildFinalImagePrompt } from './imageRulePromptBuilder';
+import {
+  CANVAS_AI_PROMPT_UTF8_BYTE_LIMIT,
+  buildFinalImagePrompt,
+  getPromptUtf8ByteLength,
+} from './imageRulePromptBuilder';
 
 describe('image rule quality', () => {
   it('enables product consistency and random text protection by default', () => {
@@ -63,6 +67,21 @@ describe('image rule quality', () => {
     expect(finalPrompt.prompt).toContain('Image quality rules:');
     expect(finalPrompt.negativeConstraints.some(item => item.includes('未请求的标题'))).toBe(false);
     expect(finalPrompt.prompt).not.toContain('未请求的标题');
+  });
+
+  it('caps long Chinese prompts by UTF-8 bytes while preserving generation constraints', () => {
+    const finalPrompt = buildFinalImagePrompt({
+      textInputs: [`设计分析开头：${'工业设计上下文'.repeat(12_000)}`],
+      presetPrompt: '必须生成带支架的桌面投影仪。',
+      rules: { no_random_text: true },
+      nodeType: { mediaType: 'image' },
+    });
+
+    expect(getPromptUtf8ByteLength(finalPrompt.prompt)).toBeLessThanOrEqual(CANVAS_AI_PROMPT_UTF8_BYTE_LIMIT);
+    expect(finalPrompt.prompt).toContain('设计分析开头');
+    expect(finalPrompt.prompt).toContain('必须生成带支架的桌面投影仪');
+    expect(finalPrompt.prompt).toContain('Negative constraints:');
+    expect(finalPrompt.prompt).toContain('中间上下文已按请求长度限制压缩');
   });
 
   it('renders the image rule switch panel with enabled rule switches', () => {

@@ -5,6 +5,7 @@ import {
   Image as ImageIcon,
   Layers3,
   Lightbulb,
+  LoaderCircle,
   Sparkles,
 } from 'lucide-react';
 import type { WorkflowResultCardData, WorkflowResultStage } from '../features/agentModel';
@@ -18,6 +19,10 @@ const STATUS_STYLE: Record<WorkflowResultCardData['status'], {
   label: string;
   badge: string;
 }> = {
+  running: {
+    label: '分析中',
+    badge: 'bg-blue-50 text-blue-600 dark:bg-blue-400/10 dark:text-blue-200',
+  },
   success: {
     label: '已完成',
     badge: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-400/10 dark:text-emerald-200',
@@ -55,6 +60,7 @@ const TextAsset = ({ title, content }: { title: string; content: string }) => (
 
 export function WorkflowResultCard({ result, compact = false }: WorkflowResultCardProps) {
   const status = STATUS_STYLE[result.status];
+  const isRunning = result.status === 'running';
   const columns = compact ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3';
   return (
     <article className="overflow-hidden rounded-[18px] border border-blue-100/90 bg-gradient-to-br from-white via-blue-50/35 to-violet-50/30 shadow-[0_10px_28px_rgba(37,99,235,0.10)] dark:border-blue-300/15 dark:from-[#202124] dark:via-blue-950/20 dark:to-violet-950/15">
@@ -67,7 +73,8 @@ export function WorkflowResultCard({ result, compact = false }: WorkflowResultCa
             <h3 className="min-w-0 flex-1 truncate text-[11px] font-black text-stone-800 dark:text-white/88">
               {result.title || result.workflowName}
             </h3>
-            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-bold ${status.badge}`}>
+            <span className={`flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[8px] font-bold ${status.badge}`}>
+              {isRunning && <LoaderCircle className="h-2.5 w-2.5 animate-spin" />}
               {status.label}
             </span>
           </div>
@@ -75,6 +82,12 @@ export function WorkflowResultCard({ result, compact = false }: WorkflowResultCa
           <div className="mt-1 text-[8px] text-stone-400 dark:text-white/30">
             完成 {result.completedSteps}/{result.totalSteps} 个步骤
           </div>
+          {isRunning && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-[8px] font-medium text-blue-500 dark:text-blue-200/75">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+              正在分析下一节点，结果会实时更新
+            </div>
+          )}
         </div>
       </header>
 

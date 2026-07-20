@@ -1,7 +1,60 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorkflowResultCardData, normalizeWorkflowResultCardData } from './workflowResult';
+import {
+  buildWorkflowResultCardData,
+  normalizeWorkflowResultCardData,
+  upsertWorkflowResultMessage,
+} from './workflowResult';
 
 describe('Workflow Result Card data', () => {
+  it('updates the existing workflow result message as nodes complete', () => {
+    const firstResult = buildWorkflowResultCardData({
+      workflowId: 'workflow',
+      workflowNodeId: 'workflow-node',
+      workflowName: '实时工作流',
+      status: 'running',
+      completedSteps: 1,
+      totalSteps: 3,
+      textAssets: [{ nodeId: 'brief', title: '需求拆解', content: '第一步完成。' }],
+    });
+    const firstMessage = {
+      id: 'result-message',
+      role: 'agent' as const,
+      type: 'workflow_result' as const,
+      content: firstResult.summary,
+      timestamp: 100,
+      status: 'completed' as const,
+      workflowResult: firstResult,
+    };
+    const secondResult = buildWorkflowResultCardData({
+      workflowId: 'workflow',
+      workflowNodeId: 'workflow-node',
+      workflowName: '实时工作流',
+      status: 'running',
+      completedSteps: 2,
+      totalSteps: 3,
+      textAssets: [
+        { nodeId: 'brief', title: '需求拆解', content: '第一步完成。' },
+        { nodeId: 'strategy', title: '设计策略', content: '第二步完成。' },
+      ],
+    });
+    const updated = upsertWorkflowResultMessage([firstMessage], {
+      ...firstMessage,
+      id: 'new-result-message',
+      timestamp: 200,
+      content: secondResult.summary,
+      workflowResult: secondResult,
+    });
+
+    expect(updated).toHaveLength(1);
+    expect(updated[0]?.id).toBe('result-message');
+    expect(updated[0]?.timestamp).toBe(100);
+    expect(updated[0]?.workflowResult?.completedSteps).toBe(2);
+    expect(updated[0]?.workflowResult?.analysisResults).toHaveLength(2);
+    expect(updated[0]?.workflowResult?.status).toBe('running');
+    expect(updated[0]?.workflowResult?.summary).toContain('分析中 2/3 个步骤');
+    expect(updated[0]?.workflowResult?.nextSteps).not.toContain('检查失败或缺失的节点后重新运行工作流');
+  });
+
   it('classifies DesignStrategy and keeps the remaining text outputs as analysis assets', () => {
     const result = buildWorkflowResultCardData({
       workflowId: 'industrial-design',

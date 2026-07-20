@@ -16,7 +16,48 @@ const ROLE_TERMS: Record<InspirationReferenceRole, string[]> = {
   SUBJECT_REF: ['subject', 'product', 'identity', '主体', '产品', '一致性', '品类', '结构保持'],
 };
 
+export const inferInspirationReferenceRoleFromFolderName = (
+  value?: string | null,
+): InspirationReferenceRole | undefined => {
+  const name = String(value || '').trim();
+  if (!name) return undefined;
+  if (/(?:造型|形态|轮廓|外观|体块|比例|form|shape|silhouette)/i.test(name)) return 'FORM_REF';
+  if (/(?:cmf|色彩|颜色|配色|材质|材料|表面|工艺|color|material|finish)/i.test(name)) return 'CMF_REF';
+  if (/(?:结构|机构|装配|构造|工程|structure|mechanism|assembly)/i.test(name)) return 'STRUCTURE_REF';
+  if (/(?:交互|操控|按键|旋钮|界面|interaction|control|ui)/i.test(name)) return 'INTERACTION_REF';
+  if (/(?:氛围|场景|情绪|风格|意象|mood|scene|style)/i.test(name)) return 'MOOD_REF';
+  if (/(?:产品参考|品类参考|竞品|product\s*ref|subject\s*ref)/i.test(name)) return 'SUBJECT_REF';
+  return undefined;
+};
+
 const normalize = (value: unknown) => String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const SEARCH_STOP_WORDS = new Set([
+  '一个', '一些', '当前', '帮我', '我们', '需要', '进行', '设计', '产品', '用户', '使用', '参考', '方案',
+  '设备', '素材', '图片', '图像', '生成', '其他', '视觉', '视觉设计',
+  'the', 'and', 'for', 'with', 'from', 'this', 'that',
+]);
+type SearchSegmenter = {
+  segment: (input: string) => Iterable<{ segment: string; isWordLike?: boolean }>;
+};
+const SegmenterCtor = (Intl as unknown as {
+  Segmenter?: new (locale?: string, options?: { granularity?: string }) => SearchSegmenter;
+}).Segmenter;
+const searchSegmenter = SegmenterCtor
+  ? new SegmenterCtor('zh-CN', { granularity: 'word' })
+  : null;
+
+export const tokenizeDrawerSearchText = (value: unknown) => {
+  const text = normalize(value);
+  const wordSegments = searchSegmenter
+    ? Array.from(searchSegmenter.segment(text))
+      .filter(segment => segment.isWordLike !== false)
+      .map(segment => normalize(segment.segment))
+    : [];
+  const segments = [...text.split(' '), ...wordSegments];
+  return Array.from(new Set(segments
+    .filter(segment => segment.length > 1 && !SEARCH_STOP_WORDS.has(segment))))
+    .slice(0, 96);
+};
 const compact = (value: unknown, max = 120) => {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max)}…` : text;
@@ -135,7 +176,7 @@ export function searchDrawerInspirations(
   const briefText = typeof input.projectBrief === 'string'
     ? input.projectBrief
     : JSON.stringify(input.projectBrief || {});
-  const queryTokens = Array.from(new Set(normalize(`${input.query} ${briefText}`).split(' ').filter(token => token.length > 1)));
+  const queryTokens = tokenizeDrawerSearchText(`${input.query} ${briefText}`);
   const folderIds = new Set((input.folderIds || []).filter(Boolean));
   const topK = Math.max(1, Math.min(8, Math.round(input.topK || 8)));
 
@@ -144,16 +185,23 @@ export function searchDrawerInspirations(
     .filter(item => folderIds.size === 0 || (!!item.folderId && folderIds.has(item.folderId)))
     .map(item => {
       const profile = getInspirationProfile(item);
+      const folderName = item.folderId ? String(input.folderNames?.[item.folderId] || '').trim() : '';
+      const folderRole = inferInspirationReferenceRoleFromFolderName(folderName);
       const byRole = profileFeatures(profile);
       const roleScores = Object.fromEntries((Object.keys(byRole) as InspirationReferenceRole[]).map(role => {
         const featureText = normalize(byRole[role].join(' '));
         const lexical = queryTokens.filter(token => featureText.includes(token)).length;
         return [role, lexical];
       })) as Record<InspirationReferenceRole, number>;
-      const recommendedRole = inferRole(`${input.query} ${briefText}`, roleScores, input.referenceRole);
+      const recommendedRole = inferRole(
+        `${input.query} ${briefText}`,
+        roleScores,
+        input.referenceRole || folderRole,
+      );
       const allText = normalize([
         item.name,
         item.content,
+        folderName,
         profile.summary,
         profile.category,
         ...profile.userTags,
@@ -163,21 +211,41 @@ export function searchDrawerInspirations(
       const matchedTokens = queryTokens.filter(token => allText.includes(token));
       const roleFeatures = byRole[recommendedRole].filter(feature => {
         const normalizedFeature = normalize(feature);
-        return queryTokens.some(token => normalizedFeature.includes(token) || token.includes(normalizedFeature));
+        return normalizedFeature.length > 1
+          && queryTokens.some(token => normalizedFeature.includes(token) || token.includes(normalizedFeature));
       });
-      const matchedFeatures = Array.from(new Set([...roleFeatures, ...matchedTokens])).slice(0, 6);
+      const normalizedFolderName = normalize(folderName);
+      const folderMatchedTokens = folderName
+        ? queryTokens.filter(token => normalizedFolderName.includes(token) || token.includes(normalizedFolderName))
+        : [];
+      const folderEvidence = folderName && (folderRole || folderMatchedTokens.length > 0)
+        ? [`参考文件夹：${folderName}`]
+        : [];
+      const matchedFeatures = Array.from(new Set([
+        ...roleFeatures,
+        ...matchedTokens,
+        ...folderEvidence,
+      ])).slice(0, 6);
       const metadataBonus = item.inspirationProfile ? 2 : 0;
-      const score = matchedTokens.length + roleScores[recommendedRole] * 1.5 + metadataBonus;
+      const folderRoleBonus = folderRole ? 1 : 0;
+      const folderSemanticBonus = folderMatchedTokens.length > 0 ? 2 : 0;
+      const score = matchedTokens.length
+        + roleScores[recommendedRole] * 1.5
+        + metadataBonus
+        + folderRoleBonus
+        + folderSemanticBonus;
       const confidence = Math.max(0.18, Math.min(0.98, 0.3 + score * 0.08));
       const featureReason = matchedFeatures.length > 0 ? matchedFeatures.slice(0, 3).join('、') : profile.summary;
       return {
         itemId: item.id,
         summary: compact(profile.summary || item.name || item.content),
-        reason: `${featureReason || item.name || '该素材'}与项目需求相关，建议作为 ${recommendedRole}。`,
+        reason: `${folderName ? `来自“${folderName}”；` : ''}${featureReason || item.name || '该素材'}与项目需求相关，建议作为 ${recommendedRole}。`,
         matchedFeatures,
         recommendedRole,
         confidence: Number(confidence.toFixed(2)),
         state: getInspirationCandidateState(confidence),
+        folderId: item.folderId,
+        folderName: folderName || undefined,
         score,
       };
     })

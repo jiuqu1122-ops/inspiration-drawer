@@ -1,5 +1,6 @@
-import type { BufferItem } from '../../types';
+import type { BufferItem, Folder } from '../../types';
 import type { CanvasWorkflowTemplate } from '../canvasTemplates';
+import { getDrawerFolderPathName } from '../folderModel';
 import { searchDrawerInspirations } from '../appAgent/inspirationMemory/drawerSemanticRetrieval';
 import type { InspirationCandidate } from '../appAgent/inspirationMemory/types';
 import { extractProjectBrief } from '../appAgent/skills/creativeProductDesignSkill';
@@ -21,6 +22,15 @@ export const INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS = {
   delivery: 'industrial_design_delivery',
 } as const;
 
+export const shouldTolerateIndustrialDesignDependencyFailure = (
+  nodeId: string,
+  dependencyId: string,
+) => dependencyId === INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.review
+  && (
+    nodeId === INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.development
+    || nodeId === INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.delivery
+  );
+
 export type IndustrialDesignLocalInspirationContext = {
   references: InspirationCandidate[];
   metadataText: string;
@@ -35,12 +45,15 @@ const compact = (value: unknown, max = 240) => {
 /**
  * Level 0/1 retrieval for the built-in workflow. This deliberately calls the
  * existing metadata search directly: it does not analyze images, invoke an LLM,
- * browse the web, or promote medium-confidence candidates automatically.
+ * browse the web, or use drawer images as hidden visual inputs. Relevant
+ * medium-confidence matches with at least two concrete feature hits are safe
+ * here because only their metadata is passed downstream and the original image
+ * is never attached automatically.
  */
 export const buildIndustrialDesignLocalInspirationContext = (
   items: BufferItem[],
   projectRequest: string,
-  options: { excludeItemIds?: string[]; topK?: number } = {},
+  options: { excludeItemIds?: string[]; topK?: number; folders?: Folder[] } = {},
 ): IndustrialDesignLocalInspirationContext => {
   const query = compact(projectRequest, 1_200);
   const excludedIds = new Set((options.excludeItemIds || []).map(String).filter(Boolean));
@@ -48,12 +61,35 @@ export const buildIndustrialDesignLocalInspirationContext = (
     ? searchDrawerInspirations(items.filter(item => !excludedIds.has(item.id)), {
       query,
       projectBrief: { ...extractProjectBrief(query) } as Record<string, unknown>,
+      folderNames: Object.fromEntries((options.folders || []).map(folder => [
+        folder.id,
+        getDrawerFolderPathName(options.folders || [], folder.id) || folder.name,
+      ])),
       topK: Math.min(8, Math.max(1, Number(options.topK) || 8)),
     })
     : [];
-  const references = candidates
-    .filter(candidate => candidate.state === 'selected' && !excludedIds.has(candidate.itemId))
-    .slice(0, 4);
+  const eligibleCandidates = candidates
+    .filter(candidate => (
+      candidate.state === 'selected'
+      || (candidate.state === 'candidate' && candidate.matchedFeatures.length >= 2)
+    ))
+    .filter(candidate => !excludedIds.has(candidate.itemId));
+  const references: InspirationCandidate[] = [];
+  const selectedIds = new Set<string>();
+  const selectedRoles = new Set<string>();
+  for (const candidate of eligibleCandidates) {
+    if (selectedRoles.has(candidate.recommendedRole)) continue;
+    references.push(candidate);
+    selectedIds.add(candidate.itemId);
+    selectedRoles.add(candidate.recommendedRole);
+    if (references.length >= 4) break;
+  }
+  for (const candidate of eligibleCandidates) {
+    if (references.length >= 4) break;
+    if (selectedIds.has(candidate.itemId)) continue;
+    references.push(candidate);
+    selectedIds.add(candidate.itemId);
+  }
 
   if (references.length === 0) {
     return {
@@ -71,9 +107,10 @@ export const buildIndustrialDesignLocalInspirationContext = (
     references,
     usedExtraReferences: true,
     metadataText: [
-      '本地灵感参考（仅来自抽屉已有 metadata / InspirationProfile，未重新分析图片）：',
+      '本地灵感参考（仅来自抽屉已有 metadata / InspirationProfile，未重新分析图片，也未把原图接入生成节点）：',
       ...references.map((reference, index) => [
         `${index + 1}. itemId: ${reference.itemId}`,
+        reference.folderName ? `Folder: ${reference.folderName}` : '',
         `Role: ${reference.recommendedRole}`,
         `Summary: ${compact(reference.summary, 180)}`,
         reference.matchedFeatures.length > 0
@@ -81,7 +118,8 @@ export const buildIndustrialDesignLocalInspirationContext = (
           : '',
         `Reason: ${compact(reference.reason, 220)}`,
       ].filter(Boolean).join('\n')),
-      '只迁移上述有证据的设计原则，不复制具体产品；不得补充 metadata 中不存在的品牌、型号或市场事实。',
+      '只迁移上述有证据的设计原则，不复制具体产品；这些条目不是视觉上游，只有用户在画布中显式连线的图片才是视觉参考。',
+      '不得补充 metadata 中不存在的品牌、型号或市场事实。',
     ].join('\n\n'),
   };
 };
@@ -103,6 +141,7 @@ export const buildIndustrialDesignRuntimeContextText = (input: {
 
 const LOCAL_ONLY_POLICY = `资料边界（必须遵守）：
 - 只使用用户原始需求、已连接的产品参考图、当前画布输入，以及上游明确提供的本地灵感 metadata。
+- 抽屉检索结果只作为 metadata 参考线索，不等于原图视觉输入；只有画布中显式连接的图片可以作为视觉上游。
 - 不调用外部搜索，不打开网页采集器，不要求补做全库图片分析；已有 InspirationProfile 直接复用。
 - 不虚构竞品、品牌、型号、销量、价格、趋势或市场统计；缺少证据时标记“未知/待确认”。
 - 如果上游写有“${INDUSTRIAL_DESIGN_FULL_PROCESS_NO_EXTRA_REFERENCE}”，必须保留这个事实，并直接依据需求和产品参考图继续。`;
@@ -154,7 +193,7 @@ ${LOCAL_ONLY_POLICY}`;
 
 const CONCEPT_GENERATION_PROMPT = `生成工业设计“概念方向探索板”。
 
-严格执行上游 DesignBrief、ResearchReport 与 DesignStrategy。连接的用户产品图是 SUBJECT_REF；本地灵感图只能按照 ResearchReport 中的角色贡献指定特征，禁止融合成拼贴或复制某个现有产品。
+严格执行上游 DesignBrief、ResearchReport 与 DesignStrategy。连接的用户产品图是 SUBJECT_REF；本地灵感 metadata 只能按照 ResearchReport 中的角色贡献指定特征，禁止把未连接的抽屉图片当作视觉输入，也禁止融合成拼贴或复制某个现有产品。
 
 输出一张 16:9 横版工业设计概念板，在同一画布中清楚展示 3 个差异化方向：
 - 每个方向拥有不同的轮廓架构、体块组织和功能分区；去掉颜色后仍可区分。
@@ -180,7 +219,8 @@ ${LOCAL_ONLY_POLICY}`;
 
 const DEVELOPMENT_PROMPT = `生成工业设计“方案深化板”。
 
-把上游概念探索图作为 BASE/主视觉依据，严格执行 DesignReview 选中的方向和修改优先级；用户产品参考图用于保持品类、功能与必须保留项，本地灵感图仅按已分配角色提供局部原则。
+把上游概念探索图作为 BASE/主视觉依据，严格执行 DesignReview 选中的方向和修改优先级；用户产品参考图用于保持品类、功能与必须保留项，本地灵感 metadata 仅按已分配角色提供局部原则。
+如果 DesignReview 因超时或渠道故障不可用，必须根据 DesignStrategy 与概念探索图独立选择完成度最高、最符合需求的方向继续深化，不得停止生成。
 
 输出一张精致的 16:9 横版四分区工业设计展示板：
 - 左上：最大权重的最终三季度主视图；
@@ -195,6 +235,7 @@ ${LOCAL_ONLY_POLICY}`;
 const DELIVERY_PROMPT = `执行工业设计全流程的“交付整理”阶段。
 
 把上游 DesignBrief、ResearchReport、DesignStrategy、DesignReview 和最终深化图整理成可复制交付的 Markdown Document，包含：
+如果 DesignReview 不可用但方案深化图已生成，以 DesignStrategy 和方案深化图为准继续交付，并明确标注评审环节使用了自动降级。
 1. 项目目标与需求摘要；
 2. 资料边界与参考使用情况；
 3. Design Reference Plan（itemId、role、reason；没有时写“${INDUSTRIAL_DESIGN_FULL_PROCESS_NO_EXTRA_REFERENCE}”）；
@@ -235,7 +276,7 @@ export const INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW:
           type: 'text',
           content: '项目上下文将在运行时由用户需求、已连接画布素材与本地灵感 metadata 组成。',
           name: '项目需求与本地参考',
-          remark: '可连接需求文字、用户产品图和当前画布相关图片；高置信度抽屉参考会在运行前本地接入',
+          remark: '可连接需求文字、用户产品图和当前画布相关图片；抽屉参考仅以 metadata 列入参考计划，不会自动添加图片节点',
           createdAt: 0,
           isQuickAccess: false,
         },
@@ -409,6 +450,7 @@ export const INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW:
           isQuickAccess: false,
         },
         inputs: [
+          INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.concepts,
           INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.review,
           INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.references,
           INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.requirements,

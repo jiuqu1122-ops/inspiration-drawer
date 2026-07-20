@@ -593,8 +593,20 @@ pub async fn generate_cloud_images(
     if client_request_id.len() < 8 || client_request_id.len() > 128 {
         return Err("invalid_request: 生图请求 ID 无效".to_string());
     }
-    if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
-        return Err("invalid_request: 生图模型或提示词无效".to_string());
+    if model.is_empty() {
+        return Err("invalid_request: 生图模型为空".to_string());
+    }
+    if model.len() > 200 {
+        return Err("invalid_request: 生图模型名称过长".to_string());
+    }
+    if prompt.is_empty() {
+        return Err("invalid_request: 生图提示词为空".to_string());
+    }
+    if prompt.len() > 50_000 {
+        return Err(format!(
+            "invalid_request: 生图提示词过长（UTF-8 {} / 50000 字节）",
+            prompt.len()
+        ));
     }
     if !(1..=4).contains(&request.count) || request.input_images.len() > 8 {
         return Err("invalid_request: 生图数量或参考图数量无效".to_string());

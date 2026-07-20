@@ -70,6 +70,7 @@ import {
   writeActiveAgentConversationId,
   writeAgentConversations,
 } from './agentStorage';
+import { upsertWorkflowResultMessage } from './workflowResult';
 
 type RuntimeOptions = {
   getContext: () => AgentCanvasContext;
@@ -1005,14 +1006,18 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       type: 'workflow_result',
       content: result.summary,
       timestamp,
-      status: result.status === 'error' ? 'error' : 'completed',
+      status: result.status === 'running'
+        ? 'streaming'
+        : result.status === 'error'
+          ? 'error'
+          : 'completed',
       error: result.error,
       workflowResult: result,
     };
     patchConversation(conversationId, conversation => ({
       ...conversation,
       updatedAt: timestamp,
-      messages: [...conversation.messages, resultMessage],
+      messages: upsertWorkflowResultMessage(conversation.messages, resultMessage),
     }));
   }, [patchConversation]);
 
