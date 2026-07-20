@@ -18182,7 +18182,7 @@ function MainApp() {
           : useDirectReferenceImages ? 'direct' : 'auto',
         getSourceItems(),
         xaisReferenceFormat,
-        usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first',
+        'cloudflared-first',
         usePortableWalletReferences,
       );
       let inputImages = preparedInputs.images;
@@ -18344,7 +18344,7 @@ function MainApp() {
             'remote-only',
             getSourceItems(),
             xaisReferenceFormat,
-            usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first',
+            'cloudflared-first',
             usePortableWalletReferences,
           );
           if (freshInputs.images.length === 0) return false;
