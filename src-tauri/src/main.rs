@@ -629,8 +629,18 @@ fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
         .redirect(Policy::limited(10))
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(timeout_secs))
+        .no_proxy()
         .build()
         .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
+}
+
+fn should_prefer_direct_generated_image_download(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            host == "adobe.yrzsai.com" || host == "xaisp3.oss-ap-southeast-1.aliyuncs.com"
+        })
 }
 
 fn build_engine_download_http_client(
@@ -669,6 +679,33 @@ fn download_url_to_file_with_timeout(
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<Option<String>, String> {
+    let has_configured_proxy = effective_proxy(Some(app_handle), explicit_proxy).is_some();
+    let allow_direct_first = explicit_proxy
+        .map(str::trim)
+        .map(str::is_empty)
+        .unwrap_or(true)
+        && has_configured_proxy
+        && should_prefer_direct_generated_image_download(url);
+    if allow_direct_first {
+        let direct_result = build_direct_http_client(timeout_secs)
+            .and_then(|client| download_url_to_file_with_client(&client, url, out_path));
+        match direct_result {
+            Ok(content_type) => return Ok(content_type),
+            Err(direct_err) => {
+                let _ = fs::remove_file(out_path);
+                let _ = fs::remove_file(out_path.with_extension("download.tmp"));
+                return build_http_client(Some(app_handle), explicit_proxy, timeout_secs)
+                    .and_then(|client| download_url_to_file_with_client(&client, url, out_path))
+                    .map_err(|proxy_err| {
+                        format!(
+                            "直连下载失败：{}；代理下载也失败：{}",
+                            direct_err, proxy_err
+                        )
+                    });
+            }
+        }
+    }
+
     let first_result = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)
         .and_then(|client| download_url_to_file_with_client(&client, url, out_path));
     match first_result {
@@ -10683,9 +10720,7 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
         }
     }
 
-    if local_path.is_none()
-        && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
-    {
+    if local_path.is_none() && (trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
         return Ok(trimmed.to_string());
     }
 
@@ -12739,8 +12774,21 @@ fn looks_like_huaban_pin_suffix(suffix: &str) -> bool {
 mod web_image_url_tests {
     use super::{
         extract_nested_image_url, huaban_image_url_from_api_json, huaban_pin_id_from_url,
-        looks_like_image_url,
+        looks_like_image_url, should_prefer_direct_generated_image_download,
     };
+
+    #[test]
+    fn generated_image_hosts_prefer_direct_downloads() {
+        assert!(should_prefer_direct_generated_image_download(
+            "https://adobe.yrzsai.com/generated/example.png"
+        ));
+        assert!(should_prefer_direct_generated_image_download(
+            "https://xaisp3.oss-ap-southeast-1.aliyuncs.com/example.png"
+        ));
+        assert!(!should_prefer_direct_generated_image_download(
+            "https://gd-hbimg-edge.huaban.com/example.png"
+        ));
+    }
 
     #[test]
     fn recognizes_bing_thumbnail_image_without_extension() {

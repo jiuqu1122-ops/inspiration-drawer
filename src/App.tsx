@@ -70,6 +70,7 @@ import {
   type WorkflowResultReference,
 } from './features/agentModel';
 import { buildWorkflowResultCardData } from './features/workflowResult';
+import { prepareAgentVisualReferences } from './features/canvasAgentVisualReferences';
 import { resolveWorkflowInputs } from './features/appAgent/commands/workflowInputResolver';
 import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/appAgentKernel';
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
@@ -1024,7 +1025,7 @@ const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
 const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
 const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
 const CANVAS_AI_OUTPUT_CACHE_STALE_MS = 75_000;
-const GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS = [1_200, 3_200];
+const GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS = [1_500];
 const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 1;
 const CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE = 3;
 const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 90;
@@ -9325,7 +9326,9 @@ function MainApp() {
         throw lastError;
       };
 
-      cacheGeneratedImage()
+      const cachePromise = cacheGeneratedImage();
+      generatedImageCachePromisesRef.current.set(source, cachePromise);
+      cachePromise
         .then((cachedPath) => {
           if (!cachedPath) {
             generatedImageCachePendingIdsRef.current.delete(item.id);
@@ -9377,6 +9380,11 @@ function MainApp() {
           generatedImageCachePendingIdsRef.current.delete(item.id);
           setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
           patchMatchingOutputs({ cacheStatus: 'failed' });
+        })
+        .finally(() => {
+          if (generatedImageCachePromisesRef.current.get(source) === cachePromise) {
+            generatedImageCachePromisesRef.current.delete(source);
+          }
         });
     });
 
@@ -10908,6 +10916,7 @@ function MainApp() {
   const canvasAiOutputThumbnailInFlightRef = useRef(new Set<string>());
   const canvasAiOutputThumbnailRecoveryAttemptedRef = useRef(new Set<string>());
   const generatedImageCachePendingIdsRef = useRef(new Set<string>());
+  const generatedImageCachePromisesRef = useRef(new Map<string, Promise<string>>());
 
   const readDataImageSize = (source?: string) => new Promise<{ width: number; height: number } | null>((resolve) => {
     const rawSource = (source || '').trim();
@@ -13897,10 +13906,13 @@ function MainApp() {
     let readableSource = source;
     if (/^https?:\/\//i.test(source)) {
       try {
-        const cachedPath = await invoke<string>('cache_web_image', {
-          url: source,
-          name: 'local-vision-reference',
-        });
+        const cachedPath = await (
+          generatedImageCachePromisesRef.current.get(source)
+          || invoke<string>('cache_web_image', {
+            url: source,
+            name: 'local-vision-reference',
+          })
+        );
         if (cachedPath) readableSource = convertFileSrc(cachedPath);
       } catch (err) {
         console.warn('缓存本地模型参考图失败，尝试直接读取:', err);
@@ -25623,33 +25635,10 @@ useEffect(() => {
   const prepareCanvasAgentVisualReferences = async (
     references: AgentCanvasVisualReference[],
     provider: 'openai-compatible' | 'codex',
-  ): Promise<AgentCanvasVisualReference[]> => {
-    const prepared: AgentCanvasVisualReference[] = [];
-    for (const reference of references.filter(item => item.mediaType === 'image').slice(0, 6)) {
-      const source = (reference.source || reference.thumbnail || '').trim();
-      if (provider === 'codex' && reference.path) {
-        prepared.push(reference);
-        continue;
-      }
-      if (!source) continue;
-      const canUseDirectly = /^https?:\/\//i.test(source)
-        && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(source);
-      if (canUseDirectly) {
-        prepared.push(reference);
-        continue;
-      }
-      try {
-        const dataUrl = await imageSourceToModelDataUrl(source);
-        if (dataUrl) prepared.push({ ...reference, source: dataUrl });
-      } catch (error) {
-        console.warn('Agent 视觉引用准备失败:', error);
-        if (provider === 'codex' && /^data:image\//i.test(source)) {
-          prepared.push(reference);
-        }
-      }
-    }
-    return prepared;
-  };
+  ): Promise<AgentCanvasVisualReference[]> => prepareAgentVisualReferences(references, {
+    provider,
+    toModelDataUrl: imageSourceToModelDataUrl,
+  });
 
   const analyzeDrawerInspirationWithLlm = async (input: {
     itemId: string;
