@@ -19198,6 +19198,11 @@ function MainApp() {
   const generateCanvasAiGeneratorNode = async (targetId: string) => {
     const launchKey = `launch:${targetId}`;
     const launchToken = createCanvasAiClientRequestId(launchKey);
+    let launchReleased = false;
+    const releaseLaunch = () => {
+      if (launchReleased) return;
+      launchReleased = releaseCanvasAiRun(canvasAiRunTokensRef.current, launchKey, launchToken);
+    };
     if (!claimCanvasAiRun(canvasAiRunTokensRef.current, launchKey, launchToken)) {
       showToast('这个节点已经在处理本次生成操作');
       return;
@@ -19231,9 +19236,10 @@ function MainApp() {
       if (!nextNode) return;
       if (appendCanvasItems([nextNode], '再次生成 AI 节点') <= 0) return;
       showToast('已复制节点，开始再次生成');
+      releaseLaunch();
       await runCanvasAiGeneratorNode(nextNode.id);
     } finally {
-      releaseCanvasAiRun(canvasAiRunTokensRef.current, launchKey, launchToken);
+      releaseLaunch();
     }
   };
 
