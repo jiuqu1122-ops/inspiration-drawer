@@ -13,6 +13,10 @@ import {
   PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_ID,
   PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_LABEL,
 } from './productDetailsFiveImagesWorkflow';
+import { INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW } from './workflows/industrialDesignFullProcessWorkflow';
+import type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
+
+export type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
 
 export type CanvasWorkflowNodeTemplate = {
   id: string;
@@ -37,6 +41,7 @@ export type CanvasWorkflowTemplate = {
   label: string;
   hint: string;
   nodes: CanvasWorkflowNodeTemplate[];
+  userInput?: CanvasWorkflowUserInputConfig;
   createdAt?: number;
   builtin?: boolean;
 };
@@ -342,6 +347,7 @@ export const PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW: CanvasWorkflowTempla
 };
 
 export const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+  INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
     id: 'imported-workflow-mqxvzmig-0-epcv',

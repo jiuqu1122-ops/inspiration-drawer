@@ -206,8 +206,33 @@ export type WorkflowResultMedia = {
   status?: 'success' | 'error';
 };
 
-export type WorkflowResultCardData = {
+export type WorkflowResultStage = {
+  stage: 'requirement' | 'research' | 'concept' | 'refinement' | 'delivery';
+  title: string;
+  summary: string;
+  nodeId?: string;
+};
+
+export type AgentWorkflowResult = {
   workflowId: string;
+  title?: string;
+  stages: WorkflowResultStage[];
+  references?: Array<{
+    id: string;
+    title?: string;
+    thumbnail?: string;
+    role?: string;
+  }>;
+  media?: Array<{
+    id: string;
+    nodeId?: string;
+    type: 'image' | 'video';
+    url?: string;
+    thumbnail?: string;
+  }>;
+};
+
+export type WorkflowResultCardData = AgentWorkflowResult & {
   workflowNodeId: string;
   workflowName: string;
   status: WorkflowResultStatus;
@@ -307,7 +332,20 @@ export type AgentCanvasContext = {
     status?: string;
   }>;
   presets: Array<{ id: string; label: string; hint: string }>;
-  workflows: Array<{ id: string; label: string; hint: string }>;
+  workflows: Array<{
+    id: string;
+    label: string;
+    hint: string;
+    userInput?: {
+      enabled: boolean;
+      type?: 'text';
+      label?: string;
+      placeholder?: string;
+      required?: boolean;
+      acceptImages?: boolean;
+      acceptFiles?: boolean;
+    };
+  }>;
   drawer?: {
     activeTab: string;
     activeFolderId: string;
@@ -329,6 +367,7 @@ export type AgentCanvasContext = {
 
 export type AgentToolExecutionContext = {
   snapshot?: AgentCanvasContext;
+  userRequest?: string;
 };
 
 export type AgentCanvasToolExecutor = (

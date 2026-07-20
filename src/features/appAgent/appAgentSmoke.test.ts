@@ -173,6 +173,18 @@ export function runAppAgentSmokeTests() {
   });
   assert(industrialReviewTurn.activeSkillIds.includes('workflow-builder-skill'), 'industrial review workflow should match workflow-builder-skill');
   assert(industrialReviewTurn.activeSkillIds.includes('creative-product-design-skill'), 'industrial review workflow should also match creative-product-design-skill');
+  const localFullProcessTurn = prepareAppAgentTurn({
+    userText: '使用工业设计全流程工作流设计一台便携咖啡机',
+    context: industrialReviewContext,
+  });
+  assert(
+    localFullProcessTurn.activeSkillPrompt.includes('when applying industrial-design-full-process, do not call drawer_search_inspirations'),
+    'local-first full-process workflow should suppress the creative skill pre-search call',
+  );
+  assert(
+    localFullProcessTurn.activeSkillPrompt.includes('pass the user\'s exact original request in projectBrief'),
+    'workflow skill should pass the original project request into the built-in workflow',
+  );
   assert(industrialReviewTurn.shouldUseDeterministicPlan, 'industrial review workflow should use deterministic plan');
   assert(industrialReviewTurn.trace.deterministicActionsUsed === true, 'industrial review workflow trace should mark deterministic actions used');
   const { draftAction: workflowDraftAction, workflowDefinition } = getIndustrialReviewDraftDefinition(

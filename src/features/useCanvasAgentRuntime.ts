@@ -1027,6 +1027,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     try {
       call.result = await optionsRef.current.executeTool(call.name, call.arguments, {
         snapshot: run.snapshot?.context,
+        userRequest: run.userRequest || run.snapshot?.userRequest,
       });
       call.status = 'completed';
       upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {

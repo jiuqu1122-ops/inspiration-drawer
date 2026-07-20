@@ -8,6 +8,7 @@ import {
   type CanvasWorkflowNodeTemplate,
   type CanvasWorkflowTemplate,
 } from './canvasTemplates';
+import { normalizeCanvasWorkflowUserInput } from './canvasWorkflowUserInput';
 
 export const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
 export const CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_hidden_builtin_prompt_presets';
@@ -260,6 +261,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       ? record.hint.trim().slice(0, 80)
       : '自定义工作流',
     nodes,
+    userInput: normalizeCanvasWorkflowUserInput(record.userInput),
     createdAt: Number(record.createdAt) || Date.now(),
     builtin: !!record.builtin,
   };

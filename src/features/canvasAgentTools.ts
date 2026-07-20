@@ -530,6 +530,8 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
       parameters: objectSchema({
         workflowId: { type: 'string' },
         workflowName: { type: 'string' },
+        inputIds: { type: 'array', items: { type: 'string' } },
+        projectBrief: { type: 'string' },
       }),
     },
   },
@@ -857,6 +859,8 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
               arguments: objectSchema({
                 workflowId: { type: ['string', 'null'] },
                 workflowName: { type: ['string', 'null'] },
+                inputIds: { type: 'array', items: { type: 'string' } },
+                projectBrief: { type: ['string', 'null'] },
               }, ['workflowId', 'workflowName']),
             },
             required: ['tool', 'arguments'],

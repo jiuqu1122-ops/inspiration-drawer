@@ -366,6 +366,7 @@ export const workflowBuilderSkill: AppAgentSkill = {
     'Use image_generator nodes only for visual concept execution; Design Agent text nodes own design reasoning and text artifacts.',
     'Supported deterministic intents: create_workflow, create_workflow_nodes, create_industrial_design_review_workflow, and run_workflow.',
     'Use canvas_apply_workflow for existing workflows and canvas_create_workflow only when the user asks for reusable or multi-stage workflows.',
+    'For a local-first end-to-end industrial design request, apply workflow industrial-design-full-process and pass the user\'s exact original request in projectBrief. Its runtime performs metadata-only local inspiration retrieval; do not call drawer analysis, external search, or the web collector before applying it.',
     'Workflow steps must be compact, non-empty and connected by inputStepIds when later steps depend on earlier ones.',
     'For product detail-page workflows, pass compact intent and steps; the app can compile the local DAG.',
   ].join('\n'),

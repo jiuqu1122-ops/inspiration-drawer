@@ -177,6 +177,20 @@ import {
 } from './features/designAgentNode';
 import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './features/canvasTemplates';
 import {
+  injectCanvasWorkflowUserInputContext,
+  normalizeCanvasWorkflowUserInput,
+  selectCanvasWorkflowUserInputTargetIds,
+  type CanvasWorkflowUserInputConfig,
+} from './features/canvasWorkflowUserInput';
+import {
+  INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
+  INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS,
+  INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID,
+  buildIndustrialDesignLocalInspirationContext,
+  buildIndustrialDesignRuntimeContextText,
+  type IndustrialDesignLocalInspirationContext,
+} from './features/workflows/industrialDesignFullProcessWorkflow';
+import {
   claimCanvasAiRun,
   createCanvasAiClientRequestId,
   releaseCanvasAiRun,
@@ -404,6 +418,7 @@ type CanvasWorkflowTemplate = {
   label: string;
   hint: string;
   nodes: CanvasWorkflowNodeTemplate[];
+  userInput?: CanvasWorkflowUserInputConfig;
   createdAt?: number;
   builtin?: boolean;
 };
@@ -2237,6 +2252,7 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
   return { errors: Array.from(new Set(errors)), warnings: Array.from(new Set(warnings)) };
 };
 const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+  INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
     id: 'imported-workflow-mqxvzmig-0-epcv',
@@ -3015,6 +3031,7 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       ? record.hint.trim().slice(0, 80)
       : '自定义工作流',
     nodes,
+    userInput: normalizeCanvasWorkflowUserInput(record.userInput),
     createdAt: Number(record.createdAt) || Date.now(),
     builtin: !!record.builtin,
   };
@@ -4475,6 +4492,8 @@ function MainApp() {
   } | null>(null);
   const canvasUploadInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasUploadTargetIdRef = useRef<string | null>(null);
+  const canvasWorkflowFileInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingCanvasWorkflowFileTargetIdRef = useRef<string | null>(null);
   const canvasClipboardRef = useRef<CanvasImageItem[]>([]);
   const canvasPanRef = useRef<{
     pointerId: number;
@@ -10278,6 +10297,9 @@ function MainApp() {
 
   const isCanvasImageFileName = (value?: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(value || '');
   const isCanvasVideoFileName = (value?: string) => /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value || '');
+  const isCanvasWorkflowReadableTextFileName = (value?: string) => (
+    /\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|xml|html?|css|mjs|cjs|js|jsx|ts|tsx)$/i.test(value || '')
+  );
 
   const fileUrlToLocalPath = (value: string) => {
     try {
@@ -11701,6 +11723,23 @@ function MainApp() {
     canUseCanvasItemAsFrameInterpolationVideoInput(canvasItem)
   );
 
+  const canUseCanvasItemAsWorkflowMaterial = (
+    canvasItem: CanvasImageItem | null | undefined,
+    configValue: unknown,
+  ) => {
+    if (!canvasItem) return false;
+    const userInput = normalizeCanvasWorkflowUserInput(configValue);
+    const isImageInput = canvasItem.item.type === 'image'
+      || canvasItem.ai?.type === 'image-generator'
+      || canvasItem.ai?.type === 'workflow'
+      || canUseCanvasItemAsImageEnhancementInput(canvasItem);
+    if (isImageInput) return userInput.acceptImages !== false;
+    if (canvasItem.item.type === 'file' && !isCanvasWorkflowReferenceBridge(canvasItem)) {
+      return userInput.acceptFiles === true;
+    }
+    return true;
+  };
+
   const isCanvasWorkflowReferenceBridge = (canvasItem?: CanvasImageItem | null) => (
     canvasItem?.workflowBridge?.type === 'reference-image'
   );
@@ -11712,17 +11751,20 @@ function MainApp() {
   const canUseCanvasItemAsInputForTarget = (
     source?: CanvasImageItem | null,
     target?: CanvasImageItem | null,
-  ) => (
-    isCanvasWorkflowReferenceBridge(target)
+  ) => {
+    if (target?.ai?.type === 'workflow') {
+      if (!canUseCanvasItemAsWorkflowMaterial(source, getCanvasWorkflowTemplateFromNode(target)?.userInput)) return false;
+    }
+    return isCanvasWorkflowReferenceBridge(target)
       ? canUseCanvasItemAsReferenceBridgeInput(source)
       : target?.ai?.type === 'frame-interpolation'
-      ? canUseCanvasItemAsFrameInterpolationVideoInput(source)
-      : target?.ai?.type === 'image-enhancement'
-        ? canUseCanvasItemAsImageEnhancementInput(source)
-        : target?.ai?.type === 'video-enhancement'
-          ? canUseCanvasItemAsVideoEnhancementInput(source)
-      : canUseCanvasItemAsAiInput(source)
-  );
+        ? canUseCanvasItemAsFrameInterpolationVideoInput(source)
+        : target?.ai?.type === 'image-enhancement'
+          ? canUseCanvasItemAsImageEnhancementInput(source)
+          : target?.ai?.type === 'video-enhancement'
+            ? canUseCanvasItemAsVideoEnhancementInput(source)
+            : canUseCanvasItemAsAiInput(source);
+  };
 
   const isCanvasAgentTextTarget = (canvasItem?: CanvasImageItem | null) => (
     !!canvasItem && canvasItem.item.type === 'text' && !canvasItem.ai && canvasItem.textMode !== 'plain'
@@ -15099,7 +15141,8 @@ function MainApp() {
     const textInputs: string[] = [];
     const seenTextKeys = new Set<string>();
     const pushTextInput = (inputItem: CanvasImageItem) => {
-      if (inputItem.item.type !== 'text' || inputItem.ai) return;
+      if (isCanvasWorkflowReferenceBridge(inputItem)) return;
+      if ((inputItem.item.type !== 'text' && inputItem.item.type !== 'file') || inputItem.ai) return;
       const content = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
       if (!content) return;
       const key = `${inputItem.id}:${content}`;
@@ -16358,6 +16401,12 @@ function MainApp() {
       console.warn('Canvas workflow validation warnings:', validation.warnings, cleanWorkflow);
     }
     const itemId = Math.random().toString(36).substring(2, 9);
+    const acceptedInputIds = Array.from(new Set(inputIds)).filter(inputId => (
+      canUseCanvasItemAsWorkflowMaterial(
+        canvasItemsRef.current.find(item => item.id === inputId),
+        cleanWorkflow.userInput,
+      )
+    ));
     const outputSlots = getCanvasWorkflowOutputSlotTemplates(cleanWorkflow, 'all');
     const outputSlotCount = Math.max(1, outputSlots.length);
     const firstOutputAspectRatio = outputSlots[0]?.node.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
@@ -16381,7 +16430,7 @@ function MainApp() {
       y: Math.max(24, pos.y),
       width: nodeSize.width,
       height: nodeSize.height,
-      inputs: Array.from(new Set(inputIds)),
+      inputs: acceptedInputIds,
       ai: {
         type: 'workflow',
         provider: canvasAiProvider,
@@ -16538,6 +16587,7 @@ function MainApp() {
       label,
       hint: `${canvasWorkflowSaveDraft.nodes.length} 个节点，${canvasWorkflowSaveDraft.aiCount} 个生图节点，固定 ${canvasWorkflowSaveDraft.fixedImageCount} 图/${canvasWorkflowSaveDraft.fixedTextCount} 文`,
       nodes: canvasWorkflowSaveDraft.nodes,
+      userInput: normalizeCanvasWorkflowUserInput(undefined),
       createdAt: Date.now(),
     };
     const moduleNode = buildCanvasWorkflowModuleNode(
@@ -16759,16 +16809,24 @@ function MainApp() {
   };
 
   const expandCanvasWorkflowModuleForEdit = (canvasId: string) => {
+    commitCanvasAiPromptDraft(canvasId, undefined, true);
     const moduleNode = canvasItemsRef.current.find(item => item.id === canvasId);
     const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
     if (!moduleNode || !workflow) {
       showToast('没有可展开的工作流模块');
       return;
     }
+    const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
+    const acceptedInputIds = (moduleNode.inputs || []).filter(inputId => (
+      canUseCanvasItemAsWorkflowMaterial(
+        canvasItemsRef.current.find(item => item.id === inputId),
+        workflowUserInput,
+      )
+    ));
     const { items: rawExpandedItems, idMap } = instantiateCanvasWorkflowTemplateItems(
       workflow,
       { x: moduleNode.x, y: moduleNode.y },
-      moduleNode.inputs || []
+      acceptedInputIds
     );
     const runtimeSnapshots = normalizeCanvasWorkflowRuntimeSnapshots(moduleNode.ai?.workflowRuntime);
     const restoredItems = applyCanvasWorkflowRuntimeSnapshots(workflow, rawExpandedItems, idMap, runtimeSnapshots);
@@ -16889,6 +16947,7 @@ function MainApp() {
       label: group.workflowLabel,
       hint: group.workflowHint,
       nodes,
+      userInput: originalWorkflow?.userInput,
       builtin: group.workflowBuiltin,
       createdAt: Date.now(),
     });
@@ -16896,6 +16955,7 @@ function MainApp() {
   };
 
   const getComparableCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate) => ({
+    userInput: normalizeCanvasWorkflowUserInput(workflow.userInput),
     nodes: workflow.nodes
       .map(node => ({
         id: node.id,
@@ -17052,11 +17112,16 @@ function MainApp() {
       item: {
         ...moduleDraft.item,
         id: group.module.item.id,
+        content: group.module.item.content || '',
         createdAt: group.module.item.createdAt,
       },
       ai: {
         ...moduleDraft.ai,
         type: 'workflow' as const,
+        skillMeta: {
+          ...(moduleDraft.ai?.skillMeta || {}),
+          ...(group.module.ai?.skillMeta || {}),
+        },
       },
     };
     const outputs = createCanvasWorkflowModuleOutputsFromExpandedGroup(moduleNode, workflowForModule, groupItems, built.idMap);
@@ -17157,7 +17222,9 @@ function MainApp() {
           const nextItem = content === undefined ? item.item : {
             ...item.item,
             content,
-            name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : getCanvasAiNodeTitle(item.ai)),
+            name: item.ai?.type === 'workflow'
+              ? item.item.name
+              : content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : getCanvasAiNodeTitle(item.ai)),
           };
           const nextCanvasItem: CanvasImageItem = {
             ...item,
@@ -17289,7 +17356,7 @@ function MainApp() {
 
   const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => {
     updateCanvasItemsImmediate(prev => prev.map(item => {
-      if (item.id !== canvasId || !isCanvasAiGeneratorType(item.ai?.type)) return item;
+      if (item.id !== canvasId || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')) return item;
       const oldExpanded = previousExpanded ?? canvasAiPromptEditingId === item.id;
       const oldSize = getCanvasAiNodeDesignSizeForItem(item, oldExpanded);
       const nextSize = getCanvasAiNodeDesignSizeForItem(item, expanded);
@@ -17583,6 +17650,74 @@ function MainApp() {
     const addedCount = appendCanvasItems(images, '添加 AI 输入图片', false);
     if (addedCount <= 0) return;
     connectCanvasItemsToGenerator(images.map(item => item.id), targetId);
+  };
+
+  const chooseLocalFilesForCanvasWorkflow = (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const workflow = getCanvasWorkflowTemplateFromNode(target);
+    if (!target || target.ai?.type !== 'workflow' || !normalizeCanvasWorkflowUserInput(workflow?.userInput).acceptFiles) {
+      showToast('这个工作流未启用文件输入');
+      return;
+    }
+    pendingCanvasWorkflowFileTargetIdRef.current = targetId;
+    setCanvasInputMenuForId(null);
+    canvasWorkflowFileInputRef.current?.click();
+  };
+
+  const handleCanvasWorkflowFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const targetId = pendingCanvasWorkflowFileTargetIdRef.current;
+    pendingCanvasWorkflowFileTargetIdRef.current = null;
+    const files = Array.from(event.target.files || []).slice(0, 6);
+    event.target.value = '';
+    if (!targetId || files.length === 0) return;
+
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const workflow = getCanvasWorkflowTemplateFromNode(target);
+    if (!target || target.ai?.type !== 'workflow' || !normalizeCanvasWorkflowUserInput(workflow?.userInput).acceptFiles) return;
+
+    const perFileTextLimit = Math.max(2_000, Math.floor(16_000 / files.length));
+    const created = await Promise.all(files.map(async (file, index): Promise<CanvasImageItem> => {
+      let extractedText = '';
+      if (isCanvasWorkflowReadableTextFileName(file.name)) {
+        try {
+          const byteLimit = perFileTextLimit * 4;
+          const rawText = await file.slice(0, byteLimit).text();
+          const wasTruncated = file.size > byteLimit || rawText.length > perFileTextLimit;
+          extractedText = rawText.trim().slice(0, perFileTextLimit);
+          if (wasTruncated && extractedText) extractedText += '\n\n[文件内容已截断]';
+        } catch (error) {
+          console.warn('读取工作流文字附件失败:', error);
+        }
+      }
+      const localPath = (file as File & { path?: string }).path;
+      const metadata = [
+        `文件：${file.name}`,
+        file.type ? `类型：${file.type}` : '',
+        extractedText ? `内容：\n${extractedText}` : '正文未解析；仅提供文件名称和类型。',
+      ].filter(Boolean).join('\n');
+      const itemId = Math.random().toString(36).substring(2, 9);
+      return {
+        id: makeCanvasNodeId(itemId, 'file_input'),
+        item: {
+          id: itemId,
+          type: 'file',
+          content: metadata,
+          name: file.name,
+          path: localPath,
+          fileSize: file.size,
+          modifiedAt: file.lastModified,
+          createdAt: Date.now() + index,
+          isQuickAccess: false,
+        },
+        x: Math.max(24, target.x - 440 - (index % 2) * 24),
+        y: Math.max(24, target.y + index * 52),
+        width: 360,
+        height: 180,
+      };
+    }));
+
+    if (appendCanvasItems(created, '添加 Workflow 输入文件', false) <= 0) return;
+    connectCanvasItemsToGenerator(created.map(item => item.id), targetId);
   };
 
   const chooseLocalVideosForCanvasGenerator = async (targetId: string) => {
@@ -19148,11 +19283,43 @@ function MainApp() {
     if (!target || target.ai?.type !== 'image-generator' || !group) return false;
 
     const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId);
+    const workflow = getCanvasWorkflowTemplateFromNode(group.module);
+    const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow?.userInput);
+    const workflowUserRequest = String(group.module.item.content || '').trim().slice(0, 6_000);
+    if (workflowUserInput.enabled && workflowUserInput.required && !workflowUserRequest) {
+      showToast(`请输入${workflowUserInput.label || '用户需求'}后再运行`);
+      return true;
+    }
     const runIds = getCanvasExpandedWorkflowDownstreamGeneratorIds(targetId, groupItems);
     if (runIds.length === 0) {
       showToast('这个展开工作流里没有可运行的后续生图节点');
       return true;
     }
+
+    const explicitTextInputIds = workflow?.nodes
+      .filter(node => (
+        node.acceptsExternalInputs === true
+        && (
+          !Array.isArray(node.externalInputTypes)
+          || node.externalInputTypes.length === 0
+          || node.externalInputTypes.includes('text')
+        )
+      ))
+      .map(node => groupItems.find(item => getCanvasWorkflowGroup(item)?.templateId === node.id)?.id || '')
+      .filter(Boolean) || [];
+    const workflowContextTargetIds = Array.from(new Set([
+      targetId,
+      ...selectCanvasWorkflowUserInputTargetIds(groupItems, explicitTextInputIds),
+    ]));
+    const getExpandedWorkflowSourceItems = () => injectCanvasWorkflowUserInputContext(
+      canvasItemsRef.current,
+      {
+        workflowNodeId: group.module.id,
+        request: workflowUserRequest,
+        config: workflowUserInput,
+        targetNodeIds: workflowContextTargetIds,
+      },
+    );
 
     const runIdSet = new Set(runIds);
     const groupSelectionIds = getCanvasWorkflowGroupItemIdsForSelection(group.groupId);
@@ -19200,8 +19367,8 @@ function MainApp() {
       if (isCanvasAgentTextTarget(current)) {
         try {
           const output = await runCanvasTextAgentTarget(current, {
-            sourceItems: () => canvasItemsRef.current,
-            getLatestTarget: () => canvasItemsRef.current.find(item => item.id === nodeId),
+            sourceItems: getExpandedWorkflowSourceItems,
+            getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
             updateTextOutput: (textOutput) => updateCanvasTextOutputItem(nodeId, textOutput),
             showResultToast: false,
             showReferenceToast: false,
@@ -19218,9 +19385,9 @@ function MainApp() {
       if (current.ai?.type !== 'image-generator') continue;
 
       await runCanvasAiGeneratorTarget(current, {
-        sourceItems: () => canvasItemsRef.current,
+        sourceItems: getExpandedWorkflowSourceItems,
         updateAi: (patch, content) => updateCanvasAiGeneratorData(nodeId, patch, content),
-        getLatestTarget: () => canvasItemsRef.current.find(item => item.id === nodeId),
+        getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
         showResultToast: false,
       });
 
@@ -19256,13 +19423,20 @@ function MainApp() {
       ...nextNode,
       item: {
         ...nextNode.item,
+        content: source.item.content || '',
         name: source.item.name || nextNode.item.name,
         remark: source.item.remark || nextNode.item.remark,
+      },
+      ai: {
+        ...(nextNode.ai || { type: 'workflow' as const }),
+        type: 'workflow' as const,
+        skillMeta: source.ai?.skillMeta,
       },
     };
   };
 
   const runCanvasWorkflowModuleNode = async (targetId: string) => {
+    commitCanvasAiPromptDraft(targetId, undefined, true);
     const moduleNode = canvasItemsRef.current.find(item => item.id === targetId);
     const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
     if (!moduleNode || !workflow) {
@@ -19270,8 +19444,151 @@ function MainApp() {
       return;
     }
 
-    const runtime = instantiateCanvasWorkflowTemplateItems(workflow, { x: moduleNode.x, y: moduleNode.y }, moduleNode.inputs || []);
+    const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
+    const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
+    const workflowMaterialInputIds = (moduleNode.inputs || []).filter(inputId => (
+      canUseCanvasItemAsWorkflowMaterial(
+        canvasItemsRef.current.find(item => item.id === inputId),
+        workflowUserInput,
+      )
+    ));
+    if (workflowUserInput.enabled && workflowUserInput.required && !workflowUserRequest) {
+      const error = `请输入${workflowUserInput.label || '用户需求'}后再运行`;
+      updateCanvasAiGeneratorData(targetId, { status: 'error', error });
+      updateCanvasSelection([targetId]);
+      showToast(error);
+      return;
+    }
+
+    let localInspirationContext: IndustrialDesignLocalInspirationContext | null = null;
+    let localInspirationCanvasNodes: Array<{ itemId: string; nodeId: string }> = [];
+    let originalProjectRequest = '';
+    if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID) {
+      const connectedItems = workflowMaterialInputIds
+        .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+        .filter((item): item is CanvasImageItem => !!item);
+      const connectedText = connectedItems
+        .filter(item => item.item.type === 'text')
+        .map(item => String(item.item.remark || item.item.content || '').trim())
+        .filter(Boolean);
+      originalProjectRequest = [moduleNode.item.content, ...connectedText]
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+        .join('\n\n')
+        .slice(0, 2_400);
+      const explicitlyConnectedDrawerIds = connectedItems.flatMap(item => [
+        item.item.sourceItemId,
+        item.item.id,
+      ]).filter((itemId): itemId is string => !!itemId);
+      localInspirationContext = buildIndustrialDesignLocalInspirationContext(
+        itemsRef.current,
+        originalProjectRequest,
+        { excludeItemIds: explicitlyConnectedDrawerIds, topK: 8 },
+      );
+
+      for (const reference of localInspirationContext.references) {
+        const nodeId = await createDrawerImageCanvasNode(reference.itemId, undefined, {
+          reuseExisting: true,
+          select: false,
+          toast: false,
+          label: '工业设计全流程：接入本地灵感',
+        });
+        if (nodeId) localInspirationCanvasNodes.push({ itemId: reference.itemId, nodeId });
+      }
+    }
+
+    const runtime = instantiateCanvasWorkflowTemplateItems(workflow, { x: moduleNode.x, y: moduleNode.y }, workflowMaterialInputIds);
     let runtimeItems = runtime.items;
+    if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID && localInspirationContext) {
+      const referenceContextRuntimeId = runtime.idMap.get(INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.references);
+      const connectedInputSummary = workflowMaterialInputIds
+        .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+        .filter((item): item is CanvasImageItem => !!item)
+        .map(item => item.item.name || item.id);
+      const injectedContextText = buildIndustrialDesignRuntimeContextText({
+        projectRequest: originalProjectRequest,
+        connectedInputLabels: connectedInputSummary,
+        localInspirationContext,
+      });
+      const referenceNodeByItemId = new Map(localInspirationCanvasNodes.map(reference => [reference.itemId, reference.nodeId]));
+      const designReferencePlan = {
+        references: localInspirationContext.references.map(reference => ({
+          itemId: reference.itemId,
+          role: reference.recommendedRole,
+          reason: reference.reason,
+          matchedFeatures: reference.matchedFeatures,
+          confidence: reference.confidence,
+        })),
+      };
+
+      runtimeItems = runtimeItems.map(item => {
+        if (item.id === referenceContextRuntimeId) {
+          return {
+            ...item,
+            item: {
+              ...item.item,
+              content: injectedContextText,
+              remark: injectedContextText,
+            },
+          };
+        }
+        if (item.ai?.type !== 'image-generator') return item;
+
+        const localReferenceInputs = localInspirationContext?.references
+          .map(reference => referenceNodeByItemId.get(reference.itemId) || '')
+          .filter(Boolean) || [];
+        const localReferenceRoles = (localInspirationContext?.references || []).flatMap(reference => {
+          const nodeId = referenceNodeByItemId.get(reference.itemId);
+          if (!nodeId) return [];
+          return [{
+            nodeId,
+            role: reference.recommendedRole === 'SUBJECT_REF' ? 'SUBJECT_REF' as const : 'STYLE_REF' as const,
+          }];
+        });
+        const referenceRoles = Array.from(new Map([
+          ...(item.ai.referenceRoles || []),
+          ...localReferenceRoles,
+        ].map(reference => [reference.nodeId, reference])).values());
+        return {
+          ...item,
+          inputs: Array.from(new Set([...(item.inputs || []), ...localReferenceInputs])),
+          ai: {
+            ...item.ai,
+            ...(referenceRoles.length > 0 ? { referenceRoles } : {}),
+            skillMeta: {
+              ...(item.ai.skillMeta || {}),
+              originalRequest: originalProjectRequest || undefined,
+              designReferencePlan,
+              localInspirationReferenceState: localInspirationContext?.usedExtraReferences ? 'selected' : 'none',
+            },
+          },
+        };
+      });
+    }
+    if (
+      workflow.id !== INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID
+      && workflowUserInput.enabled
+      && workflowUserRequest
+    ) {
+      const explicitTextInputIds = workflow.nodes
+        .filter(node => (
+          node.acceptsExternalInputs === true
+          && (
+            !Array.isArray(node.externalInputTypes)
+            || node.externalInputTypes.length === 0
+            || node.externalInputTypes.includes('text')
+          )
+        ))
+        .map(node => runtime.idMap.get(node.id) || '')
+        .filter(Boolean);
+      const contextTargetIds = selectCanvasWorkflowUserInputTargetIds(runtimeItems, explicitTextInputIds);
+      runtimeItems = injectCanvasWorkflowUserInputContext(runtimeItems, {
+        workflowNodeId: targetId,
+        request: workflowUserRequest,
+        config: workflowUserInput,
+        targetNodeIds: contextTargetIds,
+      });
+    }
     const runOrder = sortCanvasWorkflowRuntimeNodeIds(runtimeItems);
     const generatorRunIds = runOrder.filter(nodeId => runtimeItems.find(item => item.id === nodeId)?.ai?.type === 'image-generator');
     if (generatorRunIds.length === 0) {
@@ -19324,6 +19641,8 @@ function MainApp() {
         ...output,
         id: draft.id,
         name: draft.name,
+        nodeId: draft.nodeId,
+        nodeLabel: draft.nodeLabel,
       };
     });
     const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeSnapshots(workflow, runtimeItems, runtime.idMap);
@@ -19332,10 +19651,24 @@ function MainApp() {
       outputs: CanvasAiGeneratedOutput[],
       error?: string,
     ) => {
-      const textAssets = workflow.nodes.flatMap(node => {
+      const noExtraReferenceAssets = workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID
+        && localInspirationContext
+        && !localInspirationContext.usedExtraReferences
+        ? [{
+          nodeId: INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.references,
+          title: '本地灵感参考',
+          content: localInspirationContext.metadataText,
+          designAgentConfig: {
+            agentRole: 'inspiration_analyzer' as const,
+            outputArtifactType: 'InspirationAnalysis' as const,
+            thinkingMode: 'analysis' as const,
+          },
+        }]
+        : [];
+      const textAssets = [...noExtraReferenceAssets, ...workflow.nodes.flatMap(node => {
         const runtimeId = runtime.idMap.get(node.id);
         const runtimeItem = runtimeItems.find(item => item.id === runtimeId);
-        if (!runtimeItem || !isCanvasAgentTextTarget(runtimeItem)) return [];
+        if (!runtimeItem || !isCanvasAgentTextTarget(runtimeItem) || runStatus.get(runtimeId || '') !== 'success') return [];
         const content = String(runtimeItem.item.remark || '').trim();
         if (!content) return [];
         return [{
@@ -19344,9 +19677,9 @@ function MainApp() {
           content,
           designAgentConfig: node.designAgentConfig || runtimeItem.designAgentConfig,
         }];
-      });
+      })];
 
-      const inputCanvasItems = (moduleNode.inputs || [])
+      const inputCanvasItems = workflowMaterialInputIds
         .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
         .filter((item): item is CanvasImageItem => !!item);
       const referenceRoles = new Map<string, string>();
@@ -19448,6 +19781,10 @@ function MainApp() {
       error: undefined,
       outputs: outputDrafts,
       generatedAt: Date.now(),
+      skillMeta: {
+        ...(moduleNode.ai?.skillMeta || {}),
+        originalRequest: workflowUserRequest || undefined,
+      },
     });
     updateCanvasSelection([targetId]);
     showToast(`开始运行工作流「${workflow.label}」：${runOrder.length} 个内部节点`);
@@ -19661,6 +19998,7 @@ function MainApp() {
   };
 
   const generateCanvasWorkflowModuleNode = async (targetId: string) => {
+    commitCanvasAiPromptDraft(targetId, undefined, true);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || target.ai?.type !== 'workflow') return;
     if (!hasCanvasAiGeneratedResults(target)) {
@@ -25388,6 +25726,7 @@ useEffect(() => {
           id: workflow.id,
           label: workflow.label,
           hint: workflow.hint,
+          userInput: normalizeCanvasWorkflowUserInput(workflow.userInput),
         })),
         drawer: {
           activeTab: activeTabRef.current,
@@ -25418,6 +25757,7 @@ useEffect(() => {
     ),
     executeTool: async (name, args, execution) => {
       const snapshot = execution?.snapshot;
+      const executionUserRequest = String(execution?.userRequest || '').trim();
       const hasSelectionSnapshot = snapshot !== undefined;
       const snapshotSelectedIds = Array.isArray(snapshot?.selectedIds)
         ? snapshot.selectedIds.map(String)
@@ -25488,7 +25828,6 @@ useEffect(() => {
           ...(snapshotSurface === 'drawer' ? selectedIds : []),
           ...(snapshot?.selectedItems || []).flatMap(item => [item.id, item.sourceItemId || '']),
           ...(snapshot?.visualReferences || []).map(reference => reference.sourceItemId || ''),
-          ...(snapshot?.drawer?.items || []).map(item => item.id),
         ]);
         const drawerItemById = new Map(itemsRef.current.map(item => [item.id, item]));
         return drawerIds
@@ -25498,7 +25837,11 @@ useEffect(() => {
       const resolveAgentWorkflowInputIds = async (
         workflow: CanvasWorkflowTemplate,
         requestedInputIds: string[] = [],
-        options: { allowMissingRequired?: boolean; useImplicitInputs?: boolean } = {},
+        options: {
+          allowMissingRequired?: boolean;
+          useImplicitInputs?: boolean;
+          allowRecentCanvasFallback?: boolean;
+        } = {},
       ) => {
         const useImplicitInputs = options.useImplicitInputs !== false;
         const requestedInputs = getExistingCanvasIds(requestedInputIds);
@@ -25523,7 +25866,7 @@ useEffect(() => {
           selectedDrawerItems,
           canvasNodes: getAgentWorkflowCanvasNodes(),
           drawerItems: itemsRef.current,
-          allowRecentCanvasFallback: useImplicitInputs,
+          allowRecentCanvasFallback: options.allowRecentCanvasFallback ?? useImplicitInputs,
         });
         let resolution = runResolver();
         const createdNodeIds: string[] = [];
@@ -26852,7 +27195,14 @@ useEffect(() => {
         const requestedInputs = Array.isArray(args.inputIds)
           ? args.inputIds.map(String).filter(id => canvasItemsRef.current.some(item => item.id === id))
           : [];
-        const preflight = await resolveAgentWorkflowInputIds(workflow, requestedInputs);
+        const isLocalIndustrialDesignWorkflow = workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID;
+        const projectBrief = typeof args.projectBrief === 'string' && args.projectBrief.trim()
+          ? args.projectBrief.trim()
+          : executionUserRequest;
+        const preflight = await resolveAgentWorkflowInputIds(workflow, requestedInputs, {
+          allowMissingRequired: isLocalIndustrialDesignWorkflow,
+          allowRecentCanvasFallback: !isLocalIndustrialDesignWorkflow,
+        });
         if (!isCanvasModeRef.current) enterCanvasMode();
         const inputBounds = preflight.inputIds.length > 0 ? getCanvasItemsBounds(preflight.inputIds) : null;
         const base = inputBounds
@@ -26860,6 +27210,17 @@ useEffect(() => {
           : getCanvasDropPosition(0);
         const moduleNode = buildCanvasWorkflowModuleNode(workflow, base, preflight.inputIds);
         if (!moduleNode) throw new Error('添加工作流失败');
+        if (projectBrief) {
+          moduleNode.item = { ...moduleNode.item, content: projectBrief };
+          moduleNode.ai = {
+            ...(moduleNode.ai || { type: 'workflow' as const }),
+            type: 'workflow' as const,
+            skillMeta: {
+              ...(moduleNode.ai?.skillMeta || {}),
+              originalRequest: projectBrief,
+            },
+          };
+        }
         if (appendCanvasItems([moduleNode], 'Agent 添加工作流') <= 0) throw new Error('添加工作流失败');
         updateCanvasSelection([moduleNode.id]);
         return {
@@ -26869,6 +27230,7 @@ useEffect(() => {
           workflowAutoConnections: preflight.resolution.autoConnections,
           workflowInputResolution: preflight.resolution.workflowInputResolution,
           createdInputNodeIds: preflight.createdNodeIds,
+          projectBriefIncluded: Boolean(projectBrief),
         };
       }
 
@@ -31156,6 +31518,13 @@ useEffect(() => {
                         className="hidden"
                         onChange={handleCanvasGeneratorUpload}
                       />
+                      <input
+                        ref={canvasWorkflowFileInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={handleCanvasWorkflowFileUpload}
+                      />
                       {canvasInputPickTargetId && (() => {
                         const target = canvasItemsById.get(canvasInputPickTargetId);
                         const allowVideoReference = (
@@ -31344,6 +31713,14 @@ useEffect(() => {
                           );
                           const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
+                          const canvasWorkflowUserInput = isCanvasWorkflowItem
+                            ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)
+                            : null;
+                          const canvasWorkflowAllowsImages = canvasWorkflowUserInput?.acceptImages !== false;
+                          const canvasWorkflowAllowsFiles = canvasWorkflowUserInput?.acceptFiles === true;
+                          const showCanvasAiAttachmentControl = !isCanvasWorkflowItem
+                            || canvasWorkflowAllowsImages
+                            || canvasWorkflowAllowsFiles;
                           const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
                           const canvasAiRealOutputs = isCanvasAiNodeItem ? canvasItem.ai?.outputs || [] : [];
                           const showCanvasAiOutputPreview = isCanvasWorkflowItem || canvasAiRealOutputs.length > 0;
@@ -31437,6 +31814,9 @@ useEffect(() => {
                           const isCanvasTextReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => (
                             !inputItem.bufferItem && inputItem.node.item.type === 'text' && !inputItem.node.ai
                           );
+                          const isCanvasFileReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => (
+                            !inputItem.bufferItem && inputItem.node.item.type === 'file' && !inputItem.node.ai
+                          );
                           const getCanvasReferencePreviewSource = (inputItem: CanvasInputPreviewItem) => {
                             if (inputItem.bufferItem) return getCanvasItemNavSource(inputItem.bufferItem);
                             if (inputItem.node.item.type === 'image') return getCanvasItemNavSource(inputItem.node.item);
@@ -31455,6 +31835,7 @@ useEffect(() => {
                               isCanvasImageReferencePreviewItem(item)
                               || isCanvasVideoReferencePreviewItem(item)
                               || isCanvasTextReferencePreviewItem(item)
+                              || (isCanvasWorkflowItem && isCanvasFileReferencePreviewItem(item))
                             ))
                             : expandedCanvasInputPreviewItems;
                           const canvasTextMediaInputItems = isTextCanvasItem
@@ -31579,6 +31960,7 @@ useEffect(() => {
                                     <div className={`${canvasItem.ai?.type === 'image-generator' ? 'flex-row' : 'flex-col'} flex min-h-0 flex-1 gap-3 px-4 pb-3 pt-4`}>
                                       <div className="flex min-w-0 flex-1 flex-col gap-3">
                                       <div className="flex items-start justify-between gap-3">
+                                        {showCanvasAiAttachmentControl && (
                                         <button
                                           data-no-drag="true"
                                           type="button"
@@ -31589,7 +31971,7 @@ useEffect(() => {
                                             setCanvasInputMenuForId(prev => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
                                           className={`group/reference relative flex h-[58px] ${canvasAiMediaType === 'video' ? 'max-w-[560px]' : 'max-w-[330px]'} shrink-0 items-center justify-start overflow-visible rounded-[14px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
-                                          title="添加或管理参考图"
+                                          title={isCanvasWorkflowItem ? '添加或管理工作流素材' : '添加或管理参考图'}
                                         >
                                           {canvasAiMediaType === 'video' ? (
                                             <span className="flex h-[58px] max-w-full items-center gap-1.5 overflow-hidden">
@@ -31695,6 +32077,10 @@ useEffect(() => {
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
                                                         {getCanvasAiMediaType(inputSourceNode.ai) === 'video' ? <Film className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                                                       </span>
+                                                    ) : inputSourceNode.item.type === 'file' ? (
+                                                      <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                        <FileIcon className="h-4 w-4" />
+                                                      </span>
                                                     ) : (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
                                                         <Type className="h-4 w-4" />
@@ -31711,11 +32097,14 @@ useEffect(() => {
                                             </span>
                                           ) : (
                                             <span className="flex h-14 w-14 flex-col items-center justify-center gap-1 rounded-[14px] border border-dashed border-stone-300/48 text-[9px] font-black text-stone-400 transition-colors group-hover/reference:border-stone-400/70 group-hover/reference:text-stone-500 dark:border-white/[0.12] dark:text-white/34 dark:group-hover/reference:border-white/24 dark:group-hover/reference:text-white/52">
-                                              <ImageIcon className="h-3.5 w-3.5 shrink-0" />
-                                              <span>参考图</span>
+                                              {isCanvasWorkflowItem && !canvasWorkflowAllowsImages && canvasWorkflowAllowsFiles
+                                                ? <FileIcon className="h-3.5 w-3.5 shrink-0" />
+                                                : <ImageIcon className="h-3.5 w-3.5 shrink-0" />}
+                                              <span>{isCanvasWorkflowItem ? '输入素材' : '参考图'}</span>
                                             </span>
                                           )}
                                         </button>
+                                        )}
                                         <div className="ml-auto flex min-w-[132px] flex-col items-end gap-1.5 pt-0.5">
                                           <span className="max-w-[250px] truncate text-[11px] font-black text-stone-500 dark:text-white/58">
                                             {isCanvasWorkflowItem ? canvasItem.ai?.presetLabel || '工作流模块' : canvasItem.ai?.presetLabel || getCanvasAiNodeTitle(canvasItem.ai)}
@@ -31987,15 +32376,46 @@ useEffect(() => {
                                       {isCanvasWorkflowItem ? (
                                         <div className="shrink-0 rounded-[14px] px-0.5 py-1 text-[13px] font-semibold leading-6 text-stone-500 dark:text-white/54">
                                           <div className="flex items-center gap-2 text-stone-600 dark:text-white/68">
-                                            <Link className="h-4 w-4" />
-                                            <span>{canvasWorkflow?.label || canvasItem.ai?.presetLabel || '未命名工作流'}</span>
+                                            <Link className="h-4 w-4 shrink-0" />
+                                            <span className="min-w-0 flex-1 truncate">{canvasWorkflow?.label || canvasItem.ai?.presetLabel || '未命名工作流'}</span>
+                                            <span className="shrink-0 rounded-full bg-stone-950/[0.045] px-2 py-0.5 text-[9px] font-black text-stone-500 dark:bg-white/[0.07] dark:text-white/50">
+                                              {canvasWorkflow?.nodes.length || 0} 个步骤
+                                            </span>
                                           </div>
-                                          <div className="mt-2 line-clamp-3 text-[12px] leading-5 text-stone-400 dark:text-white/38">
-                                            {canvasWorkflow?.hint || '右键选择「展开工作流」可查看和修改内部节点。'}
-                                          </div>
-                                          <div className="mt-2 inline-flex rounded-full bg-stone-950/[0.045] px-2.5 py-1 text-[10px] font-black text-stone-500 dark:bg-white/[0.07] dark:text-white/50">
-                                            {canvasWorkflow?.nodes.filter(node => node.ai?.type === 'image-generator').length || 0} 个生图步骤
-                                          </div>
+                                          {canvasWorkflowUserInput?.enabled !== false ? (
+                                            <div className="mt-1.5">
+                                              <label className="mb-0.5 flex items-center gap-1 text-[10px] font-black text-stone-400 dark:text-white/38">
+                                                {canvasWorkflowUserInput?.label || '用户需求'}
+                                                {canvasWorkflowUserInput?.required && <span className="text-red-500">*</span>}
+                                              </label>
+                                              <textarea
+                                                data-no-drag="true"
+                                                data-canvas-edit-control="true"
+                                                data-canvas-node-prompt="true"
+                                                rows={2}
+                                                defaultValue={canvasItem.item.content || ''}
+                                                onChange={(event) => scheduleCanvasAiPromptDraftCommit(canvasItem.id, event.currentTarget.value)}
+                                                onFocus={() => {
+                                                  setCanvasAiPromptEditingId(canvasItem.id);
+                                                  resizeCanvasAiPromptEditor(canvasItem.id, true, false);
+                                                  updateCanvasSelection([canvasItem.id]);
+                                                }}
+                                                onBlur={(event) => {
+                                                  commitCanvasAiPromptDraft(canvasItem.id, event.currentTarget.value, true);
+                                                  setCanvasAiPromptEditingId(prev => prev === canvasItem.id ? null : prev);
+                                                  resizeCanvasAiPromptEditor(canvasItem.id, false, true);
+                                                }}
+                                                onPointerDown={(event) => event.stopPropagation()}
+                                                onWheel={(event) => event.stopPropagation()}
+                                                placeholder={canvasWorkflowUserInput?.placeholder || '描述你希望这个工作流完成的任务…'}
+                                                className="h-[62px] w-full resize-none overflow-y-auto rounded-[11px] border border-stone-950/[0.055] bg-white/42 px-2.5 py-1.5 text-[12px] font-semibold leading-5 text-stone-700 outline-none placeholder:text-stone-400 focus:border-blue-300 focus:bg-white/68 dark:border-white/[0.075] dark:bg-white/[0.035] dark:text-white/74 dark:placeholder:text-white/30 dark:focus:border-blue-300/35 dark:focus:bg-white/[0.055]"
+                                              />
+                                            </div>
+                                          ) : (
+                                            <div className="mt-2 line-clamp-3 text-[12px] leading-5 text-stone-400 dark:text-white/38">
+                                              {canvasWorkflow?.hint || '右键选择「展开工作流」可查看和修改内部节点。'}
+                                            </div>
+                                          )}
                                         </div>
                                       ) : isCanvasFrameInterpolationItem ? (
                                         <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
@@ -33020,6 +33440,23 @@ useEffect(() => {
                                     )}
                                   </div>
                                 </div>
+                              ) : canvasItem.item.type === 'file' ? (
+                                <div className="flex h-full w-full flex-col overflow-hidden rounded-[18px] border border-violet-200/70 bg-white/92 text-stone-700 shadow-[0_10px_26px_rgba(15,23,42,0.10)] dark:border-violet-300/16 dark:bg-stone-900/92 dark:text-white/78">
+                                  <div className="flex items-center gap-2 border-b border-stone-950/[0.045] bg-violet-50/72 px-3 py-2 dark:border-white/[0.06] dark:bg-violet-300/[0.08]">
+                                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-violet-500/10 text-violet-600 dark:bg-violet-300/12 dark:text-violet-200">
+                                      <FileIcon className="h-4 w-4" />
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="truncate text-[12px] font-black">{canvasItem.item.name || '文件附件'}</div>
+                                      <div className="truncate text-[9px] font-bold text-stone-400 dark:text-white/38">
+                                        {canvasItem.item.fileSize ? `${Math.max(1, Math.round(canvasItem.item.fileSize / 1024))} KB` : 'File input'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="min-h-0 flex-1 overflow-hidden px-3 py-2 text-[10px] font-semibold leading-4 text-stone-500 dark:text-white/50">
+                                    <div className="line-clamp-5 whitespace-pre-wrap">{canvasItem.item.content || '未解析文件内容'}</div>
+                                  </div>
+                                </div>
                               ) : (
                                 <div className="relative h-full w-full overflow-visible bg-white/86 shadow-[0_10px_26px_rgba(15,23,42,0.10)] transition-[box-shadow] hover:shadow-[0_14px_32px_rgba(15,23,42,0.12)] dark:bg-stone-900/88 dark:shadow-[0_12px_30px_rgba(0,0,0,0.24)]">
                                   {isGeneratedMediaPending || isGeneratedMediaError ? (
@@ -33277,6 +33714,11 @@ useEffect(() => {
                             || (canvasItem.ai?.type === 'video-generator' && canvasItem.ai?.videoInputMode !== 'FLF')
                           );
                           const isVideoOnlyInput = canvasItem.ai?.type === 'frame-interpolation' || canvasItem.ai?.type === 'video-enhancement';
+                          const workflowUserInput = canvasItem.ai?.type === 'workflow'
+                            ? normalizeCanvasWorkflowUserInput(getCanvasWorkflowTemplateFromNode(canvasItem)?.userInput)
+                            : null;
+                          const canUploadWorkflowImages = canvasItem.ai?.type !== 'workflow' || workflowUserInput?.acceptImages !== false;
+                          const canUploadWorkflowFiles = canvasItem.ai?.type === 'workflow' && workflowUserInput?.acceptFiles === true;
                           return (
                             <div
                               key={`canvas-input-menu-${canvasItem.id}`}
@@ -33292,7 +33734,7 @@ useEffect(() => {
                                 event.stopPropagation();
                               }}
                             >
-                              {!isVideoOnlyInput && (
+                              {!isVideoOnlyInput && canUploadWorkflowImages && (
                                 <button
                                   type="button"
                                   className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
@@ -33304,6 +33746,20 @@ useEffect(() => {
                                 >
                                   <Upload className="h-3.5 w-3.5 text-cyan-500 dark:text-cyan-300" />
                                   本地图片
+                                </button>
+                              )}
+                              {canUploadWorkflowFiles && (
+                                <button
+                                  type="button"
+                                  className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    chooseLocalFilesForCanvasWorkflow(canvasItem.id);
+                                  }}
+                                >
+                                  <FileIcon className="h-3.5 w-3.5 text-violet-500 dark:text-violet-300" />
+                                  本地文件
                                 </button>
                               )}
                               {canUploadReferenceVideo && (
@@ -33321,6 +33777,7 @@ useEffect(() => {
                                   本地视频
                                 </button>
                               )}
+                              {canUploadWorkflowImages && (
                               <button
                                 type="button"
                                 className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
@@ -33335,6 +33792,7 @@ useEffect(() => {
                                   : <ImageIcon className="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />}
                                 {isVideoOnlyInput ? '画布视频' : '画布图片'}
                               </button>
+                              )}
                               <button
                                 type="button"
                                 className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-500 hover:bg-stone-100 hover:text-stone-950 dark:text-white/65 dark:hover:bg-white/10 dark:hover:text-white"
@@ -34420,6 +34878,11 @@ useEffect(() => {
                         );
                         const isMediaToolInput = target?.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target?.ai?.type);
                         const isVideoOnlyInput = target?.ai?.type === 'frame-interpolation' || target?.ai?.type === 'video-enhancement';
+                        const workflowUserInput = target?.ai?.type === 'workflow'
+                          ? normalizeCanvasWorkflowUserInput(getCanvasWorkflowTemplateFromNode(target)?.userInput)
+                          : null;
+                        const canUploadWorkflowImages = target?.ai?.type !== 'workflow' || workflowUserInput?.acceptImages !== false;
+                        const canUploadWorkflowFiles = target?.ai?.type === 'workflow' && workflowUserInput?.acceptFiles === true;
                         return (
                         <>
                           <div className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white/38">新增输入</div>
@@ -34436,7 +34899,7 @@ useEffect(() => {
                               文字说明
                             </button>
                           )}
-                          {!isVideoOnlyInput && (
+                          {!isVideoOnlyInput && canUploadWorkflowImages && (
                             <button
                               type="button"
                               className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
@@ -34448,6 +34911,20 @@ useEffect(() => {
                             >
                               <Upload className="h-3.5 w-3.5 text-cyan-300" />
                               上传图片
+                            </button>
+                          )}
+                          {canUploadWorkflowFiles && (
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                              onClick={() => {
+                                const targetId = canvasContextMenu.targetId || '';
+                                setCanvasContextMenu(null);
+                                chooseLocalFilesForCanvasWorkflow(targetId);
+                              }}
+                            >
+                              <FileIcon className="h-3.5 w-3.5 text-violet-300" />
+                              上传文件
                             </button>
                           )}
                           {canUploadReferenceVideo && (

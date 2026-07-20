@@ -7,7 +7,7 @@ import {
   Lightbulb,
   Sparkles,
 } from 'lucide-react';
-import type { WorkflowResultCardData } from '../features/agentModel';
+import type { WorkflowResultCardData, WorkflowResultStage } from '../features/agentModel';
 
 type WorkflowResultCardProps = {
   result: WorkflowResultCardData;
@@ -30,6 +30,14 @@ const STATUS_STYLE: Record<WorkflowResultCardData['status'], {
     label: '执行失败',
     badge: 'bg-red-50 text-red-600 dark:bg-red-400/10 dark:text-red-200',
   },
+};
+
+const STAGE_LABELS: Record<WorkflowResultStage['stage'], string> = {
+  requirement: '需求分析',
+  research: '灵感 / 参考分析',
+  concept: '设计策略与概念',
+  refinement: '方案评审与深化',
+  delivery: '交付整理',
 };
 
 const TextAsset = ({ title, content }: { title: string; content: string }) => (
@@ -57,7 +65,7 @@ export function WorkflowResultCard({ result, compact = false }: WorkflowResultCa
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h3 className="min-w-0 flex-1 truncate text-[11px] font-black text-stone-800 dark:text-white/88">
-              {result.workflowName}
+              {result.title || result.workflowName}
             </h3>
             <span className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-bold ${status.badge}`}>
               {status.label}
@@ -71,32 +79,56 @@ export function WorkflowResultCard({ result, compact = false }: WorkflowResultCa
       </header>
 
       <div className="space-y-3 p-3">
-        {result.designStrategy && (
+        {result.stages.length > 0 ? (
           <section>
             <div className="mb-1.5 flex items-center gap-1.5 text-[9px] font-black text-stone-600 dark:text-white/65">
-              <Lightbulb className="h-3.5 w-3.5 text-amber-500" />设计策略
+              <Lightbulb className="h-3.5 w-3.5 text-amber-500" />完整设计过程
             </div>
-            <TextAsset title={result.designStrategy.title} content={result.designStrategy.content} />
-          </section>
-        )}
-
-        {result.analysisResults.length > 0 && (
-          <section>
-            <div className="mb-1.5 flex items-center gap-1.5 text-[9px] font-black text-stone-600 dark:text-white/65">
-              <FileText className="h-3.5 w-3.5 text-violet-500" />分析结果
-            </div>
-            <div className="space-y-1.5">
-              {result.analysisResults.map(asset => (
-                <TextAsset key={`${asset.nodeId}:${asset.artifactType || asset.title}`} title={asset.title} content={asset.content} />
+            <div className="space-y-2">
+              {result.stages.map((stage, index) => (
+                <div key={`${stage.stage}:${stage.nodeId || index}`} className="flex items-start gap-2">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-500 text-[8px] font-black text-white shadow-sm shadow-blue-500/20">
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 text-[8px] font-bold text-blue-600 dark:text-blue-200/80">
+                      {STAGE_LABELS[stage.stage]}
+                    </div>
+                    <TextAsset title={stage.title} content={stage.summary} />
+                  </div>
+                </div>
               ))}
             </div>
           </section>
+        ) : (
+          <>
+            {result.designStrategy && (
+              <section>
+                <div className="mb-1.5 flex items-center gap-1.5 text-[9px] font-black text-stone-600 dark:text-white/65">
+                  <Lightbulb className="h-3.5 w-3.5 text-amber-500" />设计策略
+                </div>
+                <TextAsset title={result.designStrategy.title} content={result.designStrategy.content} />
+              </section>
+            )}
+            {result.analysisResults.length > 0 && (
+              <section>
+                <div className="mb-1.5 flex items-center gap-1.5 text-[9px] font-black text-stone-600 dark:text-white/65">
+                  <FileText className="h-3.5 w-3.5 text-violet-500" />分析结果
+                </div>
+                <div className="space-y-1.5">
+                  {result.analysisResults.map(asset => (
+                    <TextAsset key={`${asset.nodeId}:${asset.artifactType || asset.title}`} title={asset.title} content={asset.content} />
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
         )}
 
         {result.inspirationReferences.length > 0 && (
           <section>
             <div className="mb-1.5 flex items-center gap-1.5 text-[9px] font-black text-stone-600 dark:text-white/65">
-              <Sparkles className="h-3.5 w-3.5 text-fuchsia-500" />灵感参考
+              <Sparkles className="h-3.5 w-3.5 text-fuchsia-500" />参考资料
             </div>
             <div className={`grid ${columns} gap-1.5`}>
               {result.inspirationReferences.map(reference => (

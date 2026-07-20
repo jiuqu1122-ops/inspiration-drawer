@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorkflowResultCardData } from './workflowResult';
+import { buildWorkflowResultCardData, normalizeWorkflowResultCardData } from './workflowResult';
 
 describe('Workflow Result Card data', () => {
   it('classifies DesignStrategy and keeps the remaining text outputs as analysis assets', () => {
@@ -28,6 +28,8 @@ describe('Workflow Result Card data', () => {
 
     expect(result.designStrategy?.nodeId).toBe('strategy');
     expect(result.analysisResults.map(asset => asset.nodeId)).toEqual(['brief']);
+    expect(result.title).toBe('工业设计工作流');
+    expect(result.stages.map(stage => stage.stage)).toEqual(['requirement', 'concept']);
     expect(result.summary).toContain('2 份文本成果');
   });
 
@@ -50,6 +52,7 @@ describe('Workflow Result Card data', () => {
     });
 
     expect(result.inspirationReferences).toHaveLength(8);
+    expect(result.references).toHaveLength(8);
     expect(result.inspirationReferences[0]?.thumbnail).toBeUndefined();
     expect(new Set(result.inspirationReferences.map(reference => reference.itemId)).size).toBe(8);
   });
@@ -77,5 +80,113 @@ describe('Workflow Result Card data', () => {
     ]);
     expect(result.status).toBe('partial');
     expect(result.error).toBe('生成节点失败');
+  });
+
+  it('aggregates the complete industrial design process into five ordered stages', () => {
+    const result = buildWorkflowResultCardData({
+      workflowId: 'industrial-design-full-process',
+      workflowNodeId: 'workflow-node',
+      workflowName: '工业设计全流程｜本地优先',
+      status: 'success',
+      completedSteps: 7,
+      totalSteps: 7,
+      textAssets: [
+        {
+          nodeId: 'industrial_design_requirement_analysis',
+          title: '1. 需求拆解',
+          content: '目标用户与产品约束。',
+          designAgentConfig: { agentRole: 'requirement_analyzer', outputArtifactType: 'DesignBrief' },
+        },
+        {
+          nodeId: 'industrial_design_research_insights',
+          title: '2. 调研洞察',
+          content: '参考证据与设计机会点。',
+          designAgentConfig: { agentRole: 'inspiration_analyzer', outputArtifactType: 'ResearchReport' },
+        },
+        {
+          nodeId: 'industrial_design_concept_strategy',
+          title: '3A. 概念策略',
+          content: '三个差异化概念方向。',
+          designAgentConfig: { agentRole: 'design_strategist', outputArtifactType: 'DesignStrategy' },
+        },
+        {
+          nodeId: 'industrial_design_concept_review',
+          title: '4A. 方案评审',
+          content: '选择第二个方向继续深化。',
+          designAgentConfig: { agentRole: 'design_reviewer', outputArtifactType: 'DesignReview' },
+        },
+        {
+          nodeId: 'industrial_design_delivery',
+          title: '5. 交付整理',
+          content: '最终方案说明与下一步建议。',
+          designAgentConfig: { agentRole: 'presentation_writer', outputArtifactType: 'Document' },
+        },
+      ],
+      inspirationReferences: [{
+        id: 'reference-1',
+        itemId: 'drawer-item-1',
+        name: '暖白磨砂参考',
+        thumbnail: 'https://example.com/reference.jpg',
+        role: 'CMF_REF',
+      }],
+      generationResults: [
+        {
+          id: 'concept-output',
+          nodeId: 'industrial_design_concept_generation',
+          name: '概念生成',
+          mediaType: 'image',
+          url: 'https://example.com/concept.jpg',
+        },
+        {
+          id: 'refinement-output',
+          nodeId: 'industrial_design_concept_development',
+          name: '方案深化',
+          mediaType: 'image',
+          url: 'https://example.com/refinement.jpg',
+        },
+      ],
+    });
+
+    expect(result.stages.map(stage => stage.stage)).toEqual([
+      'requirement',
+      'research',
+      'concept',
+      'refinement',
+      'delivery',
+    ]);
+    expect(result.stages.find(stage => stage.stage === 'concept')?.summary).toContain('视觉结果：概念生成');
+    expect(result.stages.find(stage => stage.stage === 'refinement')?.summary).toContain('视觉结果：方案深化');
+    expect(result.references).toEqual([{
+      id: 'reference-1',
+      title: '暖白磨砂参考',
+      thumbnail: 'https://example.com/reference.jpg',
+      role: 'CMF_REF',
+    }]);
+    expect(result.media?.map(media => [media.id, media.type])).toEqual([
+      ['concept-output', 'image'],
+      ['refinement-output', 'image'],
+    ]);
+  });
+
+  it('normalizes a compact AgentChatMessage workflowResult without legacy arrays', () => {
+    const normalized = normalizeWorkflowResultCardData({
+      workflowId: 'industrial-design-full-process',
+      title: '工业设计成果',
+      stages: [
+        { stage: 'requirement', title: '需求分析', summary: '需求摘要', nodeId: 'requirement-node' },
+        { stage: 'delivery', title: '最终交付', summary: '交付摘要', nodeId: 'delivery-node' },
+      ],
+      references: [{ id: 'ref', title: '产品参考', role: 'SUBJECT_REF' }],
+      media: [{ id: 'image', nodeId: 'delivery-node', type: 'image', url: 'https://example.com/final.jpg' }],
+    });
+
+    expect(normalized?.workflowName).toBe('工业设计成果');
+    expect(normalized?.stages.map(stage => stage.stage)).toEqual(['requirement', 'delivery']);
+    expect(normalized?.analysisResults.map(asset => asset.agentRole)).toEqual([
+      'requirement_analyzer',
+      'presentation_writer',
+    ]);
+    expect(normalized?.inspirationReferences[0]?.name).toBe('产品参考');
+    expect(normalized?.generationResults[0]?.mediaType).toBe('image');
   });
 });

@@ -1,4 +1,5 @@
 import type { AgentChatMessage, AgentConversation, AgentMessageType } from './agentModel';
+import { normalizeWorkflowResultCardData } from './workflowResult';
 
 const AGENT_CONVERSATIONS_STORAGE_KEY = 'drawer_agent_conversations_v1';
 const AGENT_ACTIVE_CONVERSATION_STORAGE_KEY = 'drawer_agent_active_conversation_v1';
@@ -9,25 +10,23 @@ const normalizeAgentMessage = (value: unknown): AgentChatMessage => {
   if (!value || typeof value !== 'object') return value as AgentChatMessage;
   const message = value as Record<string, unknown>;
   const rawType = message.type;
-  const workflowResult = message.workflowResult && typeof message.workflowResult === 'object' && !Array.isArray(message.workflowResult)
-    ? message.workflowResult as Record<string, unknown>
-    : null;
-  const hasWorkflowResult = !!workflowResult
-    && ['success', 'partial', 'error'].includes(String(workflowResult.status || ''))
-    && typeof workflowResult.workflowName === 'string'
-    && Array.isArray(workflowResult.analysisResults)
-    && Array.isArray(workflowResult.inspirationReferences)
-    && Array.isArray(workflowResult.generationResults)
-    && Array.isArray(workflowResult.nextSteps);
+  const workflowResult = normalizeWorkflowResultCardData(message.workflowResult);
+  const hasWorkflowResult = !!workflowResult;
   let type: AgentMessageType;
-  if (rawType === 'workflow_result') {
-    type = hasWorkflowResult ? 'workflow_result' : 'text';
+  if (hasWorkflowResult) {
+    type = 'workflow_result';
+  } else if (rawType === 'workflow_result') {
+    type = 'text';
   } else if (rawType === 'text' || rawType === 'tool') {
     type = rawType;
   } else {
     type = Array.isArray(message.toolCalls) && message.toolCalls.length > 0 ? 'tool' : 'text';
   }
-  return { ...message, type } as AgentChatMessage;
+  return {
+    ...message,
+    type,
+    ...(workflowResult ? { workflowResult } : {}),
+  } as AgentChatMessage;
 };
 
 export const readAgentConversations = (): AgentConversation[] => {
