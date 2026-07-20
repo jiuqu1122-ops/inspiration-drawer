@@ -260,6 +260,10 @@ import {
 import { EdgeTrigger } from './features/EdgeTrigger';
 import { clearLegacyStartupFlags, isLaunchIntroDoneThisPage, markLaunchIntroDoneThisPage } from './features/startup';
 import { writeImageSourceToClipboard } from './features/imageClipboard';
+import {
+  getDrawerExternalDragCacheCandidates,
+  getDrawerExternalDragLocalCandidates,
+} from './features/drawerExternalDrag';
 import { LruCache } from './features/lruCache';
 import {
   getPreviewOriginalSource,
@@ -22809,18 +22813,68 @@ function MainApp() {
     lastSelectedDrawerItemIdRef.current = itemId;
   };
 
-  const getExternalDragSourcesForItem = (itemId: string) => {
+  const getExternalDragItemsForItem = (itemId: string) => {
     const dragIds = selectedIds.includes(itemId) && selectedIds.length > 1 ? selectedIds : [itemId];
     return items
       .filter(item => dragIds.includes(item.id))
-      .filter(item => item.type === 'image' || item.type === 'file' || item.type === 'video')
-      .map(item => normalizeLocalDragPath(item.path || item.url || item.content))
-      .filter(Boolean);
+      .filter(item => item.type === 'image' || item.type === 'file' || item.type === 'video');
+  };
+
+  const resolveExternalDragLocalPath = async (item: BufferItem) => {
+    for (const candidate of getDrawerExternalDragLocalCandidates(item)) {
+      try {
+        const kind = await invoke<'file' | 'directory' | 'missing'>('path_kind', { path: candidate });
+        if (kind === 'file') return { path: normalizeLocalDragPath(candidate), restored: false };
+      } catch (_) {}
+    }
+
+    const cacheCandidates = getDrawerExternalDragCacheCandidates(item);
+    if (cacheCandidates.length === 0) return { path: '', restored: false };
+
+    const latestCacheDir = (
+      webImageCacheDirRef.current
+      || localStorage.getItem('drawer_web_image_cache_dir')
+      || ''
+    ).trim();
+    try {
+      const { cachedPath, sourceUrl } = await cacheWebImageFromCandidates(
+        cacheCandidates,
+        item.name || item.content || '拖出图片',
+        latestCacheDir || undefined,
+      );
+      if (!cachedPath) return { path: '', restored: false };
+      const cachedUrl = convertFileSrc(cachedPath);
+      const sourceIsData = /^data:image\//i.test(sourceUrl);
+      const patchItem = (current: BufferItem): BufferItem => ({
+        ...current,
+        path: cachedPath,
+        url: cachedUrl,
+        sourceUrl: current.sourceUrl || (sourceIsData ? undefined : sourceUrl),
+        originalUrl: current.originalUrl || (sourceIsData ? undefined : sourceUrl),
+      });
+      setItems(prev => prev.map(current => current.id === item.id ? patchItem(current) : current));
+      updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
+        canvasItem.item.id === item.id
+          ? { ...canvasItem, item: patchItem(canvasItem.item) }
+          : canvasItem
+      )));
+      return { path: cachedPath, restored: true };
+    } catch (err) {
+      console.warn('拖出图片本地缓存恢复失败:', err);
+      return { path: '', restored: false };
+    }
   };
 
   const startNativeDrawerItemDrag = async (itemId: string) => {
-    const paths = getExternalDragSourcesForItem(itemId);
-    if (paths.length === 0) return false;
+    const resolved = await Promise.all(getExternalDragItemsForItem(itemId).map(resolveExternalDragLocalPath));
+    const paths = Array.from(new Set(resolved.map(result => result.path).filter(Boolean)));
+    if (paths.length === 0) {
+      showToast('拖出失败：没有可读取的本地文件或图片缓存');
+      return false;
+    }
+    if (resolved.some(result => result.restored)) {
+      showToast(paths.length > 1 ? '已恢复缺失的本地缓存，正在拖出文件' : '已恢复本地缓存，正在拖出图片');
+    }
     try {
       await invoke('start_file_drag', { paths });
     } catch (err) {
