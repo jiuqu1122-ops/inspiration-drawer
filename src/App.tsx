@@ -19617,7 +19617,24 @@ function MainApp() {
     });
     const failedIds = new Set<string>();
     const skippedIds = new Set<string>();
+    const runtimeErrors = new Map<string, string>();
     let completedCount = 0;
+
+    const getRuntimeNodeLabel = (nodeId: string) => {
+      const templateNode = workflow.nodes.find(node => runtime.idMap.get(node.id) === nodeId);
+      const runtimeItem = runtimeItems.find(item => item.id === nodeId);
+      return templateNode?.item.name
+        || runtimeItem?.ai?.presetLabel
+        || runtimeItem?.item.name
+        || '内部节点';
+    };
+
+    const recordRuntimeNodeFailure = (nodeId: string, error: unknown) => {
+      const rawMessage = error instanceof Error ? error.message : String(error || '节点执行失败');
+      const summary = getCanvasAiErrorSummary(rawMessage);
+      runtimeErrors.set(nodeId, summary);
+      return summary;
+    };
 
     const getRuntimeSourceItems = () => [
       ...canvasItemsRef.current.filter(item => item.id !== targetId),
@@ -19844,6 +19861,7 @@ function MainApp() {
       if (!current) {
         runStatus.set(nodeId, 'failed');
         failedIds.add(nodeId);
+        recordRuntimeNodeFailure(nodeId, '内部节点不存在');
         return;
       }
       runStatus.set(nodeId, 'running');
@@ -19881,11 +19899,23 @@ function MainApp() {
           } else {
             runStatus.set(nodeId, 'failed');
             failedIds.add(nodeId);
+            const summary = recordRuntimeNodeFailure(nodeId, 'Agent API 没有返回文字结果');
+            runtimeItems = runtimeItems.map(item => (
+              item.id === nodeId
+                ? { ...item, item: { ...item.item, remark: `运行失败：${summary}` } }
+                : item
+            ));
           }
         } catch (error) {
           console.warn('Workflow text node failed', error);
           runStatus.set(nodeId, 'failed');
           failedIds.add(nodeId);
+          const summary = recordRuntimeNodeFailure(nodeId, error);
+          runtimeItems = runtimeItems.map(item => (
+            item.id === nodeId
+              ? { ...item, item: { ...item.item, remark: `运行失败：${summary}` } }
+              : item
+          ));
         }
         return;
       }
@@ -19918,6 +19948,12 @@ function MainApp() {
       } else {
         runStatus.set(nodeId, 'failed');
         failedIds.add(nodeId);
+        recordRuntimeNodeFailure(
+          nodeId,
+          latest?.ai?.error
+            || latest?.ai?.outputs?.find(output => output.status === 'error' && output.error)?.error
+            || '图片生成节点没有返回可用结果'
+        );
       }
     };
 
@@ -19953,12 +19989,21 @@ function MainApp() {
       }
     }
 
-    const finalOutputs = collectModuleOutputs('error', failedIds.size > 0 ? '内部节点生成失败' : '没有生成这个输出');
+    const firstFailedId = runOrder.find(nodeId => (
+      runStatus.get(nodeId) === 'failed' && runtimeErrors.has(nodeId)
+    ));
+    const firstFailure = firstFailedId
+      ? `${getRuntimeNodeLabel(firstFailedId)}：${runtimeErrors.get(firstFailedId)}`
+      : '';
+    const workflowError = failedIds.size > 0
+      ? `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}${firstFailure ? `；首个错误：${firstFailure}` : ''}`
+      : '部分终端输出没有生成';
+    const finalOutputs = collectModuleOutputs(
+      'error',
+      failedIds.size > 0 ? workflowError : '没有生成这个输出'
+    );
     const finalSuccessCount = finalOutputs.filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output)).length;
     if (failedIds.size > 0 || finalSuccessCount < outputSlots.length) {
-      const workflowError = failedIds.size > 0
-        ? `内部 ${failedIds.size} 个节点失败/跳过${skippedIds.size > 0 ? `（跳过 ${skippedIds.size} 个）` : ''}`
-        : '部分终端输出没有生成';
       updateCanvasAiGeneratorData(targetId, {
         outputs: finalOutputs,
         workflowRuntime: getRuntimeSnapshots(),
@@ -19975,7 +20020,7 @@ function MainApp() {
         mediaType: 'image',
         generatedCount: finalSuccessCount,
         requestedCount: outputSlots.length,
-        error: failedIds.size > 0 ? `内部 ${failedIds.size} 个节点失败/跳过` : '部分终端输出没有生成',
+        error: workflowError,
       });
       return publishWorkflowResult(finalSuccessCount > 0 || completedCount > 0 ? 'partial' : 'error', finalOutputs, workflowError);
     }
@@ -28134,6 +28179,7 @@ useEffect(() => {
     const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
       request: {
         requestId,
+        model: agentModelRef.current.trim() || undefined,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: buildCanvasTextAgentUserContent(promptParts.join('\n\n'), preparedReferences) },

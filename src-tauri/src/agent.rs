@@ -1066,7 +1066,12 @@ pub async fn agent_openai_chat(
 ) -> Result<AgentOpenAiChatResult, String> {
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
-        return agent_wallet_chat(app_handle, request).await;
+        let mut wallet_request = request;
+        wallet_request.model = Some(resolve_wallet_agent_model(
+            wallet_request.model.as_deref(),
+            &settings.api_model,
+        ));
+        return agent_wallet_chat(app_handle, wallet_request).await;
     }
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     let cancellations = state.openai_cancellations.clone();
@@ -1203,6 +1208,17 @@ pub async fn agent_openai_chat(
     })
     .await
     .map_err(|error| format!("Agent API 后台任务失败：{}", error))?
+}
+
+fn resolve_wallet_agent_model(requested: Option<&str>, configured: &str) -> String {
+    let requested = requested.map(str::trim).filter(|value| !value.is_empty());
+    let model = requested.unwrap_or_else(|| configured.trim());
+    let normalized = normalize_api_model(model);
+    if normalized.is_empty() {
+        "unmind-agent".to_string()
+    } else {
+        normalized
+    }
 }
 
 async fn agent_wallet_chat(
@@ -2178,6 +2194,19 @@ mod tests {
         assert_eq!(normalize_api_model("gpt5.5"), "gpt-5.5");
         assert_eq!(normalize_api_model("5.4-mini"), "gpt-5.4-mini");
         assert_eq!(normalize_api_model("custom-model"), "custom-model");
+    }
+
+    #[test]
+    fn wallet_agent_model_prefers_request_and_falls_back_safely() {
+        assert_eq!(
+            resolve_wallet_agent_model(Some(" gpt-5.6-sol "), "configured-model"),
+            "gpt-5.6-sol"
+        );
+        assert_eq!(
+            resolve_wallet_agent_model(None, " configured-model "),
+            "configured-model"
+        );
+        assert_eq!(resolve_wallet_agent_model(Some("  "), ""), "unmind-agent");
     }
 
     #[test]
