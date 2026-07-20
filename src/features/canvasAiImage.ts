@@ -991,6 +991,11 @@ export const selectCanvasAiImageCandidatesForResolution = (
   });
 };
 
+export const shouldUsePortableWalletImageReferences = (
+  cloudWallet: boolean,
+  mediaType: 'image' | 'video',
+) => cloudWallet && mediaType === 'image';
+
 export const sortCanvasAiImageCandidatesByChannelPriority = (
   candidates: CanvasAiModelCandidate[],
   orderedChannelIds: string[],

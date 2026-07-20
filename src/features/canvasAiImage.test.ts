@@ -27,6 +27,7 @@ import {
   sortCanvasAiImageCandidatesByChannelPriority,
   shouldRetrySameCanvasAiImageCandidate,
   shouldTryNextCanvasAiImageCandidate,
+  shouldUsePortableWalletImageReferences,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
 
@@ -75,6 +76,12 @@ describe('NewAPI image model mapping', () => {
 });
 
 describe('unified wallet image model families', () => {
+  it('uses portable references for single-channel wallet image requests', () => {
+    expect(shouldUsePortableWalletImageReferences(true, 'image')).toBe(true);
+    expect(shouldUsePortableWalletImageReferences(false, 'image')).toBe(false);
+    expect(shouldUsePortableWalletImageReferences(true, 'video')).toBe(false);
+  });
+
   it('merges XAIS resolution variants into the public model families', () => {
     expect(getXaisImageModelDisplayName('Xais Nano Pro_2K')).toBe('Nano Banana Pro');
     expect(getXaisImageModelDisplayName('Nano_Banana_Pro_4K_0')).toBe('Nano Banana Pro');

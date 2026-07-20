@@ -329,6 +329,7 @@ import {
   normalizeNewApiBaseEndpoint,
   normalizeXaisImage2Model,
   resolveXaisImage2Ratio,
+  shouldUsePortableWalletImageReferences,
   supportsCanvasAiImageResolution,
 } from './features/canvasAiImage';
 
@@ -15367,13 +15368,17 @@ function MainApp() {
     delivery: 'auto' | 'direct' | 'remote-only' = 'auto',
     sourceItems: CanvasImageItem[] = canvasItemsRef.current,
     referenceFormat: 'any' | 'jpeg' = 'any',
-    publicationPreference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first'
+    publicationPreference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first',
+    portableWalletReferences = false,
   ) => {
     const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
     const inputMode = isOpenAiLikeCanvasAiProvider(provider) ? 'stable' : mode;
     const useDirectLocalInputs = isOpenAiLikeCanvasAiProvider(provider) || delivery === 'direct';
     const requireRemoteInputs = delivery === 'remote-only';
-    const uploadXaisAttachmentInputs = provider === 'xais-chat' && requireRemoteInputs && referenceFormat === 'jpeg';
+    const uploadXaisAttachmentInputs = !portableWalletReferences
+      && provider === 'xais-chat'
+      && requireRemoteInputs
+      && referenceFormat === 'jpeg';
     const inputImageItems = getCanvasImageInputBufferItemsForNode(canvasItem, sourceItems);
     const result: string[] = [];
     let usedRemoteFirst = false;
@@ -15395,7 +15400,9 @@ function MainApp() {
         if (prepared.warning) {
           console.warn('AI 节点参考图浏览器读取失败，改用本地源:', prepared.warning);
         }
-        if (isXaisAttachmentImageRef(prepared.source)) {
+        if (!portableWalletReferences
+          && provider === 'xais-chat'
+          && isXaisAttachmentImageRef(prepared.source)) {
           result.push(prepared.source);
           continue;
         }
@@ -18151,9 +18158,10 @@ function MainApp() {
       const requestModel = isCanvasAiLicenseManaged && effectiveCanvasAiModel
         ? effectiveCanvasAiModel
         : getCanvasAiResolvedModel(provider, selectedModel, mediaType);
-      const usePortableWalletReferences = mediaType === 'image'
-        && useCloudWallet
-        && (targetAi.providerCandidates?.length || 0) > 1;
+      const usePortableWalletReferences = shouldUsePortableWalletImageReferences(
+        useCloudWallet,
+        mediaType,
+      );
       const isXaisWorkerRequest = provider === 'xais-chat'
         && (mediaType === 'video' || isCanvasAiXaisWorkerModel(requestModel));
       const xaisReferenceFormat: 'any' | 'jpeg' = !usePortableWalletReferences
@@ -18174,7 +18182,8 @@ function MainApp() {
           : useDirectReferenceImages ? 'direct' : 'auto',
         getSourceItems(),
         xaisReferenceFormat,
-        usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first'
+        usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first',
+        usePortableWalletReferences,
       );
       let inputImages = preparedInputs.images;
       let negativePrompt: string | undefined;
@@ -18297,7 +18306,9 @@ function MainApp() {
             'stable',
             useDirectReferenceImages ? 'direct' : 'auto',
             getSourceItems(),
-            xaisReferenceFormat
+            xaisReferenceFormat,
+            'cloudflared-first',
+            usePortableWalletReferences,
           );
           inputImages = fallbackInputs.images;
           temporaryReferenceShares = [
@@ -18333,7 +18344,8 @@ function MainApp() {
             'remote-only',
             getSourceItems(),
             xaisReferenceFormat,
-            usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first'
+            usePortableWalletReferences ? 'hosted-first' : 'cloudflared-first',
+            usePortableWalletReferences,
           );
           if (freshInputs.images.length === 0) return false;
           inputImages = freshInputs.images;
