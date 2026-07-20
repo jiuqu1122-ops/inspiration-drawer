@@ -10,7 +10,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, State};
 
 use crate::ai_credentials::{
@@ -20,6 +20,7 @@ use crate::ai_gateway::{self, ApiBalanceResult};
 use crate::license::types::AiGatewayKind;
 
 const AGENT_SETTINGS_FILE: &str = "agent_config.json";
+const AGENT_WALLET_TASKS_FILE: &str = "agent_wallet_tasks.json";
 const CONFIGURED_HEADER_VALUE: &str = "[configured]";
 const CODEX_RPC_TIMEOUT_SECS: u64 = 45;
 const CODEX_API_KEY_ENV: &str = "LINGGAN_CODEX_API_KEY";
@@ -332,6 +333,8 @@ impl CodexRuntime {
 pub struct AgentRuntimeState {
     codex: Mutex<Option<CodexRuntime>>,
     openai_cancellations: Arc<Mutex<HashSet<String>>>,
+    wallet_tasks: Arc<Mutex<HashMap<String, String>>>,
+    wallet_pollers: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Drop for AgentRuntimeState {
@@ -346,6 +349,30 @@ impl Drop for AgentRuntimeState {
 
 fn settings_path(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
     crate::get_user_data_dir(app_handle).join(AGENT_SETTINGS_FILE)
+}
+
+fn wallet_tasks_path(app_handle: &tauri::AppHandle) -> std::path::PathBuf {
+    crate::get_user_data_dir(app_handle).join(AGENT_WALLET_TASKS_FILE)
+}
+
+fn read_pending_wallet_tasks(app_handle: &tauri::AppHandle) -> HashMap<String, String> {
+    fs::read_to_string(wallet_tasks_path(app_handle))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_pending_wallet_tasks(
+    app_handle: &tauri::AppHandle,
+    tasks: &HashMap<String, String>,
+) -> Result<(), String> {
+    let path = wallet_tasks_path(app_handle);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("无法创建 Agent 任务目录：{error}"))?;
+    }
+    let text = serde_json::to_string(tasks)
+        .map_err(|error| format!("无法序列化 Agent 任务记录：{error}"))?;
+    fs::write(path, text).map_err(|error| format!("无法保存 Agent 任务记录：{error}"))
 }
 
 fn get_codex_home(app_handle: &tauri::AppHandle, mode: CodexRuntimeMode) -> PathBuf {
@@ -813,36 +840,43 @@ pub struct AgentInspirationAnalysisRequest {
 #[tauri::command]
 pub async fn agent_analyze_inspiration(
     app_handle: tauri::AppHandle,
+    state: State<'_, AgentRuntimeState>,
     request: AgentInspirationAnalysisRequest,
 ) -> Result<Value, String> {
+    let request_id = format!("inspiration-{}", uuid_like_id());
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5 * 60))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("无法初始化灵感自动分析连接：{error}"))?;
-    let response = client
-        .post("https://api.unmind.art/v1/ai/inspirations/analyze")
-        .bearer_auth(access_token)
-        .json(&json!({
-            "itemId": request.item_id,
-            "imageSource": request.image_source,
-            "userTags": request.user_tags,
-            "userNotes": request.user_notes,
-            "existingProfile": request.existing_profile,
-            "model": request.model,
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("灵感自动分析请求失败：{error}"))?;
-    let status = response.status();
-    let value = response
-        .json::<Value>()
-        .await
-        .map_err(|error| format!("读取灵感自动分析响应失败：{error}"))?;
-    if !status.is_success() {
-        let message = value.get("message").and_then(Value::as_str).unwrap_or("服务暂不可用");
-        return Err(format!("灵感自动分析 HTTP {status}：{message}"));
+    let mut payload = json!({
+        "itemId": request.item_id,
+        "imageSource": request.image_source,
+        "userTags": request.user_tags,
+        "userNotes": request.user_notes,
+        "existingProfile": request.existing_profile,
+    });
+    if let Some(model) = request.model {
+        payload["model"] = Value::String(model);
     }
+    let submission = submit_wallet_task(
+        &client,
+        &access_token,
+        &request_id,
+        "inspiration_analysis",
+        payload,
+    )
+    .await?;
+    let value = poll_wallet_task(
+        &app_handle,
+        &client,
+        &access_token,
+        &request_id,
+        submission,
+        &state.openai_cancellations,
+    )
+    .await?;
     Ok(value.get("profile").cloned().unwrap_or(value))
 }
 
@@ -852,6 +886,233 @@ struct OpenAiToolCallResult {
     id: String,
     name: String,
     arguments: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WalletTaskSubmission {
+    task_id: String,
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WalletTaskError {
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WalletTaskStatus {
+    task_id: String,
+    status: String,
+    stage: String,
+    progress: u8,
+    result: Option<Value>,
+    error: Option<WalletTaskError>,
+}
+
+fn wallet_task_error(value: &Value, fallback: &str) -> String {
+    value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn wallet_poll_backoff_seconds(consecutive_errors: u32) -> u64 {
+    2_u64
+        .saturating_pow(consecutive_errors.min(5))
+        .min(30)
+}
+
+fn wallet_task_is_terminal(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
+fn wallet_poll_status_is_retryable(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 502 | 503 | 504 | 524)
+}
+
+fn openai_request_cancelled(
+    cancellations: &Arc<Mutex<HashSet<String>>>,
+    request_id: &str,
+) -> bool {
+    cancellations
+        .lock()
+        .map(|values| values.contains(request_id))
+        .unwrap_or(false)
+}
+
+async fn submit_wallet_task(
+    client: &reqwest::Client,
+    access_token: &str,
+    request_id: &str,
+    task_type: &str,
+    payload: Value,
+) -> Result<WalletTaskSubmission, String> {
+    let response = client
+        .post("https://api.unmind.art/v1/ai/tasks")
+        .timeout(Duration::from_secs(30))
+        .bearer_auth(access_token)
+        .json(&json!({
+            "type": task_type,
+            "requestId": request_id,
+            "payload": payload,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("提交后台任务失败：{error}"))?;
+    let status = response.status();
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("读取后台任务提交响应失败：{error}"))?;
+    if status != reqwest::StatusCode::ACCEPTED {
+        return Err(format!(
+            "提交后台任务 HTTP {status}：{}",
+            wallet_task_error(&value, "服务暂不可用")
+        ));
+    }
+    serde_json::from_value(value).map_err(|error| format!("后台任务提交响应格式无效：{error}"))
+}
+
+async fn poll_wallet_task(
+    app_handle: &tauri::AppHandle,
+    client: &reqwest::Client,
+    access_token: &str,
+    request_id: &str,
+    submission: WalletTaskSubmission,
+    cancellations: &Arc<Mutex<HashSet<String>>>,
+) -> Result<Value, String> {
+    let started_at = Instant::now();
+    let mut consecutive_errors = 0_u32;
+    let mut poll_count = 0_u32;
+    let task_id = submission.task_id;
+    let _ = app_handle.emit(
+        "agent-openai-stream",
+        json!({
+            "requestId": request_id,
+            "kind": "status",
+            "taskId": task_id,
+            "status": submission.status,
+            "stage": "queued",
+            "progress": 0,
+        }),
+    );
+
+    loop {
+        if openai_request_cancelled(cancellations, request_id) {
+            let _ = client
+                .delete(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
+                .timeout(Duration::from_secs(15))
+                .bearer_auth(access_token)
+                .send()
+                .await;
+            return Err("Agent 请求已取消".to_string());
+        }
+        if started_at.elapsed() > Duration::from_secs(12 * 60) {
+            return Err("后台任务查询超时，任务可能仍在服务器运行".to_string());
+        }
+
+        tokio_sleep(Duration::from_secs(2)).await;
+        poll_count += 1;
+        let response = client
+            .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
+            .timeout(Duration::from_secs(15))
+            .bearer_auth(access_token)
+            .send()
+            .await;
+        let response = match response {
+            Ok(value) => value,
+            Err(error) => {
+                consecutive_errors += 1;
+                let delay = wallet_poll_backoff_seconds(consecutive_errors);
+                let _ = app_handle.emit(
+                    "agent-openai-stream",
+                    json!({
+                        "requestId": request_id,
+                        "kind": "status",
+                        "taskId": task_id,
+                        "status": "running",
+                        "stage": "reconnecting",
+                        "progress": 0,
+                        "pollCount": poll_count,
+                    }),
+                );
+                if started_at.elapsed() > Duration::from_secs(12 * 60) {
+                    return Err(format!("后台任务查询持续失败：{error}"));
+                }
+                tokio_sleep(Duration::from_secs(delay)).await;
+                continue;
+            }
+        };
+        let http_status = response.status();
+        let value = response
+            .json::<Value>()
+            .await
+            .map_err(|error| format!("读取后台任务状态失败：{error}"))?;
+        if wallet_poll_status_is_retryable(http_status) {
+            consecutive_errors += 1;
+            let delay = wallet_poll_backoff_seconds(consecutive_errors);
+            let _ = app_handle.emit(
+                "agent-openai-stream",
+                json!({
+                    "requestId": request_id,
+                    "kind": "status",
+                    "taskId": task_id,
+                    "status": "running",
+                    "stage": "reconnecting",
+                    "progress": 0,
+                    "pollCount": poll_count,
+                }),
+            );
+            tokio_sleep(Duration::from_secs(delay)).await;
+            continue;
+        }
+        if !http_status.is_success() {
+            return Err(format!(
+                "查询后台任务 HTTP {http_status}：{}",
+                wallet_task_error(&value, "服务暂不可用")
+            ));
+        }
+        consecutive_errors = 0;
+        let task: WalletTaskStatus = serde_json::from_value(value)
+            .map_err(|error| format!("后台任务状态格式无效：{error}"))?;
+        let _ = app_handle.emit(
+            "agent-openai-stream",
+            json!({
+                "requestId": request_id,
+                "kind": "status",
+                "taskId": task.task_id,
+                "status": task.status,
+                "stage": task.stage,
+                "progress": task.progress,
+                "pollCount": poll_count,
+            }),
+        );
+        if !wallet_task_is_terminal(&task.status) {
+            continue;
+        }
+        match task.status.as_str() {
+            "succeeded" => {
+                return task.result.ok_or_else(|| "后台任务完成但没有返回结果".to_string());
+            }
+            "failed" | "cancelled" => {
+                let error = task.error.unwrap_or(WalletTaskError {
+                    code: "TASK_FAILED".to_string(),
+                    message: "后台任务未完成".to_string(),
+                });
+                return Err(format!("{}：{}", error.code, error.message));
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn tokio_sleep(duration: Duration) {
+    let _ = tauri::async_runtime::spawn_blocking(move || thread::sleep(duration)).await;
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1071,7 +1332,14 @@ pub async fn agent_openai_chat(
             wallet_request.model.as_deref(),
             &settings.api_model,
         );
-        return agent_wallet_chat(app_handle, wallet_request).await;
+        return agent_wallet_chat(
+            app_handle,
+            wallet_request,
+            state.openai_cancellations.clone(),
+            state.wallet_tasks.clone(),
+            state.wallet_pollers.clone(),
+        )
+        .await;
     }
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     let cancellations = state.openai_cancellations.clone();
@@ -1229,53 +1497,93 @@ fn resolve_wallet_agent_model(requested: Option<&str>, configured: &str) -> Opti
 async fn agent_wallet_chat(
     app_handle: tauri::AppHandle,
     request: AgentOpenAiChatRequest,
+    cancellations: Arc<Mutex<HashSet<String>>>,
+    wallet_tasks: Arc<Mutex<HashMap<String, String>>>,
+    wallet_pollers: Arc<Mutex<HashSet<String>>>,
 ) -> Result<AgentOpenAiChatResult, String> {
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5 * 60))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("无法初始化钱包 Agent 连接：{error}"))?;
-    let response = client
-        .post("https://api.unmind.art/v1/ai/chat/completions")
-        .bearer_auth(access_token)
-        .json(&json!({
-            "clientRequestId": request.request_id,
+    if let Ok(mut tasks) = wallet_tasks.lock() {
+        if tasks.is_empty() {
+            tasks.extend(read_pending_wallet_tasks(&app_handle));
+        }
+    }
+    if let Ok(mut values) = cancellations.lock() {
+        values.remove(&request.request_id);
+    }
+    let persisted_task_id = wallet_tasks
+        .lock()
+        .ok()
+        .and_then(|tasks| tasks.get(&request.request_id).cloned());
+    let submission = if let Some(task_id) = persisted_task_id {
+        WalletTaskSubmission {
+            task_id,
+            status: "running".to_string(),
+        }
+    } else {
+        let mut payload = json!({
             "messages": request.messages,
             "tools": request.tools,
-            "model": request.model,
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("钱包 Agent 请求失败：{error}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|error| format!("读取钱包 Agent 响应失败：{error}"))?;
-    if !status.is_success() {
-        let message = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| preview_response_text(&text));
-        return Err(format!("钱包 Agent HTTP {status}：{message}"));
+        });
+        if let Some(model) = request.model {
+            payload["model"] = Value::String(model);
+        }
+        submit_wallet_task(
+            &client,
+            &access_token,
+            &request.request_id,
+            "agent_chat",
+            payload,
+        )
+        .await?
+    };
+    let poller_started = wallet_pollers
+        .lock()
+        .map(|mut pollers| pollers.insert(request.request_id.clone()))
+        .unwrap_or(false);
+    if !poller_started {
+        return Err("同一个 Agent 后台任务已在查询中".to_string());
     }
+    if let Ok(mut tasks) = wallet_tasks.lock() {
+        tasks.insert(request.request_id.clone(), submission.task_id.clone());
+        let _ = write_pending_wallet_tasks(&app_handle, &tasks);
+    }
+    let value = poll_wallet_task(
+        &app_handle,
+        &client,
+        &access_token,
+        &request.request_id,
+        submission,
+        &cancellations,
+    )
+    .await;
+    if let Ok(mut pollers) = wallet_pollers.lock() {
+        pollers.remove(&request.request_id);
+    }
+    if let Ok(mut tasks) = wallet_tasks.lock() {
+        tasks.remove(&request.request_id);
+        let _ = write_pending_wallet_tasks(&app_handle, &tasks);
+    }
+    if let Ok(mut values) = cancellations.lock() {
+        values.remove(&request.request_id);
+    }
+    let value = value?;
 
     let mut content = String::new();
     let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
     let mut finish_reason = None;
-    parse_openai_buffered_text(
-        &text,
+    parse_openai_response_value(
+        &value,
         &mut content,
         &mut tool_calls,
         &mut finish_reason,
         &app_handle,
         &request.request_id,
-    )?;
+    );
     let tool_calls = tool_calls
         .into_values()
         .map(|value| OpenAiToolCallResult {
@@ -1312,6 +1620,7 @@ fn uuid_like_id() -> String {
 
 #[tauri::command]
 pub fn agent_cancel_openai(
+    app_handle: tauri::AppHandle,
     state: State<'_, AgentRuntimeState>,
     request_id: String,
 ) -> Result<(), String> {
@@ -1319,7 +1628,31 @@ pub fn agent_cancel_openai(
         .openai_cancellations
         .lock()
         .map_err(|_| "Agent cancellation lock poisoned".to_string())?
-        .insert(request_id);
+        .insert(request_id.clone());
+    let task_id = state
+        .wallet_tasks
+        .lock()
+        .ok()
+        .and_then(|tasks| tasks.get(&request_id).cloned());
+    if let Some(task_id) = task_id {
+        tauri::async_runtime::spawn(async move {
+            if let Ok(access_token) = crate::commands::license::cloud_access_token(&app_handle).await
+            {
+                let Ok(client) = reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(15))
+                    .build()
+                else {
+                    return;
+                };
+                let _ = client
+                    .delete(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
+                    .bearer_auth(access_token)
+                    .send()
+                    .await;
+            }
+        });
+    }
     Ok(())
 }
 
@@ -2213,6 +2546,39 @@ mod tests {
         );
         assert_eq!(resolve_wallet_agent_model(Some("  "), ""), None);
         assert_eq!(resolve_wallet_agent_model(Some("unmind-agent"), ""), None);
+    }
+
+    #[test]
+    fn wallet_task_polling_uses_bounded_exponential_backoff() {
+        assert_eq!(wallet_poll_backoff_seconds(1), 2);
+        assert_eq!(wallet_poll_backoff_seconds(2), 4);
+        assert_eq!(wallet_poll_backoff_seconds(4), 16);
+        assert_eq!(wallet_poll_backoff_seconds(20), 30);
+    }
+
+    #[test]
+    fn wallet_task_polling_stops_for_every_terminal_status() {
+        assert!(wallet_task_is_terminal("succeeded"));
+        assert!(wallet_task_is_terminal("failed"));
+        assert!(wallet_task_is_terminal("cancelled"));
+        assert!(!wallet_task_is_terminal("queued"));
+        assert!(!wallet_task_is_terminal("running"));
+    }
+
+    #[test]
+    fn wallet_task_polling_retries_only_transient_http_errors() {
+        assert!(wallet_poll_status_is_retryable(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(wallet_poll_status_is_retryable(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(wallet_poll_status_is_retryable(reqwest::StatusCode::GATEWAY_TIMEOUT));
+        assert!(!wallet_poll_status_is_retryable(reqwest::StatusCode::BAD_REQUEST));
+        assert!(!wallet_poll_status_is_retryable(reqwest::StatusCode::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn wallet_task_polling_observes_request_cancellation() {
+        let cancellations = Arc::new(Mutex::new(HashSet::from(["request-1".to_string()])));
+        assert!(openai_request_cancelled(&cancellations, "request-1"));
+        assert!(!openai_request_cancelled(&cancellations, "request-2"));
     }
 
     #[test]

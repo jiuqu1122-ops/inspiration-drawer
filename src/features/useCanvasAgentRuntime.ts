@@ -105,6 +105,24 @@ type OpenAiChatResult = {
   finishReason?: string;
 };
 
+const walletTaskStageLabel = (stage: string) => {
+  const labels: Record<string, string> = {
+    queued: '请求已进入后台队列',
+    starting: '后台任务正在启动',
+    preparing: '正在准备分析上下文',
+    connecting: '正在连接模型渠道',
+    generating: '模型正在分析和生成',
+    retrying: '渠道短暂不可用，正在重试',
+    upstream_error: '模型渠道返回临时错误',
+    reconnecting: '网络波动，正在恢复任务查询',
+    aggregating: '正在整理模型结果',
+    completed: '模型结果已返回',
+    failed: '后台任务执行失败',
+    cancelled: '后台任务已取消',
+  };
+  return labels[stage] || '后台任务正在处理';
+};
+
 type PendingToolRun = {
   conversationId: string;
   assistantMessageId: string;
@@ -234,6 +252,7 @@ const collectWorkflowTraceFromCalls = (calls: AgentToolCall[]) => {
 const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'software-agent-full-control-v5';
 const AGENT_MAX_TOOL_ROUNDS = 10;
 const AGENT_THINKING_STEP_LIMIT = 24;
+const AGENT_TOOL_TIMEOUT_MS = 3 * 60 * 1000;
 const AGENT_THINKING_TERMINAL_STATUSES = new Set<AgentThinkingStepStatus>([
   'completed',
   'cancelled',
@@ -807,7 +826,31 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       listen<Record<string, unknown>>('agent-openai-stream', event => {
         const requestId = String(event.payload?.requestId || '');
         const active = activeOpenAiRequestsRef.current.get(requestId);
-        if (!active || event.payload?.kind !== 'delta') return;
+        if (!active) return;
+        if (event.payload?.kind === 'status') {
+          const stage = String(event.payload?.stage || 'running');
+          const progress = Math.max(0, Math.min(100, Number(event.payload?.progress || 0)));
+          const taskStatus = String(event.payload?.status || 'running');
+          upsertThinkingStep(active.conversationId, active.messageId, 'wallet-task-status', {
+            title: walletTaskStageLabel(stage),
+            detail: progress > 0 ? `处理进度 ${Math.round(progress)}%` : undefined,
+            status: taskStatus === 'failed'
+              ? 'error'
+              : taskStatus === 'cancelled'
+                ? 'cancelled'
+                : taskStatus === 'succeeded'
+                  ? 'completed'
+                  : 'running',
+          });
+          if (!['failed', 'cancelled', 'succeeded'].includes(taskStatus)) {
+            patchMessage(active.conversationId, active.messageId, message => ({
+              ...message,
+              status: 'streaming',
+            }));
+          }
+          return;
+        }
+        if (event.payload?.kind !== 'delta') return;
         const delta = String(event.payload?.delta || '');
         if (!delta) return;
         active.streamed = true;
@@ -1029,11 +1072,19 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
       status: 'running',
     });
     updateToolCalls(run);
+    let timeoutId: number | undefined;
     try {
-      call.result = await optionsRef.current.executeTool(call.name, call.arguments, {
-        snapshot: run.snapshot?.context,
-        userRequest: run.userRequest || run.snapshot?.userRequest,
-      });
+      call.result = await Promise.race([
+        optionsRef.current.executeTool(call.name, call.arguments, {
+          snapshot: run.snapshot?.context,
+          userRequest: run.userRequest || run.snapshot?.userRequest,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timeoutId = window.setTimeout(() => {
+            reject(new Error(`工具执行超过 ${Math.round(AGENT_TOOL_TIMEOUT_MS / 60_000)} 分钟，已停止等待`));
+          }, AGENT_TOOL_TIMEOUT_MS);
+        }),
+      ]);
       call.status = 'completed';
       upsertThinkingStep(run.conversationId, run.assistantMessageId, `tool-${call.id}`, {
         title: `已执行：${getCanvasAgentToolLabel(call.name)}`,
@@ -1049,6 +1100,8 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         detail: String(error),
         status: 'error',
       });
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
     }
     updateToolCalls(run);
   }, [updateToolCalls, upsertThinkingStep]);
