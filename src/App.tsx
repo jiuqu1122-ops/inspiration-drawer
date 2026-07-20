@@ -201,6 +201,10 @@ import {
   releaseCanvasAiRun,
 } from './features/canvasAiRunGuard';
 import {
+  estimateCanvasImageGenerationCredits,
+  estimateCanvasWorkflowCredits,
+} from './features/canvasGenerationCredits';
+import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
   buildScheduleItemsFromText,
@@ -31882,6 +31886,30 @@ useEffect(() => {
                           );
                           const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
+                          const canvasWorkflowCreditEstimate = isCanvasWorkflowItem
+                            ? estimateCanvasWorkflowCredits(canvasWorkflow, {
+                              resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
+                                node.ai?.provider || canvasAiProvider,
+                              )),
+                            })
+                            : null;
+                          const canvasImageCreditEstimate = canvasItem.ai?.type === 'image-generator'
+                            ? estimateCanvasImageGenerationCredits({
+                              model: canvasAiItemModel,
+                              resolution: canvasAiItemImageResolution,
+                              count: canvasItem.ai.count,
+                            })
+                            : null;
+                          const canvasRunCreditLabel = canvasWorkflowCreditEstimate
+                            ? `${canvasWorkflowCreditEstimate.imageNodeCount}图片节点 + ${canvasWorkflowCreditEstimate.llmNodeCount}LLM节点 · ${canvasWorkflowCreditEstimate.totalCredits}积分`
+                            : canvasImageCreditEstimate
+                              ? `${canvasImageCreditEstimate.totalCredits}积分`
+                              : '';
+                          const canvasRunCreditTitle = canvasWorkflowCreditEstimate
+                            ? `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：${canvasWorkflowCreditEstimate.imageNodeCount} 个图片节点，共生成 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；${canvasWorkflowCreditEstimate.llmNodeCount} 个 LLM 节点（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
+                            : canvasImageCreditEstimate
+                              ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
+                              : undefined;
                           const canvasWorkflowUserInput = isCanvasWorkflowItem
                             ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)
                             : null;
@@ -33249,6 +33277,7 @@ useEffect(() => {
                                         disabled={canvasItem.ai?.status === 'working' || isLocalMediaBenchmarking}
                                         onPointerDown={(event) => handleCanvasAiRunPointerDown(event, canvasItem.id)}
                                         onClick={(event) => handleCanvasAiRunClick(event, canvasItem.id)}
+                                        title={canvasRunCreditTitle}
                                         className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
                                       >
                                         <Play className={`h-4 w-4 fill-current ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
@@ -33267,6 +33296,11 @@ useEffect(() => {
                                             : hasCanvasAiGeneratedResults(canvasItem)
                                               ? '再次生成'
                                               : '生成'}
+                                        {canvasItem.ai?.status !== 'working' && canvasRunCreditLabel && (
+                                          <span className="whitespace-nowrap text-[10px] font-bold text-amber-600 dark:text-amber-300">
+                                            · {canvasRunCreditLabel}
+                                          </span>
+                                        )}
                                       </button>
                                     </div>
                                   </div>
