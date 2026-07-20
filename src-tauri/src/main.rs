@@ -10676,11 +10676,20 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
         return image_bytes_to_png_data_url(&bytes);
     }
 
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    let local_path = local_path_from_url_like(trimmed);
+    if let Some(path) = local_path.as_ref() {
+        if !path.exists() || !path.is_file() {
+            return Err("local image source does not exist or is not a file".to_string());
+        }
+    }
+
+    if local_path.is_none()
+        && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+    {
         return Ok(trimmed.to_string());
     }
 
-    let path = local_path_from_url_like(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
+    let path = local_path.unwrap_or_else(|| PathBuf::from(trimmed));
     if path.exists() && path.is_file() {
         let bytes = fs::read(&path).map_err(|e| e.to_string())?;
         let mime = guess_mime_from_path(&path);

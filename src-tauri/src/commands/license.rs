@@ -196,6 +196,32 @@ pub struct CloudVideoGenerationResult {
     charged_credits: String,
 }
 
+fn normalize_cloud_image_references(input_images: Vec<String>) -> Result<Vec<String>, String> {
+    input_images
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let normalized = crate::image_source_for_ai(&source).map_err(|error| {
+                format!(
+                    "invalid_request: reference image {} could not be read: {}",
+                    index + 1,
+                    error
+                )
+            })?;
+            if normalized.starts_with("data:image/")
+                || normalized.starts_with("http://")
+                || normalized.starts_with("https://")
+            {
+                return Ok(normalized);
+            }
+            Err(format!(
+                "invalid_request: reference image {} is not a readable local image, HTTP URL, or data URL",
+                index + 1
+            ))
+        })
+        .collect()
+}
+
 #[derive(Deserialize)]
 struct CloudApiError {
     error: Option<String>,
@@ -585,7 +611,7 @@ pub async fn redeem_credit_code(
 #[tauri::command]
 pub async fn generate_cloud_images(
     app_handle: tauri::AppHandle,
-    request: CloudImageGenerationRequest,
+    mut request: CloudImageGenerationRequest,
 ) -> Result<CloudImageGenerationResult, String> {
     let client_request_id = request.client_request_id.trim();
     let model = request.model.trim();
@@ -611,6 +637,8 @@ pub async fn generate_cloud_images(
     if !(1..=4).contains(&request.count) || request.input_images.len() > 8 {
         return Err("invalid_request: 生图数量或参考图数量无效".to_string());
     }
+    request.input_images =
+        normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
     if request
         .input_images
         .iter()
@@ -816,7 +844,9 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_display_name, validate_email};
+    use super::{normalize_cloud_image_references, validate_display_name, validate_email};
+    use base64::Engine as _;
+    use std::fs;
 
     #[test]
     fn validates_trial_display_names() {
@@ -835,5 +865,41 @@ mod tests {
             "designer@example.com"
         );
         assert!(validate_email("not-an-email").is_err());
+    }
+
+    #[test]
+    fn converts_local_cloud_image_references_to_data_urls() {
+        let path = std::env::temp_dir().join(format!(
+            "inspiration-drawer-cloud-reference-{}.png",
+            std::process::id()
+        ));
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nYQAAAAASUVORK5CYII=")
+            .unwrap();
+        fs::write(&path, png).unwrap();
+
+        let raw_path = path.to_string_lossy().to_string();
+        let source = if cfg!(target_os = "windows") {
+            format!("http://asset.localhost/{}", raw_path.replace('\\', "/"))
+        } else {
+            raw_path
+        };
+        let result = normalize_cloud_image_references(vec![source]).unwrap();
+        let _ = fs::remove_file(path);
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn keeps_portable_cloud_image_references_unchanged() {
+        let references = vec![
+            "https://assets.example.test/reference.png".to_string(),
+            "data:image/png;base64,aGVsbG8=".to_string(),
+        ];
+        assert_eq!(
+            normalize_cloud_image_references(references.clone()).unwrap(),
+            references
+        );
     }
 }
