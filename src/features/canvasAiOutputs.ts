@@ -19,6 +19,11 @@ export const getCanvasAiOutputDisplaySource = (output?: CanvasAiGeneratedOutput 
   || ''
 );
 
+export const buildCanvasAiOutputLocalCachePatch = (path: string) => ({
+  path,
+  cacheStatus: 'pending' as const,
+});
+
 export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
   (isCanvasAiGeneratorType(canvasItem?.ai?.type) || canvasItem?.ai?.type === 'workflow')
     ? (canvasItem.ai.outputs || []).filter(

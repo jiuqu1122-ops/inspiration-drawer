@@ -264,6 +264,7 @@ import {
   getDrawerExternalDragCacheCandidates,
   getDrawerExternalDragLocalCandidates,
 } from './features/drawerExternalDrag';
+import { buildCanvasAiOutputLocalCachePatch } from './features/canvasAiOutputs';
 import { LruCache } from './features/lruCache';
 import {
   getPreviewOriginalSource,
@@ -9350,7 +9351,7 @@ function MainApp() {
               : canvasItem
           )));
           const matchSources = [source, cachedUrl];
-          patchMatchingOutputs({ url: cachedUrl, path: cachedPath, cacheStatus: 'pending' }, matchSources);
+          patchMatchingOutputs(buildCanvasAiOutputLocalCachePatch(cachedPath), matchSources);
           enqueueCanvasAiOutputThumbnailJob({
             key: `output:${item.id}:${cachedPath}`,
             outputId: item.id,
@@ -32491,7 +32492,7 @@ useEffect(() => {
                                                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 overflow-hidden rounded-md bg-white/92 px-2.5 py-2 text-left shadow-sm ring-1 ring-black/[0.05] backdrop-blur-md dark:bg-stone-950/88 dark:ring-white/[0.08]">
                                                       <div className="flex items-center gap-2 text-[10px] font-black text-stone-600 dark:text-white/72">
                                                         <Download className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
-                                                        <span>{isOutputImagePreviewing ? '原图已下载，正在生成预览' : '图片已生成，正在下载原图'}</span>
+                                                        <span>{isOutputImagePreviewing ? '原图已下载，正在生成预览' : '图片已生成，正在后台缓存，不影响下游生成'}</span>
                                                       </div>
                                                       <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-950/[0.08] dark:bg-white/[0.09]">
                                                         <div className="h-full w-2/5 animate-pulse rounded-full bg-cyan-500" />

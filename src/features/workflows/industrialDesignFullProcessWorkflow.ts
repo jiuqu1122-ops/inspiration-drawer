@@ -1,7 +1,11 @@
 import type { BufferItem, Folder } from '../../types';
 import type { CanvasWorkflowTemplate } from '../canvasTemplates';
 import { getDrawerFolderPathName } from '../folderModel';
-import { searchDrawerInspirations } from '../appAgent/inspirationMemory/drawerSemanticRetrieval';
+import {
+  inferInspirationReferenceRoleFromFolderName,
+  searchDrawerInspirations,
+  tokenizeDrawerSearchText,
+} from '../appAgent/inspirationMemory/drawerSemanticRetrieval';
 import type { InspirationCandidate } from '../appAgent/inspirationMemory/types';
 import { extractProjectBrief } from '../appAgent/skills/creativeProductDesignSkill';
 
@@ -68,7 +72,22 @@ export const buildIndustrialDesignLocalInspirationContext = (
       topK: Math.min(8, Math.max(1, Number(options.topK) || 8)),
     })
     : [];
-  const eligibleCandidates = candidates
+  const directQueryTokens = tokenizeDrawerSearchText(projectRequest);
+  const folderMatchesDirectQuery = (candidate: InspirationCandidate) => {
+    const folderName = String(candidate.folderName || '').toLowerCase();
+    return !!folderName && directQueryTokens.some(token => folderName.includes(token.toLowerCase()));
+  };
+  const directFolderMatches = candidates.filter(folderMatchesDirectQuery);
+  const scopedCandidates = directFolderMatches.length >= 2
+    ? candidates.filter(candidate => {
+      if (folderMatchesDirectQuery(candidate)) return true;
+      const curatedRole = inferInspirationReferenceRoleFromFolderName(candidate.folderName);
+      return !!curatedRole
+        && curatedRole !== 'SUBJECT_REF'
+        && candidate.matchedFeatures.length >= 2;
+    })
+    : candidates;
+  const eligibleCandidates = scopedCandidates
     .filter(candidate => (
       candidate.state === 'selected'
       || (candidate.state === 'candidate' && candidate.matchedFeatures.length >= 2)

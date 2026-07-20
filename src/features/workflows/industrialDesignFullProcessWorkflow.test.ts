@@ -200,6 +200,58 @@ describe('industrial design local inspiration context', () => {
     expect(context.metadataText).toContain('Folder: 参考库 / 投影仪产品参考');
   });
 
+  it('prioritizes a matching product reference folder over generic industrial-design matches', () => {
+    const folders: Folder[] = [
+      { id: 'controller-references', name: '手柄参考', color: '#10b981' },
+      { id: 'misc-references', name: '其他工业设计', color: '#64748b' },
+    ];
+    const controllerReferences = ['front', 'back', 'detail'].map((suffix, index) => ({
+      ...makeImage(`controller-${suffix}`, {
+        itemId: `controller-${suffix}`,
+        summary: `FPS 游戏手柄${index + 1}，展示对称摇杆与握持布局`,
+        objects: ['游戏手柄', '摇杆', '肩键'],
+        category: '游戏控制器',
+        form: { silhouette: ['双握把'], geometry: ['对称布局'], proportion: ['手持尺度'] },
+        cmf: { colors: ['黑色'], materials: ['塑料'], finishes: ['磨砂'] },
+        style: ['电竞'], interaction: ['对称摇杆', '肩键'], scene: ['FPS 游戏'], mood: [], userTags: ['手柄'], userNotes: [],
+      }),
+      folderId: 'controller-references',
+    }));
+    const unrelatedReferences = [
+      {
+        ...makeImage('projector-generic', {
+          itemId: 'projector-generic', summary: '科技感桌面投影仪', objects: ['投影仪'], category: '投影设备',
+          form: { silhouette: ['方圆'], geometry: ['对称'], proportion: ['桌面尺度'] },
+          cmf: { colors: ['黑色'], materials: ['塑料'], finishes: ['磨砂'] },
+          style: ['科技'], interaction: ['按键'], scene: ['桌面'], mood: [], userTags: [], userNotes: [],
+        }),
+        folderId: 'misc-references',
+      },
+      {
+        ...makeImage('radio-generic', {
+          itemId: 'radio-generic', summary: '硬核手持对讲机', objects: ['对讲机'], category: '通信设备',
+          form: { silhouette: ['厚重'], geometry: ['对称'], proportion: ['手持尺度'] },
+          cmf: { colors: ['黑色'], materials: ['塑料'], finishes: ['磨砂'] },
+          style: ['科技'], interaction: ['按键'], scene: ['户外'], mood: [], userTags: [], userNotes: [],
+        }),
+        folderId: 'misc-references',
+      },
+    ];
+
+    const context = buildIndustrialDesignLocalInspirationContext(
+      [...controllerReferences, ...unrelatedReferences],
+      '帮我设计一个 FPS 游戏手柄，要求对称摇杆',
+      { folders },
+    );
+
+    expect(context.references.map(reference => reference.itemId)).toEqual([
+      'controller-front',
+      'controller-back',
+      'controller-detail',
+    ]);
+    expect(context.references.every(reference => reference.folderName === '手柄参考')).toBe(true);
+  });
+
   it('excludes explicit product references and emits the required no-reference marker', () => {
     const context = buildIndustrialDesignLocalInspirationContext(
       [warmCoffeeReference],

@@ -27,6 +27,7 @@ export const inferInspirationReferenceRoleFromFolderName = (
   if (/(?:交互|操控|按键|旋钮|界面|interaction|control|ui)/i.test(name)) return 'INTERACTION_REF';
   if (/(?:氛围|场景|情绪|风格|意象|mood|scene|style)/i.test(name)) return 'MOOD_REF';
   if (/(?:产品参考|品类参考|竞品|product\s*ref|subject\s*ref)/i.test(name)) return 'SUBJECT_REF';
+  if (/(?:参考|reference|(?:^|\W)ref(?:$|\W))/i.test(name)) return 'SUBJECT_REF';
   return undefined;
 };
 
@@ -177,6 +178,7 @@ export function searchDrawerInspirations(
     ? input.projectBrief
     : JSON.stringify(input.projectBrief || {});
   const queryTokens = tokenizeDrawerSearchText(`${input.query} ${briefText}`);
+  const directQueryTokens = tokenizeDrawerSearchText(input.query);
   const folderIds = new Set((input.folderIds || []).filter(Boolean));
   const topK = Math.max(1, Math.min(8, Math.round(input.topK || 8)));
 
@@ -216,23 +218,38 @@ export function searchDrawerInspirations(
       });
       const normalizedFolderName = normalize(folderName);
       const folderMatchedTokens = folderName
-        ? queryTokens.filter(token => normalizedFolderName.includes(token) || token.includes(normalizedFolderName))
+        ? directQueryTokens.filter(token => normalizedFolderName.includes(token) || token.includes(normalizedFolderName))
         : [];
+      const subjectText = normalize([
+        folderName,
+        item.name,
+        profile.category,
+        ...profile.objects,
+        ...profile.userTags,
+      ].join(' '));
+      const subjectMatchedTokens = directQueryTokens.filter(token => (
+        subjectText.includes(token) || token.includes(subjectText)
+      ));
       const folderEvidence = folderName && (folderRole || folderMatchedTokens.length > 0)
         ? [`参考文件夹：${folderName}`]
         : [];
       const matchedFeatures = Array.from(new Set([
         ...roleFeatures,
+        ...subjectMatchedTokens,
         ...matchedTokens,
         ...folderEvidence,
       ])).slice(0, 6);
       const metadataBonus = item.inspirationProfile ? 2 : 0;
-      const folderRoleBonus = folderRole ? 1 : 0;
-      const folderSemanticBonus = folderMatchedTokens.length > 0 ? 2 : 0;
+      const folderRoleBonus = folderRole ? 2 : 0;
+      const subjectSemanticBonus = subjectMatchedTokens.length * 3;
+      const folderSemanticBonus = folderMatchedTokens.length > 0
+        ? 8 + folderMatchedTokens.length * 4
+        : 0;
       const score = matchedTokens.length
         + roleScores[recommendedRole] * 1.5
         + metadataBonus
         + folderRoleBonus
+        + subjectSemanticBonus
         + folderSemanticBonus;
       const confidence = Math.max(0.18, Math.min(0.98, 0.3 + score * 0.08));
       const featureReason = matchedFeatures.length > 0 ? matchedFeatures.slice(0, 3).join('、') : profile.summary;
