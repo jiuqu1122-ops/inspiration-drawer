@@ -19486,6 +19486,15 @@ function MainApp() {
 
     let localInspirationContext: IndustrialDesignLocalInspirationContext | null = null;
     let originalProjectRequest = '';
+    let workflowDesignReferencePlan: {
+      references: Array<{
+        itemId: string;
+        role: string;
+        reason: string;
+        matchedFeatures: string[];
+        confidence: number;
+      }>;
+    } | undefined;
     if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID) {
       const connectedItems = workflowMaterialInputIds
         .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
@@ -19527,7 +19536,7 @@ function MainApp() {
         connectedInputLabels: connectedInputSummary,
         localInspirationContext,
       });
-      const designReferencePlan = {
+      workflowDesignReferencePlan = {
         references: localInspirationContext.references.map(reference => ({
           itemId: reference.itemId,
           role: reference.recommendedRole,
@@ -19556,7 +19565,7 @@ function MainApp() {
             skillMeta: {
               ...(item.ai.skillMeta || {}),
               originalRequest: originalProjectRequest || undefined,
-              designReferencePlan,
+              designReferencePlan: workflowDesignReferencePlan,
               localInspirationReferenceState: localInspirationContext?.usedExtraReferences ? 'selected' : 'none',
             },
           },
@@ -19747,7 +19756,34 @@ function MainApp() {
           : item.item.thumbnail || getCanvasItemDisplaySource(item.item);
       };
 
-      const plannedReferences: WorkflowResultReference[] = runtimeItems.flatMap(runtimeItem => {
+      const toWorkflowResultReference = (
+        reference: Record<string, unknown>,
+        idPrefix: string,
+        index: number,
+      ): WorkflowResultReference | null => {
+        const itemId = String(reference.itemId || '').trim();
+        if (!itemId) return null;
+        const drawerItem = itemsRef.current.find(item => item.id === itemId);
+        const canvasItem = canvasItemsRef.current.find(item => (
+          item.id === itemId || item.item.id === itemId || item.item.sourceItemId === itemId
+        ));
+        return {
+          id: `${idPrefix}:planned-reference:${itemId}:${index}`,
+          nodeId: canvasItem?.id,
+          itemId,
+          name: getDrawerReferenceName(drawerItem) || canvasItem?.item.name || `灵感参考 ${index + 1}`,
+          thumbnail: getDrawerReferencePreview(drawerItem) || getCanvasReferencePreview(canvasItem),
+          role: String(reference.role || reference.referenceRole || '').trim() || undefined,
+          reason: String(reference.reason || '').trim() || undefined,
+        };
+      };
+      const localPlannedReferences: WorkflowResultReference[] = (
+        workflowDesignReferencePlan?.references || []
+      ).flatMap((reference, index) => {
+        const resultReference = toWorkflowResultReference(reference, targetId, index);
+        return resultReference ? [resultReference] : [];
+      });
+      const runtimePlannedReferences: WorkflowResultReference[] = runtimeItems.flatMap(runtimeItem => {
         const plan = runtimeItem.ai?.skillMeta?.designReferencePlan;
         const references = plan && typeof plan === 'object' && !Array.isArray(plan)
           ? (plan as Record<string, unknown>).references
@@ -19755,24 +19791,15 @@ function MainApp() {
         if (!Array.isArray(references)) return [];
         return references.flatMap((value, index) => {
           if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-          const reference = value as Record<string, unknown>;
-          const itemId = String(reference.itemId || '').trim();
-          if (!itemId) return [];
-          const drawerItem = itemsRef.current.find(item => item.id === itemId);
-          const canvasItem = canvasItemsRef.current.find(item => (
-            item.id === itemId || item.item.id === itemId || item.item.sourceItemId === itemId
-          ));
-          return [{
-            id: `${runtimeItem.id}:planned-reference:${itemId}:${index}`,
-            nodeId: canvasItem?.id,
-            itemId,
-            name: getDrawerReferenceName(drawerItem) || canvasItem?.item.name || `灵感参考 ${index + 1}`,
-            thumbnail: getDrawerReferencePreview(drawerItem) || getCanvasReferencePreview(canvasItem),
-            role: String(reference.role || reference.referenceRole || '').trim() || undefined,
-            reason: String(reference.reason || '').trim() || undefined,
-          } satisfies WorkflowResultReference];
+          const resultReference = toWorkflowResultReference(
+            value as Record<string, unknown>,
+            runtimeItem.id,
+            index,
+          );
+          return resultReference ? [resultReference] : [];
         });
       });
+      const plannedReferences = [...localPlannedReferences, ...runtimePlannedReferences];
       const externalReferences: WorkflowResultReference[] = inputCanvasItems.flatMap((inputItem, index) => {
         const output = getCanvasAiSuccessfulOutputs(inputItem)[0];
         const isVisual = inputItem.item.type === 'image'
@@ -19832,6 +19859,10 @@ function MainApp() {
       skillMeta: {
         ...(moduleNode.ai?.skillMeta || {}),
         originalRequest: workflowUserRequest || undefined,
+        ...(workflowDesignReferencePlan ? {
+          designReferencePlan: workflowDesignReferencePlan,
+          localInspirationReferenceState: localInspirationContext?.usedExtraReferences ? 'selected' : 'none',
+        } : {}),
       },
     });
     updateCanvasSelection([targetId]);
