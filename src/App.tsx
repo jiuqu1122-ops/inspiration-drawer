@@ -23105,7 +23105,7 @@ function MainApp() {
     const placeholderSource = item
       ? getPreviewPlaceholderSource(item)
       : originalSource;
-    const cacheKey = item?.id || originalSource;
+    const cacheKey = item ? `${item.id}\n${originalSource}` : originalSource;
     const cachedSource = selectedImageOriginalCacheRef.current.get(cacheKey);
     const source = cachedSource || placeholderSource || originalSource;
     if (!source) return;
@@ -25403,8 +25403,8 @@ useEffect(() => {
     e.preventDefault();
     e.stopPropagation();
 
-    if (item.type === 'image' && item.url) {
-      openSelectedImagePreview(item.url);
+    if (item.type === 'image' && getPreviewOriginalSource(item)) {
+      openSelectedImagePreview(item);
       return;
     }
 
@@ -26529,7 +26529,7 @@ useEffect(() => {
         if (action === 'open_item') {
           const item = targets[0];
           if (!item) throw new Error('没有找到要打开的素材');
-          if (item.type === 'image' && item.url) openSelectedImagePreview(item.url);
+          if (item.type === 'image' && getPreviewOriginalSource(item)) openSelectedImagePreview(item);
           else if (item.type === 'video' && item.path) openSelectedVideoPreview({ url: convertFileSrc(item.path), path: item.path });
           else {
             const target = item.path || item.url || item.content;
@@ -32384,6 +32384,7 @@ useEffect(() => {
                                             {canvasAiOutputs.map((output, outputIndex) => {
                                               const outputSource = getCanvasAiOutputDisplaySource(output);
                                               const outputPreviewSource = getCanvasAiOutputThumbnailSource(output);
+                                              const outputPreviewItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
                                               const isOutputError = output.status === 'error';
                                               const isOutputWorking = output.status === 'working';
                                               const outputMediaType = output.mediaType || canvasAiMediaType;
@@ -32406,7 +32407,7 @@ useEffect(() => {
                                                     event.stopPropagation();
                                                     if (!outputSource) return;
                                                     if (outputMediaType === 'video') openSelectedVideoPreview({ url: outputSource, path: output.path || outputSource }, { fromCanvas: true });
-                                                    else openSelectedImagePreview(outputSource, { fromCanvas: true });
+                                                    else openSelectedImagePreview(outputPreviewItem || outputSource, { fromCanvas: true });
                                                   }}
                                                   onKeyDown={(event) => {
                                                     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -32414,7 +32415,7 @@ useEffect(() => {
                                                     event.stopPropagation();
                                                     if (!outputSource) return;
                                                     if (outputMediaType === 'video') openSelectedVideoPreview({ url: outputSource, path: output.path || outputSource }, { fromCanvas: true });
-                                                    else openSelectedImagePreview(outputSource, { fromCanvas: true });
+                                                    else openSelectedImagePreview(outputPreviewItem || outputSource, { fromCanvas: true });
                                                   }}
                                                   className={`relative overflow-hidden rounded-[14px] border text-center transition-colors ${
                                                     isOutputError

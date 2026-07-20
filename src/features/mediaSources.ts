@@ -16,8 +16,8 @@ export const isHttpImageSource = (value?: unknown) => (
 export const getOriginalMediaSource = (item?: Partial<BufferItem> | null) => {
   if (!item) return '';
   return (
-    item.url
-    || (item.path ? convertFileSrc(item.path) : '')
+    (item.path ? convertFileSrc(item.path) : '')
+    || item.url
     || item.thumbnail
     || item.content
     || ''
