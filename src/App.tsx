@@ -6493,6 +6493,7 @@ function MainApp() {
     providerCandidates?: CanvasAiModelCandidate[],
   ) => {
     const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source, providerChannelId);
+    if (resolvedSource !== canvasAiCredentialSource) return canvasAiUnifiedImageModelOptions;
     if (!isCanvasAiPublicImageModel(provider, model)) return canvasAiUnifiedImageModelOptions;
     const selectedValue = providerCandidates && providerCandidates.length > 1
       ? canvasAiGroupedModelChoiceValue(
