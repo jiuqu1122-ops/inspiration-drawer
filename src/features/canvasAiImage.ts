@@ -64,6 +64,21 @@ export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
 
 export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
 
+export const resolveCanvasAiReferenceProvider = (
+  runtimeProvider: CanvasAiImageProvider | null | undefined,
+  nodeProvider: CanvasAiImageProvider | null | undefined,
+  fallbackProvider: CanvasAiImageProvider,
+) => runtimeProvider || nodeProvider || fallbackProvider;
+
+export const mergeCanvasAiReferenceSourceItems = <T extends { id: string }>(
+  currentItems: T[],
+  runtimeItems: T[],
+) => {
+  const itemsById = new Map(currentItems.map(item => [item.id, item]));
+  runtimeItems.forEach(item => itemsById.set(item.id, item));
+  return Array.from(itemsById.values());
+};
+
 export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
 export type CanvasAiImageResolution = '1k' | '2k' | '4k';
 
@@ -155,6 +170,7 @@ export type CanvasAiBaseImageOptions = {
   negativePrompt?: string;
   model?: string;
   inputImages?: string[];
+  prepareInputImagesForCandidate?: (candidate: CanvasAiModelCandidate) => Promise<string[]>;
   aspectRatio?: string;
   resolution?: string;
   outputFormat?: string;
@@ -905,6 +921,33 @@ export const getCanvasAiImageModelFamily = (
   return null;
 };
 
+export const getCanvasAiPublicImageModelPriority = (
+  provider?: string | null,
+  model?: string | null,
+) => {
+  const family = getCanvasAiImageModelFamily(provider, model);
+  if (family === 'nano-banana-pro') return 0;
+  if (family === 'nano-banana-2') return 1;
+  if (family === 'nano-banana-lite') return 2;
+  if (family === 'gpt-image-2') return 3;
+  if (family === 'gpt-image-2-h') return 4;
+  return 99;
+};
+
+export const shouldUseCanvasAiNativeImageBatchRequest = (
+  provider: CanvasAiImageProvider,
+  cloudWallet: boolean,
+  requestedCount: number,
+) => requestedCount <= 1 && (provider === 'new-api' || cloudWallet);
+
+export const getCanvasAiSlotClientRequestId = (
+  clientRequestId: string,
+  slotIndex: number,
+  requestedCount: number,
+) => requestedCount > 1
+  ? `${clientRequestId}:slot:${slotIndex + 1}`
+  : clientRequestId;
+
 const imageFamilyLabel = (family: CanvasAiImageModelFamily) => {
   if (family === 'nano-banana-pro') return 'Nano Banana Pro';
   if (family === 'nano-banana-2') return 'Nano Banana 2';
@@ -990,6 +1033,14 @@ export const selectCanvasAiImageCandidatesForResolution = (
     return [exact ?? first];
   });
 };
+
+export const resolveCanvasAiCandidateInputImages = async (
+  inputImages: string[] | undefined,
+  candidate: CanvasAiModelCandidate,
+  prepareInputImagesForCandidate?: (candidate: CanvasAiModelCandidate) => Promise<string[]>,
+) => prepareInputImagesForCandidate
+  ? prepareInputImagesForCandidate(candidate)
+  : (inputImages || []);
 
 export const shouldUsePortableWalletImageReferences = (
   cloudWallet: boolean,
@@ -1483,10 +1534,15 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
   const requestModel = resolveXaisImageRequestModel(model);
   const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
   const requestCount = Math.max(1, Math.min(4, count));
-  const inputImages = (options.inputImages || [])
+  const referenceInputs = (options.inputImages || [])
     .map(image => String(image || '').trim())
-    .filter(image => isRemoteHttpImageSource(image) || isXaisAttachmentImageRef(image))
+    .filter(Boolean)
     .slice(0, 8);
+  const inputImages = referenceInputs
+    .filter(image => isRemoteHttpImageSource(image) || isXaisAttachmentImageRef(image));
+  if (referenceInputs.length > 0 && inputImages.length === 0) {
+    throw new Error('XAIS 收到的参考图格式不兼容，已停止本次请求，避免错误地按纯文字生成。');
+  }
   const isNanoModel = isXaisNanoImageModel(model);
   const isNanoLiteModel = isXaisNanoLiteImageModel(model);
   const requestRatio = getXaisImage2RatioOptions(model).length > 0
@@ -1517,10 +1573,12 @@ const generateXaisWorkerTaskImages = async (options: CanvasAiImageOptions, count
     }
 
     debugXaisImage2('workerTaskStart request', {
+      clientRequestId: options.clientRequestId,
       endpoint,
       model,
       requestModel,
       ratio: requestRatio,
+      referenceInputCount: referenceInputs.length,
       refCount: inputImages.length,
       refs: inputImages.map(image => isXaisAttachmentImageRef(image) ? image : '[remote-url]'),
       custom_field: customField,
@@ -1646,7 +1704,7 @@ const trimDebugText = (value: unknown, max = 900) => {
   return text.length > max ? `${text.slice(0, max)}...` : text;
 };
 
-const debugXaisImage2 = (label: string, value?: unknown) => {
+export const debugXaisImage2 = (label: string, value?: unknown) => {
   try {
     if (typeof console === 'undefined') return;
     const at = new Date().toISOString();
@@ -2325,7 +2383,18 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
     let lastError: unknown = null;
     for (const candidate of candidates) {
       let candidateError: unknown = null;
+      let candidateInputImages = options.inputImages || [];
+      try {
+        candidateInputImages = await resolveCanvasAiCandidateInputImages(
+          options.inputImages,
+          candidate,
+          options.prepareInputImagesForCandidate,
+        );
+      } catch (error) {
+        candidateError = error;
+      }
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (candidateError) break;
         try {
           const runtime = options.providerRuntime?.[candidate.provider];
           return await generateCanvasAiProviderImages({
@@ -2340,7 +2409,9 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
             apiProvider: runtime?.apiProvider ?? options.apiProvider,
             gatewayKind: runtime?.gatewayKind ?? options.gatewayKind,
             licenseManaged: runtime?.licenseManaged ?? options.licenseManaged,
+            inputImages: candidateInputImages,
             providerCandidates: undefined,
+            prepareInputImagesForCandidate: undefined,
           });
         } catch (error) {
           candidateError = error;

@@ -5,8 +5,10 @@ import {
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
+  getCanvasAiPublicImageModelPriority,
   getCanvasAiPublicImageModelName,
   getCanvasAiImageResolutionValues,
+  getCanvasAiSlotClientRequestId,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
@@ -18,14 +20,18 @@ import {
   isNewApiImageProtocolUnsupportedError,
   isHiddenCanvasAiImageModel,
   isCanvasAiPublicImageModel,
+  mergeCanvasAiReferenceSourceItems,
   newApiImageRequestParams,
   newApiVideoRequestParams,
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
+  resolveCanvasAiReferenceProvider,
+  resolveCanvasAiCandidateInputImages,
   selectCanvasAiImageCandidatesForResolution,
   sortCanvasAiImageCandidatesByChannelPriority,
   shouldRetrySameCanvasAiImageCandidate,
+  shouldUseCanvasAiNativeImageBatchRequest,
   shouldTryNextCanvasAiImageCandidate,
   shouldUsePortableWalletImageReferences,
   supportsCanvasAiImageResolution,
@@ -76,6 +82,63 @@ describe('NewAPI image model mapping', () => {
 });
 
 describe('unified wallet image model families', () => {
+  it('puts Nano Banana Pro before GPT Image 2 in the unified picker', () => {
+    expect(getCanvasAiPublicImageModelPriority('xais-chat', 'Xais Nano Pro_2K'))
+      .toBeLessThan(getCanvasAiPublicImageModelPriority('new-api', 'gpt-image-2'));
+  });
+
+  it('uses separate concurrent requests when more than one output is requested', () => {
+    expect(shouldUseCanvasAiNativeImageBatchRequest('new-api', false, 1)).toBe(true);
+    expect(shouldUseCanvasAiNativeImageBatchRequest('new-api', false, 2)).toBe(false);
+    expect(shouldUseCanvasAiNativeImageBatchRequest('xais-chat', true, 2)).toBe(false);
+    expect(getCanvasAiSlotClientRequestId('request-1', 0, 2)).toBe('request-1:slot:1');
+    expect(getCanvasAiSlotClientRequestId('request-1', 1, 2)).toBe('request-1:slot:2');
+    expect(getCanvasAiSlotClientRequestId('request-1', 0, 1)).toBe('request-1');
+  });
+
+  it('uses the runtime provider when an old node retains a different provider', () => {
+    expect(resolveCanvasAiReferenceProvider('xais-chat', 'new-api', 'openai-compatible'))
+      .toBe('xais-chat');
+    expect(resolveCanvasAiReferenceProvider(undefined, 'new-api', 'openai-compatible'))
+      .toBe('new-api');
+  });
+
+  it('keeps current canvas references missing from a runtime snapshot', () => {
+    const currentItems = [
+      { id: 'reference', value: 'current reference' },
+      { id: 'target', value: 'old target' },
+    ];
+    const runtimeItems = [
+      { id: 'target', value: 'runtime target' },
+    ];
+
+    expect(mergeCanvasAiReferenceSourceItems(currentItems, runtimeItems)).toEqual([
+      { id: 'reference', value: 'current reference' },
+      { id: 'target', value: 'runtime target' },
+    ]);
+  });
+
+  it('re-prepares reference images for each provider candidate', async () => {
+    const candidate = {
+      source: 'local' as const,
+      provider: 'xais-chat' as const,
+      model: 'Xais Nano Pro_2K',
+    };
+    let preparedFor = '';
+
+    const images = await resolveCanvasAiCandidateInputImages(
+      ['data:image/png;base64,old-provider-format'],
+      candidate,
+      async current => {
+        preparedFor = current.provider;
+        return ['xais-uploaded-reference.jpg'];
+      },
+    );
+
+    expect(preparedFor).toBe('xais-chat');
+    expect(images).toEqual(['xais-uploaded-reference.jpg']);
+  });
+
   it('uses portable references for single-channel wallet image requests', () => {
     expect(shouldUsePortableWalletImageReferences(true, 'image')).toBe(true);
     expect(shouldUsePortableWalletImageReferences(false, 'image')).toBe(false);

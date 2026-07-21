@@ -318,10 +318,13 @@ import {
   XAIS_CHAT_IMAGE_MODEL_OPTIONS,
   XAIS_CHAT_VIDEO_MODEL_DEFAULT,
   XAIS_CHAT_VIDEO_MODEL_OPTIONS,
+  debugXaisImage2,
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
   getCanvasAiImageResolutionValues,
+  getCanvasAiSlotClientRequestId,
   getCanvasAiPublicImageModelName,
+  getCanvasAiPublicImageModelPriority,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
@@ -331,12 +334,15 @@ import {
   isOpenAiLikeCanvasAiProvider,
   isLikelyNewApiVideoModel,
   isXaisImage2Model,
+  mergeCanvasAiReferenceSourceItems,
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
   normalizeXaisImage2Model,
+  resolveCanvasAiReferenceProvider,
   resolveXaisImage2Ratio,
   shouldUsePortableWalletImageReferences,
+  shouldUseCanvasAiNativeImageBatchRequest,
   supportsCanvasAiImageResolution,
 } from './features/canvasAiImage';
 
@@ -6393,7 +6399,13 @@ function MainApp() {
         models.forEach(model => addCandidate({ source: 'local', provider, model }));
       });
     }
-    return Array.from(groups.values()).map(group => {
+    return Array.from(groups.values())
+      .sort((left, right) => (
+        getCanvasAiPublicImageModelPriority(left.candidates[0]?.provider, left.candidates[0]?.model)
+          - getCanvasAiPublicImageModelPriority(right.candidates[0]?.provider, right.candidates[0]?.model)
+        || left.label.localeCompare(right.label)
+      ))
+      .map(group => {
       const first = group.candidates[0];
       const routeCount = new Set(group.candidates.map(candidate => (
         [candidate.source, candidate.provider, candidate.providerChannelId || ''].join('|')
@@ -6408,30 +6420,42 @@ function MainApp() {
         meta: canvasAiCredentialSource === 'local' ? '本地额度' : '钱包额度',
         section: canvasAiCredentialSource === 'local' ? '本地 API' : '授权钱包',
       };
-    });
+      });
   }, [canvasAiApiKey, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiNewApiModels, canvasAiOpenAiModels, canvasAiProvider, canvasAiXaisModels]);
 
   useEffect(() => {
     if (!isCanvasMode || canvasAiUnifiedImageModelOptions.length === 0) return;
-    const firstChoice = parseCanvasAiModelChoiceValue(canvasAiUnifiedImageModelOptions[0].value);
+    const availableChoices = canvasAiUnifiedImageModelOptions
+      .map(option => parseCanvasAiModelChoiceValue(option.value))
+      .filter((choice): choice is NonNullable<ReturnType<typeof parseCanvasAiModelChoiceValue>> => !!choice);
+    const firstChoice = availableChoices.find(choice => (
+      getCanvasAiPublicImageModelName(choice.provider, choice.model) === 'Nano Banana Pro'
+    )) || availableChoices[0];
     if (!firstChoice) return;
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
         if (item.ai?.type !== 'image-generator') return item;
+        const hasSuccessfulOutput = (item.ai.outputs || []).some(output => (
+          output.status === 'success' && Boolean(output.url || output.path)
+        ));
+        if (hasSuccessfulOutput) return item;
         const candidates = item.ai.providerCandidates || [];
-        const matchingChoice = canvasAiUnifiedImageModelOptions
-          .map(option => parseCanvasAiModelChoiceValue(option.value))
-          .find(choice => choice && (
-            (choice.source === canvasAiCredentialSource
-              && choice.provider === item.ai?.provider
-              && choice.model === item.ai?.model)
-            || choice.providerCandidates?.some(candidate => (
-              candidate.source === canvasAiCredentialSource
-              && candidate.provider === item.ai?.provider
-              && candidate.model === item.ai?.model
-            ))
-          )) || firstChoice;
+        const currentPublicModel = getCanvasAiPublicImageModelName(item.ai.provider, item.ai.model);
+        const matchingChoice = availableChoices.find(choice => (
+          (choice.source === canvasAiCredentialSource
+            && choice.provider === item.ai?.provider
+            && choice.model === item.ai?.model)
+          || choice.providerCandidates?.some(candidate => (
+            candidate.source === canvasAiCredentialSource
+            && candidate.provider === item.ai?.provider
+            && candidate.model === item.ai?.model
+          ))
+        )) || (currentPublicModel
+          ? availableChoices.find(choice => (
+            getCanvasAiPublicImageModelName(choice.provider, choice.model) === currentPublicModel
+          ))
+          : undefined) || firstChoice;
         const nextCandidates = matchingChoice.providerCandidates || [];
         const sameCandidates = candidates.length === nextCandidates.length
           && candidates.every((candidate, index) => {
@@ -6493,7 +6517,6 @@ function MainApp() {
     providerCandidates?: CanvasAiModelCandidate[],
   ) => {
     const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source, providerChannelId);
-    if (resolvedSource !== canvasAiCredentialSource) return canvasAiUnifiedImageModelOptions;
     if (!isCanvasAiPublicImageModel(provider, model)) return canvasAiUnifiedImageModelOptions;
     const selectedValue = providerCandidates && providerCandidates.length > 1
       ? canvasAiGroupedModelChoiceValue(
@@ -6505,16 +6528,6 @@ function MainApp() {
     if (canvasAiUnifiedImageModelOptions.some(option => option.value === selectedValue)) {
       return canvasAiUnifiedImageModelOptions;
     }
-    const belongsToUnifiedGroup = canvasAiUnifiedImageModelOptions.some(option => {
-      const choice = parseCanvasAiModelChoiceValue(option.value);
-      return choice?.providerCandidates?.some(candidate => (
-        candidate.source === resolvedSource
-        && candidate.provider === provider
-        && candidate.model === model
-        && (!providerChannelId || candidate.providerChannelId === providerChannelId)
-      ));
-    });
-    if (belongsToUnifiedGroup) return canvasAiUnifiedImageModelOptions;
     const label = getCanvasAiPublicImageModelName(provider, model);
     if (!label) return canvasAiUnifiedImageModelOptions;
     return [
@@ -6824,6 +6837,11 @@ function MainApp() {
       )) || detectedChannels.find(channel => !channel.error && channel.models.length > 0);
       if (normalized.length > 0) {
         updateCanvasItemsImmediate(prev => prev.map(item => {
+          const hasSuccessfulOutput = item.ai?.type === 'image-generator'
+            && (item.ai.outputs || []).some(output => (
+              output.status === 'success' && Boolean(output.url || output.path)
+            ));
+          if (hasSuccessfulOutput) return item;
           const itemProvider = normalizeCanvasAiProvider(item.ai?.provider || canvasAiProvider);
           const itemChannel = item.ai?.providerChannelId
             ? detectedChannels.find(channel => channel.id === item.ai?.providerChannelId)
@@ -15430,8 +15448,13 @@ function MainApp() {
     referenceFormat: 'any' | 'jpeg' = 'any',
     publicationPreference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first',
     portableWalletReferences = false,
+    runtimeProvider?: CanvasAiProvider,
   ) => {
-    const provider = normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider);
+    const provider = resolveCanvasAiReferenceProvider(
+      runtimeProvider,
+      canvasItem.ai?.provider ? normalizeCanvasAiProvider(canvasItem.ai.provider) : undefined,
+      canvasAiProvider,
+    );
     const inputMode = isOpenAiLikeCanvasAiProvider(provider) ? 'stable' : mode;
     const useDirectLocalInputs = isOpenAiLikeCanvasAiProvider(provider) || delivery === 'direct';
     const requireRemoteInputs = delivery === 'remote-only';
@@ -15911,10 +15934,13 @@ function MainApp() {
     const itemId = Math.random().toString(36).substring(2, 9);
     const presetPrompt = getCanvasAiPresetPrompt(preset);
     const isVideo = mediaType === 'video';
+    const defaultImageChoice = !isVideo && canvasAiUnifiedImageModelOptions.length > 0
+      ? parseCanvasAiModelChoiceValue(canvasAiUnifiedImageModelOptions[0].value)
+      : null;
     const provider = isVideo
       ? canvasAiProvider === 'new-api' ? 'new-api' : 'xais-chat'
-      : canvasAiProvider;
-    const model = getCanvasAiResolvedModel(provider, '', mediaType);
+      : defaultImageChoice?.provider || canvasAiProvider;
+    const model = defaultImageChoice?.model || getCanvasAiResolvedModel(provider, '', mediaType);
     const name = preset ? `AI ${preset.label}` : (isVideo ? 'AI 视频节点' : 'AI 生图节点');
     const aspectRatio = preset?.aspectRatio || (isVideo ? '9:16' : CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const count = preset?.count || CANVAS_AI_DEFAULT_COUNT;
@@ -15950,6 +15976,9 @@ function MainApp() {
         type: isVideo ? 'video-generator' : 'image-generator',
         provider,
         model,
+        providerChannelId: defaultImageChoice?.providerChannelId,
+        credentialSource: defaultImageChoice?.source,
+        providerCandidates: defaultImageChoice?.providerCandidates,
         prompt: '',
         presetId: preset?.id,
         presetLabel: preset?.label,
@@ -18104,6 +18133,8 @@ function MainApp() {
       clientRequestId?: string;
     }
   ) => {
+    const latestTarget = options.getLatestTarget?.();
+    if (latestTarget?.id === target.id) target = latestTarget;
     const targetAi = target.ai;
     if (!isCanvasAiGeneratorType(targetAi?.type)) return [] as CanvasAiGeneratedOutput[];
 
@@ -18159,7 +18190,11 @@ function MainApp() {
       : (mediaType === 'video' && provider === 'new-api'
         ? canvasAiNewApiVideoKey.trim() || providerApiKey.trim()
         : providerApiKey.trim());
-    const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
+    const getRuntimeSourceItems = options.sourceItems || (() => canvasItemsRef.current);
+    const getSourceItems = () => mergeCanvasAiReferenceSourceItems(
+      canvasItemsRef.current,
+      getRuntimeSourceItems(),
+    );
     const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
     const textInputPrompts = getCanvasTextInputsForNode(target, getSourceItems());
@@ -18234,17 +18269,55 @@ function MainApp() {
         || (provider === 'xais-chat' && !isXaisWorkerRequest)
         ? 'stable'
         : 'remote-first';
+      const referenceSourceItems = getSourceItems();
+      const resolvedReferenceItems = getCanvasImageInputBufferItemsForNode(target, referenceSourceItems);
+      const globalTarget = canvasItemsRef.current.find(item => item.id === target.id);
+      const globalReferenceItems = globalTarget
+        ? getCanvasImageInputBufferItemsForNode(globalTarget, canvasItemsRef.current)
+        : [];
+      if (provider === 'xais-chat') {
+        debugXaisImage2('referenceResolution', {
+          clientRequestId,
+          targetId: target.id,
+          targetInputCount: (target.inputs || []).length,
+          targetInputIds: (target.inputs || []).slice(0, 8),
+          storedProvider: targetAi.provider,
+          runtimeProvider: provider,
+          runtimeSourceItemCount: getRuntimeSourceItems().length,
+          mergedSourceItemCount: referenceSourceItems.length,
+          resolvedReferenceCount: resolvedReferenceItems.length,
+          resolvedReferenceTypes: resolvedReferenceItems.map(item => item.type),
+          globalTargetInputCount: (globalTarget?.inputs || []).length,
+          globalResolvedReferenceCount: globalReferenceItems.length,
+        });
+      }
       const preparedInputs = await getCanvasImageInputsForNode(
         target,
         inputMode,
         usePortableWalletReferences || isXaisWorkerRequest
           ? 'remote-only'
           : useDirectReferenceImages ? 'direct' : 'auto',
-        getSourceItems(),
+        referenceSourceItems,
         xaisReferenceFormat,
         'cloudflared-first',
         usePortableWalletReferences,
+        provider,
       );
+      if (provider === 'xais-chat') {
+        debugXaisImage2('referencePreparation', {
+          clientRequestId,
+          resolvedReferenceCount: resolvedReferenceItems.length,
+          preparedReferenceCount: preparedInputs.images.length,
+          usedRemoteFirst: preparedInputs.usedRemoteFirst,
+        });
+      }
+      if (
+        provider === 'xais-chat'
+        && Math.max(resolvedReferenceItems.length, globalReferenceItems.length) > 0
+        && preparedInputs.images.length === 0
+      ) {
+        throw new Error('XAIS 参考图准备结果为空，已停止本次生成，请查看 xais-image2.log 中的 referenceResolution 记录。');
+      }
       let inputImages = preparedInputs.images;
       let negativePrompt: string | undefined;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
@@ -18295,6 +18368,62 @@ function MainApp() {
           return { apiKey: runtimeKey };
         }
       };
+      const prepareInputImagesForCandidate = async (candidate: CanvasAiModelCandidate) => {
+        const candidateRequestModel = getCanvasAiResolvedModel(candidate.provider, candidate.model, 'image');
+        const candidateUsesWallet = candidate.source === 'wallet';
+        if (
+          candidate.provider === provider
+          && candidateRequestModel === requestModel
+          && candidateUsesWallet === useCloudWallet
+        ) {
+          return inputImages;
+        }
+
+        const candidatePortableReferences = shouldUsePortableWalletImageReferences(candidateUsesWallet, 'image');
+        const candidateIsXaisWorker = candidate.provider === 'xais-chat'
+          && isCanvasAiXaisWorkerModel(candidateRequestModel);
+        const candidateReferenceFormat: 'any' | 'jpeg' = !candidatePortableReferences
+          && candidateIsXaisWorker
+          ? 'jpeg'
+          : 'any';
+        const candidateUsesDirectReferences = isOpenAiLikeCanvasAiProvider(candidate.provider)
+          || (candidate.provider === 'xais-chat' && !candidateIsXaisWorker);
+        const candidateInputMode = candidateUsesDirectReferences ? 'stable' : 'remote-first';
+        const candidatePreparedInputs = await getCanvasImageInputsForNode(
+          target,
+          candidateInputMode,
+          candidatePortableReferences || candidateIsXaisWorker
+            ? 'remote-only'
+            : candidateUsesDirectReferences ? 'direct' : 'auto',
+          referenceSourceItems,
+          candidateReferenceFormat,
+          'cloudflared-first',
+          candidatePortableReferences,
+          candidate.provider,
+        );
+        temporaryReferenceShares = [
+          ...temporaryReferenceShares,
+          ...candidatePreparedInputs.temporaryShareIds,
+        ];
+        if (candidate.provider === 'xais-chat') {
+          debugXaisImage2('candidateReferencePreparation', {
+            clientRequestId,
+            provider: candidate.provider,
+            model: candidateRequestModel,
+            source: candidate.source,
+            resolvedReferenceCount: resolvedReferenceItems.length,
+            preparedReferenceCount: candidatePreparedInputs.images.length,
+          });
+        }
+        if (
+          candidate.provider === 'xais-chat'
+          && Math.max(resolvedReferenceItems.length, globalReferenceItems.length) > 0
+          && candidatePreparedInputs.images.length === 0
+        ) {
+          throw new Error('XAIS 候选渠道的参考图准备结果为空，已停止本次生成。');
+        }
+        return candidatePreparedInputs.images;
+      };
       let generateOptions = {
         provider,
         apiKey,
@@ -18304,6 +18433,9 @@ function MainApp() {
           : undefined,
         providerCandidates: selectedProviderCandidates.length > 1
           ? selectedProviderCandidates
+          : undefined,
+        prepareInputImagesForCandidate: mediaType === 'image' && selectedProviderCandidates.length > 1
+          ? prepareInputImagesForCandidate
           : undefined,
         providerRuntime: {
           'new-api': providerRuntime('new-api'),
@@ -18369,6 +18501,7 @@ function MainApp() {
             xaisReferenceFormat,
             'cloudflared-first',
             usePortableWalletReferences,
+            provider,
           );
           inputImages = fallbackInputs.images;
           temporaryReferenceShares = [
@@ -18406,6 +18539,7 @@ function MainApp() {
             xaisReferenceFormat,
             'cloudflared-first',
             usePortableWalletReferences,
+            provider,
           );
           if (freshInputs.images.length === 0) return false;
           inputImages = freshInputs.images;
@@ -18585,7 +18719,11 @@ function MainApp() {
           ), { status: 'working', error: undefined });
 
           try {
-            const requestOptions = { ...generateOptions, count: 1 };
+            const requestOptions = {
+              ...generateOptions,
+              clientRequestId: getCanvasAiSlotClientRequestId(clientRequestId, index, requestedCount),
+              count: 1,
+            };
             const batch = mediaType === 'video'
               ? await generateCanvasAiProviderVideos(requestOptions)
               : await generateCanvasAiProviderImages(requestOptions);
@@ -18619,7 +18757,11 @@ function MainApp() {
         }
       };
 
-      if (mediaType === 'image' && (provider === 'new-api' || useCloudWallet)) {
+      if (mediaType === 'image' && shouldUseCanvasAiNativeImageBatchRequest(
+        provider,
+        useCloudWallet,
+        requestedCount,
+      )) {
         await runNewApiImageBatch();
       } else {
         await Promise.all(
