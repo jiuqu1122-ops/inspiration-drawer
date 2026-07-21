@@ -2410,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "inspiration-drawer"
-version = "5.0.3"
+version = "5.0.4"
 dependencies = [
  "base64 0.22.1",
  "chrono",
