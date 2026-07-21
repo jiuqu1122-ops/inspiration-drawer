@@ -275,6 +275,7 @@ import {
   clearLegacyStartupFlags,
   isLaunchIntroDoneThisPage,
   markLaunchIntroDoneThisPage,
+  shouldDeferLicenseGateForPostInstall,
   shouldInvokeLicenseGateDrawerOpen,
   shouldReuseStartupDrawerAfterOverlay,
 } from './features/startup';
@@ -4932,6 +4933,7 @@ function MainApp() {
   const idleAutoCloseTimerRef = useRef<any | null>(null);
   const startupAutoCloseTimerRef = useRef<any | null>(null);
   const startupAutoCloseSuppressedRef = useRef(false);
+  const isPostInstallLaunchRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const enforceAntiTouchClosed = (showFeedback = false) => {
     if (closeTimerRef.current) {
@@ -23439,6 +23441,42 @@ function MainApp() {
 
   const [drawerState, setDrawerState] = useState<'closed' | 'pre_open' | 'open' | 'closing'>(() => shouldShowInitialLaunchIntro() ? 'pre_open' : 'closed');
 
+  useEffect(() => {
+    let disposed = false;
+
+    void invoke<boolean>('consume_post_install_launch', {
+      width: drawerWidthRef.current,
+      height: drawerHeightRef.current,
+      mode: triggerModeRef.current,
+    }).then((isPostInstallLaunch) => {
+      if (disposed || !isPostInstallLaunch) return;
+
+      isPostInstallLaunchRef.current = true;
+      markLaunchIntroDoneThisPage();
+      startupAutoCloseSuppressedRef.current = true;
+      isPointerInsideDrawerRef.current = false;
+      showLaunchIntroRef.current = false;
+      isSplashVisibleRef.current = false;
+      isPinnedRef.current = false;
+
+      flushSync(() => {
+        setShowLaunchIntro(false);
+        setIsSplashVisible(false);
+        setIsPinned(false);
+        setIsOpen(true);
+        setDrawerState('open');
+      });
+
+      void invoke('toggle_pin', { pinned: false }).catch(() => {});
+    }).catch((error) => {
+      console.warn('resolve post-install launch failed:', error);
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   const isPointerInsideDrawerRef = useRef(false);
   const lastDrawerPointerDownAtRef = useRef(0);
   const drawerPanelInteractionHoldUntilRef = useRef(0);
@@ -29239,6 +29277,10 @@ useEffect(() => {
 
   useEffect(() => {
     if (!isLicenseGateActive) return;
+    if (shouldDeferLicenseGateForPostInstall({
+      isPostInstallLaunch: isPostInstallLaunchRef.current,
+      isLicenseLoaded: licenseStatus !== null,
+    })) return;
 
     isPointerInsideDrawerRef.current = true;
     startupAutoCloseSuppressedRef.current = true;

@@ -63,6 +63,8 @@ static STARTUP_CLOSE_LOCK_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_RESIZE_ANIMATION_TOKEN: AtomicU64 = AtomicU64::new(0);
 static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
 static MAIN_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static POST_INSTALL_LAUNCH_PENDING: AtomicBool = AtomicBool::new(false);
+const POST_INSTALL_LAUNCH_MARKER: &str = ".inspiration-drawer-post-install";
 
 struct CloudflaredShare {
     child: Child,
@@ -376,6 +378,21 @@ fn set_startup_close_lock(ms: u64) {
         now_millis_u64().saturating_add(ms)
     };
     STARTUP_CLOSE_LOCK_UNTIL_MS.store(until, Ordering::Relaxed);
+}
+
+fn take_post_install_launch_marker() -> bool {
+    let marker = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join(POST_INSTALL_LAUNCH_MARKER)));
+    let Some(marker) = marker else {
+        return false;
+    };
+    if !marker.is_file() {
+        return false;
+    }
+
+    let _ = fs::remove_file(marker);
+    true
 }
 
 fn is_anti_touch_locked() -> bool {
@@ -14846,6 +14863,16 @@ fn open_drawer(
     height: f64,
     mode: Option<String>,
 ) -> Result<(), String> {
+    if POST_INSTALL_LAUNCH_PENDING.load(Ordering::Acquire) {
+        if let Some(main) = app_handle.get_webview_window("main") {
+            let _ = main.hide();
+        }
+        if let Some(edge) = app_handle.get_webview_window("edge") {
+            let _ = edge.hide();
+        }
+        return Ok(());
+    }
+
     if is_anti_touch_locked() && !is_startup_close_locked() {
         if let Some(main) = app_handle.get_webview_window("main") {
             let _ = main.emit("drawer-closed", ());
@@ -15018,6 +15045,22 @@ fn open_drawer(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+fn consume_post_install_launch(
+    app_handle: tauri::AppHandle,
+    width: f64,
+    height: f64,
+    mode: Option<String>,
+) -> Result<bool, String> {
+    if !POST_INSTALL_LAUNCH_PENDING.swap(false, Ordering::AcqRel) {
+        return Ok(false);
+    }
+
+    set_startup_close_lock(0);
+    open_drawer(app_handle, width, height, mode)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -15861,6 +15904,13 @@ fn schedule_startup_edge_rescue(app: tauri::AppHandle) {
     let _ = thread::spawn(move || {
         thread::sleep(Duration::from_millis(1800));
 
+        // During an overwrite install, the frontend owns the first stable open.
+        // Give WebView startup enough time before falling back to the edge trigger.
+        if POST_INSTALL_LAUNCH_PENDING.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(8200));
+            POST_INSTALL_LAUNCH_PENDING.store(false, Ordering::Release);
+        }
+
         if is_anti_touch_locked()
             || window_is_visible(&app, "main")
             || window_is_visible(&app, "edge")
@@ -16069,6 +16119,7 @@ fn main() {
             start_file_drag,
             copy_files_to_clipboard,
             set_startup_close_lock,
+            consume_post_install_launch,
             set_anti_touch_lock,
             open_drawer,
             close_drawer,
@@ -16093,6 +16144,7 @@ fn main() {
             show_system_notification,
         ])
         .setup(|app| {
+            POST_INSTALL_LAUNCH_PENDING.store(take_post_install_launch_marker(), Ordering::Release);
             set_startup_close_lock(16_000);
 
             if let Some(main) = app.get_webview_window("main") {

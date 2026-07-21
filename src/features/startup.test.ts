@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  shouldDeferLicenseGateForPostInstall,
   shouldInvokeLicenseGateDrawerOpen,
   shouldReuseStartupDrawerAfterOverlay,
 } from './startup';
@@ -39,6 +40,21 @@ describe('startup drawer ownership', () => {
       wasStartupOverlayActive: false,
       isStartupOverlayActive: false,
       isDrawerActive: true,
+    })).toBe(false);
+  });
+
+  it('keeps the license gate from reopening while post-install startup is resolving', () => {
+    expect(shouldDeferLicenseGateForPostInstall({
+      isPostInstallLaunch: true,
+      isLicenseLoaded: false,
+    })).toBe(true);
+    expect(shouldDeferLicenseGateForPostInstall({
+      isPostInstallLaunch: true,
+      isLicenseLoaded: true,
+    })).toBe(false);
+    expect(shouldDeferLicenseGateForPostInstall({
+      isPostInstallLaunch: false,
+      isLicenseLoaded: false,
     })).toBe(false);
   });
 });

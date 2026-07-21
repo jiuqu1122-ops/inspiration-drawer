@@ -31,3 +31,8 @@ export const shouldReuseStartupDrawerAfterOverlay = (options: {
   && !options.isStartupOverlayActive
   && options.isDrawerActive
 );
+
+export const shouldDeferLicenseGateForPostInstall = (options: {
+  isPostInstallLaunch: boolean;
+  isLicenseLoaded: boolean;
+}) => options.isPostInstallLaunch && !options.isLicenseLoaded;
