@@ -271,7 +271,13 @@ import {
   writeOpenFloatingNoteLabels,
 } from './features/floatingNotes';
 import { EdgeTrigger } from './features/EdgeTrigger';
-import { clearLegacyStartupFlags, isLaunchIntroDoneThisPage, markLaunchIntroDoneThisPage } from './features/startup';
+import {
+  clearLegacyStartupFlags,
+  isLaunchIntroDoneThisPage,
+  markLaunchIntroDoneThisPage,
+  shouldInvokeLicenseGateDrawerOpen,
+  shouldReuseStartupDrawerAfterOverlay,
+} from './features/startup';
 import { writeImageSourceToClipboard, writeLocalImageFileToClipboard } from './features/imageClipboard';
 import {
   getDrawerExternalDragCacheCandidates,
@@ -23553,6 +23559,7 @@ function MainApp() {
     isPinned ||
     isStartupOverlayActive ||
     ((!!selectedImage || !!selectedVideo) && !isCanvasWorkbenchMediaPreviewActive);
+  const startupOverlayWasActiveRef = useRef(isStartupOverlayActive);
 
   // 启动欢迎/更新日志期间只做一次确定的“侧边滑出”序列：
   // 1. 先把真实 Tauri 窗口打开到抽屉尺寸
@@ -23802,6 +23809,8 @@ useEffect(() => {
   let cancelled = false;
   let timer: any = null;
   let frame: number | null = null;
+  const wasStartupOverlayActive = startupOverlayWasActiveRef.current;
+  startupOverlayWasActiveRef.current = isStartupOverlayActive;
 
   const run = async () => {
     if (snipMode.active || isSnipSessionActive || snipExitInFlightRef.current) return;
@@ -23815,6 +23824,15 @@ useEffect(() => {
       // 启动覆盖层拥有独立且唯一的窗口打开/滑入序列。这里若继续调用
       // open_drawer，会和启动 useLayoutEffect 竞争并反复回写开合状态。
       if (isStartupOverlayActive) return;
+
+      if (shouldReuseStartupDrawerAfterOverlay({
+        wasStartupOverlayActive,
+        isStartupOverlayActive,
+        isDrawerActive,
+      })) {
+        setDrawerState('open');
+        return;
+      }
 
       setDrawerState(prev => (prev === 'open' ? 'open' : 'pre_open'));
 
@@ -29224,8 +29242,6 @@ useEffect(() => {
 
     isPointerInsideDrawerRef.current = true;
     startupAutoCloseSuppressedRef.current = true;
-    setIsOpen(true);
-    setDrawerState('open');
     clearIdleAutoClose();
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
@@ -29235,11 +29251,21 @@ useEffect(() => {
       clearTimeout(startupAutoCloseTimerRef.current);
       startupAutoCloseTimerRef.current = null;
     }
-    void invoke('open_drawer', {
-      width: drawerWidthRef.current,
-      height: drawerHeightRef.current,
-      mode: triggerModeRef.current,
-    }).catch(() => {});
+    if (!isStartupOverlayActive) {
+      setIsOpen(true);
+      setDrawerState('open');
+    }
+    if (shouldInvokeLicenseGateDrawerOpen({
+      isLicenseGateActive,
+      isStartupOverlayActive,
+      isDrawerAlreadyOpen: stateRef.current.isOpen,
+    })) {
+      void invoke('open_drawer', {
+        width: drawerWidthRef.current,
+        height: drawerHeightRef.current,
+        mode: triggerModeRef.current,
+      }).catch(() => {});
+    }
 
     const blockWhenOutsideLicenseGate = (event: Event) => {
       const target = event.target;
@@ -29277,7 +29303,7 @@ useEffect(() => {
         document.removeEventListener(eventName, blockWhenOutsideLicenseGate, true);
       });
     };
-  }, [isLicenseGateActive]);
+  }, [isLicenseGateActive, isStartupOverlayActive]);
 
   const newFolderParent = newFolderParentId
     ? folders.find(folder => folder.id === newFolderParentId) || null
