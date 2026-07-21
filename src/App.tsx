@@ -9,7 +9,8 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp
+  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp,
+  LogOut
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
@@ -5693,6 +5694,7 @@ function MainApp() {
   const [isEmailVerifying, setIsEmailVerifying] = useState(false);
   const [cloudAccount, setCloudAccount] = useState<CloudAccountSummary | null>(null);
   const [isCloudAccountLoading, setIsCloudAccountLoading] = useState(false);
+  const [isCloudAccountLoggingOut, setIsCloudAccountLoggingOut] = useState(false);
   const [creditRedemptionCode, setCreditRedemptionCode] = useState('');
   const [creditRedemptionError, setCreditRedemptionError] = useState('');
   const [isRedeemingCredits, setIsRedeemingCredits] = useState(false);
@@ -5859,6 +5861,46 @@ function MainApp() {
     } finally {
       setIsCloudAccountLoading(false);
     }
+  };
+
+  const confirmCloudAccountLogout = () => {
+    if (isCloudAccountLoggingOut) return;
+    setConfirmDialog({
+      isOpen: true,
+      title: '退出登录？',
+      message: '退出后会移除本机保存的账户授权，并返回邮箱登录界面。抽屉中的素材和本地设置不会被删除。',
+      onConfirm: () => {},
+      actions: [
+        {
+          label: '退出登录',
+          className: 'inline-flex items-center gap-1.5 rounded-[16px] bg-red-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-red-600',
+          onClick: async () => {
+            closeConfirmDialog();
+            setIsCloudAccountLoggingOut(true);
+            try {
+              const nextStatus = await invoke<LicenseStatus>('remove_license');
+              setLicenseStatus(nextStatus);
+              setCloudAccount(null);
+              setCanvasAiCloudImageModels(null);
+              setRegistrationEmail('');
+              setRegistrationDisplayName('');
+              setEmailVerificationCode('');
+              setEmailChallengeId('');
+              setEmailRegistrationError('');
+              setCreditRedemptionCode('');
+              setCreditRedemptionError('');
+              await canvasAgent.refreshSettings().catch(() => {});
+              showToast('已退出登录');
+            } catch (err) {
+              console.error('退出账户失败:', err);
+              showToast(`退出登录失败：${formatLicenseCommandError(err)}`);
+            } finally {
+              setIsCloudAccountLoggingOut(false);
+            }
+          },
+        },
+      ],
+    });
   };
 
   const redeemCloudCredits = async () => {
@@ -31381,6 +31423,18 @@ useEffect(() => {
                                       <div className="text-[10px] leading-4 text-red-500 dark:text-red-300">{creditRedemptionError}</div>
                                     )}
                                   </div>
+
+                                  {licenseStatus?.valid && licenseStatus.needs_email_registration === false && (
+                                    <button
+                                      type="button"
+                                      onClick={confirmCloudAccountLogout}
+                                      disabled={isCloudAccountLoggingOut}
+                                      className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-[14px] border border-red-200 bg-red-50/70 px-3 py-2 text-[11px] font-black text-red-600 transition-colors hover:border-red-300 hover:bg-red-100 disabled:cursor-wait disabled:opacity-55 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15"
+                                    >
+                                      <LogOut className={`h-3.5 w-3.5 ${isCloudAccountLoggingOut ? 'animate-pulse' : ''}`} />
+                                      {isCloudAccountLoggingOut ? '正在退出…' : '退出登录'}
+                                    </button>
+                                  )}
 
                                 </div>
                               </motion.div>

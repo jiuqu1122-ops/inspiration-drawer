@@ -817,6 +817,11 @@ pub fn remove_license(app_handle: tauri::AppHandle) -> Result<LicenseStatus, Str
     if path.exists() {
         fs::remove_file(&path).map_err(|err| format!("io_error: 无法移除授权文件：{err}"))?;
     }
+    if let Some(cache) = CLOUD_TOKEN_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            *guard = None;
+        }
+    }
     let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
     Ok(LicenseStatus::unlicensed(machine_id))
 }
