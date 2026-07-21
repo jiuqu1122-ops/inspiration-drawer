@@ -5979,6 +5979,32 @@ fn parse_xais_upload_url_response(
     })
 }
 
+fn xais_registration_contains_url(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => {
+            let value = value.trim();
+            value.starts_with("http://") || value.starts_with("https://")
+        }
+        serde_json::Value::Array(items) => items.iter().any(xais_registration_contains_url),
+        serde_json::Value::Object(object) => object.values().any(xais_registration_contains_url),
+        _ => false,
+    }
+}
+
+fn validate_xais_attachment_registration_response(raw: &str) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|error| format!("invalid registration response: {error}"))?;
+    if xais_registration_contains_url(&value) {
+        Ok(())
+    } else {
+        Err("registration response did not resolve an image URL".to_string())
+    }
+}
+
 fn xais_upload_reference_image(
     app_handle: &tauri::AppHandle,
     profile: &ai_credentials::EffectiveApiProfile,
@@ -6056,14 +6082,56 @@ fn xais_upload_reference_image(
     let name = upload.name.trim().to_string();
     let registration_endpoint =
         ai_gateway::xais_adapter::attachment_registration_endpoint(profile, &name)?;
-    let _ = http_get_text_with_headers(
-        app_handle,
-        &registration_endpoint,
-        &profile.api_key,
-        explicit_proxy,
-        Some(&profile.headers),
-    );
+    let mut registration_error = None;
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(600 * attempt));
+        }
+        let registered = http_get_text_with_headers(
+            app_handle,
+            &registration_endpoint,
+            &profile.api_key,
+            explicit_proxy,
+            Some(&profile.headers),
+        )
+        .and_then(|raw| validate_xais_attachment_registration_response(&raw));
+        match registered {
+            Ok(()) => {
+                registration_error = None;
+                break;
+            }
+            Err(error) => registration_error = Some(error),
+        }
+    }
+    if let Some(error) = registration_error {
+        return Err(format!(
+            "XAIS reference attachment registration failed: {}",
+            error
+        ));
+    }
     Ok(name)
+}
+
+#[cfg(test)]
+mod xais_reference_registration_tests {
+    use super::validate_xais_attachment_registration_response;
+
+    #[test]
+    fn registration_requires_a_resolved_http_url() {
+        assert!(validate_xais_attachment_registration_response(
+            r#"{"data":{"url":"https://xais.example.test/reference.png"}}"#
+        )
+        .is_ok());
+        assert!(validate_xais_attachment_registration_response(
+            r#"["https://xais.example.test/reference.png"]"#
+        )
+        .is_ok());
+        assert!(
+            validate_xais_attachment_registration_response(r#"{"success":true,"data":{}}"#)
+                .is_err()
+        );
+        assert!(validate_xais_attachment_registration_response("not-json").is_err());
+    }
 }
 
 fn build_ai_image_edit_form(
