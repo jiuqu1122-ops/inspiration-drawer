@@ -1,8 +1,12 @@
-import type { CanvasImageItem } from './canvasModel';
+import type { CanvasAiCredentialSource, CanvasImageItem } from './canvasModel';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 
 export const CANVAS_LLM_NODE_CREDITS = 10;
 export const CANVAS_DEFAULT_IMAGE_UNIT_CREDITS = 100;
+
+export const shouldShowCanvasGenerationCredits = (
+  credentialSource?: CanvasAiCredentialSource | null,
+) => credentialSource === 'wallet';
 
 const imageModelToken = (model?: string | null) => String(model || '')
   .trim()

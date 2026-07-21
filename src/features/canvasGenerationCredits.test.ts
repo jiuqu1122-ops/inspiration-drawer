@@ -4,9 +4,16 @@ import {
   estimateCanvasImageGenerationCredits,
   estimateCanvasWorkflowCredits,
   getCanvasImageUnitCredits,
+  shouldShowCanvasGenerationCredits,
 } from './canvasGenerationCredits';
 
 describe('canvas generation credits', () => {
+  it('only displays estimates for wallet credits', () => {
+    expect(shouldShowCanvasGenerationCredits('wallet')).toBe(true);
+    expect(shouldShowCanvasGenerationCredits('local')).toBe(false);
+    expect(shouldShowCanvasGenerationCredits(undefined)).toBe(false);
+  });
+
   it('uses the wallet image pricing table', () => {
     expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(10);
     expect(getCanvasImageUnitCredits('gpt-image-2', '2k')).toBe(15);

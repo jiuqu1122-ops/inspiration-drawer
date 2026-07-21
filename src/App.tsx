@@ -203,6 +203,7 @@ import {
 import {
   estimateCanvasImageGenerationCredits,
   estimateCanvasWorkflowCredits,
+  shouldShowCanvasGenerationCredits,
 } from './features/canvasGenerationCredits';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
@@ -31892,14 +31893,15 @@ useEffect(() => {
                           );
                           const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
-                          const canvasWorkflowCreditEstimate = isCanvasWorkflowItem
+                          const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource);
+                          const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
                             ? estimateCanvasWorkflowCredits(canvasWorkflow, {
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
                                 node.ai?.provider || canvasAiProvider,
                               )),
                             })
                             : null;
-                          const canvasImageCreditEstimate = canvasItem.ai?.type === 'image-generator'
+                          const canvasImageCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'image-generator'
                             ? estimateCanvasImageGenerationCredits({
                               model: canvasAiItemModel,
                               resolution: canvasAiItemImageResolution,
