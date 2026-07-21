@@ -20,12 +20,12 @@ const getPricedImageResolution = (
   model?: string | null,
   resolution?: string | null,
 ): PricedImageResolution => {
+  const requested = String(resolution || '').trim().toLowerCase();
+  if (requested === '1k' || requested === '2k' || requested === '4k') return requested;
   const token = imageModelToken(model);
   if (token.includes('4k')) return '4k';
   if (token.includes('2k')) return '2k';
   if (token.includes('1k')) return '1k';
-  const requested = String(resolution || '').trim().toLowerCase();
-  if (requested === '1k' || requested === '4k') return requested;
   return '2k';
 };
 

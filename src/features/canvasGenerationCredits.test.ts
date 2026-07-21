@@ -15,11 +15,12 @@ describe('canvas generation credits', () => {
   });
 
   it('uses the wallet image pricing table', () => {
-    expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(10);
+    expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(18);
     expect(getCanvasImageUnitCredits('gpt-image-2', '2k')).toBe(15);
-    expect(getCanvasImageUnitCredits('Xais Img2_4K', '2k')).toBe(18);
-    expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(35);
-    expect(getCanvasImageUnitCredits('Xais Nano Pro_2K', '4k')).toBe(18);
+    expect(getCanvasImageUnitCredits('Xais Img2_4K', '2k')).toBe(15);
+    expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(30);
+    expect(getCanvasImageUnitCredits('Xais Nano Pro_2K', '4k')).toBe(20);
+    expect(getCanvasImageUnitCredits('Xais Nano Pro_4K', '2k')).toBe(18);
     expect(getCanvasImageUnitCredits('Nano Banana Pro', '4k')).toBe(20);
     expect(getCanvasImageUnitCredits('Nano Banana 2', '2k')).toBe(15);
     expect(getCanvasImageUnitCredits('unknown-model', '2k')).toBe(100);

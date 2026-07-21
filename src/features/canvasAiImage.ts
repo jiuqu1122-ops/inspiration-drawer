@@ -1047,6 +1047,11 @@ export const shouldUsePortableWalletImageReferences = (
   mediaType: 'image' | 'video',
 ) => cloudWallet && mediaType === 'image';
 
+export const getCanvasAiReferencePublicationMaxUrlLength = (
+  portableWalletReferences: boolean,
+  provider?: string | null,
+) => portableWalletReferences && provider === 'xais-chat' ? 512 : 64;
+
 export const sortCanvasAiImageCandidatesByChannelPriority = (
   candidates: CanvasAiModelCandidate[],
   orderedChannelIds: string[],

@@ -32,6 +32,7 @@ import {
   sortCanvasAiImageCandidatesByChannelPriority,
   shouldRetrySameCanvasAiImageCandidate,
   shouldUseCanvasAiNativeImageBatchRequest,
+  getCanvasAiReferencePublicationMaxUrlLength,
   shouldTryNextCanvasAiImageCandidate,
   shouldUsePortableWalletImageReferences,
   supportsCanvasAiImageResolution,
@@ -143,6 +144,12 @@ describe('unified wallet image model families', () => {
     expect(shouldUsePortableWalletImageReferences(true, 'image')).toBe(true);
     expect(shouldUsePortableWalletImageReferences(false, 'image')).toBe(false);
     expect(shouldUsePortableWalletImageReferences(true, 'video')).toBe(false);
+  });
+
+  it('relaxes the legacy XAIS URL length limit only for wallet-side attachment uploads', () => {
+    expect(getCanvasAiReferencePublicationMaxUrlLength(true, 'xais-chat')).toBe(512);
+    expect(getCanvasAiReferencePublicationMaxUrlLength(true, 'new-api')).toBe(64);
+    expect(getCanvasAiReferencePublicationMaxUrlLength(false, 'xais-chat')).toBe(64);
   });
 
   it('merges XAIS resolution variants into the public model families', () => {

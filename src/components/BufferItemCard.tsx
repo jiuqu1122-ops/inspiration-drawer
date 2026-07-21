@@ -7,7 +7,11 @@ import {
 } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { writeImageSourceToClipboard } from '../features/imageClipboard';
+import {
+  imageSourceToPngDataUrl,
+  writeImageSourceToClipboard,
+  writeLocalImageFileToClipboard,
+} from '../features/imageClipboard';
 import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
 
 type LazyCardImageProps = {
@@ -352,14 +356,25 @@ function BufferItemCard({
       }
 
       if (item.type === 'image') {
-        const source = item.url || item.path || item.content || '';
+        const source = item.path || item.url || item.content || '';
         if (!source) throw new Error('没有可复制的图片');
+
+        if (await writeLocalImageFileToClipboard(source)) {
+          markCopied('📋 图片已复制');
+          return;
+        }
 
         try {
           await invoke('copy_image', { dataUrl: source });
         } catch (err) {
           console.warn('native card image copy failed:', err);
-          await writeImageSourceToClipboard(source);
+          const pngDataUrl = await imageSourceToPngDataUrl(source);
+          try {
+            await invoke('copy_image', { dataUrl: pngDataUrl });
+          } catch (pngError) {
+            console.warn('native card PNG copy failed:', pngError);
+            await writeImageSourceToClipboard(pngDataUrl);
+          }
         }
         markCopied('📋 图片已复制');
         return;

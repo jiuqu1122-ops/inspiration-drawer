@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   File as FileIcon, X, Check, Pin, Image as ImageIcon, Film, LayoutGrid,
-  CheckSquare, Trash2, ChevronLeft, ChevronRight, Palette, Plus, StickyNote,
+  CheckSquare, ChevronLeft, ChevronRight, Palette, Plus, StickyNote,
   Clock, Tag,
 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -627,8 +627,6 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   };
 
   const updateTextLive = (nextContent: string) => {
-    setText(nextContent);
-
     const current = noteRef.current;
     if (!current) return;
 
@@ -843,7 +841,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     if (!isEditingNoteText) return;
     window.setTimeout(() => {
       noteTextAreaRef.current?.focus();
-      noteTextAreaRef.current?.setSelectionRange(text.length, text.length);
+      const length = noteTextAreaRef.current?.value.length ?? text.length;
+      noteTextAreaRef.current?.setSelectionRange(length, length);
     }, 0);
   }, [isEditingNoteText]);
 
@@ -1334,9 +1333,11 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     animateTextNoteSize(previousMode, { persist: false, durationMs: 145 });
   };
 
+  const noteCornerClass = note?.type === 'image' ? 'rounded-[6px]' : 'rounded-[24px]';
+
   return (
     <div
-      className={`${isDark && note?.type !== 'text' ? 'dark ' : ''}w-screen h-screen overflow-hidden rounded-[24px] bg-white/96 text-stone-800 dark:bg-stone-950/96 dark:text-stone-100 font-sans select-none ${
+      className={`${isDark && note?.type !== 'text' ? 'dark ' : ''}w-screen h-screen overflow-hidden ${noteCornerClass} bg-white/96 text-stone-800 dark:bg-stone-950/96 dark:text-stone-100 font-sans select-none ${
         isSnipImageNote
           ? 'border-2 border-emerald-400/90 dark:border-emerald-300/85'
           : 'border border-black/10 dark:border-white/10'
@@ -1348,27 +1349,9 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
       onMouseLeave={handleNoteMouseLeave}
       title={zoomTitle}
     >
-      <div className="relative h-full w-full overflow-hidden rounded-[24px]">
+      <div className={`relative h-full w-full overflow-hidden ${noteCornerClass}`}>
         {note && !isTextNoteMedium && (
           <div className="absolute right-3 top-3 z-40 flex gap-1.5">
-            {isSnipImageNote && (
-              <button
-                data-no-drag="true"
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                onDoubleClick={(e) => e.stopPropagation()}
-                onClick={destroyCurrentSnipNote}
-                title="销毁截图便签"
-                className={`${noteToolButtonBaseClass} ${noteDeleteToolClass} ${
-                  isNoteHovered ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-1 pointer-events-none'
-                }`}
-              >
-                <Trash2 className="h-3.5 w-3.5 transition-all group-hover:fill-current group-hover:stroke-[2.4]" />
-              </button>
-            )}
             {note?.type === 'text' && (
               <div data-no-drag="true" data-note-color-transient="true" className="relative">
                 <button
@@ -1470,9 +1453,9 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
             e.stopPropagation();
           }}
           onDoubleClick={(e) => e.stopPropagation()}
-          onClick={hideNote}
-          title="关闭便签"
-          className={`${noteToolButtonBaseClass} ${noteCloseToolClass} ${
+          onClick={isSnipImageNote ? destroyCurrentSnipNote : hideNote}
+          title={isSnipImageNote ? '删除截图便签' : '关闭便签'}
+          className={`${noteToolButtonBaseClass} ${isSnipImageNote ? noteDeleteToolClass : noteCloseToolClass} ${
             isNoteHovered ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-1 pointer-events-none'
           }`}
         >
@@ -1751,7 +1734,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                 <textarea
                   ref={noteTextAreaRef}
                   data-no-drag="true"
-                  value={text}
+                  defaultValue={text}
                   onChange={(e) => updateTextLive(e.target.value)}
                   onBlur={finishTextEdit}
                   onKeyDown={(e) => {

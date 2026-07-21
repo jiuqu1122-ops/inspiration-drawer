@@ -1,15 +1,6 @@
 import { Image as TauriImage } from '@tauri-apps/api/image';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { writeImage } from '@tauri-apps/plugin-clipboard-manager';
-
-const MAX_CLIPBOARD_IMAGE_CACHE_SIZE = 12;
-
-type CachedClipboardImage = {
-  promise: Promise<TauriImage>;
-  lastUsed: number;
-};
-
-const clipboardImageCache = new Map<string, CachedClipboardImage>();
 
 const isLocalImagePath = (source: string) => (
   /^[a-zA-Z]:[\\/]/.test(source)
@@ -18,29 +9,30 @@ const isLocalImagePath = (source: string) => (
   || /^file:/i.test(source)
 );
 
+const isNativeLocalImageSource = (source: string) => (
+  isLocalImagePath(source)
+  || /^asset:\/\//i.test(source)
+  || /asset\.localhost/i.test(source)
+);
+
+export const writeLocalImageFileToClipboard = async (source: string) => {
+  const value = source.trim();
+  if (!value || !isNativeLocalImageSource(value)) return false;
+  try {
+    await invoke('copy_files_to_clipboard', { paths: [value] });
+    return true;
+  } catch (error) {
+    console.warn('local image file clipboard copy failed:', error);
+    return false;
+  }
+};
+
 const getFetchableImageSource = (source: string) => {
   const value = source.trim();
   if (!value) throw new Error('empty image source');
   if (!isLocalImagePath(value)) return value;
   const localPath = value.replace(/^file:\/\/+?/i, '').replace(/^\/([a-zA-Z]:[\\/])/, '$1');
   return convertFileSrc(localPath);
-};
-
-const getCacheKey = (source: string) => {
-  const value = source.trim();
-  if (!value) return '';
-  if (!/^data:image\//i.test(value)) return value;
-  return `${value.slice(0, 96)}:${value.length}:${value.slice(-96)}`;
-};
-
-const trimClipboardImageCache = () => {
-  if (clipboardImageCache.size <= MAX_CLIPBOARD_IMAGE_CACHE_SIZE) return;
-  const entries = Array.from(clipboardImageCache.entries()).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-  const removeCount = entries.length - MAX_CLIPBOARD_IMAGE_CACHE_SIZE;
-  entries.slice(0, removeCount).forEach(([key, cached]) => {
-    clipboardImageCache.delete(key);
-    cached.promise.then(image => image.close()).catch(() => {});
-  });
 };
 
 const canvasToPngBytes = async (canvas: HTMLCanvasElement) => {
@@ -110,44 +102,45 @@ const blobToPngBytes = async (blob: Blob) => {
   return await blobToPngBytesWithImageElement(blob);
 };
 
-const createClipboardImageFromSource = async (source: string) => {
+const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result || ''));
+  reader.onerror = () => reject(reader.error || new Error('data url conversion failed'));
+  reader.readAsDataURL(blob);
+});
+
+const readImageSourceBlob = async (source: string) => {
   const response = await fetch(getFetchableImageSource(source));
-  if (!response.ok) throw new Error(`读取图片失败: ${response.status}`);
+  if (!response.ok) throw new Error(`failed to read image: ${response.status}`);
   const blob = await response.blob();
   if (blob.size === 0) throw new Error('empty image bytes');
   if (!blob.type.startsWith('image/') && !/^data:image\//i.test(source.trim())) {
     throw new Error('source is not an image');
   }
+  return blob;
+};
 
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  try {
-    return await TauriImage.fromBytes(bytes);
-  } catch (directError) {
-    if (typeof document === 'undefined') throw directError;
-    const pngBytes = await blobToPngBytes(blob);
-    return await TauriImage.fromBytes(pngBytes);
-  }
+export const imageSourceToPngDataUrl = async (source: string) => {
+  const blob = await readImageSourceBlob(source);
+  const pngBytes = await blobToPngBytes(blob);
+  return await blobToDataUrl(new Blob([pngBytes], { type: 'image/png' }));
+};
+
+const createClipboardImageFromSource = async (source: string) => {
+  const blob = await readImageSourceBlob(source);
+  const pngBytes = await blobToPngBytes(blob);
+  return await TauriImage.fromBytes(pngBytes);
 };
 
 /**
- * Fast image clipboard path. This keeps normal image copies in the Tauri
- * clipboard plugin, converts non-PNG sources before falling back elsewhere,
- * and caches decoded image resources for repeated preview copies.
+ * Clipboard-plugin fallback. Decoded native image resources are closed after
+ * each write so repeated copies of large images cannot accumulate in memory.
  */
 export const writeImageSourceToClipboard = async (source: string) => {
-  const key = getCacheKey(source);
-  const cached = clipboardImageCache.get(key);
-  const promise = cached?.promise || createClipboardImageFromSource(source);
-  clipboardImageCache.set(key, { promise, lastUsed: Date.now() });
-  trimClipboardImageCache();
-
+  const image = await createClipboardImageFromSource(source);
   try {
-    await writeImage(await promise);
-  } catch {
-    clipboardImageCache.delete(key);
-    const freshPromise = createClipboardImageFromSource(source);
-    clipboardImageCache.set(key, { promise: freshPromise, lastUsed: Date.now() });
-    await writeImage(await freshPromise);
-    trimClipboardImageCache();
+    await writeImage(image);
+  } finally {
+    await image.close().catch(() => {});
   }
 };

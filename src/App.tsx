@@ -107,6 +107,12 @@ import {
   truncatePromptToUtf8ByteLimit,
 } from './features/appAgent/imageQuality/imageRulePromptBuilder';
 
+const sortCanvasesNewestFirst = (items: CanvasRecord[]) => (
+  [...items].sort((a, b) => (
+    (b.sortOrder - a.sortOrder) || (b.createdAt - a.createdAt)
+  ))
+);
+
 type VirtualDropStatus =
   | 'queued'
   | 'inspecting'
@@ -266,7 +272,7 @@ import {
 } from './features/floatingNotes';
 import { EdgeTrigger } from './features/EdgeTrigger';
 import { clearLegacyStartupFlags, isLaunchIntroDoneThisPage, markLaunchIntroDoneThisPage } from './features/startup';
-import { writeImageSourceToClipboard } from './features/imageClipboard';
+import { writeImageSourceToClipboard, writeLocalImageFileToClipboard } from './features/imageClipboard';
 import {
   getDrawerExternalDragCacheCandidates,
   getDrawerExternalDragLocalCandidates,
@@ -309,7 +315,6 @@ import {
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
   NEW_API_IMAGE_MODEL_OPTIONS,
-  NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
   OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS,
@@ -341,6 +346,7 @@ import {
   normalizeXaisImage2Model,
   resolveCanvasAiReferenceProvider,
   resolveXaisImage2Ratio,
+  getCanvasAiReferencePublicationMaxUrlLength,
   shouldUsePortableWalletImageReferences,
   shouldUseCanvasAiNativeImageBatchRequest,
   supportsCanvasAiImageResolution,
@@ -483,6 +489,7 @@ const LazyFloatingNoteHost = React.lazy(() => (
   import('./features/FloatingNoteHost').then(module => ({ default: module.FloatingNoteHost }))
 ));
 const CANVAS_WORKBENCH_MODE_STORAGE_KEY = 'drawer_canvas_workbench_mode';
+const DRAWER_WORKBENCH_MODE_STORAGE_KEY = 'drawer_workbench_mode';
 const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
 const DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_folder_sidebar_width';
 const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 178;
@@ -1023,6 +1030,8 @@ const SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY = 'drawer_screenshot_auto_pin_note';
 const CALENDAR_NOTIFICATION_SENT_STORAGE_PREFIX = 'drawer_calendar_notification_sent_';
 const CALENDAR_NOTIFICATION_HOURS = [10, 15];
 const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown_date';
+const APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY = 'drawer_app_update_last_automatic_check';
+const APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
 const SNIP_RESTORE_DRAWER_STORAGE_KEY = 'drawer_snip_restore_drawer';
 const CANVAS_FALLBACK_IMAGE_WIDTH = 360;
@@ -1093,7 +1102,7 @@ const CANVAS_AI_DEFAULT_VIDEO_DURATION = 15;
 const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
 const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
 const CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS = 5 * 60 * 1000;
-const CANVAS_AI_NEW_API_STUCK_TIMEOUT_MS = (NEW_API_IMAGE_REQUEST_TIMEOUT_SECS + 30) * 1000;
+const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = 6 * 60 * 1000;
 const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
 const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
 const CANVAS_AI_INPUT_IMAGE_QUALITY = 0.9;
@@ -4229,18 +4238,28 @@ function MainApp() {
     }
   }, [folders]);
   const [isCanvasMode, setIsCanvasMode] = useState(false);
-  const [isCanvasWorkbenchMode, setIsCanvasWorkbenchMode] = useState(() => localStorage.getItem(CANVAS_WORKBENCH_MODE_STORAGE_KEY) === 'true');
+  const [isCanvasWorkbenchMode, setIsCanvasWorkbenchMode] = useState(() => localStorage.getItem(CANVAS_WORKBENCH_MODE_STORAGE_KEY) !== 'false');
+  const [isDrawerWorkbenchMode, setIsDrawerWorkbenchMode] = useState(() => localStorage.getItem(DRAWER_WORKBENCH_MODE_STORAGE_KEY) === 'true');
   const isCanvasWorkbenchActive = isCanvasMode && isCanvasWorkbenchMode;
+  const isDrawerWorkbenchActive = !isCanvasMode && isDrawerWorkbenchMode;
+  const isMainWorkbenchActive = isCanvasWorkbenchActive || isDrawerWorkbenchActive;
   const isCanvasWorkbenchActiveRef = useRef(false);
+  const isMainWorkbenchActiveRef = useRef(false);
   useEffect(() => {
     localStorage.setItem(CANVAS_WORKBENCH_MODE_STORAGE_KEY, isCanvasWorkbenchMode ? 'true' : 'false');
   }, [isCanvasWorkbenchMode]);
   useEffect(() => {
+    localStorage.setItem(DRAWER_WORKBENCH_MODE_STORAGE_KEY, isDrawerWorkbenchMode ? 'true' : 'false');
+  }, [isDrawerWorkbenchMode]);
+  useEffect(() => {
     isCanvasWorkbenchActiveRef.current = isCanvasWorkbenchActive;
-    invoke('set_canvas_workbench_active', { active: isCanvasWorkbenchActive }).catch((err) => {
-      console.warn('set canvas workbench mode failed:', err);
-    });
   }, [isCanvasWorkbenchActive]);
+  useEffect(() => {
+    isMainWorkbenchActiveRef.current = isMainWorkbenchActive;
+    invoke('set_main_workbench_active', { active: isMainWorkbenchActive }).catch((err) => {
+      console.warn('set main workbench mode failed:', err);
+    });
+  }, [isMainWorkbenchActive]);
   const [canvasItems, setCanvasItems] = useState<CanvasImageItem[]>([]);
   const [canvasWorkingTimerTick, setCanvasWorkingTimerTick] = useState(() => Date.now());
   const [canvasScale, setCanvasScale] = useState(1);
@@ -4870,6 +4889,7 @@ function MainApp() {
           && !licenseGateActiveRef.current
           && !isPinnedRef.current
           && !isCanvasModeRef.current
+          && !isMainWorkbenchActiveRef.current
           && !showLaunchIntroRef.current
           && !isSplashVisibleRef.current
           && !showUpdateLogRef.current
@@ -5053,6 +5073,7 @@ function MainApp() {
   const [virtualDropJobs, setVirtualDropJobs] = useState<VirtualDropUiJob[]>([]);
   const [appVersion, setAppVersion] = useState('');
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
+  const isCheckingAppUpdateRef = useRef(false);
   const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
   const [isMobileConnected, setIsMobileConnected] = useState(false);
   const disconnectTimerRef = useRef<any | null>(null);
@@ -5161,11 +5182,12 @@ function MainApp() {
 
   const checkAndInstallAppUpdate = async (options: { silent?: boolean; hidePromptWhenUpToDate?: boolean } = {}) => {
     if (!isMainDrawerWindow) return;
-    if (isCheckingAppUpdate) {
+    if (isCheckingAppUpdateRef.current) {
       if (!options.silent) showToast('正在检查更新...');
       return;
     }
 
+    isCheckingAppUpdateRef.current = true;
     setIsCheckingAppUpdate(true);
     const progressId = `app-update-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let unlistenAppUpdateProgress: (() => void) | undefined;
@@ -5288,9 +5310,39 @@ function MainApp() {
       if (!options.silent) showToast(formatAppUpdateErrorMessage(err));
     } finally {
       unlistenAppUpdateProgress?.();
+      isCheckingAppUpdateRef.current = false;
       setIsCheckingAppUpdate(false);
     }
   };
+
+  useEffect(() => {
+    if (!isMainDrawerWindow) return;
+    let disposed = false;
+    let timer: number | null = null;
+
+    const scheduleNextAutomaticCheck = () => {
+      if (disposed) return;
+      const stored = Number(localStorage.getItem(APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY));
+      const lastCheckedAt = Number.isFinite(stored) && stored > 0 ? stored : 0;
+      const elapsed = lastCheckedAt > 0 ? Math.max(0, Date.now() - lastCheckedAt) : 0;
+      const delayMs = lastCheckedAt > 0
+        ? Math.max(1000, APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS - elapsed)
+        : 15_000;
+
+      timer = window.setTimeout(async () => {
+        if (disposed) return;
+        localStorage.setItem(APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY, String(Date.now()));
+        await checkAndInstallAppUpdate({ silent: true, hidePromptWhenUpToDate: true });
+        scheduleNextAutomaticCheck();
+      }, delayMs);
+    };
+
+    scheduleNextAutomaticCheck();
+    return () => {
+      disposed = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
 
   const handleAppUpdatePromptClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -7763,6 +7815,28 @@ function MainApp() {
     showToast(next ? '已开启画布工作台模式' : '已关闭画布工作台模式');
   };
 
+  const toggleDrawerWorkbenchMode = () => {
+    const next = !isDrawerWorkbenchMode;
+    setIsDrawerWorkbenchMode(next);
+    if (next) {
+      if (closeTimerRef.current) {
+        clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      if (idleAutoCloseTimerRef.current) {
+        clearTimeout(idleAutoCloseTimerRef.current);
+        idleAutoCloseTimerRef.current = null;
+      }
+      isPointerInsideDrawerRef.current = true;
+      isPinnedRef.current = false;
+      setIsPinned(false);
+      setIsOpen(true);
+      setDrawerState('open');
+      invoke('toggle_pin', { pinned: false }).catch(() => {});
+    }
+    showToast(next ? '已开启抽屉工作台模式' : '已关闭抽屉工作台模式');
+  };
+
   const toggleAutoStartSetting = async () => {
     if (isAutoStartChanging) return;
     const previous = isAutoStart;
@@ -8477,26 +8551,45 @@ function MainApp() {
     if (!canVirtualizeDrawerGrid) {
       return { start: 0, end: Math.min(displayItems.length, drawerRenderLimit), top: 0, bottom: 0 };
     }
-    const rowHeight = Math.max(1, cardMediaHeight + 118);
-    const firstRow = Math.max(0, Math.floor(drawerScrollTop / rowHeight) - DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
-    const visibleRows = Math.max(
-      firstRow + 1,
-      Math.ceil((drawerScrollTop + Math.max(drawerViewportHeight, 1)) / rowHeight) + DRAWER_VIRTUALIZATION_OVERSCAN_ROWS,
-    );
     const totalRows = Math.ceil(displayItems.length / drawerGridColumnCount);
+    const compactMediaRowHeight = Math.max(1, cardMediaHeight + 10);
+    const detailedRowHeight = Math.max(compactMediaRowHeight, cardMediaHeight + 118);
+    const rowOffsets = new Array<number>(totalRows + 1).fill(0);
+    for (let row = 0; row < totalRows; row += 1) {
+      const rowStart = row * drawerGridColumnCount;
+      const rowEnd = Math.min(displayItems.length, rowStart + drawerGridColumnCount);
+      const hasDetailedCard = displayItems
+        .slice(rowStart, rowEnd)
+        .some(item => item.type !== 'image' && item.type !== 'video');
+      rowOffsets[row + 1] = rowOffsets[row] + (hasDetailedCard ? detailedRowHeight : compactMediaRowHeight);
+    }
+
+    const viewportTop = Math.max(0, drawerScrollTop);
+    const viewportBottom = viewportTop + Math.max(drawerViewportHeight, 1);
+    let firstVisibleRow = 0;
+    while (firstVisibleRow < totalRows - 1 && rowOffsets[firstVisibleRow + 1] <= viewportTop) {
+      firstVisibleRow += 1;
+    }
+    let endVisibleRow = Math.min(totalRows, firstVisibleRow + 1);
+    while (endVisibleRow < totalRows && rowOffsets[endVisibleRow] < viewportBottom) {
+      endVisibleRow += 1;
+    }
+
+    const firstRow = Math.max(0, firstVisibleRow - DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
+    const endRow = Math.min(totalRows, endVisibleRow + DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
     const start = Math.min(displayItems.length, firstRow * drawerGridColumnCount);
-    const end = Math.min(displayItems.length, visibleRows * drawerGridColumnCount);
+    const end = Math.min(displayItems.length, endRow * drawerGridColumnCount);
     return {
       start,
       end,
-      top: firstRow * rowHeight,
-      bottom: Math.max(0, (totalRows - visibleRows) * rowHeight),
+      top: rowOffsets[firstRow],
+      bottom: Math.max(0, rowOffsets[totalRows] - rowOffsets[endRow]),
     };
   }, [
     canVirtualizeDrawerGrid,
     cardMediaHeight,
     cardWidth,
-    displayItems.length,
+    displayItems,
     drawerGridColumnCount,
     drawerRenderLimit,
     drawerScrollTop,
@@ -9909,6 +10002,7 @@ function MainApp() {
             !isPanelInteractionHeld &&
             !drawerAutoCloseBlockRef.current &&
             !licenseGateActiveRef.current &&
+            !isMainWorkbenchActiveRef.current &&
             !isTextEntryActive()
           ) {
             setIsOpen(false);
@@ -10032,7 +10126,7 @@ function MainApp() {
         const restored = sanitizeCanvasPersistedState({ items: nodes });
         activeCanvasIdRef.current = active.id;
         setActiveCanvasId(active.id);
-        setCanvases(canvasList.length > 0 ? canvasList : [active]);
+        setCanvases(sortCanvasesNewestFirst(canvasList.length > 0 ? canvasList : [active]));
         setCanvasTrashCount(trashCount);
         canvasItemsRef.current = restored.items;
         canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
@@ -12344,14 +12438,15 @@ function MainApp() {
       listCanvases(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
       getCanvasTrashCount(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
     ]);
-    setCanvases(canvasList);
+    const sortedCanvasList = sortCanvasesNewestFirst(canvasList);
+    setCanvases(sortedCanvasList);
     setCanvasTrashCount(trashCount);
-    const active = canvasList.find(canvas => canvas.isActive) || canvasList[0];
+    const active = sortedCanvasList.find(canvas => canvas.isActive) || sortedCanvasList[0];
     if (active && active.id !== activeCanvasIdRef.current && !isSwitchingCanvasRef.current) {
       activeCanvasIdRef.current = active.id;
       setActiveCanvasId(active.id);
     }
-    return canvasList;
+    return sortedCanvasList;
   };
 
   const refreshDeletedCanvases = async () => {
@@ -12451,9 +12546,9 @@ function MainApp() {
             ? { ...item, ...active, isActive: true }
             : item.isActive ? { ...item, isActive: false } : item
         ));
-        return next.some(item => item.id === active.id)
-          ? next
-          : [...next, active].sort((a, b) => (a.sortOrder - b.sortOrder) || (a.createdAt - b.createdAt));
+        return sortCanvasesNewestFirst(
+          next.some(item => item.id === active.id) ? next : [...next, active]
+        );
       });
       if (!isCanvasModeRef.current) enterCanvasMode();
       showToast(`已切换到「${active.name || '画布'}」`);
@@ -12487,10 +12582,10 @@ function MainApp() {
       const canvas = await createCanvas(name.trim(), DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID);
       const active = await setActiveCanvas(canvas.id, DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID);
       const nextCanvas = { ...canvas, ...active, isActive: true };
-      setCanvases(prev => [
+      setCanvases(prev => sortCanvasesNewestFirst([
         ...prev.map(item => item.isActive ? { ...item, isActive: false } : item),
         nextCanvas,
-      ].sort((a, b) => (a.sortOrder - b.sortOrder) || (a.createdAt - b.createdAt)));
+      ]));
       activeCanvasIdRef.current = nextCanvas.id;
       setActiveCanvasId(nextCanvas.id);
       await loadCanvasItems(nextCanvas.id, { knownEmpty: true });
@@ -14162,11 +14257,25 @@ function MainApp() {
     if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
       throw new Error('invalid image data url');
     }
-    const pngDataUrl = await imageDataUrlToPngDataUrl(dataUrl);
-
+    let backendError: unknown = null;
     let pluginError: unknown = null;
     let browserError: unknown = null;
-    let backendError: unknown = null;
+
+    try {
+      await invoke('copy_image', { dataUrl });
+      return;
+    } catch (err) {
+      backendError = err;
+      console.warn('backend copy canvas image failed:', err);
+    }
+
+    let pngDataUrl = '';
+    try {
+      pngDataUrl = await imageDataUrlToPngDataUrl(dataUrl);
+    } catch (err) {
+      console.warn('canvas image PNG conversion failed:', err);
+      throw err || backendError;
+    }
 
     try {
       await writeImageSourceToClipboard(pngDataUrl);
@@ -14176,9 +14285,8 @@ function MainApp() {
       console.warn('clipboard-manager copy canvas image failed:', err);
     }
 
-    const blob = await dataUrlToBlob(pngDataUrl);
-
     try {
+      const blob = await dataUrlToBlob(pngDataUrl);
       const ClipboardItemCtor = (window as any).ClipboardItem;
       if (!navigator.clipboard || !ClipboardItemCtor) throw new Error('ClipboardItem unavailable');
       await navigator.clipboard.write([
@@ -14188,14 +14296,6 @@ function MainApp() {
     } catch (err) {
       browserError = err;
       console.warn('browser clipboard canvas image copy failed:', err);
-    }
-
-    try {
-      await invoke('copy_image', { dataUrl: pngDataUrl });
-      return;
-    } catch (err) {
-      backendError = err;
-      console.warn('backend copy canvas image failed:', err);
     }
 
     throw backendError || pluginError || browserError || new Error('copy canvas image failed');
@@ -14213,17 +14313,17 @@ function MainApp() {
   const shouldTryBackendImageCopyDirectly = (source: string) => {
     const value = source.trim();
     if (!value) return false;
-    if (/^data:image\//i.test(value)) {
-      return /^data:image\/(?:png|jpe?g|bmp|gif);base64,/i.test(value);
-    }
     if (/^blob:/i.test(value)) return false;
     return true;
   };
 
   const copyImageSourceToSystemClipboard = async (source: string) => {
     let backendError: unknown = null;
-    let directError: unknown = null;
     let dataUrlError: unknown = null;
+
+    if (await writeLocalImageFileToClipboard(source)) {
+      return;
+    }
 
     if (shouldTryBackendImageCopyDirectly(source)) {
       try {
@@ -14236,14 +14336,6 @@ function MainApp() {
     }
 
     try {
-      await writeImageSourceToClipboard(source);
-      return;
-    } catch (err) {
-      directError = err;
-      console.warn('fast clipboard image copy failed:', err);
-    }
-
-    try {
       const dataUrl = await imageSourceToDataUrl(source, false);
       await copyImageDataUrlToSystemClipboard(dataUrl);
       return;
@@ -14252,7 +14344,7 @@ function MainApp() {
       console.warn('copy canvas image source via data url failed:', err);
     }
 
-    throw dataUrlError || directError || backendError || new Error('copy image source failed');
+    throw dataUrlError || backendError || new Error('copy image source failed');
   };
 
   const copySelectedImagePreviewToClipboard = async () => {
@@ -14282,7 +14374,7 @@ function MainApp() {
       return false;
     }
 
-    const source = getCanvasItemDisplaySource(canvasItem.item);
+    const source = canvasItem.item.path || getCanvasItemDisplaySource(canvasItem.item);
     if (!source) {
       showToast(options.missingToast || '这张图片没有可复制的来源');
       return false;
@@ -15317,7 +15409,8 @@ function MainApp() {
 
   const publishLocalAiInputs = async (
     sources: string[],
-    preference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first'
+    preference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first',
+    maxUrlLength = 64,
   ) => {
     if (sources.length === 0) return { urls: [] as string[], shareIds: [] as TemporaryReferenceShare[] };
     if (!isCloudflaredDisclaimerAccepted) {
@@ -15329,6 +15422,7 @@ function MainApp() {
       const result = await invoke<CloudflaredPublicImageUrlsResult>('create_cloudflared_public_image_urls', {
         sources,
         dir: cacheDir,
+        maxUrlLength,
       });
       const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
       if (!result.shareId || urls.length === 0) {
@@ -15418,26 +15512,42 @@ function MainApp() {
         ? effectiveCanvasAiEndpoint
         : provider === canvasAiProvider ? canvasAiEndpoint : getStoredCanvasAiEndpoint(provider)
     );
-    const refs = await invoke<string[]>('upload_xais_reference_images', {
-      endpoint,
-      apiKey,
-      gatewayKind: isCanvasAiLicenseManaged
-        ? effectiveCanvasAiGatewayKind
-        : canvasAiGatewayKindForProvider(provider),
-      provider: isCanvasAiLicenseManaged
-        ? effectiveCanvasAiApiProvider
-        : (provider === canvasAiProvider
-          ? canvasAiApiProvider
-          : getStoredCanvasAiApiProvider(provider)),
-      model: effectiveCanvasAiModel,
-      headers: isCanvasAiLicenseManaged
-        ? undefined
-        : parseCanvasAiHeaders(provider === canvasAiProvider
-          ? canvasAiHeadersText
-          : getStoredCanvasAiHeadersText(provider)),
-      sources: cleanSources,
-    });
-    return (refs || []).map(ref => ref.trim()).filter(Boolean);
+    const startedAt = Date.now();
+    try {
+      const refs = await invoke<string[]>('upload_xais_reference_images', {
+        endpoint,
+        apiKey,
+        gatewayKind: isCanvasAiLicenseManaged
+          ? effectiveCanvasAiGatewayKind
+          : canvasAiGatewayKindForProvider(provider),
+        provider: isCanvasAiLicenseManaged
+          ? effectiveCanvasAiApiProvider
+          : (provider === canvasAiProvider
+            ? canvasAiApiProvider
+            : getStoredCanvasAiApiProvider(provider)),
+        model: effectiveCanvasAiModel,
+        headers: isCanvasAiLicenseManaged
+          ? undefined
+          : parseCanvasAiHeaders(provider === canvasAiProvider
+            ? canvasAiHeadersText
+            : getStoredCanvasAiHeadersText(provider)),
+        sources: cleanSources,
+      });
+      const output = (refs || []).map(ref => ref.trim()).filter(Boolean);
+      debugXaisImage2('localAttachmentPreparation', {
+        sourceCount: cleanSources.length,
+        attachmentCount: output.length,
+        durationMs: Date.now() - startedAt,
+      });
+      return output;
+    } catch (error) {
+      debugXaisImage2('localAttachmentPreparationFailed', {
+        sourceCount: cleanSources.length,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   };
 
   const getCanvasImageInputsForNode = async (
@@ -15529,7 +15639,8 @@ function MainApp() {
         try {
           const published = await publishLocalAiInputs(
             localSources,
-            publicationPreference
+            publicationPreference,
+            getCanvasAiReferencePublicationMaxUrlLength(portableWalletReferences, provider),
           );
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
@@ -18141,6 +18252,29 @@ function MainApp() {
     const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
 
     const mediaType = getCanvasAiMediaType(targetAi);
+    const imageTaskDeadlineAt = mediaType === 'image'
+      ? Date.now() + CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
+      : 0;
+    const waitForCanvasAiProviderTask = async <T,>(request: Promise<T>): Promise<T> => {
+      if (!imageTaskDeadlineAt) return request;
+      const remainingMs = imageTaskDeadlineAt - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error('图片生成任务等待超过 6 分钟，已自动取消');
+      }
+      let timeoutId: number | null = null;
+      try {
+        return await Promise.race([
+          request,
+          new Promise<never>((_, reject) => {
+            timeoutId = window.setTimeout(() => {
+              reject(new Error('图片生成任务等待超过 6 分钟，已自动取消'));
+            }, remainingMs);
+          }),
+        ]);
+      } finally {
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+      }
+    };
     // A generator node can retain provider fields from an earlier selection. Re-resolve
     // image requests against the currently selected source so choosing the wallet can
     // never accidentally reuse a local-API candidate.
@@ -18291,6 +18425,7 @@ function MainApp() {
           globalResolvedReferenceCount: globalReferenceItems.length,
         });
       }
+      const referencePreparationStartedAt = Date.now();
       const preparedInputs = await getCanvasImageInputsForNode(
         target,
         inputMode,
@@ -18309,6 +18444,8 @@ function MainApp() {
           resolvedReferenceCount: resolvedReferenceItems.length,
           preparedReferenceCount: preparedInputs.images.length,
           usedRemoteFirst: preparedInputs.usedRemoteFirst,
+          portableWalletReferences: usePortableWalletReferences,
+          durationMs: Date.now() - referencePreparationStartedAt,
         });
       }
       if (
@@ -18474,6 +18611,7 @@ function MainApp() {
         outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         duration: targetAi.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION,
         inputMode: targetAi.videoInputMode || 'REF',
+        timeoutSecs: mediaType === 'image' ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MS / 1000 : undefined,
         count: 1,
       };
       const generatedOutputs: CanvasAiGeneratedOutput[] = [];
@@ -18662,10 +18800,12 @@ function MainApp() {
         try {
           while (true) {
             try {
-              const batch = await generateCanvasAiProviderImages({
-                ...generateOptions,
-                count: requestedCount,
-              });
+              const batch = await waitForCanvasAiProviderTask(
+                generateCanvasAiProviderImages({
+                  ...generateOptions,
+                  count: requestedCount,
+                })
+              );
               responseReceivedAt = Date.now();
               returnedCount = batch.length;
               responseKinds = Array.from(new Set(batch.map(source => (
@@ -18724,9 +18864,11 @@ function MainApp() {
               clientRequestId: getCanvasAiSlotClientRequestId(clientRequestId, index, requestedCount),
               count: 1,
             };
-            const batch = mediaType === 'video'
-              ? await generateCanvasAiProviderVideos(requestOptions)
-              : await generateCanvasAiProviderImages(requestOptions);
+            const batch = await waitForCanvasAiProviderTask(
+              mediaType === 'video'
+                ? generateCanvasAiProviderVideos(requestOptions)
+                : generateCanvasAiProviderImages(requestOptions)
+            );
             const freshUrl = batch
               .map(url => url.trim())
               .find(url => url && !seenGeneratedUrls.has(url));
@@ -19354,17 +19496,16 @@ function MainApp() {
 
   useEffect(() => {
     if (!isCanvasMode) return;
-    const settleStaleNewApiNodes = () => {
+    const settleStaleImageNodes = () => {
       const now = Date.now();
       const staleNodes = canvasItemsRef.current.filter(item => {
         const ai = item.ai;
         if (ai?.type !== 'image-generator' || ai.status !== 'working' || !ai.generatedAt) return false;
-        if (normalizeCanvasAiProvider(ai.provider || '') !== 'new-api') return false;
-        return now - ai.generatedAt >= CANVAS_AI_NEW_API_STUCK_TIMEOUT_MS;
+        return now - ai.generatedAt >= CANVAS_AI_IMAGE_TASK_TIMEOUT_MS;
       });
       staleNodes.forEach(item => {
         canvasAiRunTokensRef.current.delete(item.id);
-        const error = 'NewAPI 生图请求已超时结束，请手动重试。';
+        const error = '图片生成任务等待超过 6 分钟，已自动取消，请手动重试。';
         updateCanvasAiGeneratorData(item.id, {
           status: 'error',
           error,
@@ -19374,10 +19515,10 @@ function MainApp() {
             : output),
         });
       });
-      if (staleNodes.length > 0) showToast(`已结束 ${staleNodes.length} 个超时的 NewAPI 生图任务，可手动重试`);
+      if (staleNodes.length > 0) showToast(`已自动取消 ${staleNodes.length} 个超时的图片生成任务，可手动重试`);
     };
-    settleStaleNewApiNodes();
-    const timer = window.setInterval(settleStaleNewApiNodes, 5000);
+    settleStaleImageNodes();
+    const timer = window.setInterval(settleStaleImageNodes, 5000);
     return () => window.clearInterval(timer);
   }, [isCanvasMode]);
 
@@ -21622,6 +21763,29 @@ function MainApp() {
     requestExitCanvasMode();
   };
 
+  const runDrawerWorkbenchWindowAction = (action: 'minimize' | 'maximize' | 'close') => {
+    if (action === 'minimize') {
+      appWindow.minimize().catch((err) => {
+        console.warn('minimize drawer workbench failed:', err);
+        showToast('最小化失败');
+      });
+      return;
+    }
+    if (action === 'maximize') {
+      appWindow.toggleMaximize().catch((err) => {
+        console.warn('maximize drawer workbench failed:', err);
+        showToast('最大化失败');
+      });
+      return;
+    }
+
+    isPointerInsideDrawerRef.current = false;
+    isPinnedRef.current = false;
+    setIsPinned(false);
+    setIsOpen(false);
+    invoke('toggle_pin', { pinned: false }).catch(() => {});
+  };
+
   const toggleCanvasMode = () => {
     if (isCanvasModeRef.current) requestExitCanvasMode();
     else enterCanvasMode();
@@ -22159,7 +22323,7 @@ function MainApp() {
     listen('native-drag-leave', () => {
       setExternalDragActive(false);
       if (isCanvasModeRef.current) return;
-      if (!licenseGateActiveRef.current && !isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
+      if (!licenseGateActiveRef.current && !isPinnedRef.current && !isMainWorkbenchActiveRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
     }).then(f => unlistenNativeDragLeave = f);
 
     listen('native-drop', (event: any) => {
@@ -22246,7 +22410,7 @@ function MainApp() {
       } else if (type === 'leave') {
         setExternalDragActive(false);
         if (isCanvasModeRef.current) return;
-        if (!licenseGateActiveRef.current && !isPinnedRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
+        if (!licenseGateActiveRef.current && !isPinnedRef.current && !isMainWorkbenchActiveRef.current && !showLaunchIntroRef.current && !isSplashVisibleRef.current && !showUpdateLogRef.current) setIsOpen(false);
       } else if (type === 'drop') {
         setExternalDragActive(false);
         if (stateRef.current.isAntiTouchMode) return;
@@ -23488,8 +23652,7 @@ function MainApp() {
 
     const copyOnce = async () => {
       let backendError: unknown = null;
-      let pluginError: unknown = null;
-      let browserError: unknown = null;
+      let normalizedError: unknown = null;
 
       try {
         await invoke('copy_image', { dataUrl: source });
@@ -23500,31 +23663,15 @@ function MainApp() {
       }
 
       try {
-        await writeImageSourceToClipboard(source);
+        const dataUrl = await imageSourceToDataUrl(source, false);
+        await copyImageDataUrlToSystemClipboard(dataUrl);
         return;
       } catch (err) {
-        pluginError = err;
-        console.warn('clipboard-manager copy image failed:', err);
+        normalizedError = err;
+        console.warn('normalized PNG clipboard image copy failed:', err);
       }
 
-      // 兜底 1：浏览器 ClipboardItem。部分 WebView2 环境允许这样写入 PNG。
-      try {
-        const ClipboardItemCtor = (window as any).ClipboardItem;
-        if (!navigator.clipboard || !ClipboardItemCtor) throw new Error('ClipboardItem unavailable');
-        const response = await fetch(convertFileSrc(source));
-        if (!response.ok) throw new Error(`读取截图文件失败: ${response.status}`);
-        const blob = await response.blob();
-        const pngBlob = blob.type === 'image/png' ? blob : new Blob([await blob.arrayBuffer()], { type: 'image/png' });
-        await navigator.clipboard.write([
-          new ClipboardItemCtor({ 'image/png': pngBlob })
-        ]);
-        return;
-      } catch (err) {
-        browserError = err;
-        console.warn('browser clipboard image copy failed:', err);
-      }
-
-      throw backendError || browserError || pluginError || new Error('copy image failed');
+      throw normalizedError || backendError || new Error('copy image failed');
     };
 
     let lastError: unknown = null;
@@ -24860,8 +25007,8 @@ useEffect(() => {
     isGlobalMouseDown.current ||
     isResizingState.current ||
     isDraggingOver ||
-    isCanvasWorkbenchActive ||
-    isCanvasWorkbenchActiveRef.current ||
+    isMainWorkbenchActive ||
+    isMainWorkbenchActiveRef.current ||
     isPinned ||
     isPinnedRef.current ||
     !!canvasBrushEditor ||
@@ -24884,7 +25031,8 @@ useEffect(() => {
     isGlobalMouseDown.current ||
     isResizingState.current ||
     isDraggingOver ||
-    isCanvasWorkbenchActive ||
+    isMainWorkbenchActive ||
+    isMainWorkbenchActiveRef.current ||
     isPinned ||
     !!canvasBrushEditor ||
     !!selectedImage ||
@@ -25073,7 +25221,7 @@ useEffect(() => {
           if (
             !isOpen ||
             shouldBlockAutoClose() ||
-            isCanvasWorkbenchActiveRef.current ||
+            isMainWorkbenchActiveRef.current ||
             isPinnedRef.current ||
             pointerInsideForClose ||
             wasInternalInteraction ||
@@ -25436,7 +25584,7 @@ useEffect(() => {
     setIsDraggingTitle(true);
     isDraggingTitleRef.current = true;
     isGlobalMouseDown.current = true;
-    if (!isCanvasWorkbenchActiveRef.current) {
+    if (!isMainWorkbenchActiveRef.current) {
       setIsPinned(true);
       isPinnedRef.current = true;
       invoke('toggle_pin', { pinned: true }).catch(() => {});
@@ -25512,7 +25660,7 @@ useEffect(() => {
       isGlobalMouseDown.current = false;
       isDraggingTitleRef.current = false;
       setIsDraggingTitle(false);
-      appWindow.setResizable(isCanvasWorkbenchActiveRef.current).catch(() => {});
+      appWindow.setResizable(isMainWorkbenchActiveRef.current).catch(() => {});
     };
 
     const onMove = (event: PointerEvent | MouseEvent) => {
@@ -29758,13 +29906,16 @@ useEffect(() => {
                       value={registrationEmail}
                       onChange={(event) => {
                         setRegistrationEmail(event.target.value);
+                        if (emailChallengeId) {
+                          setEmailChallengeId('');
+                          setEmailVerificationCode('');
+                        }
                         if (emailRegistrationError) setEmailRegistrationError('');
                       }}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter' && !isEmailCodeSending && !emailChallengeId) void requestEmailCode();
                       }}
                       maxLength={254}
-                      readOnly={Boolean(emailChallengeId)}
                       autoComplete="email"
                       inputMode="email"
                       placeholder="name@example.com"
@@ -29907,6 +30058,7 @@ useEffect(() => {
           isPointerInsideDrawerRef.current = false;
           // 动画阶段的 pointerleave 很容易是元素移动造成的，不代表鼠标真的离开了抽屉。
           if (isStartupOverlayActive || drawerState !== 'open') return;
+          if (isMainWorkbenchActiveRef.current) return;
           if (shouldBlockAutoClose()) {
             scheduleAutoClose(3000);
             return;
@@ -30720,6 +30872,42 @@ useEffect(() => {
                   {/* 右侧按钮组：按钮本身不拖动，按钮之间的空白仍可拖动 */}
                   <div className="z-[100] flex flex-wrap justify-end gap-1.5 flex-1 min-w-[180px] max-w-full">
 
+                    {isDrawerWorkbenchActive && (
+                      <div
+                        data-no-drag="true"
+                        className="mr-1 flex items-center gap-1 rounded-[14px] border border-stone-200/70 bg-white/72 p-0.5 shadow-sm backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-800/65"
+                        title="抽屉工作台窗口控制"
+                      >
+                        <button
+                          type="button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => runDrawerWorkbenchWindowAction('minimize')}
+                          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 dark:hover:text-stone-50"
+                          title="最小化"
+                        >
+                          <Minimize2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => runDrawerWorkbenchWindowAction('maximize')}
+                          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 dark:hover:text-stone-50"
+                          title="最大化 / 还原"
+                        >
+                          <Maximize2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => runDrawerWorkbenchWindowAction('close')}
+                          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:text-stone-300 dark:hover:bg-red-400/15 dark:hover:text-red-200"
+                          title="关闭抽屉"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
+
                     {isSelectMode ? (
                       <>
                         <button onClick={() => setSelectedIds(displayItems.map(i => i.id))} className="text-xs font-medium px-2.5 py-1.5 bg-white/65 dark:bg-stone-800/65 backdrop-blur-md rounded-[14px] text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors shadow-sm">全选</button>
@@ -30863,7 +31051,7 @@ useEffect(() => {
                         <button data-drawer-settings-toggle="true" onClick={toggleSettings} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${showSettings ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-100 dark:bg-violet-400/14 dark:text-violet-200 dark:ring-violet-400/20' : 'hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-400/12 dark:hover:text-violet-200'}`} title="设置与帮助">
                           <Settings className="w-3.5 h-3.5" />
                         </button>
-                        {!isCanvasWorkbenchActive && (
+                        {!isMainWorkbenchActive && (
                           <button onClick={handleTogglePin} className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 dark:bg-stone-800/65 backdrop-blur-md ${isPinned ? 'text-blue-700 bg-blue-50 ring-1 ring-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:ring-blue-400/20' : 'text-stone-500 dark:text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200'}`}>
                             {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />} {isPinned ? '复位' : '钉住'}
                           </button>
@@ -31664,6 +31852,25 @@ useEffect(() => {
                                     </span>
                                     <span className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ${triggerMode === 'float' ? 'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800/50' : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'}`}>
                                       {triggerMode === 'float' ? '悬浮方块' : '侧边小条'}
+                                      <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={toggleDrawerWorkbenchMode}
+                                    className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
+                                    title="开启后，抽屉按普通工作台窗口运行：显示在任务栏，不再自动缩回，并提供最小化、最大化和关闭按钮"
+                                  >
+                                    <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
+                                      <Monitor className="w-3.5 h-3.5 text-sky-500" /> 抽屉工作台模式
+                                    </span>
+                                    <span className={'flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold transition-colors ' + (
+                                      isDrawerWorkbenchMode
+                                        ? 'bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:border-sky-800/50'
+                                        : 'bg-stone-50 text-stone-500 border-stone-200 dark:bg-stone-700 dark:text-stone-300 dark:border-stone-600'
+                                    )}>
+                                      {isDrawerWorkbenchMode ? <Check className="w-3 h-3" /> : <Power className="w-3 h-3" />}
+                                      {isDrawerWorkbenchMode ? '已开启' : '已关闭'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>

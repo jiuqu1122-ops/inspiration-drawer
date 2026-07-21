@@ -652,7 +652,7 @@ pub async fn generate_cloud_images(
         "/v1/ai/images/generations",
         &access_token,
         &request,
-        Duration::from_secs(12 * 60),
+        Duration::from_secs(7 * 60),
     )
     .await
 }
@@ -745,7 +745,12 @@ pub async fn get_cloud_video_status(
     provider_channel_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let task_id = task_id.trim();
-    if task_id.is_empty() || task_id.len() > 256 || !task_id.chars().all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':')) {
+    if task_id.is_empty()
+        || task_id.len() > 256
+        || !task_id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':'))
+    {
         return Err("invalid_request: 视频任务 ID 无效".to_string());
     }
     let access_token = cloud_access_token(&app_handle).await?;
@@ -763,7 +768,8 @@ pub async fn get_cloud_video_status(
     if let Some(client_request_id) = client_request_id.filter(|value| !value.trim().is_empty()) {
         request = request.query(&[("clientRequestId", client_request_id)]);
     }
-    if let Some(provider_channel_id) = provider_channel_id.filter(|value| !value.trim().is_empty()) {
+    if let Some(provider_channel_id) = provider_channel_id.filter(|value| !value.trim().is_empty())
+    {
         request = request.query(&[("providerChannelId", provider_channel_id)]);
     }
     let response = request
@@ -777,8 +783,14 @@ pub async fn get_cloud_video_status(
         .map_err(|error| format!("cloud_invalid_response: 无法读取视频状态：{error}"))?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
-        let code = parsed.as_ref().and_then(|value| value.error.as_deref()).unwrap_or("cloud_request_failed");
-        let message = parsed.as_ref().and_then(|value| value.message.as_deref()).unwrap_or("视频状态查询失败");
+        let code = parsed
+            .as_ref()
+            .and_then(|value| value.error.as_deref())
+            .unwrap_or("cloud_request_failed");
+        let message = parsed
+            .as_ref()
+            .and_then(|value| value.message.as_deref())
+            .unwrap_or("视频状态查询失败");
         return Err(cloud_error(code, message));
     }
     serde_json::from_str(&body).map_err(|_| "cloud_invalid_response: 视频状态格式无效".to_string())

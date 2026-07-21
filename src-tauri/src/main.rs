@@ -62,7 +62,7 @@ fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
 static STARTUP_CLOSE_LOCK_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 static WINDOW_RESIZE_ANIMATION_TOKEN: AtomicU64 = AtomicU64::new(0);
 static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
-static CANVAS_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MAIN_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct CloudflaredShare {
     child: Child,
@@ -387,12 +387,12 @@ fn set_anti_touch_lock(locked: bool) {
     ANTI_TOUCH_LOCKED.store(if locked { 1 } else { 0 }, Ordering::Relaxed);
 }
 
-fn is_canvas_workbench_active() -> bool {
-    CANVAS_WORKBENCH_ACTIVE.load(Ordering::Relaxed)
+fn is_main_workbench_active() -> bool {
+    MAIN_WORKBENCH_ACTIVE.load(Ordering::Relaxed)
 }
 
-fn apply_main_canvas_workbench_mode(main: &WebviewWindow) {
-    let active = is_canvas_workbench_active();
+fn apply_main_workbench_mode(main: &WebviewWindow) {
+    let active = is_main_workbench_active();
     if !active {
         let _ = main.unmaximize();
     }
@@ -402,10 +402,10 @@ fn apply_main_canvas_workbench_mode(main: &WebviewWindow) {
 }
 
 #[tauri::command]
-fn set_canvas_workbench_active(app_handle: tauri::AppHandle, active: bool) -> Result<(), String> {
-    CANVAS_WORKBENCH_ACTIVE.store(active, Ordering::Relaxed);
+fn set_main_workbench_active(app_handle: tauri::AppHandle, active: bool) -> Result<(), String> {
+    MAIN_WORKBENCH_ACTIVE.store(active, Ordering::Relaxed);
     if let Some(main) = app_handle.get_webview_window("main") {
-        apply_main_canvas_workbench_mode(&main);
+        apply_main_workbench_mode(&main);
     }
     Ok(())
 }
@@ -6597,16 +6597,32 @@ async fn upload_xais_reference_images(
         if clean_sources.is_empty() {
             return Ok(Vec::new());
         }
-        let mut output = Vec::with_capacity(clean_sources.len());
-        for source in clean_sources {
-            output.push(xais_upload_reference_image(
-                &app_handle,
-                &profile,
-                &source,
-                proxy.as_deref().filter(|value| !value.trim().is_empty()),
-            )?);
-        }
-        Ok(output)
+        let explicit_proxy = proxy
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string);
+        thread::scope(|scope| {
+            let handles = clean_sources
+                .into_iter()
+                .map(|source| {
+                    let app_handle = &app_handle;
+                    let profile = &profile;
+                    let explicit_proxy = explicit_proxy.as_deref();
+                    scope.spawn(move || {
+                        xais_upload_reference_image(app_handle, profile, &source, explicit_proxy)
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| "XAIS reference image upload worker panicked".to_string())?
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
     })
     .await
     .map_err(|e| format!("XAIS reference image upload task failed: {}", e))?
@@ -9872,6 +9888,7 @@ async fn create_cloudflared_public_image_urls(
     app_handle: tauri::AppHandle,
     sources: Vec<String>,
     dir: Option<String>,
+    max_url_length: Option<usize>,
 ) -> Result<CloudflaredPublicImageUrls, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if sources.is_empty() {
@@ -9904,9 +9921,11 @@ async fn create_cloudflared_public_image_urls(
                 }
             };
 
+        let max_url_length = max_url_length.unwrap_or(64).clamp(64, 2048);
+        let tunnel_attempts = if max_url_length > 64 { 1 } else { 5 };
         let mut selected_tunnel: Option<(String, Child, Vec<String>)> = None;
         let mut last_tunnel_error = String::new();
-        for attempt in 0..5 {
+        for attempt in 0..tunnel_attempts {
             let (base_url, mut child) = match spawn_cloudflared_tunnel(&app_handle, port) {
                 Ok(value) => value,
                 Err(err) => {
@@ -9919,7 +9938,7 @@ async fn create_cloudflared_public_image_urls(
                 .iter()
                 .map(|name| format!("{}/{}", base, name))
                 .collect::<Vec<_>>();
-            if urls.iter().all(|url| url.len() <= 64) {
+            if urls.iter().all(|url| url.len() <= max_url_length) {
                 if let Some(warning) = warm_up_cloudflared_public_urls(&app_handle, &urls) {
                     last_tunnel_error = warning;
                     let _ = child.kill();
@@ -9931,8 +9950,9 @@ async fn create_cloudflared_public_image_urls(
                 break;
             }
             last_tunnel_error = format!(
-                "cloudflared 第 {} 次生成的公网 URL 超过 64 字符，已重试",
-                attempt + 1
+                "cloudflared 第 {} 次生成的公网 URL 超过 {} 字符，已重试",
+                attempt + 1,
+                max_url_length,
             );
             let _ = child.kill();
             let _ = child.wait();
@@ -9946,7 +9966,10 @@ async fn create_cloudflared_public_image_urls(
                 let _ = server_thread.join();
                 let _ = fs::remove_dir_all(&share_dir);
                 return Err(if last_tunnel_error.is_empty() {
-                    "cloudflared 没有生成符合 Xais 64 字符限制的公网 URL".to_string()
+                    format!(
+                        "cloudflared 没有生成符合 {} 字符限制的公网 URL",
+                        max_url_length
+                    )
                 } else {
                     last_tunnel_error
                 });
@@ -10007,7 +10030,7 @@ async fn create_r2_public_image_urls(
         }
 
         let config = read_r2_local_config(&app_handle)?;
-        let client = build_http_client(Some(&app_handle), None, 180)?;
+        let client = build_http_client(Some(&app_handle), None, 30)?;
         let suffix = short_r2_share_suffix();
         let share_id = format!("r2_{}", suffix);
         let mut keys: Vec<String> = Vec::new();
@@ -10092,7 +10115,7 @@ async fn create_litterbox_public_image_urls(
             return Err("没有需要上传到 Litterbox 的本地参考图".to_string());
         }
 
-        let client = build_http_client(Some(&app_handle), None, 180)?;
+        let client = build_http_client(Some(&app_handle), None, 30)?;
         let suffix = short_r2_share_suffix();
         let expiration = normalize_litterbox_expiration(time);
         let mut urls: Vec<String> = Vec::new();
@@ -11661,8 +11684,8 @@ fn sys_update_bounds(
 
 #[tauri::command]
 fn set_topmost(window: WebviewWindow, topmost: bool) -> Result<(), String> {
-    if window.label() == "main" && is_canvas_workbench_active() {
-        apply_main_canvas_workbench_mode(&window);
+    if window.label() == "main" && is_main_workbench_active() {
+        apply_main_workbench_mode(&window);
         return Ok(());
     }
     window.set_always_on_top(topmost).map_err(|e| e.to_string())
@@ -11701,7 +11724,7 @@ fn toggle_pin(window: WebviewWindow, pinned: bool) {
     // pinned 只表示锁定展开/不自动缩回，不要在这里控制窗口位置。
     // 取消钉住后的复位/缩回由前端 close_drawer + trigger mode 处理。
     if window.label() == "main" {
-        apply_main_canvas_workbench_mode(&window);
+        apply_main_workbench_mode(&window);
     } else {
         let _ = window.set_always_on_top(true);
     }
@@ -13488,50 +13511,69 @@ fn set_clipboard_image_from_bytes(bytes: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Result<(), String> {
-    use std::mem::size_of;
-    use std::ptr::{copy_nonoverlapping, null_mut};
-    use winapi::ctypes::c_void;
-    use winapi::shared::minwindef::DWORD;
-    use winapi::um::winbase::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-    use winapi::um::wingdi::{BITMAPINFOHEADER, BI_RGB};
-    use winapi::um::winuser::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_DIB,
-    };
+fn encode_clipboard_png(image: &screenshots::image::RgbaImage) -> Result<Vec<u8>, String> {
+    let mut png = Vec::new();
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        &mut png,
+        screenshots::image::codecs::png::CompressionType::Fast,
+        screenshots::image::codecs::png::FilterType::Adaptive,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|e| format!("clipboard PNG encoding failed: {e}"))?;
+    Ok(png)
+}
 
-    let rgba = image.to_rgba8();
-    let width = rgba.width();
-    let height = rgba.height();
+#[cfg(target_os = "windows")]
+fn encode_clipboard_dib(image: &screenshots::image::RgbaImage) -> Result<Vec<u8>, String> {
+    use std::mem::size_of;
+    use std::ptr::copy_nonoverlapping;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::wingdi::{BITMAPINFOHEADER, BI_RGB};
+
+    let width = usize::try_from(image.width()).map_err(|_| "image width is too large")?;
+    let height = usize::try_from(image.height()).map_err(|_| "image height is too large")?;
     if width == 0 || height == 0 {
         return Err("empty image".to_string());
     }
-
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let header_size = size_of::<BITMAPINFOHEADER>();
-    let pixel_size = width_usize
-        .checked_mul(height_usize)
-        .and_then(|value| value.checked_mul(4))
+    let width_i32 = i32::try_from(width).map_err(|_| "image width is too large")?;
+    let height_i32 = i32::try_from(height).map_err(|_| "image height is too large")?;
+    let row_bytes = width
+        .checked_mul(3)
         .ok_or_else(|| "image is too large for clipboard".to_string())?;
+    let row_stride = row_bytes
+        .checked_add(3)
+        .map(|value| value & !3)
+        .ok_or_else(|| "image is too large for clipboard".to_string())?;
+    let pixel_size = row_stride
+        .checked_mul(height)
+        .ok_or_else(|| "image is too large for clipboard".to_string())?;
+    let header_size = size_of::<BITMAPINFOHEADER>();
     let total_size = header_size
         .checked_add(pixel_size)
         .ok_or_else(|| "image is too large for clipboard".to_string())?;
+    let size_image =
+        DWORD::try_from(pixel_size).map_err(|_| "image is too large for clipboard".to_string())?;
 
-    let mut dib = vec![0u8; total_size];
     let header = BITMAPINFOHEADER {
         biSize: header_size as DWORD,
-        biWidth: width as i32,
-        biHeight: -(height as i32),
+        biWidth: width_i32,
+        biHeight: height_i32,
         biPlanes: 1,
-        biBitCount: 32,
+        biBitCount: 24,
         biCompression: BI_RGB,
-        biSizeImage: pixel_size as DWORD,
+        biSizeImage: size_image,
         biXPelsPerMeter: 0,
         biYPelsPerMeter: 0,
         biClrUsed: 0,
         biClrImportant: 0,
     };
-
+    let mut dib = vec![0u8; total_size];
     unsafe {
         copy_nonoverlapping(
             &header as *const BITMAPINFOHEADER as *const u8,
@@ -13540,16 +13582,116 @@ fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Resul
         );
     }
 
-    for (index, pixel) in rgba.as_raw().chunks_exact(4).enumerate() {
-        let out = header_size + index * 4;
-        dib[out] = pixel[2];
-        dib[out + 1] = pixel[1];
-        dib[out + 2] = pixel[0];
-        dib[out + 3] = pixel[3];
+    let source = image.as_raw();
+    let source_row_bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| "image is too large for clipboard".to_string())?;
+    for target_y in 0..height {
+        let source_y = height - 1 - target_y;
+        let source_row_start = source_y * source_row_bytes;
+        let source_row = &source[source_row_start..source_row_start + source_row_bytes];
+        let target_row = header_size + target_y * row_stride;
+        let target_row = &mut dib[target_row..target_row + row_bytes];
+        for (pixel, target) in source_row
+            .chunks_exact(4)
+            .zip(target_row.chunks_exact_mut(3))
+        {
+            match pixel[3] {
+                255 => {
+                    target[0] = pixel[2];
+                    target[1] = pixel[1];
+                    target[2] = pixel[0];
+                }
+                0 => target.copy_from_slice(&[255, 255, 255]),
+                alpha => {
+                    let alpha = u32::from(alpha);
+                    let composite = |channel: u8| -> u8 {
+                        ((u32::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+                    };
+                    target[0] = composite(pixel[2]);
+                    target[1] = composite(pixel[1]);
+                    target[2] = composite(pixel[0]);
+                }
+            }
+        }
     }
+    Ok(dib)
+}
+
+#[cfg(target_os = "windows")]
+fn create_clipboard_bitmap(
+    image: &screenshots::image::RgbaImage,
+    dib: &[u8],
+) -> Result<winapi::shared::windef::HBITMAP, String> {
+    use std::mem::{size_of, zeroed};
+    use std::ptr::{copy_nonoverlapping, null_mut};
+    use winapi::ctypes::c_void;
+    use winapi::um::wingdi::{
+        CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+    use winapi::um::winuser::{GetDC, ReleaseDC};
+
+    let header_size = size_of::<BITMAPINFOHEADER>();
+    let pixel_bytes = dib
+        .get(header_size..)
+        .ok_or_else(|| "invalid clipboard DIB".to_string())?;
+    let width = i32::try_from(image.width()).map_err(|_| "image width is too large")?;
+    let height = i32::try_from(image.height()).map_err(|_| "image height is too large")?;
+    let size_image = u32::try_from(pixel_bytes.len())
+        .map_err(|_| "image is too large for clipboard".to_string())?;
+
+    let mut info: BITMAPINFO = unsafe { zeroed() };
+    info.bmiHeader.biSize = header_size as u32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 24;
+    info.bmiHeader.biCompression = BI_RGB;
+    info.bmiHeader.biSizeImage = size_image;
 
     unsafe {
-        let handle = GlobalAlloc(GMEM_MOVEABLE, dib.len());
+        let screen_dc = GetDC(null_mut());
+        let mut target: *mut c_void = null_mut();
+        let bitmap = CreateDIBSection(screen_dc, &info, DIB_RGB_COLORS, &mut target, null_mut(), 0);
+        if !screen_dc.is_null() {
+            ReleaseDC(null_mut(), screen_dc);
+        }
+        if bitmap.is_null() {
+            return Err("CreateDIBSection failed".to_string());
+        }
+        if target.is_null() {
+            DeleteObject(bitmap as *mut c_void);
+            return Err("CreateDIBSection returned no pixels".to_string());
+        }
+        copy_nonoverlapping(pixel_bytes.as_ptr(), target as *mut u8, pixel_bytes.len());
+        Ok(bitmap)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Result<(), String> {
+    use std::ptr::{copy_nonoverlapping, null_mut};
+    use winapi::ctypes::c_void;
+    use winapi::shared::minwindef::HGLOBAL;
+    use winapi::um::winbase::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use winapi::um::wingdi::DeleteObject;
+    use winapi::um::winuser::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+        CF_BITMAP, CF_DIB,
+    };
+
+    let rgba = image.into_rgba8();
+    let pixel_count = u64::from(rgba.width()) * u64::from(rgba.height());
+    let dib = encode_clipboard_dib(&rgba)?;
+    let bitmap = (pixel_count <= 8_000_000)
+        .then(|| create_clipboard_bitmap(&rgba, &dib).ok())
+        .flatten();
+    let png = (pixel_count <= 1_000_000)
+        .then(|| encode_clipboard_png(&rgba).ok())
+        .flatten();
+
+    unsafe fn allocate_global(bytes: &[u8]) -> Result<HGLOBAL, String> {
+        let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
         if handle.is_null() {
             return Err("GlobalAlloc failed".to_string());
         }
@@ -13558,8 +13700,25 @@ fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Resul
             GlobalFree(handle);
             return Err("GlobalLock failed".to_string());
         }
-        copy_nonoverlapping(dib.as_ptr(), target, dib.len());
+        copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
         GlobalUnlock(handle);
+        Ok(handle)
+    }
+
+    unsafe {
+        let png_handle = png.as_ref().and_then(|bytes| allocate_global(bytes).ok());
+        let dib_handle = match allocate_global(&dib) {
+            Ok(handle) => handle,
+            Err(error) => {
+                if let Some(handle) = bitmap {
+                    DeleteObject(handle as *mut c_void);
+                }
+                if let Some(handle) = png_handle {
+                    GlobalFree(handle);
+                }
+                return Err(error);
+            }
+        };
 
         let mut open = false;
         for _ in 0..8 {
@@ -13570,26 +13729,86 @@ fn set_clipboard_dynamic_image(image: screenshots::image::DynamicImage) -> Resul
             std::thread::sleep(Duration::from_millis(20));
         }
         if !open {
-            GlobalFree(handle);
+            if let Some(handle) = bitmap {
+                DeleteObject(handle as *mut c_void);
+            }
+            GlobalFree(dib_handle);
+            if let Some(handle) = png_handle {
+                GlobalFree(handle);
+            }
             return Err("OpenClipboard failed".to_string());
         }
 
         if EmptyClipboard() == 0 {
             CloseClipboard();
-            GlobalFree(handle);
+            if let Some(handle) = bitmap {
+                DeleteObject(handle as *mut c_void);
+            }
+            GlobalFree(dib_handle);
+            if let Some(handle) = png_handle {
+                GlobalFree(handle);
+            }
             return Err("EmptyClipboard failed".to_string());
         }
 
-        if SetClipboardData(CF_DIB, handle as *mut c_void).is_null() {
-            CloseClipboard();
-            GlobalFree(handle);
-            return Err("SetClipboardData failed".to_string());
+        let bitmap_published = bitmap
+            .map(|handle| {
+                let published = !SetClipboardData(CF_BITMAP, handle as *mut c_void).is_null();
+                if !published {
+                    DeleteObject(handle as *mut c_void);
+                }
+                published
+            })
+            .unwrap_or(false);
+
+        let dib_published = !SetClipboardData(CF_DIB, dib_handle as *mut c_void).is_null();
+        if !dib_published {
+            GlobalFree(dib_handle);
+        }
+
+        let mut png_published = false;
+        if let Some(handle) = png_handle {
+            let name: Vec<u16> = "PNG".encode_utf16().chain(std::iter::once(0)).collect();
+            let format = RegisterClipboardFormatW(name.as_ptr());
+            if format != 0 {
+                png_published = !SetClipboardData(format, handle as *mut c_void).is_null();
+            }
+            if !png_published {
+                GlobalFree(handle);
+            }
         }
 
         CloseClipboard();
+        if !bitmap_published && !dib_published {
+            return Err("standard bitmap clipboard formats failed".to_string());
+        }
     }
 
     Ok(())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod clipboard_image_tests {
+    use super::encode_clipboard_dib;
+
+    #[test]
+    fn clipboard_dib_is_bottom_up_24_bit_and_white_composites_alpha() {
+        let image =
+            screenshots::image::RgbaImage::from_raw(1, 2, vec![255, 0, 0, 255, 0, 0, 255, 0])
+                .unwrap();
+        let dib = encode_clipboard_dib(&image).unwrap();
+        assert_eq!(u16::from_le_bytes([dib[14], dib[15]]), 24);
+        assert_eq!(i32::from_le_bytes([dib[8], dib[9], dib[10], dib[11]]), 2);
+        assert_eq!(&dib[40..43], &[255, 255, 255]);
+        assert_eq!(&dib[44..47], &[0, 0, 255]);
+    }
+
+    #[test]
+    fn clipboard_dib_composites_partial_alpha_without_overflow() {
+        let image = screenshots::image::RgbaImage::from_raw(1, 1, vec![10, 20, 30, 128]).unwrap();
+        let dib = encode_clipboard_dib(&image).unwrap();
+        assert_eq!(&dib[40..43], &[142, 137, 132]);
+    }
 }
 
 #[tauri::command]
@@ -13921,7 +14140,7 @@ async fn complete_snip_selection(
     let _ = snip.set_position(LogicalPosition::new(-32000.0, -32000.0));
     if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.set_ignore_cursor_events(false);
-        apply_main_canvas_workbench_mode(&main);
+        apply_main_workbench_mode(&main);
     }
 
     let app_for_capture = app_handle.clone();
@@ -14581,7 +14800,7 @@ fn hide_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     }
     if let Some(main) = app_handle.get_webview_window("main") {
         let _ = main.set_ignore_cursor_events(false);
-        apply_main_canvas_workbench_mode(&main);
+        apply_main_workbench_mode(&main);
     }
     Ok(())
 }
@@ -14605,7 +14824,7 @@ fn recover_after_snip(
 
     if restore_drawer {
         if let Some(main) = app_handle.get_webview_window("main") {
-            apply_main_canvas_workbench_mode(&main);
+            apply_main_workbench_mode(&main);
             let _ = main.show();
             let _ = main.emit("drawer-opened", ());
         }
@@ -14614,7 +14833,7 @@ fn recover_after_snip(
     }
 
     if let Some(main) = app_handle.get_webview_window("main") {
-        apply_main_canvas_workbench_mode(&main);
+        apply_main_workbench_mode(&main);
         let _ = main.emit("snip-recovered", ());
     }
     Ok(())
@@ -14643,8 +14862,8 @@ fn open_drawer(
         .ok_or_else(|| "main window not found".to_string())?;
     let edge = app_handle.get_webview_window("edge");
 
-    if is_canvas_workbench_active() {
-        apply_main_canvas_workbench_mode(&main);
+    if is_main_workbench_active() {
+        apply_main_workbench_mode(&main);
         main.show().map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         if let Some(edge_window) = edge {
@@ -14789,7 +15008,7 @@ fn open_drawer(
         .map_err(|e| e.to_string())?;
     main.set_position(LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())?;
-    apply_main_canvas_workbench_mode(&main);
+    apply_main_workbench_mode(&main);
     main.show().map_err(|e| e.to_string())?;
     let _ = main.emit("drawer-opened", ());
 
@@ -14817,7 +15036,7 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
     // 在欢迎页显示期间，前端会设置一个短暂的后端关闭锁。
     // 任何旧的 edge 预热、mouseleave 或定时器触发 close_drawer，都不能真的 hide 主窗口。
     if is_startup_close_locked() {
-        apply_main_canvas_workbench_mode(&main);
+        apply_main_workbench_mode(&main);
         main.show().map_err(|e| e.to_string())?;
         let _ = main.emit("drawer-opened", ());
         return Ok(());
@@ -15791,7 +16010,7 @@ fn main() {
             describe_image_for_search,
             sys_update_bounds,
             set_topmost,
-            set_canvas_workbench_active,
+            set_main_workbench_active,
             sys_drag_window,
             snap_to_right,
             toggle_pin,
@@ -15878,7 +16097,7 @@ fn main() {
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
-                apply_main_canvas_workbench_mode(&main);
+                apply_main_workbench_mode(&main);
                 let _ = main.set_min_size(Some(tauri::LogicalSize::new(
                     DRAWER_MIN_WIDTH,
                     DRAWER_MIN_HEIGHT,
