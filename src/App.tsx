@@ -9,7 +9,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp,
+  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp,
   LogOut
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
@@ -4050,7 +4050,7 @@ const CanvasListItem = React.memo(function CanvasListItem({
           className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-16 text-left text-[12px] font-bold transition-colors ${isActive ? 'bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'} disabled:cursor-wait disabled:opacity-60`}
           title={canvas.name}
         >
-          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${isActive ? 'bg-white/18 text-white dark:bg-stone-950/14 dark:text-stone-950' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/12 dark:text-indigo-200'}`}>
+          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${isActive ? 'bg-white/18 text-white dark:bg-stone-950/82 dark:text-indigo-200 dark:ring-1 dark:ring-white/15' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/12 dark:text-indigo-200'}`}>
             <Layers className="h-3.5 w-3.5" />
           </span>
           <span className="min-w-0 flex-1 truncate">{canvas.name || '画布'}</span>
@@ -15488,7 +15488,7 @@ function MainApp() {
 
   const publishLocalAiInputs = async (
     sources: string[],
-    preference: 'cloudflared-first' | 'hosted-first' = 'cloudflared-first',
+    preference: 'cloudflared-first' | 'hosted-first' | 'oss-only' = 'cloudflared-first',
     maxUrlLength = 64,
   ) => {
     if (sources.length === 0) return { urls: [] as string[], shareIds: [] as TemporaryReferenceShare[] };
@@ -15549,7 +15549,11 @@ function MainApp() {
       return { urls, shareIds: [{ kind: 'r2' as const, id: result.shareId }] };
     };
 
-    const attempts = preference === 'hosted-first'
+    const attempts = preference === 'oss-only'
+      ? [
+        { label: 'OSS', run: publishViaOss },
+      ]
+      : preference === 'hosted-first'
       ? [
         { label: 'OSS', run: publishViaOss },
         { label: 'Litterbox', run: publishViaLitterbox },
@@ -15695,7 +15699,10 @@ function MainApp() {
           result.push(prepared.source);
           continue;
         }
-        if (requireRemoteInputs && referenceFormat !== 'jpeg' && prepared.remoteFallback) {
+        if (requireRemoteInputs
+          && referenceFormat !== 'jpeg'
+          && prepared.remoteFallback
+          && !portableWalletReferences) {
           result.push(prepared.remoteFallback);
           continue;
         }
@@ -15731,16 +15738,18 @@ function MainApp() {
         try {
           const published = await publishLocalAiInputs(
             localSources,
-            publicationPreference,
+            portableWalletReferences ? 'oss-only' : publicationPreference,
             getCanvasAiReferencePublicationMaxUrlLength(portableWalletReferences, provider),
           );
           result.push(...published.urls);
           temporaryShareIds.push(...published.shareIds);
         } catch (err) {
           preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
-          const remoteFallbacks = localInputsForCloudflared
-            .map(item => item.remoteFallback)
-            .filter((value): value is string => !!value);
+          const remoteFallbacks = portableWalletReferences
+            ? []
+            : localInputsForCloudflared
+              .map(item => item.remoteFallback)
+              .filter((value): value is string => !!value);
           const failedLocalVideos = localInputsForCloudflared
             .filter(item => item.type === 'video' && !item.remoteFallback)
             .map(item => item.label);
@@ -18492,7 +18501,8 @@ function MainApp() {
         : 'any';
       const useDirectReferenceImages = isOpenAiLikeCanvasAiProvider(provider)
         || (provider === 'xais-chat' && !isXaisWorkerRequest);
-      const inputMode = isOpenAiLikeCanvasAiProvider(provider)
+      const inputMode = usePortableWalletReferences
+        || isOpenAiLikeCanvasAiProvider(provider)
         || (provider === 'xais-chat' && !isXaisWorkerRequest)
         ? 'stable'
         : 'remote-first';
@@ -18622,7 +18632,9 @@ function MainApp() {
           : 'any';
         const candidateUsesDirectReferences = isOpenAiLikeCanvasAiProvider(candidate.provider)
           || (candidate.provider === 'xais-chat' && !candidateIsXaisWorker);
-        const candidateInputMode = candidateUsesDirectReferences ? 'stable' : 'remote-first';
+        const candidateInputMode = candidatePortableReferences || candidateUsesDirectReferences
+          ? 'stable'
+          : 'remote-first';
         const candidatePreparedInputs = await getCanvasImageInputsForNode(
           target,
           candidateInputMode,
@@ -24684,7 +24696,7 @@ useEffect(() => {
 
   const handleTogglePin = () => {
     if (isPinned) {
-      // 复位：取消钉住，并让抽屉按当前动画缩回；关闭完成后 edge 会自动回到最右侧。
+      // 收回：取消钉住，并让抽屉按当前动画缩回；关闭完成后 edge 会自动回到最右侧。
       setIsPinned(false);
       isPinnedRef.current = false;
       isPointerInsideDrawerRef.current = false;
@@ -30607,7 +30619,7 @@ useEffect(() => {
                       className={`flex h-10 w-full min-w-0 items-center gap-2 rounded-[12px] px-2 text-left text-[13px] font-black transition-all ${isCanvasMode ? 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950' : dragOverFolderId === 'all' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25' : activeFolderId === 'all' ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'}`}
                       title={isCanvasMode ? '点击把主抽屉图片加入画布，长按退出画布' : '长按进入无限画布'}
                     >
-                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] ${isCanvasMode ? 'bg-white/18 text-white dark:bg-stone-950/14 dark:text-stone-950' : activeFolderId === 'all' ? 'bg-white/14 text-blue-200' : 'bg-blue-50 text-blue-600 dark:bg-blue-400/12 dark:text-blue-200'}`}>
+                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] ${isCanvasMode ? 'bg-white/18 text-white dark:bg-stone-950/82 dark:text-blue-200 dark:ring-1 dark:ring-white/15' : activeFolderId === 'all' ? 'bg-white/14 text-blue-200' : 'bg-blue-50 text-blue-600 dark:bg-blue-400/12 dark:text-blue-200'}`}>
                         {isCanvasMode ? <LayoutGrid className="h-4 w-4" /> : <Lightbulb className="h-4 w-4" />}
                       </span>
                       <span className="min-w-0 flex-1 truncate">{isCanvasMode ? '无限画布' : '主抽屉'}</span>
@@ -31350,7 +31362,7 @@ useEffect(() => {
                           className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 dark:hover:text-stone-50"
                           title="最小化"
                         >
-                          <Minimize2 className="h-3.5 w-3.5" />
+                          <Minus className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -31359,7 +31371,7 @@ useEffect(() => {
                           className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 dark:hover:text-stone-50"
                           title="最大化 / 还原"
                         >
-                          <Maximize2 className="h-3.5 w-3.5" />
+                          <Square className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -31439,7 +31451,7 @@ useEffect(() => {
                                 className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 dark:hover:text-stone-50"
                                 title="最小化"
                               >
-                                <Minimize2 className="h-3.5 w-3.5" />
+                                <Minus className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 type="button"
@@ -31448,7 +31460,7 @@ useEffect(() => {
                                 className="flex h-7 w-7 items-center justify-center rounded-[10px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 dark:hover:text-stone-50"
                                 title="最大化 / 还原"
                               >
-                                <Maximize2 className="h-3.5 w-3.5" />
+                                <Square className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 type="button"
@@ -31468,18 +31480,6 @@ useEffect(() => {
                               title="把当前多选的图片/文字连接到 AI 或文字节点"
                             >
                               <Link className="w-3.5 h-3.5" /> 连接 {selectedCanvasConnectableCount}
-                            </button>
-                          )}
-                          {canvasSelectedIds.length > 0 && (
-                            <button
-                              onClick={() => {
-                                const selectedIds = canvasSelectedIdsRef.current;
-                                removeCanvasItemsByIds(selectedIds);
-                              }}
-                              className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-red-50 text-red-600 shadow-sm transition-colors hover:bg-red-100 dark:bg-red-900/30 dark:text-red-300 dark:hover:bg-red-900/50"
-                              title="删除选中的画布元素（Delete）"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" /> 删除 {canvasSelectedIds.length}
                             </button>
                           )}
                           <button
@@ -31518,7 +31518,7 @@ useEffect(() => {
                         </button>
                         {!isMainWorkbenchActive && (
                           <button onClick={handleTogglePin} className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 dark:bg-stone-800/65 backdrop-blur-md ${isPinned ? 'text-blue-700 bg-blue-50 ring-1 ring-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:ring-blue-400/20' : 'text-stone-500 dark:text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200'}`}>
-                            {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />} {isPinned ? '复位' : '钉住'}
+                            {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />} {isPinned ? '收回' : '钉住'}
                           </button>
                         )}
                       </>
@@ -38421,7 +38421,7 @@ useEffect(() => {
                   <p>抽屉支持“侧边小条”和“悬浮方块”两种入口，可在设置里切换，也可用 <span className="font-semibold">{triggerShortcut}</span> 快速切换。</p>
                   <p>侧边小条默认在右侧中间：悬停展开；按住左键经过不会误触发；<span className="font-semibold">Ctrl + 鼠标左键拖动</span> 可上下移动小条。</p>
                   <p>悬浮方块默认在右下角：悬停 0.8 秒展开；按住左键可拖动位置；拖入文件/网页图会自动展开抽屉。</p>
-                  <p>拖动抽屉标题栏可以移动抽屉位置，移动后会自动进入钉住状态；点击右上角复位按钮后，抽屉会回到触发边并恢复自动缩回。</p>
+                  <p>拖动抽屉标题栏可以移动抽屉位置，移动后会自动进入钉住状态；点击右上角收回按钮后，抽屉会回到触发边并恢复自动缩回。</p>
                   <p>左边缘、底边和左下角可以拖动调整抽屉宽高；鼠标离开抽屉后，如果没有钉住或预览内容，抽屉会自动缩回。</p>
                 </section>
 
