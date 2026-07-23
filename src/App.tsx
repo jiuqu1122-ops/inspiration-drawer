@@ -217,6 +217,7 @@ import {
   estimateCanvasWorkflowCredits,
   shouldShowCanvasGenerationCredits,
 } from './features/canvasGenerationCredits';
+import { getAutoRecoverableAiImageResultSource } from './features/aiImageResultRecovery';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -1113,7 +1114,8 @@ const CANVAS_AI_DEFAULT_IMAGE_RESOLUTION = '2k';
 const CANVAS_AI_DEFAULT_VIDEO_DURATION = 15;
 const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
 const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
-const CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS = 5 * 60 * 1000;
+const CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
+const CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY = 2;
 const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = 6 * 60 * 1000;
 const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
 const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
@@ -11126,6 +11128,9 @@ function MainApp() {
   const canvasAiOutputThumbnailQueueRef = useRef<CanvasAiOutputThumbnailJob[]>([]);
   const canvasAiOutputThumbnailInFlightRef = useRef(new Set<string>());
   const canvasAiOutputThumbnailRecoveryAttemptedRef = useRef(new Set<string>());
+  const canvasAiOutputSourceRecoveryAttemptedRef = useRef(new Set<string>());
+  const canvasAiOutputSourceRecoveryInFlightRef = useRef(new Set<string>());
+  const [canvasAiOutputSourceRecoveryTick, setCanvasAiOutputSourceRecoveryTick] = useState(0);
   const generatedImageCachePendingIdsRef = useRef(new Set<string>());
   const generatedImageCachePromisesRef = useRef(new Map<string, Promise<string>>());
 
@@ -15684,7 +15689,9 @@ function MainApp() {
           result.push(prepared.source);
           continue;
         }
-        if (isRemoteHttpImageSource(prepared.source) && !uploadXaisAttachmentInputs) {
+        if (isRemoteHttpImageSource(prepared.source)
+          && !uploadXaisAttachmentInputs
+          && !portableWalletReferences) {
           result.push(prepared.source);
           continue;
         }
@@ -29258,6 +29265,104 @@ useEffect(() => {
     canvasItems,
     canvasRenderViewport,
   ]);
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const availableSlots = Math.max(
+      0,
+      CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY
+        - canvasAiOutputSourceRecoveryInFlightRef.current.size,
+    );
+    if (availableSlots === 0) return;
+
+    const candidates = canvasItems.flatMap((canvasItem) => (
+      getCanvasAiOutputPreviewSlots(canvasItem).map((output, outputIndex) => {
+        const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
+        const source = output.sourceUrl || output.url || '';
+        const stableSource = getAutoRecoverableAiImageResultSource({
+          mediaType,
+          status: output.status,
+          cacheStatus: output.cacheStatus,
+          path: output.path,
+          source,
+        });
+        const recoveryKey = stableSource
+          ? `${canvasItem.id}:${output.id || outputIndex}:${stableSource}`
+          : '';
+        const shouldRecover = !!stableSource
+          && !!recoveryKey
+          && !canvasAiOutputSourceRecoveryAttemptedRef.current.has(recoveryKey)
+          && !canvasAiOutputSourceRecoveryInFlightRef.current.has(recoveryKey);
+        return shouldRecover
+          ? { canvasItem, output, outputIndex, stableSource, recoveryKey }
+          : null;
+      })
+    )).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+
+    candidates.slice(0, availableSlots).forEach((candidate) => {
+      const {
+        canvasItem,
+        output,
+        outputIndex,
+        stableSource,
+        recoveryKey,
+      } = candidate;
+      canvasAiOutputSourceRecoveryAttemptedRef.current.add(recoveryKey);
+      canvasAiOutputSourceRecoveryInFlightRef.current.add(recoveryKey);
+      void cacheCanvasGeneratedImageSource(
+        stableSource,
+        output.name || output.taskId || output.id || `recovered-${outputIndex + 1}`,
+      ).then((cached) => {
+        if (!cached.path) throw new Error('旧节点恢复没有返回本地缓存文件');
+        updateCanvasItemsImmediate(prev => prev.map((item) => {
+          if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
+          let changed = false;
+          const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
+            const matches = output.id
+              ? currentOutput.id === output.id
+              : currentIndex === outputIndex;
+            if (!matches) return currentOutput;
+            changed = true;
+            return {
+              ...currentOutput,
+              url: cached.url,
+              path: cached.path,
+              sourceUrl: stableSource,
+              cacheStatus: 'ready' as const,
+            };
+          });
+          return changed ? { ...item, ai: { ...item.ai, outputs } } : item;
+        }));
+        if (output.id) {
+          setItems(prev => prev.map(item => item.id === output.id
+            ? {
+              ...item,
+              url: cached.url,
+              path: cached.path,
+              sourceUrl: stableSource,
+              originalUrl: stableSource,
+            }
+            : item));
+        }
+        scheduleCanvasChangedNodesPatchSave([canvasItem.id]);
+        scheduleCanvasStateSave({ syncNodes: false });
+        enqueueCanvasAiOutputThumbnailJob({
+          key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}`,
+          canvasItemId: canvasItem.id,
+          outputIndex,
+          outputId: output.id,
+          source: cached.url,
+          path: cached.path,
+        });
+      }).catch((error) => {
+        console.warn('旧 AI 图片节点自动恢复失败:', error);
+      }).finally(() => {
+        canvasAiOutputSourceRecoveryInFlightRef.current.delete(recoveryKey);
+        window.setTimeout(() => {
+          setCanvasAiOutputSourceRecoveryTick(value => value + 1);
+        }, 180);
+      });
+    });
+  }, [isCanvasMode, canvasItems, canvasAiOutputSourceRecoveryTick]);
   useEffect(() => {
     if (!isCanvasMode) return;
     if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;

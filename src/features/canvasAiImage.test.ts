@@ -184,9 +184,10 @@ describe('unified wallet image model families', () => {
     expect(images).toEqual(['xais-uploaded-reference.jpg']);
   });
 
-  it('uses portable references only for XAIS wallet image requests', () => {
+  it('uses portable OSS references for every wallet image request', () => {
     expect(shouldUsePortableWalletImageReferences(true, 'image', 'xais-chat')).toBe(true);
-    expect(shouldUsePortableWalletImageReferences(true, 'image', 'new-api')).toBe(false);
+    expect(shouldUsePortableWalletImageReferences(true, 'image', 'new-api')).toBe(true);
+    expect(shouldUsePortableWalletImageReferences(true, 'image', 'openai-compatible')).toBe(true);
     expect(shouldUsePortableWalletImageReferences(false, 'image', 'xais-chat')).toBe(false);
     expect(shouldUsePortableWalletImageReferences(true, 'video', 'xais-chat')).toBe(false);
   });

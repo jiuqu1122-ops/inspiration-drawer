@@ -1089,8 +1089,8 @@ export const resolveCanvasAiCandidateInputImages = async (
 export const shouldUsePortableWalletImageReferences = (
   cloudWallet: boolean,
   mediaType: 'image' | 'video',
-  provider?: string | null,
-) => cloudWallet && mediaType === 'image' && provider === 'xais-chat';
+  _provider?: string | null,
+) => cloudWallet && mediaType === 'image';
 
 export const getCanvasAiReferencePublicationMaxUrlLength = (
   portableWalletReferences: boolean,
