@@ -13,13 +13,13 @@ import {
 } from './imageRulePromptBuilder';
 
 describe('image rule quality', () => {
-  it('enables product consistency and random text protection by default', () => {
+  it('keeps every image rule disabled by default while preserving recommendations', () => {
     const rules = getDefaultImageRuleState({ hasReferenceImage: true, outputRole: 'hero_main' });
 
-    expect(rules.product_consistency).toBe(true);
-    expect(rules.structure_credibility).toBe(true);
-    expect(rules.no_random_text).toBe(true);
-    expect(rules.no_structure_drift).toBe(true);
+    expect(rules.product_consistency).toBeUndefined();
+    expect(rules.structure_credibility).toBeUndefined();
+    expect(rules.no_random_text).toBeUndefined();
+    expect(rules.no_structure_drift).toBeUndefined();
     expect(rules.atmosphere).toBeUndefined();
     expect(rules.brand_feel).toBeUndefined();
     expect(rules.premium_lighting).toBeUndefined();

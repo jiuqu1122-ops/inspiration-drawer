@@ -17,6 +17,8 @@ export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
 export const NEW_API_IMAGE_REQUEST_TIMEOUT_SECS = 360;
+export const NEW_API_IMAGE_TASK_MAX_WAIT_MS = 10 * 60 * 1000;
+export const NEW_API_IMAGE_TASK_POLL_INTERVAL_MS = 3000;
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS = [
   { value: OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT, label: 'gpt-image-1' },
@@ -111,8 +113,8 @@ export const getNewApiImageModelDisplayName = (model?: string | null) => {
 
 export const getDefaultNewApiImageProtocol = (
   _model?: string | null,
-  _hasInputImages = false,
-): NewApiImageProtocol => 'chat_completions';
+  hasInputImages = false,
+): NewApiImageProtocol => hasInputImages ? 'images_edits' : 'images_generations';
 
 export const isGptImage2LikeModel = (model?: string | null) => (
   toImageModelToken(model).includes('gptimage2')
@@ -204,7 +206,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
-        inputImages: (options.inputImages || []).filter(Boolean).slice(0, 8),
+        inputImages: (options.inputImages || []).filter(Boolean).slice(0, options.provider === 'new-api' ? 9 : 8),
         aspectRatio: normalizeImageAspectRatio(options.aspectRatio),
         resolution: options.resolution?.trim() || undefined,
         outputFormat: normalizeOutputFormat(options.outputFormat),
@@ -561,10 +563,16 @@ const postImageEditViaTauri = async (
     model: string;
     prompt: string;
     n: number;
-    size: string;
+    size?: string;
     quality?: string;
     responseFormat?: string;
+    aspectRatio?: string;
+    outputResolution?: string;
+    imageSize?: string;
     images: string[];
+    asyncTask?: boolean;
+    stream?: boolean;
+    repeatImageField?: boolean;
   },
   context?: CanvasAiRequestContext,
 ) => {
@@ -648,13 +656,42 @@ const normalizeImageAspectRatio = (aspectRatio?: string | null) => {
 };
 
 export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
-  const isHighResolution = normalizeCanvasAiImageResolution(resolution) === '4k';
-  switch (normalizeImageAspectRatio(aspectRatio)) {
-    case '9:16': return isHighResolution ? '2160x3840' : '1088x1920';
-    case '16:9': return isHighResolution ? '3840x2160' : '1920x1088';
-    case '3:4': return isHighResolution ? '2400x3200' : '960x1280';
-    case '4:3': return isHighResolution ? '3200x2400' : '1280x960';
-    default: return isHighResolution ? '2880x2880' : '1024x1024';
+  const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const sizes: Record<CanvasAiImageResolution, Record<string, string>> = {
+    '1k': {
+      '9:16': '720x1280',
+      '16:9': '1280x720',
+      '3:4': '768x1024',
+      '4:3': '1024x768',
+      '1:1': '1024x1024',
+    },
+    '2k': {
+      '9:16': '1152x2048',
+      '16:9': '2048x1152',
+      '3:4': '1536x2048',
+      '4:3': '2048x1536',
+      '1:1': '2048x2048',
+    },
+    '4k': {
+      '9:16': '2160x3840',
+      '16:9': '3840x2160',
+      '3:4': '2400x3200',
+      '4:3': '3200x2400',
+      '1:1': '2880x2880',
+    },
+  };
+  return sizes[normalizedResolution][normalizeImageAspectRatio(aspectRatio)];
+};
+
+const getImageContentViaTauri = async (url: string, apiKey: string, context?: CanvasAiRequestContext) => {
+  try {
+    return await invoke<string>('get_ai_image_content', {
+      url,
+      apiKey,
+      ...requestProfileArgs(context),
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error));
   }
 };
 
@@ -671,16 +708,23 @@ export const newApiImageRequestParams = (
   resolution?: string
 ) => {
   const ratio = normalizeImageAspectRatio(aspectRatio);
-  const size = newApiSizeFromAspectRatio(model, ratio, resolution);
-  const supportsResolution = isGptImage2LikeModel(model) || supportsNewApiImageFamilyResolution(model);
+  const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const family = getNewApiImageModelFamily(model);
+  if (family === 'nano-banana-pro' || family === 'nano-banana-2') {
+    const resolutionLabel = normalizedResolution.toUpperCase();
+    return {
+      n: count,
+      aspect_ratio: ratio,
+      output_resolution: resolutionLabel,
+      image_size: resolutionLabel,
+    };
+  }
+  const size = newApiSizeFromAspectRatio(model, ratio, normalizedResolution);
   return {
     n: count,
     size,
     aspect_ratio: ratio,
-    ratio,
-    ...(supportsResolution ? {
-      quality: normalizeCanvasAiImageResolution(resolution) === '4k' ? 'high' : 'standard',
-    } : {}),
+    ...(isGptImage2LikeModel(model) ? { quality: 'medium' } : {}),
   };
 };
 
@@ -1045,7 +1089,8 @@ export const resolveCanvasAiCandidateInputImages = async (
 export const shouldUsePortableWalletImageReferences = (
   cloudWallet: boolean,
   mediaType: 'image' | 'video',
-) => cloudWallet && mediaType === 'image';
+  provider?: string | null,
+) => cloudWallet && mediaType === 'image' && provider === 'xais-chat';
 
 export const getCanvasAiReferencePublicationMaxUrlLength = (
   portableWalletReferences: boolean,
@@ -1071,20 +1116,71 @@ export const sortCanvasAiImageCandidatesByChannelPriority = (
     .map(({ candidate }) => candidate);
 };
 
+type WalletImageChannelSnapshot = {
+  id?: string;
+  provider?: string;
+  models?: string[];
+  error?: string | null;
+};
+
+const normalizeWalletChannelProvider = (provider?: string | null): CanvasAiModelCandidate['provider'] => {
+  const normalized = String(provider || '').trim().toUpperCase();
+  if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
+  if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
+  if (normalized === 'OPENAI-COMPATIBLE') return 'openai-compatible';
+  return 'custom';
+};
+
+export const reconcileWalletImageCandidates = (
+  candidates: CanvasAiModelCandidate[],
+  channels: WalletImageChannelSnapshot[],
+) => {
+  const walletCandidates = candidates.filter(candidate => candidate.source === 'wallet');
+  const nonWalletCandidates = candidates.filter(candidate => candidate.source !== 'wallet');
+  const requestedPublicNames = new Set(walletCandidates
+    .map(candidate => getCanvasAiPublicImageModelName(candidate.provider, candidate.model))
+    .filter(Boolean));
+  if (walletCandidates.length === 0 || requestedPublicNames.size === 0) return candidates;
+
+  const refreshedWalletCandidates: CanvasAiModelCandidate[] = [];
+  channels.forEach(channel => {
+    const channelId = String(channel.id || '').trim();
+    if (!channelId || channel.error) return;
+    const provider = normalizeWalletChannelProvider(channel.provider);
+    (channel.models || []).forEach(rawModel => {
+      const model = String(rawModel || '').trim();
+      if (!model || isHiddenCanvasAiImageModel(provider, model)) return;
+      const publicName = getCanvasAiPublicImageModelName(provider, model);
+      if (!publicName || !requestedPublicNames.has(publicName)) return;
+      refreshedWalletCandidates.push({
+        source: 'wallet',
+        provider,
+        model,
+        providerChannelId: channelId,
+      });
+    });
+  });
+  return refreshedWalletCandidates.length > 0
+    ? [...refreshedWalletCandidates, ...nonWalletCandidates]
+    : candidates;
+};
+
 const refreshWalletImageCandidatePriority = async (candidates: CanvasAiModelCandidate[]) => {
-  if (candidates.filter(candidate => candidate.source === 'wallet' && candidate.providerChannelId).length < 2) {
+  if (!candidates.some(candidate => candidate.source === 'wallet' && candidate.providerChannelId)) {
     return candidates;
   }
   try {
-    const result = await invoke<{ channels?: Array<{ id?: string }> }>('get_cloud_image_models', {
+    const result = await invoke<{ channels?: WalletImageChannelSnapshot[] }>('get_cloud_image_models', {
       provider: null,
     });
-    const orderedChannelIds = (result.channels || [])
+    const channels = result.channels || [];
+    const refreshedCandidates = reconcileWalletImageCandidates(candidates, channels);
+    const orderedChannelIds = channels
       .map(channel => String(channel.id || '').trim())
       .filter(Boolean);
     return orderedChannelIds.length > 0
-      ? sortCanvasAiImageCandidatesByChannelPriority(candidates, orderedChannelIds)
-      : candidates;
+      ? sortCanvasAiImageCandidatesByChannelPriority(refreshedCandidates, orderedChannelIds)
+      : refreshedCandidates;
   } catch (error) {
     console.warn('Unable to refresh wallet image channel priority; using the current route order.', error);
     return candidates;
@@ -1096,7 +1192,7 @@ export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
   const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
   if ([400, 401, 402, 403, 404, 422, 429].includes(status)) return true;
-  return /(?:insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|(?:provided|reference|input) image is not valid|invalid (?:provided|reference|input) image|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|operation copy failed|copy operation failed|source path does not exist|no such file|file (?:does not exist|not found)|余额不足|额度不足|渠道不可用|渠道鉴权失败|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满|源文件不存在|文件(?:复制失败|不存在|未找到))/i.test(message);
+  return /(?:provider_model_family_mismatch|insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|(?:provided|reference|input) image is not valid|invalid (?:provided|reference|input) image|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|operation copy failed|copy operation failed|source path does not exist|no such file|file (?:does not exist|not found)|余额不足|额度不足|渠道不可用|渠道鉴权失败|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满|源文件不存在|文件(?:复制失败|不存在|未找到))/i.test(message);
 };
 
 export const shouldRetrySameCanvasAiImageCandidate = (error: unknown) => {
@@ -2069,13 +2165,20 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
 
   const endpoint = normalizeNewApiBaseEndpoint(options.endpoint || '');
   if (!endpoint) throw new Error('Please enter New API Base URL first, for example https://your-new-api.example.com/v1');
-  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
+  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 9);
   const model = (options.model || NEW_API_IMAGE_MODEL_DEFAULT).trim() || NEW_API_IMAGE_MODEL_DEFAULT;
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution);
   const promptText = buildPromptWithOptions(prompt, options.aspectRatio, options.resolution);
   const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
-  const protocol = getDefaultNewApiImageProtocol(model, inputImages.length > 0);
+  const defaultProtocol = getDefaultNewApiImageProtocol(model, inputImages.length > 0);
+  const protocol = options.imageProtocol === 'images_edits' || options.imageProtocol === 'images_generations'
+    ? options.imageProtocol
+    : defaultProtocol;
+  const useAsync = options.imageProtocol === 'async_task'
+    || normalizeCanvasAiImageResolution(options.resolution) === '4k'
+    || inputImages.length > 1
+    || count > 1;
   const cloudflareReferenceUrls = getCloudflareReferenceUrls(inputImages);
   const referenceHosts = getRemoteReferenceHosts(inputImages);
   const clientRequestId = options.clientRequestId?.trim()
@@ -2083,68 +2186,104 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
   const requestContext = (readiness: NewApiReferenceReadiness): CanvasAiImageOptions => ({
     ...options,
     clientRequestId,
-    endpointProtocol: protocol,
+    endpointProtocol: useAsync ? 'async_task' : protocol,
     referenceHost: (readiness.referenceHosts.length > 0 ? readiness.referenceHosts : referenceHosts).join(','),
     referenceReadyDurationMs: readiness.readyDurationMs,
     isFirstRequest: true,
     singleAttempt: true,
     timeoutSecs: NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
   });
-  const chatContent = inputImages.length > 0
-    ? [
-      { type: 'text', text: promptText },
-      ...inputImages.map(image => ({
-        type: 'image_url',
-        image_url: { url: image },
-      })),
-    ]
-    : promptText;
+  const generationEndpoint = normalizeNewApiEndpoint(endpoint, 'images/generations');
+  const collectResults = (value: unknown) => {
+    const inputSet = new Set(inputImages.map(image => image.trim()));
+    return Array.from(new Set(collectImageStrings(value)
+      .map(image => image.trim())
+      .filter(image => image && !inputSet.has(image))));
+  };
+  const resolveResponse = async (started: unknown, readiness: NewApiReferenceReadiness) => {
+    const immediate = collectResults(started);
+    if (immediate.length > 0) return immediate.slice(0, count);
+
+    const taskId = getTaskIdFromResponse(started);
+    if (!taskId) return [];
+    const taskContext = requestContext(readiness);
+    const deadline = Date.now() + NEW_API_IMAGE_TASK_MAX_WAIT_MS;
+    let lastStatus: unknown = started;
+    while (Date.now() <= deadline) {
+      await delay(NEW_API_IMAGE_TASK_POLL_INTERVAL_MS);
+      lastStatus = await getJsonViaTauri(
+        `${generationEndpoint}/${encodeURIComponent(taskId)}`,
+        apiKey,
+        taskContext,
+      );
+      const images = collectResults(lastStatus);
+      if (images.length > 0) return images.slice(0, count);
+      const state = getNewApiVideoTaskState(lastStatus);
+      if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+        throw new Error(getNewApiVideoFailureMessage(lastStatus) || `NewAPI image task failed: ${taskId}`);
+      }
+      if (/^(?:completed|complete|succeeded|success|finished|done)$/.test(state)) {
+        const content = await getImageContentViaTauri(
+          `${endpoint}/images/${encodeURIComponent(taskId)}/content`,
+          apiKey,
+          taskContext,
+        );
+        const contentImages = collectResults(parseAiResponseText(content));
+        if (contentImages.length > 0) return contentImages.slice(0, count);
+      }
+    }
+    const failure = getNewApiVideoFailureMessage(lastStatus);
+    throw new Error(failure || `NewAPI image task timed out: ${taskId}`);
+  };
 
   try {
     const data = await executeNewApiImageProtocol(protocol, cloudflareReferenceUrls, {
       ensureReferencesReady: ensureNewApiReferenceUrlsReady,
-      chatCompletions: (readiness) => postJsonViaTauri(
-        normalizeNewApiEndpoint(endpoint, 'chat/completions'),
-        apiKey,
-        {
-          model,
-          ...imageParams,
-          ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
-          messages: [{ role: 'user', content: chatContent }],
-          modalities: ['image'],
-          stream: false,
-          max_tokens: 8192,
-        },
-        requestContext(readiness),
-      ),
-      imagesEdits: (readiness) => {
+      chatCompletions: () => {
+        throw new Error('NewAPI chat/completions image generation is deprecated.');
+      },
+      imagesEdits: async (readiness) => {
         if (inputImages.length === 0) {
           throw new Error('images/edits 需要至少一张参考图。');
         }
-        return postImageEditViaTauri(normalizeNewApiEndpoint(endpoint, 'images/edits'), apiKey, {
+        const started = await postImageEditViaTauri(normalizeNewApiEndpoint(endpoint, 'images/edits'), apiKey, {
           model,
           prompt: promptText,
           n: imageParams.n,
-          size: imageParams.size,
+          ...('size' in imageParams ? { size: imageParams.size } : {}),
           ...('quality' in imageParams ? { quality: imageParams.quality } : {}),
+          ...('aspect_ratio' in imageParams ? { aspectRatio: imageParams.aspect_ratio } : {}),
+          ...('output_resolution' in imageParams ? { outputResolution: imageParams.output_resolution } : {}),
+          ...('image_size' in imageParams ? { imageSize: imageParams.image_size } : {}),
           responseFormat: NEW_API_IMAGE_RESPONSE_FORMAT,
           images: inputImages,
+          ...(useAsync ? { asyncTask: true } : {}),
+          stream: false,
+          repeatImageField: true,
         }, requestContext(readiness));
+        return resolveResponse(started, readiness);
       },
-      imagesGenerations: (readiness) => postJsonViaTauri(
-        normalizeNewApiEndpoint(endpoint, 'images/generations'),
-        apiKey,
-        {
-          model,
-          prompt: promptText,
-          ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
-          ...imageParams,
-          response_format: NEW_API_IMAGE_RESPONSE_FORMAT,
-        },
-        requestContext(readiness),
-      ),
+      imagesGenerations: async (readiness) => {
+        const started = await postJsonViaTauri(
+          generationEndpoint,
+          apiKey,
+          {
+            model,
+            prompt: promptText,
+            ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+            ...imageParams,
+            ...(inputImages.length === 1 ? { image: inputImages[0] } : {}),
+            ...(inputImages.length > 1 ? { images: inputImages } : {}),
+            response_format: NEW_API_IMAGE_RESPONSE_FORMAT,
+            ...(useAsync ? { async: true } : {}),
+            stream: false,
+          },
+          requestContext(readiness),
+        );
+        return resolveResponse(started, readiness);
+      },
     });
-    const images = Array.from(new Set(collectImageStrings(data)));
+    const images = Array.from(new Set(Array.isArray(data) ? data : collectImageStrings(data)));
     if (images.length === 0) {
       throw new Error(`${newApiImageProtocolLabel(protocol)} did not return image data.`);
     }

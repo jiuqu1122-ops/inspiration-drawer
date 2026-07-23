@@ -19,6 +19,7 @@ describe('canvas generation credits', () => {
     expect(getCanvasImageUnitCredits('gpt-image-2', '2k')).toBe(15);
     expect(getCanvasImageUnitCredits('Xais Img2_4K', '2k')).toBe(15);
     expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(30);
+    expect(getCanvasImageUnitCredits('legacy-gpt-image-2-high-quality', '4k')).toBe(35);
     expect(getCanvasImageUnitCredits('Xais Nano Pro_2K', '4k')).toBe(20);
     expect(getCanvasImageUnitCredits('Xais Nano Pro_4K', '2k')).toBe(18);
     expect(getCanvasImageUnitCredits('Nano Banana Pro', '4k')).toBe(20);
@@ -93,5 +94,22 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasWorkflowCredits(workflow, {
       resolveImageModel: () => 'Xais Nano Pro_2K',
     }).totalCredits).toBe(18);
+  });
+
+  it('prices retired legacy workflow model labels using the runtime fallback', () => {
+    const workflow = {
+      id: 'legacy-model-workflow',
+      label: 'Legacy workflow',
+      hint: '',
+      nodes: [{
+        id: 'render', x: 0, y: 0, width: 100, height: 100,
+        item: { id: 'render', type: 'text', content: '' },
+        ai: { type: 'image-generator', model: 'retired-image-model-v1', count: 2 },
+      }],
+    } as CanvasWorkflowTemplate;
+
+    expect(estimateCanvasWorkflowCredits(workflow, {
+      resolveImageModel: () => 'Xais Nano Pro_2K',
+    }).totalCredits).toBe(36);
   });
 });

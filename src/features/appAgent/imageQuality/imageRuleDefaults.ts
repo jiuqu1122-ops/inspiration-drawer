@@ -65,15 +65,12 @@ export const ECOMMERCE_DETAIL_PAGE_RECOMMENDED_RULES = stateFromKeys([
   'no_random_text',
 ]);
 
-export const DEFAULT_ENABLED_IMAGE_RULES = mergeImageRuleStates(
-  PRODUCT_IMAGE_GENERATOR_DEFAULT_RULES,
-);
+// Rules are opt-in. Recommended groups remain available to presets and agents,
+// but a newly created image node must not silently constrain the user's edit.
+export const DEFAULT_ENABLED_IMAGE_RULES: ImageRuleState = {};
 
-export const getDefaultEnabledImageRules = (context: ImageRuleDefaultContext = {}): ImageRuleState => (
-  mergeImageRuleStates(
-    DEFAULT_ENABLED_IMAGE_RULES,
-    context.hasReferenceImage ? REFERENCE_IMAGE_DEFAULT_RULES : undefined,
-  )
+export const getDefaultEnabledImageRules = (_context: ImageRuleDefaultContext = {}): ImageRuleState => (
+  mergeImageRuleStates(DEFAULT_ENABLED_IMAGE_RULES)
 );
 
 const contextText = (context: ImageRuleDefaultContext) => [

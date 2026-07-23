@@ -104,6 +104,13 @@ const DRAWER_MANAGE_PROPERTIES = {
   enabled: { type: ['boolean', 'null'] },
 };
 
+const DRAWER_PROFILE_ORGANIZATION_PROPERTIES = {
+  folderId: { type: ['string', 'null'] },
+  recursive: { type: ['boolean', 'null'] },
+  strategy: { type: ['string', 'null'], enum: ['topic', 'topic_color', null] },
+  categories: { type: 'array', items: { type: 'string' } },
+};
+
 const CANVAS_MANAGE_PROPERTIES = {
   action: { type: 'string', enum: CANVAS_MANAGE_ACTIONS },
   targetIds: { type: 'array', items: { type: 'string' } },
@@ -431,6 +438,33 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'drawer_get_analysis_coverage',
+      description: '统计指定文件夹或整个抽屉的图片分析覆盖率。直接扫描完整抽屉，不需要素材 ID。',
+      parameters: objectSchema(DRAWER_PROFILE_ORGANIZATION_PROPERTIES),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'drawer_plan_organization',
+      description: '根据图片已有 InspirationProfile 在本地生成完整整理预览，不调用模型、不移动素材，也不需要素材 ID。默认使用当前文件夹。',
+      parameters: objectSchema(DRAWER_PROFILE_ORGANIZATION_PROPERTIES),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'drawer_apply_organization',
+      description: '执行已预览的抽屉整理计划。必须传入 drawer_plan_organization 返回的 planId；这是批量移动操作，执行前需要用户确认。',
+      parameters: objectSchema({
+        planId: { type: 'string' },
+        minimumConfidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+      }, ['planId']),
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'canvas_manage',
       description: '操作已有画布节点和画布视图。',
       parameters: objectSchema(CANVAS_MANAGE_PROPERTIES, ['action']),
@@ -707,6 +741,36 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['drawer_get_analysis_coverage'] },
+              arguments: objectSchema(DRAWER_PROFILE_ORGANIZATION_PROPERTIES, ['folderId', 'recursive', 'strategy', 'categories']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['drawer_plan_organization'] },
+              arguments: objectSchema(DRAWER_PROFILE_ORGANIZATION_PROPERTIES, ['folderId', 'recursive', 'strategy', 'categories']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', enum: ['drawer_apply_organization'] },
+              arguments: objectSchema({
+                planId: { type: 'string' },
+                minimumConfidence: { type: ['number', 'null'] },
+              }, ['planId', 'minimumConfidence']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_manage'] },
               arguments: objectSchema(CANVAS_MANAGE_PROPERTIES, [
                 'action',
@@ -956,7 +1020,15 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
   additionalProperties: false,
 };
 
-const READ_ONLY_TOOLS = new Set(['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context', 'drawer_search_inspirations', 'get_inspiration_analysis_job']);
+const READ_ONLY_TOOLS = new Set([
+  'app_get_context',
+  'app_get_ui_snapshot',
+  'canvas_get_context',
+  'drawer_search_inspirations',
+  'get_inspiration_analysis_job',
+  'drawer_get_analysis_coverage',
+  'drawer_plan_organization',
+]);
 
 export const isCanvasAgentToolReadOnly = (name: string) => READ_ONLY_TOOLS.has(name);
 
@@ -964,6 +1036,7 @@ export const isCanvasAgentToolSensitive = (name: string, args: Record<string, un
   name === 'canvas_run_workflow'
   || name === 'canvas_run_text_agent'
   || name === 'app_ui_interact'
+  || name === 'drawer_apply_organization'
   || (name === 'calendar_manage' && ['delete_schedule'].includes(String(args.action || '')))
   || (name === 'drawer_manage' && ['delete_items', 'delete_folder'].includes(String(args.action || '')))
   || (name === 'canvas_manage' && ['delete_nodes', 'clear_canvas', 'run_nodes'].includes(String(args.action || '')))
@@ -975,6 +1048,9 @@ export const isCanvasAgentToolSensitive = (name: string, args: Record<string, un
 );
 
 export const getCanvasAgentToolLabel = (name: string) => ({
+  drawer_get_analysis_coverage: '统计图片分析覆盖率',
+  drawer_plan_organization: '预览智能整理',
+  drawer_apply_organization: '执行智能整理',
   app_get_context: '读取软件状态',
   app_get_ui_snapshot: '读取可见控件',
   app_ui_interact: '复刻界面操作',

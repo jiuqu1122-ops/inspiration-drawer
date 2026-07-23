@@ -12,7 +12,15 @@ export function getLegacyActionRiskLevel(action: LegacyAgentAction): RiskLevel {
   const args = action.arguments || {};
   const tool = action.tool;
   const toolAction = String(args.action || '');
-  if (['app_get_context', 'app_get_ui_snapshot', 'canvas_get_context', 'drawer_search_inspirations', 'get_inspiration_analysis_job'].includes(tool)) return 'read';
+  if ([
+    'app_get_context',
+    'app_get_ui_snapshot',
+    'canvas_get_context',
+    'drawer_search_inspirations',
+    'get_inspiration_analysis_job',
+    'drawer_get_analysis_coverage',
+    'drawer_plan_organization',
+  ].includes(tool)) return 'read';
   if (tool === 'analyze_inspiration' || tool === 'analyze_inspirations_batch') return 'safe_write';
   if (tool === 'app_ui_interact') return 'safe_write';
   if (tool === 'drawer_manage' && ['delete_items', 'delete_folder'].includes(toolAction)) return 'destructive';
@@ -35,6 +43,7 @@ export function evaluateLegacyActionPermission(
   const reasons: string[] = [`risk:${riskLevel}`];
   const alwaysConfirm = riskLevel === 'destructive'
     || riskLevel === 'system_process'
+    || action.tool === 'drawer_apply_organization'
     || action.tool === 'app_ui_interact';
   const costlyNeedsConfirmation = riskLevel === 'costly'
     && !isDirectCreativeExecutionRequest(options.userText || '');

@@ -40,8 +40,10 @@ export const getCanvasImageUnitCredits = (
     || token.includes('image2')
     || token.includes('img2');
   const isHighQuality = isGptImage2 && (
-    rawModel.includes('高画质')
+    /高画质|高品質|high[\s_-]*quality/i.test(rawModel)
     || token.endsWith('h')
+    || token.includes('image2h')
+    || token.includes('img2h')
     || token.includes('highquality')
   );
 
@@ -124,8 +126,17 @@ export const estimateCanvasWorkflowCredits = (
 
   const imageNodes = workflow.nodes.filter(node => node.ai?.type === 'image-generator');
   const imageEstimate = imageNodes.reduce((summary, node) => {
+    const savedModel = node.ai?.model;
+    const resolvedModel = options.resolveImageModel?.(node);
+    // Historical workflows can contain retired/unrecognised model labels. They
+    // are executed with the current provider fallback, so pricing the stale
+    // label at the generic 100-credit sentinel overstates the real run.
+    const pricedSavedModel = getCanvasImageUnitCredits(savedModel, node.ai?.resolution);
+    const model = savedModel && pricedSavedModel !== CANVAS_DEFAULT_IMAGE_UNIT_CREDITS
+      ? savedModel
+      : resolvedModel || savedModel;
     const estimate = estimateCanvasImageGenerationCredits({
-      model: node.ai?.model || options.resolveImageModel?.(node),
+      model,
       resolution: node.ai?.resolution,
       count: node.ai?.count,
     });

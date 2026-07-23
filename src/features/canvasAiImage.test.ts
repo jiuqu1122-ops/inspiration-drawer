@@ -26,6 +26,7 @@ import {
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
+  reconcileWalletImageCandidates,
   resolveCanvasAiReferenceProvider,
   resolveCanvasAiCandidateInputImages,
   selectCanvasAiImageCandidatesForResolution,
@@ -104,6 +105,49 @@ describe('unified wallet image model families', () => {
       .toBe('new-api');
   });
 
+  it('rebuilds stale wallet model and channel pairs from the latest channel snapshot', () => {
+    const refreshed = reconcileWalletImageCandidates([
+      {
+        source: 'wallet',
+        provider: 'xais-chat',
+        model: 'Xais Nano Pro_2K',
+        providerChannelId: 'old-priority',
+      },
+      {
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'gemini-3-pro-image',
+        providerChannelId: 'new-priority',
+      },
+    ], [
+      {
+        id: 'new-priority',
+        provider: 'XAIS',
+        models: ['Xais Nano Pro_4K'],
+      },
+      {
+        id: 'old-priority',
+        provider: 'NEW_API',
+        models: ['gemini-3-pro-image'],
+      },
+    ]);
+
+    expect(refreshed).toEqual([
+      {
+        source: 'wallet',
+        provider: 'xais-chat',
+        model: 'Xais Nano Pro_4K',
+        providerChannelId: 'new-priority',
+      },
+      {
+        source: 'wallet',
+        provider: 'new-api',
+        model: 'gemini-3-pro-image',
+        providerChannelId: 'old-priority',
+      },
+    ]);
+  });
+
   it('keeps current canvas references missing from a runtime snapshot', () => {
     const currentItems = [
       { id: 'reference', value: 'current reference' },
@@ -140,10 +184,11 @@ describe('unified wallet image model families', () => {
     expect(images).toEqual(['xais-uploaded-reference.jpg']);
   });
 
-  it('uses portable references for single-channel wallet image requests', () => {
-    expect(shouldUsePortableWalletImageReferences(true, 'image')).toBe(true);
-    expect(shouldUsePortableWalletImageReferences(false, 'image')).toBe(false);
-    expect(shouldUsePortableWalletImageReferences(true, 'video')).toBe(false);
+  it('uses portable references only for XAIS wallet image requests', () => {
+    expect(shouldUsePortableWalletImageReferences(true, 'image', 'xais-chat')).toBe(true);
+    expect(shouldUsePortableWalletImageReferences(true, 'image', 'new-api')).toBe(false);
+    expect(shouldUsePortableWalletImageReferences(false, 'image', 'xais-chat')).toBe(false);
+    expect(shouldUsePortableWalletImageReferences(true, 'video', 'xais-chat')).toBe(false);
   });
 
   it('relaxes the legacy XAIS URL length limit only for wallet-side attachment uploads', () => {
@@ -226,6 +271,7 @@ describe('unified wallet image model families', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_unavailable'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('provider_model_family_mismatch: selected model does not match channel family'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('上游算力紧张，请稍后再试'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('service overloaded: no available worker'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, operation copy failed: source path does not exist'))).toBe(true);
@@ -288,31 +334,29 @@ describe('image resolution routing', () => {
     expect(normalizeCanvasAiImageResolution('1K')).toBe('1k');
     expect(normalizeCanvasAiImageResolution('4K')).toBe('4k');
     expect(normalizeCanvasAiImageResolution(undefined)).toBe('2k');
-    expect(gptImage2SizeFromAspectRatio('16:9', '2K')).toBe('1920x1088');
+    expect(gptImage2SizeFromAspectRatio('16:9', '1K')).toBe('1280x720');
+    expect(gptImage2SizeFromAspectRatio('16:9', '2K')).toBe('2048x1152');
     expect(gptImage2SizeFromAspectRatio('3:4', '4K')).toBe('2400x3200');
   });
 
   it('adds size and quality for mapped NewAPI models', () => {
     expect(newApiImageRequestParams('gemini-3-pro-image', 2, '16:9', '2K')).toEqual({
       n: 2,
-      size: '1920x1088',
       aspect_ratio: '16:9',
-      ratio: '16:9',
-      quality: 'standard',
+      output_resolution: '2K',
+      image_size: '2K',
     });
     expect(newApiImageRequestParams('gemini-3.1-flash-image-preview', 1, '3:4', '4K')).toEqual({
       n: 1,
-      size: '2400x3200',
       aspect_ratio: '3:4',
-      ratio: '3:4',
-      quality: 'high',
+      output_resolution: '4K',
+      image_size: '4K',
     });
     expect(newApiImageRequestParams('gpt_image_2', 1, '9:16', '4k')).toEqual({
       n: 1,
       size: '2160x3840',
       aspect_ratio: '9:16',
-      ratio: '9:16',
-      quality: 'high',
+      quality: 'medium',
     });
   });
 
@@ -321,7 +365,6 @@ describe('image resolution routing', () => {
       n: 1,
       size: '1792x1024',
       aspect_ratio: '16:9',
-      ratio: '16:9',
     });
   });
 
@@ -330,7 +373,6 @@ describe('image resolution routing', () => {
       n: 1,
       size: '1792x1024',
       aspect_ratio: '16:9',
-      ratio: '16:9',
     });
   });
 });
@@ -344,11 +386,11 @@ describe('NewAPI image protocol errors', () => {
     expect(NEW_API_IMAGE_REQUEST_TIMEOUT_SECS).toBeGreaterThan(267);
   });
 
-  it('routes all current NewAPI image models through chat/completions', () => {
-    expect(getDefaultNewApiImageProtocol('gemini-3.1-flash-image', true)).toBe('chat_completions');
-    expect(getDefaultNewApiImageProtocol('gpt-image-2', true)).toBe('chat_completions');
-    expect(getDefaultNewApiImageProtocol('gpt-image-2', false)).toBe('chat_completions');
-    expect(getDefaultNewApiImageProtocol('custom-image-model', false)).toBe('chat_completions');
+  it('routes NewAPI text-to-image and image edits through the current image endpoints', () => {
+    expect(getDefaultNewApiImageProtocol('gemini-3.1-flash-image', true)).toBe('images_edits');
+    expect(getDefaultNewApiImageProtocol('gpt-image-2', true)).toBe('images_edits');
+    expect(getDefaultNewApiImageProtocol('gpt-image-2', false)).toBe('images_generations');
+    expect(getDefaultNewApiImageProtocol('custom-image-model', false)).toBe('images_generations');
   });
 
   it.each([

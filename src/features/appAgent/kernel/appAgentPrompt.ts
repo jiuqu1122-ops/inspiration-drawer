@@ -11,6 +11,8 @@ export const APP_AGENT_TOOL_MANIFEST_PROMPT = [
   '- app_get_context: read compact scoped context; pass scopes instead of assuming full app context.',
   '- app_navigate: global navigation, search, settings, notes, calendar and window actions.',
   '- drawer_manage: drawer materials, folders, selections and notes.',
+  '- drawer_get_analysis_coverage/drawer_plan_organization: scan the complete drawer or folder locally from stored InspirationProfile metadata; use these for bulk organization instead of requesting or listing material IDs.',
+  '- drawer_apply_organization: apply only a previously previewed organization plan; never invent a planId and wait for confirmation before moving materials.',
   '- drawer_search_inspirations: metadata-only retrieval of at most 8 compact candidates. Respect candidate/selected/rejected state and confidence thresholds.',
   '- analyze_inspiration/analyze_inspirations_batch/get_inspiration_analysis_job: explicit library-maintenance tools only; never call them during an ordinary creative request.',
   '- calendar_manage: calendar schedule actions.',

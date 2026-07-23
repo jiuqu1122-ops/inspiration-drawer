@@ -15,6 +15,7 @@ use crate::license::{
 
 const LICENSE_FILE_NAME: &str = "license.json";
 const CLOUD_API_BASE_URL: &str = "https://api.unmind.art";
+const WALLET_PROTOCOL_VERSION: &str = "1";
 
 struct CachedCloudToken {
     value: String,
@@ -322,6 +323,8 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
         .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
     let response = client
         .post(format!("{CLOUD_API_BASE_URL}{path}"))
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
         .json(request_body)
         .send()
         .await
@@ -370,6 +373,8 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
     let response = client
         .post(format!("{CLOUD_API_BASE_URL}{path}"))
         .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
         .json(request_body)
         .send()
         .await
@@ -634,7 +639,14 @@ pub async fn generate_cloud_images(
             prompt.len()
         ));
     }
-    if !(1..=4).contains(&request.count) || request.input_images.len() > 8 {
+    let max_reference_images = if request.provider.as_deref() == Some("xais-chat") {
+        8
+    } else {
+        9
+    };
+    if !(1..=4).contains(&request.count)
+        || request.input_images.len() > max_reference_images
+    {
         return Err("invalid_request: 生图数量或参考图数量无效".to_string());
     }
     request.input_images =
@@ -673,7 +685,9 @@ pub async fn get_cloud_image_models(
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
     let request = client
         .get(format!("{CLOUD_API_BASE_URL}/v1/ai/images/models"))
-        .bearer_auth(access_token);
+        .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
     let response = request
         .send()
         .await
@@ -761,7 +775,9 @@ pub async fn get_cloud_video_status(
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
     let mut request = client
         .get(format!("{CLOUD_API_BASE_URL}/v1/ai/videos/{task_id}"))
-        .bearer_auth(access_token);
+        .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION);
     if let Some(provider) = provider.filter(|value| !value.trim().is_empty()) {
         request = request.query(&[("provider", provider)]);
     }

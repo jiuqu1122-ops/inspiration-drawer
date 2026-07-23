@@ -203,12 +203,12 @@ export const sanitizeCanvasPersistedState = (value: unknown): CanvasPersistedSta
     width: clamp(
       Number((rawSize as { width?: unknown }).width) || CANVAS_BASE_WIDTH,
       CANVAS_BASE_WIDTH,
-      20000
+      1_000_000
     ),
     height: clamp(
       Number((rawSize as { height?: unknown }).height) || CANVAS_BASE_HEIGHT,
       CANVAS_BASE_HEIGHT,
-      20000
+      1_000_000
     ),
   };
   const scroll = {

@@ -95,7 +95,9 @@ export const createCanvasAiOutputBufferItem = (
     || canvasItem.item.content
     || ''
   ).trim();
+  const taskName = (output.taskId || output.clientRequestId || '').trim();
   const name = output.name
+    || (taskName ? `${taskName}${index > 0 ? `_${index + 1}` : ''}` : '')
     || (titleSeed ? `${titleSeed} #${index + 1}` : `AI generated ${mediaType} #${index + 1}`);
   const generatedAt = output.generatedAt
     || canvasItem.ai?.generatedAt

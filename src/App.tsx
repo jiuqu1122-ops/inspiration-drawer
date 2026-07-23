@@ -91,6 +91,11 @@ import {
   type InspirationProfile,
 } from './features/appAgent/inspirationMemory';
 import {
+  buildProfileOrganizationPlan,
+  type ProfileOrganizationPlan,
+  type ProfileOrganizationStrategy,
+} from './features/appAgent/inspirationMemory/profileOrganizer';
+import {
   type ImagePolicy,
   type ImageRuleKey,
   type ImageRuleState,
@@ -979,7 +984,7 @@ type CloudflaredPublicImageUrlsResult = {
 };
 
 type TemporaryReferenceShare = {
-  kind: 'cloudflared' | 'r2';
+  kind: 'oss' | 'cloudflared' | 'r2';
   id: string;
 };
 
@@ -1664,6 +1669,15 @@ const createCanvasImagePolicy = (
     && typeof (explicitRulesOrPolicy as ImagePolicy).defaultPreset === 'string'
       ? (explicitRulesOrPolicy as ImagePolicy).defaultPreset
       : context.workflowTemplateId || context.qualityProfileId || context.outputRole || 'product_image_generator'
+  ),
+  panelExpanded: (
+    explicitRulesOrPolicy
+    && typeof explicitRulesOrPolicy === 'object'
+    && !Array.isArray(explicitRulesOrPolicy)
+    && 'rules' in explicitRulesOrPolicy
+    && typeof (explicitRulesOrPolicy as ImagePolicy).panelExpanded === 'boolean'
+      ? (explicitRulesOrPolicy as ImagePolicy).panelExpanded
+      : true
   ),
 });
 const getImagePolicyFromRecord = (value: unknown): ImagePolicy | null => {
@@ -4210,6 +4224,10 @@ function MainApp() {
   const [activeTab, setActiveTab] = useState<DrawerTabType>('all');
   const itemsRef = useRef<BufferItem[]>([]);
   const inspirationAnalysisJobsRef = useRef(new Map<string, InspirationAnalysisJob>());
+  const drawerOrganizationPlansRef = useRef(new Map<string, {
+    plan: ProfileOrganizationPlan;
+    createdAt: number;
+  }>());
   const inspirationRetrievalCacheRef = useRef(new Map<string, { createdAt: number; candidates: InspirationCandidate[] }>());
   const autoInspirationAnalysisAttemptedRef = useRef(new Set<string>());
   const autoInspirationAnalysisRunningRef = useRef(false);
@@ -4275,6 +4293,8 @@ function MainApp() {
   const [isCanvasChromeHidden, setIsCanvasChromeHidden] = useState(false);
   const [isCanvasNavigatorVisible, setIsCanvasNavigatorVisible] = useState(() => localStorage.getItem('drawer_canvas_navigator_visible') !== 'false');
   const [isCanvasGeneratedListVisible, setIsCanvasGeneratedListVisible] = useState(() => localStorage.getItem('drawer_canvas_generated_list_visible') !== 'false');
+  const [isCanvasGeneratedMultiSelect, setIsCanvasGeneratedMultiSelect] = useState(false);
+  const [canvasGeneratedSelectedIds, setCanvasGeneratedSelectedIds] = useState<string[]>([]);
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [canvasAgentInput, setCanvasAgentInput] = useState('');
   const [isDrawerAgentOpen, setIsDrawerAgentOpen] = useState(false);
@@ -11882,7 +11902,7 @@ function MainApp() {
       showOutputPreview: canvasItem.ai?.type === 'workflow' || canvasAiRealOutputs.length > 0,
       localMediaTool: isCanvasAiLocalMediaToolType(canvasItem.ai?.type),
       showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
-      imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded === true,
+      imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded !== false,
     });
   };
   void runAiAlchemyFromCard;
@@ -12513,6 +12533,17 @@ function MainApp() {
       window.clearTimeout(canvasPersistSaveTimerRef.current);
       canvasPersistSaveTimerRef.current = null;
     }
+    // A node patch is intentionally delayed while the user is interacting. If it
+    // survives a canvas switch it would read the new canvas refs when the timer
+    // fires and can write old pending changes into the newly active canvas.
+    // The full snapshot below already contains those changes, so discard the
+    // delayed patch before changing activeCanvasIdRef.
+    if (canvasPatchSaveTimerRef.current !== null) {
+      window.clearTimeout(canvasPatchSaveTimerRef.current);
+      canvasPatchSaveTimerRef.current = null;
+    }
+    canvasPatchSavePendingIdsRef.current.clear();
+    canvasInteractionChangedNodeIdsRef.current.clear();
     const state = buildCanvasPersistedState();
     const currentCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
     const nodesSignature = getCanvasNodesPersistSignature(state.items);
@@ -15408,7 +15439,9 @@ function MainApp() {
 
   const stopTemporaryReferenceShares = async (shares: TemporaryReferenceShare[]) => {
     await Promise.all(shares.map(share => {
-      const command = share.kind === 'r2' ? 'delete_r2_public_image_urls' : 'stop_cloudflared_share';
+      const command = share.kind === 'oss'
+        ? 'delete_oss_public_image_urls'
+        : share.kind === 'r2' ? 'delete_r2_public_image_urls' : 'stop_cloudflared_share';
       return invoke(command, { shareId: share.id }).catch(err => {
         console.warn(`${share.kind} 临时分享清理失败:`, err);
       });
@@ -15437,6 +15470,15 @@ function MainApp() {
         throw new Error('cloudflared 没有返回可用的公网图片 URL');
       }
       return { urls, shareIds: [{ kind: 'cloudflared' as const, id: result.shareId }] };
+    };
+
+    const publishViaOss = async () => {
+      const result = await invoke<CloudflaredPublicImageUrlsResult>('create_oss_public_image_urls', { sources });
+      const urls = Array.isArray(result.urls) ? result.urls.filter(Boolean) : [];
+      if (!result.shareId || urls.length === 0) {
+        throw new Error('OSS 没有返回可用的公网图片 URL');
+      }
+      return { urls, shareIds: [{ kind: 'oss' as const, id: result.shareId }] };
     };
 
     const publishViaLitterbox = async () => {
@@ -15471,12 +15513,14 @@ function MainApp() {
 
     const attempts = preference === 'hosted-first'
       ? [
+        { label: 'OSS', run: publishViaOss },
         { label: 'Litterbox', run: publishViaLitterbox },
         { label: 'cloudflared', run: publishViaCloudflared },
         { label: 'R2', run: publishViaR2 },
         { label: 'Tmpfiles', run: publishViaTmpfiles },
       ]
       : [
+        { label: 'OSS', run: publishViaOss },
         { label: 'cloudflared', run: publishViaCloudflared },
         { label: 'Litterbox', run: publishViaLitterbox },
         { label: 'R2', run: publishViaR2 },
@@ -17526,7 +17570,7 @@ function MainApp() {
   const toggleCanvasImageRulePanel = (canvasId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === canvasId);
     if (target?.ai?.type !== 'image-generator') return;
-    const nextExpanded = target.ai.imagePolicy?.panelExpanded !== true;
+    const nextExpanded = target.ai.imagePolicy?.panelExpanded === false;
     updateCanvasItemsImmediate(prev => prev.map(item => {
       if (item.id !== canvasId || item.ai?.type !== 'image-generator') return item;
       const nextItem: CanvasImageItem = {
@@ -18398,6 +18442,7 @@ function MainApp() {
       const usePortableWalletReferences = shouldUsePortableWalletImageReferences(
         useCloudWallet,
         mediaType,
+        provider,
       );
       const isXaisWorkerRequest = provider === 'xais-chat'
         && (mediaType === 'video' || isCanvasAiXaisWorkerModel(requestModel));
@@ -18524,7 +18569,11 @@ function MainApp() {
           return inputImages;
         }
 
-        const candidatePortableReferences = shouldUsePortableWalletImageReferences(candidateUsesWallet, 'image');
+        const candidatePortableReferences = shouldUsePortableWalletImageReferences(
+          candidateUsesWallet,
+          'image',
+          candidate.provider,
+        );
         const candidateIsXaisWorker = candidate.provider === 'xais-chat'
           && isCanvasAiXaisWorkerModel(candidateRequestModel);
         const candidateReferenceFormat: 'any' | 'jpeg' = !candidatePortableReferences
@@ -18706,18 +18755,14 @@ function MainApp() {
 
       const placeGeneratedMedia = async (url: string, index: number) => {
         const source = url.trim();
-        const deferGeneratedImageCache = mediaType === 'image' && (
-          /^https?:\/\//i.test(source)
-          || (provider === 'new-api' && /^data:image\//i.test(source))
+        // A successful provider response is not yet a durable output. Cache it
+        // before publishing success so expiring Image2/task URLs remain
+        // downloadable after the workflow finishes.
+        const durableOutputName = `${clientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
+        let cached = await cacheCanvasGeneratedImageSource(
+          source,
+          mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
         );
-        let cached = deferGeneratedImageCache
-          ? { url: source, path: '' }
-          : await cacheCanvasGeneratedImageSource(
-            source,
-            mediaType === 'video'
-              ? `AI generated video ${Date.now()}-${index + 1}.mp4`
-              : `AI generated ${Date.now()}-${index + 1}`
-          );
         if (mediaType === 'video' && cached.path) {
           try {
             const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
@@ -18734,10 +18779,10 @@ function MainApp() {
           }
         }
         const displayUrl = cached.url || source;
-        const size = mediaType === 'video' || deferGeneratedImageCache
+        const size = mediaType === 'video' || !cached.path
           ? getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO)
           : await readImageDisplaySize(displayUrl);
-        const thumbnail = mediaType === 'image' && !deferGeneratedImageCache
+        const thumbnail = mediaType === 'image' && !!cached.path
           ? await createCanvasImagePreviewThumbnail(displayUrl, cached.path || undefined)
           : undefined;
         const generatedAt = Date.now();
@@ -18746,14 +18791,16 @@ function MainApp() {
             id: `canvas_ai_output_${generatedAt.toString(36)}_${index}`,
             prompt,
           }),
+          taskId: clientRequestId,
+          clientRequestId,
           mediaType,
           url: displayUrl,
           path: cached.path || undefined,
           thumbnail,
-          name: mediaType === 'video' ? `AI generated video #${index + 1}` : `AI generated #${index + 1}`,
+          name: durableOutputName,
           prompt,
           status: 'success',
-          cacheStatus: deferGeneratedImageCache ? 'pending' : 'ready',
+          cacheStatus: cached.path ? 'ready' : 'failed',
           error: undefined,
           generatedAt,
           width: size.width,
@@ -19578,6 +19625,21 @@ function MainApp() {
     }
   };
 
+  const growCanvasNearViewportEdge = (surface = canvasSurfaceRef.current) => {
+    if (!surface || isCanvasZoomingRef.current) return;
+    const scale = canvasScaleRef.current || 1;
+    const current = canvasSizeRef.current;
+    const edgeMargin = Math.max(180, Math.min(520, CANVAS_GROW_CHUNK * scale * 0.28));
+    const remainingRight = current.width * scale - (surface.scrollLeft + surface.clientWidth);
+    const remainingBottom = current.height * scale - (surface.scrollTop + surface.clientHeight);
+    const nextWidth = remainingRight <= edgeMargin ? current.width + CANVAS_GROW_CHUNK : current.width;
+    const nextHeight = remainingBottom <= edgeMargin ? current.height + CANVAS_GROW_CHUNK : current.height;
+    if (nextWidth !== current.width || nextHeight !== current.height) {
+      setCanvasSizeImmediate({ width: nextWidth, height: nextHeight });
+      scheduleCanvasStateSave();
+    }
+  };
+
   const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
     const itemsById = new Map(sourceItems.map(item => [item.id, item]));
     const runnableIds = sourceItems
@@ -19825,6 +19887,7 @@ function MainApp() {
       return;
     }
 
+    setIsAgentChatOpen(true);
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
     const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
     const workflowMaterialInputIds = (moduleNode.inputs || []).filter(inputId => (
@@ -21478,6 +21541,16 @@ function MainApp() {
       const scale = canvasScaleRef.current || 1;
       let nextLeft = pan.startScrollLeft - (event.clientX - pan.startClientX);
       let nextTop = pan.startScrollTop - (event.clientY - pan.startClientY);
+      if (nextLeft < 0 || nextTop < 0) {
+        expandCanvasBeforeViewport(
+          nextLeft < 0 ? CANVAS_GROW_CHUNK : 0,
+          nextTop < 0 ? CANVAS_GROW_CHUNK : 0,
+        );
+        const shiftedPan = canvasPanRef.current;
+        if (!shiftedPan) return;
+        nextLeft = shiftedPan.startScrollLeft - (event.clientX - shiftedPan.startClientX);
+        nextTop = shiftedPan.startScrollTop - (event.clientY - shiftedPan.startClientY);
+      }
       nextLeft = Math.max(0, nextLeft);
       nextTop = Math.max(0, nextTop);
       growCanvasToFit(
@@ -21485,6 +21558,7 @@ function MainApp() {
         (nextTop + targetSurface.clientHeight) / scale + CANVAS_GROW_CHUNK * 0.8
       );
       writeCanvasSurfaceScroll(targetSurface, nextLeft, nextTop);
+      growCanvasNearViewportEdge(targetSurface);
     };
     const onUp = () => {
       canvasPanRef.current = null;
@@ -21632,6 +21706,7 @@ function MainApp() {
         canvasStateSaveDeferredDuringZoomRef.current = true;
         return;
       }
+      growCanvasNearViewportEdge(surface);
       scheduleCanvasViewportUpdate();
       const shouldLockScroll = isCanvasSpacePressedRef.current || canvasPanRef.current !== null;
       if (!shouldLockScroll) {
@@ -23017,6 +23092,31 @@ function MainApp() {
       return;
     }
 
+    const resolveDurableDownloadSource = async (item: BufferItem) => {
+      const localPath = String(item.path || '').trim();
+      if (localPath) return localPath;
+      const source = String(item.url || item.sourceUrl || item.originalUrl || item.content || '').trim();
+      if (!item.type || item.type === 'text' || !/^(?:https?:|data:(?:image|video)\/)/i.test(source)) {
+        return source;
+      }
+      const latestCacheDir = (
+        webImageCacheDirRef.current
+        || localStorage.getItem('drawer_web_image_cache_dir')
+        || ''
+      ).trim();
+      try {
+        const cachedPath = await invoke<string>('cache_web_image', {
+          url: source,
+          name: item.name || item.id || 'generated-output',
+          dir: latestCacheDir || undefined,
+        });
+        return String(cachedPath || source).trim();
+      } catch (error) {
+        console.warn('下载前重新缓存生成结果失败，尝试直接下载原始地址:', error);
+        return source;
+      }
+    };
+
     try {
       if (cleanItems.length === 1) {
         const item = cleanItems[0];
@@ -23034,7 +23134,7 @@ function MainApp() {
         if (!savePath) return;
 
         await invoke('save_item_source_as', {
-          source: item.path || item.url || item.content || '',
+          source: await resolveDurableDownloadSource(item),
           dest: savePath,
           content: item.content || '',
           itemType: item.type,
@@ -23061,7 +23161,7 @@ function MainApp() {
         const dest = `${baseDir}${separator}${fileName}`;
         try {
           await invoke('save_item_source_as', {
-            source: item.path || item.url || item.content || '',
+            source: await resolveDurableDownloadSource(item),
             dest,
             content: item.content || '',
             itemType: item.type,
@@ -26247,7 +26347,10 @@ useEffect(() => {
       const drawerItemsForAgentContext = itemsRef.current
         .filter(item => {
           if (selectedDrawerIds.has(item.id)) return true;
-          if (!drawerSearch) return false;
+          // With no explicit selection/search, expose lightweight metadata for
+          // main-drawer images so canvas state inspection can actually discover
+          // the references visible on the drawer home page.
+          if (!drawerSearch) return !item.folderId && item.type === 'image';
           return [
             item.id,
             item.name,
@@ -26565,7 +26668,7 @@ useEffect(() => {
           const drawerItemsForContext = itemsRef.current
             .filter(item => {
               if (selectedDrawerIds.has(item.id)) return true;
-              if (!drawerSearch) return false;
+              if (!drawerSearch) return !item.folderId && item.type === 'image';
               return [
                 item.id,
                 item.name,
@@ -26737,6 +26840,132 @@ useEffect(() => {
           throw new Error(`不支持的软件导航操作：${action}`);
         }
         return { action, surface: isCanvasModeRef.current ? 'canvas' : 'drawer' };
+      }
+
+      if (name === 'drawer_get_analysis_coverage' || name === 'drawer_plan_organization') {
+        const requestedFolderId = String(args.folderId ?? '').trim();
+        const activeDrawerFolderId = activeFolderIdStateRef.current;
+        const sourceFolderId = requestedFolderId === 'all'
+          ? undefined
+          : requestedFolderId || (activeDrawerFolderId !== 'all' ? activeDrawerFolderId : undefined);
+        if (sourceFolderId && !foldersRef.current.some(folder => folder.id === sourceFolderId)) {
+          throw new Error('整理范围对应的文件夹不存在');
+        }
+        const strategy = ['topic', 'topic_color'].includes(String(args.strategy))
+          ? String(args.strategy) as ProfileOrganizationStrategy
+          : 'topic';
+        const plan = buildProfileOrganizationPlan({
+          items: itemsRef.current,
+          folders: foldersRef.current,
+          sourceFolderId,
+          recursive: args.recursive !== false,
+          strategy,
+          categories: Array.isArray(args.categories) ? args.categories.map(String).filter(Boolean) : [],
+        });
+        const sourceFolder = sourceFolderId
+          ? foldersRef.current.find(folder => folder.id === sourceFolderId)
+          : undefined;
+        const coverage = {
+          scope: sourceFolder?.name || '整个抽屉',
+          totalImages: plan.totalImages,
+          analyzedImages: plan.analyzedImages,
+          unanalyzedImages: plan.unanalyzedImages,
+          coveragePercent: plan.totalImages > 0
+            ? Math.round((plan.analyzedImages / plan.totalImages) * 100)
+            : 100,
+        };
+        if (name === 'drawer_get_analysis_coverage') return coverage;
+        const planId = `drawer_organize_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        drawerOrganizationPlansRef.current.set(planId, { plan, createdAt: Date.now() });
+        return {
+          planId,
+          ...coverage,
+          strategy,
+          plannedItems: plan.assignments.length,
+          unresolvedItems: plan.unresolvedItemIds.length,
+          groups: plan.groups.map(group => ({
+            name: group.name,
+            count: group.count,
+            minimumConfidence: group.confidence,
+            reason: group.reason,
+            samples: group.samples,
+          })),
+          note: plan.unresolvedItemIds.length > 0
+            ? '未分析或无法可靠分类的素材会保留原位，不影响其余素材整理。'
+            : '全部图片均已有可用分析结果。',
+        };
+      }
+
+      if (name === 'drawer_apply_organization') {
+        const planId = String(args.planId || '').trim();
+        const storedPlan = drawerOrganizationPlansRef.current.get(planId);
+        if (!storedPlan) throw new Error('整理计划不存在或已经执行，请重新生成预览');
+        if (Date.now() - storedPlan.createdAt > 30 * 60 * 1000) {
+          drawerOrganizationPlansRef.current.delete(planId);
+          throw new Error('整理计划已超过 30 分钟，请重新生成预览');
+        }
+        const minimumConfidence = Math.min(1, Math.max(0, Number(args.minimumConfidence) || 0.74));
+        const assignments = storedPlan.plan.assignments.filter(assignment => assignment.confidence >= minimumConfidence);
+        const existingItemIds = new Set(itemsRef.current.map(item => item.id));
+        const validAssignments = assignments.filter(assignment => existingItemIds.has(assignment.itemId));
+        if (validAssignments.length === 0) throw new Error('整理计划中没有符合置信度要求的可移动素材');
+
+        const nextFolders = [...foldersRef.current];
+        const parentId = storedPlan.plan.sourceFolderId;
+        const parent = parentId ? nextFolders.find(folder => folder.id === parentId) : undefined;
+        const folderIdByName = new Map<string, string>();
+        nextFolders
+          .filter(folder => (folder.parentId || undefined) === parentId)
+          .forEach(folder => folderIdByName.set(folder.name.trim().toLocaleLowerCase(), folder.id));
+        const createdFolders: Folder[] = [];
+        validAssignments.forEach(assignment => {
+          if (assignment.destinationFolderId && nextFolders.some(folder => folder.id === assignment.destinationFolderId)) return;
+          const key = assignment.destinationName.trim().toLocaleLowerCase();
+          if (folderIdByName.has(key)) return;
+          const folder: Folder = {
+            id: `org_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+            name: assignment.destinationName,
+            color: parent?.color || '#10b981',
+            parentId,
+          };
+          nextFolders.push(folder);
+          createdFolders.push(folder);
+          folderIdByName.set(key, folder.id);
+        });
+        const destinationByItemId = new Map(validAssignments.map(assignment => [
+          assignment.itemId,
+          assignment.destinationFolderId
+            || folderIdByName.get(assignment.destinationName.trim().toLocaleLowerCase()),
+        ]));
+        const movedIds = new Set<string>();
+        const nextItems = itemsRef.current.map(item => {
+          const destinationId = destinationByItemId.get(item.id);
+          if (!destinationId || item.folderId === destinationId) return item;
+          movedIds.add(item.id);
+          return { ...item, folderId: destinationId };
+        });
+        if (movedIds.size === 0 && createdFolders.length === 0) {
+          drawerOrganizationPlansRef.current.delete(planId);
+          return { planId, moved: 0, createdFolders: [], skipped: validAssignments.length };
+        }
+        pushDrawerUndoSnapshot('智能整理抽屉');
+        foldersRef.current = nextFolders;
+        itemsRef.current = nextItems;
+        setFolders(nextFolders);
+        persistFoldersSnapshot(nextFolders);
+        setItems(nextItems);
+        setSelectedIds([]);
+        setIsSelectMode(false);
+        drawerOrganizationPlansRef.current.delete(planId);
+        showToast(`智能整理完成：移动 ${movedIds.size} 项`);
+        return {
+          planId,
+          moved: movedIds.size,
+          skipped: validAssignments.length - movedIds.size,
+          createdFolders: createdFolders.map(folder => folder.name),
+          unresolvedItems: storedPlan.plan.unresolvedItemIds.length,
+          undoAvailable: true,
+        };
       }
 
       if (name === 'drawer_manage') {
@@ -28877,6 +29106,24 @@ useEffect(() => {
     () => canvasGeneratedItemsForList.slice(0, CANVAS_GENERATED_LIST_RENDER_LIMIT),
     [canvasGeneratedItemsForList],
   );
+  const canvasGeneratedDownloadableItems = useMemo(
+    () => canvasGeneratedItemsForList.filter(entry => (
+      entry.ai?.status !== 'working'
+      && entry.ai?.status !== 'error'
+      && !!getCanvasItemNavSource(entry.item)
+    )),
+    [canvasGeneratedItemsForList],
+  );
+  const canvasGeneratedSelectedIdSet = useMemo(
+    () => new Set(canvasGeneratedSelectedIds),
+    [canvasGeneratedSelectedIds],
+  );
+  const canvasGeneratedSelectedDownloadItems = useMemo(
+    () => canvasGeneratedDownloadableItems
+      .filter(entry => canvasGeneratedSelectedIdSet.has(entry.id))
+      .map(entry => entry.item),
+    [canvasGeneratedDownloadableItems, canvasGeneratedSelectedIdSet],
+  );
   const getCanvasItemRenderedBox = (canvasItem: CanvasImageItem): CanvasItemBox => {
     const isCanvasAiNodeItem = isCanvasAiGeneratorType(canvasItem.ai?.type) || canvasItem.ai?.type === 'workflow';
     if (!isCanvasAiNodeItem) {
@@ -29247,7 +29494,10 @@ useEffect(() => {
     canvasFolderImportPrompt
       ? getFolderImageItemsForCanvas(canvasFolderImportPrompt.folderId)
       : []
-  ), [canvasFolderImportPrompt?.folderId, folders, items]);
+  // `folderId` is undefined for the main drawer both while the picker is
+  // closed and while it is open. Depending only on folderId therefore leaves
+  // the memo stuck at the closed-state empty array.
+  ), [canvasFolderImportPrompt, folders, items]);
   const visibleCanvasFolderPickerItems = useMemo(
     () => canvasFolderPickerItems.slice(0, canvasFolderPickerVisibleCount),
     [canvasFolderPickerItems, canvasFolderPickerVisibleCount],
@@ -32428,7 +32678,7 @@ useEffect(() => {
                             ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
                             : canvasAiNodeDesignSize?.width || canvasItem.width;
                           const isImageRulePanelExpanded = canvasItem.ai?.type === 'image-generator'
-                            && canvasItem.ai.imagePolicy?.panelExpanded === true;
+                            && canvasItem.ai.imagePolicy?.panelExpanded !== false;
                           const canvasAiOutputTileLayout = isCanvasAiNodeItem && canvasAiNodeDesignSize && showCanvasAiOutputPreview
                             ? getCanvasAiOutputTileLayout({
                               width: canvasAiMainColumnLayoutWidth,
@@ -35754,6 +36004,26 @@ useEffect(() => {
                           </span>
                         </div>
                         <div className="flex items-center gap-1">
+                          {canvasGeneratedDownloadableItems.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsCanvasGeneratedMultiSelect(prev => {
+                                  if (prev) setCanvasGeneratedSelectedIds([]);
+                                  return !prev;
+                                });
+                              }}
+                              className={`flex h-[22px] items-center gap-1 rounded-[7px] px-1.5 text-[9px] font-black transition-colors ${
+                                isCanvasGeneratedMultiSelect
+                                  ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-400/16 dark:text-cyan-200'
+                                  : 'text-stone-400 hover:bg-stone-100 hover:text-cyan-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-cyan-200'
+                              }`}
+                              title={isCanvasGeneratedMultiSelect ? '退出多选' : '批量选择下载'}
+                            >
+                              <CheckSquare className="h-3 w-3" />
+                              {isCanvasGeneratedMultiSelect ? '取消' : '多选'}
+                            </button>
+                          )}
                           {canvasGeneratedItemsForList.length > 0 && (
                             <button
                               type="button"
@@ -35774,6 +36044,46 @@ useEffect(() => {
                           </button>
                         </div>
                       </div>
+                      {isCanvasGeneratedMultiSelect && (
+                        <div className="mt-2 flex items-center justify-between gap-2 rounded-[11px] bg-cyan-50/80 px-2 py-1.5 dark:bg-cyan-400/10">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const allIds = canvasGeneratedDownloadableItems.map(entry => entry.id);
+                              const allSelected = allIds.length > 0 && allIds.every(id => canvasGeneratedSelectedIdSet.has(id));
+                              setCanvasGeneratedSelectedIds(allSelected ? [] : allIds);
+                            }}
+                            className="flex items-center gap-1 text-[9px] font-black text-cyan-700 hover:text-cyan-900 dark:text-cyan-200 dark:hover:text-white"
+                          >
+                            <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-[4px] border ${
+                              canvasGeneratedDownloadableItems.length > 0
+                              && canvasGeneratedDownloadableItems.every(entry => canvasGeneratedSelectedIdSet.has(entry.id))
+                                ? 'border-cyan-500 bg-cyan-500 text-white'
+                                : 'border-cyan-300 bg-white/80 dark:border-cyan-500/60 dark:bg-stone-900/60'
+                            }`}>
+                              {canvasGeneratedDownloadableItems.length > 0
+                              && canvasGeneratedDownloadableItems.every(entry => canvasGeneratedSelectedIdSet.has(entry.id))
+                                ? <Check className="h-2.5 w-2.5" />
+                                : null}
+                            </span>
+                            全选
+                          </button>
+                          <span className="text-[9px] font-bold text-stone-500 dark:text-stone-400">
+                            已选 {canvasGeneratedSelectedDownloadItems.length} 张
+                          </span>
+                          <button
+                            type="button"
+                            disabled={canvasGeneratedSelectedDownloadItems.length === 0}
+                            onClick={() => {
+                              void downloadBufferItems(canvasGeneratedSelectedDownloadItems, { feature: 'commercial_export' });
+                            }}
+                            className="flex h-6 items-center gap-1 rounded-[8px] bg-cyan-500 px-2 text-[9px] font-black text-white transition-colors hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-stone-300 dark:disabled:bg-stone-700"
+                          >
+                            <Download className="h-3 w-3" />
+                            下载
+                          </button>
+                        </div>
+                      )}
                       {canvasGeneratedItemsForList.length > CANVAS_GENERATED_LIST_RENDER_LIMIT && (
                         <div className="mt-1.5 px-1 text-[9px] font-bold text-stone-400 dark:text-stone-500">
                           为保持流畅，仅显示最近 {CANVAS_GENERATED_LIST_RENDER_LIMIT} 条
@@ -35801,25 +36111,61 @@ useEffect(() => {
                                   key={`canvas-generated-list-${generatedItem.id}`}
                                   role="button"
                                   tabIndex={0}
+                                  onPointerDown={(event) => {
+                                    if (!isCanvasGeneratedMultiSelect) return;
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    if (isPending || isError) return;
+                                    setCanvasGeneratedSelectedIds(prev => (
+                                      prev.includes(generatedItem.id)
+                                        ? prev.filter(id => id !== generatedItem.id)
+                                        : [...prev, generatedItem.id]
+                                    ));
+                                  }}
                                   onClick={(event) => {
                                     event.preventDefault();
                                     event.stopPropagation();
+                                    if (isCanvasGeneratedMultiSelect) {
+                                      return;
+                                    }
                                     centerCanvasItemInView(generatedItem.canvasItem, { select: true });
                                   }}
                                   onKeyDown={(event) => {
                                     if (event.key !== 'Enter' && event.key !== ' ') return;
                                     event.preventDefault();
                                     event.stopPropagation();
+                                    if (isCanvasGeneratedMultiSelect) {
+                                      if (isPending || isError) return;
+                                      setCanvasGeneratedSelectedIds(prev => (
+                                        prev.includes(generatedItem.id)
+                                          ? prev.filter(id => id !== generatedItem.id)
+                                          : [...prev, generatedItem.id]
+                                      ));
+                                      return;
+                                    }
                                     centerCanvasItemInView(generatedItem.canvasItem, { select: true });
                                   }}
                                   className={`group/generated flex w-full cursor-pointer items-center gap-2 rounded-[14px] border p-1.5 text-left transition-colors ${
-                                    canvasSelectedIdsSet.has(generatedItem.canvasItem.id)
+                                    isCanvasGeneratedMultiSelect && canvasGeneratedSelectedIdSet.has(generatedItem.id)
+                                      ? 'border-cyan-400 bg-cyan-50/90 ring-1 ring-cyan-300/60 dark:border-cyan-400/50 dark:bg-cyan-400/14'
+                                      : canvasSelectedIdsSet.has(generatedItem.canvasItem.id)
                                       ? 'border-cyan-200 bg-cyan-50/76 dark:border-cyan-400/24 dark:bg-cyan-400/12'
                                       : 'border-white/70 bg-white/58 hover:bg-white/90 dark:border-stone-700/60 dark:bg-stone-950/28 dark:hover:bg-stone-800/70'
                                   }`}
                                   title={prompt || generatedItem.item.name || '定位已生成内容'}
                                 >
-                                  <div className="h-12 w-14 shrink-0 overflow-hidden rounded-[10px] bg-stone-900/8 dark:bg-white/8">
+                                  <div className="relative h-12 w-14 shrink-0 overflow-hidden rounded-[10px] bg-stone-900/8 dark:bg-white/8">
+                                    {isCanvasGeneratedMultiSelect && (
+                                      <span className={`absolute left-1 top-1 z-10 flex h-4 w-4 items-center justify-center rounded-[5px] border shadow-sm ${
+                                        canvasGeneratedSelectedIdSet.has(generatedItem.id)
+                                          ? 'border-cyan-500 bg-cyan-500 text-white'
+                                          : isPending || isError
+                                            ? 'border-stone-300 bg-stone-200/90 text-stone-400 dark:border-stone-600 dark:bg-stone-700/90'
+                                            : 'border-white bg-white/90 text-transparent dark:border-stone-500 dark:bg-stone-900/90'
+                                      }`}>
+                                        {canvasGeneratedSelectedIdSet.has(generatedItem.id) && <Check className="h-3 w-3" />}
+                                      </span>
+                                    )}
                                     {isPending || isError ? (
                                       <div className={`flex h-full w-full items-center justify-center ${isError ? 'bg-red-500/12 text-red-500' : 'bg-cyan-500/10 text-cyan-500'}`}>
                                         <Sparkles className={`h-4 w-4 ${isPending && !isError ? 'animate-pulse' : ''}`} />
@@ -35873,7 +36219,7 @@ useEffect(() => {
                                         {generatedAt ? new Date(generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
                                       </span>
                                       <span className="flex items-center gap-1">
-                                        {!isPending && !isError && generatedItem.item.type === 'image' && (
+                                        {!isCanvasGeneratedMultiSelect && !isPending && !isError && generatedItem.item.type === 'image' && (
                                           <button
                                             type="button"
                                             onPointerDown={(event) => {
@@ -35891,7 +36237,7 @@ useEffect(() => {
                                             <Brush className="h-3 w-3" />
                                           </button>
                                         )}
-                                        <button
+                                        {!isCanvasGeneratedMultiSelect && <button
                                           type="button"
                                           onClick={(event) => {
                                             event.preventDefault();
@@ -35902,7 +36248,7 @@ useEffect(() => {
                                           title="下载"
                                         >
                                           <Download className="h-3 w-3" />
-                                        </button>
+                                        </button>}
                                       </span>
                                     </div>
                                   </div>

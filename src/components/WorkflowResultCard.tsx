@@ -1,6 +1,8 @@
 import {
   AlertTriangle,
   ArrowRight,
+  Check,
+  Copy,
   FileText,
   Image as ImageIcon,
   Layers3,
@@ -8,6 +10,8 @@ import {
   LoaderCircle,
   Sparkles,
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import type { WorkflowResultCardData, WorkflowResultStage } from '../features/agentModel';
 
 type WorkflowResultCardProps = {
@@ -45,18 +49,60 @@ const STAGE_LABELS: Record<WorkflowResultStage['stage'], string> = {
   delivery: '交付整理',
 };
 
-const TextAsset = ({ title, content }: { title: string; content: string }) => (
-  <details className="group/asset rounded-[12px] border border-stone-100 bg-white/72 px-2.5 py-2 dark:border-white/[0.07] dark:bg-white/[0.035]">
-    <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[9px] font-bold text-stone-600 dark:text-stone-200">
-      <FileText className="h-3 w-3 shrink-0 text-blue-500" />
-      <span className="min-w-0 flex-1 truncate">{title}</span>
-      <span className="text-[8px] font-medium text-stone-400 group-open/asset:hidden">展开</span>
-    </summary>
-    <div className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap text-[9px] leading-4.5 text-stone-500 [scrollbar-width:thin] dark:text-stone-400">
-      {content}
-    </div>
-  </details>
-);
+const TextAsset = ({ title, content }: { title: string; content: string }) => {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copyContent = async (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      await writeText(content);
+      setCopied(true);
+    } catch (error) {
+      console.warn('复制工作流分析结果失败:', error);
+    }
+  };
+
+  return (
+    <details className="group/asset rounded-[12px] border border-stone-100 bg-white/72 px-2.5 py-2 dark:border-white/[0.07] dark:bg-white/[0.035]">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[9px] font-bold text-stone-600 dark:text-stone-200">
+        <FileText className="h-3 w-3 shrink-0 text-blue-500" />
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+        <span
+          role="button"
+          tabIndex={0}
+          title="复制全文"
+          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[8px] font-medium text-stone-400 transition-colors hover:bg-stone-100 hover:text-blue-600 dark:hover:bg-white/[0.07] dark:hover:text-blue-200"
+          onClick={copyContent}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            void copyContent(event);
+          }}
+        >
+          {copied ? <Check className="h-2.5 w-2.5" /> : <Copy className="h-2.5 w-2.5" />}
+          {copied ? '已复制' : '复制'}
+        </span>
+        <span className="shrink-0 text-[8px] font-medium text-stone-400 group-open/asset:hidden">展开</span>
+        <span className="hidden shrink-0 text-[8px] font-medium text-stone-400 group-open/asset:inline">收起</span>
+      </summary>
+      <div
+        data-no-drag="true"
+        className="mt-2 max-h-52 cursor-text select-text overflow-y-auto whitespace-pre-wrap text-[9px] leading-4.5 text-stone-500 [scrollbar-width:thin] dark:text-stone-400"
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {content}
+      </div>
+    </details>
+  );
+};
 
 export function WorkflowResultCard({ result, compact = false }: WorkflowResultCardProps) {
   const status = STATUS_STYLE[result.status];

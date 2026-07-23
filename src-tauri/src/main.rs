@@ -326,11 +326,19 @@ impl Drop for RealEsrganEstimateTaskGuard {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CloudflaredPublicImageUrls {
     share_id: String,
     urls: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OssReferenceImageUpload {
+    filename: String,
+    mime: String,
+    data: String,
 }
 
 #[derive(serde::Serialize)]
@@ -4955,7 +4963,7 @@ fn run_realesrgan_image_enhancement_impl(
     let resize_mode = normalize_realesrgan_resize_mode(resize_mode);
     let output_format = normalize_realesrgan_image_format(output_format);
     let progress_id_ref = progress_id.as_deref();
-    let status = build_realesrgan_engine_status()?;
+    let status = ensure_realesrgan_engine_installed(&app_handle, progress_id_ref)?;
     let engine_dir = PathBuf::from(&status.engine_dir);
     let exe_path = PathBuf::from(&status.exe_path);
     if !exe_path.is_file() {
@@ -5518,6 +5526,78 @@ fn http_get_text_with_headers(
             redact_ai_secrets(&text, api_key, headers)
         ))
     }
+}
+
+fn http_get_image_content_with_headers(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    api_key: &str,
+    explicit_proxy: Option<&str>,
+    headers: Option<&BTreeMap<String, String>>,
+) -> Result<String, String> {
+    use base64::{engine::general_purpose, Engine as _};
+
+    let timeout_secs = 420;
+    let send = |client: &Client| {
+        let request = client
+            .get(url)
+            .header("accept", "image/*, application/json, */*")
+            .bearer_auth(api_key);
+        apply_custom_http_headers(request, headers)?
+            .send()
+            .map_err(|error| error.to_string())
+    };
+    let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
+    let response = match send(&client) {
+        Ok(response) => response,
+        Err(first_err) => {
+            let can_retry_direct = explicit_proxy
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true);
+            if !can_retry_direct {
+                return Err(format!("AI image content GET failed: {first_err}"));
+            }
+            let direct_client = build_direct_http_client(timeout_secs)?;
+            send(&direct_client).map_err(|second_err| {
+                format!(
+                    "AI image content GET failed: {first_err}; direct retry failed: {second_err}"
+                )
+            })?
+        }
+    };
+
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .split(';')
+        .next()
+        .unwrap_or("application/octet-stream")
+        .trim()
+        .to_ascii_lowercase();
+    let bytes = response.bytes().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&bytes);
+        return Err(format!(
+            "AI image content GET failed: HTTP {status}: {}",
+            redact_ai_secrets(&text, api_key, headers)
+        ));
+    }
+    if content_type.contains("json") || content_type.starts_with("text/") {
+        return String::from_utf8(bytes.to_vec())
+            .map_err(|error| format!("AI image content text decode failed: {error}"));
+    }
+    let mime = if content_type.starts_with("image/") {
+        content_type
+    } else {
+        "image/png".to_string()
+    };
+    Ok(format!(
+        "data:{mime};base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 fn xais_output_key(key: &str) -> bool {
@@ -6156,31 +6236,59 @@ fn build_ai_image_edit_form(
     model: &str,
     prompt: &str,
     n: u32,
-    size: &str,
+    size: Option<&str>,
     quality: Option<&str>,
     response_format: Option<&str>,
+    aspect_ratio: Option<&str>,
+    output_resolution: Option<&str>,
+    image_size: Option<&str>,
     images: &[String],
+    async_task: Option<bool>,
+    stream: Option<bool>,
+    repeat_image_field: bool,
 ) -> Result<Form, String> {
     let mut form = Form::new()
         .text("model", model.to_string())
         .text("prompt", prompt.to_string())
-        .text("n", n.to_string())
-        .text("size", size.to_string());
+        .text("n", n.to_string());
+    if let Some(value) = size.filter(|value| !value.trim().is_empty()) {
+        form = form.text("size", value.to_string());
+    }
     if let Some(value) = quality.filter(|value| !value.trim().is_empty()) {
         form = form.text("quality", value.to_string());
     }
     if let Some(value) = response_format.filter(|value| !value.trim().is_empty()) {
         form = form.text("response_format", value.to_string());
     }
+    if let Some(value) = aspect_ratio.filter(|value| !value.trim().is_empty()) {
+        form = form.text("aspect_ratio", value.to_string());
+    }
+    if let Some(value) = output_resolution.filter(|value| !value.trim().is_empty()) {
+        form = form.text("output_resolution", value.to_string());
+    }
+    if let Some(value) = image_size.filter(|value| !value.trim().is_empty()) {
+        form = form.text("image_size", value.to_string());
+    }
+    if let Some(value) = async_task {
+        form = form.text("async", value.to_string());
+    }
+    if let Some(value) = stream {
+        form = form.text("stream", value.to_string());
+    }
 
-    for (index, image) in images.iter().take(8).enumerate() {
+    let max_images = if repeat_image_field { 9 } else { 8 };
+    for (index, image) in images.iter().take(max_images).enumerate() {
         let (bytes, mime) = image_edit_source_to_bytes(client, image)?;
         let ext = image_mime_extension(&mime);
         let part = Part::bytes(bytes)
             .file_name(format!("input-{}.{}", index + 1, ext))
             .mime_str(&mime)
             .map_err(|e| format!("参考图 MIME 设置失败：{}", e))?;
-        let field_name = if index == 0 { "image" } else { "image[]" };
+        let field_name = if repeat_image_field || index == 0 {
+            "image"
+        } else {
+            "image[]"
+        };
         form = form.part(field_name, part);
     }
 
@@ -6194,10 +6302,16 @@ fn http_post_image_edit_with_headers(
     model: &str,
     prompt: &str,
     n: u32,
-    size: &str,
+    size: Option<&str>,
     quality: Option<&str>,
     response_format: Option<&str>,
+    aspect_ratio: Option<&str>,
+    output_resolution: Option<&str>,
+    image_size: Option<&str>,
     images: &[String],
+    async_task: Option<bool>,
+    stream: Option<bool>,
+    repeat_image_field: bool,
     explicit_proxy: Option<&str>,
     headers: Option<&BTreeMap<String, String>>,
     options: &AiHttpRequestOptions,
@@ -6221,7 +6335,13 @@ fn http_post_image_edit_with_headers(
                 size,
                 quality,
                 response_format,
+                aspect_ratio,
+                output_resolution,
+                image_size,
                 images,
+                async_task,
+                stream,
+                repeat_image_field,
             )?),
         options.trace.as_ref(),
     );
@@ -6259,7 +6379,13 @@ fn http_post_image_edit_with_headers(
                         size,
                         quality,
                         response_format,
+                        aspect_ratio,
+                        output_resolution,
+                        image_size,
                         images,
+                        async_task,
+                        stream,
+                        repeat_image_field,
                     )?),
                 options.trace.as_ref(),
             );
@@ -6503,10 +6629,16 @@ async fn post_ai_image_edit(
     model: String,
     prompt: String,
     n: u32,
-    size: String,
+    size: Option<String>,
     quality: Option<String>,
     response_format: Option<String>,
+    aspect_ratio: Option<String>,
+    output_resolution: Option<String>,
+    image_size: Option<String>,
     images: Vec<String>,
+    async_task: Option<bool>,
+    stream: Option<bool>,
+    repeat_image_field: Option<bool>,
     proxy: Option<String>,
     provider: Option<String>,
     gateway_kind: Option<license::types::AiGatewayKind>,
@@ -6560,10 +6692,16 @@ async fn post_ai_image_edit(
             &model,
             &prompt,
             n,
-            &size,
+            size.as_deref(),
             quality.as_deref(),
             response_format.as_deref(),
+            aspect_ratio.as_deref(),
+            output_resolution.as_deref(),
+            image_size.as_deref(),
             &images,
+            async_task,
+            stream,
+            repeat_image_field.unwrap_or(false),
             proxy.as_deref().filter(|value| !value.trim().is_empty()),
             Some(&request_headers),
             &request_options,
@@ -6728,6 +6866,45 @@ async fn get_ai_text(
     })
     .await
     .map_err(|e| format!("AI GET request task failed: {}", e))?
+}
+
+#[tauri::command]
+async fn get_ai_image_content(
+    app_handle: tauri::AppHandle,
+    url: String,
+    api_key: String,
+    proxy: Option<String>,
+    provider: Option<String>,
+    gateway_kind: Option<license::types::AiGatewayKind>,
+    model: Option<String>,
+    headers: Option<BTreeMap<String, String>>,
+) -> Result<String, String> {
+    let profile = canvas_request_profile(
+        &app_handle,
+        provider,
+        gateway_kind,
+        &url,
+        &api_key,
+        model.as_deref().unwrap_or(""),
+        headers,
+    )?;
+    let request_url = rewrite_canvas_ai_url(&url, &profile);
+    let request_key = profile.api_key.clone();
+    let request_headers = profile.headers.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if request_key.trim().is_empty() {
+            return Err("Please enter API Key first.".to_string());
+        }
+        http_get_image_content_with_headers(
+            &app_handle,
+            &request_url,
+            &request_key,
+            proxy.as_deref().filter(|value| !value.trim().is_empty()),
+            Some(&request_headers),
+        )
+    })
+    .await
+    .map_err(|e| format!("AI image content GET task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -10087,6 +10264,77 @@ async fn create_r2_public_image_urls(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_oss_public_image_urls(
+    app_handle: tauri::AppHandle,
+    sources: Vec<String>,
+) -> Result<CloudflaredPublicImageUrls, String> {
+    if sources.is_empty() {
+        return Err("没有需要上传到 OSS 的本地参考图".to_string());
+    }
+    let images = tauri::async_runtime::spawn_blocking(move || {
+        use base64::{engine::general_purpose, Engine as _};
+        sources.iter().take(13).enumerate().map(|(index, source)| {
+            let object = source_to_r2_object(source)?;
+            if !object.content_type.starts_with("image/") {
+                return Err("OSS 参考图桥接仅支持图片".to_string());
+            }
+            Ok(OssReferenceImageUpload {
+                filename: format!("reference-{}.{}", index, object.ext),
+                mime: object.content_type,
+                data: general_purpose::STANDARD.encode(object.bytes),
+            })
+        }).collect::<Result<Vec<_>, String>>()
+    }).await.map_err(|error| error.to_string())??;
+
+    let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("OSS 参考图连接初始化失败：{error}"))?;
+    let response = client
+        .post("https://api.unmind.art/v1/ai/reference-images")
+        .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", "1")
+        .json(&serde_json::json!({ "images": images }))
+        .send().await
+        .map_err(|error| format!("OSS 参考图上传失败：{error}"))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!("OSS 参考图上传失败（{}）：{}", status.as_u16(), body));
+    }
+    serde_json::from_str(&body).map_err(|error| format!("OSS 参考图响应无效：{error}"))
+}
+
+#[tauri::command]
+async fn delete_oss_public_image_urls(
+    app_handle: tauri::AppHandle,
+    share_id: String,
+) -> Result<(), String> {
+    if !share_id.chars().all(|value| value.is_ascii_alphanumeric() || value == '-') {
+        return Err("OSS 临时分享 ID 无效".to_string());
+    }
+    let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build().map_err(|error| error.to_string())?
+        .delete(format!("https://api.unmind.art/v1/ai/reference-images/{share_id}"))
+        .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", "1")
+        .send().await
+        .map_err(|error| format!("OSS 临时参考图清理失败：{error}"))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("OSS 临时参考图清理失败（{}）", response.status().as_u16()))
+    }
 }
 
 #[tauri::command]
@@ -16045,6 +16293,7 @@ fn main() {
             post_ai_image_edit,
             upload_xais_reference_images,
             get_ai_text,
+            get_ai_image_content,
             check_newapi_reference_urls_ready,
             create_cloudflared_public_image_urls,
             stop_cloudflared_share,
@@ -16052,6 +16301,8 @@ fn main() {
             create_litterbox_public_image_urls,
             create_r2_public_image_urls,
             delete_r2_public_image_urls,
+            create_oss_public_image_urls,
+            delete_oss_public_image_urls,
             collect_web_images,
             cache_web_image,
             cache_web_image_to_dir,

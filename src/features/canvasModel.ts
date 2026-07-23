@@ -75,6 +75,8 @@ export type CanvasAiItemType =
 
 export type CanvasAiGeneratedOutput = {
   id: string;
+  taskId?: string;
+  clientRequestId?: string;
   mediaType?: CanvasAiMediaType;
   url?: string;
   path?: string;
