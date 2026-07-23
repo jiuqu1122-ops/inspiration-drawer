@@ -9491,13 +9491,17 @@ function MainApp() {
 
       const cacheGeneratedImage = async () => {
         let lastError: unknown = new Error('网页图片缓存没有返回文件路径');
+        let resolvedSource = source;
+        if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
+          resolvedSource = await invoke<string>('resolve_ai_image_result_url', { url: source });
+        }
         const retryDelays = /^https?:\/\//i.test(source)
           ? GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS
           : [];
         for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
           try {
             const cachedPath = await invoke<string>('cache_web_image', {
-              url: source,
+              url: resolvedSource,
               name: item.name || item.content || AI_GENERATED_FOLDER_NAME,
               dir: latestCacheDir || undefined,
             });
@@ -9565,8 +9569,27 @@ function MainApp() {
         .catch((err) => {
           console.warn('AI 生图缓存失败:', err);
           generatedImageCachePendingIdsRef.current.delete(item.id);
-          setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
-          patchMatchingOutputs({ cacheStatus: 'failed' });
+          void (async () => {
+            let fallbackUrl = source;
+            if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
+              try {
+                fallbackUrl = await invoke<string>('resolve_ai_image_result_url', { url: source });
+              } catch (_) {}
+            }
+            setItems(prev => prev.map(existing => existing.id === item.id
+              ? {
+                ...existing,
+                url: fallbackUrl,
+                sourceUrl: source,
+                originalUrl: source,
+              }
+              : existing));
+            patchMatchingOutputs({
+              url: fallbackUrl,
+              sourceUrl: source,
+              cacheStatus: 'failed',
+            });
+          })();
         })
         .finally(() => {
           if (generatedImageCachePromisesRef.current.get(source) === cachePromise) {
@@ -13187,6 +13210,8 @@ function MainApp() {
       name: output.name || canvasItem.item.name,
       path: output.path,
       url: output.url,
+      sourceUrl: output.sourceUrl,
+      originalUrl: output.sourceUrl,
       createdAt: output.generatedAt || canvasItem.item.createdAt || Date.now(),
       isQuickAccess: false,
     } as BufferItem));
@@ -15200,7 +15225,7 @@ function MainApp() {
   const cacheCanvasGeneratedImageSource = async (source: string, name: string) => {
     const trimmed = source.trim();
     if (!trimmed || (!/^data:(?:image|video)\//i.test(trimmed) && !/^https?:\/\//i.test(trimmed))) {
-      return { url: trimmed, path: '' };
+      return { url: trimmed, path: '', sourceUrl: trimmed };
     }
 
     const latestCacheDir = (
@@ -15208,18 +15233,26 @@ function MainApp() {
       localStorage.getItem('drawer_web_image_cache_dir') ||
       ''
     ).trim();
+    let resolvedUrl = trimmed;
+    if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(trimmed)) {
+      try {
+        resolvedUrl = await invoke<string>('resolve_ai_image_result_url', { url: trimmed });
+      } catch (err) {
+        console.warn('解析 AI 图片 OSS 临时地址失败:', err);
+      }
+    }
 
     try {
       const cachedPath = await invoke<string>('cache_web_image', {
-        url: trimmed,
+        url: resolvedUrl,
         name: name || AI_GENERATED_FOLDER_NAME,
         dir: latestCacheDir || undefined,
       });
-      if (!cachedPath) return { url: trimmed, path: '' };
-      return { url: convertFileSrc(cachedPath), path: cachedPath };
+      if (!cachedPath) return { url: resolvedUrl, path: '', sourceUrl: trimmed };
+      return { url: convertFileSrc(cachedPath), path: cachedPath, sourceUrl: trimmed };
     } catch (err) {
-      console.warn('AI 生成媒体预缓存失败，暂用接口返回源:', err);
-      return { url: trimmed, path: '' };
+      console.warn('AI 生成媒体本地缓存失败，保留 OSS 远程预览:', err);
+      return { url: resolvedUrl, path: '', sourceUrl: trimmed };
     }
   };
 
@@ -18772,7 +18805,7 @@ function MainApp() {
             });
             const normalizedPath = (normalized.outputPath || '').trim();
             if (normalized.converted && normalizedPath) {
-              cached = { path: normalizedPath, url: convertFileSrc(normalizedPath) };
+              cached = { path: normalizedPath, url: convertFileSrc(normalizedPath), sourceUrl: source };
             }
           } catch (error) {
             console.warn('AI 视频帧率自动检测/标准化失败，保留原视频:', error);
@@ -18795,6 +18828,7 @@ function MainApp() {
           clientRequestId,
           mediaType,
           url: displayUrl,
+          sourceUrl: cached.sourceUrl || source,
           path: cached.path || undefined,
           thumbnail,
           name: durableOutputName,
@@ -23095,7 +23129,7 @@ function MainApp() {
     const resolveDurableDownloadSource = async (item: BufferItem) => {
       const localPath = String(item.path || '').trim();
       if (localPath) return localPath;
-      const source = String(item.url || item.sourceUrl || item.originalUrl || item.content || '').trim();
+      const source = String(item.originalUrl || item.sourceUrl || item.url || item.content || '').trim();
       if (!item.type || item.type === 'text' || !/^(?:https?:|data:(?:image|video)\/)/i.test(source)) {
         return source;
       }
@@ -23104,16 +23138,24 @@ function MainApp() {
         || localStorage.getItem('drawer_web_image_cache_dir')
         || ''
       ).trim();
+      let resolvedSource = source;
+      if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
+        try {
+          resolvedSource = await invoke<string>('resolve_ai_image_result_url', { url: source });
+        } catch (error) {
+          console.warn('下载前解析 OSS 临时地址失败:', error);
+        }
+      }
       try {
         const cachedPath = await invoke<string>('cache_web_image', {
-          url: source,
+          url: resolvedSource,
           name: item.name || item.id || 'generated-output',
           dir: latestCacheDir || undefined,
         });
-        return String(cachedPath || source).trim();
+        return String(cachedPath || resolvedSource).trim();
       } catch (error) {
-        console.warn('下载前重新缓存生成结果失败，尝试直接下载原始地址:', error);
-        return source;
+        console.warn('下载前缓存生成结果失败，改用 OSS 临时地址直接下载:', error);
+        return resolvedSource;
       }
     };
 

@@ -79,6 +79,7 @@ export type CanvasAiGeneratedOutput = {
   clientRequestId?: string;
   mediaType?: CanvasAiMediaType;
   url?: string;
+  sourceUrl?: string;
   path?: string;
   thumbnail?: string;
   name?: string;

@@ -105,7 +105,8 @@ export const createCanvasAiOutputBufferItem = (
     || Date.now();
   const rawUrl = (output.url || source).trim();
   const rawPath = (output.path || '').trim();
-  const remoteSource = /^https?:\/\//i.test(rawUrl) ? rawUrl : '';
+  const durableRemoteSource = (output.sourceUrl || '').trim();
+  const remoteSource = durableRemoteSource || (/^https?:\/\//i.test(rawUrl) ? rawUrl : '');
   return {
     id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
     type: mediaType,

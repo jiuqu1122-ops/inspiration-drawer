@@ -664,8 +664,246 @@ fn should_prefer_direct_generated_image_download(url: &str) -> bool {
         .ok()
         .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
         .is_some_and(|host| {
-            host == "adobe.yrzsai.com" || host == "xaisp3.oss-ap-southeast-1.aliyuncs.com"
+            host == "api.unmind.art"
+                || host == "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com"
+                || host.ends_with(".oss-cn-hongkong.aliyuncs.com")
+                || host == "adobe.yrzsai.com"
+                || host == "xaisp3.oss-ap-southeast-1.aliyuncs.com"
         })
+}
+
+fn is_wallet_ai_image_result_url(value: &str) -> bool {
+    Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
+            && url.path().starts_with("/v1/ai/image-results/")
+    })
+}
+
+fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
+    let url = Url::parse(value).map_err(|_| "OSS 签名地址格式无效".to_string())?;
+    let allowed = url.scheme() == "https"
+        && url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case(
+                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
+            )
+        })
+        && url.path().starts_with("/generated-images/");
+    if !allowed {
+        return Err("OSS 签名地址不属于允许的生成结果 Bucket".to_string());
+    }
+    if url.query().is_none() {
+        return Err("OSS 生成结果地址缺少签名参数".to_string());
+    }
+    Ok(url.to_string())
+}
+
+fn image_result_json_url(value: &str) -> Result<Url, String> {
+    let mut url = Url::parse(value).map_err(|_| "AI 图片结果地址格式无效".to_string())?;
+    let retained = url
+        .query_pairs()
+        .filter(|(key, _)| key != "redirect")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.extend_pairs(retained);
+        pairs.append_pair("redirect", "0");
+    }
+    Ok(url)
+}
+
+fn resolve_ai_image_result_url_with_client(
+    client: &Client,
+    source: &str,
+    access_token: &str,
+) -> Result<String, String> {
+    if !is_wallet_ai_image_result_url(source) {
+        return Ok(source.trim().to_string());
+    }
+    let endpoint = image_result_json_url(source)?;
+    let response = client
+        .get(endpoint)
+        .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", "1")
+        .send()
+        .map_err(|error| format!("获取 OSS 图片地址失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "获取 OSS 图片地址失败，HTTP 状态码：{}",
+            response.status()
+        ));
+    }
+    let body = response
+        .json::<serde_json::Value>()
+        .map_err(|_| "OSS 图片地址响应格式无效".to_string())?;
+    let signed_url = body
+        .get("url")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "OSS 图片地址响应缺少 url".to_string())?;
+    validate_generated_image_oss_url(signed_url)
+}
+
+fn resolve_ai_image_result_url_blocking(
+    app_handle: &tauri::AppHandle,
+    source: &str,
+    access_token: &str,
+) -> Result<String, String> {
+    if !is_wallet_ai_image_result_url(source) {
+        return Ok(source.trim().to_string());
+    }
+    let direct = build_direct_http_client(45)
+        .and_then(|client| resolve_ai_image_result_url_with_client(&client, source, access_token));
+    match direct {
+        Ok(url) => Ok(url),
+        Err(direct_error) => {
+            if effective_proxy(Some(app_handle), None).is_none() {
+                return Err(direct_error);
+            }
+            build_http_client(Some(app_handle), None, 45)
+                .and_then(|client| {
+                    resolve_ai_image_result_url_with_client(&client, source, access_token)
+                })
+                .map_err(|proxy_error| {
+                    format!(
+                        "直连获取 OSS 图片地址失败：{}；代理重试失败：{}",
+                        direct_error, proxy_error
+                    )
+                })
+        }
+    }
+}
+
+#[tauri::command]
+async fn resolve_ai_image_result_url(
+    app_handle: tauri::AppHandle,
+    url: String,
+) -> Result<String, String> {
+    if !is_wallet_ai_image_result_url(url.trim()) {
+        return Ok(url.trim().to_string());
+    }
+    let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        resolve_ai_image_result_url_blocking(&app_handle, url.trim(), &access_token)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+mod ai_image_result_url_tests {
+    use super::{
+        build_direct_http_client, download_url_to_file_with_client, image_result_json_url,
+        is_wallet_ai_image_result_url,
+        should_prefer_direct_generated_image_download, validate_generated_image_oss_url,
+    };
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn recognizes_wallet_result_urls_and_builds_json_mode_without_double_encoding() {
+        let source = "https://api.unmind.art/v1/ai/image-results/abc.png?foo=a%2Bb";
+        assert!(is_wallet_ai_image_result_url(source));
+        let resolved = image_result_json_url(source).expect("json endpoint");
+        assert_eq!(resolved.host_str(), Some("api.unmind.art"));
+        assert_eq!(
+            resolved.query_pairs()
+                .find(|(key, _)| key == "foo")
+                .map(|(_, value)| value.into_owned()),
+            Some("a+b".to_string())
+        );
+        assert_eq!(
+            resolved.query_pairs()
+                .find(|(key, _)| key == "redirect")
+                .map(|(_, value)| value.into_owned()),
+            Some("0".to_string())
+        );
+        assert!(!resolved.as_str().contains("%252B"));
+    }
+
+    #[test]
+    fn only_accepts_https_signed_urls_from_the_generated_image_bucket() {
+        let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=a%2Bb";
+        assert_eq!(
+            validate_generated_image_oss_url(signed).expect("allowed signed URL"),
+            signed
+        );
+        assert!(validate_generated_image_oss_url(
+            "https://evil.example/generated-images/a.png?token=x"
+        )
+        .is_err());
+        assert!(validate_generated_image_oss_url(
+            "http://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=x"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn prefers_direct_connections_for_api_and_hong_kong_oss() {
+        assert!(should_prefer_direct_generated_image_download(
+            "https://api.unmind.art/v1/ai/image-results/a.png"
+        ));
+        assert!(should_prefer_direct_generated_image_download(
+            "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=x"
+        ));
+        assert!(should_prefer_direct_generated_image_download(
+            "https://another.oss-cn-hongkong.aliyuncs.com/a.png"
+        ));
+    }
+
+    #[test]
+    fn downloads_a_redirected_image_to_a_local_file() {
+        let image_listener = TcpListener::bind("127.0.0.1:0").expect("image listener");
+        let image_address = image_listener.local_addr().expect("image address");
+        let image_thread = thread::spawn(move || {
+            let (mut stream, _) = image_listener.accept().expect("image request");
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 8\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n",
+                )
+                .expect("image response");
+        });
+
+        let redirect_listener = TcpListener::bind("127.0.0.1:0").expect("redirect listener");
+        let redirect_address = redirect_listener.local_addr().expect("redirect address");
+        let redirect_thread = thread::spawn(move || {
+            let (mut stream, _) = redirect_listener.accept().expect("redirect request");
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{image_address}/signed.png?token=a%2Bb\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("redirect response");
+        });
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("oss-redirect-test-{stamp}.png"));
+        let client = build_direct_http_client(5).expect("client");
+        let content_type = download_url_to_file_with_client(
+            &client,
+            &format!("http://{redirect_address}/result.png"),
+            &output,
+        )
+        .expect("download");
+
+        assert_eq!(content_type.as_deref(), Some("image/png"));
+        assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        let _ = fs::remove_file(output);
+        redirect_thread.join().expect("redirect thread");
+        image_thread.join().expect("image thread");
+    }
 }
 
 fn build_engine_download_http_client(
@@ -705,11 +943,7 @@ fn download_url_to_file_with_timeout(
     timeout_secs: u64,
 ) -> Result<Option<String>, String> {
     let has_configured_proxy = effective_proxy(Some(app_handle), explicit_proxy).is_some();
-    let allow_direct_first = explicit_proxy
-        .map(str::trim)
-        .map(str::is_empty)
-        .unwrap_or(true)
-        && has_configured_proxy
+    let allow_direct_first = has_configured_proxy
         && should_prefer_direct_generated_image_download(url);
     if allow_direct_first {
         let direct_result = build_direct_http_client(timeout_secs)
@@ -7687,6 +7921,17 @@ async fn save_item_source_as(
     item_type: Option<String>,
     feature: Option<String>,
 ) -> Result<(), String> {
+    let source = if is_wallet_ai_image_result_url(source.trim()) {
+        let access_token = commands::license::cloud_access_token(&app_handle).await?;
+        let resolver_handle = app_handle.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            resolve_ai_image_result_url_blocking(&resolver_handle, source.trim(), &access_token)
+        })
+        .await
+        .map_err(|error| error.to_string())??
+    } else {
+        source
+    };
     tauri::async_runtime::spawn_blocking(move || {
         save_item_source_as_impl(app_handle, source, dest, content, item_type, feature)
     })
@@ -10447,6 +10692,17 @@ async fn cache_web_image(
     dir: Option<String>,
     proxy: Option<String>,
 ) -> Result<String, String> {
+    let url = if is_wallet_ai_image_result_url(url.trim()) {
+        let access_token = commands::license::cloud_access_token(&app_handle).await?;
+        let resolver_handle = app_handle.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            resolve_ai_image_result_url_blocking(&resolver_handle, url.trim(), &access_token)
+        })
+        .await
+        .map_err(|error| error.to_string())??
+    } else {
+        url
+    };
     tauri::async_runtime::spawn_blocking(move || {
         cache_web_image_impl(app_handle, url, name, dir, proxy)
     })
@@ -16303,6 +16559,7 @@ fn main() {
             delete_r2_public_image_urls,
             create_oss_public_image_urls,
             delete_oss_public_image_urls,
+            resolve_ai_image_result_url,
             collect_web_images,
             cache_web_image,
             cache_web_image_to_dir,
