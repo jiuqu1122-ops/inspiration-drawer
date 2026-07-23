@@ -680,6 +680,29 @@ fn is_wallet_ai_image_result_url(value: &str) -> bool {
     })
 }
 
+fn generated_oss_result_key(value: &str) -> Option<String> {
+    let url = Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || !url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case(
+                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
+            )
+        })
+    {
+        return None;
+    }
+    let key = url.path().strip_prefix("/generated-images/")?;
+    let valid = key.len() <= 80
+        && key
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_');
+    valid.then(|| key.to_string())
+}
+
+fn is_wallet_ai_image_result_source(value: &str) -> bool {
+    is_wallet_ai_image_result_url(value) || generated_oss_result_key(value).is_some()
+}
+
 fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
     let url = Url::parse(value).map_err(|_| "OSS 签名地址格式无效".to_string())?;
     let allowed = url.scheme() == "https"
@@ -699,7 +722,14 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
 }
 
 fn image_result_json_url(value: &str) -> Result<Url, String> {
-    let mut url = Url::parse(value).map_err(|_| "AI 图片结果地址格式无效".to_string())?;
+    let mut url = if let Some(key) = generated_oss_result_key(value) {
+        Url::parse(&format!(
+            "https://api.unmind.art/v1/ai/image-results/{key}"
+        ))
+        .map_err(|_| "AI 图片结果地址格式无效".to_string())?
+    } else {
+        Url::parse(value).map_err(|_| "AI 图片结果地址格式无效".to_string())?
+    };
     let retained = url
         .query_pairs()
         .filter(|(key, _)| key != "redirect")
@@ -719,7 +749,7 @@ fn resolve_ai_image_result_url_with_client(
     source: &str,
     access_token: &str,
 ) -> Result<String, String> {
-    if !is_wallet_ai_image_result_url(source) {
+    if !is_wallet_ai_image_result_source(source) {
         return Ok(source.trim().to_string());
     }
     let endpoint = image_result_json_url(source)?;
@@ -751,7 +781,7 @@ fn resolve_ai_image_result_url_blocking(
     source: &str,
     access_token: &str,
 ) -> Result<String, String> {
-    if !is_wallet_ai_image_result_url(source) {
+    if !is_wallet_ai_image_result_source(source) {
         return Ok(source.trim().to_string());
     }
     let direct = build_direct_http_client(45)
@@ -781,7 +811,7 @@ async fn resolve_ai_image_result_url(
     app_handle: tauri::AppHandle,
     url: String,
 ) -> Result<String, String> {
-    if !is_wallet_ai_image_result_url(url.trim()) {
+    if !is_wallet_ai_image_result_source(url.trim()) {
         return Ok(url.trim().to_string());
     }
     let access_token = commands::license::cloud_access_token(&app_handle).await?;
@@ -796,7 +826,7 @@ async fn resolve_ai_image_result_url(
 mod ai_image_result_url_tests {
     use super::{
         build_direct_http_client, download_url_to_file_with_client, image_result_json_url,
-        is_wallet_ai_image_result_url,
+        generated_oss_result_key, is_wallet_ai_image_result_url,
         should_prefer_direct_generated_image_download, validate_generated_image_oss_url,
     };
     use std::fs;
@@ -824,6 +854,21 @@ mod ai_image_result_url_tests {
             Some("0".to_string())
         );
         assert!(!resolved.as_str().contains("%252B"));
+    }
+
+    #[test]
+    fn rebuilds_the_stable_api_url_from_a_generated_oss_object() {
+        let source = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/abc.png?token=expired";
+        assert_eq!(generated_oss_result_key(source).as_deref(), Some("abc.png"));
+        let endpoint = image_result_json_url(source).expect("stable API endpoint");
+        assert_eq!(endpoint.host_str(), Some("api.unmind.art"));
+        assert_eq!(endpoint.path(), "/v1/ai/image-results/abc.png");
+        assert_eq!(
+            endpoint.query_pairs()
+                .find(|(key, _)| key == "redirect")
+                .map(|(_, value)| value.into_owned()),
+            Some("0".to_string())
+        );
     }
 
     #[test]
@@ -7921,7 +7966,7 @@ async fn save_item_source_as(
     item_type: Option<String>,
     feature: Option<String>,
 ) -> Result<(), String> {
-    let source = if is_wallet_ai_image_result_url(source.trim()) {
+    let source = if is_wallet_ai_image_result_source(source.trim()) {
         let access_token = commands::license::cloud_access_token(&app_handle).await?;
         let resolver_handle = app_handle.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -10692,7 +10737,7 @@ async fn cache_web_image(
     dir: Option<String>,
     proxy: Option<String>,
 ) -> Result<String, String> {
-    let url = if is_wallet_ai_image_result_url(url.trim()) {
+    let url = if is_wallet_ai_image_result_source(url.trim()) {
         let access_token = commands::license::cloud_access_token(&app_handle).await?;
         let resolver_handle = app_handle.clone();
         tauri::async_runtime::spawn_blocking(move || {
