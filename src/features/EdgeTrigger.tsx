@@ -25,6 +25,7 @@ import {
   getStoredTriggerMode,
   saveEdgeStripY,
   saveFloatPosition,
+  shouldAllowTriggerHoverOpen,
   type TriggerMode,
 } from './triggerModel';
 
@@ -38,6 +39,7 @@ export function EdgeTrigger() {
   const openingRef = useRef(false);
   const dragOpenBurstRef = useRef<number | null>(null);
   const startupPreviewDoneRef = useRef(false);
+  const triggerShownAtRef = useRef(Date.now());
   const floatDragRef = useRef({ active: false, moved: false, lastX: 0, lastY: 0 });
   const [isFloatDragOverlay, setIsFloatDragOverlay] = useState(false);
   const [floatVisualPos, setFloatVisualPos] = useState(() => getStoredFloatPosition());
@@ -160,12 +162,16 @@ export function EdgeTrigger() {
       antiTouchRef.current ||
       triggerModeRef.current !== 'float' ||
       floatDragRef.current.active ||
+      (!allowWhileLeftButtonDown && !shouldAllowTriggerHoverOpen(triggerShownAtRef.current)) ||
       (!allowWhileLeftButtonDown && leftButtonDownRef.current)
     ) return;
     clearFloatHoverOpenTimer();
     floatHoverOpenTimerRef.current = window.setTimeout(() => {
       floatHoverOpenTimerRef.current = null;
-      if (!allowWhileLeftButtonDown && leftButtonDownRef.current) return;
+      if (
+        (!allowWhileLeftButtonDown && !shouldAllowTriggerHoverOpen(triggerShownAtRef.current))
+        || (!allowWhileLeftButtonDown && leftButtonDownRef.current)
+      ) return;
       openDrawer(true);
     }, delay);
   };
@@ -286,6 +292,7 @@ export function EdgeTrigger() {
     let unlistenTheme: (() => void) | undefined;
     let unlistenAntiTouch: (() => void) | undefined;
     let unlistenNativeDragEnter: (() => void) | undefined;
+    let unlistenEdgeShown: (() => void) | undefined;
     listen('trigger-mode-changed', (event: any) => {
       const next = event.payload === 'float' ? 'float' : 'edge';
       localStorage.setItem('drawer_trigger_mode', next);
@@ -325,6 +332,12 @@ export function EdgeTrigger() {
       if (triggerModeRef.current === 'float') scheduleFloatHoverOpen(300, true);
       else startDragOpenBurst(null);
     }).then(f => unlistenNativeDragEnter = f);
+
+    listen('edge-shown', () => {
+      triggerShownAtRef.current = Date.now();
+      clearFloatHoverOpenTimer();
+      clearEdgeHoverOpenTimer();
+    }).then(f => unlistenEdgeShown = f);
 
     positionTrigger(getStoredTriggerMode());
 
@@ -421,6 +434,7 @@ export function EdgeTrigger() {
       if (unlistenTheme) unlistenTheme();
       if (unlistenAntiTouch) unlistenAntiTouch();
       if (unlistenNativeDragEnter) unlistenNativeDragEnter();
+      if (unlistenEdgeShown) unlistenEdgeShown();
       unlistenPromise.then(unlisten => unlisten()).catch(() => {});
     };
   }, []);
@@ -433,11 +447,23 @@ export function EdgeTrigger() {
 
   const scheduleEdgeHoverOpen = (delay = EDGE_HOVER_OPEN_DELAY) => {
     // 普通鼠标悬停才展开；如果左键正按着经过小条，说明用户可能在拖选/拖动别的东西，不能误触发。
-    if (antiTouchRef.current || triggerModeRef.current !== 'edge' || edgeStripDragRef.current.active || leftButtonDownRef.current) return;
+    if (
+      antiTouchRef.current
+      || triggerModeRef.current !== 'edge'
+      || edgeStripDragRef.current.active
+      || leftButtonDownRef.current
+      || !shouldAllowTriggerHoverOpen(triggerShownAtRef.current)
+    ) return;
     clearEdgeHoverOpenTimer();
     edgeHoverOpenTimerRef.current = window.setTimeout(() => {
       edgeHoverOpenTimerRef.current = null;
-      if (edgeStripDragRef.current.active || antiTouchRef.current || triggerModeRef.current !== 'edge' || leftButtonDownRef.current) return;
+      if (
+        edgeStripDragRef.current.active
+        || antiTouchRef.current
+        || triggerModeRef.current !== 'edge'
+        || leftButtonDownRef.current
+        || !shouldAllowTriggerHoverOpen(triggerShownAtRef.current)
+      ) return;
       openDrawer(true);
     }, delay);
   };

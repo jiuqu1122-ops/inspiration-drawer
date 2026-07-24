@@ -15267,11 +15267,17 @@ fn position_edge(
         return Ok(());
     }
 
-    if is_float_mode(mode.as_deref()) {
-        position_float_edge(app_handle, x, y)
+    let result = if is_float_mode(mode.as_deref()) {
+        position_float_edge(app_handle.clone(), x, y)
     } else {
-        position_side_edge(app_handle, height, y)
+        position_side_edge(app_handle.clone(), height, y)
+    };
+    if result.is_ok() {
+        if let Some(edge) = app_handle.get_webview_window("edge") {
+            let _ = edge.emit("edge-shown", ());
+        }
     }
+    result
 }
 
 #[tauri::command]

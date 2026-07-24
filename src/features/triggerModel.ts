@@ -6,8 +6,14 @@ export const EDGE_HOVER_OPEN_DELAY = 140;
 export const FLOAT_TRIGGER_SIZE = 56;
 export const FLOAT_TRIGGER_MARGIN = 24;
 export const FLOAT_HOVER_OPEN_DELAY = 800;
+export const TRIGGER_RESHOW_HOVER_GUARD_MS = 1200;
 export const TRIGGER_POSITION_DEFAULT_VERSION = '2026-05-right-bottom-float-center-edge';
 export type TriggerMode = 'edge' | 'float';
+
+export const shouldAllowTriggerHoverOpen = (
+  shownAt: number,
+  now = Date.now(),
+) => shownAt <= 0 || now - shownAt >= TRIGGER_RESHOW_HOVER_GUARD_MS;
 
 export const getStoredTriggerMode = (): TriggerMode => (
   localStorage.getItem('drawer_trigger_mode') === 'float' ? 'float' : 'edge'
