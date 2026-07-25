@@ -145,7 +145,10 @@ export const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): Canva
   return { ...item, item: nextItem, ai: nextAi };
 };
 
-const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem => {
+const normalizeInterruptedCanvasAiRun = (
+  item: CanvasImageItem,
+  activeRunNodeIds?: ReadonlySet<string>,
+): CanvasImageItem => {
   const cleanItem = recoverCanvasAiNodeWithUsableResults(stripCanvasItemDataImageProvenance(item));
   if (cleanItem.ai?.type === 'video-generator') {
     const invalidVideoError = '接口返回了无效的视频结果，请重新生成';
@@ -174,7 +177,7 @@ const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem
     }
   }
 
-  if (cleanItem.ai?.status !== 'working') return cleanItem;
+  if (cleanItem.ai?.status !== 'working' || activeRunNodeIds?.has(cleanItem.id)) return cleanItem;
   const failedAt = cleanItem.ai.generatedAt || Date.now();
   const interruptedError = '上次生成已中断，请重新生成';
   return {
@@ -196,7 +199,10 @@ const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem
   };
 };
 
-export const sanitizeCanvasPersistedState = (value: unknown): CanvasPersistedState => {
+export const sanitizeCanvasPersistedState = (
+  value: unknown,
+  options: { activeRunNodeIds?: ReadonlySet<string> } = {},
+): CanvasPersistedState => {
   const record = value && typeof value === 'object' ? value as Partial<CanvasPersistedState> : {};
   const rawSize = record.size && typeof record.size === 'object' ? record.size : {};
   const rawScroll = record.scroll && typeof record.scroll === 'object' ? record.scroll : {};
@@ -217,7 +223,9 @@ export const sanitizeCanvasPersistedState = (value: unknown): CanvasPersistedSta
     top: Math.max(0, Number((rawScroll as { top?: unknown }).top) || 0),
   };
   return {
-    items: Array.isArray(record.items) ? record.items.map(normalizeInterruptedCanvasAiRun) : [],
+    items: Array.isArray(record.items)
+      ? record.items.map(item => normalizeInterruptedCanvasAiRun(item, options.activeRunNodeIds))
+      : [],
     size,
     scale: clamp(Number(record.scale) || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
     scroll,

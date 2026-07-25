@@ -913,7 +913,10 @@ const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): CanvasImageI
   return { ...item, item: nextItem, ai: nextAi };
 };
 
-const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem => {
+const normalizeInterruptedCanvasAiRun = (
+  item: CanvasImageItem,
+  activeRunNodeIds?: ReadonlySet<string>,
+): CanvasImageItem => {
   const cleanItem = stripCanvasItemDataImageProvenance(item);
   if (cleanItem.ai?.type === 'video-generator') {
     const invalidVideoError = '接口返回了无效的视频结果，请重新生成';
@@ -941,7 +944,7 @@ const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem
       };
     }
   }
-  if (cleanItem.ai?.status !== 'working') return cleanItem;
+  if (cleanItem.ai?.status !== 'working' || activeRunNodeIds?.has(cleanItem.id)) return cleanItem;
   const failedAt = cleanItem.ai.generatedAt || Date.now();
   const interruptedError = '上次生成已中断，请重新生成';
   return {
@@ -963,7 +966,10 @@ const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem
   };
 };
 
-const sanitizeCanvasPersistedState = (value: unknown): CanvasPersistedState => {
+const sanitizeCanvasPersistedState = (
+  value: unknown,
+  options: { activeRunNodeIds?: ReadonlySet<string> } = {},
+): CanvasPersistedState => {
   const record = value && typeof value === 'object' ? value as Partial<CanvasPersistedState> : {};
   const rawSize = record.size && typeof record.size === 'object' ? record.size : {};
   const rawScroll = record.scroll && typeof record.scroll === 'object' ? record.scroll : {};
@@ -976,7 +982,9 @@ const sanitizeCanvasPersistedState = (value: unknown): CanvasPersistedState => {
     top: Math.max(0, Number((rawScroll as { top?: unknown }).top) || 0),
   };
   return {
-    items: Array.isArray(record.items) ? record.items.map(normalizeInterruptedCanvasAiRun) : [],
+    items: Array.isArray(record.items)
+      ? record.items.map(item => normalizeInterruptedCanvasAiRun(item, options.activeRunNodeIds))
+      : [],
     size,
     scale: clamp(Number(record.scale) || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
     scroll,
@@ -4523,6 +4531,9 @@ function MainApp() {
   const canvasSearchAddingIdsRef = useRef(new Set<string>());
   const canvasSearchDropIndexRef = useRef(0);
   const canvasAiRunTokensRef = useRef(new Map<string, string>());
+  const canvasSessionItemsRef = useRef(new Map<string, CanvasImageItem[]>());
+  const canvasBackgroundPatchChainsRef = useRef(new Map<string, Promise<void>>());
+  const canvasActiveRunNodeIdsRef = useRef(new Map<string, Map<string, number>>());
   const canvasAiModelRefreshSignatureRef = useRef('');
   const canvasScaleCommitTimerRef = useRef<number | null>(null);
   const canvasRunButtonPointerRef = useRef<{ targetId: string; at: number } | null>(null);
@@ -5267,7 +5278,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.8');
+        setAppVersion('5.0.9');
       });
   }, []);
 
@@ -9638,24 +9649,26 @@ function MainApp() {
 
       const patchMatchingOutputs = (patch: Partial<CanvasAiGeneratedOutput>, matchSources = [source]) => {
         const sourceSet = new Set(matchSources.filter(Boolean));
-        updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
-          if (!canvasItem.ai?.outputs?.length) return canvasItem;
-          let changed = false;
-          const outputs = canvasItem.ai.outputs.map((output) => {
-            const outputSource = getCanvasAiOutputDisplaySource(output);
-            const matchesOutput = output.id === item.id || sourceSet.has(outputSource);
-            const matchesGeneration = !options?.canvasOutputClientRequestId
-              || output.id === item.id
-              || output.clientRequestId === options.canvasOutputClientRequestId
-              || output.taskId === options.canvasOutputClientRequestId;
-            if (!matchesOutput || !matchesGeneration) return output;
-            changed = true;
-            return recoverCanvasAiOutputWithUsableResult({ ...output, ...patch });
-          });
-          return changed
-            ? recoverCanvasAiNodeWithUsableResults({ ...canvasItem, ai: { ...canvasItem.ai, outputs } })
-            : canvasItem;
-        }));
+        if (!options?.onOutputCachePatch) {
+          updateCanvasItemsImmediate(prev => prev.map(canvasItem => {
+            if (!canvasItem.ai?.outputs?.length) return canvasItem;
+            let changed = false;
+            const outputs = canvasItem.ai.outputs.map((output) => {
+              const outputSource = getCanvasAiOutputDisplaySource(output);
+              const matchesOutput = output.id === item.id || sourceSet.has(outputSource);
+              const matchesGeneration = !options?.canvasOutputClientRequestId
+                || output.id === item.id
+                || output.clientRequestId === options.canvasOutputClientRequestId
+                || output.taskId === options.canvasOutputClientRequestId;
+              if (!matchesOutput || !matchesGeneration) return output;
+              changed = true;
+              return recoverCanvasAiOutputWithUsableResult({ ...output, ...patch });
+            });
+            return changed
+              ? recoverCanvasAiNodeWithUsableResults({ ...canvasItem, ai: { ...canvasItem.ai, outputs } })
+              : canvasItem;
+          }));
+        }
         options?.onOutputCachePatch?.(item.id, Array.from(sourceSet), patch);
       };
 
@@ -9710,11 +9723,13 @@ function MainApp() {
             originalUrl,
           } as BufferItem;
           setItems(prev => prev.map(existing => existing.id === item.id ? cachedItem : existing));
-          updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
-            canvasItem.item.id === item.id
-              ? { ...canvasItem, item: cachedItem }
-              : canvasItem
-          )));
+          if (!options?.onOutputCachePatch) {
+            updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
+              canvasItem.item.id === item.id
+                ? { ...canvasItem, item: cachedItem }
+                : canvasItem
+            )));
+          }
           const matchSources = [source, cachedUrl];
           patchMatchingOutputs(buildCanvasAiOutputLocalCachePatch(cachedPath), matchSources);
           enqueueCanvasAiOutputThumbnailJob({
@@ -10337,6 +10352,7 @@ function MainApp() {
       const savedState = await invoke('load_canvas_state');
       const restored = sanitizeCanvasPersistedState(savedState);
       canvasItemsRef.current = restored.items;
+      canvasSessionItemsRef.current.set(DEFAULT_CANVAS_ID, restored.items);
       canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
       canvasSizeRef.current = restored.size;
       canvasScaleRef.current = restored.scale;
@@ -10355,12 +10371,16 @@ function MainApp() {
           getCanvasTrashCount(DEFAULT_PROJECT_ID, DEFAULT_LIBRARY_ID),
         ]);
         const nodes = await listCanvasNodes(active.id);
-        const restored = sanitizeCanvasPersistedState({ items: nodes });
+        const restored = sanitizeCanvasPersistedState(
+          { items: nodes },
+          { activeRunNodeIds: getActiveCanvasRunNodeIds(active.id) },
+        );
         activeCanvasIdRef.current = active.id;
         setActiveCanvasId(active.id);
         setCanvases(sortCanvasesNewestFirst(canvasList.length > 0 ? canvasList : [active]));
         setCanvasTrashCount(trashCount);
         canvasItemsRef.current = restored.items;
+        canvasSessionItemsRef.current.set(active.id, restored.items);
         canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
         setCanvasItems(restored.items);
         canvasSizeRef.current = restored.size;
@@ -12424,8 +12444,90 @@ function MainApp() {
   const updateCanvasItemsImmediate = (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => {
     const next = updater(canvasItemsRef.current);
     canvasItemsRef.current = next;
+    canvasSessionItemsRef.current.set(activeCanvasIdRef.current || DEFAULT_CANVAS_ID, next);
     setCanvasItems(next);
     return next;
+  };
+
+  const getCanvasSessionItems = (canvasId: string) => {
+    const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
+    if (normalizedCanvasId === activeCanvasIdRef.current && !isSwitchingCanvasRef.current) {
+      return canvasItemsRef.current;
+    }
+    return canvasSessionItemsRef.current.get(normalizedCanvasId) || [];
+  };
+
+  const setCanvasSessionItems = (canvasId: string, nextItems: CanvasImageItem[]) => {
+    const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
+    canvasSessionItemsRef.current.set(normalizedCanvasId, nextItems);
+    if (normalizedCanvasId !== activeCanvasIdRef.current || isSwitchingCanvasRef.current) return;
+    canvasItemsRef.current = nextItems;
+    setCanvasItems(nextItems);
+  };
+
+  const getActiveCanvasRunNodeIds = (canvasId: string) => {
+    const activeNodeCounts = canvasActiveRunNodeIdsRef.current.get(canvasId || DEFAULT_CANVAS_ID);
+    return activeNodeCounts ? new Set(activeNodeCounts.keys()) : undefined;
+  };
+
+  const markCanvasRunNodeActive = (canvasId: string, nodeId: string) => {
+    const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
+    const activeNodeCounts = canvasActiveRunNodeIdsRef.current.get(normalizedCanvasId) || new Map<string, number>();
+    activeNodeCounts.set(nodeId, (activeNodeCounts.get(nodeId) || 0) + 1);
+    canvasActiveRunNodeIdsRef.current.set(normalizedCanvasId, activeNodeCounts);
+  };
+
+  const markCanvasRunNodeSettled = (canvasId: string, nodeId: string) => {
+    const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
+    const activeNodeCounts = canvasActiveRunNodeIdsRef.current.get(normalizedCanvasId);
+    if (!activeNodeCounts) return;
+    const nextCount = (activeNodeCounts.get(nodeId) || 0) - 1;
+    if (nextCount > 0) activeNodeCounts.set(nodeId, nextCount);
+    else activeNodeCounts.delete(nodeId);
+    if (activeNodeCounts.size === 0) canvasActiveRunNodeIdsRef.current.delete(normalizedCanvasId);
+  };
+
+  const waitForCanvasBackgroundPatches = async (canvasId: string) => {
+    const pending = canvasBackgroundPatchChainsRef.current.get(canvasId || DEFAULT_CANVAS_ID);
+    if (!pending) return;
+    try {
+      await pending;
+    } catch {
+      // The write already logs its own error. Loading the latest durable snapshot can continue.
+    }
+  };
+
+  const enqueueCanvasBackgroundWrite = (
+    canvasId: string,
+    write: () => Promise<void>,
+  ) => {
+    const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
+    const previous = canvasBackgroundPatchChainsRef.current.get(normalizedCanvasId) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(write);
+    canvasBackgroundPatchChainsRef.current.set(normalizedCanvasId, next);
+    void next
+      .catch((error) => {
+        console.warn('Failed to persist a background canvas result:', error);
+      })
+      .finally(() => {
+        if (canvasBackgroundPatchChainsRef.current.get(normalizedCanvasId) === next) {
+          canvasBackgroundPatchChainsRef.current.delete(normalizedCanvasId);
+        }
+      });
+    return next;
+  };
+
+  const enqueueCanvasBackgroundNodePatch = (canvasId: string, node: CanvasImageItem) => {
+    const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
+    const persistedNode = stripCanvasItemDataImageProvenance(node);
+    return enqueueCanvasBackgroundWrite(normalizedCanvasId, async () => {
+      if (persistedNode.item) {
+        await invoke('upsert_assets', { assets: [persistedNode.item] });
+      }
+      await patchCanvasNodes(normalizedCanvasId, [persistedNode]);
+    });
   };
 
   const getCanvasItemElement = (id: string) => {
@@ -12729,13 +12831,33 @@ function MainApp() {
     canvasImageSourceCacheRef.current.clear();
     canvasPreviewSourceIdsRef.current.clear();
     canvasImageUpgradeFailedRef.current.clear();
+    await waitForCanvasBackgroundPatches(canvasId);
     const nodes = options.knownEmpty ? [] : await listCanvasNodes(canvasId);
-    const restored = sanitizeCanvasPersistedState({ items: nodes });
+    const activeRunNodeIds = getActiveCanvasRunNodeIds(canvasId);
+    const sessionItems = canvasSessionItemsRef.current.get(canvasId) || [];
+    const sessionItemsById = new Map(sessionItems.map(item => [item.id, item]));
+    const mergedNodes = activeRunNodeIds?.size
+      ? [
+        ...nodes.map((node) => {
+          const nodeId = String((node as Partial<CanvasImageItem>)?.id || '');
+          return activeRunNodeIds.has(nodeId) ? sessionItemsById.get(nodeId) || node : node;
+        }),
+        ...sessionItems.filter(item => (
+          activeRunNodeIds.has(item.id)
+          && !nodes.some(node => String((node as Partial<CanvasImageItem>)?.id || '') === item.id)
+        )),
+      ]
+      : nodes;
+    const restored = sanitizeCanvasPersistedState(
+      { items: mergedNodes },
+      { activeRunNodeIds },
+    );
     const fitSize = restored.items.reduce((size, item) => ({
       width: Math.max(size.width, Math.ceil((item.x + item.width + CANVAS_GROW_CHUNK * 0.35) / CANVAS_GROW_CHUNK) * CANVAS_GROW_CHUNK),
       height: Math.max(size.height, Math.ceil((item.y + item.height + CANVAS_GROW_CHUNK * 0.35) / CANVAS_GROW_CHUNK) * CANVAS_GROW_CHUNK),
     }), { width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
     canvasItemsRef.current = restored.items;
+    canvasSessionItemsRef.current.set(canvasId, restored.items);
     canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
     setCanvasItems(restored.items);
     canvasSizeRef.current = fitSize;
@@ -12775,17 +12897,22 @@ function MainApp() {
     const nodesSignature = getCanvasNodesPersistSignature(state.items);
     if (nodesSignature === canvasLastSyncedNodesSignatureRef.current) {
       invoke('save_canvas_state', { state }).catch(() => {});
+      await waitForCanvasBackgroundPatches(currentCanvasId);
       return;
     }
-    if (state.items.length > 0) {
-      const assetItems = state.items.map(item => item.item).filter(Boolean);
+    let latestItems = state.items;
+    await enqueueCanvasBackgroundWrite(currentCanvasId, async () => {
+      latestItems = (canvasSessionItemsRef.current.get(currentCanvasId) || state.items)
+        .map(stripCanvasItemDataImageProvenance);
+      const assetItems = latestItems.map(item => item.item).filter(Boolean);
       if (assetItems.length > 0) {
         await invoke('upsert_assets', { assets: assetItems });
       }
-    }
-    await updateCanvasNodes(currentCanvasId, state.items);
-    canvasLastSyncedNodesSignatureRef.current = nodesSignature;
-    invoke('save_canvas_state', { state }).catch(() => {});
+      await updateCanvasNodes(currentCanvasId, latestItems);
+    });
+    const latestSignature = getCanvasNodesPersistSignature(latestItems);
+    canvasLastSyncedNodesSignatureRef.current = latestSignature;
+    invoke('save_canvas_state', { state: { ...state, items: latestItems } }).catch(() => {});
   };
 
   const makeCanvasNodeId = (seed: string, kind = 'node') => {
@@ -12960,8 +13087,12 @@ function MainApp() {
       await saveCurrentCanvasBeforeSwitch();
       return copyCanvasItemsToDrawerFolder(canvasItemsRef.current, canvas);
     }
+    await waitForCanvasBackgroundPatches(canvas.id);
     const nodes = await listCanvasNodes(canvas.id);
-    const restored = sanitizeCanvasPersistedState({ items: nodes });
+    const restored = sanitizeCanvasPersistedState(
+      { items: nodes },
+      { activeRunNodeIds: getActiveCanvasRunNodeIds(canvas.id) },
+    );
     return copyCanvasItemsToDrawerFolder(restored.items, canvas);
   };
 
@@ -16781,8 +16912,11 @@ function MainApp() {
     return record as CanvasWorkflowExpandedGroup;
   };
 
-  const getCanvasWorkflowExpandedGroupItems = (groupId: string) => (
-    canvasItemsRef.current.filter(item => getCanvasWorkflowGroup(item)?.groupId === groupId)
+  const getCanvasWorkflowExpandedGroupItems = (
+    groupId: string,
+    sourceItems: CanvasImageItem[] = canvasItemsRef.current,
+  ) => (
+    sourceItems.filter(item => getCanvasWorkflowGroup(item)?.groupId === groupId)
   );
 
   const applyCanvasWorkflowRuntimeSnapshots = (
@@ -17735,59 +17869,104 @@ function MainApp() {
     });
   };
 
-  const updateCanvasAiGeneratorData = (canvasId: string, patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === canvasId
-        ? (() => {
-          const nextAi = {
-            ...(item.ai || {}),
-            ...patch,
-            type: patch.type || item.ai?.type || 'image-generator',
-          } as NonNullable<CanvasImageItem['ai']>;
-          const nextItem = content === undefined ? item.item : {
-            ...item.item,
-            content,
-            name: item.ai?.type === 'workflow'
-              ? item.item.name
-              : content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : getCanvasAiNodeTitle(item.ai)),
-          };
-          const nextCanvasItem = recoverCanvasAiNodeWithUsableResults({
-            ...item,
-            ai: nextAi,
-            item: nextItem,
-          });
-          const shouldResizeAiNode = isCanvasAiGeneratorType(item.ai?.type) && (
-            patch.aspectRatio !== undefined
-            || patch.count !== undefined
-            || content !== undefined
-            || (
-              isCanvasAiLocalMediaToolType(item.ai?.type)
-              && (
-                patch.outputs !== undefined
-                || patch.error !== undefined
-                || patch.interpolationProgress !== undefined
-                || patch.enhancementProgress !== undefined
-                || patch.enhancementEngine !== undefined
-                || patch.quickEnhancementScale !== undefined
-              )
-            )
-          );
-          if (shouldResizeAiNode) {
-            const promptExpanded = canvasAiPromptEditingId === item.id;
-            const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded);
-            const nextSize = getCanvasAiNodeDesignSizeForItem(nextCanvasItem, promptExpanded);
-            const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
-            return {
-              ...nextCanvasItem,
-              width: nextSize.width * nodeScale,
-              height: nextSize.height * nodeScale,
-            };
-          }
-          return nextCanvasItem;
-        })()
-      : item
-    )));
+  const applyCanvasAiGeneratorDataPatch = (
+    item: CanvasImageItem,
+    patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+    content?: string,
+  ) => {
+    const nextAi = {
+      ...(item.ai || {}),
+      ...patch,
+      type: patch.type || item.ai?.type || 'image-generator',
+    } as NonNullable<CanvasImageItem['ai']>;
+    const nextItem = content === undefined ? item.item : {
+      ...item.item,
+      content,
+      name: item.ai?.type === 'workflow'
+        ? item.item.name
+        : content.trim().split(/\r?\n/)[0]?.slice(0, 24) || (item.ai?.presetLabel ? `AI ${item.ai.presetLabel}` : getCanvasAiNodeTitle(item.ai)),
+    };
+    const nextCanvasItem = recoverCanvasAiNodeWithUsableResults({
+      ...item,
+      ai: nextAi,
+      item: nextItem,
+    });
+    const shouldResizeAiNode = isCanvasAiGeneratorType(item.ai?.type) && (
+      patch.aspectRatio !== undefined
+      || patch.count !== undefined
+      || content !== undefined
+      || (
+        isCanvasAiLocalMediaToolType(item.ai?.type)
+        && (
+          patch.outputs !== undefined
+          || patch.error !== undefined
+          || patch.interpolationProgress !== undefined
+          || patch.enhancementProgress !== undefined
+          || patch.enhancementEngine !== undefined
+          || patch.quickEnhancementScale !== undefined
+        )
+      )
+    );
+    if (!shouldResizeAiNode) return nextCanvasItem;
+    const promptExpanded = canvasAiPromptEditingId === item.id;
+    const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded);
+    const nextSize = getCanvasAiNodeDesignSizeForItem(nextCanvasItem, promptExpanded);
+    const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
+    return {
+      ...nextCanvasItem,
+      width: nextSize.width * nodeScale,
+      height: nextSize.height * nodeScale,
+    };
   };
+
+  const updateCanvasAiGeneratorDataForCanvas = (
+    targetCanvasId: string,
+    nodeId: string,
+    patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+    content?: string,
+  ) => {
+    return updateCanvasNodeForCanvas(
+      targetCanvasId,
+      nodeId,
+      item => applyCanvasAiGeneratorDataPatch(item, patch, content),
+    );
+  };
+
+  const updateCanvasNodeForCanvas = (
+    targetCanvasId: string,
+    nodeId: string,
+    updater: (item: CanvasImageItem) => CanvasImageItem,
+  ) => {
+    const normalizedCanvasId = targetCanvasId || DEFAULT_CANVAS_ID;
+    let updatedNode: CanvasImageItem | undefined;
+    const updateItems = (sourceItems: CanvasImageItem[]) => sourceItems.map(item => {
+      if (item.id !== nodeId) return item;
+      updatedNode = updater(item);
+      return updatedNode;
+    });
+
+    if (normalizedCanvasId === activeCanvasIdRef.current && !isSwitchingCanvasRef.current) {
+      updateCanvasItemsImmediate(updateItems);
+      return updatedNode;
+    }
+
+    const nextItems = updateItems(getCanvasSessionItems(normalizedCanvasId));
+    if (!updatedNode) return undefined;
+    setCanvasSessionItems(normalizedCanvasId, nextItems);
+    void enqueueCanvasBackgroundNodePatch(normalizedCanvasId, updatedNode);
+    return updatedNode;
+  };
+
+  const updateCanvasAiGeneratorData = (
+    nodeId: string,
+    patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+    content?: string,
+  ) => updateCanvasAiGeneratorDataForCanvas(
+    activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
+    nodeId,
+    patch,
+    content,
+  );
 
   const updateCanvasImageRule = (canvasId: string, key: ImageRuleKey, enabled: boolean) => {
     const target = canvasItemsRef.current.find(item => item.id === canvasId);
@@ -18632,10 +18811,12 @@ function MainApp() {
         ? canvasAiNewApiVideoKey.trim() || providerApiKey.trim()
         : providerApiKey.trim());
     const getRuntimeSourceItems = options.sourceItems || (() => canvasItemsRef.current);
-    const getSourceItems = () => mergeCanvasAiReferenceSourceItems(
-      canvasItemsRef.current,
-      getRuntimeSourceItems(),
-    );
+    const getSourceItems = () => {
+      const runtimeSourceItems = getRuntimeSourceItems();
+      return options.sourceItems
+        ? runtimeSourceItems
+        : mergeCanvasAiReferenceSourceItems(canvasItemsRef.current, runtimeSourceItems);
+    };
     const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
     const textInputPrompts = getCanvasTextInputsForNode(target, getSourceItems());
@@ -18714,9 +18895,9 @@ function MainApp() {
         : 'remote-first';
       const referenceSourceItems = getSourceItems();
       const resolvedReferenceItems = getCanvasImageInputBufferItemsForNode(target, referenceSourceItems);
-      const globalTarget = canvasItemsRef.current.find(item => item.id === target.id);
+      const globalTarget = referenceSourceItems.find(item => item.id === target.id);
       const globalReferenceItems = globalTarget
-        ? getCanvasImageInputBufferItemsForNode(globalTarget, canvasItemsRef.current)
+        ? getCanvasImageInputBufferItemsForNode(globalTarget, referenceSourceItems)
         : [];
       if (provider === 'xais-chat') {
         debugXaisImage2('referenceResolution', {
@@ -19765,25 +19946,32 @@ function MainApp() {
 
   const runCanvasAiGeneratorNode = async (targetId: string) => {
     commitCanvasAiPromptDraft(targetId, undefined, true);
-    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    canvasSessionItemsRef.current.set(runCanvasId, canvasItemsRef.current);
+    const target = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
     if (!target || !isCanvasAiGeneratorType(target.ai?.type)) return;
     const runToken = createCanvasAiClientRequestId(targetId);
-    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, targetId, runToken)) {
+    const runKey = `${runCanvasId}:${targetId}`;
+    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken)) {
       showToast('这个节点正在生成，请等待完成后再手动重试');
       return;
     }
-    const isCurrentRun = () => canvasAiRunTokensRef.current.get(targetId) === runToken;
+    markCanvasRunNodeActive(runCanvasId, targetId);
+    const isCurrentRun = () => canvasAiRunTokensRef.current.get(runKey) === runToken;
     const updateAiIfCurrent = (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
       if (!isCurrentRun()) return;
-      updateCanvasAiGeneratorData(targetId, patch, content);
+      updateCanvasAiGeneratorDataForCanvas(runCanvasId, targetId, patch, content);
     };
     try {
       await runCanvasAiGeneratorTarget(target, {
+        sourceItems: () => getCanvasSessionItems(runCanvasId),
         updateAi: updateAiIfCurrent,
         forceUpdateAi: updateAiIfCurrent,
-        getLatestTarget: () => canvasItemsRef.current.find(item => item.id === targetId),
+        getLatestTarget: () => getCanvasSessionItems(runCanvasId).find(item => item.id === targetId),
         selectTarget: () => {
-          if (isCurrentRun()) updateCanvasSelection([targetId]);
+          if (isCurrentRun() && activeCanvasIdRef.current === runCanvasId && isCanvasModeRef.current) {
+            updateCanvasSelection([targetId]);
+          }
         },
         showResultToast: true,
         toastLabel: getCanvasAiNodeTitle(target.ai),
@@ -19791,11 +19979,11 @@ function MainApp() {
       });
     } finally {
       if (isCurrentRun()) {
-        const latest = canvasItemsRef.current.find(item => item.id === targetId);
+        const latest = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
         if (latest?.ai?.status === 'working') {
           const failedAt = Date.now();
           const error = '生成任务已结束但未返回可用结果，请手动重试。';
-          updateCanvasAiGeneratorData(targetId, {
+          updateCanvasAiGeneratorDataForCanvas(runCanvasId, targetId, {
             status: 'error',
             error,
             generatedAt: failedAt,
@@ -19804,8 +19992,10 @@ function MainApp() {
               : output),
           });
         }
-        releaseCanvasAiRun(canvasAiRunTokensRef.current, targetId, runToken);
+        releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       }
+      await waitForCanvasBackgroundPatches(runCanvasId);
+      markCanvasRunNodeSettled(runCanvasId, targetId);
     }
   };
 
@@ -19838,7 +20028,8 @@ function MainApp() {
   }, [isCanvasMode]);
 
   const generateCanvasAiGeneratorNode = async (targetId: string) => {
-    const launchKey = `launch:${targetId}`;
+    const launchCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    const launchKey = `launch:${launchCanvasId}:${targetId}`;
     const launchToken = createCanvasAiClientRequestId(launchKey);
     let launchReleased = false;
     const releaseLaunch = () => {
@@ -19981,11 +20172,20 @@ function MainApp() {
   };
 
   const runCanvasExpandedWorkflowFromNode = async (targetId: string) => {
-    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    const sourceCanvasItems = canvasItemsRef.current;
+    canvasSessionItemsRef.current.set(runCanvasId, sourceCanvasItems);
+    const getRunCanvasItems = () => getCanvasSessionItems(runCanvasId);
+    const updateRunNodeAi = (
+      nodeId: string,
+      patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+      content?: string,
+    ) => updateCanvasAiGeneratorDataForCanvas(runCanvasId, nodeId, patch, content);
+    const target = sourceCanvasItems.find(item => item.id === targetId);
     const group = getCanvasWorkflowGroup(target);
     if (!target || target.ai?.type !== 'image-generator' || !group) return false;
 
-    const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId);
+    const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId, sourceCanvasItems);
     const workflow = getCanvasWorkflowTemplateFromNode(group.module);
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow?.userInput);
     const workflowUserRequest = String(group.module.item.content || '').trim().slice(0, 6_000);
@@ -20015,7 +20215,7 @@ function MainApp() {
       ...selectCanvasWorkflowUserInputTargetIds(groupItems, explicitTextInputIds),
     ]));
     const getExpandedWorkflowSourceItems = () => injectCanvasWorkflowUserInputContext(
-      canvasItemsRef.current,
+      getRunCanvasItems(),
       {
         workflowNodeId: group.module.id,
         request: workflowUserRequest,
@@ -20046,18 +20246,20 @@ function MainApp() {
 
     const failedIds = new Set<string>();
     let successCount = 0;
-    for (const nodeId of runIds) {
-      const current = canvasItemsRef.current.find(item => item.id === nodeId);
+    runIds.forEach(nodeId => markCanvasRunNodeActive(runCanvasId, nodeId));
+    try {
+      for (const nodeId of runIds) {
+      const current = getRunCanvasItems().find(item => item.id === nodeId);
       if (!current) continue;
 
       const upstreamRunnableIds = (current.inputs || []).filter(inputId => {
-        const source = canvasItemsRef.current.find(item => item.id === inputId);
+        const source = getRunCanvasItems().find(item => item.id === inputId);
         return !!source && runIdSet.has(inputId) && (source.ai?.type === 'image-generator' || isCanvasAgentTextTarget(source));
       });
       if (upstreamRunnableIds.some(inputId => failedIds.has(inputId))) {
         failedIds.add(nodeId);
         if (current.ai?.type === 'image-generator') {
-          updateCanvasAiGeneratorData(nodeId, {
+          updateRunNodeAi(nodeId, {
             status: 'error',
             error: '上游节点生成失败，已跳过',
             outputs: [],
@@ -20072,7 +20274,11 @@ function MainApp() {
           const output = await runCanvasTextAgentTarget(current, {
             sourceItems: getExpandedWorkflowSourceItems,
             getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
-            updateTextOutput: (textOutput) => updateCanvasTextOutputItem(nodeId, textOutput),
+            updateTextOutput: (textOutput) => updateCanvasNodeForCanvas(
+              runCanvasId,
+              nodeId,
+              item => ({ ...item, item: { ...item.item, remark: textOutput } }),
+            ),
             showResultToast: false,
             showReferenceToast: false,
           });
@@ -20089,17 +20295,21 @@ function MainApp() {
 
       await runCanvasAiGeneratorTarget(current, {
         sourceItems: getExpandedWorkflowSourceItems,
-        updateAi: (patch, content) => updateCanvasAiGeneratorData(nodeId, patch, content),
+        updateAi: (patch, content) => updateRunNodeAi(nodeId, patch, content),
         getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
         showResultToast: false,
       });
 
-      const latest = canvasItemsRef.current.find(item => item.id === nodeId);
+      const latest = getRunCanvasItems().find(item => item.id === nodeId);
       if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
         successCount += 1;
       } else {
         failedIds.add(nodeId);
       }
+      }
+    } finally {
+      await waitForCanvasBackgroundPatches(runCanvasId);
+      runIds.forEach(nodeId => markCanvasRunNodeSettled(runCanvasId, nodeId));
     }
 
     showToast(failedIds.size > 0
@@ -20140,7 +20350,15 @@ function MainApp() {
 
   const runCanvasWorkflowModuleNode = async (targetId: string) => {
     commitCanvasAiPromptDraft(targetId, undefined, true);
-    const moduleNode = canvasItemsRef.current.find(item => item.id === targetId);
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    const sourceCanvasItems = canvasItemsRef.current;
+    canvasSessionItemsRef.current.set(runCanvasId, sourceCanvasItems);
+    const getRunCanvasItems = () => getCanvasSessionItems(runCanvasId);
+    const updateModuleAi = (
+      patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+      content?: string,
+    ) => updateCanvasAiGeneratorDataForCanvas(runCanvasId, targetId, patch, content);
+    const moduleNode = sourceCanvasItems.find(item => item.id === targetId);
     const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
     if (!moduleNode || !workflow) {
       showToast('请先选中一个工作流模块');
@@ -20152,13 +20370,13 @@ function MainApp() {
     const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
     const workflowMaterialInputIds = (moduleNode.inputs || []).filter(inputId => (
       canUseCanvasItemAsWorkflowMaterial(
-        canvasItemsRef.current.find(item => item.id === inputId),
+        sourceCanvasItems.find(item => item.id === inputId),
         workflowUserInput,
       )
     ));
     if (workflowUserInput.enabled && workflowUserInput.required && !workflowUserRequest) {
       const error = `请输入${workflowUserInput.label || '用户需求'}后再运行`;
-      updateCanvasAiGeneratorData(targetId, { status: 'error', error });
+      updateModuleAi({ status: 'error', error });
       updateCanvasSelection([targetId]);
       showToast(error);
       return;
@@ -20177,7 +20395,7 @@ function MainApp() {
     } | undefined;
     if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID) {
       const connectedItems = workflowMaterialInputIds
-        .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+        .map(inputId => sourceCanvasItems.find(item => item.id === inputId))
         .filter((item): item is CanvasImageItem => !!item);
       const connectedText = connectedItems
         .filter(item => item.item.type === 'text')
@@ -20208,7 +20426,7 @@ function MainApp() {
     if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID && localInspirationContext) {
       const referenceContextRuntimeId = runtime.idMap.get(INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.references);
       const connectedInputSummary = workflowMaterialInputIds
-        .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+        .map(inputId => sourceCanvasItems.find(item => item.id === inputId))
         .filter((item): item is CanvasImageItem => !!item)
         .map(item => item.item.name || item.id);
       const injectedContextText = buildIndustrialDesignRuntimeContextText({
@@ -20279,10 +20497,20 @@ function MainApp() {
     const runOrder = sortCanvasWorkflowRuntimeNodeIds(runtimeItems);
     const generatorRunIds = runOrder.filter(nodeId => runtimeItems.find(item => item.id === nodeId)?.ai?.type === 'image-generator');
     if (generatorRunIds.length === 0) {
-      updateCanvasAiGeneratorData(targetId, { status: 'error', error: '工作流内部没有生图节点' });
+      updateModuleAi({ status: 'error', error: '工作流内部没有生图节点' });
       showToast('工作流内部没有生图节点');
       return;
     }
+
+    const runToken = createCanvasAiClientRequestId(targetId);
+    const runKey = `${runCanvasId}:workflow:${targetId}`;
+    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken)) {
+      showToast('这个工作流正在运行，请等待完成后再重试');
+      return;
+    }
+    markCanvasRunNodeActive(runCanvasId, targetId);
+
+    try {
 
     const outputDrafts = createCanvasWorkflowOutputDrafts(moduleNode, workflow, 'working');
     const outputSlots = getCanvasWorkflowOutputSlotTemplates(workflow)
@@ -20344,7 +20572,7 @@ function MainApp() {
     };
 
     const getRuntimeSourceItems = () => [
-      ...canvasItemsRef.current.filter(item => item.id !== targetId),
+      ...getRunCanvasItems().filter(item => item.id !== targetId),
       ...runtimeItems,
     ];
     const collectModuleOutputs = (
@@ -20404,7 +20632,7 @@ function MainApp() {
       })];
 
       const inputCanvasItems = workflowMaterialInputIds
-        .map(inputId => canvasItemsRef.current.find(item => item.id === inputId))
+        .map(inputId => getRunCanvasItems().find(item => item.id === inputId))
         .filter((item): item is CanvasImageItem => !!item);
       const referenceRoles = new Map<string, string>();
       runtimeItems.forEach(runtimeItem => {
@@ -20444,7 +20672,7 @@ function MainApp() {
         const itemId = String(reference.itemId || '').trim();
         if (!itemId) return null;
         const drawerItem = itemsRef.current.find(item => item.id === itemId);
-        const canvasItem = canvasItemsRef.current.find(item => (
+        const canvasItem = getRunCanvasItems().find(item => (
           item.id === itemId || item.item.id === itemId || item.item.sourceItemId === itemId
         ));
         return {
@@ -20531,7 +20759,7 @@ function MainApp() {
       getRuntimeFailureSummary() || undefined,
     );
 
-    updateCanvasAiGeneratorData(targetId, {
+    updateModuleAi({
       status: 'working',
       error: undefined,
       outputs: outputDrafts,
@@ -20545,7 +20773,9 @@ function MainApp() {
         } : {}),
       },
     });
-    updateCanvasSelection([targetId]);
+    if (activeCanvasIdRef.current === runCanvasId && isCanvasModeRef.current) {
+      updateCanvasSelection([targetId]);
+    }
     showToast(`开始运行工作流「${workflow.label}」：${runOrder.length} 个内部节点`);
 
     const updateRuntimeItemAi = (
@@ -20633,7 +20863,7 @@ function MainApp() {
           if (output.trim()) {
             runStatus.set(nodeId, 'success');
             completedCount += 1;
-            updateCanvasAiGeneratorData(targetId, {
+            updateModuleAi({
               outputs: collectModuleOutputs('working'),
               workflowRuntime: getRuntimeSnapshots(),
               status: 'working',
@@ -20688,7 +20918,7 @@ function MainApp() {
       if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
-        updateCanvasAiGeneratorData(targetId, {
+        updateModuleAi({
           outputs: collectModuleOutputs('working'),
           workflowRuntime: getRuntimeSnapshots(),
           status: 'working',
@@ -20754,7 +20984,7 @@ function MainApp() {
     );
     const finalSuccessCount = finalOutputs.filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output)).length;
     if (failedIds.size > 0 || finalSuccessCount < outputSlots.length) {
-      updateCanvasAiGeneratorData(targetId, {
+      updateModuleAi({
         outputs: finalOutputs,
         workflowRuntime: getRuntimeSnapshots(),
         status: 'error',
@@ -20774,7 +21004,7 @@ function MainApp() {
       });
       return publishWorkflowResult(finalSuccessCount > 0 || completedCount > 0 ? 'partial' : 'error', finalOutputs, workflowError);
     }
-    updateCanvasAiGeneratorData(targetId, {
+    updateModuleAi({
       outputs: finalOutputs,
       workflowRuntime: getRuntimeSnapshots(),
       status: 'success',
@@ -20790,6 +21020,11 @@ function MainApp() {
       requestedCount: outputSlots.length,
     });
     return publishWorkflowResult('success', finalOutputs);
+    } finally {
+      releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
+      await waitForCanvasBackgroundPatches(runCanvasId);
+      markCanvasRunNodeSettled(runCanvasId, targetId);
+    }
   };
 
   const generateCanvasWorkflowModuleNode = async (targetId: string) => {
@@ -33110,7 +33345,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.8'}
+                                      v{appVersion || '5.0.9'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -38869,7 +39104,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.8'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.9'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -39009,7 +39244,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.8'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.9'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -39102,11 +39337,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.8</p>
-                <p>新增图片 AI 自动标签，支持全库搜索标签、后台分析进度与失败重试。</p>
-                <p>画布新增全库图片搜索、文件夹候选预览及分批双行浏览，可快速加入素材。</p>
-                <p>支持直接拖入节点/工作流预设 JSON，并优化多参考图、生成节点恢复和视频播放。</p>
-                <p>修复启动反复展开、数据保存及多项画布交互问题。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.9</p>
+                <p>生成任务现在会在后台持续运行，切换画布或返回抽屉不会中断结果接收。</p>
+                <p>生成结果会准确写回任务发起时的原画布，避免跨画布覆盖或误报“上次生成已中断”。</p>
+                <p>优化后台任务持久化与画布切换时序，提升单节点和工作流生成稳定性。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

@@ -1,66 +1,62 @@
-# Tauri + React + Typescript
+# Inspiration Drawer / 灵感抽屉
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+灵感抽屉是一款面向设计与创意工作的 Windows 桌面工具，将素材收集、AI 自动标签、无限画布、生成式工作流和桌面便签整合在一个本地工作台中。
 
-## Recommended IDE Setup
+## 下载
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+当前版本：**5.0.9**
 
-## 画布 Agent（v4.2.9）
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.9/Inspiration.Drawer_5.0.9_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.9)
+- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.9)
 
-v4.2.9 在 Agent 输入区增加与官方 Codex 一致的模型和推理强度选择器。模型列表直接读取当前 ChatGPT 账户的 Codex App Server `model/list`，选择结果会应用到新线程和后续回合；同时保留真实节点预设、画布权限切换与节点图片自动引用能力。
+应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-设置中的“AGENT 设置”与生图、CMF 接口相互独立，支持两种运行方式：
+## 5.0.9 更新
 
-- OpenAI-compatible API：配置 Base URL、API Key、模型和可选 Header，使用 Chat Completions 流式响应及函数工具控制画布。
-- Codex App Server：应用会在首次登录时下载并校验 OpenAI 官方 Codex 运行时，也可以使用用户指定的 `codex` CLI。应用通过 stdio JSON-RPC 连接 App Server，支持 ChatGPT/设备码登录、线程恢复、流式消息和审批事件。
+- 生成任务切换画布或返回抽屉后仍会在后台持续运行。
+- 结果会准确写回任务发起时的原画布，避免跨画布覆盖。
+- 修复活跃任务被误判为“上次生成已中断”的问题。
+- 优化单节点、展开工作流和工作流模块的后台持久化时序。
 
-Agent 侧边栏在画布右侧占用独立布局空间，可以收起或拖动左侧边缘调整宽度。节点创建、Prompt 修改、连线、工作流应用和布局整理都通过受控画布工具执行；运行工作流始终需要用户确认。
+## 主要功能
 
-Codex 侧边栏使用与画布一致的深浅配色，并通过 App Server 的 `account/rateLimits/read` 与更新事件显示 5 小时、每周额度的剩余比例和重置时间。最终回复以 `item/completed` 为准，画布动作使用严格 JSON Schema；失败状态和服务端错误会直接展示，不再伪装成空的成功回复。
+- **灵感抽屉**：收集和管理图片、视频、文本与文件，支持文件夹、多选、批量下载及全库搜索。
+- **AI 自动标签**：后台分析图片并将结构化标签写入原有标签体系，可按标签搜索和整理素材。
+- **无限画布**：自由组织素材、图片生成节点、文字 Agent 节点和可复用工作流。
+- **生成工作流**：支持多参考图、节点/工作流预设 JSON、结果列表与批量下载。
+- **画布 Agent**：支持 OpenAI-compatible API 与 Codex App Server，通过受控工具操作画布和工作流。
+- **桌面工具**：提供截图、桌面便签、快捷记录、全局快捷键及手机局域网传输。
+- **本地优先**：画布和素材保存在本机；AI 结果与参考图只在需要公网访问时使用临时桥接。
 
-Codex 模式默认使用只读沙箱。登录令牌由 Codex 自己管理，前端不会读取 `~/.codex/auth.json`。API 模式的 Key 由 Tauri 后端配置保存，前端只接收“是否已配置”的状态。
+## 开发
 
-## 离线授权
-
-主程序只保留以下客户端职责：
-
-- 生成稳定的本机机器码；
-- 导入 `license.json`；
-- 使用内置 Ed25519 公钥验证签名、产品、机器与到期日；
-- 根据授权状态控制本地功能。
-
-签发私钥、授权生成界面、授权台账和额度运营界面已经移到独立项目 `inspiration-operations-workbench`，不再参与灵感抽屉主程序的前端或 Rust 构建。
-
-主程序内置公钥：
-
-```text
-PUBLIC_KEY_B64=AAS4rzI5dxFefYmQCNp1wYpYgKwMXp5+wG1WgF/UoRQ=
-```
-
-独立授权器生成的新 License 只包含签名后的产品、客户、机器码、版本、功能与到期日，不包含上游 API 地址或 API Key。AI 渠道与用户额度由 `inspiration-wallet-server` 统一管理。
-
-### 导入和验证
-
-1. 启动应用：`npm run tauri -- dev`。
-2. 打开“设置 -> 离线授权”，复制本机 64 位机器码。
-3. 在独立授权器中签发并保存 `license.json`。
-4. 回到灵感抽屉导入文件；成功后会显示客户、版本、到期时间和功能列表。
-5. 修改授权文件、换机器导入或使用过期授权时，主程序必须拒绝。
-
-### 测试
+环境要求：Node.js、Rust stable、Windows WebView2 和 Tauri 2 构建依赖。
 
 ```powershell
-cd src-tauri
-cargo test
-cd ..
-npm run build
+npm install
+npm run tauri -- dev
 ```
 
-### 安全注意
+验证：
 
-- 主程序和本仓库中不得出现签发私钥或授权生成命令。
-- 更换签发密钥必须同时更新主程序、统一后端和独立授权器的公钥，并制定既有 License 迁移方案。
-- 离线授权不能完全阻止二进制逆向，只能提高分发门槛。
-- Windows 机器码基于 `MachineGuid`、主板 UUID 和 BIOS 序列号的哈希；更换主板或重装系统可能需要换机流程。
-- 过期判断依赖本地系统时间；云端登录后还应由服务器再次检查 License 有效期和账户状态。
+```powershell
+npm test
+npm run build
+cd src-tauri
+cargo test
+cargo check
+```
+
+签名发布需要本机配置 Tauri updater 私钥；私钥、API Key、数据库密码和任何生产环境凭据都不应提交到仓库。
+
+## 技术栈
+
+- Tauri 2 + Rust
+- React 19 + TypeScript + Vite
+- SQLite 本地数据层
+- Codex App Server / OpenAI-compatible API
+
+## 说明
+
+本软件是本地工作流与 API 接入工具，不直接提供第三方 AI 模型服务。使用自有 API 或外部模型渠道时，请遵守对应服务商的协议与当地法律法规。
