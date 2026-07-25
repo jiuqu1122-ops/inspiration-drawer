@@ -161,16 +161,28 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
     const inputIds = Array.isArray(node.inputs)
       ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
       : [];
+    const hasConcreteImageSource = itemType === 'image'
+      && [rawItem.url, rawItem.path, rawItem.thumbnail, rawItem.sourceUrl, rawItem.originalUrl]
+        .some(value => typeof value === 'string' && value.trim().length > 0);
+    const shouldRestoreConcreteFixedImage = hasConcreteImageSource
+      && !rawAi
+      && node.bridgeType !== 'reference_image'
+      && id !== 'product_reference_image';
     const inferredExternalImageInput = shouldInferExternalImageInputs
       && inputIds.length === 0
+      && !(node.fixedInput === true && itemType === 'image')
+      && !hasConcreteImageSource
       && (
         rawAi?.type === 'image-generator'
         || itemType === 'text'
         || itemType === 'image'
         || itemType === 'file'
       );
-    const acceptsExternalInputs = node.acceptsExternalInputs === true || inferredExternalImageInput;
-    if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
+    const acceptsExternalInputs = !shouldRestoreConcreteFixedImage
+      && (node.acceptsExternalInputs === true || inferredExternalImageInput);
+    if (shouldRestoreConcreteFixedImage) {
+      externalInputTypes = undefined;
+    } else if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
       externalInputTypes = ['image', 'text'];
     }
     const isReferenceImageBridge = (
@@ -212,7 +224,9 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         isQuickAccess: false,
       },
       inputs: inputIds,
-      fixedInput: typeof node.fixedInput === 'boolean'
+      fixedInput: shouldRestoreConcreteFixedImage
+        ? true
+        : typeof node.fixedInput === 'boolean'
         ? (inferredExternalImageInput ? false : node.fixedInput)
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
       textMode: node.textMode === 'plain'

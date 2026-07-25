@@ -12,6 +12,57 @@ import {
 } from './workflows/industrialDesignFullProcessWorkflow';
 
 describe('built-in canvas workflows', () => {
+  it('keeps and recovers a saved master image as a fixed workflow input', () => {
+    const normalized = normalizeCanvasWorkflowTemplate({
+      id: 'fixed-master-reference',
+      label: 'Fixed master reference',
+      hint: 'Use the SUBJECT_REF as the fixed master image',
+      nodes: [
+        {
+          id: 'master-image',
+          x: 0,
+          y: 0,
+          width: 480,
+          height: 640,
+          item: {
+            type: 'image',
+            content: 'master.png',
+            name: 'master.png',
+            path: 'C:\\cache\\master.png',
+            url: 'asset://localhost/C%3A/cache/master.png',
+          },
+          fixedInput: false,
+          acceptsExternalInputs: true,
+          externalInputTypes: ['image', 'text'],
+        },
+        {
+          id: 'generator',
+          x: 560,
+          y: 0,
+          width: 480,
+          height: 640,
+          item: {
+            type: 'text',
+            content: '',
+            name: 'Generator',
+          },
+          inputs: ['master-image'],
+          ai: {
+            type: 'image-generator',
+            presetPrompt: 'Generate from the connected SUBJECT_REF',
+          },
+        },
+      ],
+    });
+
+    const masterImage = normalized?.nodes.find(node => node.id === 'master-image');
+    expect(masterImage?.fixedInput).toBe(true);
+    expect(masterImage?.acceptsExternalInputs).toBe(false);
+    expect(masterImage?.externalInputTypes).toBeUndefined();
+    expect(masterImage?.item.path).toBe('C:\\cache\\master.png');
+    expect(normalized?.nodes.find(node => node.id === 'generator')?.inputs).toEqual(['master-image']);
+  });
+
   it('gives every legacy and current workflow the shared user-input contract', () => {
     CANVAS_BUILT_IN_WORKFLOWS.forEach(workflow => {
       expect(normalizeCanvasWorkflowTemplate(workflow)?.userInput).toMatchObject({

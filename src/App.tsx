@@ -334,6 +334,10 @@ import {
 } from './features/dragData';
 import { getCanvasTemplateImportCandidates } from './features/canvasTemplateImport';
 import {
+  embedCanvasWorkflowFixedImages,
+  materializeCanvasWorkflowFixedImages,
+} from './features/canvasWorkflowPortableImages';
+import {
   CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
   CANVAS_AI_PROVIDER_OPTIONS,
   NEW_API_ENDPOINT_DEFAULT,
@@ -3019,16 +3023,28 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     const inputIds = Array.isArray(node.inputs)
       ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
       : [];
+    const hasConcreteImageSource = itemType === 'image'
+      && [rawItem.url, rawItem.path, rawItem.thumbnail, rawItem.sourceUrl, rawItem.originalUrl]
+        .some(value => typeof value === 'string' && value.trim().length > 0);
+    const shouldRestoreConcreteFixedImage = hasConcreteImageSource
+      && !rawAi
+      && node.bridgeType !== 'reference_image'
+      && id !== 'product_reference_image';
     const inferredExternalImageInput = shouldInferExternalImageInputs
       && inputIds.length === 0
+      && !(node.fixedInput === true && itemType === 'image')
+      && !hasConcreteImageSource
       && (
         rawAi?.type === 'image-generator'
         || itemType === 'text'
         || itemType === 'image'
         || itemType === 'file'
       );
-    const acceptsExternalInputs = node.acceptsExternalInputs === true || inferredExternalImageInput;
-    if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
+    const acceptsExternalInputs = !shouldRestoreConcreteFixedImage
+      && (node.acceptsExternalInputs === true || inferredExternalImageInput);
+    if (shouldRestoreConcreteFixedImage) {
+      externalInputTypes = undefined;
+    } else if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
       externalInputTypes = ['image', 'text'];
     }
     const isReferenceImageBridge = (
@@ -3068,7 +3084,9 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         isQuickAccess: false,
       },
       inputs: inputIds,
-      fixedInput: typeof node.fixedInput === 'boolean'
+      fixedInput: shouldRestoreConcreteFixedImage
+        ? true
+        : typeof node.fixedInput === 'boolean'
         ? (inferredExternalImageInput ? false : node.fixedInput)
         : (!node.ai && (itemType === 'image' || itemType === 'text')),
       textMode: node.textMode === 'plain'
@@ -16345,6 +16363,14 @@ function MainApp() {
     };
   };
 
+  const materializeImportedCanvasWorkflows = (workflows: CanvasWorkflowTemplate[]) => (
+    materializeCanvasWorkflowFixedImages(
+      workflows,
+      (fileName, dataUrl) => invoke<string>('save_dropped_file', { fileName, dataUrl }),
+      path => convertFileSrc(path),
+    )
+  );
+
   const chooseCanvasTemplateImportFiles = async () => {
     const selected = await open({
       multiple: true,
@@ -16389,7 +16415,7 @@ function MainApp() {
 
       if (shouldImportWorkflows && payload.workflows.length > 0) {
         const usedWorkflowIds = new Set(canvasWorkflowTemplates.map(workflow => workflow.id));
-        const importedWorkflows = payload.workflows.map((workflow, index) => {
+        const importedWorkflowDrafts = payload.workflows.map((workflow, index) => {
           let nextId = '';
           do {
             nextId = `imported-workflow-${Date.now().toString(36)}-${index}-${Math.random().toString(36).substring(2, 6)}`;
@@ -16402,6 +16428,7 @@ function MainApp() {
             createdAt: Date.now() + index,
           };
         });
+        const importedWorkflows = await materializeImportedCanvasWorkflows(importedWorkflowDrafts);
         importedWorkflowCount = importedWorkflows.length;
         setCustomCanvasWorkflows(prev => {
           return [...importedWorkflows, ...prev].slice(0, 48);
@@ -16423,7 +16450,8 @@ function MainApp() {
       showToast(`已导入 ${importedPresetCount} 个预设、${importedWorkflowCount} 个工作流`);
     } catch (err) {
       console.warn('导入画布模板失败:', err);
-      showToast('导入失败，请检查 JSON 文件');
+      const message = err instanceof Error ? err.message : '';
+      showToast(message ? `导入失败：${message}` : '导入失败，请检查 JSON 文件');
     }
   };
 
@@ -16432,8 +16460,8 @@ function MainApp() {
     defaultName: string
   ) => {
     const presets = (payload.presets || []).map(preset => ({ ...preset }));
-    const workflows = (payload.workflows || []).map(workflow => ({ ...workflow, builtin: false }));
-    if (presets.length === 0 && workflows.length === 0) {
+    const workflowDrafts = (payload.workflows || []).map(workflow => ({ ...workflow, builtin: false }));
+    if (presets.length === 0 && workflowDrafts.length === 0) {
       showToast('没有可导出的内容');
       return;
     }
@@ -16443,6 +16471,10 @@ function MainApp() {
         filters: [{ name: 'JSON', extensions: ['json'] }],
       });
       if (!filePath) return;
+      const workflows = await embedCanvasWorkflowFixedImages(
+        workflowDrafts,
+        source => imageSourceToDataUrl(source, false),
+      );
       await invoke('save_item_source_as', {
         source: '',
         dest: filePath,
@@ -16458,7 +16490,8 @@ function MainApp() {
       showToast('已导出 JSON 文件');
     } catch (err) {
       console.warn('导出画布模板失败:', err);
-      showToast('导出失败');
+      const message = err instanceof Error ? err.message : '';
+      showToast(message ? `导出失败：${message}` : '导出失败');
     }
   };
 
@@ -21053,7 +21086,7 @@ function MainApp() {
     }
   };
 
-  const addCanvasTemplateValuesAtDrop = (
+  const addCanvasTemplateValuesAtDrop = async (
     rawValues: unknown[],
     client?: { x: number; y: number },
   ) => {
@@ -21071,7 +21104,8 @@ function MainApp() {
     const presets = Array.from(presetMap.values());
 
     const usedWorkflowIds = new Set(canvasWorkflowTemplates.map(workflow => workflow.id));
-    const workflows = payload.workflows.slice(0, 48).flatMap((workflow, index) => {
+    const materializedWorkflows = await materializeImportedCanvasWorkflows(payload.workflows.slice(0, 48));
+    const workflows = materializedWorkflows.flatMap((workflow, index) => {
       let nextId = '';
       do {
         nextId = `imported-workflow-${Date.now().toString(36)}-${index}-${Math.random().toString(36).substring(2, 6)}`;
@@ -21154,7 +21188,15 @@ function MainApp() {
         console.warn(`画布 JSON 文件读取失败：${source.name}`, error);
       }
     }
-    const result = addCanvasTemplateValuesAtDrop(values, client);
+    let result: Awaited<ReturnType<typeof addCanvasTemplateValuesAtDrop>>;
+    try {
+      result = await addCanvasTemplateValuesAtDrop(values, client);
+    } catch (error) {
+      console.warn('Failed to restore embedded workflow images:', error);
+      const message = error instanceof Error ? error.message : '';
+      showToast(message ? `JSON 图片导入失败：${message}` : 'JSON 图片导入失败');
+      return true;
+    }
     if (!result.recognized) {
       showToast(failedCount > 0 && values.length === 0
         ? 'JSON 文件读取失败，请检查文件内容'
