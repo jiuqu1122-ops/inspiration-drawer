@@ -8,6 +8,7 @@ import {
   type CanvasAiGeneratedOutput,
   type CanvasImageItem,
 } from './canvasModel';
+import { recoverCanvasAiNodeWithUsableResults } from './canvasAiOutputs';
 
 const DATA_THUMBNAIL_KEEP_MAX_CHARS = 96 * 1024;
 
@@ -145,7 +146,7 @@ export const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): Canva
 };
 
 const normalizeInterruptedCanvasAiRun = (item: CanvasImageItem): CanvasImageItem => {
-  const cleanItem = stripCanvasItemDataImageProvenance(item);
+  const cleanItem = recoverCanvasAiNodeWithUsableResults(stripCanvasItemDataImageProvenance(item));
   if (cleanItem.ai?.type === 'video-generator') {
     const invalidVideoError = '接口返回了无效的视频结果，请重新生成';
     let hasInvalidVideoOutput = false;

@@ -64,6 +64,11 @@ export type BufferItem = {
   originalUrl?: string;
   alchemy?: AlchemyData;
   inspirationProfile?: InspirationProfile;
+  inspirationAnalysisFailure?: {
+    attemptedAt: number;
+    attempts: number;
+    message: string;
+  };
 };
 
 

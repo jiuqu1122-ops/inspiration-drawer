@@ -100,6 +100,33 @@ const getAlchemyState = (item: AlchemyBufferItem): AlchemyState => {
 
 const safeTextList = (values?: string[]) => (Array.isArray(values) ? values.filter(Boolean) : []);
 
+const isLocalAlchemyResult = (result?: AlchemyResult | null) => {
+  if (!result || result.analysisMode === 'ai') return false;
+  if (result.analysisMode === 'palette' || result.analysisMode === 'local' || result.analysisMode === 'mock') {
+    return true;
+  }
+
+  const apiStatus = String(result.apiStatus || '').toLowerCase();
+  const colorSource = String(result.colorSource || '').toLowerCase();
+  return /(?:^|[_-])(?:local|palette|mock)(?:[_-]|$)|fallback|placeholder/.test(apiStatus)
+    || /^(?:local-canvas|fallback-preset|quick-fallback)$/.test(colorSource);
+};
+
+const removeLocalAlchemyKeywords = (item: AlchemyBufferItem): AlchemyBufferItem => {
+  const result = item.alchemy?.result;
+  if (!isLocalAlchemyResult(result) || safeTextList(result?.keywords).length === 0) return item;
+  return {
+    ...item,
+    alchemy: {
+      ...item.alchemy!,
+      result: {
+        ...result!,
+        keywords: [],
+      },
+    },
+  };
+};
+
 const getItemRemarkEntries = (item: Pick<BufferItem, 'remark' | 'remarks'>) => {
   const fromList = Array.isArray(item.remarks)
     ? item.remarks.map(value => String(value || '').trim()).filter(Boolean)
@@ -121,18 +148,27 @@ const replaceFirstItemRemark = (item: Pick<BufferItem, 'remark' | 'remarks'>, fi
 
 const getAlchemySearchText = (item: AlchemyBufferItem) => {
   const result = item.alchemy?.result;
+  const searchableAlchemyKeywords = isLocalAlchemyResult(result) ? [] : safeTextList(result?.keywords);
+  const aiTagNames = Array.isArray(item.inspirationProfile?.aiTags)
+    ? item.inspirationProfile.aiTags
+      .map(tag => String(tag?.name || '').trim())
+      .filter(Boolean)
+    : [];
+  const searchableRemarks = item.type === 'image'
+    ? []
+    : [item.remark, ...safeTextList(item.remarks)];
   return [
     item.name,
     item.content,
-    item.remark,
-    ...safeTextList(item.remarks),
+    ...searchableRemarks,
     item.path,
     item.url,
     item.alchemy?.note,
     result?.title,
     result?.cmf,
     result?.form,
-    ...safeTextList(result?.keywords),
+    ...searchableAlchemyKeywords,
+    ...aiTagNames,
     ...safeTextList(result?.borrow),
     ...safeTextList(result?.avoid),
     ...safeTextList(result?.materials),
@@ -584,6 +620,8 @@ export {
   getAlchemyState,
   getItemRemarkEntries,
   replaceFirstItemRemark,
+  isLocalAlchemyResult,
+  removeLocalAlchemyKeywords,
   getAlchemySearchText,
   buildLocalAlchemyResult,
   buildLocalPaletteOnlyResult,

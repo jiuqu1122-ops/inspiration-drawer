@@ -450,8 +450,9 @@ const visualReferenceNotice = (references: AgentCanvasVisualReference[]) => {
   return [
     '当前可用参考图已随本轮消息附加：',
     ...usable.slice(0, 6).map((reference, index) => (
-      `${index + 1}. ${reference.name}（nodeId: ${reference.nodeId}${reference.outputId ? `, outputId: ${reference.outputId}` : ''}）`
+      `图${index + 1}（Image ${index + 1}）：${reference.name}（nodeId: ${reference.nodeId}${reference.outputId ? `, outputId: ${reference.outputId}` : ''}）`
     )),
+    '图号严格对应附件顺序，不得交换或重排。',
   ].join('\n');
 };
 
@@ -467,13 +468,16 @@ const buildOpenAiUserContent = (
   if (imageReferences.length === 0) return textPart;
   return [
     { type: 'text', text: textPart },
-    ...imageReferences.map(reference => ({
-      type: 'image_url',
-      image_url: {
-        url: reference.source,
-        detail: 'low',
+    ...imageReferences.flatMap((reference, index) => ([
+      { type: 'text', text: `紧随此文字的图片附件是图${index + 1}（Image ${index + 1}）：${reference.name}` },
+      {
+        type: 'image_url',
+        image_url: {
+          url: reference.source,
+          detail: 'low',
+        },
       },
-    })),
+    ])),
   ];
 };
 
@@ -485,7 +489,12 @@ const buildCodexUserInput = (
   references
     .filter(reference => reference.mediaType === 'image')
     .slice(0, 6)
-    .forEach(reference => {
+    .forEach((reference, index) => {
+      input.push({
+        type: 'text',
+        text: `紧随此文字的图片附件是图${index + 1}（Image ${index + 1}）：${reference.name}`,
+        text_elements: [],
+      });
       if (reference.path) {
         input.push({ type: 'localImage', path: reference.path, detail: 'low' });
         return;

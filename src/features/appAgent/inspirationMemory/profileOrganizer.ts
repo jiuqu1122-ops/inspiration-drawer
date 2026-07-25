@@ -121,6 +121,7 @@ export const buildProfileOrganizationPlan = (input: {
       ...profile.cmf.materials,
       ...profile.cmf.finishes,
       ...profile.scene,
+      ...(profile.aiTags || []).map(tag => tag.name),
       ...profile.userTags,
       ...profile.userNotes,
     ].join(' '));

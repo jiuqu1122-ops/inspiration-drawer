@@ -427,6 +427,30 @@ const buildChinesePromptWithOptions = (prompt: string, aspectRatio?: string, res
   return `${prompt.trim()}\n${constraints.join('，')}`;
 };
 
+export const buildCanvasAiIndexedReferencePrompt = (prompt: string, referenceCount: number) => {
+  const cleanPrompt = prompt.trim();
+  const count = Math.max(0, Math.min(9, Math.floor(referenceCount)));
+  if (count < 2) return cleanPrompt;
+  const mapping = Array.from({ length: count }, (_, index) => (
+    `第${index + 1}个附件 = 图${index + 1}（Image ${index + 1}）`
+  )).join('；');
+  return [
+    cleanPrompt,
+    `参考图编号严格按附件顺序绑定：${mapping}。用户提到“图N”或“Image N”时，只能使用第N个附件对应的内容，不要交换、重排或把其他参考图当作图N。`,
+  ].filter(Boolean).join('\n\n');
+};
+
+export const orderCanvasAiReferenceSources = (
+  inputCount: number,
+  indexedSources: Iterable<readonly [number, string]>,
+) => {
+  const sourceByIndex = new Map(indexedSources);
+  const ordered = Array.from({ length: Math.max(0, inputCount) }, (_, index) => (
+    sourceByIndex.get(index)?.trim() || ''
+  )).filter(Boolean);
+  return ordered;
+};
+
 const normalizeOutputFormat = (format?: string | null) => (
   String(format || '').trim().toLowerCase() === 'png' ? 'png' : 'jpg'
 );
@@ -2573,10 +2597,14 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
     }
     throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
   }
-  if (options.cloudWallet) return generateCloudWalletImages(options);
-  if (options.provider === 'xais-chat') return generateXaisChatImages(options);
-  if (options.provider === 'new-api') return generateNewApiImages(options);
-  return generateOpenAiCompatibleImages(options);
+  const requestOptions = {
+    ...options,
+    prompt: buildCanvasAiIndexedReferencePrompt(options.prompt, options.inputImages?.length || 0),
+  };
+  if (requestOptions.cloudWallet) return generateCloudWalletImages(requestOptions);
+  if (requestOptions.provider === 'xais-chat') return generateXaisChatImages(requestOptions);
+  if (requestOptions.provider === 'new-api') return generateNewApiImages(requestOptions);
+  return generateOpenAiCompatibleImages(requestOptions);
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {

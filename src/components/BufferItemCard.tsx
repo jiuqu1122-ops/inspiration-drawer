@@ -13,6 +13,7 @@ import {
   writeLocalImageFileToClipboard,
 } from '../features/imageClipboard';
 import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
+import { isLocalAlchemyResult } from '../features/alchemy';
 
 type LazyCardImageProps = {
   src?: string;
@@ -152,6 +153,9 @@ function BufferItemCard({
   })();
   const shouldShowRemarkToggle = remarkEntries.length > 2 || remarkEntries.some(remark => remark.length > 48);
   const areRemarksClamped = shouldShowRemarkToggle && !areRemarksExpanded;
+  const aiTagNames = Array.isArray(item.inspirationProfile?.aiTags)
+    ? item.inspirationProfile.aiTags.map((tag: any) => String(tag?.name || '').trim()).filter(Boolean).slice(0, 8)
+    : [];
 
   const commitRemarkEdit = (options: { keepOpen?: boolean } = {}) => {
     skipRemarkEditSaveRef.current = false;
@@ -450,8 +454,11 @@ function BufferItemCard({
   const isAlchemyLoading = alchemyState === 'analyzing';
   const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
   const alchemyColors = Array.isArray(alchemyResult?.colors) ? alchemyResult.colors.slice(0, 4) : [];
-  const alchemyKeywords = Array.isArray(alchemyResult?.keywords) ? alchemyResult.keywords.slice(0, 3) : [];
-  const hasCompactPalette = item.type === 'image' && (isAlchemyLoading || alchemyColors.length > 0);
+  const alchemyKeywords = !isLocalAlchemyResult(alchemyResult) && Array.isArray(alchemyResult?.keywords)
+    ? alchemyResult.keywords.slice(0, 3)
+    : [];
+  const imageKeywords = Array.from(new Set([...alchemyKeywords, ...aiTagNames])).slice(0, 11);
+  const hasCompactPalette = item.type === 'image' && (isAlchemyLoading || alchemyColors.length > 0 || imageKeywords.length > 0);
   const imageCardSource = getImageListSource(item, { allowOriginalFallback: !!preferFullImageSource });
   const imagePreviewSource = getPreviewOriginalSource(item);
   const imagePreviewPlaceholderSource = getPreviewPlaceholderSource(item);
@@ -801,14 +808,14 @@ return (
                       />
                     ))}
                   </div>
-                  {alchemyKeywords.length > 0 && (
+                  {imageKeywords.length > 0 && (
                     <motion.div
                       className="mt-2 flex flex-wrap gap-1 overflow-hidden"
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{ type: 'tween', duration: 0.12, ease: 'easeOut' }}
                     >
-                      {alchemyKeywords.map((tag: string) => (
+                      {imageKeywords.map((tag: string) => (
                         <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300" style={{ borderRadius: chipRadius }}>{tag}</span>
                       ))}
                     </motion.div>

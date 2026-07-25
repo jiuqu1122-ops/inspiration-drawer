@@ -7250,6 +7250,29 @@ fn collect_drop_media_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
     Ok(output)
 }
 
+const MAX_CANVAS_TEMPLATE_JSON_BYTES: u64 = 4 * 1024 * 1024;
+
+#[tauri::command]
+fn read_canvas_template_json(path: String) -> Result<String, String> {
+    let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
+    if !normalized.is_file() {
+        return Err("画布模板 JSON 文件不存在".to_string());
+    }
+    let is_json = normalized
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if !is_json {
+        return Err("画布模板文件必须是 JSON 格式".to_string());
+    }
+    let metadata = fs::metadata(&normalized).map_err(|error| error.to_string())?;
+    if metadata.len() > MAX_CANVAS_TEMPLATE_JSON_BYTES {
+        return Err("画布模板 JSON 文件不能超过 4 MB".to_string());
+    }
+    fs::read_to_string(&normalized).map_err(|error| format!("读取画布模板 JSON 失败：{}", error))
+}
+
 fn local_media_metadata_impl(path: String) -> Result<LocalMediaMetadata, String> {
     let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
     if !normalized.is_file() {
@@ -8380,6 +8403,25 @@ pub(crate) fn compact_items_payload(value: &mut serde_json::Value) {
     }
 }
 
+fn write_text_file_atomically(path: &Path, content: &str) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("drawer_items.json");
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary_path = path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+
+    fs::write(&temporary_path, content).map_err(|error| error.to_string())?;
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn load_items(app_handle: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let path = get_user_data_dir(&app_handle).join("drawer_items.json");
@@ -8398,7 +8440,7 @@ fn save_items(app_handle: tauri::AppHandle, mut items: serde_json::Value) -> Res
     let path = get_user_data_dir(&app_handle).join("drawer_items.json");
     compact_items_payload(&mut items);
     let content = serde_json::to_string(&items).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    write_text_file_atomically(&path, &content)
 }
 
 #[tauri::command]
@@ -11394,6 +11436,20 @@ fn image_source_for_ai(input: &str) -> Result<String, String> {
     }
 
     Ok(trimmed.to_string())
+}
+
+#[tauri::command]
+async fn read_local_image_data_url(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data_url = image_source_for_ai(&path)?;
+        if data_url.starts_with("data:image/") {
+            Ok(data_url)
+        } else {
+            Err("local image could not be converted to a data URL".to_string())
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn build_siliconflow_image_search_query_body(
@@ -16611,6 +16667,7 @@ fn main() {
             create_oss_public_image_urls,
             delete_oss_public_image_urls,
             resolve_ai_image_result_url,
+            read_local_image_data_url,
             collect_web_images,
             cache_web_image,
             cache_web_image_to_dir,
@@ -16630,6 +16687,7 @@ fn main() {
             check_and_install_app_update_mirrors,
             path_kind,
             collect_drop_media_paths,
+            read_canvas_template_json,
             get_local_media_metadata,
             delete_local_file,
             show_in_folder,

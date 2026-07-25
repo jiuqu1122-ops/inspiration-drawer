@@ -66,6 +66,26 @@ assert(matches[0]?.itemId === 'warm-appliance', 'semantic retrieval should rank 
 assert(matches[0]?.recommendedRole === 'CMF_REF', 'requested role should be preserved');
 assert(matches[0]?.matchedFeatures.includes('暖白色'), 'matched features should explain retrieval');
 
+const tagOnlyMatches = searchDrawerInspirations([{
+  ...baseItem('future-speaker', '桌面音响参考'),
+  inspirationProfile: {
+    itemId: 'future-speaker',
+    summary: '桌面音响参考',
+    objects: ['音响'],
+    category: '音响',
+    form: { silhouette: [], geometry: [], proportion: [] },
+    cmf: { colors: [], materials: [], finishes: [] },
+    style: [], interaction: [], scene: [], mood: [], userTags: [], userNotes: [],
+    aiTags: [{ name: '未来主义', category: '风格', confidence: 0.93 }],
+  },
+}], {
+  query: '未来主义',
+  projectBrief: {},
+  referenceRole: 'MOOD_REF',
+  topK: 1,
+});
+assert(tagOnlyMatches[0]?.itemId === 'future-speaker', 'AI tags should participate in inspiration retrieval');
+
 const brief = extractCreativeBrief({ userText: '为年轻用户设计一个温暖复古的便携咖啡机，暖白磨砂，避免科技发光感' });
 assert(brief.projectBrief.productType.length > 0, 'creative brief should include product type');
 assert(brief.projectBrief.styleKeywords.includes('温暖'), 'creative brief should extract style');

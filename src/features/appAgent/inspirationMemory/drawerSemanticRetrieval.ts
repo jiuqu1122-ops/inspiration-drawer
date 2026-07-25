@@ -150,13 +150,19 @@ export const getInspirationProfile = (item: BufferItem): InspirationProfile => {
   };
 };
 
+const aiTagNames = (profile: InspirationProfile, categories?: string[]) => (
+  (profile.aiTags || [])
+    .filter(tag => !categories || categories.includes(tag.category))
+    .map(tag => tag.name)
+);
+
 const profileFeatures = (profile: InspirationProfile) => ({
-  FORM_REF: [...profile.form.silhouette, ...profile.form.geometry, ...profile.form.proportion, ...profile.style],
-  CMF_REF: [...profile.cmf.colors, ...profile.cmf.materials, ...profile.cmf.finishes, ...profile.style],
-  STRUCTURE_REF: [...profile.objects, ...profile.form.geometry, ...profile.interaction, profile.category],
-  INTERACTION_REF: [...profile.interaction, ...profile.objects, ...profile.scene],
-  MOOD_REF: [...profile.mood, ...profile.scene, ...profile.style, ...profile.cmf.colors],
-  SUBJECT_REF: [...profile.objects, profile.category, profile.summary, ...profile.form.silhouette],
+  FORM_REF: [...profile.form.silhouette, ...profile.form.geometry, ...profile.form.proportion, ...profile.style, ...aiTagNames(profile, ['形态', '视角', '风格'])],
+  CMF_REF: [...profile.cmf.colors, ...profile.cmf.materials, ...profile.cmf.finishes, ...profile.style, ...aiTagNames(profile, ['色彩', '材质', '风格'])],
+  STRUCTURE_REF: [...profile.objects, ...profile.form.geometry, ...profile.interaction, profile.category, ...aiTagNames(profile, ['产品类别', '设计领域', '形态'])],
+  INTERACTION_REF: [...profile.interaction, ...profile.objects, ...profile.scene, ...aiTagNames(profile, ['产品类别', '场景'])],
+  MOOD_REF: [...profile.mood, ...profile.scene, ...profile.style, ...profile.cmf.colors, ...aiTagNames(profile, ['风格', '色彩', '场景'])],
+  SUBJECT_REF: [...profile.objects, profile.category, profile.summary, ...profile.form.silhouette, ...aiTagNames(profile, ['产品类别', '设计领域'])],
 });
 
 const inferRole = (query: string, scores: Record<InspirationReferenceRole, number>, requested?: InspirationReferenceRole) => {
@@ -206,6 +212,7 @@ export function searchDrawerInspirations(
         folderName,
         profile.summary,
         profile.category,
+        ...aiTagNames(profile),
         ...profile.userTags,
         ...profile.userNotes,
         ...Object.values(byRole).flat(),
@@ -225,6 +232,7 @@ export function searchDrawerInspirations(
         item.name,
         profile.category,
         ...profile.objects,
+        ...aiTagNames(profile, ['产品类别', '设计领域']),
         ...profile.userTags,
       ].join(' '));
       const subjectMatchedTokens = directQueryTokens.filter(token => (

@@ -9,6 +9,25 @@ export const INSPIRATION_REFERENCE_ROLES = [
 
 export type InspirationReferenceRole = typeof INSPIRATION_REFERENCE_ROLES[number];
 
+export const AI_TAG_CATEGORIES = [
+  '产品类别',
+  '设计领域',
+  '风格',
+  '材质',
+  '色彩',
+  '形态',
+  '场景',
+  '视角',
+] as const;
+
+export type AiTagCategory = typeof AI_TAG_CATEGORIES[number];
+
+export interface AiImageTag {
+  name: string;
+  category: AiTagCategory;
+  confidence: number;
+}
+
 export interface InspirationProfile {
   itemId: string;
   summary: string;
@@ -30,6 +49,9 @@ export interface InspirationProfile {
   mood: string[];
   userTags: string[];
   userNotes: string[];
+  aiTags?: AiImageTag[];
+  analyzedAt?: string;
+  analysisVersion?: number;
 }
 
 export interface DrawerSearchInspirationsInput {

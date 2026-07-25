@@ -19,6 +19,50 @@ export const getCanvasAiOutputDisplaySource = (output?: CanvasAiGeneratedOutput 
   || ''
 );
 
+const hasCanvasAiOutputUsableSource = (output?: CanvasAiGeneratedOutput | null) => (
+  !!(output?.url || output?.path)
+);
+
+export const recoverCanvasAiOutputWithUsableResult = (
+  output: CanvasAiGeneratedOutput
+): CanvasAiGeneratedOutput => {
+  if (output.status !== 'error' || !hasCanvasAiOutputUsableSource(output)) return output;
+  return {
+    ...output,
+    status: 'success',
+    error: undefined,
+  };
+};
+
+export const recoverCanvasAiNodeWithUsableResults = (
+  canvasItem: CanvasImageItem
+): CanvasImageItem => {
+  if (!canvasItem.ai?.outputs?.length) return canvasItem;
+  let outputsChanged = false;
+  const outputs = canvasItem.ai.outputs.map((output) => {
+    const recovered = recoverCanvasAiOutputWithUsableResult(output);
+    if (recovered !== output) outputsChanged = true;
+    return recovered;
+  });
+  const expectedOutputCount = Math.max(
+    1,
+    Math.round(Number(canvasItem.ai.count) || outputs.length)
+  );
+  const allOutputsSucceeded = outputs.length >= expectedOutputCount && outputs.every(output => (
+    output.status === 'success' && hasCanvasAiOutputUsableSource(output)
+  ));
+  const shouldRecoverNode = canvasItem.ai.status === 'error' && allOutputsSucceeded;
+  if (!outputsChanged && !shouldRecoverNode) return canvasItem;
+  return {
+    ...canvasItem,
+    ai: {
+      ...canvasItem.ai,
+      outputs,
+      ...(shouldRecoverNode ? { status: 'success' as const, error: undefined } : {}),
+    },
+  };
+};
+
 export const buildCanvasAiOutputLocalCachePatch = (path: string) => ({
   path,
   cacheStatus: 'pending' as const,
@@ -26,7 +70,7 @@ export const buildCanvasAiOutputLocalCachePatch = (path: string) => ({
 
 export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
   (isCanvasAiGeneratorType(canvasItem?.ai?.type) || canvasItem?.ai?.type === 'workflow')
-    ? (canvasItem.ai.outputs || []).filter(
+    ? (canvasItem.ai.outputs || []).map(recoverCanvasAiOutputWithUsableResult).filter(
       output => output.status === 'success' && getCanvasAiOutputDisplaySource(output)
     )
     : []
@@ -117,7 +161,6 @@ export const createCanvasAiOutputBufferItem = (
     thumbnail: output.thumbnail || undefined,
     sourceUrl: remoteSource || undefined,
     originalUrl: remoteSource || undefined,
-    remark: output.prompt || canvasItem.ai?.prompt || canvasItem.item.content || '',
     createdAt: generatedAt,
     isQuickAccess: false,
   };

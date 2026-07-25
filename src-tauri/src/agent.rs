@@ -833,8 +833,6 @@ pub struct AgentInspirationAnalysisRequest {
     #[serde(default)]
     user_notes: Vec<String>,
     existing_profile: Option<Value>,
-    #[serde(default)]
-    model: Option<String>,
 }
 
 #[tauri::command]
@@ -850,16 +848,13 @@ pub async fn agent_analyze_inspiration(
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("无法初始化灵感自动分析连接：{error}"))?;
-    let mut payload = json!({
+    let payload = json!({
         "itemId": request.item_id,
         "imageSource": request.image_source,
         "userTags": request.user_tags,
         "userNotes": request.user_notes,
         "existingProfile": request.existing_profile,
     });
-    if let Some(model) = request.model {
-        payload["model"] = Value::String(model);
-    }
     let submission = submit_wallet_task(
         &client,
         &access_token,

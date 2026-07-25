@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   NEW_API_IMAGE_RESPONSE_FORMAT,
   NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
+  buildCanvasAiIndexedReferencePrompt,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
@@ -26,6 +27,7 @@ import {
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
+  orderCanvasAiReferenceSources,
   reconcileWalletImageCandidates,
   resolveCanvasAiReferenceProvider,
   resolveCanvasAiCandidateInputImages,
@@ -84,6 +86,38 @@ describe('NewAPI image model mapping', () => {
 });
 
 describe('unified wallet image model families', () => {
+  it('binds prompt image numbers to attachment order for multi-reference requests', () => {
+    const prompt = buildCanvasAiIndexedReferencePrompt('使用图1的脸和图2的服装', 2);
+
+    expect(prompt).toContain('第1个附件 = 图1（Image 1）');
+    expect(prompt).toContain('第2个附件 = 图2（Image 2）');
+    expect(prompt).toContain('不要交换、重排');
+  });
+
+  it('does not add numbering instructions to a single-reference request', () => {
+    expect(buildCanvasAiIndexedReferencePrompt('保留参考图主体', 1)).toBe('保留参考图主体');
+  });
+
+  it('restores attachment order after local and remote references finish in different groups', () => {
+    expect(orderCanvasAiReferenceSources(2, [
+      [1, 'https://example.com/image-2.webp'],
+      [0, 'https://oss.example.com/image-1.png'],
+    ])).toEqual([
+      'https://oss.example.com/image-1.png',
+      'https://example.com/image-2.webp',
+    ]);
+  });
+
+  it('keeps duplicate sources in separate numbered attachment slots', () => {
+    expect(orderCanvasAiReferenceSources(2, [
+      [0, 'https://example.com/shared.png'],
+      [1, 'https://example.com/shared.png'],
+    ])).toEqual([
+      'https://example.com/shared.png',
+      'https://example.com/shared.png',
+    ]);
+  });
+
   it('puts Nano Banana Pro before GPT Image 2 in the unified picker', () => {
     expect(getCanvasAiPublicImageModelPriority('xais-chat', 'Xais Nano Pro_2K'))
       .toBeLessThan(getCanvasAiPublicImageModelPriority('new-api', 'gpt-image-2'));
