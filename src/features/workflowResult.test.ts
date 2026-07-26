@@ -6,6 +6,23 @@ import {
 } from './workflowResult';
 
 describe('Workflow Result Card data', () => {
+  it('creates a visible running card before the first workflow node completes', () => {
+    const result = buildWorkflowResultCardData({
+      workflowId: 'workflow',
+      workflowNodeId: 'workflow-node',
+      workflowName: '实时工作流',
+      status: 'running',
+      completedSteps: 0,
+      totalSteps: 3,
+    });
+
+    expect(result.status).toBe('running');
+    expect(result.title).toBe('实时工作流');
+    expect(result.summary).toContain('分析中 0/3 个步骤');
+    expect(result.analysisResults).toEqual([]);
+    expect(result.generationResults).toEqual([]);
+  });
+
   it('updates the existing workflow result message as nodes complete', () => {
     const firstResult = buildWorkflowResultCardData({
       workflowId: 'workflow',

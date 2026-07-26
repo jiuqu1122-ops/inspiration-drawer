@@ -20811,6 +20811,7 @@ function MainApp() {
         } : {}),
       },
     });
+    publishWorkflowProgress();
     if (activeCanvasIdRef.current === runCanvasId && isCanvasModeRef.current) {
       updateCanvasSelection([targetId]);
     }
