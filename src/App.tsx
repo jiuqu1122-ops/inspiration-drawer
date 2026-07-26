@@ -23,7 +23,6 @@ import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-sh
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, emitTo } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { readTextFile } from '@tauri-apps/plugin-fs';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { relaunch } from '@tauri-apps/plugin-process';
 
@@ -187,6 +186,11 @@ import {
   type CanvasItemBox,
   type CanvasResizeCorner,
 } from './features/canvasModel';
+import { findNearestCanvasItemIdForEmptyViewport } from './features/canvasViewportNavigation';
+import {
+  getGeneratedImageCacheSource,
+  shouldCacheGeneratedImageAgain,
+} from './features/generatedImageCache';
 import {
   DESIGN_AGENT_ARTIFACT_LABELS,
   DESIGN_AGENT_ARTIFACT_TYPES,
@@ -4641,6 +4645,7 @@ function MainApp() {
   const canvasClipboardRef = useRef<CanvasImageItem[]>([]);
   const canvasPanRef = useRef<{
     pointerId: number;
+    button: number;
     startClientX: number;
     startClientY: number;
     startScrollLeft: number;
@@ -4753,6 +4758,21 @@ function MainApp() {
       canvasSpaceKeyCapturedRef.current = false;
       keepCanvasSessionOnLeaveRef.current = false;
     }
+  }, [isCanvasMode]);
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const surface = canvasSurfaceRef.current;
+    if (!surface) return;
+    const preventNativeMiddleMouse = (event: MouseEvent) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+    };
+    surface.addEventListener('mousedown', preventNativeMiddleMouse, { capture: true, passive: false });
+    surface.addEventListener('auxclick', preventNativeMiddleMouse, { capture: true, passive: false });
+    return () => {
+      surface.removeEventListener('mousedown', preventNativeMiddleMouse, true);
+      surface.removeEventListener('auxclick', preventNativeMiddleMouse, true);
+    };
   }, [isCanvasMode]);
   useEffect(() => { canvasItemsRef.current = canvasItems; }, [canvasItems]);
   useEffect(() => {
@@ -5301,7 +5321,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.9');
+        setAppVersion('5.0.10');
       });
   }, []);
 
@@ -9574,9 +9594,14 @@ function MainApp() {
         if (Array.isArray(result?.colors) && result.colors.length > 0) return;
         if (paletteAnalysisRequestedIdsRef.current.has(item.id)) return;
         paletteAnalysisRequestedIdsRef.current.add(item.id);
-        window.setTimeout(() => {
+        const runWhenCanvasIdle = () => {
+          if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+            window.setTimeout(runWhenCanvasIdle, 180);
+            return;
+          }
           void runLocalPaletteAnalysis(item as AlchemyBufferItem, { silent: true, note: '已自动提取配色。' });
-        }, index * 20);
+        };
+        window.setTimeout(runWhenCanvasIdle, index * 20);
       });
   };
 
@@ -9627,6 +9652,10 @@ function MainApp() {
       canvasOutputClientRequestId?: string;
     }
   ) => {
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+      window.setTimeout(() => addGeneratedImagesToDrawer(generatedItems, options), 180);
+      return;
+    }
     const cleanItems = generatedItems.filter(item => item.type === 'image');
     if (cleanItems.length === 0) return;
 
@@ -9644,8 +9673,7 @@ function MainApp() {
     });
     const savedIds = new Set(savedItems.map(item => item.id));
     savedItems.forEach((item) => {
-      const source = item.sourceUrl || item.originalUrl || item.url || item.path || '';
-      if (source && !source.startsWith('asset:') && !/^[a-zA-Z]:[\\/]/.test(source) && !source.startsWith('\\\\')) {
+      if (shouldCacheGeneratedImageAgain(item)) {
         generatedImageCachePendingIdsRef.current.add(item.id);
       }
     });
@@ -9660,13 +9688,34 @@ function MainApp() {
     ).trim();
 
     savedItems.forEach((item) => {
-      const source = item.sourceUrl || item.originalUrl || item.url || item.path || '';
+      const source = getGeneratedImageCacheSource(item);
       if (!source) return;
-      if (source.startsWith('asset:') || /^[a-zA-Z]:[\\/]/.test(source) || source.startsWith('\\\\')) {
-        const paletteItem = item.thumbnail
-          ? { ...item, url: item.thumbnail, path: undefined }
-          : item;
-        triggerAutoPaletteForItems([paletteItem as BufferItem]);
+      if (!shouldCacheGeneratedImageAgain(item)) {
+        if (item.thumbnail) {
+          triggerAutoPaletteForItems([{
+            ...item,
+            url: item.thumbnail,
+            path: undefined,
+          } as BufferItem]);
+          return;
+        }
+        const localPreviewSource = item.url || (item.path ? convertFileSrc(item.path) : source);
+        enqueueCanvasAiOutputThumbnailJob({
+          key: `drawer-local:${item.id}:${item.path || localPreviewSource}`,
+          outputId: item.id,
+          drawerItemId: item.id,
+          source: localPreviewSource,
+          path: item.path,
+          onSettled: (patch) => {
+            if (!patch.thumbnail) return;
+            triggerAutoPaletteForItems([{
+              ...item,
+              url: patch.thumbnail,
+              path: undefined,
+              thumbnail: patch.thumbnail,
+            } as BufferItem]);
+          },
+        });
         return;
       }
 
@@ -12469,6 +12518,15 @@ function MainApp() {
     canvasItemsRef.current = next;
     canvasSessionItemsRef.current.set(activeCanvasIdRef.current || DEFAULT_CANVAS_ID, next);
     setCanvasItems(next);
+    const activeDrag = canvasDragRef.current;
+    if (activeDrag?.hasMoved) {
+      scheduleCanvasInteractionPaint({
+        kind: 'move',
+        ids: activeDrag.ids,
+        dx: activeDrag.latestDelta.dx,
+        dy: activeDrag.latestDelta.dy,
+      });
+    }
     return next;
   };
 
@@ -12896,6 +12954,9 @@ function MainApp() {
     clearCanvasUndoStack();
     canvasViewportRef.current = null;
     setCanvasViewport(null);
+    if (isCanvasModeRef.current && restored.items.length > 0) {
+      scheduleCanvasFocusNearestContentIfViewportEmpty(canvasId);
+    }
     return restored.items;
   };
 
@@ -15659,6 +15720,10 @@ function MainApp() {
     job: CanvasAiOutputThumbnailJob,
     patch: Partial<CanvasAiGeneratedOutput>
   ) => {
+    if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+      window.setTimeout(() => settleCanvasAiOutputThumbnailJob(job, patch), 160);
+      return;
+    }
     const thumbnail = patch.thumbnail;
     const matchSources = new Set((job.matchSources || []).filter(Boolean));
     const changedCanvasIds = new Set<string>();
@@ -16390,7 +16455,7 @@ function MainApp() {
       if (filePaths.length === 0) return;
       const payload = { presets: [] as CanvasAiPromptPreset[], workflows: [] as CanvasWorkflowTemplate[] };
       for (const filePath of filePaths) {
-        const parsed = JSON.parse(await readTextFile(filePath));
+        const parsed = await invoke<unknown>('read_canvas_template_json', { path: filePath });
         const filePayload = getCanvasTemplateImportPayload(parsed);
         payload.presets.push(...filePayload.presets);
         payload.workflows.push(...filePayload.workflows);
@@ -19256,9 +19321,10 @@ function MainApp() {
           }
         }
         const displayUrl = cached.url || source;
-        const size = mediaType === 'video' || !cached.path
-          ? getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO)
-          : await readImageDisplaySize(displayUrl);
+        // Avoid decoding a potentially huge generated image in the renderer
+        // during result placement. Rust creates the small preview off-thread,
+        // while the requested aspect ratio supplies the initial layout size.
+        const size = getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
         const thumbnail = mediaType === 'image' && !!cached.path
           ? await createCanvasImagePreviewThumbnail(displayUrl, cached.path || undefined)
           : undefined;
@@ -21180,7 +21246,7 @@ function MainApp() {
   };
 
   const addCanvasDroppedTemplateJsonSources = async (
-    sources: Array<{ name: string; read: () => Promise<string> }>,
+    sources: Array<{ name: string; read: () => Promise<unknown> }>,
     client?: { x: number; y: number },
   ) => {
     if (sources.length === 0) return false;
@@ -21188,7 +21254,10 @@ function MainApp() {
     let failedCount = 0;
     for (const source of sources) {
       try {
-        values.push(JSON.parse(await source.read()) as unknown);
+        const rawValue = await source.read();
+        values.push(typeof rawValue === 'string'
+          ? JSON.parse(rawValue) as unknown
+          : rawValue);
       } catch (error) {
         failedCount += 1;
         console.warn(`画布 JSON 文件读取失败：${source.name}`, error);
@@ -21222,13 +21291,17 @@ function MainApp() {
     const videoFiles = allFiles.filter(file => file.type.startsWith('video/') || isCanvasVideoFileName(file.name));
     if (templateFiles.length === 0 && imageFiles.length === 0 && videoFiles.length === 0) return false;
 
-    lastCanvasDroppedPathsKeyRef.current = [...templateFiles, ...imageFiles, ...videoFiles].map(file => `${file.name}:${file.size}:${file.lastModified}`).join('\n');
-    lastCanvasDropAtRef.current = Date.now();
+    const mediaFiles = [...imageFiles, ...videoFiles];
+    if (mediaFiles.length > 0) {
+      lastCanvasDroppedPathsKeyRef.current = mediaFiles.map(file => `${file.name}:${file.size}:${file.lastModified}`).join('\n');
+      lastCanvasDropAtRef.current = Date.now();
+    }
 
-    const handledTemplates = await addCanvasDroppedTemplateJsonSources(
-      templateFiles.map(file => ({ name: file.name, read: () => file.text() })),
-      client,
-    );
+    // Local JSON files are handled by the native path event. Do not call
+    // File.text() here: image-bearing workflow JSON can contain tens of
+    // megabytes of Base64 and loading it into WebView2 is enough to crash the
+    // renderer before Rust can cache the embedded image.
+    const handledTemplates = templateFiles.length > 0;
 
     const createdImages = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index, client)));
     const imageItems = createdImages.filter((item): item is CanvasImageItem => !!item);
@@ -21243,12 +21316,22 @@ function MainApp() {
   };
 
   const addCanvasDroppedPaths = async (paths: string[], client?: { x: number; y: number }) => {
-    const cleanPaths = Array.from(new Set((paths || []).map(normalizeLocalDragPath).filter(Boolean)));
+    let cleanPaths = Array.from(new Set((paths || []).map(normalizeLocalDragPath).filter(Boolean)));
     if (cleanPaths.length === 0) return;
 
-    const key = cleanPaths.join('\n');
     const now = Date.now();
-    if (key === lastCanvasDroppedPathsKeyRef.current && now - lastCanvasDropAtRef.current < 700) return;
+    const recentDrop = now - lastCanvasDropAtRef.current < 700;
+    const initialKey = cleanPaths.join('\n');
+    if (initialKey === lastCanvasDroppedPathsKeyRef.current && recentDrop) return;
+    if (recentDrop) {
+      // A DOM drop may already have handled media files from the same gesture.
+      // Keep the JSON path so the native importer can safely extract embedded
+      // images, while avoiding duplicate image/video nodes.
+      cleanPaths = cleanPaths.filter(isCanvasTemplateJsonFileName);
+      if (cleanPaths.length === 0) return;
+    }
+    const key = cleanPaths.join('\n');
+    if (key === lastCanvasDroppedPathsKeyRef.current && recentDrop) return;
     lastCanvasDroppedPathsKeyRef.current = key;
     lastCanvasDropAtRef.current = now;
 
@@ -21257,7 +21340,7 @@ function MainApp() {
     const handledTemplates = await addCanvasDroppedTemplateJsonSources(
       templatePaths.map(path => ({
         name: path.split(/[\\/]/).pop() || path,
-        read: () => invoke<string>('read_canvas_template_json', { path }),
+        read: () => invoke<unknown>('read_canvas_template_json', { path }),
       })),
       client,
     );
@@ -22204,6 +22287,28 @@ function MainApp() {
     window.setTimeout(tryFocus, 220);
   };
 
+  const scheduleCanvasFocusNearestContentIfViewportEmpty = (canvasId: string) => {
+    let frameAttempts = 0;
+    const tryFocus = () => {
+      if (!isCanvasModeRef.current || activeCanvasIdRef.current !== canvasId) return;
+      const surface = canvasSurfaceRef.current;
+      if (!surface || surface.clientWidth <= 0 || surface.clientHeight <= 0) {
+        frameAttempts += 1;
+        if (frameAttempts < 8) window.requestAnimationFrame(tryFocus);
+        return;
+      }
+      const targetId = findNearestCanvasItemIdForEmptyViewport(
+        canvasItemsRef.current,
+        readCanvasViewportRect(surface),
+      );
+      if (!targetId) return;
+      centerCanvasItemInView(
+        canvasItemsRef.current.find(item => item.id === targetId),
+      );
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(tryFocus));
+  };
+
   const startCanvasPan = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isCanvasSpacePressedRef.current && e.button !== 1 && !e.shiftKey) return;
     if (e.button !== 0 && e.button !== 1) return;
@@ -22211,10 +22316,12 @@ function MainApp() {
     if (!surface) return;
     e.preventDefault();
     e.stopPropagation();
-    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const pointerCaptureTarget = e.currentTarget;
+    pointerCaptureTarget.setPointerCapture?.(e.pointerId);
     setCanvasInteractionActive(true);
     canvasPanRef.current = {
       pointerId: e.pointerId,
+      button: e.button,
       startClientX: e.clientX,
       startClientY: e.clientY,
       startScrollLeft: surface.scrollLeft,
@@ -22229,6 +22336,11 @@ function MainApp() {
       const pan = canvasPanRef.current;
       const targetSurface = canvasSurfaceRef.current;
       if (!pan || !targetSurface) return;
+      const pressedButtonMask = pan.button === 1 ? 4 : 1;
+      if ((event.buttons & pressedButtonMask) === 0) {
+        onUp();
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const scale = canvasScaleRef.current || 1;
@@ -22253,19 +22365,36 @@ function MainApp() {
       writeCanvasSurfaceScroll(targetSurface, nextLeft, nextTop);
       growCanvasNearViewportEdge(targetSurface);
     };
+    let finished = false;
     const onUp = () => {
-      canvasPanRef.current = null;
+      if (finished) return;
+      finished = true;
+      if (canvasPanRef.current?.pointerId === e.pointerId) {
+        canvasPanRef.current = null;
+      }
       scheduleCanvasViewportUpdate();
       scheduleCanvasStateSave();
       setCanvasInteractionActive(false, 0);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
+      document.removeEventListener('mouseup', onMouseUp, true);
+      window.removeEventListener('blur', onUp);
+      pointerCaptureTarget.removeEventListener('lostpointercapture', onUp);
+      if (pointerCaptureTarget.hasPointerCapture?.(e.pointerId)) {
+        pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+      }
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button === e.button) onUp();
     };
 
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);
+    document.addEventListener('mouseup', onMouseUp, true);
+    window.addEventListener('blur', onUp);
+    pointerCaptureTarget.addEventListener('lostpointercapture', onUp);
   };
 
   const zoomCanvasAt = (clientX: number, clientY: number, deltaY: number) => {
@@ -23161,7 +23290,10 @@ function MainApp() {
             void addCanvasWebImageUrl(image.url as string, image.name, client, image.fallback_urls);
           }
         } else if (Array.isArray(payload.paths) && payload.paths.length > 0) {
-          if (Date.now() - lastCanvasDropAtRef.current < 700) return;
+          if (
+            Date.now() - lastCanvasDropAtRef.current < 700
+            && !payload.paths.some(isCanvasTemplateJsonFileName)
+          ) return;
           void addCanvasDroppedPaths(payload.paths, client);
         }
       } else if (webImages.length > 0) {
@@ -23236,7 +23368,10 @@ function MainApp() {
         if (Date.now() - lastWebImageDropAtRef.current < 1500) return;
         const paths = event.payload.paths;
         if (isCanvasModeRef.current) {
-          if (Date.now() - lastCanvasDropAtRef.current < 700) return;
+          if (
+            Date.now() - lastCanvasDropAtRef.current < 700
+            && !(paths || []).some(isCanvasTemplateJsonFileName)
+          ) return;
           const client = updateCanvasDragClientFromNativePosition(event.payload.position);
           void addCanvasDroppedPaths(paths || [], client);
         } else {
@@ -23262,7 +23397,10 @@ function MainApp() {
       const paths = event.payload as string[];
       if (Array.isArray(paths) && paths.length > 0) {
         if (isCanvasModeRef.current) {
-          if (Date.now() - lastCanvasDropAtRef.current < 700) return;
+          if (
+            Date.now() - lastCanvasDropAtRef.current < 700
+            && !paths.some(isCanvasTemplateJsonFileName)
+          ) return;
           void addCanvasDroppedPaths(paths, lastCanvasDragClientRef.current || undefined);
         }
         else void addDroppedPaths(paths);
@@ -33393,7 +33531,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.9'}
+                                      v{appVersion || '5.0.10'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -33982,7 +34120,7 @@ useEffect(() => {
                                                 return (
                                                   <span
                                                     key={inputItem?.id || `video-reference-${inputIndex}`}
-                                                    className={`relative flex h-14 ${canvasVideoInputMode === 'FLF' || isVideoReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[14px] text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60`}
+                                                    className={`group/reference-thumbnail relative flex h-14 ${canvasVideoInputMode === 'FLF' || isVideoReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[14px] text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60`}
                                                     aria-label={inputItem ? '双击移除输入' : `添加${slotLabel}`}
                                                     title={inputItem ? '双击移除输入' : `添加${slotLabel}`}
                                                     onPointerDown={(event) => event.stopPropagation()}
@@ -34026,6 +34164,34 @@ useEffect(() => {
                                                     <span className="pointer-events-none absolute left-1 top-1 z-10 flex h-4 min-w-4 items-center justify-center rounded bg-black/68 px-1 text-[9px] font-black leading-none text-white shadow-sm">
                                                       {inputIndex + 1}
                                                     </span>
+                                                    {inputItem && (
+                                                      <span
+                                                        data-no-drag="true"
+                                                        role="button"
+                                                        tabIndex={0}
+                                                        aria-label={`移除${slotLabel}`}
+                                                        title={`移除${slotLabel}`}
+                                                        className="absolute right-1 top-1 z-20 flex h-5 w-5 items-center justify-center rounded-full bg-black/85 text-white opacity-0 shadow-sm transition-[opacity,background-color] hover:bg-black focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover/reference-thumbnail:opacity-100"
+                                                        onPointerDown={(event) => {
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                        }}
+                                                        onMouseDown={(event) => event.stopPropagation()}
+                                                        onClick={(event) => {
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                          disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
+                                                        }}
+                                                        onKeyDown={(event) => {
+                                                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                          disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
+                                                        }}
+                                                      >
+                                                        <X className="h-3 w-3" strokeWidth={2.5} />
+                                                      </span>
+                                                    )}
                                                   </span>
                                                 );
                                               })}
@@ -34043,7 +34209,7 @@ useEffect(() => {
                                                 return (
                                                   <span
                                                     key={inputItem.id}
-                                                    className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-visible text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60"
+                                                    className="group/reference-thumbnail relative flex h-14 w-14 shrink-0 items-center justify-center overflow-visible text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60"
                                                     style={{
                                                       marginLeft: inputIndex > 0 ? -10 : 0,
                                                     }}
@@ -34081,6 +34247,32 @@ useEffect(() => {
                                                     )}
                                                     <span className="pointer-events-none absolute left-1 top-1 z-10 flex h-4 min-w-4 items-center justify-center rounded bg-black/68 px-1 text-[9px] font-black leading-none text-white shadow-sm">
                                                       {inputIndex + 1}
+                                                    </span>
+                                                    <span
+                                                      data-no-drag="true"
+                                                      role="button"
+                                                      tabIndex={0}
+                                                      aria-label={`移除参考图 ${inputIndex + 1}`}
+                                                      title={`移除参考图 ${inputIndex + 1}`}
+                                                      className="absolute right-1 top-1 z-20 flex h-5 w-5 items-center justify-center rounded-full bg-black/85 text-white opacity-0 shadow-sm transition-[opacity,background-color] hover:bg-black focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover/reference-thumbnail:opacity-100"
+                                                      onPointerDown={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                      }}
+                                                      onMouseDown={(event) => event.stopPropagation()}
+                                                      onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
+                                                      }}
+                                                      onKeyDown={(event) => {
+                                                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
+                                                      }}
+                                                    >
+                                                      <X className="h-3 w-3" strokeWidth={2.5} />
                                                     </span>
                                                   </span>
                                                 );
@@ -39152,7 +39344,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.9'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.10'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -39292,7 +39484,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.9'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.10'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -39385,10 +39577,11 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.9</p>
-                <p>生成任务现在会在后台持续运行，切换画布或返回抽屉不会中断结果接收。</p>
-                <p>生成结果会准确写回任务发起时的原画布，避免跨画布覆盖或误报“上次生成已中断”。</p>
-                <p>优化后台任务持久化与画布切换时序，提升单节点和工作流生成稳定性。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.10</p>
+                <p>修复带参考图工作流 JSON 导入时可能崩溃的问题，并提升大文件导入稳定性。</p>
+                <p>切换画布落在空白区域时会自动定位最近节点；参考图支持悬停快速移除。</p>
+                <p>优化生成图落盘、缩略图与抽屉写入，减少卡顿并避免拖动节点时位置跳变。</p>
+                <p>修复中键按在图片上拖动画布后可能持续漂移的问题。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

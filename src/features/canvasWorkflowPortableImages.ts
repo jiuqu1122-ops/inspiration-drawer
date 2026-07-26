@@ -93,32 +93,57 @@ export const materializeCanvasWorkflowFixedImages = async (
   workflows: CanvasWorkflowTemplate[],
   saveImageDataUrl: (fileName: string, dataUrl: string) => Promise<string>,
   getDisplayUrl: (path: string) => string,
-) => Promise.all(workflows.map(async workflow => ({
-  ...workflow,
-  nodes: await Promise.all(workflow.nodes.map(async (node, index) => {
-    if (!isPortableFixedImageNode(node)) return node;
-    const dataUrl = getFixedImageSources(node).find(isEmbeddedImage) || '';
-    if (!dataUrl) return node;
+) => {
+  const materialized: CanvasWorkflowTemplate[] = [];
+  // Intentionally restore one image at a time. A workflow can contain multiple
+  // multi-megabyte data URLs, and parallel IPC calls briefly duplicate all of
+  // them in WebView2 and Rust.
+  for (const workflow of workflows) {
+    const nodes: CanvasWorkflowNodeTemplate[] = [];
+    for (let index = 0; index < workflow.nodes.length; index += 1) {
+      const node = workflow.nodes[index];
+      if (!node || !isPortableFixedImageNode(node)) {
+        if (node) nodes.push(node);
+        continue;
+      }
+      const dataUrl = getFixedImageSources(node).find(isEmbeddedImage) || '';
+      const existingPath = String(node.item.path || '').trim();
+      if (!dataUrl) {
+        nodes.push(existingPath
+          ? {
+              ...node,
+              item: {
+                ...node.item,
+                url: getDisplayUrl(existingPath),
+                path: existingPath,
+              },
+            }
+          : node);
+        continue;
+      }
 
-    const fileName = getFixedImageFileName(node, index, dataUrl);
-    const path = String(await saveImageDataUrl(fileName, dataUrl) || '').trim();
-    if (!path) {
-      throw new Error(`固定参考图“${node.item.name || node.item.content || node.id}”缓存失败`);
+      const fileName = getFixedImageFileName(node, index, dataUrl);
+      const path = String(await saveImageDataUrl(fileName, dataUrl) || '').trim();
+      if (!path) {
+        throw new Error(`固定参考图“${node.item.name || node.item.content || node.id}”缓存失败`);
+      }
+      nodes.push({
+        ...node,
+        fixedInput: true,
+        acceptsExternalInputs: false,
+        externalInputTypes: undefined,
+        bridgeType: undefined,
+        item: {
+          ...node.item,
+          url: getDisplayUrl(path),
+          path,
+          thumbnail: undefined,
+          sourceUrl: undefined,
+          originalUrl: undefined,
+        },
+      });
     }
-    return {
-      ...node,
-      fixedInput: true,
-      acceptsExternalInputs: false,
-      externalInputTypes: undefined,
-      bridgeType: undefined,
-      item: {
-        ...node.item,
-        url: getDisplayUrl(path),
-        path,
-        thumbnail: undefined,
-        sourceUrl: undefined,
-        originalUrl: undefined,
-      },
-    };
-  })),
-})));
+    materialized.push({ ...workflow, nodes });
+  }
+  return materialized;
+};

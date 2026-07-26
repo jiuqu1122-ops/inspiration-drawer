@@ -91,6 +91,82 @@ describe('portable workflow fixed images', () => {
     expect(fixedImage?.item.url).toBe('asset://C:\\app\\uploads\\master.jpg');
   });
 
+  it('adds a display URL when the native importer already restored the local image', async () => {
+    const nativeMaterialized = {
+      ...workflow,
+      nodes: workflow.nodes.map(node => node.id === 'fixed-image'
+        ? {
+            ...node,
+            item: {
+              ...node.item,
+              url: undefined,
+              path: 'C:\\app\\uploads\\master.png',
+            },
+          }
+        : node),
+    };
+    const saveImageDataUrl = vi.fn(async () => 'unused');
+    const [materialized] = await materializeCanvasWorkflowFixedImages(
+      [nativeMaterialized],
+      saveImageDataUrl,
+      path => `asset://${path}`,
+    );
+
+    expect(saveImageDataUrl).not.toHaveBeenCalled();
+    expect(materialized?.nodes[0]?.item.url).toBe('asset://C:\\app\\uploads\\master.png');
+  });
+
+  it('restores multiple embedded images sequentially to avoid an IPC memory spike', async () => {
+    const twoImageWorkflow: CanvasWorkflowTemplate = {
+      ...workflow,
+      nodes: [
+        workflow.nodes[0],
+        {
+          ...workflow.nodes[0],
+          id: 'fixed-image-2',
+          item: {
+            ...workflow.nodes[0].item,
+            id: 'fixed-image-2',
+            name: 'master-2.png',
+            path: undefined,
+            url: 'data:image/png;base64,dHdv',
+          },
+        },
+        ...workflow.nodes.slice(1),
+      ],
+    };
+    let active = 0;
+    let peakActive = 0;
+    const saveImageDataUrl = vi.fn(async (fileName: string) => {
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return `C:\\app\\uploads\\${fileName}`;
+    });
+
+    await materializeCanvasWorkflowFixedImages(
+      [{
+        ...twoImageWorkflow,
+        nodes: twoImageWorkflow.nodes.map(node => node.id === 'fixed-image'
+          ? {
+              ...node,
+              item: {
+                ...node.item,
+                path: undefined,
+                url: 'data:image/png;base64,b25l',
+              },
+            }
+          : node),
+      }],
+      saveImageDataUrl,
+      path => `asset://${path}`,
+    );
+
+    expect(saveImageDataUrl).toHaveBeenCalledTimes(2);
+    expect(peakActive).toBe(1);
+  });
+
   it('fails export instead of silently dropping an unreadable fixed image', async () => {
     await expect(embedCanvasWorkflowFixedImages([workflow], async () => {
       throw new Error('file missing');

@@ -1393,7 +1393,11 @@ fn build_realesrgan_engine_status() -> Result<RealEsrganEngineStatus, String> {
 fn sha256_file_upper(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|e| format!("读取文件失败: {}", e))?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 1024];
+    // Keep large I/O buffers off the Rust thread stack. Some Tauri commands
+    // already use most of the Windows main-thread stack while deserializing
+    // image-bearing JSON; another 1 MB stack allocation can terminate the
+    // whole process with STATUS_STACK_OVERFLOW.
+    let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         let read = file
             .read(&mut buffer)
@@ -7250,10 +7254,170 @@ fn collect_drop_media_paths(paths: Vec<String>) -> Result<Vec<String>, String> {
     Ok(output)
 }
 
-const MAX_CANVAS_TEMPLATE_JSON_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_CANVAS_TEMPLATE_JSON_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_CANVAS_TEMPLATE_EMBEDDED_IMAGE_CHARS: usize = 96 * 1024 * 1024;
+
+fn is_canvas_template_embedded_image(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("data:image/")
+        && trimmed
+            .split_once(',')
+            .is_some_and(|(metadata, payload)| metadata.ends_with(";base64") && !payload.is_empty())
+}
+
+fn canvas_template_embedded_image_extension(data_url: &str) -> &'static str {
+    let mime = data_url
+        .trim()
+        .strip_prefix("data:image/")
+        .and_then(|value| value.split_once(';'))
+        .map(|(mime, _)| mime.to_ascii_lowercase())
+        .unwrap_or_default();
+    match mime.as_str() {
+        "jpeg" | "jpg" => "jpg",
+        "webp" => "webp",
+        "gif" => "gif",
+        "bmp" | "x-ms-bmp" => "bmp",
+        "svg+xml" => "svg",
+        _ => "png",
+    }
+}
+
+fn canvas_template_embedded_image_file_name(
+    node: &serde_json::Map<String, serde_json::Value>,
+    item: &serde_json::Map<String, serde_json::Value>,
+    data_url: &str,
+) -> String {
+    let raw_name = item
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| item.get("content").and_then(serde_json::Value::as_str))
+        .or_else(|| node.get("id").and_then(serde_json::Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("workflow-reference");
+    let safe_name = sanitize_file_name(raw_name);
+    let stem = Path::new(&safe_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("workflow-reference");
+    format!(
+        "{}.{}",
+        sanitize_file_name(stem),
+        canvas_template_embedded_image_extension(data_url)
+    )
+}
+
+fn materialize_canvas_template_embedded_images<F>(
+    value: &mut serde_json::Value,
+    save_image: &mut F,
+) -> Result<usize, String>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
+    let mut restored = 0usize;
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                restored += materialize_canvas_template_embedded_images(value, save_image)?;
+            }
+        }
+        serde_json::Value::Object(record) => {
+            let is_fixed_image_node = record
+                .get("item")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|item| item.get("type"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value == "image")
+                && record
+                    .get("acceptsExternalInputs")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                && record.get("bridgeType").and_then(serde_json::Value::as_str)
+                    != Some("reference_image")
+                && (record
+                    .get("fixedInput")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    || record.get("ai").is_none()
+                    || record.get("ai").is_some_and(serde_json::Value::is_null));
+
+            if is_fixed_image_node {
+                let embedded_key = record
+                    .get("item")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|item| {
+                        ["url", "path", "sourceUrl", "originalUrl", "thumbnail"]
+                            .into_iter()
+                            .find(|key| {
+                                item.get(*key)
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(is_canvas_template_embedded_image)
+                            })
+                    });
+
+                if let Some(embedded_key) = embedded_key {
+                    let file_name = {
+                        let item = record
+                            .get("item")
+                            .and_then(serde_json::Value::as_object)
+                            .ok_or_else(|| "工作流固定参考图数据无效".to_string())?;
+                        let data_url = item
+                            .get(embedded_key)
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| "工作流固定参考图数据无效".to_string())?;
+                        if data_url.len() > MAX_CANVAS_TEMPLATE_EMBEDDED_IMAGE_CHARS {
+                            return Err("单张工作流内嵌图片过大，不能超过 96 MB".to_string());
+                        }
+                        canvas_template_embedded_image_file_name(record, item, data_url)
+                    };
+
+                    let data_url = record
+                        .get_mut("item")
+                        .and_then(serde_json::Value::as_object_mut)
+                        .and_then(|item| item.remove(embedded_key))
+                        .and_then(|value| match value {
+                            serde_json::Value::String(value) => Some(value),
+                            _ => None,
+                        })
+                        .ok_or_else(|| "工作流固定参考图数据无效".to_string())?;
+                    let path = save_image(&file_name, &data_url)?;
+                    let item = record
+                        .get_mut("item")
+                        .and_then(serde_json::Value::as_object_mut)
+                        .ok_or_else(|| "工作流固定参考图数据无效".to_string())?;
+                    for key in ["url", "path", "sourceUrl", "originalUrl", "thumbnail"] {
+                        item.remove(key);
+                    }
+                    item.insert("path".to_string(), serde_json::Value::String(path));
+                    restored += 1;
+                }
+            }
+
+            for child in record.values_mut() {
+                restored += materialize_canvas_template_embedded_images(child, save_image)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(restored)
+}
 
 #[tauri::command]
-fn read_canvas_template_json(path: String) -> Result<String, String> {
+async fn read_canvas_template_json(
+    app_handle: tauri::AppHandle,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_canvas_template_json_impl(&app_handle, path)
+    })
+    .await
+    .map_err(|error| format!("读取画布模板任务失败：{}", error))?
+}
+
+fn read_canvas_template_json_impl(
+    app_handle: &tauri::AppHandle,
+    path: String,
+) -> Result<serde_json::Value, String> {
     let normalized = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
     if !normalized.is_file() {
         return Err("画布模板 JSON 文件不存在".to_string());
@@ -7268,9 +7432,130 @@ fn read_canvas_template_json(path: String) -> Result<String, String> {
     }
     let metadata = fs::metadata(&normalized).map_err(|error| error.to_string())?;
     if metadata.len() > MAX_CANVAS_TEMPLATE_JSON_BYTES {
-        return Err("画布模板 JSON 文件不能超过 4 MB".to_string());
+        return Err("画布模板 JSON 文件不能超过 128 MB".to_string());
     }
-    fs::read_to_string(&normalized).map_err(|error| format!("读取画布模板 JSON 失败：{}", error))
+    let file =
+        File::open(&normalized).map_err(|error| format!("读取画布模板 JSON 失败：{}", error))?;
+    let mut parsed: serde_json::Value = serde_json::from_reader(BufReader::new(file))
+        .map_err(|error| format!("解析画布模板 JSON 失败：{}", error))?;
+    materialize_canvas_template_embedded_images(&mut parsed, &mut |file_name, data_url| {
+        save_dropped_data_url_impl(app_handle, file_name, data_url)
+    })?;
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod canvas_template_import_tests {
+    use super::*;
+
+    #[test]
+    fn file_hashing_does_not_require_a_megabyte_of_thread_stack() {
+        let path = std::env::temp_dir().join(format!(
+            "inspiration-drawer-small-stack-hash-{}-{}.bin",
+            std::process::id(),
+            current_time_millis()
+        ));
+        let bytes = vec![42u8; 2 * 1024 * 1024];
+        fs::write(&path, &bytes).unwrap();
+        let thread_path = path.clone();
+
+        let hash = std::thread::Builder::new()
+            .name("small-stack-file-hash".to_string())
+            .stack_size(512 * 1024)
+            .spawn(move || sha256_file_upper(&thread_path))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(hash, sha256_bytes_upper(&bytes));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn materializes_embedded_fixed_images_before_returning_json_to_the_webview() {
+        let mut value = serde_json::json!({
+            "workflows": [{
+                "label": "带图工作流",
+                "nodes": [
+                    {
+                        "id": "master",
+                        "fixedInput": true,
+                        "item": {
+                            "type": "image",
+                            "name": "母版.png",
+                            "url": "data:image/jpeg;base64,ZmFrZQ=="
+                        }
+                    },
+                    {
+                        "id": "external",
+                        "fixedInput": false,
+                        "acceptsExternalInputs": true,
+                        "bridgeType": "reference_image",
+                        "item": {
+                            "type": "image",
+                            "url": "data:image/png;base64,ZXh0ZXJuYWw="
+                        }
+                    }
+                ]
+            }]
+        });
+        let mut saved = Vec::new();
+
+        let restored =
+            materialize_canvas_template_embedded_images(&mut value, &mut |file_name, data_url| {
+                saved.push((file_name.to_string(), data_url.to_string()));
+                Ok(r"C:\cache\master.jpg".to_string())
+            })
+            .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].0, "母版.jpg");
+        assert_eq!(
+            value["workflows"][0]["nodes"][0]["item"]["path"],
+            r"C:\cache\master.jpg"
+        );
+        assert!(value["workflows"][0]["nodes"][0]["item"]
+            .get("url")
+            .is_none());
+        assert_eq!(
+            value["workflows"][0]["nodes"][1]["item"]["url"],
+            "data:image/png;base64,ZXh0ZXJuYWw="
+        );
+    }
+
+    #[test]
+    fn strips_large_embedded_image_payloads_before_webview_serialization() {
+        let payload = "A".repeat(5 * 1024 * 1024);
+        let mut value = serde_json::json!({
+            "workflow": {
+                "label": "大图工作流",
+                "nodes": [{
+                    "id": "master",
+                    "fixedInput": true,
+                    "item": {
+                        "type": "image",
+                        "url": format!("data:image/png;base64,{payload}")
+                    }
+                }]
+            }
+        });
+        assert!(serde_json::to_vec(&value).unwrap().len() > 4 * 1024 * 1024);
+
+        let restored = materialize_canvas_template_embedded_images(
+            &mut value,
+            &mut |_, _| Ok(r"C:\cache\large-master.png".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(restored, 1);
+        assert!(serde_json::to_vec(&value).unwrap().len() < 1024);
+        assert_eq!(
+            value["workflow"]["nodes"][0]["item"]["path"],
+            r"C:\cache\large-master.png"
+        );
+    }
 }
 
 fn local_media_metadata_impl(path: String) -> Result<LocalMediaMetadata, String> {
@@ -8064,6 +8349,14 @@ fn save_dropped_file(
     file_name: String,
     data_url: String,
 ) -> Result<String, String> {
+    save_dropped_data_url_impl(&app_handle, &file_name, &data_url)
+}
+
+fn save_dropped_data_url_impl(
+    app_handle: &tauri::AppHandle,
+    file_name: &str,
+    data_url: &str,
+) -> Result<String, String> {
     let comma_index = data_url
         .find(',')
         .ok_or_else(|| "invalid data url".to_string())?;
@@ -8077,7 +8370,7 @@ fn save_dropped_file(
     let uploads_dir = get_user_data_dir(&app_handle).join("uploads");
     fs::create_dir_all(&uploads_dir).map_err(|e| e.to_string())?;
 
-    let safe_name = sanitize_file_name(&file_name);
+    let safe_name = sanitize_file_name(file_name);
     let extension = local_file_extension(Path::new(&safe_name));
     let _cache_guard = local_media_cache_write_lock()
         .lock()

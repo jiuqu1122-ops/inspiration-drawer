@@ -4,20 +4,20 @@
 
 ## 下载
 
-当前版本：**5.0.9**
+当前版本：**5.0.10**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.9/Inspiration.Drawer_5.0.9_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.9)
-- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.9)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.10/Inspiration.Drawer_5.0.10_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.10)
+- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.10)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 5.0.9 更新
+## 5.0.10 更新
 
-- 生成任务切换画布或返回抽屉后仍会在后台持续运行。
-- 结果会准确写回任务发起时的原画布，避免跨画布覆盖。
-- 修复活跃任务被误判为“上次生成已中断”的问题。
-- 优化单节点、展开工作流和工作流模块的后台持久化时序。
+- 修复带参考图工作流 JSON 导入崩溃，并提升大文件导入稳定性。
+- 切换画布落在空白区域时自动定位最近节点或图片。
+- 优化生成图落盘与缩略图处理，减少卡顿和拖动节点跳变。
+- 参考图支持悬停快速移除，修复图片上中键平移后的画布漂移。
 
 ## 主要功能
 
