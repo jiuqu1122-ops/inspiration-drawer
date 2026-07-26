@@ -188,6 +188,11 @@ import {
 } from './features/canvasModel';
 import { findNearestCanvasItemIdForEmptyViewport } from './features/canvasViewportNavigation';
 import {
+  getCanvasDrawerMediaPreviewSource,
+  getCanvasDrawerMediaSource,
+  isCanvasDrawerMediaItem,
+} from './features/canvasDrawerMedia';
+import {
   getGeneratedImageCacheSource,
   shouldCacheGeneratedImageAgain,
 } from './features/generatedImageCache';
@@ -1018,7 +1023,7 @@ type TemporaryReferenceShare = {
   id: string;
 };
 
-type CanvasFolderImagePickerState = CanvasFolderImportPrompt & {
+type CanvasFolderMediaPickerState = CanvasFolderImportPrompt & {
   x: number;
   y: number;
 };
@@ -4383,7 +4388,7 @@ function MainApp() {
   const [deletedCanvases, setDeletedCanvases] = useState<CanvasRecord[]>([]);
   const [canvasTrashCount, setCanvasTrashCount] = useState(0);
   const [isLoadingCanvasTrash, setIsLoadingCanvasTrash] = useState(false);
-  const [canvasFolderImportPrompt, setCanvasFolderImportPrompt] = useState<CanvasFolderImagePickerState | null>(null);
+  const [canvasFolderImportPrompt, setCanvasFolderImportPrompt] = useState<CanvasFolderMediaPickerState | null>(null);
   const [canvasConnectionDraft, setCanvasConnectionDraft] = useState<{ fromId: string; sourceIds: string[]; fromX: number; fromY: number; toX: number; toY: number } | null>(null);
   const [canvasInputActionDraft, setCanvasInputActionDraft] = useState<{ targetId: string; fromX: number; fromY: number; toX: number; toY: number } | null>(null);
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
@@ -8759,14 +8764,13 @@ function MainApp() {
     }
     return result.filter(item => activeTab === 'all' || item.type === activeTab);
   }, [items, folders, activeTab, searchQuery, activeFolderId]);
-  const canvasSearchImageResults = useMemo(() => {
+  const canvasSearchMediaResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!isCanvasMode || !isSearchActive || !query) {
       return { candidates: [] as AlchemyBufferItem[], total: 0 };
     }
     const matches = (items as AlchemyBufferItem[]).filter(item => (
-      item.type === 'image'
-      && Boolean(item.thumbnail || item.url || item.path || item.sourceUrl || item.originalUrl)
+      isCanvasDrawerMediaItem(item)
       && getAlchemySearchText(item).includes(query)
     ));
     return {
@@ -21370,20 +21374,26 @@ function MainApp() {
     }
   };
 
-  const createDrawerImageCanvasNode = async (
+  const createDrawerMediaCanvasNode = async (
     itemId: string,
     client?: { x: number; y: number },
     options: { reuseExisting?: boolean; select?: boolean; toast?: boolean; label?: string; dropIndex?: number } = {},
   ) => {
     const source = itemsRef.current.find(item => item.id === itemId);
-    if (!source || source.type !== 'image') return '';
-    const sourceAsset = source.url || source.thumbnail || source.sourceUrl || source.originalUrl || (source.path ? convertFileSrc(source.path) : '');
+    if (!source || !isCanvasDrawerMediaItem(source)) return '';
+    const rawSource = getCanvasDrawerMediaSource(source);
+    const sourceAsset = source.path && rawSource === source.path && !/^(?:asset:|file:|blob:|data:|https?:)/i.test(rawSource)
+      ? convertFileSrc(rawSource)
+      : rawSource;
+    const mediaLabel = source.type === 'video' ? '视频' : '图片';
     if (!sourceAsset) {
-      if (options.toast !== false) showToast('图片源丢失，无法添加到画布');
+      if (options.toast !== false) showToast(`${mediaLabel}源丢失，无法添加到画布`);
       return '';
     }
     if (options.reuseExisting) {
-      const existing = canvasItemsRef.current.find(item => item.item.type === 'image' && item.item.sourceItemId === source.id);
+      const existing = canvasItemsRef.current.find(item => (
+        item.item.type === source.type && item.item.sourceItemId === source.id
+      ));
       if (existing) return existing.id;
     }
 
@@ -21395,8 +21405,11 @@ function MainApp() {
       isQuickAccess: false,
     };
     const pos = getCanvasDropPosition(options.dropIndex || 0, client);
-    const canvasId = makeCanvasNodeId(item.id, 'image');
-    const size = await readImageDisplaySize(sourceAsset);
+    const canvasId = makeCanvasNodeId(item.id, source.type);
+    const preview = getCanvasDrawerMediaPreviewSource(source);
+    const size = source.type === 'video'
+      ? preview ? await readImageDisplaySize(preview) : { width: 320, height: 180 }
+      : await readImageDisplaySize(sourceAsset);
     const canvasItem = {
       id: canvasId,
       item,
@@ -21405,7 +21418,7 @@ function MainApp() {
       width: size.width,
       height: size.height,
     };
-    if (appendCanvasItems([canvasItem], options.label || '添加图片到画布', options.select !== false) === 0) return '';
+    if (appendCanvasItems([canvasItem], options.label || `添加${mediaLabel}到画布`, options.select !== false) === 0) return '';
     if (options.toast !== false) showToast('已添加到无限画布');
     return canvasId;
   };
@@ -21450,39 +21463,41 @@ function MainApp() {
     return canvasId;
   };
 
-  const addDrawerImageItemToCanvas = async (itemId: string, client?: { x: number; y: number }) => {
-    const nodeId = await createDrawerImageCanvasNode(itemId, client, { toast: true });
+  const addDrawerMediaItemToCanvas = async (itemId: string, client?: { x: number; y: number }) => {
+    const nodeId = await createDrawerMediaCanvasNode(itemId, client, { toast: true });
     return !!nodeId;
   };
 
-  const addCanvasSearchImageCandidate = async (itemId: string) => {
+  const addCanvasSearchMediaCandidate = async (itemId: string) => {
     if (canvasSearchAddingIdsRef.current.has(itemId)) return;
     canvasSearchAddingIdsRef.current.add(itemId);
     try {
       const dropIndex = canvasSearchDropIndexRef.current % 12;
       canvasSearchDropIndexRef.current += 1;
-      const nodeId = await createDrawerImageCanvasNode(itemId, undefined, {
+      const nodeId = await createDrawerMediaCanvasNode(itemId, undefined, {
         dropIndex,
         toast: false,
-        label: '从搜索结果添加图片',
+        label: '从搜索结果添加素材',
       });
-      if (!nodeId) showToast('搜索图片加入画布失败');
+      if (!nodeId) showToast('搜索素材加入画布失败');
     } finally {
       canvasSearchAddingIdsRef.current.delete(itemId);
     }
   };
 
-  const getFolderImageItemsForCanvas = (folderId?: string) => {
+  const getFolderMediaItemsForCanvas = (folderId?: string) => {
     const folderScopeIds = getDrawerFolderScopeIds(folders, folderId);
-    return items.filter(item => (
-      item.type === 'image' && (folderId ? !!item.folderId && folderScopeIds.has(item.folderId) : !item.folderId)
-    ));
+    return items
+      .filter(isCanvasDrawerMediaItem)
+      .filter(item => (
+        folderId ? !!item.folderId && folderScopeIds.has(item.folderId) : !item.folderId
+      ));
   };
 
-  const requestAddFolderImagesToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
-    const count = getFolderImageItemsForCanvas(folderId).length;
+  const requestAddFolderMediaToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
+    const count = getFolderMediaItemsForCanvas(folderId).length;
     if (count === 0) {
-      showToast('这个文件夹里还没有图片');
+      showToast('这个文件夹里还没有图片或视频');
       return;
     }
     setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
@@ -21495,15 +21510,15 @@ function MainApp() {
     });
   };
 
-  const addFolderImagesToCanvas = async (folderId?: string) => {
-    const imageItems = getFolderImageItemsForCanvas(folderId);
-    if (imageItems.length === 0) {
-      showToast('这个文件夹里还没有图片');
+  const addFolderMediaToCanvas = async (folderId?: string) => {
+    const mediaItems = getFolderMediaItemsForCanvas(folderId);
+    if (mediaItems.length === 0) {
+      showToast('这个文件夹里还没有图片或视频');
       return;
     }
 
     const now = Date.now();
-    const nextItems = imageItems.map((source, index) => {
+    const nextItems = mediaItems.map((source, index) => {
       const item: BufferItem = {
         ...source,
         id: Math.random().toString(36).substring(2, 9),
@@ -21512,9 +21527,11 @@ function MainApp() {
         isQuickAccess: false,
       };
       const pos = getCanvasDropPosition(index);
-      const size = getFastCanvasImageDisplaySize(item);
+      const size = source.type === 'video'
+        ? source.thumbnail ? getFastCanvasImageDisplaySize(item) : { width: 320, height: 180 }
+        : getFastCanvasImageDisplaySize(item);
       return {
-        id: makeCanvasNodeId(item.id, 'image'),
+        id: makeCanvasNodeId(item.id, source.type),
         item,
         x: pos.x,
         y: pos.y,
@@ -21523,22 +21540,22 @@ function MainApp() {
       } as CanvasImageItem;
     });
 
-    const addedCount = appendCanvasItems(nextItems, '添加图片到画布');
-    if (addedCount > 0) showToast(`已添加 ${addedCount} 张图片到无限画布`);
+    const addedCount = appendCanvasItems(nextItems, '添加素材到画布');
+    if (addedCount > 0) showToast(`已添加 ${addedCount} 个图片或视频素材到无限画布`);
   };
 
-  const confirmAddFolderImagesToCanvas = () => {
+  const confirmAddFolderMediaToCanvas = () => {
     const prompt = canvasFolderImportPrompt;
     if (!prompt) return;
     setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt(null);
-    void addFolderImagesToCanvas(prompt.folderId);
+    void addFolderMediaToCanvas(prompt.folderId);
   };
 
-  const addFolderImagePickerItemToCanvas = (itemId: string) => {
+  const addFolderMediaPickerItemToCanvas = (itemId: string) => {
     setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt(null);
-    void addDrawerImageItemToCanvas(itemId);
+    void addDrawerMediaItemToCanvas(itemId);
   };
 
   const cacheWebImageFromCandidates = async (
@@ -22581,7 +22598,7 @@ function MainApp() {
     lastCanvasDragClientRef.current = client;
 
     const drawerItemId = getDraggedDrawerItemId(e.dataTransfer);
-    if (drawerItemId && await addDrawerImageItemToCanvas(drawerItemId, client)) {
+    if (drawerItemId && await addDrawerMediaItemToCanvas(drawerItemId, client)) {
       clearDrawerItemDragState();
       return;
     }
@@ -22619,7 +22636,7 @@ function MainApp() {
       if (added) return;
     }
 
-    showToast('无限画布只接收图片');
+    showToast('无限画布只接收图片或视频');
   };
 
   const blockInternalCanvasNativeDrag = (e: React.DragEvent<HTMLDivElement>) => {
@@ -24355,7 +24372,7 @@ function MainApp() {
           const rect = canvasEl.getBoundingClientRect();
           const isInsideCanvas = me.clientX >= rect.left && me.clientX <= rect.right && me.clientY >= rect.top && me.clientY <= rect.bottom;
           if (isInsideCanvas) {
-            void addDrawerImageItemToCanvas(itemId, { x: me.clientX, y: me.clientY });
+            void addDrawerMediaItemToCanvas(itemId, { x: me.clientX, y: me.clientY });
             cleanup();
             return;
           }
@@ -27532,7 +27549,7 @@ useEffect(() => {
         if (resolution.nodesToCreateFromDrawerItems.length > 0) {
           if (!isCanvasModeRef.current) enterCanvasMode();
           for (const drawerItemId of resolution.nodesToCreateFromDrawerItems) {
-            const nodeId = await createDrawerImageCanvasNode(drawerItemId, undefined, {
+            const nodeId = await createDrawerMediaCanvasNode(drawerItemId, undefined, {
               reuseExisting: true,
               select: false,
               toast: false,
@@ -28168,13 +28185,13 @@ useEffect(() => {
           return { action, created };
         }
         if (action === 'add_items_to_canvas') {
-          const imageTargets = targets.filter(item => item.type === 'image');
-          if (imageTargets.length === 0) throw new Error('请选择要加入画布的图片素材');
+          const mediaTargets = targets.filter(isCanvasDrawerMediaItem);
+          if (mediaTargets.length === 0) throw new Error('请选择要加入画布的图片或视频素材');
           if (!isCanvasModeRef.current) enterCanvasMode();
           setIsAgentChatOpen(true);
           let added = 0;
-          for (const item of imageTargets) {
-            if (await addDrawerImageItemToCanvas(item.id)) added += 1;
+          for (const item of mediaTargets) {
+            if (await addDrawerMediaItemToCanvas(item.id)) added += 1;
           }
           return { action, added };
         }
@@ -28424,11 +28441,13 @@ useEffect(() => {
           return { action };
         }
         if (action === 'add_drawer_items') {
-          const drawerIds = requestedIds.filter(id => itemsRef.current.some(item => item.id === id && item.type === 'image'));
-          if (drawerIds.length === 0) throw new Error('没有找到可加入画布的抽屉图片');
+          const drawerIds = requestedIds.filter(id => itemsRef.current.some(item => (
+            item.id === id && isCanvasDrawerMediaItem(item)
+          )));
+          if (drawerIds.length === 0) throw new Error('没有找到可加入画布的抽屉图片或视频');
           let added = 0;
           for (const itemId of drawerIds) {
-            if (await addDrawerImageItemToCanvas(itemId)) added += 1;
+            if (await addDrawerMediaItemToCanvas(itemId)) added += 1;
           }
           return { action, added };
         }
@@ -28518,7 +28537,7 @@ useEffect(() => {
           } catch (error) {
             console.warn('生成前灵感图分析失败:', match.itemId, error);
           }
-          const nodeId = await createDrawerImageCanvasNode(match.itemId, undefined, {
+          const nodeId = await createDrawerMediaCanvasNode(match.itemId, undefined, {
             reuseExisting: true,
             select: false,
             toast: false,
@@ -28549,7 +28568,7 @@ useEffect(() => {
             continue;
           }
           if (!itemsRef.current.some(item => item.id === itemId && item.type === 'image')) continue;
-          const nodeId = await createDrawerImageCanvasNode(itemId, undefined, {
+          const nodeId = await createDrawerMediaCanvasNode(itemId, undefined, {
             reuseExisting: true,
             select: false,
             toast: false,
@@ -30590,7 +30609,7 @@ useEffect(() => {
     : 0;
   const canvasFolderPickerItems = useMemo(() => (
     canvasFolderImportPrompt
-      ? getFolderImageItemsForCanvas(canvasFolderImportPrompt.folderId)
+      ? getFolderMediaItemsForCanvas(canvasFolderImportPrompt.folderId)
       : []
   // `folderId` is undefined for the main drawer both while the picker is
   // closed and while it is open. Depending only on folderId therefore leaves
@@ -30744,7 +30763,7 @@ useEffect(() => {
             }
             if (isCanvasMode) {
               const rect = event.currentTarget.getBoundingClientRect();
-              requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
+              requestAddFolderMediaToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
               return;
             }
             if (handleDrawerFolderSelectionClick(folder.id, event)) {
@@ -30752,7 +30771,7 @@ useEffect(() => {
             }
           }}
           className={`relative mb-1 flex items-center justify-center cursor-pointer transition-all shadow-sm ${isNested ? 'h-8 w-8 rounded-[12px]' : 'h-10 w-10 rounded-[16px]'} ${isInvalidDropTarget ? 'bg-red-50 text-red-600 ring-2 ring-red-300 dark:bg-red-500/15 dark:text-red-200 dark:ring-red-400/35' : isFolderDragOver ? `${folderTone.drag} scale-105` : isFolderActive ? `${folderTone.active} scale-105` : `bg-white/70 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 dark:text-stone-400 ${folderTone.soft} hover:scale-105`}`}
-          title={isCanvasMode ? `${folderPathName}：点击把图片加入画布` : folderPathName}
+          title={isCanvasMode ? `${folderPathName}：点击把图片或视频加入画布` : folderPathName}
         >
           <FolderOpen className={`${isNested ? 'h-4 w-4' : 'h-5 w-5'} ${isFolderActive ? 'opacity-100' : 'opacity-85'}`} />
           <span className={`absolute -right-1.5 -top-1.5 ${folderTone.badge} min-w-[16px] rounded-full px-1 text-center text-[9px] font-bold text-white shadow-sm ring-2 ring-white/80 pointer-events-none dark:ring-stone-900/70`}>
@@ -30869,7 +30888,7 @@ useEffect(() => {
             }
             if (isCanvasMode) {
               const rect = event.currentTarget.getBoundingClientRect();
-              requestAddFolderImagesToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
+              requestAddFolderMediaToCanvas(folder.id, folderPathName, { x: rect.right + 10, y: rect.top });
               return;
             }
             if (handleDrawerFolderSelectionClick(folder.id, event)) {
@@ -30878,7 +30897,7 @@ useEffect(() => {
           }}
           className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] pr-2 text-left text-[13px] font-semibold transition-all ${rowClassName}`}
           style={{ paddingLeft: rowPaddingLeft }}
-          title={isCanvasMode ? `${folderPathName}：点击把图片加入画布` : folderPathName}
+          title={isCanvasMode ? `${folderPathName}：点击把图片或视频加入画布` : folderPathName}
         >
           {childFolders.length > 0 ? (
             <span
@@ -31547,7 +31566,7 @@ useEffect(() => {
                         }
                         if (isCanvasMode) {
                           const rect = e.currentTarget.getBoundingClientRect();
-                          requestAddFolderImagesToCanvas(undefined, '主抽屉', { x: rect.right + 10, y: rect.top });
+                          requestAddFolderMediaToCanvas(undefined, '主抽屉', { x: rect.right + 10, y: rect.top });
                           return;
                         }
                         setActiveFolderId('all');
@@ -31555,7 +31574,7 @@ useEffect(() => {
                       onPointerUp={finishMainDrawerPress}
                       onPointerLeave={finishMainDrawerPress}
                       className={`flex h-10 w-full min-w-0 items-center gap-2 rounded-[12px] px-2 text-left text-[13px] font-black transition-all ${isCanvasMode ? 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950' : dragOverFolderId === 'all' ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25' : activeFolderId === 'all' ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'}`}
-                      title={isCanvasMode ? '点击把主抽屉图片加入画布，长按退出画布' : '长按进入无限画布'}
+                      title={isCanvasMode ? '点击把主抽屉图片或视频加入画布，长按退出画布' : '长按进入无限画布'}
                     >
                       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] ${isCanvasMode ? 'bg-white/18 text-white dark:bg-stone-950/82 dark:text-blue-200 dark:ring-1 dark:ring-white/15' : activeFolderId === 'all' ? 'bg-white/14 text-blue-200' : 'bg-blue-50 text-blue-600 dark:bg-blue-400/12 dark:text-blue-200'}`}>
                         {isCanvasMode ? <LayoutGrid className="h-4 w-4" /> : <Lightbulb className="h-4 w-4" />}
@@ -31890,7 +31909,7 @@ useEffect(() => {
                     }
                     if (isCanvasMode) {
                       const rect = e.currentTarget.getBoundingClientRect();
-                      requestAddFolderImagesToCanvas(undefined, '主抽屉', { x: rect.right + 10, y: rect.top });
+                      requestAddFolderMediaToCanvas(undefined, '主抽屉', { x: rect.right + 10, y: rect.top });
                       return;
                     }
                     setActiveFolderId('all');
@@ -31898,7 +31917,7 @@ useEffect(() => {
                   onPointerUp={finishMainDrawerPress}
                   onPointerLeave={finishMainDrawerPress}
                   className={`relative mb-1 flex h-10 w-10 items-center justify-center overflow-visible rounded-[16px] cursor-pointer transition-all shadow-sm ${isCanvasMode ? 'bg-blue-500 text-white shadow-md shadow-blue-500/20 scale-105 dark:bg-blue-400 dark:text-stone-950' : dragOverFolderId === 'all' ? 'ring-2 ring-blue-300 bg-blue-50 text-blue-600 dark:ring-blue-400/40 dark:bg-blue-400/14 dark:text-blue-200 scale-105' : activeFolderId === 'all' ? 'bg-blue-500 text-white dark:bg-blue-400 dark:text-stone-950 shadow-md shadow-blue-500/20 scale-105' : 'bg-white/65 dark:bg-stone-800/65 backdrop-blur-md text-stone-500 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200 hover:scale-105'}`}
-                  title={isCanvasMode ? '点击把主抽屉图片加入画布，长按退出画布' : '长按进入无限画布'}
+                  title={isCanvasMode ? '点击把主抽屉图片或视频加入画布，长按退出画布' : '长按进入无限画布'}
                 >
                     <span className="pointer-events-none absolute -right-1.5 -top-1.5 z-0 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-white text-blue-600 ring-1 ring-blue-100 shadow-[0_4px_10px_rgba(37,99,235,0.28)] dark:bg-stone-950 dark:text-blue-300 dark:ring-blue-300/25">
                       {isCanvasMode ? (
@@ -32529,7 +32548,7 @@ useEffect(() => {
                         <div className="relative group">
                           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 group-focus-within:text-blue-500 transition-colors" />
                           <input
-                            ref={searchInputRef} type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={isCanvasMode ? '搜索所有图片、AI 标签...' : '搜索灵感、文件、备注标签...'}
+                            ref={searchInputRef} type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={isCanvasMode ? '搜索所有图片、视频、AI 标签...' : '搜索灵感、文件、备注标签...'}
                             className="w-full bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-[16px] pl-9 pr-8 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all shadow-sm"
                           />
                           {searchQuery && (
@@ -32554,30 +32573,39 @@ useEffect(() => {
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                     >
-                      {canvasSearchImageResults.candidates.length > 0 ? (
+                      {canvasSearchMediaResults.candidates.length > 0 ? (
                         <div className={`${canvasSearchCandidateLimit > CANVAS_SEARCH_CANDIDATE_LIMIT ? 'grid auto-cols-max grid-flow-col grid-rows-2' : 'flex'} w-full gap-2 overflow-x-auto px-4 pb-1.5 pt-2 [scrollbar-color:rgba(148,163,184,0.65)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-stone-300/80 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600/80`}>
-                          {canvasSearchImageResults.candidates.map(candidate => {
-                            const preview = candidate.thumbnail
-                              || candidate.url
-                              || (candidate.path ? convertFileSrc(candidate.path) : '')
-                              || candidate.sourceUrl
-                              || candidate.originalUrl
-                              || '';
+                          {canvasSearchMediaResults.candidates.map(candidate => {
+                            if (!isCanvasDrawerMediaItem(candidate)) return null;
+                            const preview = getCanvasDrawerMediaPreviewSource(candidate)
+                              || (candidate.type === 'image' && candidate.path ? convertFileSrc(candidate.path) : '');
+                            const mediaLabel = candidate.type === 'video' ? '视频' : '图片';
                             const isOnCanvas = canvasItems.some(canvasItem => canvasItem.item.sourceItemId === candidate.id);
                             return (
                               <button
                                 key={candidate.id}
                                 type="button"
-                                onClick={() => void addCanvasSearchImageCandidate(candidate.id)}
+                                onClick={() => void addCanvasSearchMediaCandidate(candidate.id)}
                                 className="group relative h-[58px] w-[58px] shrink-0 overflow-hidden rounded-[12px] border border-stone-200/80 bg-stone-100 shadow-sm transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-[0_6px_16px_rgba(43,85,145,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/45 dark:border-white/10 dark:bg-stone-800 dark:hover:border-blue-400/55"
-                                title={`加入画布：${candidate.name || candidate.content || '图片'}`}
+                                title={`加入画布：${candidate.name || candidate.content || mediaLabel}`}
                               >
-                                <img
-                                  src={preview}
-                                  alt=""
-                                  className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-105"
-                                  draggable={false}
-                                />
+                                {preview ? (
+                                  <img
+                                    src={preview}
+                                    alt=""
+                                    className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-105"
+                                    draggable={false}
+                                  />
+                                ) : (
+                                  <span className="flex h-full w-full items-center justify-center text-stone-400 dark:text-stone-500">
+                                    <Film className="h-5 w-5" />
+                                  </span>
+                                )}
+                                {candidate.type === 'video' && (
+                                  <span className="pointer-events-none absolute bottom-1.5 left-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-white shadow-sm">
+                                    <Play className="h-2.5 w-2.5 fill-current" />
+                                  </span>
+                                )}
                                 {!isOnCanvas && (
                                   <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/12 opacity-0 transition-opacity group-hover:opacity-100">
                                     <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/92 text-blue-600 shadow-md backdrop-blur-sm dark:bg-stone-900/90 dark:text-blue-300">
@@ -32593,7 +32621,7 @@ useEffect(() => {
                               </button>
                             );
                           })}
-                          {canvasSearchImageResults.total > canvasSearchImageResults.candidates.length && (
+                          {canvasSearchMediaResults.total > canvasSearchMediaResults.candidates.length && (
                             <button
                               type="button"
                               onClick={() => setCanvasSearchCandidateLimit(current => current + CANVAS_SEARCH_CANDIDATE_LIMIT)}
@@ -32604,7 +32632,7 @@ useEffect(() => {
                                 加载更多 <ChevronRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
                               </span>
                               <span className="mt-0.5 text-[8px] font-bold opacity-70">
-                                还有 {canvasSearchImageResults.total - canvasSearchImageResults.candidates.length} 张
+                                还有 {canvasSearchMediaResults.total - canvasSearchMediaResults.candidates.length} 个
                               </span>
                             </button>
                           )}
@@ -32612,7 +32640,7 @@ useEffect(() => {
                       ) : (
                         <div className="flex h-[58px] items-center justify-center gap-2 text-[10px] font-bold text-stone-400 dark:text-stone-500">
                           <ImageIcon className="h-4 w-4 opacity-65" />
-                          <span>没有匹配的图片</span>
+                          <span>没有匹配的图片或视频</span>
                         </div>
                       )}
                     </motion.div>
@@ -38990,7 +39018,7 @@ useEffect(() => {
                 </span>
                 <div className="min-w-0">
                   <div className="truncate text-xs font-black">{canvasFolderImportPrompt.folderName}</div>
-                  <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500">{canvasFolderPickerItems.length} 张图片</div>
+                  <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500">{canvasFolderPickerItems.length} 个图片或视频</div>
                 </div>
               </div>
               <button
@@ -39008,11 +39036,11 @@ useEffect(() => {
 
             <button
               type="button"
-              onClick={confirmAddFolderImagesToCanvas}
+              onClick={confirmAddFolderMediaToCanvas}
               className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400"
             >
               <Plus className="h-3.5 w-3.5" />
-              全部加入画布
+              全部素材加入画布
             </button>
 
             <div
@@ -39027,33 +39055,42 @@ useEffect(() => {
               }}
             >
               <div className="grid grid-cols-3 gap-1.5">
-                {visibleCanvasFolderPickerItems.map(item => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => addFolderImagePickerItemToCanvas(item.id)}
-                    className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-blue-300 hover:ring-2 hover:ring-blue-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-blue-300/50 dark:hover:ring-blue-300/20"
-                    title={item.name || item.content || '加入画布'}
-                  >
-                    {item.thumbnail ? (
-                      <img
-                        src={item.thumbnail}
-                        alt=""
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                        decoding="async"
-                        draggable={false}
-                      />
-                    ) : (
-                      <span className="flex h-full w-full items-center justify-center bg-stone-100 text-[10px] font-bold text-stone-300 dark:bg-stone-900 dark:text-stone-600">
-                        预览
+                {visibleCanvasFolderPickerItems.map(item => {
+                  const preview = getCanvasDrawerMediaPreviewSource(item)
+                    || (item.type === 'image' && item.path ? convertFileSrc(item.path) : '');
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => addFolderMediaPickerItemToCanvas(item.id)}
+                      className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-blue-300 hover:ring-2 hover:ring-blue-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-blue-300/50 dark:hover:ring-blue-300/20"
+                      title={item.name || item.content || '加入画布'}
+                    >
+                      {preview ? (
+                        <img
+                          src={preview}
+                          alt=""
+                          className="h-full w-full object-cover"
+                          loading="lazy"
+                          decoding="async"
+                          draggable={false}
+                        />
+                      ) : (
+                        <span className="flex h-full w-full items-center justify-center bg-stone-100 text-stone-400 dark:bg-stone-900 dark:text-stone-500">
+                          {item.type === 'video' ? <Film className="h-5 w-5" /> : <ImageIcon className="h-5 w-5" />}
+                        </span>
+                      )}
+                      {item.type === 'video' && (
+                        <span className="pointer-events-none absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white shadow-sm">
+                          <Play className="h-3 w-3 fill-current" />
+                        </span>
+                      )}
+                      <span className="absolute inset-x-0 bottom-0 hidden bg-black/58 px-1 py-1 text-[9px] font-bold text-white group-hover:block">
+                        <span className="block truncate">{item.name || item.content || '加入画布'}</span>
                       </span>
-                    )}
-                    <span className="absolute inset-x-0 bottom-0 hidden bg-black/58 px-1 py-1 text-[9px] font-bold text-white group-hover:block">
-                      <span className="block truncate">{item.name || item.content || '加入画布'}</span>
-                    </span>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
               {visibleCanvasFolderPickerItems.length < canvasFolderPickerItems.length && (
                 <div className="py-2 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
@@ -39582,6 +39619,7 @@ useEffect(() => {
                 <p>切换画布落在空白区域时会自动定位最近节点；参考图支持悬停快速移除。</p>
                 <p>优化生成图落盘、缩略图与抽屉写入，减少卡顿并避免拖动节点时位置跳变。</p>
                 <p>修复中键按在图片上拖动画布后可能持续漂移的问题。</p>
+                <p>视频素材现在可以从文件夹候选和画布搜索结果直接加入画布。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
