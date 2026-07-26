@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 import {
   embedCanvasWorkflowFixedImages,
+  hasCanvasWorkflowConcreteFixedImage,
   materializeCanvasWorkflowFixedImages,
 } from './canvasWorkflowPortableImages';
 
@@ -50,6 +51,14 @@ const workflow: CanvasWorkflowTemplate = {
 };
 
 describe('portable workflow fixed images', () => {
+  it('recognizes a fixed master image as a valid workflow reference source', () => {
+    expect(hasCanvasWorkflowConcreteFixedImage(workflow)).toBe(true);
+    expect(hasCanvasWorkflowConcreteFixedImage({
+      ...workflow,
+      nodes: workflow.nodes.filter(node => node.id !== 'fixed-image'),
+    })).toBe(false);
+  });
+
   it('embeds fixed images without touching external reference bridges', async () => {
     const readImageDataUrl = vi.fn(async () => 'data:image/png;base64,ZmFrZQ==');
     const [embedded] = await embedCanvasWorkflowFixedImages([workflow], readImageDataUrl);

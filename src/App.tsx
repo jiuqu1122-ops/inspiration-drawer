@@ -335,6 +335,7 @@ import {
 import { getCanvasTemplateImportCandidates } from './features/canvasTemplateImport';
 import {
   embedCanvasWorkflowFixedImages,
+  hasCanvasWorkflowConcreteFixedImage,
   materializeCanvasWorkflowFixedImages,
 } from './features/canvasWorkflowPortableImages';
 import {
@@ -2293,7 +2294,11 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
       && (node.item.type === 'image' || node.bridgeType === 'reference_image' || node.outputType === 'image[]' || node.outputType === 'image')
     )
   ));
-  if (workflowRequiresImageReference && !hasExternalImageInputNode) {
+  if (
+    workflowRequiresImageReference
+    && !hasExternalImageInputNode
+    && !hasCanvasWorkflowConcreteFixedImage(workflow)
+  ) {
     errors.push('Workflow prompt mentions external/reference product images but no acceptsExternalInputs=true image input node exists.');
   }
 

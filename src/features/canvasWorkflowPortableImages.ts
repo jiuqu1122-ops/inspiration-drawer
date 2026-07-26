@@ -19,6 +19,13 @@ const isPortableFixedImageNode = (node: CanvasWorkflowNodeTemplate) => (
   && node.bridgeType !== 'reference_image'
 );
 
+export const hasCanvasWorkflowConcreteFixedImage = (workflow: CanvasWorkflowTemplate) => (
+  workflow.nodes.some(node => (
+    isPortableFixedImageNode(node)
+    && getFixedImageSources(node).length > 0
+  ))
+);
+
 const getEmbeddedImageExtension = (dataUrl: string) => {
   const mime = dataUrl.match(/^data:image\/([^;,]+)/i)?.[1]?.toLowerCase() || '';
   if (mime === 'jpeg' || mime === 'jpg') return 'jpg';
