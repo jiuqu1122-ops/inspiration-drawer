@@ -15,6 +15,7 @@ import {
 } from './productDetailsFiveImagesWorkflow';
 import { INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW } from './workflows/industrialDesignFullProcessWorkflow';
 import type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
+import { removeRetiredCanvasWorkflows } from './canvasWorkflowRetirement';
 
 export type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
 
@@ -346,7 +347,7 @@ export const PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW: CanvasWorkflowTempla
   ],
 };
 
-export const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+export const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = removeRetiredCanvasWorkflows([
   INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
@@ -885,4 +886,4 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
       ),
     ],
   },
-];
+]);

@@ -154,6 +154,38 @@ pub struct CloudImageModelsResponse {
     models: Vec<String>,
     #[serde(default)]
     channels: Vec<CloudImageModelChannel>,
+    #[serde(default)]
+    pricing: Option<CloudAiPricing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAiPricing {
+    agent_request_credits: String,
+    inspiration_analysis_credits: String,
+    image_default_credits: String,
+    video_default_credits: String,
+    #[serde(default)]
+    image_models: Vec<CloudImageModelPricing>,
+    #[serde(default)]
+    video_models: Vec<CloudVideoModelPricing>,
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageModelPricing {
+    model: String,
+    credits1k: String,
+    credits2k: String,
+    credits4k: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudVideoModelPricing {
+    model: String,
+    credits: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -877,7 +909,10 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_cloud_image_references, validate_display_name, validate_email};
+    use super::{
+        normalize_cloud_image_references, validate_display_name, validate_email,
+        CloudImageModelsResponse,
+    };
     use base64::Engine as _;
     use std::fs;
 
@@ -933,6 +968,40 @@ mod tests {
         assert_eq!(
             normalize_cloud_image_references(references.clone()).unwrap(),
             references
+        );
+    }
+
+    #[test]
+    fn preserves_cloud_pricing_in_the_model_response() {
+        let response: CloudImageModelsResponse = serde_json::from_value(serde_json::json!({
+            "provider": "NEW_API",
+            "defaultModel": "gpt-image-2",
+            "models": ["gpt-image-2"],
+            "channels": [],
+            "pricing": {
+                "agentRequestCredits": "7",
+                "inspirationAnalysisCredits": "3",
+                "imageDefaultCredits": "55",
+                "videoDefaultCredits": "500",
+                "imageModels": [{
+                    "model": "gpt-image-2",
+                    "credits1k": "4",
+                    "credits2k": "6",
+                    "credits4k": "9"
+                }],
+                "videoModels": [],
+                "updatedAt": "2026-07-27T00:00:00.000Z"
+            }
+        }))
+        .unwrap();
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(
+            value["pricing"]["imageModels"][0]["credits4k"],
+            serde_json::json!("9")
+        );
+        assert_eq!(
+            value["pricing"]["inspirationAnalysisCredits"],
+            serde_json::json!("3")
         );
     }
 }

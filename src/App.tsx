@@ -214,6 +214,10 @@ import {
   type CanvasWorkflowUserInputConfig,
 } from './features/canvasWorkflowUserInput';
 import {
+  isRetiredCanvasWorkflowId,
+  removeRetiredCanvasWorkflows,
+} from './features/canvasWorkflowRetirement';
+import {
   INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS,
   INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID,
@@ -229,8 +233,10 @@ import {
 } from './features/canvasAiRunGuard';
 import {
   estimateCanvasImageGenerationCredits,
+  estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   shouldShowCanvasGenerationCredits,
+  type CanvasAiCreditPricing,
 } from './features/canvasGenerationCredits';
 import { getAutoRecoverableAiImageResultSource } from './features/aiImageResultRecovery';
 import {
@@ -347,6 +353,7 @@ import {
   hasCanvasWorkflowConcreteFixedImage,
   materializeCanvasWorkflowFixedImages,
 } from './features/canvasWorkflowPortableImages';
+import { publishCanvasReferencesInOrder } from './features/canvasReferencePublication';
 import {
   CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
   CANVAS_AI_PROVIDER_OPTIONS,
@@ -728,6 +735,7 @@ type CloudImageModelsResult = {
     models: string[];
     error?: string | null;
   }>;
+  pricing?: CanvasAiCreditPricing | null;
 };
 
 type CreditRedemptionResult = {
@@ -2352,7 +2360,7 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
 
   return { errors: Array.from(new Set(errors)), warnings: Array.from(new Set(warnings)) };
 };
-const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = [
+const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = removeRetiredCanvasWorkflows([
   INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
@@ -2899,7 +2907,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
       ),
     ],
   },
-];
+]);
 const CANVAS_AI_PROMPT_PRESET_PLACEHOLDER = '__canvas_ai_prompt_preset__';
 const CANVAS_AI_PROMPT_PRESET_ADD_VALUE = '__canvas_ai_prompt_preset_add__';
 const CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE = '__canvas_ai_prompt_preset_manage__';
@@ -3159,7 +3167,10 @@ const readCustomCanvasWorkflows = () => {
   try {
     const parsed = JSON.parse(localStorage.getItem(CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY) || '[]');
     return Array.isArray(parsed)
-      ? parsed.map(normalizeCanvasWorkflowTemplate).filter((item): item is CanvasWorkflowTemplate => !!item && !item.builtin)
+      ? parsed
+          .map(normalizeCanvasWorkflowTemplate)
+          .filter((item): item is CanvasWorkflowTemplate => !!item && !item.builtin)
+          .filter(item => !isRetiredCanvasWorkflowId(item.id))
       : [];
   } catch (_) {
     return [];
@@ -7153,7 +7164,10 @@ function MainApp() {
   };
 
   useEffect(() => {
-    if (!isCanvasMode) return;
+    if (!isCanvasMode) {
+      canvasAiModelRefreshSignatureRef.current = '';
+      return;
+    }
     if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
@@ -7179,6 +7193,31 @@ function MainApp() {
     }, 850);
     return () => window.clearTimeout(timer);
   }, [isCanvasMode, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
+
+  useEffect(() => {
+    if (!isCanvasMode || !canvasAiUsesCloudImageModels) return;
+    let disposed = false;
+    const refreshCloudPricing = () => {
+      void invoke<CloudImageModelsResult>('get_cloud_image_models', {
+        provider: effectiveCanvasAiProvider,
+      }).then((result) => {
+        if (disposed) return;
+        setCanvasAiCloudImageModels(current => current
+          ? { ...current, pricing: result.pricing ?? current.pricing }
+          : result);
+      }).catch(() => {
+        // Keep the last known pricing while temporarily offline.
+      });
+    };
+    const onFocus = () => refreshCloudPricing();
+    window.addEventListener('focus', onFocus);
+    const interval = window.setInterval(refreshCloudPricing, 5 * 60_000);
+    return () => {
+      disposed = true;
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(interval);
+    };
+  }, [isCanvasMode, canvasAiUsesCloudImageModels, effectiveCanvasAiProvider]);
 
   const getAiAnalysisConfig = (): AiAnalysisConfig => ({
     provider: aiApiProvider,
@@ -16189,11 +16228,21 @@ function MainApp() {
         }
       } else if (requireRemoteInputs) {
         try {
-          const published = await publishLocalAiInputs(
-            localSources,
-            portableWalletReferences ? 'oss-only' : publicationPreference,
-            getCanvasAiReferencePublicationMaxUrlLength(portableWalletReferences, provider),
+          const publicationMaxUrlLength = getCanvasAiReferencePublicationMaxUrlLength(
+            portableWalletReferences,
+            provider,
           );
+          const published = portableWalletReferences
+            ? await publishCanvasReferencesInOrder(
+                localSources,
+                sources => publishLocalAiInputs(sources, 'oss-only', publicationMaxUrlLength),
+                stopTemporaryReferenceShares,
+              )
+            : await publishLocalAiInputs(
+                localSources,
+                publicationPreference,
+                publicationMaxUrlLength,
+              );
           if (published.urls.length !== localSources.length) {
             await stopTemporaryReferenceShares(published.shareIds);
             throw new Error(`公网图床返回 ${published.urls.length} 张参考图，预期 ${localSources.length} 张。`);
@@ -33850,6 +33899,7 @@ useEffect(() => {
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
                                 node.ai?.provider || canvasAiProvider,
                               )),
+                              pricing: canvasAiCloudImageModels?.pricing,
                             })
                             : null;
                           const canvasImageCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'image-generator'
@@ -33857,17 +33907,40 @@ useEffect(() => {
                               model: canvasAiItemModel,
                               resolution: canvasAiItemImageResolution,
                               count: canvasItem.ai.count,
-                            })
+                            }, canvasAiCloudImageModels?.pricing)
                             : null;
+                          const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
+                            ? estimateCanvasVideoGenerationCredits({
+                              model: canvasAiItemModel,
+                              count: canvasItem.ai.count,
+                            }, canvasAiCloudImageModels?.pricing)
+                            : null;
+                          const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate
+                            ? [
+                              canvasWorkflowCreditEstimate.imageNodeCount > 0
+                                ? `${canvasWorkflowCreditEstimate.imageNodeCount}图片节点`
+                                : '',
+                              canvasWorkflowCreditEstimate.videoNodeCount > 0
+                                ? `${canvasWorkflowCreditEstimate.videoNodeCount}视频节点`
+                                : '',
+                              canvasWorkflowCreditEstimate.llmNodeCount > 0
+                                ? `${canvasWorkflowCreditEstimate.llmNodeCount}LLM节点`
+                                : '',
+                            ].filter(Boolean).join(' + ')
+                            : '';
                           const canvasRunCreditLabel = canvasWorkflowCreditEstimate
-                            ? `${canvasWorkflowCreditEstimate.imageNodeCount}图片节点 + ${canvasWorkflowCreditEstimate.llmNodeCount}LLM节点 · ${canvasWorkflowCreditEstimate.totalCredits}积分`
+                            ? `${canvasWorkflowCreditNodeLabel || '工作流'} · ${canvasWorkflowCreditEstimate.totalCredits}积分`
                             : canvasImageCreditEstimate
                               ? `${canvasImageCreditEstimate.totalCredits}积分`
+                              : canvasVideoCreditEstimate
+                                ? `${canvasVideoCreditEstimate.totalCredits}积分`
                               : '';
                           const canvasRunCreditTitle = canvasWorkflowCreditEstimate
-                            ? `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：${canvasWorkflowCreditEstimate.imageNodeCount} 个图片节点，共生成 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；${canvasWorkflowCreditEstimate.llmNodeCount} 个 LLM 节点（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
+                            ? `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：图片 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；视频 ${canvasWorkflowCreditEstimate.videoOutputCount} 条（${canvasWorkflowCreditEstimate.videoCredits} 积分）；LLM ${canvasWorkflowCreditEstimate.llmNodeCount} 次（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
                             : canvasImageCreditEstimate
                               ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
+                              : canvasVideoCreditEstimate
+                                ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：生成 ${canvasVideoCreditEstimate.outputCount} 条，每条 ${canvasVideoCreditEstimate.unitCredits} 积分`
                               : undefined;
                           const canvasWorkflowUserInput = isCanvasWorkflowItem
                             ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)

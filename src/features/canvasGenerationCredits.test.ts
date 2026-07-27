@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 import {
   estimateCanvasImageGenerationCredits,
+  estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   getCanvasImageUnitCredits,
   shouldShowCanvasGenerationCredits,
@@ -33,6 +34,55 @@ describe('canvas generation credits', () => {
       resolution: '4k',
       count: 3,
     })).toEqual({ outputCount: 3, unitCredits: 20, totalCredits: 60 });
+  });
+
+  it('uses server pricing for image and workflow LLM estimates', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [{
+        model: 'gpt-image-2',
+        credits1k: '4',
+        credits2k: '6',
+        credits4k: '9',
+      }],
+      videoModels: [],
+    };
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'GPT Image 2',
+      resolution: '4k',
+      count: 2,
+    }, pricing)).toEqual({ outputCount: 2, unitCredits: 9, totalCredits: 18 });
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'seedance2',
+      count: 2,
+    }, {
+      ...pricing,
+      videoDefaultCredits: '320',
+      videoModels: [{ model: 'seedance2', credits: '48' }],
+    })).toEqual({ outputCount: 2, unitCredits: 48, totalCredits: 96 });
+    expect(getCanvasImageUnitCredits('custom-model', '2k', pricing)).toBe(55);
+
+    const workflow = {
+      id: 'dynamic-pricing-workflow',
+      label: 'Dynamic pricing',
+      hint: '',
+      nodes: [
+        {
+          id: 'analysis', x: 0, y: 0, width: 100, height: 100,
+          item: { id: 'analysis', type: 'text', content: '' },
+          textMode: 'agent',
+        },
+        {
+          id: 'render', x: 0, y: 0, width: 100, height: 100,
+          item: { id: 'render', type: 'text', content: '' },
+          ai: { type: 'image-generator', model: 'gpt-image-2', resolution: '2k', count: 1 },
+        },
+      ],
+    } as CanvasWorkflowTemplate;
+    expect(estimateCanvasWorkflowCredits(workflow, { pricing }).totalCredits).toBe(13);
   });
 
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {
@@ -72,8 +122,11 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasWorkflowCredits(workflow)).toEqual({
       imageNodeCount: 2,
       imageOutputCount: 3,
+      videoNodeCount: 0,
+      videoOutputCount: 0,
       llmNodeCount: 1,
       imageCredits: 48,
+      videoCredits: 0,
       llmCredits: 10,
       totalCredits: 58,
     });

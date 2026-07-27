@@ -111,11 +111,11 @@ describe('built-in canvas workflows', () => {
     });
   });
 
-  it('includes the local-first industrial design full-process workflow', () => {
+  it('keeps the local-first workflow definition available without listing the retired preset', () => {
     const workflow = INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW;
     const normalized = normalizeCanvasWorkflowTemplate(workflow);
 
-    expect(CANVAS_BUILT_IN_WORKFLOWS.some(item => item.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID)).toBe(true);
+    expect(CANVAS_BUILT_IN_WORKFLOWS.some(item => item.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID)).toBe(false);
     expect(workflow.builtin).toBe(true);
     expect(normalized).not.toBeNull();
     expect(workflow.userInput).toEqual({
