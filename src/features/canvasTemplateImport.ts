@@ -1,6 +1,7 @@
 export type CanvasTemplateImportCandidates = {
   presets: unknown[];
   workflows: unknown[];
+  workflowInstances: Array<{ workflow: unknown; runtime?: unknown }>;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -21,12 +22,23 @@ const classifyCanvasTemplateCandidate = (
 };
 
 export const getCanvasTemplateImportCandidates = (rawValue: unknown): CanvasTemplateImportCandidates => {
-  const result: CanvasTemplateImportCandidates = { presets: [], workflows: [] };
+  const result: CanvasTemplateImportCandidates = { presets: [], workflows: [], workflowInstances: [] };
   if (Array.isArray(rawValue)) {
     rawValue.forEach(value => classifyCanvasTemplateCandidate(value, result));
     return result;
   }
   if (!isRecord(rawValue)) return result;
+
+  if (
+    rawValue.type === 'inspiration-drawer-workflow-instance'
+    && isRecord(rawValue.workflow)
+  ) {
+    result.workflowInstances.push({
+      workflow: rawValue.workflow,
+      runtime: rawValue.runtime,
+    });
+    return result;
+  }
 
   const hasContainerFields = Array.isArray(rawValue.presets)
     || Array.isArray(rawValue.workflows)

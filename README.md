@@ -4,19 +4,19 @@
 
 ## 下载
 
-当前版本：**5.0.11**
+当前版本：**5.0.12**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.11/Inspiration.Drawer_5.0.11_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.11)
-- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.11)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.12/Inspiration.Drawer_5.0.12_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.12)
+- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.12)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 5.0.11 更新
+## 5.0.12 更新
 
-- 自动同步服务端模型与 LLM 积分价格，运行前显示最新预计消耗。
-- 多参考图工作流改为小批次上传，失败时自动逐张重试。
-- 移除两个旧工业设计工作流预设，不影响画布上已有内容。
+- 工作流新增通用可替换内部图片槽位，支持单图、多图、必填、数量限制和自定义用途。
+- 槽位图片可从抽屉、全库搜索、本地文件或拖放添加，并支持替换、清空、移除与排序。
+- 展开和折叠工作流会保留槽位状态；模板导出不携带实例图片，也可单独导出含图片的工作流实例。
 
 ## 主要功能
 

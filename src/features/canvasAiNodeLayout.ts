@@ -92,6 +92,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
   localMediaTool?: boolean;
   showLocalMediaProgress?: boolean;
   imageRulePanelExpanded?: boolean;
+  internalSlotCount?: number;
 }) => {
   const isWorkflow = options?.type === 'workflow';
   const isVideo = options?.type === 'video-generator';
@@ -131,12 +132,16 @@ export const getCanvasAiNodeAutoSize = (options?: {
       );
   const inputHeight = 52;
   const errorHeight = options?.hasError ? 48 : 0;
+  const internalSlotHeight = isWorkflow && Number(options?.internalSlotCount) > 0
+    ? Math.max(0, Math.round(Number(options?.internalSlotCount))) * 86 + 16
+    : 0;
   const bodyGapCount = [
     headerSectionHeight,
     outputSectionHeight,
     metaSectionHeight,
     promptHeight,
     inputHeight,
+    internalSlotHeight,
     errorHeight,
   ].filter(Boolean).length - 1;
   const bodyHeight = headerSectionHeight
@@ -144,6 +149,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
     + metaSectionHeight
     + promptHeight
     + inputHeight
+    + internalSlotHeight
     + errorHeight
     + Math.max(0, bodyGapCount) * 12
     + 32;

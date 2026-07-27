@@ -185,6 +185,9 @@ import {
   type CanvasImageItem,
   type CanvasItemBox,
   type CanvasResizeCorner,
+  type CanvasWorkflowRuntime,
+  type CanvasWorkflowRuntimeNodeSnapshot,
+  type CanvasWorkflowSlotAsset,
 } from './features/canvasModel';
 import { findNearestCanvasItemIdForEmptyViewport } from './features/canvasViewportNavigation';
 import {
@@ -206,12 +209,18 @@ import {
   buildDesignAgentSystemPrompt,
   normalizeDesignAgentConfig,
 } from './features/designAgentNode';
-import { PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW } from './features/canvasTemplates';
+import {
+  PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
+  type CanvasWorkflowImageNodeModeDraft,
+  type CanvasWorkflowInternalSlot,
+  type CanvasWorkflowNodeTemplate,
+  type CanvasWorkflowSaveDraft,
+  type CanvasWorkflowTemplate,
+} from './features/canvasTemplates';
 import {
   injectCanvasWorkflowUserInputContext,
   normalizeCanvasWorkflowUserInput,
   selectCanvasWorkflowUserInputTargetIds,
-  type CanvasWorkflowUserInputConfig,
 } from './features/canvasWorkflowUserInput';
 import {
   isRetiredCanvasWorkflowId,
@@ -350,9 +359,30 @@ import {
 import { getCanvasTemplateImportCandidates } from './features/canvasTemplateImport';
 import {
   embedCanvasWorkflowFixedImages,
+  exportCanvasWorkflowInstance as buildPortableCanvasWorkflowInstance,
   hasCanvasWorkflowConcreteFixedImage,
+  materializeCanvasWorkflowInstance,
   materializeCanvasWorkflowFixedImages,
 } from './features/canvasWorkflowPortableImages';
+import {
+  applyCanvasWorkflowInternalSlotBindings,
+  clearCanvasWorkflowInternalSlot,
+  collectCanvasWorkflowInternalSlotBindings,
+  createCanvasWorkflowSlotAssetFromItem,
+  applyCanvasWorkflowSlotAssetToItem,
+  getCanvasWorkflowInternalSlotBinding,
+  getCanvasWorkflowInternalSlotNodes,
+  getCanvasWorkflowRuntimeSnapshots,
+  getMissingCanvasWorkflowInternalSlots,
+  isExternalReferenceImageBridge,
+  isExpandedCanvasWorkflowInternalSlotNode,
+  isReplaceableInternalImageSlot,
+  normalizeCanvasWorkflowInternalSlot,
+  normalizeCanvasWorkflowRuntime,
+  removeCanvasWorkflowInternalSlotAsset,
+  reorderCanvasWorkflowInternalSlotAssets,
+  replaceCanvasWorkflowInternalSlot,
+} from './features/canvasWorkflowInternalSlots';
 import { publishCanvasReferencesInOrder } from './features/canvasReferencePublication';
 import {
   CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
@@ -472,48 +502,6 @@ const getStoredLocalVisionModel = () => {
   }
   return stored;
 };
-type CanvasWorkflowNodeTemplate = {
-  id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  item: Pick<BufferItem, 'type' | 'content'> & Partial<BufferItem>;
-  inputs?: string[];
-  fixedInput?: boolean;
-  textMode?: CanvasImageItem['textMode'];
-  designAgentConfig?: DesignAgentConfig;
-  acceptsExternalInputs?: boolean;
-  externalInputTypes?: Array<'image' | 'text' | 'video'>;
-  outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
-  bridgeType?: 'reference_image';
-  ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
-};
-type CanvasWorkflowTemplate = {
-  id: string;
-  label: string;
-  hint: string;
-  nodes: CanvasWorkflowNodeTemplate[];
-  userInput?: CanvasWorkflowUserInputConfig;
-  createdAt?: number;
-  builtin?: boolean;
-};
-type CanvasWorkflowSaveDraft = {
-  label: string;
-  defaultLabel: string;
-  nodes: CanvasWorkflowNodeTemplate[];
-  bounds: CanvasItemBox;
-  externalInputIds: string[];
-  selectedItemIds: string[];
-  aiCount: number;
-  fixedImageCount: number;
-  fixedTextCount: number;
-};
-type CanvasWorkflowRuntimeNodeSnapshot = {
-  templateId: string;
-  item?: Partial<BufferItem>;
-  ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
-};
 type CanvasWorkflowValidationResult = {
   errors: string[];
   warnings: string[];
@@ -547,6 +535,7 @@ const EAGLE_API_V1_BASE_URL = 'http://127.0.0.1:41595/api';
 const EAGLE_IMPORT_PAGE_LIMIT = 200;
 const EAGLE_IMPORT_CACHE_CONCURRENCY = 2;
 const FOLDER_DRAG_MIME = 'application/x-inspiration-drawer-folder-ids';
+const WORKFLOW_SLOT_ASSET_DRAG_MIME = 'application/x-inspiration-workflow-slot-asset-index';
 type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
 type DrawerSidebarLayout = 'icons' | 'folders';
 type EagleImportStatus = {
@@ -1453,6 +1442,7 @@ const getCanvasAiNodeAutoSize = (options?: {
   localMediaTool?: boolean;
   showLocalMediaProgress?: boolean;
   imageRulePanelExpanded?: boolean;
+  internalSlotCount?: number;
 }) => {
   const isWorkflow = options?.type === 'workflow';
   const isVideo = options?.type === 'video-generator';
@@ -1492,12 +1482,16 @@ const getCanvasAiNodeAutoSize = (options?: {
       );
   const inputHeight = 52;
   const errorHeight = options?.hasError ? 48 : 0;
+  const internalSlotHeight = isWorkflow && Number(options?.internalSlotCount) > 0
+    ? Math.max(0, Math.round(Number(options?.internalSlotCount))) * 86 + 16
+    : 0;
   const bodyGapCount = [
     headerSectionHeight,
     outputSectionHeight,
     metaSectionHeight,
     promptHeight,
     inputHeight,
+    internalSlotHeight,
     errorHeight,
   ].filter(Boolean).length - 1;
   const bodyHeight = headerSectionHeight
@@ -1505,6 +1499,7 @@ const getCanvasAiNodeAutoSize = (options?: {
     + metaSectionHeight
     + promptHeight
     + inputHeight
+    + internalSlotHeight
     + errorHeight
     + Math.max(0, bodyGapCount) * 12
     + 32;
@@ -2230,6 +2225,7 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
   const warnings: string[] = [];
   const nodesById = new Map<string, CanvasWorkflowNodeTemplate>();
   const duplicateIds = new Set<string>();
+  const internalSlotIds = new Set<string>();
   const allowedItemTypes = new Set(['text', 'image', 'file', 'video']);
   const allowedAiTypes = new Set(['image-generator', 'video-generator', 'frame-interpolation', 'image-enhancement', 'video-enhancement', 'generated-image', 'generated-video', 'workflow']);
 
@@ -2239,6 +2235,17 @@ const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): Canva
     nodesById.set(node.id, node);
     if (!allowedItemTypes.has(node.item?.type || '')) errors.push(`Node "${node.id}" has unknown item type "${node.item?.type || ''}".`);
     if (node.ai?.type && !allowedAiTypes.has(node.ai.type)) errors.push(`Node "${node.id}" has unknown ai type "${node.ai.type}".`);
+    if (node.internalSlot) {
+      if (!isReplaceableInternalImageSlot(node)) {
+        errors.push(`Node "${node.id}" has an invalid internal image slot.`);
+      } else if (internalSlotIds.has(node.internalSlot.id)) {
+        errors.push(`Duplicate workflow internal slot id "${node.internalSlot.id}".`);
+      } else {
+        internalSlotIds.add(node.internalSlot.id);
+      }
+      if (node.fixedInput !== true) warnings.push(`Internal slot node "${node.id}" should keep fixedInput=true.`);
+      if (node.acceptsExternalInputs === true) errors.push(`Internal slot node "${node.id}" cannot accept external inputs.`);
+    }
   });
   duplicateIds.forEach(id => errors.push(`Duplicate workflow node id "${id}".`));
   workflow.nodes.forEach(node => {
@@ -3028,6 +3035,12 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
       ? rawItem.type
       : 'text';
     const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
+    const internalSlot = normalizeCanvasWorkflowInternalSlot(node.internalSlot, {
+      id,
+      label: typeof rawItem.name === 'string' ? rawItem.name : id,
+      order: index,
+    });
+    if (internalSlot) itemType = 'image';
     let externalInputTypes = Array.isArray(node.externalInputTypes)
       ? node.externalInputTypes
         .map(type => String(type || '').trim())
@@ -3050,10 +3063,12 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         .some(value => typeof value === 'string' && value.trim().length > 0);
     const shouldRestoreConcreteFixedImage = hasConcreteImageSource
       && !rawAi
+      && !internalSlot
       && node.bridgeType !== 'reference_image'
       && id !== 'product_reference_image';
     const inferredExternalImageInput = shouldInferExternalImageInputs
       && inputIds.length === 0
+      && !internalSlot
       && !(node.fixedInput === true && itemType === 'image')
       && !hasConcreteImageSource
       && (
@@ -3062,14 +3077,15 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         || itemType === 'image'
         || itemType === 'file'
       );
-    const acceptsExternalInputs = !shouldRestoreConcreteFixedImage
+    const acceptsExternalInputs = !internalSlot
+      && !shouldRestoreConcreteFixedImage
       && (node.acceptsExternalInputs === true || inferredExternalImageInput);
     if (shouldRestoreConcreteFixedImage) {
       externalInputTypes = undefined;
     } else if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
       externalInputTypes = ['image', 'text'];
     }
-    const isReferenceImageBridge = (
+    const isReferenceImageBridge = !internalSlot && (
       node.bridgeType === 'reference_image'
       || id === 'product_reference_image'
     )
@@ -3082,6 +3098,7 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     if (isReferenceImageBridge) itemType = 'file';
     const shouldCompactItemContent = rawAi?.type === 'image-generator'
       && isCanvasWorkflowLongDuplicateText(itemContent, executablePrompt);
+    const slotDefaultValue = internalSlot?.defaultValue;
     return {
       id,
       x: Number(node.x) || 0,
@@ -3093,11 +3110,12 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         type: itemType,
         content: isReferenceImageBridge ? (itemContent || '参考产品图桥接') : (shouldCompactItemContent ? '' : itemContent),
         name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : (isReferenceImageBridge ? '参考产品图' : undefined),
-        path: typeof rawItem.path === 'string' ? rawItem.path : undefined,
-        url: typeof rawItem.url === 'string' ? rawItem.url : undefined,
-        thumbnail: typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined,
-        sourceUrl: typeof rawItem.sourceUrl === 'string' ? rawItem.sourceUrl : undefined,
-        originalUrl: typeof rawItem.originalUrl === 'string' ? rawItem.originalUrl : undefined,
+        path: internalSlot ? slotDefaultValue?.path : (typeof rawItem.path === 'string' ? rawItem.path : undefined),
+        url: internalSlot ? slotDefaultValue?.url : (typeof rawItem.url === 'string' ? rawItem.url : undefined),
+        thumbnail: internalSlot ? undefined : (typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined),
+        sourceUrl: internalSlot ? undefined : (typeof rawItem.sourceUrl === 'string' ? rawItem.sourceUrl : undefined),
+        originalUrl: internalSlot ? undefined : (typeof rawItem.originalUrl === 'string' ? rawItem.originalUrl : undefined),
+        sourceItemId: internalSlot ? slotDefaultValue?.sourceItemId : (typeof rawItem.sourceItemId === 'string' ? rawItem.sourceItemId : undefined),
         remark: typeof rawItem.remark === 'string' ? rawItem.remark : undefined,
         remarks: Array.isArray(rawItem.remarks)
           ? rawItem.remarks.map(remark => String(remark || '').trim()).filter(Boolean).slice(0, 12)
@@ -3106,7 +3124,9 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         isQuickAccess: false,
       },
       inputs: inputIds,
-      fixedInput: shouldRestoreConcreteFixedImage
+      fixedInput: internalSlot
+        ? true
+        : shouldRestoreConcreteFixedImage
         ? true
         : typeof node.fixedInput === 'boolean'
         ? (inferredExternalImageInput ? false : node.fixedInput)
@@ -3121,7 +3141,9 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         : undefined,
       acceptsExternalInputs,
       externalInputTypes,
-      outputType: node.outputType === 'image'
+      outputType: internalSlot
+        ? (internalSlot.multiple ? 'image[]' : 'image')
+        : node.outputType === 'image'
         || node.outputType === 'image[]'
         || node.outputType === 'text'
         || node.outputType === 'video'
@@ -3129,6 +3151,7 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         ? node.outputType
         : undefined,
       bridgeType: isReferenceImageBridge ? 'reference_image' as const : undefined,
+      internalSlot,
       ai: rawAi
         ? {
           ...rawAi,
@@ -3143,7 +3166,14 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
     } as CanvasWorkflowNodeTemplate;
   }).filter(node => node.ai?.type === 'image-generator' || !!node.item.type);
 
-  if (nodes.length === 0 || !nodes.some(node => node.ai?.type === 'image-generator')) {
+  const internalSlotIds = nodes
+    .filter(isReplaceableInternalImageSlot)
+    .map(node => node.internalSlot!.id);
+  if (
+    nodes.length === 0
+    || !nodes.some(node => node.ai?.type === 'image-generator')
+    || new Set(internalSlotIds).size !== internalSlotIds.length
+  ) {
     canvasWorkflowNormalizeCache.set(cacheKey, null);
     return null;
   }
@@ -4656,6 +4686,11 @@ function MainApp() {
   } | null>(null);
   const canvasUploadInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasUploadTargetIdRef = useRef<string | null>(null);
+  const pendingCanvasWorkflowSlotUploadRef = useRef<{
+    moduleId: string;
+    slotId: string;
+    expandedNodeId?: string;
+  } | null>(null);
   const canvasWorkflowFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasWorkflowFileTargetIdRef = useRef<string | null>(null);
   const canvasClipboardRef = useRef<CanvasImageItem[]>([]);
@@ -5337,7 +5372,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.11');
+        setAppVersion('5.0.12');
       });
   }, []);
 
@@ -6032,6 +6067,12 @@ function MainApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [canvasSearchCandidateLimit, setCanvasSearchCandidateLimit] = useState(CANVAS_SEARCH_CANDIDATE_LIMIT);
+  const [canvasWorkflowSlotPickTarget, setCanvasWorkflowSlotPickTarget] = useState<{
+    moduleId: string;
+    slotId: string;
+    label: string;
+    expandedNodeId?: string;
+  } | null>(null);
 
   useEffect(() => {
     setCanvasSearchCandidateLimit(CANVAS_SEARCH_CANDIDATE_LIMIT);
@@ -12265,6 +12306,9 @@ function MainApp() {
       localMediaTool: isCanvasAiLocalMediaToolType(canvasItem.ai?.type),
       showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
       imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded !== false,
+      internalSlotCount: canvasItem.ai?.type === 'workflow'
+        ? getCanvasWorkflowInternalSlotNodes(getCanvasWorkflowTemplateFromNode(canvasItem)).length
+        : 0,
     });
   };
   void runAiAlchemyFromCard;
@@ -13685,7 +13729,17 @@ function MainApp() {
 
   const removeCanvasItemsByIds = (ids: string[], label = '删除画布元素') => {
     if (!isCanvasModeRef.current) return 0;
-    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    const requestedIds = Array.from(new Set(ids.filter(Boolean)));
+    const protectedSlotIds = new Set(requestedIds.filter(id => {
+      const item = canvasItemsRef.current.find(candidate => candidate.id === id);
+      const group = getCanvasWorkflowGroup(item);
+      const workflow = getCanvasWorkflowTemplateFromNode(group?.module);
+      return isExpandedCanvasWorkflowInternalSlotNode(item, workflow);
+    }));
+    const uniqueIds = requestedIds.filter(id => !protectedSlotIds.has(id));
+    if (protectedSlotIds.size > 0) {
+      showToast('工作流内部槽位节点不能删除，可清空或替换槽位图片');
+    }
     if (uniqueIds.length === 0) return 0;
     const idSet = new Set(uniqueIds);
     const targetCanvasItems = canvasItemsRef.current.filter(item => idSet.has(item.id));
@@ -15935,7 +15989,24 @@ function MainApp() {
       if (isCanvasWorkflowReferenceBridge(inputItem)) {
         getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visitInputItem(upstreamItem, seenNodeIds));
       } else if (inputItem.item.type === 'image' || inputItem.item.type === 'video') {
-        pushInput(inputItem.item);
+        if (inputItem.item.type === 'image' && (inputItem.workflowSlotAssets || []).length > 0) {
+          inputItem.workflowSlotAssets?.forEach((asset, assetIndex) => {
+            pushInput({
+              ...inputItem.item,
+              id: asset.sourceItemId || `${inputItem.item.id}:slot:${assetIndex}`,
+              type: 'image',
+              name: asset.name || inputItem.item.name,
+              path: asset.path,
+              url: asset.url,
+              thumbnail: asset.thumbnail,
+              sourceUrl: asset.originalUrl,
+              originalUrl: asset.originalUrl,
+              sourceItemId: asset.sourceItemId,
+            });
+          });
+        } else {
+          pushInput(inputItem.item);
+        }
       } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
         getCanvasAiSuccessfulOutputs(inputItem).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
@@ -16483,6 +16554,13 @@ function MainApp() {
         .map(normalizeCanvasWorkflowTemplate)
         .filter((item): item is CanvasWorkflowTemplate => !!item)
         .map(workflow => ({ ...workflow, builtin: false })),
+      workflowInstances: candidates.workflowInstances.flatMap(instance => {
+        const workflow = normalizeCanvasWorkflowTemplate(instance.workflow);
+        return workflow ? [{
+          workflow: { ...workflow, builtin: false },
+          runtime: normalizeCanvasWorkflowRuntime(instance.runtime),
+        }] : [];
+      }),
     };
   };
 
@@ -16506,17 +16584,23 @@ function MainApp() {
     try {
       const filePaths = await chooseCanvasTemplateImportFiles();
       if (filePaths.length === 0) return;
-      const payload = { presets: [] as CanvasAiPromptPreset[], workflows: [] as CanvasWorkflowTemplate[] };
+      const payload = {
+        presets: [] as CanvasAiPromptPreset[],
+        workflows: [] as CanvasWorkflowTemplate[],
+        workflowInstances: [] as Array<{ workflow: CanvasWorkflowTemplate; runtime: CanvasWorkflowRuntime }>,
+      };
       for (const filePath of filePaths) {
         const parsed = await invoke<unknown>('read_canvas_template_json', { path: filePath });
         const filePayload = getCanvasTemplateImportPayload(parsed);
         payload.presets.push(...filePayload.presets);
         payload.workflows.push(...filePayload.workflows);
+        payload.workflowInstances.push(...filePayload.workflowInstances);
       }
       const shouldImportPresets = scope === 'preset' || scope === 'all';
       const shouldImportWorkflows = scope === 'workflow' || scope === 'all';
       let importedPresetCount = 0;
       let importedWorkflowCount = 0;
+      let importedInstanceCount = 0;
 
       if (shouldImportPresets && payload.presets.length > 0) {
         importedPresetCount = payload.presets.length;
@@ -16566,11 +16650,67 @@ function MainApp() {
         }
       }
 
-      if (importedPresetCount === 0 && importedWorkflowCount === 0) {
+      if (shouldImportWorkflows && payload.workflowInstances.length > 0) {
+        const usedWorkflowIds = new Set(canvasWorkflowTemplates.map(workflow => workflow.id));
+        const restoredInstances: Array<{ workflow: CanvasWorkflowTemplate; runtime: CanvasWorkflowRuntime }> = [];
+        for (let index = 0; index < payload.workflowInstances.length; index += 1) {
+          const candidate = payload.workflowInstances[index];
+          const restored = await materializeCanvasWorkflowInstance({
+            portable: {
+              type: 'inspiration-drawer-workflow-instance',
+              version: 1,
+              workflow: candidate.workflow,
+              runtime: candidate.runtime,
+            },
+            saveImageDataUrl: (fileName, dataUrl) => invoke<string>('save_dropped_file', { fileName, dataUrl }),
+            getDisplayUrl: path => convertFileSrc(path),
+          });
+          let nextId = '';
+          do {
+            nextId = `imported-workflow-instance-${Date.now().toString(36)}-${index}-${Math.random().toString(36).substring(2, 6)}`;
+          } while (usedWorkflowIds.has(nextId));
+          usedWorkflowIds.add(nextId);
+          restoredInstances.push({
+            workflow: {
+              ...restored.workflow,
+              id: nextId,
+              builtin: false,
+              createdAt: Date.now() + index,
+            },
+            runtime: restored.runtime,
+          });
+        }
+        importedInstanceCount = restoredInstances.length;
+        if (restoredInstances.length > 0) {
+          setCustomCanvasWorkflows(prev => [
+            ...restoredInstances.map(instance => instance.workflow),
+            ...prev,
+          ].slice(0, 48));
+          if (!isCanvasModeRef.current) enterCanvasMode();
+          const base = getCanvasDropPosition(0);
+          const modules = restoredInstances.flatMap((instance, index) => {
+            const module = buildCanvasWorkflowModuleNode(instance.workflow, {
+              x: base.x + index * 52,
+              y: base.y + index * 52,
+            });
+            if (!module?.ai) return [];
+            return [{
+              ...module,
+              ai: {
+                ...module.ai,
+                workflowRuntime: instance.runtime,
+              },
+            }];
+          });
+          appendCanvasItems(modules, '导入工作流实例');
+        }
+      }
+
+      if (importedPresetCount === 0 && importedWorkflowCount === 0 && importedInstanceCount === 0) {
         showToast('没有找到可导入的预设或工作流');
         return;
       }
-      showToast(`已导入 ${importedPresetCount} 个预设、${importedWorkflowCount} 个工作流`);
+      showToast(`已导入 ${importedPresetCount} 个预设、${importedWorkflowCount} 个工作流、${importedInstanceCount} 个工作流实例`);
     } catch (err) {
       console.warn('导入画布模板失败:', err);
       const message = err instanceof Error ? err.message : '';
@@ -17015,19 +17155,7 @@ function MainApp() {
   };
 
   const normalizeCanvasWorkflowRuntimeSnapshots = (value: unknown): CanvasWorkflowRuntimeNodeSnapshot[] => {
-    if (!Array.isArray(value)) return [];
-    return value.map(item => {
-      const record = item && typeof item === 'object'
-        ? item as Partial<CanvasWorkflowRuntimeNodeSnapshot>
-        : {};
-      const templateId = typeof record.templateId === 'string' ? record.templateId : '';
-      if (!templateId) return null;
-      return {
-        templateId,
-        item: record.item && typeof record.item === 'object' ? cloneDrawerValue(record.item) : undefined,
-        ai: record.ai && typeof record.ai === 'object' ? cloneDrawerValue(record.ai) : undefined,
-      } as CanvasWorkflowRuntimeNodeSnapshot;
-    }).filter((item): item is CanvasWorkflowRuntimeNodeSnapshot => !!item);
+    return getCanvasWorkflowRuntimeSnapshots(value).map(snapshot => cloneDrawerValue(snapshot));
   };
 
   const createCanvasWorkflowRuntimeSnapshots = (
@@ -17074,6 +17202,53 @@ function MainApp() {
   ) => (
     sourceItems.filter(item => getCanvasWorkflowGroup(item)?.groupId === groupId)
   );
+
+  const createCanvasWorkflowRuntimeValue = (
+    workflow: CanvasWorkflowTemplate,
+    runtimeItems: CanvasImageItem[],
+    idMap: Map<string, string>,
+    previousRuntime?: unknown,
+  ): CanvasWorkflowRuntime => {
+    const previous = normalizeCanvasWorkflowRuntime(previousRuntime);
+    const snapshots = createCanvasWorkflowRuntimeSnapshots(workflow, runtimeItems, idMap);
+    return {
+      ...previous,
+      nodeSnapshots: Object.fromEntries(snapshots.map(snapshot => [snapshot.templateId, snapshot])),
+      internalSlotBindings: collectCanvasWorkflowInternalSlotBindings({
+        workflow,
+        runtimeItems,
+        idMap,
+        previousRuntime,
+      }),
+    };
+  };
+
+  const hydrateCanvasWorkflowSlotAssetsFromDrawer = (
+    runtimeItems: CanvasImageItem[],
+  ) => runtimeItems.map(item => {
+    if (!item.workflowSlotAssets?.length) return item;
+    const assets = item.workflowSlotAssets.map(asset => {
+      const drawerItem = asset.sourceItemId
+        ? itemsRef.current.find(candidate => candidate.id === asset.sourceItemId)
+        : null;
+      if (!drawerItem || drawerItem.type !== 'image') return asset;
+      return {
+        ...createCanvasWorkflowSlotAssetFromItem(drawerItem, asset.updatedAt),
+        ...asset,
+        path: asset.path || drawerItem.path,
+        url: asset.url || drawerItem.url,
+        thumbnail: asset.thumbnail || drawerItem.thumbnail,
+        originalUrl: asset.originalUrl || drawerItem.originalUrl || drawerItem.sourceUrl,
+        name: asset.name || drawerItem.name,
+        updatedAt: asset.updatedAt,
+      } as CanvasWorkflowSlotAsset;
+    });
+    return {
+      ...item,
+      item: applyCanvasWorkflowSlotAssetToItem(item.item, assets[0]),
+      workflowSlotAssets: assets,
+    };
+  });
 
   const applyCanvasWorkflowRuntimeSnapshots = (
     workflow: CanvasWorkflowTemplate,
@@ -17133,17 +17308,10 @@ function MainApp() {
       .filter(node => node.ai?.type === 'image-generator')
       .map(node => node.id));
     const hasExplicitExternalInputTargets = cleanWorkflow.nodes.some(node => node.acceptsExternalInputs);
+    const hasInternalImageSlots = getCanvasWorkflowInternalSlotNodes(cleanWorkflow).length > 0;
     const idMap = new Map<string, string>();
   const isWorkflowExternalInputPort = (node: CanvasWorkflowNodeTemplate) => (
-      node.acceptsExternalInputs === true
-      && !node.ai
-      && (
-        node.bridgeType === 'reference_image'
-        || node.item.type === 'file'
-        || node.item.type === 'image'
-        || node.outputType === 'image'
-        || node.outputType === 'image[]'
-      )
+      !node.ai && isExternalReferenceImageBridge(node)
     );
 
     cleanWorkflow.nodes.forEach(node => {
@@ -17162,9 +17330,17 @@ function MainApp() {
       const internalInputs = (node.inputs || [])
         .map(inputId => idMap.get(inputId))
         .filter((inputId): inputId is string => !!inputId);
+      const internalSlotReferenceRoles = (node.inputs || []).flatMap(inputId => {
+        const inputNode = cleanWorkflow.nodes.find(candidate => candidate.id === inputId);
+        const runtimeInputId = idMap.get(inputId);
+        const role = inputNode?.internalSlot?.role;
+        return runtimeInputId && role ? [{ nodeId: runtimeInputId, role }] : [];
+      });
       const shouldAttachExternalInputs = hasExplicitExternalInputTargets
         ? node.acceptsExternalInputs === true
-        : isAiGenerator && !(node.inputs || []).some(inputId => runnableTemplateNodeIds.has(inputId));
+        : hasInternalImageSlots
+          ? node.acceptsExternalInputs === true
+          : isAiGenerator && !(node.inputs || []).some(inputId => runnableTemplateNodeIds.has(inputId));
       const item: BufferItem = {
         ...cloneDrawerValue(node.item),
         id: nextBufferId,
@@ -17215,6 +17391,10 @@ function MainApp() {
               qualityProfileId: typeof node.ai?.skillMeta?.qualityProfileId === 'string' ? node.ai.skillMeta.qualityProfileId : undefined,
               prompt: [node.ai?.presetPrompt, node.ai?.prompt, node.item.content].filter(Boolean).join('\n'),
             }, node.ai?.imagePolicy || null),
+            referenceRoles: Array.from(new Map([
+              ...(cloneDrawerValue(node.ai?.referenceRoles || []) as Array<{ nodeId: string; role: string }>),
+              ...internalSlotReferenceRoles,
+            ].map(reference => [reference.nodeId, reference])).values()),
             status: 'idle' as const,
             error: undefined,
             generatedAt: undefined,
@@ -17256,6 +17436,7 @@ function MainApp() {
       type: 'workflow',
       aspectRatio: firstOutputAspectRatio,
       outputCount: outputSlotCount,
+      internalSlotCount: getCanvasWorkflowInternalSlotNodes(cleanWorkflow).length,
     });
     return {
       id: makeCanvasNodeId(itemId, 'workflow'),
@@ -17390,6 +17571,24 @@ function MainApp() {
     const externalInputIds = Array.from(new Set(workflowItems.flatMap(item => (
       (item.inputs || []).filter(inputId => !workflowNodeIds.has(inputId))
     ))));
+    const imageNodeModes = Object.fromEntries(
+      nodes
+        .filter(node => !node.ai && node.item.type === 'image')
+        .map((node, index) => [
+          node.id,
+          {
+            mode: 'fixed',
+            slotId: `image-slot-${index + 1}`,
+            label: node.item.name || `图片槽位 ${index + 1}`,
+            required: true,
+            multiple: false,
+            maxItems: 1,
+            role: '',
+            emptyHint: '请选择图片',
+            keepDefault: false,
+          } satisfies CanvasWorkflowImageNodeModeDraft,
+        ]),
+    );
     return {
       label: defaultName,
       defaultLabel: defaultName,
@@ -17400,6 +17599,7 @@ function MainApp() {
       aiCount,
       fixedImageCount,
       fixedTextCount,
+      imageNodeModes,
     };
   };
 
@@ -17424,15 +17624,106 @@ function MainApp() {
       showToast('请输入工作流名称');
       return;
     }
+    const configuredSlotIds = Object.values(canvasWorkflowSaveDraft.imageNodeModes || {})
+      .filter(config => config.mode === 'internal_slot')
+      .map(config => String(config.slotId || '').trim());
+    if (
+      configuredSlotIds.some(slotId => !slotId)
+      || new Set(configuredSlotIds).size !== configuredSlotIds.length
+    ) {
+      showToast('每个图片槽位必须有唯一的槽位 ID');
+      return;
+    }
+    const slotAssets = new Map<string, CanvasWorkflowSlotAsset[]>();
+    const configuredNodes = canvasWorkflowSaveDraft.nodes.map((node, nodeIndex): CanvasWorkflowNodeTemplate => {
+      const config = canvasWorkflowSaveDraft.imageNodeModes?.[node.id];
+      if (!config || node.item.type !== 'image' || node.ai) return node;
+      if (config.mode === 'external_bridge') {
+        return {
+          ...node,
+          item: {
+            ...node.item,
+            type: 'file',
+            content: node.item.name || '参考图输入',
+            path: undefined,
+            url: undefined,
+            thumbnail: undefined,
+            sourceUrl: undefined,
+            originalUrl: undefined,
+            sourceItemId: undefined,
+          },
+          fixedInput: false,
+          acceptsExternalInputs: true,
+          externalInputTypes: ['image'],
+          outputType: 'image',
+          bridgeType: 'reference_image',
+          internalSlot: undefined,
+        };
+      }
+      if (config.mode === 'internal_slot') {
+        const slot = normalizeCanvasWorkflowInternalSlot({
+          id: String(config.slotId || '').trim(),
+          label: String(config.label || node.item.name || config.slotId || '').trim(),
+          mediaType: 'image',
+          mode: 'replaceable_internal',
+          required: config.required === true,
+          multiple: config.multiple === true,
+          maxItems: config.multiple ? Math.max(1, Number(config.maxItems) || 12) : 1,
+          role: String(config.role || '').trim() || undefined,
+          emptyHint: String(config.emptyHint || '').trim() || undefined,
+          clearable: true,
+          order: nodeIndex,
+          defaultValue: config.keepDefault
+            ? {
+                url: node.item.url,
+                path: node.item.path,
+                sourceItemId: node.item.sourceItemId || node.item.id,
+              }
+            : undefined,
+        }, {
+          id: node.id,
+          label: node.item.name || node.id,
+          order: nodeIndex,
+        })!;
+        const currentAsset = createCanvasWorkflowSlotAssetFromItem(node.item);
+        if (currentAsset) slotAssets.set(slot.id, [currentAsset]);
+        return {
+          ...node,
+          fixedInput: true,
+          acceptsExternalInputs: false,
+          externalInputTypes: undefined,
+          outputType: slot.multiple ? 'image[]' : 'image',
+          bridgeType: undefined,
+          internalSlot: slot,
+          item: {
+            ...node.item,
+            path: config.keepDefault ? node.item.path : undefined,
+            url: config.keepDefault ? node.item.url : undefined,
+            thumbnail: undefined,
+            sourceUrl: undefined,
+            originalUrl: undefined,
+            sourceItemId: config.keepDefault ? node.item.sourceItemId : undefined,
+          },
+        };
+      }
+      return {
+        ...node,
+        fixedInput: config.mode === 'fixed',
+        acceptsExternalInputs: false,
+        externalInputTypes: undefined,
+        bridgeType: undefined,
+        internalSlot: undefined,
+      };
+    });
     const workflow: CanvasWorkflowTemplate = {
       id: `custom-workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
       label,
       hint: `${canvasWorkflowSaveDraft.nodes.length} 个节点，${canvasWorkflowSaveDraft.aiCount} 个生图节点，固定 ${canvasWorkflowSaveDraft.fixedImageCount} 图/${canvasWorkflowSaveDraft.fixedTextCount} 文`,
-      nodes: canvasWorkflowSaveDraft.nodes,
+      nodes: configuredNodes,
       userInput: normalizeCanvasWorkflowUserInput(undefined),
       createdAt: Date.now(),
     };
-    const moduleNode = buildCanvasWorkflowModuleNode(
+    let moduleNode = buildCanvasWorkflowModuleNode(
       workflow,
       { x: canvasWorkflowSaveDraft.bounds.x, y: canvasWorkflowSaveDraft.bounds.y },
       canvasWorkflowSaveDraft.externalInputIds
@@ -17440,6 +17731,12 @@ function MainApp() {
     if (!moduleNode) {
       showToast('工作流封装失败');
       return;
+    }
+    for (const slotNode of getCanvasWorkflowInternalSlotNodes(workflow)) {
+      const slot = slotNode.internalSlot!;
+      const assets = slotAssets.get(slot.id);
+      if (!assets?.length) continue;
+      moduleNode = replaceCanvasWorkflowInternalSlot({ module: moduleNode, slot, assets });
     }
     setCustomCanvasWorkflows(prev => [workflow, ...prev].slice(0, 24));
     pushCanvasUndoSnapshot('封装工作流');
@@ -17644,7 +17941,13 @@ function MainApp() {
       acceptedInputIds
     );
     const runtimeSnapshots = normalizeCanvasWorkflowRuntimeSnapshots(moduleNode.ai?.workflowRuntime);
-    const restoredItems = applyCanvasWorkflowRuntimeSnapshots(workflow, rawExpandedItems, idMap, runtimeSnapshots);
+    const restoredSnapshotItems = applyCanvasWorkflowRuntimeSnapshots(workflow, rawExpandedItems, idMap, runtimeSnapshots);
+    const restoredItems = hydrateCanvasWorkflowSlotAssetsFromDrawer(applyCanvasWorkflowInternalSlotBindings({
+      workflow,
+      items: restoredSnapshotItems,
+      idMap,
+      runtime: moduleNode.ai?.workflowRuntime,
+    }));
     const groupId = `workflow_group_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
     const expandedItems = restoredItems.map(item => {
       const templateEntry = Array.from(idMap.entries()).find(([, runtimeId]) => runtimeId === item.id);
@@ -17713,7 +18016,10 @@ function MainApp() {
     const nodes = groupItems.map((item): CanvasWorkflowNodeTemplate => {
       const templateId = templateIdByCanvasId.get(item.id) || item.id;
       const originalNode = originalWorkflow?.nodes.find(node => node.id === templateId);
-      const savedItem = prepareCanvasWorkflowTemplateItem(item.item);
+      const isInternalSlot = isReplaceableInternalImageSlot(originalNode);
+      const savedItem = isInternalSlot
+        ? cloneDrawerValue(originalNode!.item)
+        : prepareCanvasWorkflowTemplateItem(item.item);
       const internalInputs = (item.inputs || [])
         .map(inputId => templateIdByCanvasId.get(inputId))
         .filter((inputId): inputId is string => !!inputId);
@@ -17735,15 +18041,22 @@ function MainApp() {
           isQuickAccess: false,
         },
         inputs: internalInputs,
-        fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
+        fixedInput: isInternalSlot
+          ? true
+          : !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
         designAgentConfig: item.designAgentConfig
           ? normalizeDesignAgentConfig(item.designAgentConfig)
           : originalNode?.designAgentConfig,
-        acceptsExternalInputs,
-        externalInputTypes: acceptsExternalInputs ? originalNode?.externalInputTypes : undefined,
-        outputType: originalNode?.outputType,
-        bridgeType: originalNode?.bridgeType,
+        acceptsExternalInputs: isInternalSlot ? false : acceptsExternalInputs,
+        externalInputTypes: isInternalSlot ? undefined : (acceptsExternalInputs ? originalNode?.externalInputTypes : undefined),
+        outputType: isInternalSlot
+          ? (originalNode?.internalSlot?.multiple ? 'image[]' : 'image')
+          : originalNode?.outputType,
+        bridgeType: isInternalSlot ? undefined : originalNode?.bridgeType,
+        internalSlot: originalNode?.internalSlot
+          ? cloneDrawerValue(originalNode.internalSlot)
+          : undefined,
         ai: item.ai
           ? {
             ...cloneDrawerValue(item.ai),
@@ -17783,8 +18096,8 @@ function MainApp() {
           content: node.item.content || '',
           name: node.item.name || '',
           remark: node.item.remark || '',
-          url: node.item.url || '',
-          path: node.item.path || '',
+          url: isReplaceableInternalImageSlot(node) ? '' : node.item.url || '',
+          path: isReplaceableInternalImageSlot(node) ? '' : node.item.path || '',
         },
         inputs: [...(node.inputs || [])].sort(),
         fixedInput: !!node.fixedInput,
@@ -17792,6 +18105,10 @@ function MainApp() {
         acceptsExternalInputs: !!node.acceptsExternalInputs,
         externalInputTypes: [...(node.externalInputTypes || [])].sort(),
         outputType: node.outputType || '',
+        bridgeType: node.bridgeType || '',
+        internalSlot: node.internalSlot
+          ? cloneDrawerValue(node.internalSlot)
+          : null,
         ai: node.ai
           ? {
             type: node.ai.type,
@@ -17848,6 +18165,38 @@ function MainApp() {
 
   const exportAllCanvasWorkflows = () => {
     void exportCanvasTemplateFile({ workflows: canvasWorkflowTemplates }, 'canvas-all-workflows.json');
+  };
+
+  const exportCanvasWorkflowModuleInstance = async (canvasId: string) => {
+    const module = canvasItemsRef.current.find(item => item.id === canvasId);
+    const workflow = getCanvasWorkflowTemplateFromNode(module);
+    if (!module || !workflow) {
+      showToast('没有可导出的工作流实例');
+      return;
+    }
+    try {
+      const filePath = await save({
+        defaultPath: `${workflow.label || 'workflow'}-instance.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!filePath) return;
+      const portable = await buildPortableCanvasWorkflowInstance({
+        workflow: { ...workflow, builtin: false },
+        runtime: module.ai?.workflowRuntime,
+        includeInternalSlotAssets: true,
+        readImageDataUrl: source => imageSourceToDataUrl(source, false),
+      });
+      await invoke('save_item_source_as', {
+        source: '',
+        dest: filePath,
+        content: JSON.stringify(portable, null, 2),
+        itemType: 'text',
+      });
+      showToast('已导出工作流实例及槽位图片');
+    } catch (error) {
+      console.warn('导出工作流实例失败:', error);
+      showToast(error instanceof Error ? `导出失败：${error.message}` : '导出失败');
+    }
   };
 
   const deleteSelectedCanvasWorkflows = () => {
@@ -17944,14 +18293,19 @@ function MainApp() {
     const nextStatus = successCount > 0
       ? (successCount === outputs.length ? 'success' as const : 'error' as const)
       : 'idle' as const;
-    const runtimeSnapshots = createCanvasWorkflowRuntimeSnapshots(workflowForModule, groupItems, built.idMap);
+    const workflowRuntime = createCanvasWorkflowRuntimeValue(
+      workflowForModule,
+      groupItems,
+      built.idMap,
+      group.module.ai?.workflowRuntime,
+    );
     const restoredModule: CanvasImageItem = {
       ...moduleNode,
       ai: {
         ...(moduleNode.ai || { type: 'workflow' as const }),
         type: 'workflow' as const,
         outputs,
-        workflowRuntime: runtimeSnapshots,
+        workflowRuntime,
         status: nextStatus,
         error: nextStatus === 'error' ? '部分内部输出缺失' : undefined,
         generatedAt: successCount > 0 ? Date.now() : undefined,
@@ -18469,6 +18823,243 @@ function MainApp() {
     showToast('已添加文字说明并连接到节点');
   };
 
+  const findCanvasWorkflowSlot = (
+    module: CanvasImageItem | null | undefined,
+    slotId: string,
+  ): CanvasWorkflowInternalSlot | null => {
+    const workflow = getCanvasWorkflowTemplateFromNode(module);
+    return getCanvasWorkflowInternalSlotNodes(workflow)
+      .find(node => node.internalSlot?.id === slotId)
+      ?.internalSlot || null;
+  };
+
+  const updateCollapsedCanvasWorkflowSlot = (
+    moduleId: string,
+    slotId: string,
+    operation: (
+      module: CanvasImageItem,
+      slot: CanvasWorkflowInternalSlot,
+    ) => CanvasImageItem,
+    undoLabel = '更新工作流图片槽位',
+  ) => {
+    const module = canvasItemsRef.current.find(item => item.id === moduleId);
+    const slot = findCanvasWorkflowSlot(module, slotId);
+    if (!module || !slot) return false;
+    pushCanvasUndoSnapshot(undoLabel);
+    updateCanvasItemsImmediate(prev => prev.map(item => (
+      item.id === moduleId ? operation(item, slot) : item
+    )));
+    return true;
+  };
+
+  const replaceExpandedCanvasWorkflowSlot = (
+    expandedNodeId: string,
+    assets: CanvasWorkflowSlotAsset[],
+  ) => {
+    const expandedNode = canvasItemsRef.current.find(item => item.id === expandedNodeId);
+    const group = getCanvasWorkflowGroup(expandedNode);
+    const workflow = getCanvasWorkflowTemplateFromNode(group?.module);
+    const templateNode = workflow?.nodes.find(node => node.id === group?.templateId);
+    const slot = templateNode?.internalSlot;
+    if (!expandedNode || !group || !slot || !isReplaceableInternalImageSlot(templateNode)) return false;
+    const normalizedAssets = slot.multiple ? assets : assets.slice(0, 1);
+    pushCanvasUndoSnapshot('替换工作流内部槽位');
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      const itemGroup = getCanvasWorkflowGroup(item);
+      if (itemGroup?.groupId !== group.groupId) return item;
+      const nextModule = replaceCanvasWorkflowInternalSlot({
+        module: itemGroup.module,
+        slot,
+        assets: normalizedAssets,
+      });
+      if (item.id !== expandedNodeId) {
+        return {
+          ...item,
+          workflowGroup: {
+            ...itemGroup,
+            module: nextModule,
+          },
+        };
+      }
+      return {
+        ...item,
+        item: applyCanvasWorkflowSlotAssetToItem(item.item, normalizedAssets[0]),
+        workflowSlotAssets: normalizedAssets,
+        workflowGroup: {
+          ...itemGroup,
+          module: nextModule,
+        },
+      };
+    }));
+    return true;
+  };
+
+  const replaceCanvasWorkflowSlotAssets = (
+    moduleId: string,
+    slotId: string,
+    assets: CanvasWorkflowSlotAsset[],
+    expandedNodeId?: string,
+  ) => {
+    const changed = expandedNodeId
+      ? replaceExpandedCanvasWorkflowSlot(expandedNodeId, assets)
+      : updateCollapsedCanvasWorkflowSlot(
+          moduleId,
+          slotId,
+          (module, slot) => replaceCanvasWorkflowInternalSlot({ module, slot, assets }),
+          '替换工作流内部槽位',
+        );
+    if (changed) showToast(assets.length > 0 ? '槽位图片已更新' : '槽位已清空');
+    return changed;
+  };
+
+  const getCanvasWorkflowSlotAssetFromCanvasItem = (
+    canvasItem?: CanvasImageItem | null,
+  ): CanvasWorkflowSlotAsset | null => {
+    if (!canvasItem) return null;
+    if (canvasItem.item.type === 'image') {
+      return createCanvasWorkflowSlotAssetFromItem(canvasItem.item);
+    }
+    const output = getCanvasAiSuccessfulOutputs(canvasItem)
+      .find(candidate => (candidate.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'image');
+    if (!output) return null;
+    const bufferItem = createCanvasAiOutputBufferItem(canvasItem, output, 0);
+    return bufferItem ? createCanvasWorkflowSlotAssetFromItem(bufferItem) : null;
+  };
+
+  const getSelectedCanvasWorkflowSlotAssets = (excludeId?: string) => {
+    const canvasAssets = canvasSelectedIdsRef.current
+      .filter(id => id !== excludeId)
+      .map(id => getCanvasWorkflowSlotAssetFromCanvasItem(canvasItemsRef.current.find(item => item.id === id)))
+      .filter((asset): asset is CanvasWorkflowSlotAsset => !!asset);
+    if (canvasAssets.length > 0) return canvasAssets;
+    return selectedIds
+      .map(id => itemsRef.current.find(item => item.id === id))
+      .filter((item): item is BufferItem => !!item && item.type === 'image')
+      .map(item => createCanvasWorkflowSlotAssetFromItem(item))
+      .filter((asset): asset is CanvasWorkflowSlotAsset => !!asset);
+  };
+
+  const assignSelectedImagesToCanvasWorkflowSlot = (
+    moduleId: string,
+    slotId: string,
+    expandedNodeId?: string,
+  ) => {
+    const module = expandedNodeId
+      ? getCanvasWorkflowGroup(canvasItemsRef.current.find(item => item.id === expandedNodeId))?.module
+      : canvasItemsRef.current.find(item => item.id === moduleId);
+    const slot = findCanvasWorkflowSlot(module, slotId);
+    const assets = getSelectedCanvasWorkflowSlotAssets(expandedNodeId || moduleId);
+    if (!slot) return;
+    if (assets.length === 0) {
+      setCanvasWorkflowSlotPickTarget({
+        moduleId,
+        slotId,
+        label: slot.label,
+        expandedNodeId,
+      });
+      setIsSearchActive(true);
+      setCanvasSearchCandidateLimit(CANVAS_SEARCH_CANDIDATE_LIMIT);
+      window.setTimeout(() => searchInputRef.current?.focus(), 80);
+      showToast(`请搜索并点击要设置到「${slot.label}」的图片`);
+      return;
+    }
+    const existing = getCanvasWorkflowInternalSlotBinding(module?.ai?.workflowRuntime, slot).assets;
+    replaceCanvasWorkflowSlotAssets(
+      moduleId,
+      slotId,
+      slot.multiple ? [...existing, ...assets] : assets.slice(0, 1),
+      expandedNodeId,
+    );
+  };
+
+  const assignDrawerImageToCanvasWorkflowSlot = (
+    target: NonNullable<typeof canvasWorkflowSlotPickTarget>,
+    item: BufferItem,
+  ) => {
+    if (item.type !== 'image') {
+      showToast('内部图片槽位只支持图片');
+      return false;
+    }
+    const module = target.expandedNodeId
+      ? getCanvasWorkflowGroup(canvasItemsRef.current.find(candidate => candidate.id === target.expandedNodeId))?.module
+      : canvasItemsRef.current.find(candidate => candidate.id === target.moduleId);
+    const slot = findCanvasWorkflowSlot(module, target.slotId);
+    const nextAsset = createCanvasWorkflowSlotAssetFromItem(item);
+    if (!slot || !nextAsset) return false;
+    const existing = getCanvasWorkflowInternalSlotBinding(module?.ai?.workflowRuntime, slot).assets;
+    const assets = slot.multiple ? [...existing, nextAsset] : [nextAsset];
+    const changed = replaceCanvasWorkflowSlotAssets(
+      target.moduleId,
+      target.slotId,
+      assets,
+      target.expandedNodeId,
+    );
+    if (!slot.multiple || assets.length >= Math.max(1, Number(slot.maxItems) || 12)) {
+      setCanvasWorkflowSlotPickTarget(null);
+    }
+    return changed;
+  };
+
+  const chooseLocalImagesForCanvasWorkflowSlot = (
+    moduleId: string,
+    slotId: string,
+    expandedNodeId?: string,
+  ) => {
+    pendingCanvasWorkflowSlotUploadRef.current = { moduleId, slotId, expandedNodeId };
+    setCanvasInputMenuForId(null);
+    canvasUploadInputRef.current?.click();
+  };
+
+  const handleCanvasWorkflowSlotDrop = async (
+    event: React.DragEvent<HTMLElement>,
+    moduleId: string,
+    slotId: string,
+    expandedNodeId?: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const drawerItemId = getDraggedDrawerItemId(event.dataTransfer);
+    const drawerItem = itemsRef.current.find(item => item.id === drawerItemId && item.type === 'image');
+    if (drawerItem) {
+      const asset = createCanvasWorkflowSlotAssetFromItem(drawerItem);
+      if (asset) {
+        const module = expandedNodeId
+          ? getCanvasWorkflowGroup(canvasItemsRef.current.find(item => item.id === expandedNodeId))?.module
+          : canvasItemsRef.current.find(item => item.id === moduleId);
+        const slot = findCanvasWorkflowSlot(module, slotId);
+        const existing = slot ? getCanvasWorkflowInternalSlotBinding(module?.ai?.workflowRuntime, slot).assets : [];
+        replaceCanvasWorkflowSlotAssets(
+          moduleId,
+          slotId,
+          slot?.multiple ? [...existing, asset] : [asset],
+          expandedNodeId,
+        );
+        clearDrawerItemDragState();
+        return;
+      }
+    }
+    const imageFile = getImageFileFromDataTransfer(event.dataTransfer);
+    if (imageFile && imageFile.size > 0) {
+      const imageItem = await createCanvasImageItemFromFile(imageFile, 0);
+      const asset = imageItem ? createCanvasWorkflowSlotAssetFromItem(imageItem.item) : null;
+      if (asset) {
+        const module = expandedNodeId
+          ? getCanvasWorkflowGroup(canvasItemsRef.current.find(item => item.id === expandedNodeId))?.module
+          : canvasItemsRef.current.find(item => item.id === moduleId);
+        const slot = findCanvasWorkflowSlot(module, slotId);
+        const existing = slot ? getCanvasWorkflowInternalSlotBinding(module?.ai?.workflowRuntime, slot).assets : [];
+        replaceCanvasWorkflowSlotAssets(
+          moduleId,
+          slotId,
+          slot?.multiple ? [...existing, asset] : [asset],
+          expandedNodeId,
+        );
+      }
+      return;
+    }
+    showToast('请拖入灵感库图片或本地图片');
+  };
+
   const chooseLocalImagesForCanvasGenerator = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (target?.ai?.type === 'frame-interpolation' || target?.ai?.type === 'video-enhancement') {
@@ -18481,10 +19072,44 @@ function MainApp() {
   };
 
   const handleCanvasGeneratorUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const slotTarget = pendingCanvasWorkflowSlotUploadRef.current;
+    pendingCanvasWorkflowSlotUploadRef.current = null;
     const targetId = pendingCanvasUploadTargetIdRef.current;
     pendingCanvasUploadTargetIdRef.current = null;
     const files = Array.from(event.target.files || []);
     event.target.value = '';
+    if (slotTarget) {
+      const imageFiles = files.filter(file => file.type.startsWith('image/') || isCanvasImageFileName(file.name));
+      if (imageFiles.length === 0) {
+        showToast('请选择图片文件');
+        return;
+      }
+      const module = slotTarget.expandedNodeId
+        ? getCanvasWorkflowGroup(canvasItemsRef.current.find(item => item.id === slotTarget.expandedNodeId))?.module
+        : canvasItemsRef.current.find(item => item.id === slotTarget.moduleId);
+      const slot = findCanvasWorkflowSlot(module, slotTarget.slotId);
+      const selectedFiles = slot?.multiple
+        ? imageFiles.slice(0, Math.max(1, Number(slot.maxItems) || 12))
+        : imageFiles.slice(0, 1);
+      const created = await Promise.all(selectedFiles.map((file, index) => createCanvasImageItemFromFile(file, index)));
+      const assets = created
+        .map(item => item ? createCanvasWorkflowSlotAssetFromItem(item.item) : null)
+        .filter((asset): asset is CanvasWorkflowSlotAsset => !!asset);
+      if (assets.length === 0) {
+        showToast('图片读取失败');
+        return;
+      }
+      const existing = slot
+        ? getCanvasWorkflowInternalSlotBinding(module?.ai?.workflowRuntime, slot).assets
+        : [];
+      replaceCanvasWorkflowSlotAssets(
+        slotTarget.moduleId,
+        slotTarget.slotId,
+        slot?.multiple ? [...existing, ...assets] : assets,
+        slotTarget.expandedNodeId,
+      );
+      return;
+    }
     if (!targetId || files.length === 0) return;
 
     const target = canvasItemsRef.current.find(item => item.id === targetId);
@@ -20344,6 +20969,32 @@ function MainApp() {
 
     const groupItems = getCanvasWorkflowExpandedGroupItems(group.groupId, sourceCanvasItems);
     const workflow = getCanvasWorkflowTemplateFromNode(group.module);
+    if (workflow) {
+      const expandedIdMap = new Map<string, string>();
+      groupItems.forEach(item => {
+        const itemGroup = getCanvasWorkflowGroup(item);
+        if (itemGroup?.templateId) expandedIdMap.set(itemGroup.templateId, item.id);
+      });
+      const currentBindings = collectCanvasWorkflowInternalSlotBindings({
+        workflow,
+        runtimeItems: groupItems,
+        idMap: expandedIdMap,
+        previousRuntime: group.module.ai?.workflowRuntime,
+      });
+      const missingSlots = getMissingCanvasWorkflowInternalSlots({
+        workflow,
+        runtime: {
+          ...normalizeCanvasWorkflowRuntime(group.module.ai?.workflowRuntime),
+          internalSlotBindings: currentBindings,
+        },
+      });
+      if (missingSlots.length > 0) {
+        showToast(missingSlots.length === 1
+          ? `请先设置「${missingSlots[0].label}」`
+          : `请先设置：${missingSlots.map(slot => `「${slot.label}」`).join('、')}`);
+        return true;
+      }
+    }
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow?.userInput);
     const workflowUserRequest = String(group.module.item.content || '').trim().slice(0, 6_000);
     if (workflowUserInput.enabled && workflowUserInput.required && !workflowUserRequest) {
@@ -20501,6 +21152,11 @@ function MainApp() {
         ...(nextNode.ai || { type: 'workflow' as const }),
         type: 'workflow' as const,
         skillMeta: source.ai?.skillMeta,
+        workflowRuntime: {
+          internalSlotBindings: cloneDrawerValue(
+            normalizeCanvasWorkflowRuntime(source.ai?.workflowRuntime).internalSlotBindings || {},
+          ),
+        },
       },
     };
   };
@@ -20525,6 +21181,19 @@ function MainApp() {
     setIsAgentChatOpen(true);
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
     const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
+    const missingInternalSlots = getMissingCanvasWorkflowInternalSlots({
+      workflow,
+      runtime: moduleNode.ai?.workflowRuntime,
+    });
+    if (missingInternalSlots.length > 0) {
+      const error = missingInternalSlots.length === 1
+        ? `请先设置「${missingInternalSlots[0].label}」`
+        : `请先设置：${missingInternalSlots.map(slot => `「${slot.label}」`).join('、')}`;
+      updateModuleAi({ status: 'error', error });
+      updateCanvasSelection([targetId]);
+      showToast(error);
+      return;
+    }
     const workflowMaterialInputIds = (moduleNode.inputs || []).filter(inputId => (
       canUseCanvasItemAsWorkflowMaterial(
         sourceCanvasItems.find(item => item.id === inputId),
@@ -20579,7 +21248,12 @@ function MainApp() {
     }
 
     const runtime = instantiateCanvasWorkflowTemplateItems(workflow, { x: moduleNode.x, y: moduleNode.y }, workflowMaterialInputIds);
-    let runtimeItems = runtime.items;
+    let runtimeItems = hydrateCanvasWorkflowSlotAssetsFromDrawer(applyCanvasWorkflowInternalSlotBindings({
+      workflow,
+      items: runtime.items,
+      idMap: runtime.idMap,
+      runtime: moduleNode.ai?.workflowRuntime,
+    }));
     if (workflow.id === INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID && localInspirationContext) {
       const referenceContextRuntimeId = runtime.idMap.get(INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS.references);
       const connectedInputSummary = workflowMaterialInputIds
@@ -20754,7 +21428,12 @@ function MainApp() {
         nodeLabel: draft.nodeLabel,
       };
     });
-    const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeSnapshots(workflow, runtimeItems, runtime.idMap);
+    const getRuntimeSnapshots = () => createCanvasWorkflowRuntimeValue(
+      workflow,
+      runtimeItems,
+      runtime.idMap,
+      moduleNode.ai?.workflowRuntime,
+    );
     const publishWorkflowResult = (
       status: WorkflowResultCardData['status'],
       outputs: CanvasAiGeneratedOutput[],
@@ -27625,7 +28304,7 @@ useEffect(() => {
           }
           resolution = runResolver(createdNodeIds);
         }
-        if (!options.allowMissingRequired && resolution.requiresImageTargetNodeIds.length > 0 && resolution.resolvedImageNodeIds.length === 0) {
+        if (!options.allowMissingRequired && resolution.missingRequiredInputs.length > 0) {
           throw new Error(resolution.missingRequiredInputs[0] || '这个工作流需要产品/参考图，请先选择或拖入一张图片。');
         }
         resolution.workflowInputResolution.createdImageNodes = createdNodeIds;
@@ -32622,10 +33301,26 @@ useEffect(() => {
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                     >
+                      {canvasWorkflowSlotPickTarget && (
+                        <div className="flex items-center gap-2 px-4 pt-2 text-[10px] font-black text-stone-500 dark:text-white/52">
+                          <ImageIcon className="h-3.5 w-3.5 text-emerald-500" />
+                          <span className="min-w-0 flex-1 truncate">
+                            正在为「{canvasWorkflowSlotPickTarget.label}」选择图片
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded-full px-2 py-1 text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-white/10 dark:hover:text-white"
+                            onClick={() => setCanvasWorkflowSlotPickTarget(null)}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      )}
                       {canvasSearchMediaResults.candidates.length > 0 ? (
                         <div className={`${canvasSearchCandidateLimit > CANVAS_SEARCH_CANDIDATE_LIMIT ? 'grid auto-cols-max grid-flow-col grid-rows-2' : 'flex'} w-full gap-2 overflow-x-auto px-4 pb-1.5 pt-2 [scrollbar-color:rgba(148,163,184,0.65)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-stone-300/80 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600/80`}>
                           {canvasSearchMediaResults.candidates.map(candidate => {
                             if (!isCanvasDrawerMediaItem(candidate)) return null;
+                            if (canvasWorkflowSlotPickTarget && candidate.type !== 'image') return null;
                             const preview = getCanvasDrawerMediaPreviewSource(candidate)
                               || (candidate.type === 'image' && candidate.path ? convertFileSrc(candidate.path) : '');
                             const mediaLabel = candidate.type === 'video' ? '视频' : '图片';
@@ -32634,9 +33329,17 @@ useEffect(() => {
                               <button
                                 key={candidate.id}
                                 type="button"
-                                onClick={() => void addCanvasSearchMediaCandidate(candidate.id)}
+                                onClick={() => {
+                                  if (canvasWorkflowSlotPickTarget && candidate.type === 'image') {
+                                    assignDrawerImageToCanvasWorkflowSlot(canvasWorkflowSlotPickTarget, candidate);
+                                    return;
+                                  }
+                                  void addCanvasSearchMediaCandidate(candidate.id);
+                                }}
                                 className="group relative h-[58px] w-[58px] shrink-0 overflow-hidden rounded-[12px] border border-stone-200/80 bg-stone-100 shadow-sm transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-[0_6px_16px_rgba(43,85,145,0.16)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/45 dark:border-white/10 dark:bg-stone-800 dark:hover:border-blue-400/55"
-                                title={`加入画布：${candidate.name || candidate.content || mediaLabel}`}
+                                title={canvasWorkflowSlotPickTarget && candidate.type === 'image'
+                                  ? `设置到「${canvasWorkflowSlotPickTarget.label}」`
+                                  : `加入画布：${candidate.name || candidate.content || mediaLabel}`}
                               >
                                 {preview ? (
                                   <img
@@ -33608,7 +34311,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.11'}
+                                      v{appVersion || '5.0.12'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -33893,6 +34596,18 @@ useEffect(() => {
                           );
                           const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
+                          const canvasWorkflowInternalSlots = isCanvasWorkflowItem
+                            ? getCanvasWorkflowInternalSlotNodes(canvasWorkflow)
+                            : [];
+                          const canvasExpandedWorkflowGroup = getCanvasWorkflowGroup(canvasItem);
+                          const canvasExpandedWorkflow = canvasExpandedWorkflowGroup
+                            ? getCanvasWorkflowTemplateFromNode(canvasExpandedWorkflowGroup.module)
+                            : null;
+                          const canvasExpandedInternalSlotNode = canvasExpandedWorkflow?.nodes.find(node => (
+                            node.id === canvasExpandedWorkflowGroup?.templateId
+                            && isReplaceableInternalImageSlot(node)
+                          ));
+                          const canvasExpandedInternalSlot = canvasExpandedInternalSlotNode?.internalSlot;
                           const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource);
                           const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
                             ? estimateCanvasWorkflowCredits(canvasWorkflow, {
@@ -34417,6 +35132,242 @@ useEffect(() => {
                                           </span>
                                         </div>
                                       </div>
+                                      {isCanvasWorkflowItem && canvasWorkflowInternalSlots.length > 0 && (
+                                        <div
+                                          data-no-drag="true"
+                                          className="flex shrink-0 flex-col gap-2 rounded-[18px] border border-stone-950/[0.045] bg-stone-950/[0.025] p-2.5 dark:border-white/[0.06] dark:bg-white/[0.025]"
+                                          onPointerDown={(event) => event.stopPropagation()}
+                                        >
+                                          <div className="flex items-center justify-between px-0.5 text-[10px] font-black text-stone-500 dark:text-white/48">
+                                            <span>内部图片槽位</span>
+                                            <span>{canvasWorkflowInternalSlots.length}</span>
+                                          </div>
+                                          {canvasWorkflowInternalSlots.map(slotNode => {
+                                            const slot = slotNode.internalSlot!;
+                                            const binding = getCanvasWorkflowInternalSlotBinding(
+                                              canvasItem.ai?.workflowRuntime,
+                                              slot,
+                                            );
+                                            const assets = binding.assets;
+                                            const maxItems = slot.multiple
+                                              ? Math.max(1, Number(slot.maxItems) || 12)
+                                              : 1;
+                                            return (
+                                              <div
+                                                key={slot.id}
+                                                className="group/workflow-slot flex min-h-[66px] items-center gap-2 rounded-[14px] bg-white/72 px-2.5 py-2 ring-1 ring-stone-950/[0.045] transition-colors hover:bg-white dark:bg-black/16 dark:ring-white/[0.06] dark:hover:bg-white/[0.055]"
+                                                title={slot.description || slot.emptyHint || slot.label}
+                                                onDragEnter={(event) => {
+                                                  event.preventDefault();
+                                                  event.stopPropagation();
+                                                  event.dataTransfer.dropEffect = 'copy';
+                                                }}
+                                                onDragOver={(event) => {
+                                                  event.preventDefault();
+                                                  event.stopPropagation();
+                                                  event.dataTransfer.dropEffect = 'copy';
+                                                }}
+                                                onDrop={(event) => void handleCanvasWorkflowSlotDrop(
+                                                  event,
+                                                  canvasItem.id,
+                                                  slot.id,
+                                                )}
+                                              >
+                                                <button
+                                                  type="button"
+                                                  data-no-drag="true"
+                                                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                                  onPointerDown={(event) => event.stopPropagation()}
+                                                  onClick={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    assignSelectedImagesToCanvasWorkflowSlot(canvasItem.id, slot.id);
+                                                  }}
+                                                  title="使用画布或灵感抽屉当前选中的图片"
+                                                >
+                                                  <span className="flex h-11 min-w-11 max-w-[188px] items-center gap-1 overflow-x-auto rounded-[10px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                                    {assets.length > 0 ? assets.map((asset, assetIndex) => {
+                                                      const source = asset.thumbnail
+                                                        || asset.url
+                                                        || (asset.path ? convertFileSrc(asset.path) : '')
+                                                        || asset.originalUrl
+                                                        || '';
+                                                      return source ? (
+                                                        <span
+                                                          key={`${slot.id}:${assetIndex}:${asset.updatedAt}`}
+                                                          draggable={slot.multiple}
+                                                          className={`group/slot-asset relative h-11 w-11 shrink-0 overflow-hidden rounded-[10px] bg-stone-100 dark:bg-white/[0.06] ${slot.multiple ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                                                          onDragStart={(dragEvent) => {
+                                                            if (!slot.multiple) return;
+                                                            dragEvent.stopPropagation();
+                                                            dragEvent.dataTransfer.effectAllowed = 'move';
+                                                            dragEvent.dataTransfer.setData(
+                                                              WORKFLOW_SLOT_ASSET_DRAG_MIME,
+                                                              String(assetIndex),
+                                                            );
+                                                          }}
+                                                          onDragOver={(dragEvent) => {
+                                                            if (!slot.multiple) return;
+                                                            dragEvent.preventDefault();
+                                                            dragEvent.stopPropagation();
+                                                            dragEvent.dataTransfer.dropEffect = 'move';
+                                                          }}
+                                                          onDrop={(dropEvent) => {
+                                                            if (!slot.multiple) return;
+                                                            const rawIndex = dropEvent.dataTransfer.getData(WORKFLOW_SLOT_ASSET_DRAG_MIME);
+                                                            if (!rawIndex) return;
+                                                            dropEvent.preventDefault();
+                                                            dropEvent.stopPropagation();
+                                                            updateCollapsedCanvasWorkflowSlot(
+                                                              canvasItem.id,
+                                                              slot.id,
+                                                              (module, currentSlot) => reorderCanvasWorkflowInternalSlotAssets({
+                                                                module,
+                                                                slot: currentSlot,
+                                                                fromIndex: Number(rawIndex),
+                                                                toIndex: assetIndex,
+                                                              }),
+                                                              '调整工作流槽位顺序',
+                                                            );
+                                                          }}
+                                                        >
+                                                          <img
+                                                            src={source}
+                                                            alt=""
+                                                            loading="lazy"
+                                                            decoding="async"
+                                                            className="h-full w-full object-cover"
+                                                            draggable={false}
+                                                            onDragStart={preventCanvasNativeDrag}
+                                                          />
+                                                          {slot.multiple && (
+                                                            <span
+                                                              role="button"
+                                                              tabIndex={0}
+                                                              className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/85 text-white opacity-0 transition-opacity group-hover/slot-asset:opacity-100"
+                                                              title="移除这张图片"
+                                                              onPointerDown={(innerEvent) => {
+                                                                innerEvent.preventDefault();
+                                                                innerEvent.stopPropagation();
+                                                              }}
+                                                              onClick={(innerEvent) => {
+                                                                innerEvent.preventDefault();
+                                                                innerEvent.stopPropagation();
+                                                                updateCollapsedCanvasWorkflowSlot(
+                                                                  canvasItem.id,
+                                                                  slot.id,
+                                                                  (module, currentSlot) => removeCanvasWorkflowInternalSlotAsset({
+                                                                    module,
+                                                                    slot: currentSlot,
+                                                                    index: assetIndex,
+                                                                  }),
+                                                                  '移除工作流槽位图片',
+                                                                );
+                                                              }}
+                                                            >
+                                                              <X className="h-2.5 w-2.5" />
+                                                            </span>
+                                                          )}
+                                                        </span>
+                                                      ) : null;
+                                                    }) : (
+                                                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-dashed border-stone-300 text-stone-400 dark:border-white/16 dark:text-white/34">
+                                                        <ImageIcon className="h-4 w-4" />
+                                                      </span>
+                                                    )}
+                                                  </span>
+                                                  <span className="min-w-0 flex-1">
+                                                    <span className="flex items-center gap-1 text-[11px] font-black text-stone-700 dark:text-white/76">
+                                                      <span className="truncate">{slot.label}</span>
+                                                      {slot.required && <span className="text-red-500">*</span>}
+                                                    </span>
+                                                    {slot.description && (
+                                                      <span className="mt-0.5 block truncate text-[9px] font-semibold text-stone-500 dark:text-white/46">
+                                                        {slot.description}
+                                                      </span>
+                                                    )}
+                                                    <span className="mt-0.5 block truncate text-[9px] font-semibold text-stone-400 dark:text-white/36">
+                                                      {assets.length > 0
+                                                        ? slot.multiple
+                                                          ? `${assets.length} / ${maxItems} 张`
+                                                          : assets[0]?.name || '已设置，点击替换'
+                                                        : slot.emptyHint || '点击使用当前选中图片'}
+                                                    </span>
+                                                  </span>
+                                                </button>
+                                                <div className="flex shrink-0 items-center gap-1">
+                                                  {slot.multiple && assets.length > 1 && (
+                                                    <>
+                                                      <button
+                                                        type="button"
+                                                        data-no-drag="true"
+                                                        className="flex h-7 w-7 items-center justify-center rounded-full text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:text-white/38 dark:hover:bg-white/10 dark:hover:text-white/72"
+                                                        title="将最后一张向前移动"
+                                                        onPointerDown={(event) => event.stopPropagation()}
+                                                        onClick={(event) => {
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                          updateCollapsedCanvasWorkflowSlot(
+                                                            canvasItem.id,
+                                                            slot.id,
+                                                            (module, currentSlot) => reorderCanvasWorkflowInternalSlotAssets({
+                                                              module,
+                                                              slot: currentSlot,
+                                                              fromIndex: assets.length - 1,
+                                                              toIndex: assets.length - 2,
+                                                            }),
+                                                            '调整工作流槽位顺序',
+                                                          );
+                                                        }}
+                                                      >
+                                                        <ChevronLeft className="h-3.5 w-3.5" />
+                                                      </button>
+                                                    </>
+                                                  )}
+                                                  <button
+                                                    type="button"
+                                                    data-no-drag="true"
+                                                    className="flex h-7 w-7 items-center justify-center rounded-full text-stone-400 hover:bg-stone-100 hover:text-emerald-600 dark:text-white/38 dark:hover:bg-white/10 dark:hover:text-emerald-300"
+                                                    title={slot.multiple ? '从本地选择图片' : '从本地替换图片'}
+                                                    onPointerDown={(event) => event.stopPropagation()}
+                                                    onClick={(event) => {
+                                                      event.preventDefault();
+                                                      event.stopPropagation();
+                                                      chooseLocalImagesForCanvasWorkflowSlot(canvasItem.id, slot.id);
+                                                    }}
+                                                  >
+                                                    <Upload className="h-3.5 w-3.5" />
+                                                  </button>
+                                                  {slot.clearable !== false && assets.length > 0 && (
+                                                    <button
+                                                      type="button"
+                                                      data-no-drag="true"
+                                                      className="flex h-7 w-7 items-center justify-center rounded-full text-stone-400 hover:bg-red-50 hover:text-red-600 dark:text-white/38 dark:hover:bg-red-500/12 dark:hover:text-red-300"
+                                                      title="清空槽位"
+                                                      onPointerDown={(event) => event.stopPropagation()}
+                                                      onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        updateCollapsedCanvasWorkflowSlot(
+                                                          canvasItem.id,
+                                                          slot.id,
+                                                          (module, currentSlot) => clearCanvasWorkflowInternalSlot({
+                                                            module,
+                                                            slot: currentSlot,
+                                                          }),
+                                                          '清空工作流槽位',
+                                                        );
+                                                      }}
+                                                    >
+                                                      <X className="h-3.5 w-3.5" />
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
                                       {!showCanvasAiOutputPreview && (
                                         <div className="flex h-[220px] shrink-0 items-center justify-center">
                                           <button
@@ -35877,7 +36828,86 @@ useEffect(() => {
                                 <Search className="h-3.5 w-3.5" />
                               </button>
                             )}
-                            <button
+                            {canvasExpandedInternalSlot && canvasExpandedWorkflowGroup && (
+                              <div
+                                data-no-drag="true"
+                                className="absolute inset-x-2 bottom-2 z-50 flex items-center gap-1.5 rounded-[12px] bg-black/72 px-2 py-1.5 text-white opacity-0 shadow-lg backdrop-blur-md transition-opacity group-hover/canvas-item:opacity-100"
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onDragEnter={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  event.dataTransfer.dropEffect = 'copy';
+                                }}
+                                onDragOver={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  event.dataTransfer.dropEffect = 'copy';
+                                }}
+                                onDrop={(event) => void handleCanvasWorkflowSlotDrop(
+                                  event,
+                                  canvasExpandedWorkflowGroup.module.id,
+                                  canvasExpandedInternalSlot.id,
+                                  canvasItem.id,
+                                )}
+                              >
+                                <button
+                                  type="button"
+                                  className="min-w-0 flex-1 truncate text-left text-[10px] font-black"
+                                  title="使用画布或灵感抽屉当前选中的图片替换"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    assignSelectedImagesToCanvasWorkflowSlot(
+                                      canvasExpandedWorkflowGroup.module.id,
+                                      canvasExpandedInternalSlot.id,
+                                      canvasItem.id,
+                                    );
+                                  }}
+                                >
+                                  {canvasExpandedInternalSlot.label}
+                                  {canvasExpandedInternalSlot.required ? ' *' : ''}
+                                  {canvasExpandedInternalSlot.multiple
+                                    ? ` · ${canvasItem.workflowSlotAssets?.length || 0}/${canvasExpandedInternalSlot.maxItems || 12}`
+                                    : ''}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="flex h-6 w-6 items-center justify-center rounded-full bg-white/12 hover:bg-white/22"
+                                  title="从本地选择图片"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    chooseLocalImagesForCanvasWorkflowSlot(
+                                      canvasExpandedWorkflowGroup.module.id,
+                                      canvasExpandedInternalSlot.id,
+                                      canvasItem.id,
+                                    );
+                                  }}
+                                >
+                                  <Upload className="h-3 w-3" />
+                                </button>
+                                {canvasExpandedInternalSlot.clearable !== false && (
+                                  <button
+                                    type="button"
+                                    className="flex h-6 w-6 items-center justify-center rounded-full bg-white/12 hover:bg-red-500/70"
+                                    title="清空槽位"
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      replaceCanvasWorkflowSlotAssets(
+                                        canvasExpandedWorkflowGroup.module.id,
+                                        canvasExpandedInternalSlot.id,
+                                        [],
+                                        canvasItem.id,
+                                      );
+                                    }}
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                            {!canvasExpandedInternalSlot && <button
                               data-no-drag="true"
                               type="button"
                               className="absolute right-1.5 top-1.5 z-50 rounded-full bg-white/82 p-1 text-stone-400 opacity-0 shadow-sm transition-all hover:bg-red-50 hover:text-red-500 group-hover/canvas-item:opacity-100 dark:bg-stone-900/82 dark:text-stone-500 dark:hover:bg-red-950/30 dark:hover:text-red-300"
@@ -35898,7 +36928,7 @@ useEffect(() => {
                               title="从画布移除"
                             >
                               <X className="h-3 w-3" />
-                            </button>
+                            </button>}
                             {!isMultiSelected && (['nw', 'ne', 'sw', 'se'] as CanvasResizeCorner[]).map(corner => (
                               <button
                                 key={corner}
@@ -36966,6 +37996,19 @@ useEffect(() => {
                                       <Edit3 className="h-3.5 w-3.5 text-amber-300" />
                                       {hasCanvasAiGeneratedResults(target) ? '展开工作流' : '修改工作流'}
                                     </button>
+                                    {getCanvasWorkflowInternalSlotNodes(getCanvasWorkflowTemplateFromNode(target)).length > 0 && (
+                                      <button
+                                        type="button"
+                                        className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                        onClick={() => {
+                                          void exportCanvasWorkflowModuleInstance(target.id);
+                                          setCanvasContextMenu(null);
+                                        }}
+                                      >
+                                        <Download className="h-3.5 w-3.5 text-sky-300" />
+                                        导出实例（含槽位图片）
+                                      </button>
+                                    )}
                                   </>
                                 )}
                                 {targetWorkflowGroup && (
@@ -39217,7 +40260,7 @@ useEffect(() => {
                 top: canvasToolbarTop,
                 right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
               }}
-              className="w-[360px] rounded-[16px] bg-white p-4 shadow-[0_18px_48px_rgba(15,23,42,0.16)] border border-stone-200 dark:border-stone-700 dark:bg-stone-900"
+              className="max-h-[calc(100vh-80px)] w-[520px] overflow-y-auto rounded-[16px] border border-stone-200 bg-white p-4 shadow-[0_18px_48px_rgba(15,23,42,0.16)] dark:border-stone-700 dark:bg-stone-900"
               onMouseDown={(event) => event.stopPropagation()}
               onSubmit={(event) => {
                 event.preventDefault();
@@ -39259,6 +40302,130 @@ useEffect(() => {
                 <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700 dark:bg-blue-400/10 dark:text-blue-200">{canvasWorkflowSaveDraft.fixedTextCount} 段固定文字</span>
                 <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowSaveDraft.externalInputIds.length} 个外部输入</span>
               </div>
+              {Object.entries(canvasWorkflowSaveDraft.imageNodeModes || {}).length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <div className="text-[10px] font-black uppercase tracking-wide text-stone-400 dark:text-stone-500">
+                    内部图片行为
+                  </div>
+                  {Object.entries(canvasWorkflowSaveDraft.imageNodeModes || {}).map(([nodeId, config], imageIndex) => {
+                    const node = canvasWorkflowSaveDraft.nodes.find(candidate => candidate.id === nodeId);
+                    const updateConfig = (patch: Partial<CanvasWorkflowImageNodeModeDraft>) => {
+                      setCanvasWorkflowSaveDraft(prev => prev ? {
+                        ...prev,
+                        imageNodeModes: {
+                          ...(prev.imageNodeModes || {}),
+                          [nodeId]: {
+                            ...(prev.imageNodeModes?.[nodeId] || config),
+                            ...patch,
+                          },
+                        },
+                      } : prev);
+                    };
+                    return (
+                      <div
+                        key={nodeId}
+                        className="rounded-[14px] border border-stone-200/80 bg-stone-50/72 p-3 dark:border-white/[0.08] dark:bg-white/[0.035]"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="min-w-0 flex-1 truncate text-[11px] font-black text-stone-700 dark:text-white/72">
+                            {node?.item.name || `图片节点 ${imageIndex + 1}`}
+                          </span>
+                          <select
+                            data-no-drag="true"
+                            value={config.mode}
+                            onChange={(event) => updateConfig({
+                              mode: event.target.value as CanvasWorkflowImageNodeModeDraft['mode'],
+                            })}
+                            className="h-8 rounded-[10px] border border-stone-200 bg-white px-2 text-[10px] font-bold text-stone-600 outline-none dark:border-white/10 dark:bg-stone-950 dark:text-white/70"
+                          >
+                            <option value="normal">普通内部节点</option>
+                            <option value="fixed">不可替换固定图</option>
+                            <option value="internal_slot">可替换内部槽位</option>
+                            <option value="external_bridge">外部参考图输入</option>
+                          </select>
+                        </div>
+                        {config.mode === 'internal_slot' && (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <input
+                              data-no-drag="true"
+                              value={config.label || ''}
+                              onChange={(event) => updateConfig({ label: event.target.value })}
+                              placeholder="槽位名称"
+                              className="h-8 rounded-[10px] border border-stone-200 bg-white px-2 text-[10px] font-semibold outline-none dark:border-white/10 dark:bg-stone-950"
+                            />
+                            <input
+                              data-no-drag="true"
+                              value={config.slotId || ''}
+                              onChange={(event) => updateConfig({
+                                slotId: event.target.value.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80),
+                              })}
+                              placeholder="槽位 ID"
+                              className="h-8 rounded-[10px] border border-stone-200 bg-white px-2 font-mono text-[10px] outline-none dark:border-white/10 dark:bg-stone-950"
+                            />
+                            <input
+                              data-no-drag="true"
+                              value={config.role || ''}
+                              onChange={(event) => updateConfig({ role: event.target.value })}
+                              placeholder="参考职责 role（任意文本）"
+                              className="h-8 rounded-[10px] border border-stone-200 bg-white px-2 text-[10px] font-semibold outline-none dark:border-white/10 dark:bg-stone-950"
+                            />
+                            <input
+                              data-no-drag="true"
+                              value={config.emptyHint || ''}
+                              onChange={(event) => updateConfig({ emptyHint: event.target.value })}
+                              placeholder="空状态提示"
+                              className="h-8 rounded-[10px] border border-stone-200 bg-white px-2 text-[10px] font-semibold outline-none dark:border-white/10 dark:bg-stone-950"
+                            />
+                            <label className="flex items-center gap-1.5 text-[10px] font-bold text-stone-500 dark:text-white/52">
+                              <input
+                                type="checkbox"
+                                checked={config.required === true}
+                                onChange={(event) => updateConfig({ required: event.target.checked })}
+                              />
+                              必填
+                            </label>
+                            <label className="flex items-center gap-1.5 text-[10px] font-bold text-stone-500 dark:text-white/52">
+                              <input
+                                type="checkbox"
+                                checked={config.multiple === true}
+                                onChange={(event) => updateConfig({
+                                  multiple: event.target.checked,
+                                  maxItems: event.target.checked ? Math.max(2, Number(config.maxItems) || 4) : 1,
+                                })}
+                              />
+                              允许多图
+                            </label>
+                            {config.multiple && (
+                              <label className="flex items-center gap-2 text-[10px] font-bold text-stone-500 dark:text-white/52">
+                                最多
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={12}
+                                  value={config.maxItems || 4}
+                                  onChange={(event) => updateConfig({
+                                    maxItems: clamp(Number(event.target.value) || 1, 1, 12),
+                                  })}
+                                  className="h-7 w-16 rounded-[8px] border border-stone-200 bg-white px-2 text-[10px] outline-none dark:border-white/10 dark:bg-stone-950"
+                                />
+                                张
+                              </label>
+                            )}
+                            <label className="flex items-center gap-1.5 text-[10px] font-bold text-stone-500 dark:text-white/52">
+                              <input
+                                type="checkbox"
+                                checked={config.keepDefault === true}
+                                onChange={(event) => updateConfig({ keepDefault: event.target.checked })}
+                              />
+                              保留当前图为默认值
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   type="button"
@@ -39454,7 +40621,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.11'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.12'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -39467,9 +40634,9 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>客户端自动同步服务端模型与 LLM 积分价格，运行前即可准确显示预计消耗。</p>
-                  <p className="mt-1">优化多节点工作流参考图发布：小批次上传，失败时自动逐张重试。</p>
-                  <p className="mt-1">清理旧工业设计工作流预设，同时保留画布上已经展开的工作流内容。</p>
+                  <p>工作流新增通用可替换内部图片槽位，支持单图、多图、必填和数量限制。</p>
+                  <p className="mt-1">可从抽屉、全库搜索、本地文件或拖放添加槽位图片，并支持替换、清空与排序。</p>
+                  <p className="mt-1">展开与折叠会保留槽位状态，同时支持不含图片的模板导出和含图片的实例导出。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -39593,7 +40760,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.11'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.12'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -39686,10 +40853,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.11</p>
-                <p>客户端自动同步服务端模型与 LLM 积分价格，运行前显示最新预计消耗。</p>
-                <p>多参考图工作流改为小批次上传；批次失败时自动逐张重试，减少准备失败。</p>
-                <p>移除“工业设计全流程｜本地优先”和“基础工业设计”旧预设，不影响画布现有内容。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.12</p>
+                <p>工作流新增通用可替换内部图片槽位，支持单图、多图、必填、数量限制和自定义用途。</p>
+                <p>槽位图片可从抽屉、全库搜索、本地文件或拖放添加，并支持替换、清空、移除与排序。</p>
+                <p>展开和折叠工作流会保留槽位状态；模板导出不携带实例图片，也可单独导出含图片的工作流实例。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

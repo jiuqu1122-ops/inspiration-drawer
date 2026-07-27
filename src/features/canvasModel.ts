@@ -1,6 +1,33 @@
 import { BufferItem } from '../types';
 import type { ImagePolicy } from './appAgent/imageQuality/imageRuleCapsules';
 
+export type CanvasWorkflowSlotAsset = {
+  sourceItemId?: string;
+  path?: string;
+  url?: string;
+  thumbnail?: string;
+  originalUrl?: string;
+  name?: string;
+  updatedAt: number;
+};
+
+export type CanvasWorkflowSlotBinding = {
+  slotId: string;
+  assets: CanvasWorkflowSlotAsset[];
+};
+
+export type CanvasWorkflowRuntimeNodeSnapshot = {
+  templateId: string;
+  item?: Partial<BufferItem>;
+  ai?: Partial<CanvasAiItemData>;
+};
+
+export type CanvasWorkflowRuntime = {
+  nodeSnapshots?: Record<string, CanvasWorkflowRuntimeNodeSnapshot>;
+  internalSlotBindings?: Record<string, CanvasWorkflowSlotBinding>;
+  [key: string]: unknown;
+};
+
 export type CanvasImageItem = {
   id: string;
   item: BufferItem;
@@ -13,6 +40,11 @@ export type CanvasImageItem = {
   designAgentConfig?: DesignAgentConfig;
   ai?: CanvasAiItemData;
   workflowGroup?: unknown;
+  /**
+   * Runtime-only ordered assets for an expanded internal slot node. The
+   * collapsed module persists the same data in workflowRuntime.
+   */
+  workflowSlotAssets?: CanvasWorkflowSlotAsset[];
   workflowBridge?: {
     type: 'reference-image';
     label?: string;
@@ -138,7 +170,7 @@ export type CanvasAiItemData = {
   referenceImageNodeIds?: string[];
   referenceRoles?: Array<{
     nodeId: string;
-    role: 'BASE' | 'STYLE_REF' | 'LAYOUT_REF' | 'SUBJECT_REF' | 'NONE';
+    role: string;
   }>;
   toolHint?: string | null;
   skillMeta?: {
@@ -178,7 +210,11 @@ export type CanvasAiItemData = {
   generatedAt?: number;
   outputs?: CanvasAiGeneratedOutput[];
   workflow?: unknown;
-  workflowRuntime?: unknown;
+  /**
+   * Per-module state. Legacy projects can still contain the old snapshot
+   * array; all readers normalize that representation before use.
+   */
+  workflowRuntime?: CanvasWorkflowRuntime | CanvasWorkflowRuntimeNodeSnapshot[];
   workflowOutputMode?: 'final' | 'all';
 };
 

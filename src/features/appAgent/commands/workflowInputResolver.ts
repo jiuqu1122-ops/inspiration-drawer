@@ -17,6 +17,21 @@ export interface WorkflowNodeLike {
   externalInputTypes?: string[];
   outputType?: string;
   bridgeType?: string;
+  internalSlot?: {
+    id?: string;
+    label?: string;
+    mediaType?: string;
+    mode?: string;
+    multiple?: boolean;
+    minItems?: number;
+    maxItems?: number;
+    required?: boolean;
+    defaultValue?: {
+      sourceItemId?: string;
+      path?: string;
+      url?: string;
+    };
+  };
   item?: {
     type?: string;
     name?: string;
@@ -46,6 +61,7 @@ export interface WorkflowLike {
   steps?: WorkflowNodeLike[];
   workflowDefinition?: WorkflowLike;
   nodes?: WorkflowNodeLike[];
+  workflowRuntime?: unknown;
 }
 
 export interface CanvasNodeLike {
@@ -98,6 +114,8 @@ export interface WorkflowInputResolution {
   missingRequiredInputs: string[];
   requiresImageTargetNodeIds: string[];
   workflowInputBindings: Record<string, string[]>;
+  internalSlotBindings: Record<string, string[]>;
+  missingInternalSlots: Array<{ slotId: string; label: string }>;
   workflowVisualFanout: Array<{ inputId: string; targetStepId: string; sourceNodeIds: string[] }>;
   workflowTextDependencies: Array<{ sourceStepId: string; targetStepId: string }>;
   workflowInputResolution: {
@@ -127,6 +145,39 @@ const asNodes = (workflow?: WorkflowLike | null) => {
   if (Array.isArray(definition?.nodes)) return definition.nodes || [];
   if (Array.isArray(definition?.steps)) return definition.steps || [];
   return [];
+};
+
+const isInternalImageSlotNode = (node?: WorkflowNodeLike | null) => (
+  !!node
+  && node.internalSlot?.mode === 'replaceable_internal'
+  && (node.internalSlot.mediaType || 'image') === 'image'
+  && !!node.internalSlot.id
+);
+
+const getRuntimeInternalSlotBindings = (value: unknown) => {
+  const runtime = asRecord(value);
+  const rawBindings = asRecord(runtime?.internalSlotBindings);
+  const bindings: Record<string, string[]> = {};
+  Object.entries(rawBindings || {}).forEach(([key, candidate]) => {
+    const binding = asRecord(candidate);
+    const slotId = String(binding?.slotId || key || '').trim();
+    if (!slotId) return;
+    const assets = Array.isArray(binding?.assets) ? binding.assets : [];
+    bindings[slotId] = uniqueStrings(assets.flatMap(assetValue => {
+      const asset = asRecord(assetValue);
+      if (!asset) return [];
+      const identity = String(
+        asset.sourceItemId
+        || asset.path
+        || asset.url
+        || asset.originalUrl
+        || asset.thumbnail
+        || '',
+      ).trim();
+      return identity ? [identity] : [];
+    }));
+  });
+  return bindings;
 };
 
 const getWorkflowImageInputIds = (workflow?: WorkflowLike | null) => {
@@ -220,6 +271,7 @@ const getStepTextInputIds = (node: WorkflowNodeLike) => {
 
 export const getWorkflowImageInputTargetNodeIds = (workflow?: WorkflowLike | null) => {
   const nodes = asNodes(workflow);
+  const internalSlotNodeIds = new Set(nodes.filter(isInternalImageSlotNode).map(node => node.id));
   const nodesById = new Map(nodes.map(node => [node.id, node]));
   const definitionImageInputIds = getWorkflowImageInputIds(workflow);
   const requiredGenerators = nodes.filter(workflowNodeRequiresImageInput);
@@ -228,7 +280,7 @@ export const getWorkflowImageInputTargetNodeIds = (workflow?: WorkflowLike | nul
     return uniqueStrings([
       ...definitionImageInputIds,
       ...requiredGenerators.flatMap(getStepVisualInputIds),
-    ]);
+    ]).filter(id => !internalSlotNodeIds.has(id));
   }
   const explicitExternalTargets = nodes
     .filter(node => node.acceptsExternalInputs === true && (
@@ -256,19 +308,22 @@ export const getWorkflowImageInputTargetNodeIds = (workflow?: WorkflowLike | nul
   return uniqueStrings([
     ...explicitExternalTargets.map(node => node.id),
     ...generatorExternalTargets,
-  ]);
+  ]).filter(id => !internalSlotNodeIds.has(id));
 };
 
 export const getWorkflowVisualFanoutTargets = (workflow?: WorkflowLike | null) => {
   const nodes = asNodes(workflow);
-  const imageInputIds = getWorkflowImageInputIds(workflow);
+  const internalSlotNodeIds = new Set(nodes.filter(isInternalImageSlotNode).map(node => node.id));
+  const imageInputIds = getWorkflowImageInputIds(workflow).filter(id => !internalSlotNodeIds.has(id));
   if (imageInputIds.length === 0) return [];
   return nodes
     .filter(workflowNodeRequiresImageInput)
     .flatMap(node => {
       const visualInputs = getStepVisualInputIds(node);
       const inputIds = visualInputs.length > 0 ? visualInputs : imageInputIds;
-      return inputIds.map(inputId => ({ inputId, targetStepId: node.id }));
+      return inputIds
+        .filter(inputId => !internalSlotNodeIds.has(inputId))
+        .map(inputId => ({ inputId, targetStepId: node.id }));
     });
 };
 
@@ -325,6 +380,7 @@ export function resolveWorkflowInputs(input: {
   canvasNodes?: CanvasNodeLike[];
   drawerItems?: DrawerItemLike[];
   allowRecentCanvasFallback?: boolean;
+  workflowRuntime?: unknown;
 }): WorkflowInputResolution {
   const canvasNodes = input.canvasNodes || [];
   const canvasNodeById = new Map(canvasNodes.map(node => [node.id, node]));
@@ -374,6 +430,32 @@ export function resolveWorkflowInputs(input: {
       ...(input.allowRecentCanvasFallback !== false && nodesToCreateFromAttachments.length === 0 && nodesToCreateFromDrawerItems.length === 0 ? recentCanvasImageNodeIds : []),
     ]);
   const requiresImageTargetNodeIds = getWorkflowImageInputTargetNodeIds(input.workflow);
+  const definition = getWorkflowDefinition(input.workflow);
+  const internalSlotNodes = asNodes(input.workflow).filter(isInternalImageSlotNode);
+  const internalSlotBindings = getRuntimeInternalSlotBindings(
+    input.workflowRuntime ?? definition?.workflowRuntime,
+  );
+  internalSlotNodes.forEach(node => {
+    const slotId = String(node.internalSlot?.id || '').trim();
+    if (!slotId || internalSlotBindings[slotId]?.length) return;
+    const defaultValue = node.internalSlot?.defaultValue;
+    const identity = String(
+      defaultValue?.sourceItemId || defaultValue?.path || defaultValue?.url || '',
+    ).trim();
+    internalSlotBindings[slotId] = identity ? [identity] : [];
+  });
+  const missingInternalSlots = internalSlotNodes.flatMap(node => {
+    const slotId = String(node.internalSlot?.id || '').trim();
+    const minimum = Math.max(
+      node.internalSlot?.required === true ? 1 : 0,
+      Number(node.internalSlot?.minItems) || 0,
+    );
+    if (!slotId || minimum <= 0 || (internalSlotBindings[slotId]?.length || 0) >= minimum) return [];
+    return [{
+      slotId,
+      label: String(node.internalSlot?.label || node.item?.name || slotId),
+    }];
+  });
   const visualFanoutTargets = getWorkflowVisualFanoutTargets(input.workflow);
   const autoConnections = requiresImageTargetNodeIds.flatMap(targetId => (
     resolvedImageNodeIds.map(sourceId => ({ sourceId, targetId }))
@@ -386,12 +468,15 @@ export function resolveWorkflowInputs(input: {
     sourceNodeIds: resolvedImageNodeIds,
   }));
   const workflowTextDependencies = getWorkflowTextDependencies(input.workflow);
-  const missingRequiredInputs = requiresImageTargetNodeIds.length > 0
+  const missingRequiredInputs = [
+    ...missingInternalSlots.map(slot => `请先设置「${slot.label}」`),
+    ...(requiresImageTargetNodeIds.length > 0
     && resolvedImageNodeIds.length === 0
     && nodesToCreateFromDrawerItems.length === 0
     && nodesToCreateFromAttachments.length === 0
-    ? ['这个工作流需要产品/参考图，请先选择或拖入一张图片。']
-    : [];
+      ? ['这个工作流需要产品/参考图，请先选择或拖入一张图片。']
+      : []),
+  ];
   const duplicateImageNodesPrevented = selectedCanvasImageNodeIds.length > 0
     ? selectedDrawerImageItems.filter(item => !canvasNodeBySourceItemId.has(item.id)).length + attachmentIdsToCreate.length
     : 0;
@@ -405,6 +490,8 @@ export function resolveWorkflowInputs(input: {
     missingRequiredInputs,
     requiresImageTargetNodeIds,
     workflowInputBindings,
+    internalSlotBindings,
+    missingInternalSlots,
     workflowVisualFanout,
     workflowTextDependencies,
     workflowInputResolution: {

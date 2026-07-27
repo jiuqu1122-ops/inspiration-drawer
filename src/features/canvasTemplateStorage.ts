@@ -9,6 +9,10 @@ import {
   type CanvasWorkflowTemplate,
 } from './canvasTemplates';
 import { normalizeCanvasWorkflowUserInput } from './canvasWorkflowUserInput';
+import {
+  isReplaceableInternalImageSlot,
+  normalizeCanvasWorkflowInternalSlot,
+} from './canvasWorkflowInternalSlots';
 
 export const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
 export const CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_hidden_builtin_prompt_presets';
@@ -144,6 +148,12 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       ? rawItem.type
       : 'text';
     const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
+    const internalSlot = normalizeCanvasWorkflowInternalSlot(node.internalSlot, {
+      id,
+      label: typeof rawItem.name === 'string' ? rawItem.name : id,
+      order: index,
+    });
+    if (internalSlot) itemType = 'image';
     let externalInputTypes = Array.isArray(node.externalInputTypes)
       ? node.externalInputTypes
         .map(type => String(type || '').trim())
@@ -166,10 +176,12 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         .some(value => typeof value === 'string' && value.trim().length > 0);
     const shouldRestoreConcreteFixedImage = hasConcreteImageSource
       && !rawAi
+      && !internalSlot
       && node.bridgeType !== 'reference_image'
       && id !== 'product_reference_image';
     const inferredExternalImageInput = shouldInferExternalImageInputs
       && inputIds.length === 0
+      && !internalSlot
       && !(node.fixedInput === true && itemType === 'image')
       && !hasConcreteImageSource
       && (
@@ -178,14 +190,15 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         || itemType === 'image'
         || itemType === 'file'
       );
-    const acceptsExternalInputs = !shouldRestoreConcreteFixedImage
+    const acceptsExternalInputs = !internalSlot
+      && !shouldRestoreConcreteFixedImage
       && (node.acceptsExternalInputs === true || inferredExternalImageInput);
     if (shouldRestoreConcreteFixedImage) {
       externalInputTypes = undefined;
     } else if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
       externalInputTypes = ['image', 'text'];
     }
-    const isReferenceImageBridge = (
+    const isReferenceImageBridge = !internalSlot && (
       node.bridgeType === 'reference_image'
       || id === 'product_reference_image'
     )
@@ -200,6 +213,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
       && isCanvasWorkflowLongDuplicateText(itemContent, executablePrompt);
     const shouldCompactAiPrompt = rawAi?.type === 'image-generator'
       && isCanvasWorkflowLongDuplicateText(aiPrompt, executablePrompt);
+    const slotDefaultValue = internalSlot?.defaultValue;
     return {
       id,
       x: Number(node.x) || 0,
@@ -211,11 +225,12 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         type: itemType,
         content: isReferenceImageBridge ? (itemContent || '参考图桥接') : (shouldCompactItemContent ? '' : itemContent),
         name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : (isReferenceImageBridge ? '参考图桥接' : undefined),
-        path: typeof rawItem.path === 'string' ? rawItem.path : undefined,
-        url: typeof rawItem.url === 'string' ? rawItem.url : undefined,
-        thumbnail: typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined,
-        sourceUrl: typeof rawItem.sourceUrl === 'string' ? rawItem.sourceUrl : undefined,
-        originalUrl: typeof rawItem.originalUrl === 'string' ? rawItem.originalUrl : undefined,
+        path: internalSlot ? slotDefaultValue?.path : (typeof rawItem.path === 'string' ? rawItem.path : undefined),
+        url: internalSlot ? slotDefaultValue?.url : (typeof rawItem.url === 'string' ? rawItem.url : undefined),
+        thumbnail: internalSlot ? undefined : (typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined),
+        sourceUrl: internalSlot ? undefined : (typeof rawItem.sourceUrl === 'string' ? rawItem.sourceUrl : undefined),
+        originalUrl: internalSlot ? undefined : (typeof rawItem.originalUrl === 'string' ? rawItem.originalUrl : undefined),
+        sourceItemId: internalSlot ? slotDefaultValue?.sourceItemId : (typeof rawItem.sourceItemId === 'string' ? rawItem.sourceItemId : undefined),
         remark: typeof rawItem.remark === 'string' ? rawItem.remark : undefined,
         remarks: Array.isArray(rawItem.remarks)
           ? rawItem.remarks.map(remark => String(remark || '').trim()).filter(Boolean).slice(0, 12)
@@ -224,7 +239,9 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         isQuickAccess: false,
       },
       inputs: inputIds,
-      fixedInput: shouldRestoreConcreteFixedImage
+      fixedInput: internalSlot
+        ? true
+        : shouldRestoreConcreteFixedImage
         ? true
         : typeof node.fixedInput === 'boolean'
         ? (inferredExternalImageInput ? false : node.fixedInput)
@@ -239,7 +256,9 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         : undefined,
       acceptsExternalInputs,
       externalInputTypes,
-      outputType: node.outputType === 'image'
+      outputType: internalSlot
+        ? (internalSlot.multiple ? 'image[]' : 'image')
+        : node.outputType === 'image'
         || node.outputType === 'image[]'
         || node.outputType === 'text'
         || node.outputType === 'video'
@@ -247,6 +266,7 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
         ? node.outputType
         : undefined,
       bridgeType: isReferenceImageBridge ? 'reference_image' as const : undefined,
+      internalSlot,
       ai: rawAi
         ? {
           ...rawAi,
@@ -262,6 +282,14 @@ export const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowT
   }).filter(node => node.ai?.type === 'image-generator' || !!node.item.type);
 
   if (nodes.length === 0 || !nodes.some(node => node.ai?.type === 'image-generator')) {
+    canvasWorkflowNormalizeCache.set(cacheKey, null);
+    return null;
+  }
+
+  const slotIds = nodes
+    .filter(isReplaceableInternalImageSlot)
+    .map(node => node.internalSlot!.id);
+  if (new Set(slotIds).size !== slotIds.length) {
     canvasWorkflowNormalizeCache.set(cacheKey, null);
     return null;
   }

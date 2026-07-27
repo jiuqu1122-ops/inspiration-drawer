@@ -18,6 +18,33 @@ import type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
 import { removeRetiredCanvasWorkflows } from './canvasWorkflowRetirement';
 
 export type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
+export type {
+  CanvasWorkflowRuntime,
+  CanvasWorkflowRuntimeNodeSnapshot,
+  CanvasWorkflowSlotAsset,
+  CanvasWorkflowSlotBinding,
+} from './canvasModel';
+
+export type CanvasWorkflowInternalSlot = {
+  id: string;
+  label: string;
+  mediaType: 'image';
+  mode: 'replaceable_internal';
+  multiple?: boolean;
+  minItems?: number;
+  maxItems?: number;
+  required?: boolean;
+  description?: string;
+  emptyHint?: string;
+  role?: string;
+  order?: number;
+  defaultValue?: {
+    url?: string;
+    path?: string;
+    sourceItemId?: string;
+  };
+  clearable?: boolean;
+};
 
 export type CanvasWorkflowNodeTemplate = {
   id: string;
@@ -34,6 +61,7 @@ export type CanvasWorkflowNodeTemplate = {
   externalInputTypes?: Array<'image' | 'text' | 'video'>;
   outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
   bridgeType?: 'reference_image';
+  internalSlot?: CanvasWorkflowInternalSlot;
   ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
 };
 
@@ -57,12 +85,21 @@ export type CanvasWorkflowSaveDraft = {
   aiCount: number;
   fixedImageCount: number;
   fixedTextCount: number;
+  imageNodeModes?: Record<string, CanvasWorkflowImageNodeModeDraft>;
 };
 
-export type CanvasWorkflowRuntimeNodeSnapshot = {
-  templateId: string;
-  item?: Partial<BufferItem>;
-  ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
+export type CanvasWorkflowImageNodeMode = 'normal' | 'fixed' | 'internal_slot' | 'external_bridge';
+
+export type CanvasWorkflowImageNodeModeDraft = {
+  mode: CanvasWorkflowImageNodeMode;
+  slotId?: string;
+  label?: string;
+  required?: boolean;
+  multiple?: boolean;
+  maxItems?: number;
+  role?: string;
+  emptyHint?: string;
+  keepDefault?: boolean;
 };
 
 export type CanvasWorkflowExpandedGroup = {

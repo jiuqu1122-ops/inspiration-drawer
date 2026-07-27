@@ -10,11 +10,11 @@ const workflow = {
 
 describe('canvas template JSON import recognition', () => {
   it('recognizes a single node preset JSON object', () => {
-    expect(getCanvasTemplateImportCandidates(preset)).toEqual({ presets: [preset], workflows: [] });
+    expect(getCanvasTemplateImportCandidates(preset)).toEqual({ presets: [preset], workflows: [], workflowInstances: [] });
   });
 
   it('recognizes a single workflow preset JSON object', () => {
-    expect(getCanvasTemplateImportCandidates(workflow)).toEqual({ presets: [], workflows: [workflow] });
+    expect(getCanvasTemplateImportCandidates(workflow)).toEqual({ presets: [], workflows: [workflow], workflowInstances: [] });
   });
 
   it('recognizes exported bundles and raw arrays', () => {
@@ -23,15 +23,30 @@ describe('canvas template JSON import recognition', () => {
       version: 1,
       presets: [preset],
       workflows: [workflow],
-    }))).toEqual({ presets: [preset], workflows: [workflow] });
+    }))).toEqual({ presets: [preset], workflows: [workflow], workflowInstances: [] });
     expect(getCanvasTemplateImportCandidates([preset, workflow])).toEqual({
       presets: [preset],
       workflows: [workflow],
+      workflowInstances: [],
     });
   });
 
   it('does not recognize arbitrary JSON as a canvas template', () => {
     expect(getCanvasTemplateImportCandidates({ name: 'ordinary data', items: [] }))
-      .toEqual({ presets: [], workflows: [] });
+      .toEqual({ presets: [], workflows: [], workflowInstances: [] });
+  });
+
+  it('recognizes a portable workflow instance without treating its assets as template data', () => {
+    const runtime = { internalSlotBindings: { subject: { slotId: 'subject', assets: [{ url: 'data:image/png;base64,AA==' }] } } };
+    expect(getCanvasTemplateImportCandidates({
+      type: 'inspiration-drawer-workflow-instance',
+      version: 1,
+      workflow,
+      runtime,
+    })).toEqual({
+      presets: [],
+      workflows: [],
+      workflowInstances: [{ workflow, runtime }],
+    });
   });
 });
