@@ -5337,7 +5337,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.10');
+        setAppVersion('5.0.11');
       });
   }, []);
 
@@ -33608,7 +33608,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.10'}
+                                      v{appVersion || '5.0.11'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -39454,7 +39454,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.10'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.11'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -39467,10 +39467,9 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>新增图片 AI 自动标签，支持全库搜索标签、后台分析进度与失败重试。</p>
-                  <p className="mt-1">画布新增全库图片搜索、文件夹候选预览及分批双行浏览，可快速加入素材。</p>
-                  <p className="mt-1">支持直接拖入节点/工作流预设 JSON，并优化多参考图、生成节点恢复和视频播放。</p>
-                  <p className="mt-1">修复启动反复展开、数据保存及多项画布交互问题。</p>
+                  <p>客户端自动同步服务端模型与 LLM 积分价格，运行前即可准确显示预计消耗。</p>
+                  <p className="mt-1">优化多节点工作流参考图发布：小批次上传，失败时自动逐张重试。</p>
+                  <p className="mt-1">清理旧工业设计工作流预设，同时保留画布上已经展开的工作流内容。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -39594,7 +39593,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.10'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.11'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -39687,12 +39686,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.10</p>
-                <p>修复带参考图工作流 JSON 导入时可能崩溃的问题，并提升大文件导入稳定性。</p>
-                <p>切换画布落在空白区域时会自动定位最近节点；参考图支持悬停快速移除。</p>
-                <p>优化生成图落盘、缩略图与抽屉写入，减少卡顿并避免拖动节点时位置跳变。</p>
-                <p>修复中键按在图片上拖动画布后可能持续漂移的问题。</p>
-                <p>视频素材现在可以从文件夹候选和画布搜索结果直接加入画布。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.11</p>
+                <p>客户端自动同步服务端模型与 LLM 积分价格，运行前显示最新预计消耗。</p>
+                <p>多参考图工作流改为小批次上传；批次失败时自动逐张重试，减少准备失败。</p>
+                <p>移除“工业设计全流程｜本地优先”和“基础工业设计”旧预设，不影响画布现有内容。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
