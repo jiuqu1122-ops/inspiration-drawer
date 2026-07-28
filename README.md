@@ -4,19 +4,19 @@
 
 ## 下载
 
-当前版本：**5.0.13**
+当前版本：**5.0.14**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.13/Inspiration.Drawer_5.0.13_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.13)
-- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.13)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.14/Inspiration.Drawer_5.0.14_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.14)
+- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.14)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 5.0.13 更新
+## 5.0.14 更新
 
-- 图片生成等待时间延长至 15 分钟；超时或重启后可继续查询并自动恢复已完成结果。
-- 工作流每张结果图支持独立重试，成功后只替换当前图片，失败时保留原图。
-- 画布缩放手柄移动到选中框四角并扩大命中区域，缩小画布后仍容易操作。
+- 修复工作流单张结果重试请求 ID 过长的问题，单独重试失败时继续显示并保留原图。
+- 修复节点缩放框与节点本体错位、拖动后尺寸跳变的问题。
+- 单选和多选整体缩放统一使用实际显示尺寸，后台结果更新、提示词展开和规则折叠不再重置用户设置的比例。
 
 ## 主要功能
 

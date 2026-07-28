@@ -189,6 +189,11 @@ import {
   type CanvasWorkflowRuntimeNodeSnapshot,
   type CanvasWorkflowSlotAsset,
 } from './features/canvasModel';
+import {
+  fitCanvasBoxToDesign,
+  getCanvasBoxesBounds,
+  getCanvasDesignScale,
+} from './features/canvasResizeGeometry';
 import { findNearestCanvasItemIdForEmptyViewport } from './features/canvasViewportNavigation';
 import {
   getCanvasDrawerMediaPreviewSource,
@@ -5382,7 +5387,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.13');
+        setAppVersion('5.0.14');
       });
   }, []);
 
@@ -18421,27 +18426,31 @@ function MainApp() {
       ai: nextAi,
       item: nextItem,
     });
-    const shouldResizeAiNode = isCanvasAiGeneratorType(item.ai?.type) && (
+    const isResizableAiNode = isCanvasAiGeneratorType(item.ai?.type)
+      || item.ai?.type === 'workflow';
+    const shouldResizeAiNode = isResizableAiNode && (
       patch.aspectRatio !== undefined
       || patch.count !== undefined
       || content !== undefined
+      || patch.outputs !== undefined
+      || patch.error !== undefined
       || (
         isCanvasAiLocalMediaToolType(item.ai?.type)
         && (
-          patch.outputs !== undefined
-          || patch.error !== undefined
-          || patch.interpolationProgress !== undefined
+          patch.interpolationProgress !== undefined
           || patch.enhancementProgress !== undefined
           || patch.enhancementEngine !== undefined
           || patch.quickEnhancementScale !== undefined
         )
       )
     );
-    if (!shouldResizeAiNode) return nextCanvasItem;
+    const isBeingManuallyResized = canvasResizeRef.current?.id === item.id
+      || !!canvasGroupResizeRef.current?.startItems[item.id];
+    if (!shouldResizeAiNode || isBeingManuallyResized) return nextCanvasItem;
     const promptExpanded = canvasAiPromptEditingId === item.id;
     const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded);
     const nextSize = getCanvasAiNodeDesignSizeForItem(nextCanvasItem, promptExpanded);
-    const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
+    const nodeScale = getCanvasDesignScale(item, oldSize);
     return {
       ...nextCanvasItem,
       width: nextSize.width * nodeScale,
@@ -18549,11 +18558,13 @@ function MainApp() {
         },
       };
       const promptExpanded = canvasAiPromptEditingId === item.id;
+      const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded);
       const nextSize = getCanvasAiNodeDesignSizeForItem(nextItem, promptExpanded);
+      const nodeScale = getCanvasDesignScale(item, oldSize);
       return {
         ...nextItem,
-        width: nextSize.width,
-        height: nextSize.height,
+        width: nextSize.width * nodeScale,
+        height: nextSize.height * nodeScale,
       };
     }));
   };
@@ -18594,7 +18605,7 @@ function MainApp() {
       const oldExpanded = previousExpanded ?? canvasAiPromptEditingId === item.id;
       const oldSize = getCanvasAiNodeDesignSizeForItem(item, oldExpanded);
       const nextSize = getCanvasAiNodeDesignSizeForItem(item, expanded);
-      const nodeScale = Math.max(1, Math.min(item.width / oldSize.width, item.height / oldSize.height) || 1);
+      const nodeScale = getCanvasDesignScale(item, oldSize);
       return {
         ...item,
         width: nextSize.width * nodeScale,
@@ -18636,12 +18647,11 @@ function MainApp() {
         hasError: !!item.ai?.error,
         showOutputPreview: true,
       });
-      const currentScale = Math.min(item.width / currentSize.width, item.height / currentSize.height) || 1;
-      const nextScale = mode === 'all' ? Math.max(1, currentScale) : currentScale;
+      const currentScale = getCanvasDesignScale(item, currentSize);
       return {
         ...nextItem,
-        width: nextSize.width * nextScale,
-        height: nextSize.height * nextScale,
+        width: nextSize.width * currentScale,
+        height: nextSize.height * currentScale,
       };
     }));
     showToast(mode === 'all' ? '已显示工作流全部节点输出' : '已显示工作流最终输出');
@@ -21226,7 +21236,6 @@ function MainApp() {
       await runCanvasAiGeneratorTarget(singleTarget, {
         sourceItems: () => getCanvasSessionItems(runCanvasId),
         updateAi: updateRetrySlot,
-        forceUpdateAi: updateRetrySlot,
         getLatestTarget: getSingleTarget,
         showResultToast: false,
         clientRequestId: runToken,
@@ -21422,7 +21431,6 @@ function MainApp() {
       await runCanvasAiGeneratorTarget(singleTarget, {
         sourceItems: getRuntimeSourceItems,
         updateAi: updateRuntimeRetrySlot,
-        forceUpdateAi: updateRuntimeRetrySlot,
         getLatestTarget: getSingleTarget,
         showResultToast: false,
         clientRequestId: runToken,
@@ -22979,6 +22987,7 @@ function MainApp() {
     if (e.button !== 0) return;
     const current = canvasItemsRef.current.find(item => item.id === id);
     if (!current) return;
+    const currentBox = getCanvasItemRenderedBox(current);
     e.preventDefault();
     e.stopPropagation();
     const pointerCaptureTarget = e.currentTarget as HTMLElement;
@@ -22991,11 +23000,11 @@ function MainApp() {
       corner,
       startClientX: e.clientX,
       startClientY: e.clientY,
-      startX: current.x,
-      startY: current.y,
-      startWidth: current.width,
-      startHeight: current.height,
-      aspect: current.width / Math.max(1, current.height),
+      startX: currentBox.x,
+      startY: currentBox.y,
+      startWidth: currentBox.width,
+      startHeight: currentBox.height,
+      aspect: currentBox.width / Math.max(1, currentBox.height),
       latestBox: null,
       hasResized: false,
     };
@@ -23078,7 +23087,14 @@ function MainApp() {
     if (e.button !== 0) return;
     const selectedIds = canvasSelectedIdsRef.current;
     if (selectedIds.length < 2) return;
-    const startBounds = getCanvasItemsBounds(selectedIds);
+    const selectedIdSet = new Set(selectedIds);
+    const startItems = canvasItemsRef.current
+      .filter(item => selectedIdSet.has(item.id))
+      .reduce<Record<string, CanvasItemBox>>((acc, item) => {
+        acc[item.id] = getCanvasItemRenderedBox(item);
+        return acc;
+      }, {});
+    const startBounds = getCanvasBoxesBounds(Object.values(startItems));
     if (!startBounds || startBounds.width <= 0 || startBounds.height <= 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -23091,7 +23107,7 @@ function MainApp() {
       startClientX: e.clientX,
       startClientY: e.clientY,
       startBounds,
-      startItems: makeCanvasItemBoxMap(selectedIds),
+      startItems,
       aspect: startBounds.width / Math.max(1, startBounds.height),
       latestBoxes: null,
       hasResized: false,
@@ -31224,13 +31240,7 @@ useEffect(() => {
       };
     }
     const designSize = getCanvasAiNodeDesignSizeForItem(canvasItem);
-    const nodeScale = Math.min(canvasItem.width / designSize.width, canvasItem.height / designSize.height) || 1;
-    return {
-      x: canvasItem.x,
-      y: canvasItem.y,
-      width: designSize.width * nodeScale,
-      height: designSize.height * nodeScale,
-    };
+    return fitCanvasBoxToDesign(canvasItem, designSize);
   };
   const canvasNavItems = useMemo(() => canvasItemsForNav.map(item => ({
     item,
@@ -34788,7 +34798,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.13'}
+                                      v{appVersion || '5.0.14'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -36056,7 +36066,7 @@ useEffect(() => {
                                                       </button>
                                                     </div>
                                                   )}
-                                                  {outputSource && !isOutputError && outputMediaType === 'video' ? (
+                                                  {outputSource && outputMediaType === 'video' ? (
                                                     <CanvasSelectionVideo
                                                       src={outputSource}
                                                       isSelected={isSelected}
@@ -36068,7 +36078,7 @@ useEffect(() => {
                                                       draggable={false}
                                                       onDragStart={preventCanvasNativeDrag}
                                                     />
-                                                  ) : outputPreviewSource && !isOutputError ? (
+                                                  ) : outputPreviewSource ? (
                                                     <img
                                                       key={outputPreviewSource}
                                                       src={outputPreviewSource}
@@ -36093,6 +36103,11 @@ useEffect(() => {
                                                         {isOutputError ? '生成失败' : isOutputWorking ? `生成中 ${outputWorkingElapsedText}` : outputMediaType === 'video' ? '无视频' : '无图片'}
                                                       </span>
                                                     </span>
+                                                  )}
+                                                  {isOutputError && outputSource && (
+                                                    <div className="pointer-events-none absolute bottom-2 left-2 right-12 z-20 rounded-lg bg-red-950/78 px-2 py-1 text-left text-[9px] font-black text-red-50 shadow-sm ring-1 ring-red-100/16 backdrop-blur-md">
+                                                      重试失败，已保留原图
+                                                    </div>
                                                   )}
                                                   {isOutputWorking && outputSource && (
                                                     <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/42 text-white backdrop-blur-[1px]">
@@ -41146,7 +41161,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.13'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.14'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -41285,7 +41300,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.13'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.14'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -41378,10 +41393,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.13</p>
-                <p>图片生成等待时间延长至 15 分钟；超时或重启后会继续查询云端任务并自动找回已完成结果。</p>
-                <p>工作流每张结果图新增独立重试，可只替换当前图片；重试失败时保留原图，不影响其他节点结果。</p>
-                <p>画布缩放手柄移动到选中框四角并扩大点击区域，在不同缩放比例下都更容易拖动。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.14</p>
+                <p>修复工作流单张结果重试请求 ID 过长的问题；重试失败时继续显示并保留原图。</p>
+                <p>修复节点缩放框错位及拖动后尺寸跳变，单选和多选缩放统一使用实际显示尺寸。</p>
+                <p>后台结果更新、提示词展开和规则折叠会保留用户设置的节点比例，不再突然恢复默认大小。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
