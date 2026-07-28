@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
+  CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
+  NEW_API_IMAGE_TASK_MAX_WAIT_MS,
   NEW_API_IMAGE_RESPONSE_FORMAT,
   NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
   buildCanvasAiIndexedReferencePrompt,
@@ -417,8 +420,11 @@ describe('NewAPI image protocol errors', () => {
     expect(NEW_API_IMAGE_RESPONSE_FORMAT).toBe('url');
   });
 
-  it('keeps the synchronous request open long enough for slow upstream image jobs', () => {
-    expect(NEW_API_IMAGE_REQUEST_TIMEOUT_SECS).toBeGreaterThan(267);
+  it('keeps every image task timeout aligned at fifteen minutes', () => {
+    expect(CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES).toBe(15);
+    expect(CANVAS_AI_IMAGE_TASK_TIMEOUT_MS).toBe(15 * 60 * 1000);
+    expect(NEW_API_IMAGE_REQUEST_TIMEOUT_SECS).toBe(15 * 60);
+    expect(NEW_API_IMAGE_TASK_MAX_WAIT_MS).toBe(15 * 60 * 1000);
   });
 
   it('routes NewAPI text-to-image and image edits through the current image endpoints', () => {

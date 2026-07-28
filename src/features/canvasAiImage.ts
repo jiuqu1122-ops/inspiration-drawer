@@ -16,8 +16,10 @@ export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
-export const NEW_API_IMAGE_REQUEST_TIMEOUT_SECS = 360;
-export const NEW_API_IMAGE_TASK_MAX_WAIT_MS = 10 * 60 * 1000;
+export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES = 15;
+export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES * 60 * 1000;
+export const NEW_API_IMAGE_REQUEST_TIMEOUT_SECS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MS / 1000;
+export const NEW_API_IMAGE_TASK_MAX_WAIT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MS;
 export const NEW_API_IMAGE_TASK_POLL_INTERVAL_MS = 3000;
 
 export const OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS = [
@@ -186,6 +188,23 @@ type CloudImageGenerationResult = {
   model: string;
   chargedCredits: string;
 };
+
+export type CloudImageGenerationLookup = {
+  status: 'pending' | 'reserved' | 'processing' | 'succeeded' | 'failed' | 'refunded' | string;
+  completedAt?: number | null;
+  images: string[];
+  provider?: string;
+  providerChannelId?: string;
+  providerChannelName?: string;
+  model?: string;
+  chargedCredits?: string;
+};
+
+export const getCloudWalletImageGenerationByRequest = async (
+  clientRequestId: string,
+) => invoke<CloudImageGenerationLookup>('get_cloud_image_generation_by_request', {
+  clientRequestId: clientRequestId.trim(),
+});
 
 type CloudVideoGenerationResult = {
   results: unknown[];

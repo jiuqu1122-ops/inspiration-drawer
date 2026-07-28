@@ -387,6 +387,8 @@ import { publishCanvasReferencesInOrder } from './features/canvasReferencePublic
 import {
   CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
   CANVAS_AI_PROVIDER_OPTIONS,
+  CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
+  CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
   NEW_API_ENDPOINT_DEFAULT,
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
@@ -402,6 +404,7 @@ import {
   debugXaisImage2,
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
+  getCloudWalletImageGenerationByRequest,
   getCanvasAiImageResolutionValues,
   getCanvasAiSlotClientRequestId,
   getCanvasAiPublicImageModelName,
@@ -428,6 +431,14 @@ import {
   shouldUseCanvasAiNativeImageBatchRequest,
   supportsCanvasAiImageResolution,
 } from './features/canvasAiImage';
+import {
+  getCanvasAiTimedOutRecoveryCandidates,
+  isCanvasAiImageLookupPending,
+} from './features/canvasAiTimedOutRecovery';
+import {
+  getCanvasAiRetryNodeStatus,
+  mergeCanvasAiRetryOutputSlot,
+} from './features/canvasWorkflowOutputRetry';
 
 type CanvasGeneratedListEntry = {
   id: string;
@@ -1153,7 +1164,6 @@ const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
 const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
 const CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
 const CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY = 2;
-const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = 6 * 60 * 1000;
 const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
 const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
 const CANVAS_AI_INPUT_IMAGE_QUALITY = 0.9;
@@ -5372,7 +5382,7 @@ function MainApp() {
       .then(setAppVersion)
       .catch(err => {
         console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.12');
+        setAppVersion('5.0.13');
       });
   }, []);
 
@@ -11500,6 +11510,9 @@ function MainApp() {
   const canvasAiOutputSourceRecoveryAttemptedRef = useRef(new Set<string>());
   const canvasAiOutputSourceRecoveryInFlightRef = useRef(new Set<string>());
   const [canvasAiOutputSourceRecoveryTick, setCanvasAiOutputSourceRecoveryTick] = useState(0);
+  const canvasAiTimedOutRecoveryInFlightRef = useRef(new Set<string>());
+  const canvasAiTimedOutRecoverySettledRef = useRef(new Set<string>());
+  const [canvasAiTimedOutRecoveryTick, setCanvasAiTimedOutRecoveryTick] = useState(0);
   const generatedImageCachePendingIdsRef = useRef(new Set<string>());
   const generatedImageCachePromisesRef = useRef(new Map<string, Promise<string>>());
 
@@ -15902,7 +15915,11 @@ function MainApp() {
     runNextCanvasAiOutputThumbnailJob();
   };
 
-  const createCanvasAiOutputDrafts = (target: CanvasImageItem, prompt: string): CanvasAiGeneratedOutput[] => {
+  const createCanvasAiOutputDrafts = (
+    target: CanvasImageItem,
+    prompt: string,
+    clientRequestId?: string,
+  ): CanvasAiGeneratedOutput[] => {
     const count = clamp(Math.round(Number(target.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
     const size = getCanvasAiOutputSize(target.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const now = Date.now();
@@ -15913,6 +15930,9 @@ function MainApp() {
       name: `AI generated ${mediaType} #${index + 1}`,
       prompt,
       status: 'working',
+      clientRequestId: clientRequestId
+        ? getCanvasAiSlotClientRequestId(clientRequestId, index, count)
+        : undefined,
       generatedAt: now + index,
       width: size.width,
       height: size.height,
@@ -19526,7 +19546,7 @@ function MainApp() {
       if (!imageTaskDeadlineAt) return request;
       const remainingMs = imageTaskDeadlineAt - Date.now();
       if (remainingMs <= 0) {
-        throw new Error('图片生成任务等待超过 6 分钟，已自动取消');
+        throw new Error(`图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消`);
       }
       let timeoutId: number | null = null;
       try {
@@ -19534,7 +19554,7 @@ function MainApp() {
           request,
           new Promise<never>((_, reject) => {
             timeoutId = window.setTimeout(() => {
-              reject(new Error('图片生成任务等待超过 6 分钟，已自动取消'));
+              reject(new Error(`图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消`));
             }, remainingMs);
           }),
         ]);
@@ -19628,7 +19648,7 @@ function MainApp() {
       return [] as CanvasAiGeneratedOutput[];
     }
 
-    const outputDrafts = createCanvasAiOutputDrafts(target, prompt);
+    const outputDrafts = createCanvasAiOutputDrafts(target, prompt, clientRequestId);
     let currentOutputs = outputDrafts;
     const setCanvasAiOutputs = (
       outputs: CanvasAiGeneratedOutput[],
@@ -19973,12 +19993,16 @@ function MainApp() {
         }
       };
 
-      const placeGeneratedMedia = async (url: string, index: number) => {
+      const placeGeneratedMedia = async (
+        url: string,
+        index: number,
+        outputClientRequestId = clientRequestId,
+      ) => {
         const source = url.trim();
         // A successful provider response is not yet a durable output. Cache it
         // before publishing success so expiring Image2/task URLs remain
         // downloadable after the workflow finishes.
-        const durableOutputName = `${clientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
+        const durableOutputName = `${outputClientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
         let cached = await cacheCanvasGeneratedImageSource(
           source,
           mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
@@ -20012,8 +20036,8 @@ function MainApp() {
             id: `canvas_ai_output_${generatedAt.toString(36)}_${index}`,
             prompt,
           }),
-          taskId: clientRequestId,
-          clientRequestId,
+          taskId: outputClientRequestId,
+          clientRequestId: outputClientRequestId,
           mediaType,
           url: displayUrl,
           sourceUrl: cached.sourceUrl || source,
@@ -20047,7 +20071,7 @@ function MainApp() {
         if (drawerItem) {
           if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
           else addGeneratedImagesToDrawer([drawerItem], {
-            canvasOutputClientRequestId: clientRequestId,
+            canvasOutputClientRequestId: outputClientRequestId,
             onOutputCachePatch: (outputId, matchSources, patch) => {
               const sourceSet = new Set(matchSources);
               const nextOutputs = currentOutputs.map((currentOutput) => (
@@ -20154,7 +20178,7 @@ function MainApp() {
               throw new Error(mediaType === 'video' ? '接口没有返回新的视频数据' : '接口没有返回新的图片数据');
             }
             seenGeneratedUrls.add(freshUrl);
-            await placeGeneratedMedia(freshUrl, index);
+            await placeGeneratedMedia(freshUrl, index, requestOptions.clientRequestId);
             return;
           } catch (error) {
             lastPartialError = error;
@@ -20792,7 +20816,7 @@ function MainApp() {
       });
       staleNodes.forEach(item => {
         canvasAiRunTokensRef.current.delete(item.id);
-        const error = '图片生成任务等待超过 6 分钟，已自动取消，请手动重试。';
+        const error = `图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消，请手动重试。`;
         updateCanvasAiGeneratorData(item.id, {
           status: 'error',
           error,
@@ -21132,6 +21156,324 @@ function MainApp() {
       error: failedIds.size > 0 ? `失败/跳过 ${failedIds.size} 个节点` : undefined,
     });
     return true;
+  };
+
+  const retryCanvasExpandedWorkflowOutput = async (
+    targetId: string,
+    outputIndex: number,
+  ) => {
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    canvasSessionItemsRef.current.set(runCanvasId, canvasItemsRef.current);
+    const target = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
+    const group = getCanvasWorkflowGroup(target);
+    if (!target || target.ai?.type !== 'image-generator' || !group) return false;
+    const currentOutputs = target.ai.outputs?.length
+      ? target.ai.outputs
+      : createCanvasAiOutputDrafts(target, target.item.content || target.ai.prompt || '');
+    const fallback = currentOutputs[outputIndex];
+    if (!fallback) {
+      showToast('没有找到要重试的工作流图片');
+      return true;
+    }
+
+    const runToken = createCanvasAiClientRequestId(`${targetId}:output:${outputIndex}`);
+    const runKey = `${runCanvasId}:workflow-output:${targetId}`;
+    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken)) {
+      showToast('这张图片正在重新生成');
+      return true;
+    }
+    markCanvasRunNodeActive(runCanvasId, targetId);
+    pushCanvasUndoSnapshot('重试工作流单张输出');
+
+    const updateRetrySlot = (
+      patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+      content?: string,
+    ) => updateCanvasNodeForCanvas(runCanvasId, targetId, item => {
+      if (item.ai?.type !== 'image-generator') return item;
+      const existingOutputs = item.ai.outputs?.length ? item.ai.outputs : currentOutputs;
+      const outputs = mergeCanvasAiRetryOutputSlot(
+        existingOutputs,
+        outputIndex,
+        patch.outputs,
+        fallback,
+        patch.status === 'idle' ? undefined : patch.status,
+        patch.error,
+      );
+      const status = getCanvasAiRetryNodeStatus(outputs, patch.status);
+      return applyCanvasAiGeneratorDataPatch(item, {
+        ...patch,
+        outputs,
+        status,
+        error: status === 'success' ? undefined : patch.error,
+      }, content);
+    });
+    const getSingleTarget = () => {
+      const latest = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
+      return latest?.ai ? {
+        ...latest,
+        ai: {
+          ...latest.ai,
+          count: 1,
+          outputs: [],
+        },
+      } as CanvasImageItem : undefined;
+    };
+
+    try {
+      updateRetrySlot({ status: 'working', error: undefined, outputs: [] });
+      const singleTarget = getSingleTarget();
+      if (!singleTarget) return true;
+      await runCanvasAiGeneratorTarget(singleTarget, {
+        sourceItems: () => getCanvasSessionItems(runCanvasId),
+        updateAi: updateRetrySlot,
+        forceUpdateAi: updateRetrySlot,
+        getLatestTarget: getSingleTarget,
+        showResultToast: false,
+        clientRequestId: runToken,
+      });
+      const latest = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
+      const succeeded = latest?.ai?.outputs?.[outputIndex]?.status === 'success'
+        && !!getCanvasAiOutputDisplaySource(latest.ai.outputs[outputIndex]);
+      if (!succeeded) {
+        updateCanvasNodeForCanvas(runCanvasId, targetId, item => {
+          if (item.ai?.type !== 'image-generator') return item;
+          const outputs = [...(item.ai.outputs || currentOutputs)];
+          outputs[outputIndex] = fallback;
+          return applyCanvasAiGeneratorDataPatch(item, {
+            outputs,
+            status: target.ai?.status,
+            error: target.ai?.error,
+          });
+        });
+      }
+      showToast(succeeded
+        ? `已重新生成「${target.ai.presetLabel || target.item.name || '内部节点'}」的第 ${outputIndex + 1} 张图片`
+        : '这张工作流图片重新生成失败');
+      return true;
+    } finally {
+      releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
+      await waitForCanvasBackgroundPatches(runCanvasId);
+      markCanvasRunNodeSettled(runCanvasId, targetId);
+    }
+  };
+
+  const retryCanvasCollapsedWorkflowOutput = async (
+    moduleId: string,
+    visibleOutputIndex: number,
+  ) => {
+    commitCanvasAiPromptDraft(moduleId, undefined, true);
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
+    const sourceCanvasItems = canvasItemsRef.current;
+    canvasSessionItemsRef.current.set(runCanvasId, sourceCanvasItems);
+    const moduleNode = sourceCanvasItems.find(item => item.id === moduleId);
+    const workflow = getCanvasWorkflowTemplateFromNode(moduleNode);
+    if (!moduleNode || !workflow) return false;
+    const outputMode = moduleNode.ai?.workflowOutputMode === 'final' ? 'final' : 'all';
+    const visibleSlots = getCanvasWorkflowOutputSlotTemplates(workflow, outputMode);
+    const selectedSlot = visibleSlots[visibleOutputIndex];
+    if (!selectedSlot || selectedSlot.node.ai?.type !== 'image-generator') {
+      showToast('没有找到要重试的工作流节点');
+      return true;
+    }
+
+    const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
+    const workflowMaterialInputIds = (moduleNode.inputs || []).filter(inputId => (
+      canUseCanvasItemAsWorkflowMaterial(
+        sourceCanvasItems.find(item => item.id === inputId),
+        workflowUserInput,
+      )
+    ));
+    const runtime = instantiateCanvasWorkflowTemplateItems(
+      workflow,
+      { x: moduleNode.x, y: moduleNode.y },
+      workflowMaterialInputIds,
+    );
+    const restoredSnapshots = applyCanvasWorkflowRuntimeSnapshots(
+      workflow,
+      runtime.items,
+      runtime.idMap,
+      normalizeCanvasWorkflowRuntimeSnapshots(moduleNode.ai?.workflowRuntime),
+    );
+    let runtimeItems = hydrateCanvasWorkflowSlotAssetsFromDrawer(applyCanvasWorkflowInternalSlotBindings({
+      workflow,
+      items: restoredSnapshots,
+      idMap: runtime.idMap,
+      runtime: moduleNode.ai?.workflowRuntime,
+    }));
+    const runtimeTargetId = runtime.idMap.get(selectedSlot.node.id);
+    const runtimeTarget = runtimeItems.find(item => item.id === runtimeTargetId);
+    if (!runtimeTargetId || runtimeTarget?.ai?.type !== 'image-generator') {
+      showToast('工作流内部节点恢复失败');
+      return true;
+    }
+    const currentTargetOutputs = runtimeTarget.ai.outputs?.length
+      ? runtimeTarget.ai.outputs
+      : createCanvasAiOutputDrafts(
+        runtimeTarget,
+        runtimeTarget.item.content || runtimeTarget.ai.prompt || '',
+      );
+    const fallback = currentTargetOutputs[selectedSlot.index];
+    if (!fallback) {
+      showToast('没有找到要重试的工作流图片');
+      return true;
+    }
+
+    const runToken = createCanvasAiClientRequestId(
+      `${moduleId}:${selectedSlot.node.id}:output:${selectedSlot.index}`,
+    );
+    const runKey = `${runCanvasId}:workflow:${moduleId}`;
+    if (!claimCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken)) {
+      showToast('这个工作流正在运行，请等待完成后再重试');
+      return true;
+    }
+    setIsAgentChatOpen(true);
+    markCanvasRunNodeActive(runCanvasId, moduleId);
+    pushCanvasUndoSnapshot('重试工作流单张输出');
+
+    const collectFinalOutputs = () => {
+      const drafts = createCanvasWorkflowOutputDrafts(moduleNode, workflow);
+      const slots = getCanvasWorkflowOutputSlotTemplates(workflow);
+      return drafts.map((draft, index) => {
+        const slot = slots[index];
+        const runtimeId = slot ? runtime.idMap.get(slot.node.id) : undefined;
+        const output = runtimeItems.find(item => item.id === runtimeId)?.ai?.outputs?.[slot?.index || 0];
+        return output ? {
+          ...draft,
+          ...output,
+          id: draft.id,
+          name: draft.name,
+          nodeId: draft.nodeId,
+          nodeLabel: draft.nodeLabel,
+        } : draft;
+      });
+    };
+    const syncModule = (
+      requestedStatus?: 'idle' | 'working' | 'success' | 'error',
+      error?: string,
+    ) => {
+      const selectedOutputs = runtimeItems.find(item => item.id === runtimeTargetId)?.ai?.outputs || [];
+      const status = getCanvasAiRetryNodeStatus(selectedOutputs, requestedStatus);
+      updateCanvasAiGeneratorDataForCanvas(runCanvasId, moduleId, {
+        outputs: collectFinalOutputs(),
+        workflowRuntime: createCanvasWorkflowRuntimeValue(
+          workflow,
+          runtimeItems,
+          runtime.idMap,
+          moduleNode.ai?.workflowRuntime,
+        ),
+        status,
+        error: status === 'success' ? undefined : error,
+        generatedAt: Date.now(),
+      });
+    };
+    const updateRuntimeRetrySlot = (
+      patch: Partial<NonNullable<CanvasImageItem['ai']>>,
+      content?: string,
+    ) => {
+      runtimeItems = runtimeItems.map(item => {
+        if (item.id !== runtimeTargetId || item.ai?.type !== 'image-generator') return item;
+        const existingOutputs = item.ai.outputs?.length ? item.ai.outputs : currentTargetOutputs;
+        const outputs = mergeCanvasAiRetryOutputSlot(
+          existingOutputs,
+          selectedSlot.index,
+          patch.outputs,
+          fallback,
+          patch.status === 'idle' ? undefined : patch.status,
+          patch.error,
+        );
+        const status = getCanvasAiRetryNodeStatus(outputs, patch.status);
+        return {
+          ...item,
+          item: content === undefined ? item.item : {
+            ...item.item,
+            content,
+          },
+          ai: {
+            ...item.ai,
+            ...patch,
+            outputs,
+            status,
+            error: status === 'success' ? undefined : patch.error,
+          },
+        };
+      });
+      syncModule(patch.status, patch.error);
+    };
+    const getRuntimeSourceItems = () => [
+      ...getCanvasSessionItems(runCanvasId).filter(item => item.id !== moduleId),
+      ...runtimeItems,
+    ];
+    const getSingleTarget = () => {
+      const latest = runtimeItems.find(item => item.id === runtimeTargetId);
+      return latest?.ai ? {
+        ...latest,
+        ai: {
+          ...latest.ai,
+          count: 1,
+          outputs: [],
+        },
+      } as CanvasImageItem : undefined;
+    };
+
+    try {
+      updateRuntimeRetrySlot({ status: 'working', error: undefined, outputs: [] });
+      const singleTarget = getSingleTarget();
+      if (!singleTarget) return true;
+      await runCanvasAiGeneratorTarget(singleTarget, {
+        sourceItems: getRuntimeSourceItems,
+        updateAi: updateRuntimeRetrySlot,
+        forceUpdateAi: updateRuntimeRetrySlot,
+        getLatestTarget: getSingleTarget,
+        showResultToast: false,
+        clientRequestId: runToken,
+      });
+      const latestOutput = runtimeItems.find(item => item.id === runtimeTargetId)
+        ?.ai?.outputs?.[selectedSlot.index];
+      const succeeded = latestOutput?.status === 'success'
+        && !!getCanvasAiOutputDisplaySource(latestOutput);
+      if (!succeeded) {
+        runtimeItems = runtimeItems.map(item => {
+          if (item.id !== runtimeTargetId || item.ai?.type !== 'image-generator') return item;
+          const outputs = [...(item.ai.outputs || currentTargetOutputs)];
+          outputs[selectedSlot.index] = fallback;
+          return {
+            ...item,
+            ai: {
+              ...item.ai,
+              outputs,
+              status: runtimeTarget.ai?.status,
+              error: runtimeTarget.ai?.error,
+            },
+          };
+        });
+        syncModule(moduleNode.ai?.status, moduleNode.ai?.error);
+      } else {
+        syncModule('success');
+      }
+      showToast(succeeded
+        ? `已单独重新生成「${getCanvasWorkflowOutputLabel(selectedSlot.node)}」第 ${selectedSlot.index + 1} 张图片`
+        : '这张工作流图片重新生成失败');
+      return true;
+    } finally {
+      releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
+      await waitForCanvasBackgroundPatches(runCanvasId);
+      markCanvasRunNodeSettled(runCanvasId, moduleId);
+    }
+  };
+
+  const retryCanvasWorkflowOutput = async (
+    canvasItemId: string,
+    outputIndex: number,
+  ) => {
+    const canvasItem = canvasItemsRef.current.find(item => item.id === canvasItemId);
+    if (!canvasItem) return;
+    if (canvasItem.ai?.type === 'workflow') {
+      await retryCanvasCollapsedWorkflowOutput(canvasItemId, outputIndex);
+      return;
+    }
+    if (canvasItem.ai?.type === 'image-generator' && getCanvasWorkflowGroup(canvasItem)) {
+      await retryCanvasExpandedWorkflowOutput(canvasItemId, outputIndex);
+    }
   };
 
   const cloneCanvasWorkflowModuleForRerun = (source: CanvasImageItem): CanvasImageItem | null => {
@@ -30967,6 +31309,141 @@ useEffect(() => {
     if (!isCanvasMode) return;
     const availableSlots = Math.max(
       0,
+      2 - canvasAiTimedOutRecoveryInFlightRef.current.size,
+    );
+    if (availableSlots === 0) return;
+
+    const candidates = getCanvasAiTimedOutRecoveryCandidates(canvasItems)
+      .filter(({ canvasItem, output, outputIndex, clientRequestId }) => {
+        const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${clientRequestId}`;
+        return !canvasAiTimedOutRecoverySettledRef.current.has(recoveryKey)
+          && !canvasAiTimedOutRecoveryInFlightRef.current.has(recoveryKey);
+      })
+      .slice(0, availableSlots);
+
+    candidates.forEach((candidate) => {
+      const {
+        canvasItem,
+        output,
+        outputIndex,
+        clientRequestId,
+      } = candidate;
+      const recoveryKey = `${canvasItem.id}:${output.id || outputIndex}:${clientRequestId}`;
+      canvasAiTimedOutRecoveryInFlightRef.current.add(recoveryKey);
+      let shouldPollAgain = false;
+
+      void getCloudWalletImageGenerationByRequest(clientRequestId)
+        .then(async (lookup) => {
+          if (isCanvasAiImageLookupPending(lookup.status)) {
+            shouldPollAgain = true;
+            return;
+          }
+          if (lookup.status !== 'succeeded' || lookup.images.length === 0) {
+            canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+            return;
+          }
+
+          const source = lookup.images[0]?.trim();
+          if (!source) {
+            canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+            return;
+          }
+          const cached = await cacheCanvasGeneratedImageSource(
+            source,
+            output.name || clientRequestId,
+          );
+          const latestCanvasItem = canvasItemsRef.current.find(item => item.id === canvasItem.id);
+          const latestOutput = latestCanvasItem?.ai?.outputs?.[outputIndex];
+          if (
+            !latestCanvasItem
+            || !latestOutput
+            || latestOutput.clientRequestId !== clientRequestId
+          ) {
+            canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+            return;
+          }
+
+          const recoveredAt = Date.now();
+          const recoveredOutput: CanvasAiGeneratedOutput = {
+            ...latestOutput,
+            taskId: clientRequestId,
+            clientRequestId,
+            mediaType: 'image',
+            url: cached.url || source,
+            sourceUrl: cached.sourceUrl || source,
+            path: cached.path || undefined,
+            status: 'success',
+            cacheStatus: cached.path ? 'ready' : 'failed',
+            error: undefined,
+            generatedAt: recoveredAt,
+          };
+          const recoveredOutputs = latestCanvasItem.ai!.outputs!.map((currentOutput, index) => (
+            index === outputIndex ? recoveredOutput : currentOutput
+          ));
+          const allRecovered = recoveredOutputs.every(currentOutput => currentOutput.status === 'success');
+          const recoveredCanvasItem: CanvasImageItem = {
+            ...latestCanvasItem,
+            ai: {
+              ...latestCanvasItem.ai!,
+              outputs: recoveredOutputs,
+              status: allRecovered ? 'success' : 'error',
+              error: allRecovered ? undefined : latestCanvasItem.ai?.error,
+              generatedAt: recoveredAt,
+            },
+          };
+          updateCanvasItemsImmediate(prev => prev.map(item => (
+            item.id === recoveredCanvasItem.id ? recoveredCanvasItem : item
+          )));
+          const drawerItem = createCanvasAiOutputBufferItem(
+            recoveredCanvasItem,
+            recoveredOutput,
+            outputIndex,
+          );
+          if (drawerItem) {
+            addGeneratedImagesToDrawer([drawerItem], {
+              canvasOutputClientRequestId: clientRequestId,
+            });
+          }
+          scheduleCanvasChangedNodesPatchSave([recoveredCanvasItem.id]);
+          scheduleCanvasStateSave({ syncNodes: false });
+          enqueueCanvasAiOutputThumbnailJob({
+            key: `timed-out-recovered:${recoveredCanvasItem.id}:${recoveredOutput.id}:${cached.path || cached.url}`,
+            canvasItemId: recoveredCanvasItem.id,
+            outputIndex,
+            outputId: recoveredOutput.id,
+            source: cached.url || source,
+            path: cached.path || undefined,
+          });
+          canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+          showToast('已自动找回一张此前超时的生成图片');
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error || '');
+          if (/image_request_not_found|invalid_request/i.test(message)) {
+            canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+            return;
+          }
+          shouldPollAgain = true;
+          console.warn('超时生图任务自动恢复查询失败:', getCanvasAiErrorSummary(message));
+        })
+        .finally(() => {
+          canvasAiTimedOutRecoveryInFlightRef.current.delete(recoveryKey);
+          if (shouldPollAgain) {
+            window.setTimeout(() => {
+              setCanvasAiTimedOutRecoveryTick(value => value + 1);
+            }, 8_000);
+          } else {
+            window.setTimeout(() => {
+              setCanvasAiTimedOutRecoveryTick(value => value + 1);
+            }, 180);
+          }
+        });
+    });
+  }, [isCanvasMode, canvasItems, canvasAiTimedOutRecoveryTick]);
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    const availableSlots = Math.max(
+      0,
       CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY
         - canvasAiOutputSourceRecoveryInFlightRef.current.size,
     );
@@ -34311,7 +34788,7 @@ useEffect(() => {
                                       <Info className="w-3.5 h-3.5 text-violet-500" /> 关于软件
                                     </span>
                                     <span className="flex items-center gap-1 rounded-full border border-stone-200 bg-white/75 px-2.5 py-1 font-mono text-[10px] font-bold text-stone-500 dark:border-stone-600 dark:bg-stone-700/70 dark:text-stone-300">
-                                      v{appVersion || '5.0.12'}
+                                      v{appVersion || '5.0.13'}
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
@@ -34560,7 +35037,6 @@ useEffect(() => {
                         )}
                         {canvasRenderableItems.map(canvasItem => {
                           const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
-                          const isMultiSelected = isSelected && canvasSelectedIds.length > 1;
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasTextAgentRunning = isTextCanvasItem && canvasTextAgentRunningIds.includes(canvasItem.id);
                           const isCanvasTextPlainMode = isTextCanvasItem && canvasItem.textMode === 'plain';
@@ -35438,6 +35914,13 @@ useEffect(() => {
                                               const outputWorkingElapsedText = isOutputWorking
                                                 ? formatCanvasWorkingElapsed(output.generatedAt || canvasItem.ai?.generatedAt, canvasWorkingTimerTick)
                                                 : '';
+                                              const canRetryWorkflowOutput = outputMediaType === 'image' && (
+                                                isCanvasWorkflowItem
+                                                || (
+                                                  canvasItem.ai?.type === 'image-generator'
+                                                  && !!canvasExpandedWorkflowGroup
+                                                )
+                                              );
                                               return (
                                                 <div
                                                   key={output.id || `${canvasItem.id}-output-${outputIndex}`}
@@ -35460,7 +35943,7 @@ useEffect(() => {
                                                     if (outputMediaType === 'video') openSelectedVideoPreview({ url: outputSource, path: output.path || outputSource }, { fromCanvas: true });
                                                     else openSelectedImagePreview(outputPreviewItem || outputSource, { fromCanvas: true });
                                                   }}
-                                                  className={`relative overflow-hidden rounded-[14px] border text-center transition-colors ${
+                                                  className={`group/output-tile relative overflow-hidden rounded-[14px] border text-center transition-colors ${
                                                     isOutputError
                                                       ? 'border-red-300/20 bg-red-500/12 text-red-100'
                                                       : 'border-white/60 bg-white/58 text-stone-500 hover:bg-white/82 dark:border-white/[0.08] dark:bg-black/16 dark:text-white/56 dark:hover:bg-white/[0.06]'
@@ -35474,8 +35957,27 @@ useEffect(() => {
                                                   <span className="pointer-events-none absolute left-2 top-2 z-10 max-w-[calc(100%-112px)] truncate rounded-full bg-white/86 px-2 py-0.5 text-[9px] font-black text-stone-700 shadow-sm ring-1 ring-black/[0.04] backdrop-blur-md dark:bg-stone-950/74 dark:text-white/82 dark:ring-white/[0.08]">
                                                     {outputLabel}
                                                   </span>
+                                                  {canRetryWorkflowOutput && !isOutputWorking && (
+                                                    <button
+                                                      data-no-drag="true"
+                                                      type="button"
+                                                      className="absolute bottom-2 right-2 z-30 flex h-8 w-8 items-center justify-center rounded-full bg-black/82 text-white opacity-0 shadow-md ring-1 ring-white/16 backdrop-blur-md transition-all hover:scale-105 hover:bg-black focus:opacity-100 group-hover/output-tile:opacity-100"
+                                                      title={`只重新生成「${outputLabel}」这张图片`}
+                                                      onPointerDown={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                      }}
+                                                      onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        void retryCanvasWorkflowOutput(canvasItem.id, outputIndex);
+                                                      }}
+                                                    >
+                                                      <RefreshCw className="h-3.5 w-3.5" />
+                                                    </button>
+                                                  )}
                                                   {outputSource && !isOutputError && (
-                                                    <div className="absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover/canvas-item:opacity-100">
+                                                    <div className="absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover/output-tile:opacity-100">
                                                       {outputMediaType === 'image' && (
                                                         <button
                                                           data-no-drag="true"
@@ -35591,6 +36093,12 @@ useEffect(() => {
                                                         {isOutputError ? '生成失败' : isOutputWorking ? `生成中 ${outputWorkingElapsedText}` : outputMediaType === 'video' ? '无视频' : '无图片'}
                                                       </span>
                                                     </span>
+                                                  )}
+                                                  {isOutputWorking && outputSource && (
+                                                    <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/42 text-white backdrop-blur-[1px]">
+                                                      <RefreshCw className="h-5 w-5 animate-spin text-cyan-200" />
+                                                      <span className="text-[10px] font-black">正在重新生成</span>
+                                                    </div>
                                                   )}
                                                   {isOutputImageCaching && !isOutputError && (
                                                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-10 overflow-hidden rounded-md bg-white/92 px-2.5 py-2 text-left shadow-sm ring-1 ring-black/[0.05] backdrop-blur-md dark:bg-stone-950/88 dark:ring-white/[0.08]">
@@ -36929,22 +37437,6 @@ useEffect(() => {
                             >
                               <X className="h-3 w-3" />
                             </button>}
-                            {!isMultiSelected && (['nw', 'ne', 'sw', 'se'] as CanvasResizeCorner[]).map(corner => (
-                              <button
-                                key={corner}
-                                data-no-drag="true"
-                                type="button"
-                                tabIndex={-1}
-                                className={`absolute z-30 h-5 w-5 bg-transparent opacity-0 ${
-                                  corner === 'nw' ? '-left-2 -top-2 cursor-nwse-resize' :
-                                  corner === 'ne' ? '-right-2 -top-2 cursor-nesw-resize' :
-                                  corner === 'sw' ? '-left-2 -bottom-2 cursor-nesw-resize' :
-                                  '-right-2 -bottom-2 cursor-nwse-resize'
-                                }`}
-                                onPointerDown={(event) => startCanvasItemResize(event, canvasItem.id, corner)}
-                                title="等比缩放"
-                              />
-                            ))}
                             </div>
                           );
                         })}
@@ -37136,7 +37628,7 @@ useEffect(() => {
                             </div>
                           );
                         })()}
-                        {canvasSingleSelectedBoxForRender && (
+                        {canvasSingleSelectedBoxForRender && canvasSingleSelectedItemForRender && (
                           <div
                             className="pointer-events-none absolute z-[60] border-2 border-blue-300/90 bg-blue-300/[0.04] shadow-[0_0_0_3px_rgba(255,255,255,0.28)] dark:border-blue-400/50 dark:shadow-[0_0_0_3px_rgba(0,0,0,0.16)]"
                             style={{
@@ -37146,7 +37638,34 @@ useEffect(() => {
                               height: canvasSingleSelectedBoxForRender.height + 24,
                               borderRadius: canvasScaledSelectionRadius,
                             }}
-                          />
+                          >
+                            {(['nw', 'ne', 'sw', 'se'] as CanvasResizeCorner[]).map(corner => (
+                              <button
+                                key={corner}
+                                data-no-drag="true"
+                                type="button"
+                                tabIndex={-1}
+                                className={`pointer-events-auto absolute z-10 flex h-8 w-8 items-center justify-center ${
+                                  corner === 'nw' ? '-left-4 -top-4 cursor-nwse-resize' :
+                                  corner === 'ne' ? '-right-4 -top-4 cursor-nesw-resize' :
+                                  corner === 'sw' ? '-left-4 -bottom-4 cursor-nesw-resize' :
+                                  '-right-4 -bottom-4 cursor-nwse-resize'
+                                }`}
+                                style={{
+                                  transform: `scale(${1 / Math.max(0.25, canvasRenderScale)})`,
+                                  transformOrigin: 'center',
+                                }}
+                                onPointerDown={(event) => startCanvasItemResize(
+                                  event,
+                                  canvasSingleSelectedItemForRender.id,
+                                  corner,
+                                )}
+                                title="拖动缩放"
+                              >
+                                <span className="h-3 w-3 rounded-[4px] border-2 border-white bg-blue-500 shadow-[0_2px_8px_rgba(37,99,235,0.45)] dark:border-stone-950 dark:bg-blue-400" />
+                              </button>
+                            ))}
+                          </div>
                         )}
                         {canvasSelectedBounds && (
                           <div
@@ -37165,15 +37684,21 @@ useEffect(() => {
                                 data-no-drag="true"
                                 type="button"
                                 tabIndex={-1}
-                                className={`pointer-events-auto absolute h-6 w-6 bg-transparent opacity-0 ${
-                                  corner === 'nw' ? '-left-3 -top-3 cursor-nwse-resize' :
-                                  corner === 'ne' ? '-right-3 -top-3 cursor-nesw-resize' :
-                                  corner === 'sw' ? '-left-3 -bottom-3 cursor-nesw-resize' :
-                                  '-right-3 -bottom-3 cursor-nwse-resize'
+                                className={`pointer-events-auto absolute flex h-8 w-8 items-center justify-center ${
+                                  corner === 'nw' ? '-left-4 -top-4 cursor-nwse-resize' :
+                                  corner === 'ne' ? '-right-4 -top-4 cursor-nesw-resize' :
+                                  corner === 'sw' ? '-left-4 -bottom-4 cursor-nesw-resize' :
+                                  '-right-4 -bottom-4 cursor-nwse-resize'
                                 }`}
+                                style={{
+                                  transform: `scale(${1 / Math.max(0.25, canvasRenderScale)})`,
+                                  transformOrigin: 'center',
+                                }}
                                 onPointerDown={(event) => startCanvasGroupResize(event, corner)}
                                 title="整体缩放"
-                              />
+                              >
+                                <span className="h-3 w-3 rounded-[4px] border-2 border-white bg-blue-500 shadow-[0_2px_8px_rgba(37,99,235,0.45)] dark:border-stone-950 dark:bg-blue-400" />
+                              </button>
                             ))}
                           </div>
                         )}
@@ -40621,7 +41146,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.12'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.13'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -40760,7 +41285,7 @@ useEffect(() => {
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.12'}</span>
+                    <span className="font-mono text-[11px] font-bold text-stone-500 dark:text-stone-400">v{appVersion || '5.0.13'}</span>
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
@@ -40853,10 +41378,10 @@ useEffect(() => {
                 <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.12</p>
-                <p>工作流新增通用可替换内部图片槽位，支持单图、多图、必填、数量限制和自定义用途。</p>
-                <p>槽位图片可从抽屉、全库搜索、本地文件或拖放添加，并支持替换、清空、移除与排序。</p>
-                <p>展开和折叠工作流会保留槽位状态；模板导出不携带实例图片，也可单独导出含图片的工作流实例。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.13</p>
+                <p>图片生成等待时间延长至 15 分钟；超时或重启后会继续查询云端任务并自动找回已完成结果。</p>
+                <p>工作流每张结果图新增独立重试，可只替换当前图片；重试失败时保留原图，不影响其他节点结果。</p>
+                <p>画布缩放手柄移动到选中框四角并扩大点击区域，在不同缩放比例下都更容易拖动。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

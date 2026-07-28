@@ -6015,6 +6015,8 @@ struct AiImageRequestTrace {
     is_first_request: bool,
 }
 
+const AI_HTTP_REQUEST_MAX_TIMEOUT_SECS: u64 = 15 * 60;
+
 #[derive(Clone)]
 struct AiHttpRequestOptions {
     timeout_secs: u64,
@@ -6025,7 +6027,7 @@ struct AiHttpRequestOptions {
 impl Default for AiHttpRequestOptions {
     fn default() -> Self {
         Self {
-            timeout_secs: 300,
+            timeout_secs: AI_HTTP_REQUEST_MAX_TIMEOUT_SECS,
             single_attempt: false,
             trace: None,
         }
@@ -6119,7 +6121,9 @@ fn build_ai_http_request_options(
         })
     };
     AiHttpRequestOptions {
-        timeout_secs: timeout_secs.unwrap_or(300).clamp(30, 420),
+        timeout_secs: timeout_secs
+            .unwrap_or(AI_HTTP_REQUEST_MAX_TIMEOUT_SECS)
+            .clamp(30, AI_HTTP_REQUEST_MAX_TIMEOUT_SECS),
         single_attempt: single_attempt.unwrap_or(false),
         trace,
     }
@@ -6134,7 +6138,9 @@ fn http_post_json_with_headers(
     headers: Option<&BTreeMap<String, String>>,
     options: &AiHttpRequestOptions,
 ) -> Result<String, String> {
-    let timeout_secs = options.timeout_secs.clamp(30, 420);
+    let timeout_secs = options
+        .timeout_secs
+        .clamp(30, AI_HTTP_REQUEST_MAX_TIMEOUT_SECS);
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
     let started_at = Instant::now();
     let request = apply_ai_client_request_id(
@@ -6603,7 +6609,9 @@ fn http_post_image_edit_with_headers(
         return Err("缺少参考图".to_string());
     }
 
-    let timeout_secs = options.timeout_secs.clamp(30, 420);
+    let timeout_secs = options
+        .timeout_secs
+        .clamp(30, AI_HTTP_REQUEST_MAX_TIMEOUT_SECS);
     let client = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)?;
     let started_at = Instant::now();
     let request = apply_ai_client_request_id(
@@ -17000,6 +17008,7 @@ fn main() {
             commands::license::get_cloud_account,
             commands::license::redeem_credit_code,
             commands::license::generate_cloud_images,
+            commands::license::get_cloud_image_generation_by_request,
             commands::license::get_cloud_image_models,
             commands::license::generate_cloud_videos,
             commands::license::get_cloud_video_status,

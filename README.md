@@ -4,19 +4,19 @@
 
 ## 下载
 
-当前版本：**5.0.12**
+当前版本：**5.0.13**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.12/Inspiration.Drawer_5.0.12_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.12)
-- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.12)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.13/Inspiration.Drawer_5.0.13_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.13)
+- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.13)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 5.0.12 更新
+## 5.0.13 更新
 
-- 工作流新增通用可替换内部图片槽位，支持单图、多图、必填、数量限制和自定义用途。
-- 槽位图片可从抽屉、全库搜索、本地文件或拖放添加，并支持替换、清空、移除与排序。
-- 展开和折叠工作流会保留槽位状态；模板导出不携带实例图片，也可单独导出含图片的工作流实例。
+- 图片生成等待时间延长至 15 分钟；超时或重启后可继续查询并自动恢复已完成结果。
+- 工作流每张结果图支持独立重试，成功后只替换当前图片，失败时保留原图。
+- 画布缩放手柄移动到选中框四角并扩大命中区域，缩小画布后仍容易操作。
 
 ## 主要功能
 

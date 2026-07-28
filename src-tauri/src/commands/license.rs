@@ -16,6 +16,7 @@ use crate::license::{
 const LICENSE_FILE_NAME: &str = "license.json";
 const CLOUD_API_BASE_URL: &str = "https://api.unmind.art";
 const WALLET_PROTOCOL_VERSION: &str = "1";
+const CLOUD_IMAGE_GENERATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 struct CachedCloudToken {
     value: String,
@@ -144,6 +145,20 @@ pub struct CloudImageGenerationResult {
     provider: String,
     model: String,
     charged_credits: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudImageGenerationLookup {
+    status: String,
+    completed_at: Option<i64>,
+    #[serde(default)]
+    images: Vec<String>,
+    provider: Option<String>,
+    provider_channel_id: Option<String>,
+    provider_channel_name: Option<String>,
+    model: Option<String>,
+    charged_credits: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -433,6 +448,45 @@ async fn post_cloud_with_bearer_timeout<T: for<'de> Deserialize<'de>>(
         .map_err(|_| "cloud_invalid_response: 额度服务器返回格式无效".to_string())
 }
 
+async fn get_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
+    path: &str,
+    access_token: &str,
+) -> Result<T, String> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("cloud_unavailable: 无法初始化云端连接：{err}"))?;
+    let response = client
+        .get(format!("{CLOUD_API_BASE_URL}{path}"))
+        .bearer_auth(access_token)
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+        .send()
+        .await
+        .map_err(|err| format!("cloud_unavailable: 无法连接额度服务器：{err}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|err| format!("cloud_invalid_response: 无法读取额度服务器响应：{err}"))?;
+    if !status.is_success() {
+        let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let fallback = cloud_http_fallback(status, &body);
+        let code = parsed
+            .as_ref()
+            .and_then(|value| value.error.as_deref())
+            .unwrap_or("cloud_request_failed");
+        let message = parsed
+            .as_ref()
+            .and_then(|value| value.message.as_deref())
+            .unwrap_or(&fallback);
+        return Err(cloud_error(code, message));
+    }
+    serde_json::from_str::<T>(&body)
+        .map_err(|_| "cloud_invalid_response: 额度服务器返回格式无效".to_string())
+}
+
 fn summarize_cloud_account(
     response: &EmailVerificationResponse,
 ) -> Result<CloudAccountSummary, String> {
@@ -696,7 +750,31 @@ pub async fn generate_cloud_images(
         "/v1/ai/images/generations",
         &access_token,
         &request,
-        Duration::from_secs(7 * 60),
+        CLOUD_IMAGE_GENERATION_TIMEOUT,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn get_cloud_image_generation_by_request(
+    app_handle: tauri::AppHandle,
+    client_request_id: String,
+) -> Result<CloudImageGenerationLookup, String> {
+    let client_request_id = client_request_id.trim();
+    if client_request_id.len() < 8
+        || client_request_id.len() > 128
+        || !client_request_id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | ':'))
+    {
+        return Err("invalid_request: 生图请求 ID 无效".to_string());
+    }
+    let access_token = cloud_access_token(&app_handle).await?;
+    let encoded_request_id =
+        url::form_urlencoded::byte_serialize(client_request_id.as_bytes()).collect::<String>();
+    get_cloud_with_bearer::<CloudImageGenerationLookup>(
+        &format!("/v1/ai/images/generations/by-request/{encoded_request_id}"),
+        &access_token,
     )
     .await
 }
