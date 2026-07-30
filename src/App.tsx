@@ -10,7 +10,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp,
+  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp, MessageCircle,
   LogOut
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
@@ -5993,6 +5993,7 @@ function MainApp() {
   const [activeSettingCategory, setActiveSettingCategory] = useState<string>('ai-overview');
   const [showHelp, setShowHelp] = useState(false);
   const [showAboutSoftware, setShowAboutSoftware] = useState(false);
+  const [showContact, setShowContact] = useState(false);
   const [showStoragePath, setShowStoragePath] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [eagleImportStatus, setEagleImportStatus] = useState<EagleImportStatus>({
@@ -13725,27 +13726,7 @@ function MainApp() {
     return addedCount > 0;
   };
 
-  const getCanvasCascadeBufferItems = (canvasItem: CanvasImageItem): BufferItem[] => {
-    const outputItems = (canvasItem.ai?.outputs || []).map((output, index) => ({
-      id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
-      type: (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) as BufferItem['type'],
-      content: output.name || canvasItem.item.name || '',
-      name: output.name || canvasItem.item.name,
-      path: output.path,
-      url: output.url,
-      sourceUrl: output.sourceUrl,
-      originalUrl: output.sourceUrl,
-      createdAt: output.generatedAt || canvasItem.item.createdAt || Date.now(),
-      isQuickAccess: false,
-    } as BufferItem));
-    return [canvasItem.item, ...outputItems];
-  };
-
-  const getCanvasDeletePathKey = (path: string) => normalizeLocalDragPath(path)
-    .replace(/\//g, '\\')
-    .toLocaleLowerCase();
-
-  const removeCanvasItemsByIds = (ids: string[], label = '删除画布元素') => {
+  const removeCanvasItemsByIds = (ids: string[], label = '从画布移除节点') => {
     if (!isCanvasModeRef.current) return 0;
     const requestedIds = Array.from(new Set(ids.filter(Boolean)));
     const protectedSlotIds = new Set(requestedIds.filter(id => {
@@ -13760,20 +13741,7 @@ function MainApp() {
     }
     if (uniqueIds.length === 0) return 0;
     const idSet = new Set(uniqueIds);
-    const targetCanvasItems = canvasItemsRef.current.filter(item => idSet.has(item.id));
-    const targetBufferItems = targetCanvasItems.flatMap(getCanvasCascadeBufferItems);
-    const targetBufferIds = new Set(targetBufferItems.map(item => item.id).filter(Boolean));
-    const targetLocalPaths = Array.from(new Set(targetBufferItems.flatMap(getBufferItemLocalPaths)));
-    const targetLocalPathKeys = new Set(targetLocalPaths.map(getCanvasDeletePathKey).filter(Boolean));
-    const matchedDrawerItems = itemsRef.current.filter(item => (
-      targetBufferIds.has(item.id)
-      || getBufferItemLocalPaths(item).some(path => targetLocalPathKeys.has(getCanvasDeletePathKey(path)))
-    ));
-    const matchedDrawerIds = new Set(matchedDrawerItems.map(item => item.id));
-    const hasCascadeSideEffects = matchedDrawerIds.size > 0;
-
-    if (hasCascadeSideEffects) clearCanvasUndoStack();
-    else pushCanvasUndoSnapshot(label);
+    pushCanvasUndoSnapshot(label);
     uniqueIds.forEach(id => {
       canvasImageSourceCacheRef.current.delete(id);
       canvasPreviewSourceIdsRef.current.delete(id);
@@ -13787,14 +13755,6 @@ function MainApp() {
         ? { ...item, inputs: item.inputs.filter(inputId => !idSet.has(inputId)) }
         : item));
     updateCanvasSelection(canvasSelectedIdsRef.current.filter(selectedId => !idSet.has(selectedId)));
-
-    if (matchedDrawerIds.size > 0) {
-      itemsRef.current = itemsRef.current.filter(item => !matchedDrawerIds.has(item.id));
-      setItems(prev => prev.filter(item => !matchedDrawerIds.has(item.id)));
-    }
-    if (matchedDrawerIds.size > 0) {
-      showToast(`已同步删除抽屉 ${matchedDrawerIds.size} 个卡片，本地文件已保留`);
-    }
     return uniqueIds.length;
   };
 
@@ -23906,7 +23866,7 @@ function MainApp() {
         event.preventDefault();
         event.stopPropagation();
         const removedCount = removeCanvasItemsByIds(selectedIds);
-        if (removedCount > 0) showToast(`已删除 ${removedCount} 个画布元素`);
+        if (removedCount > 0) showToast(`已从画布移除 ${removedCount} 个节点，抽屉素材已保留`);
         return;
       }
       if (isCanvasModeRef.current && event.key === 'Escape') {
@@ -32718,10 +32678,10 @@ useEffect(() => {
           scheduleAutoClose(isLeftEdge || isBottomEdge ? 500 : 180);
         }}
       >
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-l-[30px]" onPointerDown={startResizingWidth} />}
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-b-[30px]" onPointerDown={startResizingHeight} />}
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
-            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware || showContact) && <div className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-l-[30px]" onPointerDown={startResizingWidth} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware || showContact) && <div className="absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-emerald-400/50 z-[100001] transition-colors rounded-b-[30px]" onPointerDown={startResizingHeight} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware || showContact) && <div className="absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-bl-[30px]" onPointerDown={startResizingCorner} />}
+            {(isOpen || isPinned || !!canvasBrushEditor || !!selectedImage || !!selectedVideo || showHelp || showQR || showStoragePath || showAboutSoftware || showContact) && <div className="absolute bottom-0 right-0 w-8 h-8 cursor-nwse-resize hover:bg-emerald-400/50 z-[100002] transition-colors rounded-br-[30px]" onPointerDown={startResizingRightCorner} />}
 
             <AnimatePresence>
               {localVisionModelDownload.visible && (
@@ -38627,12 +38587,12 @@ useEffect(() => {
                                   className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-red-300 transition-colors hover:bg-red-500/18"
                                   onClick={() => {
                                     const removedCount = removeCanvasItemsByIds(actionIds);
-                                    if (removedCount > 0) showToast(`已删除 ${removedCount} 个画布元素`);
+                                    if (removedCount > 0) showToast(`已从画布移除 ${removedCount} 个节点，抽屉素材已保留`);
                                     setCanvasContextMenu(null);
                                   }}
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
-                                  删除
+                                  从画布移除
                                 </button>
                               </>
                             );
@@ -41297,6 +41257,18 @@ useEffect(() => {
                 </div>
                 <div className="flex items-center justify-between gap-3 px-3 py-3">
                   <span className="flex items-center gap-2 text-xs font-medium text-stone-600 dark:text-stone-300">
+                    <MessageCircle className="h-4 w-4 text-sky-500" /> 微信联系
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAboutSoftware(false); setShowContact(true); }}
+                    className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-medium text-sky-700 transition-colors hover:bg-sky-100 dark:border-sky-400/25 dark:bg-sky-400/10 dark:text-sky-200 dark:hover:bg-sky-400/15"
+                  >
+                    查看二维码
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-3 px-3 py-3">
+                  <span className="flex items-center gap-2 text-xs font-medium text-stone-600 dark:text-stone-300">
                     <RefreshCw className="h-4 w-4 text-emerald-500" /> 版本号
                   </span>
                   <div className="flex items-center gap-2">
@@ -41313,6 +41285,50 @@ useEffect(() => {
                   </div>
                 </div>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showContact && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onMouseDown={() => setShowContact(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className="w-full max-w-[330px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5 text-center"
+              onMouseDown={event => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5">
+                  <MessageCircle className="w-4 h-4 text-sky-500" /> 微信联系
+                </span>
+                <button onClick={() => setShowContact(false)} className="text-stone-400 hover:text-red-500" aria-label="关闭联系方式">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="mx-auto w-fit rounded-[22px] border border-sky-100 bg-white p-3 shadow-sm">
+                <img
+                  src="/contact-wechat-qr.png"
+                  alt="微信联系方式二维码"
+                  width={654}
+                  height={645}
+                  draggable={false}
+                  className="h-[220px] w-[220px] select-none object-contain"
+                />
+              </div>
+              <p className="mt-3 text-xs font-semibold text-stone-700 dark:text-stone-200">使用微信扫码添加</p>
+              <p className="mt-1 text-[11px] leading-5 text-stone-500 dark:text-stone-400">产品咨询、商务合作与售后支持</p>
             </motion.div>
           </motion.div>
         )}
