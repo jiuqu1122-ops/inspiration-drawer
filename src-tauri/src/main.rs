@@ -2294,12 +2294,22 @@ async fn check_and_install_app_update_mirrors(
 
     eprintln!("[app-update] updater=自定义多源 updater current_version={current_version}");
 
-    let manifest_probe = fetch_app_update_manifest_probe_for_current_version(
-        &app_handle,
-        &progress_id,
-        check_timeout,
-        &current_version,
-    )?;
+    // The manifest probe uses reqwest's blocking client. Keep its entire
+    // lifecycle off Tokio worker threads so dropping the client cannot try to
+    // shut down its internal runtime from inside this async command.
+    let manifest_app_handle = app_handle.clone();
+    let manifest_progress_id = progress_id.clone();
+    let manifest_current_version = current_version.clone();
+    let manifest_probe = tauri::async_runtime::spawn_blocking(move || {
+        fetch_app_update_manifest_probe_for_current_version(
+            &manifest_app_handle,
+            &manifest_progress_id,
+            check_timeout,
+            &manifest_current_version,
+        )
+    })
+    .await
+    .map_err(|error| format!("更新 manifest 检查任务异常：{error}"))??;
     let manifest_endpoint = manifest_probe.endpoint.as_str().to_string();
     let raw_json = manifest_probe.raw_json;
     let version = extract_app_update_version(&raw_json).ok_or_else(|| {
