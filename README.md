@@ -4,19 +4,18 @@
 
 ## 下载
 
-当前版本：**5.0.14**
+当前版本：**5.0.15**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.14/Inspiration.Drawer_5.0.14_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.14)
-- [Gitee Release](https://gitee.com/zibinyou/inspiration-drawer/releases/tag/v5.0.14)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v5.0.15/Inspiration.Drawer_5.0.15_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v5.0.15)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 5.0.14 更新
+## 5.0.15 更新
 
-- 修复工作流单张结果重试请求 ID 过长的问题，单独重试失败时继续显示并保留原图。
-- 修复节点缩放框与节点本体错位、拖动后尺寸跳变的问题。
-- 单选和多选整体缩放统一使用实际显示尺寸，后台结果更新、提示词展开和规则折叠不再重置用户设置的比例。
+- 修复检查更新时可能触发的 Tokio runtime 关闭异常，提升多源更新检查稳定性。
+- 从画布删除节点时只移除节点与关联连线，不再同步删除抽屉中的图片和素材。
+- 在“关于软件”中增加微信联系方式二维码，方便产品咨询、商务合作与售后支持。
 
 ## 主要功能
 
