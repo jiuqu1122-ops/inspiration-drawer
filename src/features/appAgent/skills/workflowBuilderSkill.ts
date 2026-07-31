@@ -29,7 +29,7 @@ export interface WorkflowGenerationSettings {
   aspectRatio?: string;
   targetSize?: string;
   resolution?: '1K' | '2K' | '4K' | '1080p';
-  provider?: 'xais-chat';
+  provider?: 'xais-chat' | 'new-api';
   model?: string;
   modelFamily?: WorkflowModelFamily;
   explicitModel: boolean;
@@ -124,10 +124,10 @@ export const resolveWorkflowModel = (input: {
     const wantsHighQuality = input.highQuality || /(?:img2|image2)(?:2k|4k)(?:h|hq|high|highquality)/i.test(modelToken);
     if (resolution === '4K') return wantsHighQuality ? 'Xais Img2_4K(高画质)' : 'Xais Img2_4K';
     if (resolution === '2K') return wantsHighQuality ? 'Xais Img2_2K(高画质)' : 'Xais Img2_2K';
-    return 'Xais img2_1k';
+    return 'gpt-image-2';
   }
 
-  if (/lite|轻量|极速/i.test(text) || /nanobananalite|nanolite|nanolite1k/i.test(modelToken) || resolution === '1K') return 'Xais Nano_Lite_1K';
+  if (/lite|轻量|极速/i.test(text) || /nanobananalite|nanolite|nanolite1k/i.test(modelToken) || resolution === '1K') return 'Xais Nano Pro_2K';
   const useNano2 = /nano\s*2|nano2|banana\s*2|香蕉\s*2/i.test(text)
     || /nanobanana2|nano2|xaisnano2/i.test(modelToken);
   if (useNano2) return resolution === '4K' ? 'Xais Nano2_4K' : 'Xais Nano2_2K';
@@ -205,13 +205,13 @@ export function parseWorkflowGenerationSettings(
     reasons.push(`default:${settings.modelFamily}`);
   }
 
-  settings.provider = 'xais-chat';
   settings.model = resolveWorkflowModel({
     modelFamily: settings.modelFamily,
     resolution: settings.resolution,
     highQuality: settings.highQuality,
     text,
   });
+  settings.provider = settings.model === 'gpt-image-2' ? 'new-api' : 'xais-chat';
   reasons.push(`model:${settings.model}`);
 
   return settings;

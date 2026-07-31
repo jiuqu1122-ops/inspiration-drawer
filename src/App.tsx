@@ -328,6 +328,7 @@ import {
 } from './features/drawerExternalDrag';
 import {
   buildCanvasAiOutputLocalCachePatch,
+  buildCanvasAiOutputRemoteResultPatch,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './features/canvasAiOutputs';
@@ -411,6 +412,7 @@ import {
   generateCanvasAiProviderVideos,
   getCloudWalletImageGenerationByRequest,
   getCanvasAiImageResolutionValues,
+  normalizeCanvasAiOutputFormat,
   getCanvasAiSlotClientRequestId,
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelPriority,
@@ -420,6 +422,7 @@ import {
   getXaisImage2RatioOptions,
   getXaisImageModelDisplayName,
   isCanvasAiPublicImageModel,
+  supportsCanvasAiTransparentPng,
   isOpenAiLikeCanvasAiProvider,
   isLikelyNewApiVideoModel,
   isXaisImage2Model,
@@ -1957,7 +1960,7 @@ const buildCanvasProductDetailsWorkflowTemplate = (options: {
         const prompt = typeof step?.prompt === 'string' && step.prompt.trim() ? step.prompt.trim() : fallbackPrompt;
         const stepModel = typeof step?.model === 'string' && step.model.trim()
           ? normalizeXaisImage2Model(step.model.trim())
-          : normalizeXaisImage2Model(options.model || 'Xais img2_1k');
+          : normalizeXaisImage2Model(options.model || 'gpt-image-2');
         const requestedAspectRatio = typeof step?.aspectRatio === 'string' ? step.aspectRatio.trim() : '';
         const aspectRatio = requestedAspectRatio
           ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
@@ -2461,7 +2464,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         220,
         ['canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-storyboard-v2' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-storyboard-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_performance_blocking_03',
@@ -2486,7 +2489,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         440,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-performance-v2' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-performance-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_edit_plan_04',
@@ -2511,7 +2514,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         660,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-camera-edit-v2' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-camera-edit-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_episode_draft_05',
@@ -2659,7 +2662,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         220,
         ['canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-narrative-storyboard-4x3-v9' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-narrative-storyboard-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_plan_03',
@@ -2696,7 +2699,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         440,
         ['canvas_ai_storyboard_02', 'canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-camera-tech-previz-4x3-v9' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-camera-tech-previz-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_final_storyboard_04',
@@ -19969,14 +19972,17 @@ function MainApp() {
         outputClientRequestId = clientRequestId,
       ) => {
         const source = url.trim();
-        // A successful provider response is not yet a durable output. Cache it
-        // before publishing success so expiring Image2/task URLs remain
-        // downloadable after the workflow finishes.
         const durableOutputName = `${outputClientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
-        let cached = await cacheCanvasGeneratedImageSource(
-          source,
-          mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
-        );
+        const publishRemoteImageImmediately = mediaType === 'image' && /^https?:\/\//i.test(source);
+        // Remote image results are usable as soon as the provider responds.
+        // Publish them immediately and let addGeneratedImagesToDrawer cache in
+        // the background so a slow OSS transfer never keeps the node working.
+        let cached = publishRemoteImageImmediately
+          ? buildCanvasAiOutputRemoteResultPatch(source)
+          : await cacheCanvasGeneratedImageSource(
+            source,
+            mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
+          );
         if (mediaType === 'video' && cached.path) {
           try {
             const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
@@ -20016,7 +20022,7 @@ function MainApp() {
           name: durableOutputName,
           prompt,
           status: 'success',
-          cacheStatus: cached.path ? 'ready' : 'failed',
+          cacheStatus: cached.path ? 'ready' : publishRemoteImageImmediately ? 'pending' : 'failed',
           error: undefined,
           generatedAt,
           width: size.width,
@@ -30451,7 +30457,10 @@ useEffect(() => {
             : {};
           const productDetailsModel = typeof workflowMetadataArg.model === 'string' && workflowMetadataArg.model.trim()
             ? workflowMetadataArg.model.trim()
-            : 'Xais img2_1k';
+            : 'gpt-image-2';
+          const productDetailsProvider = productDetailsModel === 'gpt-image-2'
+            ? 'new-api' as CanvasAiProvider
+            : referenceWorkflowAi.provider;
           const includeStrategy = args.strategyStepMode === 'enabled'
             || workflowDefinitionArg?.strategyStepMode === 'enabled'
             || doesWorkflowExplicitlyRequestProductAnalysis(
@@ -30468,7 +30477,7 @@ useEffect(() => {
             label,
             hint,
             steps: rawSteps,
-            provider: referenceWorkflowAi.provider,
+            provider: productDetailsProvider,
             model: productDetailsModel,
             includeStrategy,
           }));
@@ -31318,10 +31327,6 @@ useEffect(() => {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
           }
-          const cached = await cacheCanvasGeneratedImageSource(
-            source,
-            output.name || clientRequestId,
-          );
           const latestCanvasItem = canvasItemsRef.current.find(item => item.id === canvasItem.id);
           const latestOutput = latestCanvasItem?.ai?.outputs?.[outputIndex];
           if (
@@ -31334,16 +31339,14 @@ useEffect(() => {
           }
 
           const recoveredAt = Date.now();
+          const remoteResult = buildCanvasAiOutputRemoteResultPatch(source);
           const recoveredOutput: CanvasAiGeneratedOutput = {
             ...latestOutput,
             taskId: clientRequestId,
             clientRequestId,
             mediaType: 'image',
-            url: cached.url || source,
-            sourceUrl: cached.sourceUrl || source,
-            path: cached.path || undefined,
+            ...remoteResult,
             status: 'success',
-            cacheStatus: cached.path ? 'ready' : 'failed',
             error: undefined,
             generatedAt: recoveredAt,
           };
@@ -31377,12 +31380,11 @@ useEffect(() => {
           scheduleCanvasChangedNodesPatchSave([recoveredCanvasItem.id]);
           scheduleCanvasStateSave({ syncNodes: false });
           enqueueCanvasAiOutputThumbnailJob({
-            key: `timed-out-recovered:${recoveredCanvasItem.id}:${recoveredOutput.id}:${cached.path || cached.url}`,
+            key: `timed-out-recovered:${recoveredCanvasItem.id}:${recoveredOutput.id}:${source}`,
             canvasItemId: recoveredCanvasItem.id,
             outputIndex,
             outputId: recoveredOutput.id,
-            source: cached.url || source,
-            path: cached.path || undefined,
+            source,
           });
           canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
           showToast('已自动找回一张此前超时的生成图片');
@@ -35040,6 +35042,24 @@ useEffect(() => {
                             canvasAiItemModel,
                             canvasItem.ai?.resolution,
                           );
+                          const canvasAiSupportsTransparentPng = supportsCanvasAiTransparentPng(
+                            canvasAiItemProvider,
+                            canvasAiItemModel,
+                          );
+                          const canvasAiOutputFormat = normalizeCanvasAiOutputFormat(
+                            canvasAiItemProvider,
+                            canvasAiItemModel,
+                            canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+                          );
+                          const canvasAiOutputFormatOptions = CANVAS_AI_OUTPUT_FORMAT_OPTIONS.map(option => (
+                            option.value === 'png' && !canvasAiSupportsTransparentPng
+                              ? {
+                                ...option,
+                                disabled: true,
+                                hint: '仅 Image2 支持透明 PNG',
+                              }
+                              : option
+                          ));
                           const isCanvasWorkflowAllOutputMode = isCanvasWorkflowItem && canvasItem.ai?.workflowOutputMode !== 'final';
                           const canvasWorkflow = isCanvasWorkflowItem ? getCanvasWorkflowTemplateFromNode(canvasItem) : null;
                           const canvasWorkflowInternalSlots = isCanvasWorkflowItem
@@ -35154,6 +35174,7 @@ useEffect(() => {
                           const canvasAiNodeScale = canvasAiNodeDesignSize
                             ? Math.min(canvasItem.width / canvasAiNodeDesignSize.width, canvasItem.height / canvasAiNodeDesignSize.height)
                             : 1;
+                          const canvasAiMenuScale = (canvasAiNodeScale || 1) * canvasRenderScale;
                           const canvasRenderedItemWidth = canvasAiNodeDesignSize
                             ? canvasAiNodeDesignSize.width * (canvasAiNodeScale || 1)
                             : canvasItem.width;
@@ -36311,7 +36332,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={138}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36329,7 +36350,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={132}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36348,7 +36369,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={118}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36364,7 +36385,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={104}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36380,7 +36401,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={112}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36396,7 +36417,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={88}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                             </>
                                           ) : isCanvasEnhancementItem ? (
@@ -36426,7 +36447,7 @@ useEffect(() => {
                                                   optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                   selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                   menuMinWidth={132}
-                                                  menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                                 />
                                               )}
                                               {isQuickVideoEnhancementItem ? (
@@ -36445,7 +36466,7 @@ useEffect(() => {
                                                   optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                   selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                   menuMinWidth={132}
-                                                  menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                                 />
                                               ) : (
                                                 <>
@@ -36464,7 +36485,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={118}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36483,7 +36504,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={128}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36499,7 +36520,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={142}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                                 </>
                                               )}
@@ -36518,7 +36539,7 @@ useEffect(() => {
                                                   optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                   selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                   menuMinWidth={112}
-                                                  menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                                 />
                                               )}
                                               <RoundedSelect
@@ -36535,7 +36556,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={88}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                             </>
                                           ) : (
@@ -36570,7 +36591,7 @@ useEffect(() => {
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                             menuMinWidth={190}
-                                            menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                           />
                                           )}
                                           <RoundedSelect
@@ -36647,7 +36668,7 @@ useEffect(() => {
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                             menuMinWidth={260}
-                                            menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                           />
                                           <RoundedSelect
                                             data-no-drag="true"
@@ -36670,7 +36691,7 @@ useEffect(() => {
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                             menuMinWidth={isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 188 : 86}
-                                            menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                           />
                                           {canvasAiSupportsImageResolution && (
                                           <RoundedSelect
@@ -36692,14 +36713,14 @@ useEffect(() => {
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                             menuMinWidth={78}
-                                            menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                           />
                                           )}
                                           {canvasAiMediaType !== 'video' ? (
                                           <RoundedSelect
                                             data-no-drag="true"
-                                            value={canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT}
-                                            options={CANVAS_AI_OUTPUT_FORMAT_OPTIONS}
+                                            value={canvasAiOutputFormat}
+                                            options={canvasAiOutputFormatOptions}
                                             onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
                                             labelClassName="text-center leading-none uppercase"
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
@@ -36709,7 +36730,7 @@ useEffect(() => {
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                             menuMinWidth={78}
-                                            menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                           />
                                           ) : (
                                             <>
@@ -36726,7 +36747,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={86}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36741,7 +36762,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={92}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36756,7 +36777,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={82}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                               <RoundedSelect
                                                 data-no-drag="true"
@@ -36774,7 +36795,7 @@ useEffect(() => {
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                                 selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                                 menuMinWidth={132}
-                                                menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                               />
                                             </>
                                           )}
@@ -36791,7 +36812,7 @@ useEffect(() => {
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
                                             menuMinWidth={86}
-                                            menuScale={canvasAiNodeScale || 1}
+                                                menuScale={canvasAiMenuScale}
                                           />
                                             </>
                                           )}

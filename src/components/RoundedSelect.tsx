@@ -10,6 +10,7 @@ type RoundedSelectOption = {
   section?: string;
   sectionHint?: string;
   kind?: 'default' | 'action';
+  disabled?: boolean;
   hiddenInMenu?: boolean;
 };
 
@@ -65,8 +66,8 @@ function RoundedSelect({
     const button = buttonRef.current;
     if (!button) return;
     const rect = button.getBoundingClientRect();
-    const scale = Math.max(0.2, Number(menuScale) || 1);
-    const minWidth = Math.max(menuMinWidth || 0, rect.width);
+    const scale = Math.max(0.05, Number(menuScale) || 1);
+    const minWidth = Math.max(menuMinWidth || 0, rect.width / scale);
     const visualMinWidth = minWidth * scale;
     const estimatedHeight = Math.min(380, Math.max(56, options.length * 52 + 14));
     const visualEstimatedHeight = estimatedHeight * scale;
@@ -157,6 +158,7 @@ function RoundedSelect({
     const active = option.value === value;
     const showSection = option.section && option.section !== list[index - 1]?.section;
     const isAction = option.kind === 'action';
+    const isDisabled = option.disabled === true;
     const ActionIcon = /manage|管理/i.test(option.value + option.label) ? Settings2 : Plus;
 
     return (
@@ -175,14 +177,19 @@ function RoundedSelect({
         )}
         <button
           type="button"
+          disabled={isDisabled}
+          aria-disabled={isDisabled}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (isDisabled) return;
             onChange(option.value);
             setOpen(false);
           }}
           className={`group/rounded-select-option flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[10px] px-2.5 py-2 text-left transition-colors ${
-            active
+            isDisabled
+              ? 'cursor-not-allowed text-stone-400 opacity-45 dark:text-stone-500'
+              : active
               ? (selectedOptionClassName || 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900')
               : isAction
                 ? 'text-stone-700 hover:bg-stone-100 dark:text-stone-200 dark:hover:bg-white/8'

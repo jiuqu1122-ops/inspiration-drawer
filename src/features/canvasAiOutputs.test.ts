@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCanvasAiOutputLocalCachePatch,
+  buildCanvasAiOutputRemoteResultPatch,
   createCanvasAiOutputBufferItem,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
@@ -16,6 +17,15 @@ describe('canvas AI output cache patches', () => {
       cacheStatus: 'pending',
     });
     expect(patch).not.toHaveProperty('url');
+  });
+
+  it('publishes a remote generation result while local caching is still pending', () => {
+    expect(buildCanvasAiOutputRemoteResultPatch(' https://example.com/generated.png ')).toEqual({
+      url: 'https://example.com/generated.png',
+      sourceUrl: 'https://example.com/generated.png',
+      path: undefined,
+      cacheStatus: 'pending',
+    });
   });
 
   it('keeps the stable API result URL when the preview uses a signed OSS URL', () => {

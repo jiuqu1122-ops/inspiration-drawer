@@ -896,23 +896,23 @@ export function runTemplateRoutingSmokeTests() {
   assert(!!detailRatioDraft, 'Template-A2: should create detail page draft with ratio settings');
   assert(detailRatioDraft.outputs.every(output => output.aspectRatio === '9:16'), 'Template-A2: all detail outputs should use requested 9:16');
   assert(detailRatioDraft.outputs.every(output => output.pageSpec?.layout.aspectRatio === '9:16'), 'Template-A2: pageSpec layout should use requested 9:16');
-  assert(detailRatioDraft.outputs.every(output => output.provider === 'xais-chat'), 'Template-A2: detail outputs should use xais provider');
-  assert(detailRatioDraft.outputs.every(output => output.model === 'Xais img2_1k'), 'Template-A2: detail workflow should default to Image2 when model is not requested');
+  assert(detailRatioDraft.outputs.every(output => output.provider === 'new-api'), 'Template-A2: detail outputs should use New API provider');
+  assert(detailRatioDraft.outputs.every(output => output.model === 'gpt-image-2'), 'Template-A2: detail workflow should default to GPT Image 2 when model is not requested');
   const detailRatioDefinition = convertWorkflowDraftToDefinition(detailRatioDraft, ['product-image-node'], detailRatioReq, 'workflow_module');
   const detailRatioSteps = Array.isArray(detailRatioDefinition.steps) ? detailRatioDefinition.steps as Array<Record<string, unknown>> : [];
   const detailRatioGenerators = detailRatioSteps.filter(step => step.type === 'image_generator');
   assert(detailRatioGenerators.every(step => step.aspectRatio === '9:16'), 'Template-A2: definition generator steps should keep requested ratio');
-  assert(detailRatioGenerators.every(step => step.model === 'Xais img2_1k'), 'Template-A2: definition generator steps should keep default Image2 model');
+  assert(detailRatioGenerators.every(step => step.model === 'gpt-image-2'), 'Template-A2: definition generator steps should keep default GPT Image 2 model');
   const detailLiteReq = '做一个产品详情页工作流，并且用nanobananalite那个模型，改成9比16';
   const detailLiteTurn = prepareAppAgentTurn({ userText: detailLiteReq, context: ctx });
   const detailLiteDraft = getWorkflowDraftAction(detailLiteTurn.deterministicLegacyActions)
     ?.arguments.workflowDraft as WorkflowRecipeDraft | undefined;
   assert(!!detailLiteDraft, 'Template-A2b: should create detail page draft with explicit Nano Banana Lite');
   assert(detailLiteDraft.outputs.every(output => output.aspectRatio === '9:16'), 'Template-A2b: explicit Lite draft should keep requested 9:16');
-  assert(detailLiteDraft.outputs.every(output => output.model === 'Xais Nano_Lite_1K'), 'Template-A2b: nanobananalite should select Nano Lite model');
+  assert(detailLiteDraft.outputs.every(output => output.model === 'Xais Nano Pro_2K'), 'Template-A2b: nanobananalite should fall back to Nano Pro 2K');
   const detailLiteDefinition = convertWorkflowDraftToDefinition(detailLiteDraft, ['product-image-node'], detailLiteReq, 'workflow_module');
   const detailLiteSteps = Array.isArray(detailLiteDefinition.steps) ? detailLiteDefinition.steps as Array<Record<string, unknown>> : [];
-  assert(detailLiteSteps.filter(step => step.type === 'image_generator').every(step => step.model === 'Xais Nano_Lite_1K'), 'Template-A2b: saved definition should keep Nano Lite model');
+  assert(detailLiteSteps.filter(step => step.type === 'image_generator').every(step => step.model === 'Xais Nano Pro_2K'), 'Template-A2b: saved definition should keep the supported Nano Pro 2K model');
   const workflowNano2Intent = parseWorkflowBuilderIntent('做一个工作流，用Nano_Banana_2_4K_0模型，比例9:16');
   assert(workflowNano2Intent.generationSettings.model === 'Xais Nano2_4K', 'Template-A2c: XAIS Nano Banana 2 call name should map to Nano2 4K');
   const updateDetailSettingsTurn = prepareAppAgentTurn({ userText: '改成4K，用nano模型', context: ctx, activeDraft: detailRatioDraft });

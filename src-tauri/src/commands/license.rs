@@ -135,6 +135,8 @@ pub struct CloudImageGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
     output_format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    background: Option<String>,
     count: u8,
 }
 

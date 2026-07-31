@@ -6541,6 +6541,8 @@ fn build_ai_image_edit_form(
     aspect_ratio: Option<&str>,
     output_resolution: Option<&str>,
     image_size: Option<&str>,
+    output_format: Option<&str>,
+    background: Option<&str>,
     images: &[String],
     async_task: Option<bool>,
     stream: Option<bool>,
@@ -6567,6 +6569,12 @@ fn build_ai_image_edit_form(
     }
     if let Some(value) = image_size.filter(|value| !value.trim().is_empty()) {
         form = form.text("image_size", value.to_string());
+    }
+    if let Some(value) = output_format.filter(|value| !value.trim().is_empty()) {
+        form = form.text("output_format", value.to_string());
+    }
+    if let Some(value) = background.filter(|value| !value.trim().is_empty()) {
+        form = form.text("background", value.to_string());
     }
     if let Some(value) = async_task {
         form = form.text("async", value.to_string());
@@ -6607,6 +6615,8 @@ fn http_post_image_edit_with_headers(
     aspect_ratio: Option<&str>,
     output_resolution: Option<&str>,
     image_size: Option<&str>,
+    output_format: Option<&str>,
+    background: Option<&str>,
     images: &[String],
     async_task: Option<bool>,
     stream: Option<bool>,
@@ -6639,6 +6649,8 @@ fn http_post_image_edit_with_headers(
                 aspect_ratio,
                 output_resolution,
                 image_size,
+                output_format,
+                background,
                 images,
                 async_task,
                 stream,
@@ -6683,6 +6695,8 @@ fn http_post_image_edit_with_headers(
                         aspect_ratio,
                         output_resolution,
                         image_size,
+                        output_format,
+                        background,
                         images,
                         async_task,
                         stream,
@@ -6936,6 +6950,8 @@ async fn post_ai_image_edit(
     aspect_ratio: Option<String>,
     output_resolution: Option<String>,
     image_size: Option<String>,
+    output_format: Option<String>,
+    background: Option<String>,
     images: Vec<String>,
     async_task: Option<bool>,
     stream: Option<bool>,
@@ -6999,6 +7015,8 @@ async fn post_ai_image_edit(
             aspect_ratio.as_deref(),
             output_resolution.as_deref(),
             image_size.as_deref(),
+            output_format.as_deref(),
+            background.as_deref(),
             &images,
             async_task,
             stream,

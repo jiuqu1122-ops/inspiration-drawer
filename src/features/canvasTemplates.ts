@@ -463,7 +463,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         220,
         ['canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-storyboard-v2' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-storyboard-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_performance_blocking_03',
@@ -488,7 +488,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         440,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-performance-v2' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-performance-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_edit_plan_04',
@@ -513,7 +513,7 @@ Original request: "我还要固定场景的，一开始我会把场景设定和�
         660,
         ['canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_cast_scene_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-fixed-scene-camera-edit-v2' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-camera-edit-v2' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_episode_draft_05',
@@ -656,7 +656,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         220,
         ['canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-narrative-storyboard-4x3-v9' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-narrative-storyboard-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_camera_plan_03',
@@ -692,7 +692,7 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         440,
         ['canvas_ai_storyboard_02', 'canvas_ai_product_master_01'],
         '4:3',
-        { provider: 'xais-chat', model: 'Xais img2_1k', presetId: 'workflow-camera-tech-previz-4x3-v9' }
+        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-camera-tech-previz-4x3-v9' }
       ),
       makeCanvasWorkflowAiNode(
         'canvas_ai_final_storyboard_04',

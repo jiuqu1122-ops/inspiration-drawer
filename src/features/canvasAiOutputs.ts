@@ -68,6 +68,16 @@ export const buildCanvasAiOutputLocalCachePatch = (path: string) => ({
   cacheStatus: 'pending' as const,
 });
 
+export const buildCanvasAiOutputRemoteResultPatch = (source: string) => {
+  const remoteSource = source.trim();
+  return {
+    url: remoteSource,
+    sourceUrl: remoteSource,
+    path: undefined,
+    cacheStatus: 'pending' as const,
+  };
+};
+
 export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
   (isCanvasAiGeneratorType(canvasItem?.ai?.type) || canvasItem?.ai?.type === 'workflow')
     ? (canvasItem.ai.outputs || []).map(recoverCanvasAiOutputWithUsableResult).filter(

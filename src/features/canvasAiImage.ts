@@ -42,8 +42,6 @@ export const XAIS_CHAT_IMAGE_MODEL_OPTIONS = [
   { value: 'Xais Nano Pro_4K', label: 'Nano Banana Pro 4K' },
   { value: 'Xais Nano2_2K', label: 'Nano Banana 2 2K' },
   { value: 'Xais Nano2_4K', label: 'Nano Banana 2 4K' },
-  { value: 'Xais Nano_Lite_1K', label: 'Nano Banana Lite 1K' },
-  { value: 'Xais img2_1k', label: 'Image2 1K' },
   { value: 'Xais Img2_2K', label: 'Image2 2K' },
   { value: 'Xais Img2_4K', label: 'Image2 4K' },
   { value: 'Xais Img2_2K(高画质)', label: 'Img2 2K H' },
@@ -229,6 +227,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         aspectRatio: normalizeImageAspectRatio(options.aspectRatio),
         resolution: options.resolution?.trim() || undefined,
         outputFormat: normalizeOutputFormat(options.outputFormat),
+        background: normalizeOutputFormat(options.outputFormat) === 'png' ? 'transparent' : undefined,
         count: Math.max(1, Math.min(4, Math.round(options.count || 1))),
       },
     });
@@ -643,6 +642,8 @@ const postImageEditViaTauri = async (
     aspectRatio?: string;
     outputResolution?: string;
     imageSize?: string;
+    outputFormat?: string;
+    background?: string;
     images: string[];
     asyncTask?: boolean;
     stream?: boolean;
@@ -779,7 +780,8 @@ export const newApiImageRequestParams = (
   model: string,
   count: number,
   aspectRatio?: string,
-  resolution?: string
+  resolution?: string,
+  outputFormat?: string,
 ) => {
   const ratio = normalizeImageAspectRatio(aspectRatio);
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
@@ -794,11 +796,18 @@ export const newApiImageRequestParams = (
     };
   }
   const size = newApiSizeFromAspectRatio(model, ratio, normalizedResolution);
+  const isGptImage2 = isGptImage2LikeModel(model);
+  const normalizedOutputFormat = normalizeOutputFormat(outputFormat);
   return {
     n: count,
     size,
     aspect_ratio: ratio,
-    ...(isGptImage2LikeModel(model) ? { quality: 'medium' } : {}),
+    ...(isGptImage2 ? {
+      quality: 'medium',
+      ...(normalizedOutputFormat === 'png'
+        ? { output_format: 'png', background: 'transparent' }
+        : {}),
+    } : {}),
   };
 };
 
@@ -866,7 +875,6 @@ export const XAIS_IMAGE2_RATIO_OPTIONS_BY_MODEL: Record<string, string[]> = {
   'Xais Nano_Lite_1K': XAIS_NANO_RATIO_OPTIONS,
   'Xais Nano Pro_4K_png': XAIS_NANO_RATIO_OPTIONS,
   'Xais Nano2_4K_png': XAIS_NANO_RATIO_OPTIONS,
-  'Xais img2_1k': ['1:1', '9:16', '4:3', '3:4', '5:4'],
   'Xais Img2_2K': [
     '2048x2048',
     '2048x1152',
@@ -976,7 +984,6 @@ export const normalizeXaisImage2Model = (model?: string | null) => {
   }
   if (/^(?:xais)?(?:img2|image2)4k$/i.test(token) || /^xais_img2_4k$/i.test(compact)) return 'Xais Img2_4K';
   if (/^(?:xais)?(?:img2|image2)2k$/i.test(token) || /^xais_img2_2k$/i.test(compact)) return 'Xais Img2_2K';
-  if (/^(?:xais)?(?:img2|image2)1k$/i.test(token) || /^xais_img2_1k$/i.test(compact)) return 'Xais img2_1k';
   return trimmed;
 };
 
@@ -988,7 +995,6 @@ export const XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL: Record<string, string> = {
   'Xais Nano_Lite_1K': 'Xais_Nano_Lite_1K',
   'Xais Nano Pro_4K_png': 'Nano_Banana_Pro_4K_5',
   'Xais Nano2_4K_png': 'Nano_Banana_2_4K_5',
-  'Xais img2_1k': 'Image2_1K',
   'Xais Img2_2K': 'Image2_2K',
   'Xais Img2_4K': 'Image2_4K',
   'Xais Img2_2K(高画质)': 'Xais_Img2_2K_H',
@@ -998,6 +1004,23 @@ export const XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL: Record<string, string> = {
 export const resolveXaisImageRequestModel = (model?: string | null) => {
   const normalized = normalizeXaisImage2Model(model || XAIS_CHAT_IMAGE_MODEL_DEFAULT);
   return XAIS_IMAGE_REQUEST_MODEL_BY_UI_MODEL[normalized] || normalized || XAIS_CHAT_IMAGE_MODEL_DEFAULT;
+};
+
+export const supportsCanvasAiTransparentPng = (
+  provider?: string | null,
+  model?: string | null,
+) => {
+  const family = getCanvasAiImageModelFamily(provider, model);
+  return family === 'gpt-image-2' || family === 'gpt-image-2-h';
+};
+
+export const normalizeCanvasAiOutputFormat = (
+  provider?: string | null,
+  model?: string | null,
+  outputFormat?: string | null,
+) => {
+  const normalized = normalizeOutputFormat(outputFormat);
+  return normalized === 'png' && !supportsCanvasAiTransparentPng(provider, model) ? 'jpg' : normalized;
 };
 
 export type CanvasAiImageModelFamily =
@@ -1032,7 +1055,7 @@ export const getCanvasAiImageModelFamily = (
   const isImage2High = /(?:img2|image2)(?:2k|4k)(?:h|hq|high|highquality)(?:$|\|)/i.test(combined)
     || /xais(?:img2|image2)(?:2k|4k)h/i.test(combined);
   if (isImage2High) return 'gpt-image-2-h';
-  if (/(?:img2|image2)(?:1k|2k|4k)/i.test(combined)) return 'gpt-image-2';
+  if (/(?:img2|image2)(?:2k|4k)/i.test(combined)) return 'gpt-image-2';
   if (/(?:nanobananapro|bananapro|nanopro)/i.test(combined)) return 'nano-banana-pro';
   if (/(?:nanobanana2|banana2|nano2)/i.test(combined)) return 'nano-banana-2';
   if (/(?:nanobananalite|bananalite|nanolite)/i.test(combined)) return 'nano-banana-lite';
@@ -1084,6 +1107,7 @@ export const getCanvasAiPublicImageModelName = (
 
 export const isHiddenCanvasAiImageModel = (provider?: string | null, model?: string | null) => {
   if (provider !== 'xais-chat') return false;
+  if (getCanvasAiImageModelFamily(provider, model) === 'nano-banana-lite') return true;
   const { raw, request } = xaisModelTokens(model);
   return raw.includes('png') || /nanobanana(?:pro|2)4k5$/i.test(request);
 };
@@ -2242,7 +2266,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 9);
   const model = (options.model || NEW_API_IMAGE_MODEL_DEFAULT).trim() || NEW_API_IMAGE_MODEL_DEFAULT;
   const count = Math.max(1, Math.min(4, Math.round(options.count || 1)));
-  const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution);
+  const imageParams = newApiImageRequestParams(model, count, options.aspectRatio, options.resolution, options.outputFormat);
   const promptText = buildPromptWithOptions(prompt, options.aspectRatio, options.resolution);
   const negativePrompt = normalizeNegativePrompt(options.negativePrompt);
   const defaultProtocol = getDefaultNewApiImageProtocol(model, inputImages.length > 0);
@@ -2329,6 +2353,8 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
           ...('aspect_ratio' in imageParams ? { aspectRatio: imageParams.aspect_ratio } : {}),
           ...('output_resolution' in imageParams ? { outputResolution: imageParams.output_resolution } : {}),
           ...('image_size' in imageParams ? { imageSize: imageParams.image_size } : {}),
+          ...('output_format' in imageParams ? { outputFormat: imageParams.output_format } : {}),
+          ...('background' in imageParams ? { background: imageParams.background } : {}),
           responseFormat: NEW_API_IMAGE_RESPONSE_FORMAT,
           images: inputImages,
           ...(useAsync ? { asyncTask: true } : {}),
@@ -2647,8 +2673,10 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
     }
     throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
   }
+  const outputFormat = normalizeCanvasAiOutputFormat(options.provider, options.model, options.outputFormat);
   const requestOptions = {
     ...options,
+    outputFormat,
     prompt: buildCanvasAiIndexedReferencePrompt(options.prompt, options.inputImages?.length || 0),
   };
   if (requestOptions.cloudWallet) return generateCloudWalletImages(requestOptions);

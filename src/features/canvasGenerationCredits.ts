@@ -12,7 +12,7 @@ export type CanvasAiCreditPricing = {
   videoDefaultCredits: string;
   imageModels: Array<{
     model: string;
-    credits1k: string;
+    credits1k?: string;
     credits2k: string;
     credits4k: string;
   }>;
@@ -33,6 +33,20 @@ const imageModelToken = (model?: string | null) => String(model || '')
   .replace(/preview/g, '')
   .replace(/[^a-z0-9]+/g, '');
 
+const supportsImageOneK = (model?: string | null) => {
+  const token = imageModelToken(model);
+  return !token.startsWith('xais')
+    && !token.includes('nanobananapro')
+    && !token.includes('nanobanana2')
+    && !token.includes('nanopro')
+    && !token.includes('nano2')
+    && !token.includes('nanolite')
+    && !token.includes('gemini3proimage')
+    && !token.includes('gemini31proimage')
+    && !token.includes('gemini31flashimage')
+    && !token.includes('gemini3flashimage');
+};
+
 type PricedImageResolution = '1k' | '2k' | '4k';
 
 const getPricedImageResolution = (
@@ -40,8 +54,11 @@ const getPricedImageResolution = (
   resolution?: string | null,
 ): PricedImageResolution => {
   const requested = String(resolution || '').trim().toLowerCase();
-  if (requested === '1k' || requested === '2k' || requested === '4k') return requested;
   const token = imageModelToken(model);
+  if (requested === '1k' || requested === '2k' || requested === '4k') {
+    if (requested === '1k' && !supportsImageOneK(model)) return '2k';
+    return requested;
+  }
   if (token.includes('4k')) return '4k';
   if (token.includes('2k')) return '2k';
   if (token.includes('1k')) return '1k';
@@ -59,14 +76,17 @@ export const getCanvasImageUnitCredits = (
   const configuredModel = pricing?.imageModels.find(item => imageModelToken(item.model) === token);
   if (configuredModel) {
     const configuredCredits = selectedResolution === '1k'
-      ? configuredModel.credits1k
+      ? configuredModel.credits1k ?? configuredModel.credits2k
       : selectedResolution === '4k' ? configuredModel.credits4k : configuredModel.credits2k;
     const parsedCredits = Number(configuredCredits);
     if (Number.isSafeInteger(parsedCredits) && parsedCredits >= 0) return parsedCredits;
   }
-  const isGptImage2 = token.includes('gptimage2')
+  const isRetiredXaisImage2OneK = token === 'xaisimg21k' || token === 'xaisimage21k';
+  const isGptImage2 = !isRetiredXaisImage2OneK && (
+    token.includes('gptimage2')
     || token.includes('image2')
-    || token.includes('img2');
+    || token.includes('img2')
+  );
   const isHighQuality = isGptImage2 && (
     /高画质|高品質|high[\s_-]*quality/i.test(rawModel)
     || token.endsWith('h')
