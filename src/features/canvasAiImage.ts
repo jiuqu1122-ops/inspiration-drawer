@@ -217,7 +217,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   try {
-    const result = await invoke<CloudImageGenerationResult>('generate_cloud_images', {
+    const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
         provider: options.provider,
@@ -232,6 +232,37 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         count: Math.max(1, Math.min(4, Math.round(options.count || 1))),
       },
     });
+    // XAIS can finish upstream while the original long-running request is still
+    // waiting on a stale connection. Reconcile by request ID in parallel so a
+    // committed result is rendered as soon as the wallet has settled it.
+    let requestSettled = false;
+    requestPromise.then(() => {
+      requestSettled = true;
+    }, () => {
+      requestSettled = true;
+    });
+    requestPromise.catch(() => {});
+    const recoveredImagesPromise = options.provider === 'xais-chat'
+      ? (async () => {
+        while (!requestSettled) {
+          await new Promise(resolve => window.setTimeout(resolve, 2500));
+          if (requestSettled) break;
+          try {
+            const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
+            if (lookup.status === 'succeeded' && lookup.images.length > 0) {
+              return Array.from(new Set(lookup.images.map(value => value.trim()).filter(Boolean)));
+            }
+          } catch (_) {
+            // The generation row may not exist yet, or the lookup may briefly fail.
+          }
+        }
+        return null;
+      })()
+      : Promise.resolve(null);
+    const result = await Promise.race([
+      requestPromise,
+      recoveredImagesPromise.then((images) => images ? { images } : new Promise<never>(() => {})),
+    ]);
     const images = Array.from(new Set(result.images.map(value => value.trim()).filter(Boolean)));
     if (images.length === 0) throw new Error('授权钱包渠道没有返回图片数据');
     return images;
@@ -1323,7 +1354,7 @@ const isXaisNanoLiteImageModel = (model?: string | null) => (
   normalizeXaisImage2Model(model) === 'Xais Nano_Lite_1K'
 );
 
-const XAIS_IMAGE_TASK_MAX_WAIT_MS = 90 * 1000;
+const XAIS_IMAGE_TASK_MAX_WAIT_MS = 15 * 60 * 1000;
 const XAIS_IMAGE_TASK_POLL_INTERVAL_MS = 2200;
 
 const collectImageStrings = (value: unknown, output: string[] = []): string[] => {
