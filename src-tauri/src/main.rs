@@ -1082,11 +1082,11 @@ fn download_url_to_file_with_client(
 
 const RIFE_ENGINE_VERSION: &str = "20221029";
 const RIFE_ENGINE_DIR_NAME: &str = "rife-ncnn-vulkan-20221029-windows";
-const RIFE_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
+const RIFE_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_SHA256: &str = "A4DA55EC5629DBD5E9C6594D96225308325FC39A3DF67CD8E77010207525CE77";
 const RIFE_ENGINE_ZIP_SIZE: u64 = 123_750_542;
 const FFMPEG_TOOLS_DIR_NAME: &str = "ffmpeg-tools-n8.1-win64-gpl";
-const FFMPEG_TOOLS_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
+const FFMPEG_TOOLS_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_SHA256: &str =
     "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
 const FFMPEG_TOOLS_ZIP_SIZE: u64 = 109_205_730;
@@ -1098,7 +1098,7 @@ const REALESRGAN_SAFE_INTERMEDIATE_MAX_PIXELS: u64 = 48_000_000;
 const REALESRGAN_SAFE_FINAL_MAX_EDGE: u32 = 4_096;
 const REALESRGAN_SAFE_FINAL_MAX_PIXELS: u64 = 16_000_000;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
-const REALESRGAN_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
+const REALESRGAN_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
     "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D";
 const REALESRGAN_ENGINE_ZIP_SIZE: u64 = 45_474_481;
