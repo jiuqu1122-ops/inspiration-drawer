@@ -193,7 +193,8 @@ pub struct CloudAiPricing {
 #[serde(rename_all = "camelCase")]
 pub struct CloudImageModelPricing {
     model: String,
-    credits1k: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits1k: Option<String>,
     credits2k: String,
     credits4k: String,
 }
@@ -1068,6 +1069,10 @@ mod tests {
                     "credits1k": "4",
                     "credits2k": "6",
                     "credits4k": "9"
+                }, {
+                    "model": "gemini-3-pro-image",
+                    "credits2k": "18",
+                    "credits4k": "20"
                 }],
                 "videoModels": [],
                 "updatedAt": "2026-07-27T00:00:00.000Z"
@@ -1078,6 +1083,10 @@ mod tests {
         assert_eq!(
             value["pricing"]["imageModels"][0]["credits4k"],
             serde_json::json!("9")
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][1]["credits1k"],
+            serde_json::Value::Null
         );
         assert_eq!(
             value["pricing"]["inspirationAnalysisCredits"],

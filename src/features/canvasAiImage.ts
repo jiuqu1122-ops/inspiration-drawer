@@ -15,6 +15,20 @@ export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
 export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
+export const NEW_API_VIDEO_MODEL_DEFAULT = 'veo-3.1';
+export const NEW_API_VIDEO_MODEL_OPTIONS = [
+  { value: 'sora-2', label: 'Sora 2' },
+  { value: 'veo-3.1', label: 'Veo 3.1' },
+  { value: 'veo-3.1-fast', label: 'Veo 3.1 Fast' },
+];
+export const CANVAS_AI_VIDEO_MODEL_OPTIONS = [
+  { value: XAIS_CHAT_VIDEO_MODEL_DEFAULT, label: 'Seedance 2.0' },
+  ...NEW_API_VIDEO_MODEL_OPTIONS,
+];
+
+export const getCanvasAiVideoProviderForModel = (model?: string | null): CanvasAiImageProvider => (
+  String(model || '').trim() === XAIS_CHAT_VIDEO_MODEL_DEFAULT ? 'xais-chat' : 'new-api'
+);
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES = 15;
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES * 60 * 1000;
@@ -518,15 +532,15 @@ export const normalizeNewApiBaseEndpoint = (endpoint: string) => {
   let trimmed = String(endpoint || '').trim().replace(/\/+$/, '');
   if (!trimmed) return '';
   trimmed = trimmed
-    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations)(?:\/[^/]+)?$/i, '/v1')
-    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations)(?:\/[^/]+)?$/i, '')
+    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations|videos)(?:\/[^/]+)?$/i, '/v1')
+    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations|videos)(?:\/[^/]+)?$/i, '')
     .replace(/\/+$/, '');
   return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
 };
 
 const normalizeNewApiEndpoint = (
   endpoint: string,
-  path: 'images/generations' | 'images/edits' | 'chat/completions' | 'video/generations'
+  path: 'images/generations' | 'images/edits' | 'chat/completions' | 'videos'
 ) => {
   const base = normalizeNewApiBaseEndpoint(endpoint);
   if (!base) throw new Error('Please enter New API Base URL first, for example https://your-new-api.example.com/v1');
@@ -732,6 +746,11 @@ const normalizeImageAspectRatio = (aspectRatio?: string | null) => {
 
 export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const requestedSize = String(aspectRatio || '').trim().replace(/×/g, 'x');
+  const xaisSizeModel = normalizedResolution === '4k' ? 'Xais Img2_4K' : 'Xais Img2_2K';
+  if (normalizedResolution !== '1k' && getXaisImage2RatioOptions(xaisSizeModel).includes(requestedSize)) {
+    return requestedSize;
+  }
   const sizes: Record<CanvasAiImageResolution, Record<string, string>> = {
     '1k': {
       '9:16': '720x1280',
@@ -771,7 +790,9 @@ const getImageContentViaTauri = async (url: string, apiKey: string, context?: Ca
 };
 
 const newApiSizeFromAspectRatio = (model?: string | null, aspectRatio?: string, resolution?: string) => (
-  isGptImage2LikeModel(model) || supportsNewApiImageFamilyResolution(model)
+  isGptImage2LikeModel(model)
+    ? gptImage2SizeFromAspectRatio(aspectRatio, resolution)
+    : supportsNewApiImageFamilyResolution(model)
     ? gptImage2SizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio), resolution)
     : imageSizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio))
 );
@@ -785,6 +806,10 @@ export const newApiImageRequestParams = (
 ) => {
   const ratio = normalizeImageAspectRatio(aspectRatio);
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const requestedDimension = String(aspectRatio || '').trim().replace(/×/g, 'x');
+  const usesExactGptImage2Size = isGptImage2LikeModel(model)
+    && /^\d+x\d+$/i.test(requestedDimension)
+    && normalizedResolution !== '1k';
   const family = getNewApiImageModelFamily(model);
   if (family === 'nano-banana-pro' || family === 'nano-banana-2') {
     const resolutionLabel = normalizedResolution.toUpperCase();
@@ -795,13 +820,13 @@ export const newApiImageRequestParams = (
       image_size: resolutionLabel,
     };
   }
-  const size = newApiSizeFromAspectRatio(model, ratio, normalizedResolution);
+  const size = newApiSizeFromAspectRatio(model, aspectRatio, normalizedResolution);
   const isGptImage2 = isGptImage2LikeModel(model);
   const normalizedOutputFormat = normalizeOutputFormat(outputFormat);
   return {
     n: count,
     size,
-    aspect_ratio: ratio,
+    ...(!usesExactGptImage2Size ? { aspect_ratio: ratio } : {}),
     ...(isGptImage2 ? {
       quality: 'medium',
       ...(normalizedOutputFormat === 'png'
@@ -814,6 +839,94 @@ export const newApiImageRequestParams = (
 const normalizeNewApiVideoResolution = (resolution?: string | null) => {
   const value = String(resolution || '').trim().toLowerCase();
   return value === '480p' || value === '1080p' ? value : '720p';
+};
+
+export const isSora2VideoModel = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') === 'sora-2'
+);
+
+export const isVeo31VideoModel = (model?: string | null) => {
+  const normalized = String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return normalized === 'veo-3-1' || normalized === 'veo-3-1-fast';
+};
+
+export const getNewApiVideoResolutionValues = (model?: string | null): string[] => (
+  isSora2VideoModel(model) ? ['720p'] : ['720p', '1080p']
+);
+
+export const normalizeNewApiVideoResolutionForModel = (
+  model?: string | null,
+  resolution?: string | null,
+) => {
+  const normalized = normalizeNewApiVideoResolution(resolution);
+  return getNewApiVideoResolutionValues(model).includes(normalized) ? normalized : '720p';
+};
+
+export const getNewApiVideoDurationValues = (model?: string | null): number[] => (
+  isSora2VideoModel(model) ? [8, 12] : [4, 5, 6, 7, 8]
+);
+
+export const normalizeNewApiVideoDurationForModel = (
+  model?: string | null,
+  duration?: number | string | null,
+) => {
+  const values = getNewApiVideoDurationValues(model);
+  const requested = Number(duration);
+  if (values.includes(requested)) return requested;
+  const fallback = values[0] ?? 8;
+  if (!Number.isFinite(requested)) return fallback;
+  return values.reduce((best, value) => (
+    Math.abs(value - requested) < Math.abs(best - requested) ? value : best
+  ), fallback);
+};
+
+export const normalizeNewApiVideoAspectRatio = (aspectRatio?: string | null) => (
+  String(aspectRatio || '').trim() === '9:16' ? '9:16' : '16:9'
+);
+
+export const getNewApiVideoReferenceLimit = (model?: string | null) => (
+  isSora2VideoModel(model) ? 1 : 3
+);
+
+export const getCanvasAiVideoReferenceSlots = (
+  model?: string | null,
+  inputMode?: CanvasAiVideoInputMode | string | null,
+) => {
+  const supportsFirstLastFrame = !isSora2VideoModel(model);
+  const mode: CanvasAiVideoInputMode = inputMode === 'FLF' && supportsFirstLastFrame ? 'FLF' : 'REF';
+  if (mode === 'FLF') return { mode, imageSlots: 2, videoSlots: 0 };
+  if (getCanvasAiVideoProviderForModel(model) === 'new-api') {
+    return { mode, imageSlots: getNewApiVideoReferenceLimit(model), videoSlots: 0 };
+  }
+  return { mode, imageSlots: 9, videoSlots: 1 };
+};
+
+export const getCanvasAiVideoReferenceSlotLabels = (
+  model?: string | null,
+  inputMode?: CanvasAiVideoInputMode | string | null,
+) => {
+  const slots = getCanvasAiVideoReferenceSlots(model, inputMode);
+  if (slots.mode === 'FLF') return ['首帧', '尾帧'];
+  if (getCanvasAiVideoProviderForModel(model) === 'new-api' && !isSora2VideoModel(model)) {
+    return ['主体', '场景/背景', '风格/纹理'].slice(0, slots.imageSlots);
+  }
+  return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+};
+
+export const buildNewApiVideoPrompt = (
+  model: string,
+  prompt: string,
+  inputMode: CanvasAiVideoInputMode | string | null | undefined,
+  imageCount: number,
+) => {
+  const basePrompt = prompt.trim();
+  if (!isVeo31VideoModel(model) || inputMode === 'FLF' || imageCount <= 0) return basePrompt;
+  const guidance = [
+    '参考图1为主体参考：保持主体（人物、角色或产品等）的外观、结构、颜色和关键识别特征一致。',
+    '参考图2为场景/背景参考：保持环境、空间关系、构图和光线氛围。',
+    '参考图3为风格/纹理参考：保持材质、色彩、质感和整体视觉风格。',
+  ].slice(0, Math.min(3, imageCount));
+  return `${basePrompt}\n\n参考图用途（请按编号分别使用，不要混淆）：\n${guidance.join('\n')}`;
 };
 
 export const getNewApiVideoDimensions = (aspectRatio?: string, resolution?: string) => {
@@ -840,28 +953,20 @@ export const newApiVideoRequestParams = (options: {
   inputMode?: CanvasAiVideoInputMode;
   count?: number;
 }) => {
-  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
-  const aspectRatio = normalizeImageAspectRatio(options.aspectRatio);
-  const resolution = normalizeNewApiVideoResolution(options.resolution);
-  const inputMode = options.inputMode === 'FLF' ? 'FLF' : 'REF';
+  const model = options.model.trim();
+  const inputImages = (options.inputImages || [])
+    .filter(Boolean)
+    .slice(0, getNewApiVideoReferenceLimit(model));
+  const aspectRatio = normalizeNewApiVideoAspectRatio(options.aspectRatio);
+  const resolution = normalizeNewApiVideoResolutionForModel(model, options.resolution);
+  const duration = normalizeNewApiVideoDurationForModel(model, options.duration);
   const dimensions = getNewApiVideoDimensions(aspectRatio, resolution);
-  const durationValue = Number(options.duration);
-  const duration = Number.isFinite(durationValue) ? Math.max(1, Math.min(60, durationValue)) : 5;
   return {
-    model: options.model.trim(),
-    prompt: options.prompt.trim(),
-    ...(inputImages[0] ? { image: inputImages[0] } : {}),
+    model,
+    prompt: buildNewApiVideoPrompt(model, options.prompt, options.inputMode, inputImages.length),
     duration,
-    ...dimensions,
-    n: Math.max(1, Math.min(4, Math.round(options.count || 1))),
-    response_format: 'url',
-    metadata: {
-      aspect_ratio: aspectRatio,
-      resolution,
-      input_mode: inputMode,
-      ...(inputMode === 'FLF' && inputImages[1] ? { end_image: inputImages[1] } : {}),
-      ...(inputImages.length > 1 ? { reference_images: inputImages } : {}),
-    },
+    size: `${dimensions.width}x${dimensions.height}`,
+    ...(inputImages.length > 0 ? { images: inputImages } : {}),
   };
 };
 
@@ -1120,6 +1225,28 @@ export const isCanvasAiPublicImageModel = (
   && !isLikelyNewApiVideoModel(model)
   && !isHiddenCanvasAiImageModel(provider, model),
 );
+
+export const CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES = [
+  'Nano Banana Pro',
+  'Nano Banana 2',
+  'GPT Image 2',
+] as const;
+
+export type CanvasAiPublicImageModelName = typeof CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES[number];
+
+export const getCanvasAiPublicImageModelId = (
+  provider: CanvasAiImageProvider,
+  publicName: CanvasAiPublicImageModelName,
+) => {
+  if (provider === 'xais-chat') {
+    if (publicName === 'Nano Banana Pro') return 'Xais Nano Pro_2K';
+    if (publicName === 'Nano Banana 2') return 'Xais Nano2_2K';
+    return 'Xais Img2_2K';
+  }
+  if (publicName === 'Nano Banana Pro') return NEW_API_NANO_BANANA_PRO_MODEL;
+  if (publicName === 'Nano Banana 2') return NEW_API_NANO_BANANA_2_MODEL;
+  return NEW_API_GPT_IMAGE_2_MODEL;
+};
 
 const xaisImageModelResolution = (model?: string | null): CanvasAiImageResolution | null => {
   const { raw, request } = xaisModelTokens(model);
@@ -2566,7 +2693,7 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
   if (!prompt) throw new Error('请输入视频提示词');
   if (!model) throw new Error('请先在视频节点选择 NewAPI 视频模型');
 
-  const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'video/generations');
+  const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'videos');
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const output: string[] = [];

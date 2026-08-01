@@ -391,53 +391,57 @@ import {
 } from './features/canvasWorkflowInternalSlots';
 import { publishCanvasReferencesInOrder } from './features/canvasReferencePublication';
 import {
-  CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
   CANVAS_AI_PROVIDER_OPTIONS,
+  CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
+  CANVAS_AI_VIDEO_MODEL_OPTIONS,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
   NEW_API_ENDPOINT_DEFAULT,
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
-  NEW_API_IMAGE_MODEL_OPTIONS,
+  NEW_API_VIDEO_MODEL_DEFAULT,
+  NEW_API_VIDEO_MODEL_OPTIONS,
   OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
-  OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS,
   XAIS_CHAT_ENDPOINT_DEFAULT,
   XAIS_CHAT_IMAGE_MODEL_DEFAULT,
   XAIS_CHAT_IMAGE_MODEL_OPTIONS,
   XAIS_CHAT_VIDEO_MODEL_DEFAULT,
-  XAIS_CHAT_VIDEO_MODEL_OPTIONS,
   debugXaisImage2,
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
   getCloudWalletImageGenerationByRequest,
   getCanvasAiImageResolutionValues,
+  getXaisImage2RatioOptions,
   normalizeCanvasAiOutputFormat,
   getCanvasAiSlotClientRequestId,
+  getCanvasAiVideoReferenceSlotLabels,
+  getCanvasAiVideoReferenceSlots,
+  getCanvasAiVideoProviderForModel,
   getCanvasAiPublicImageModelName,
-  getCanvasAiPublicImageModelPriority,
+  getCanvasAiPublicImageModelId,
   getDefaultNewApiImageProtocol,
-  getNewApiImageModelDisplayName,
-  getNewApiImageModelFamily,
-  getXaisImage2RatioOptions,
-  getXaisImageModelDisplayName,
+  getNewApiVideoDurationValues,
+  getNewApiVideoResolutionValues,
   isCanvasAiPublicImageModel,
   supportsCanvasAiTransparentPng,
   isOpenAiLikeCanvasAiProvider,
-  isLikelyNewApiVideoModel,
-  isXaisImage2Model,
   mergeCanvasAiReferenceSourceItems,
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
+  normalizeNewApiVideoAspectRatio,
+  normalizeNewApiVideoDurationForModel,
+  normalizeNewApiVideoResolutionForModel,
   normalizeXaisImage2Model,
   orderCanvasAiReferenceSources,
   resolveCanvasAiReferenceProvider,
-  resolveXaisImage2Ratio,
+  selectCanvasAiImageCandidatesForResolution,
   getCanvasAiReferencePublicationMaxUrlLength,
   shouldUsePortableWalletImageReferences,
   shouldUseCanvasAiNativeImageBatchRequest,
   supportsCanvasAiImageResolution,
+  resolveXaisImage2Ratio,
 } from './features/canvasAiImage';
 import {
   getCanvasAiTimedOutRecoveryCandidates,
@@ -1197,13 +1201,13 @@ const CANVAS_AI_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_PROVI
   value: provider.value,
   label: provider.label,
 }));
-const CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_PROVIDER_OPTIONS.map(provider => ({
-  value: provider.value,
-  label: provider.label,
-}));
 const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
 const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'openai-compatible', 'custom'];
 const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_RATIOS.map(ratio => ({
+  value: ratio,
+  label: ratio,
+}));
+const CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = ['16:9', '9:16'].map(ratio => ({
   value: ratio,
   label: ratio,
 }));
@@ -1292,7 +1296,6 @@ const CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS: RoundedSelectOption[] = [
   { value: 'jpg', label: 'JPG' },
   { value: 'webp', label: 'WebP' },
 ];
-const CANVAS_AI_NODE_ICON_SELECT_CLASS = 'h-8 w-9 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-0 text-stone-500 hover:bg-stone-950/[0.04] hover:text-stone-800 dark:text-white/62 dark:hover:bg-white/[0.07] dark:hover:text-white';
 const CANVAS_AI_NODE_TEXT_SELECT_CLASS = 'h-8 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-2 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
 const CANVAS_AI_NODE_COUNT_SELECT_CLASS = 'h-8 w-11 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-1.5 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
 const CANVAS_AI_NODE_CHEVRON_CLASS = 'h-2.5 w-2.5';
@@ -1365,6 +1368,14 @@ const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATI
   const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Number(value));
   return rawW > 0 && rawH > 0 ? rawW / rawH : 16 / 9;
 };
+const getClosestCanvasAiStandardAspectRatio = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
+  const target = parseCanvasAspectRatioValue(aspectRatio);
+  return CANVAS_AI_ASPECT_RATIOS.reduce((best, option) => (
+    Math.abs(parseCanvasAspectRatioValue(option) - target) < Math.abs(parseCanvasAspectRatioValue(best) - target)
+      ? option
+      : best
+  ), CANVAS_AI_DEFAULT_ASPECT_RATIO);
+};
 const getCanvasAspectRatioLabel = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
   const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Math.round(Number(value)));
   if (!Number.isFinite(rawW) || !Number.isFinite(rawH) || rawW <= 0 || rawH <= 0) return CANVAS_AI_DEFAULT_ASPECT_RATIO;
@@ -1381,29 +1392,41 @@ const getCanvasAspectRatioLabel = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO)
 const formatCanvasAiResolutionOptionLabel = (value: string) => {
   const trimmed = String(value || '').trim();
   if (!/^\d+\s*[x×]\s*\d+$/i.test(trimmed)) return trimmed;
-  return `${trimmed} (${getCanvasAspectRatioLabel(trimmed)})`;
+  return `${trimmed.replace(/x/i, '×')} (${getCanvasAspectRatioLabel(trimmed)})`;
 };
-const isCanvasAiResolutionOptionValue = (value: string) => /^\d+\s*x\s*\d+$/i.test(String(value || '').trim());
-const isCanvasAiResolutionOptionModel = (model?: string | null) => (
-  isXaisImage2Model(model) && getXaisImage2RatioOptions(model).some(isCanvasAiResolutionOptionValue)
+const getCanvasAiImage2RatioModel = (resolution?: string | null) => (
+  normalizeCanvasAiImageResolution(resolution) === '4k' ? 'Xais Img2_4K' : 'Xais Img2_2K'
 );
-const getClosestCanvasAiStandardAspectRatio = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-  const target = parseCanvasAspectRatioValue(aspectRatio);
-  return CANVAS_AI_ASPECT_RATIOS.reduce((best, option) => (
-    Math.abs(parseCanvasAspectRatioValue(option) - target) < Math.abs(parseCanvasAspectRatioValue(best) - target)
-      ? option
-      : best
-  ), CANVAS_AI_DEFAULT_ASPECT_RATIO);
+const usesCanvasAiImage2DimensionOptions = (model?: string | null, resolution?: string | null) => {
+  const publicName = getCanvasAiPublicImageModelName('new-api', model)
+    || getCanvasAiPublicImageModelName('xais-chat', normalizeXaisImage2Model(model));
+  return (publicName === 'GPT Image 2' || publicName === 'GPT Image 2 H')
+    && normalizeCanvasAiImageResolution(resolution) !== '1k';
 };
-const getCanvasAiAspectRatioOptionsForModel = (model?: string | null): RoundedSelectOption[] => {
-  if (isXaisImage2Model(model)) {
-    return getXaisImage2RatioOptions(model).map(value => ({ value, label: formatCanvasAiResolutionOptionLabel(value) }));
+const getCanvasAiAspectRatioOptionsForModel = (
+  model?: string | null,
+  resolution?: string | null,
+): RoundedSelectOption[] => {
+  if (usesCanvasAiImage2DimensionOptions(model, resolution)) {
+    return getXaisImage2RatioOptions(getCanvasAiImage2RatioModel(resolution)).map(value => ({
+      value,
+      label: formatCanvasAiResolutionOptionLabel(value),
+    }));
   }
   return CANVAS_AI_ASPECT_RATIO_OPTIONS;
 };
-const normalizeCanvasAiAspectRatioForModel = (model?: string | null, aspectRatio?: string | null) => {
+const normalizeCanvasAiAspectRatioForModel = (
+  model?: string | null,
+  aspectRatio?: string | null,
+  resolution?: string | null,
+) => {
   const value = String(aspectRatio || '').trim();
-  if (isXaisImage2Model(model)) return resolveXaisImage2Ratio(model, value || CANVAS_AI_DEFAULT_ASPECT_RATIO);
+  if (usesCanvasAiImage2DimensionOptions(model, resolution)) {
+    return resolveXaisImage2Ratio(
+      getCanvasAiImage2RatioModel(resolution),
+      value || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+    );
+  }
   if (/^\d+\s*[x×]\s*\d+$/i.test(value)) return getClosestCanvasAiStandardAspectRatio(value);
   return CANVAS_AI_ASPECT_RATIOS.includes(value) ? value : CANVAS_AI_DEFAULT_ASPECT_RATIO;
 };
@@ -3226,7 +3249,7 @@ const readCustomCanvasWorkflows = () => {
 };
 const getCanvasAiDefaultModel = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
   mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : ''
+    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : provider === 'new-api' ? NEW_API_VIDEO_MODEL_DEFAULT : ''
     : provider === 'xais-chat'
     ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
     : provider === 'new-api'
@@ -3247,15 +3270,6 @@ const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
     : provider === 'openai-compatible'
       ? OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
       : ''
-);
-const getCanvasAiModelOptions = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
-  mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_OPTIONS : []
-    : provider === 'xais-chat'
-    ? XAIS_CHAT_IMAGE_MODEL_OPTIONS
-    : provider === 'new-api'
-      ? NEW_API_IMAGE_MODEL_OPTIONS
-    : OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS
 );
 const readStoredCanvasAiOpenAiModels = () => {
   try {
@@ -6513,247 +6527,56 @@ function MainApp() {
     }
   };
 
-  const canvasAiOpenAiModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    canvasAiOpenAiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
-    OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'image-generator' && item.ai?.provider === 'openai-compatible' && item.ai.model?.trim()) {
-        merged.add(item.ai.model.trim());
-      }
-    });
-    return Array.from(merged)
-      .sort((a, b) => {
-        const aImage = isCanvasAiLikelyOpenAiImageModel(a);
-        const bImage = isCanvasAiLikelyOpenAiImageModel(b);
-        if (aImage !== bImage) return aImage ? -1 : 1;
-        return a.localeCompare(b);
-      })
-      .map(value => {
-        const likelyImage = isCanvasAiLikelyOpenAiImageModel(value);
-        return {
-          value,
-          label: value,
-          meta: likelyImage ? '图像' : '未知',
-          hint: likelyImage ? '模型名看起来支持图像生成' : '未能从模型名判断图像能力，可手动测试',
-          section: likelyImage ? '可能支持图像' : '其它模型',
-        };
-      });
-  }, [canvasAiOpenAiModels, canvasItems]);
-
-  const canvasAiNewApiModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    canvasAiNewApiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
-    const remoteModelSet = new Set(canvasAiNewApiModels.map(model => model.trim()).filter(Boolean));
-    if (canvasAiNewApiModels.length === 0) {
-      NEW_API_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
-    }
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'image-generator' && item.ai?.provider === 'new-api' && item.ai.model?.trim()) {
-        const model = item.ai.model.trim();
-        if (remoteModelSet.size === 0 || remoteModelSet.has(model)) merged.add(model);
-      }
-    });
-    return Array.from(merged)
-      .sort((a, b) => {
-        const aImage = getNewApiImageModelFamily(a) !== null || isCanvasAiLikelyOpenAiImageModel(a);
-        const bImage = getNewApiImageModelFamily(b) !== null || isCanvasAiLikelyOpenAiImageModel(b);
-        if (aImage !== bImage) return aImage ? -1 : 1;
-        return a.localeCompare(b);
-      })
-      .map(value => {
-        const likelyImage = getNewApiImageModelFamily(value) !== null || isCanvasAiLikelyOpenAiImageModel(value);
-        const displayName = getNewApiImageModelDisplayName(value);
-        return {
-          value,
-          label: displayName,
-          meta: likelyImage ? '图像' : '未知',
-          hint: displayName !== value
-            ? `模型 ID：${value}`
-            : likelyImage ? '模型名看起来支持图像生成' : '未能从模型名判断图像能力，可手动测试',
-          section: likelyImage ? '可能支持图像' : '其它模型',
-        };
-      });
-  }, [canvasAiNewApiModels, canvasItems]);
-
-  const canvasAiNewApiVideoModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    canvasAiNewApiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'video-generator' && item.ai?.provider === 'new-api' && item.ai.model?.trim()) {
-        merged.add(item.ai.model.trim());
-      }
-    });
-    return Array.from(merged)
-      .sort((a, b) => {
-        const aVideo = isLikelyNewApiVideoModel(a);
-        const bVideo = isLikelyNewApiVideoModel(b);
-        if (aVideo !== bVideo) return aVideo ? -1 : 1;
-        return a.localeCompare(b);
-      })
-      .map(value => {
-        const likelyVideo = isLikelyNewApiVideoModel(value);
-        return {
-          value,
-          label: value,
-          meta: likelyVideo ? '视频' : '未知',
-          hint: likelyVideo ? '模型名看起来支持视频生成' : '未能从模型名判断视频能力，可手动测试',
-          section: likelyVideo ? '可能支持视频' : '其它模型',
-        };
-      });
-  }, [canvasAiNewApiModels, canvasItems]);
-
-  const canvasAiXaisModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    const allowedModels = new Set(XAIS_CHAT_IMAGE_MODEL_OPTIONS.map(option => option.value));
-    canvasAiXaisModels.forEach(model => {
-      const trimmed = normalizeXaisImage2Model(model.trim());
-      if (trimmed && allowedModels.has(trimmed)) merged.add(trimmed);
-    });
-    XAIS_CHAT_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'image-generator' && normalizeCanvasAiProvider(item.ai?.provider || '') === 'xais-chat' && item.ai?.model?.trim()) {
-        const normalizedModel = normalizeXaisImage2Model(item.ai.model.trim());
-        if (allowedModels.has(normalizedModel)) merged.add(normalizedModel);
-      }
-    });
-    return sortCanvasAiModelsForProvider('xais-chat', Array.from(merged)).map(value => ({
-      value,
-      label: XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => option.value === value)?.label || value,
-    }));
-  }, [canvasAiXaisModels, canvasItems]);
-
-  const canvasAiLegacyImageModelOptions = useMemo<RoundedSelectOption[]>(() => {
-    const options: RoundedSelectOption[] = [];
-    const seen = new Set<string>();
-    const addModel = (
-      source: CanvasAiCredentialSource,
-      provider: CanvasAiProvider,
-      rawModel: string,
-      channel?: { id: string; name: string },
-    ) => {
-      const model = rawModel.trim();
-      if (!model) return;
-      const value = canvasAiModelChoiceValue(source, provider, model, channel?.id);
-      if (seen.has(value)) return;
-      seen.add(value);
-      const label = provider === 'new-api'
-        ? getNewApiImageModelDisplayName(model)
-        : provider === 'xais-chat'
-          ? getXaisImageModelDisplayName(model)
-          : model;
-      const modelIdHint = label !== model ? ` · 模型 ID：${model}` : '';
-      options.push({
-        value,
-        label,
-        hint: source === 'local'
-          ? `使用本地额度${modelIdHint}`
-          : `使用授权钱包额度${modelIdHint}`,
-        meta: source === 'local' ? '本地额度' : '钱包',
-        section: source === 'local' ? '本地 API' : `授权钱包 · ${channel?.name || '默认渠道'}`,
-        sectionHint: source === 'local' ? '消耗本地 API 余额' : `渠道：${channel?.name || '默认渠道'}`,
-      });
-    };
-
-    if (canvasAiCloudImageModels) {
-      const channels = canvasAiCloudImageModels.channels || [];
-      if (channels.length > 0) {
-        channels.forEach(channel => {
-          const provider = canvasAiProviderForCloudKind(channel.provider);
-          channel.models.forEach(model => addModel('wallet', provider, model, channel));
-        });
-      } else {
-        const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-        canvasAiCloudImageModels.models.forEach(model => addModel('wallet', provider, model));
-      }
-    }
-
-    const localModelSources: Array<{ provider: CanvasAiProvider; models: string[] }> = [
-      { provider: 'new-api', models: canvasAiNewApiModels },
-      { provider: 'xais-chat', models: canvasAiXaisModels },
-      { provider: 'openai-compatible', models: canvasAiOpenAiModels },
-      { provider: 'custom', models: canvasAiOpenAiModels },
-    ];
-    localModelSources.forEach(({ provider, models }) => {
-      const apiKey = provider === canvasAiProvider
-        ? canvasAiApiKey.trim()
-        : getStoredCanvasAiApiKey(provider).trim();
-      if (!apiKey) return;
-      models.forEach(model => addModel('local', provider, model));
-    });
-    return options;
-  }, [
-    canvasAiApiKey,
-    canvasAiCloudImageModels,
-    canvasAiNewApiModels,
-    canvasAiOpenAiModels,
-    canvasAiProvider,
-    canvasAiXaisModels,
-  ]);
-
-  void canvasAiLegacyImageModelOptions;
   const canvasAiUnifiedImageModelOptions = useMemo<RoundedSelectOption[]>(() => {
-    const groups = new Map<string, { label: string; candidates: CanvasAiModelCandidate[] }>();
-    const addCandidate = (candidate: CanvasAiModelCandidate) => {
-      if (candidate.source !== canvasAiCredentialSource || !candidate.model.trim()) return;
-      if (!isCanvasAiPublicImageModel(candidate.provider, candidate.model)) return;
-      const label = getCanvasAiPublicImageModelName(candidate.provider, candidate.model.trim());
-      if (!label) return;
-      const key = label.trim().toLocaleLowerCase();
-      const group = groups.get(key) || { label, candidates: [] };
-      if (!group.candidates.some(item => item.provider === candidate.provider
-        && item.model === candidate.model
-        && item.providerChannelId === candidate.providerChannelId)) {
-        group.candidates.push({ ...candidate, model: candidate.model.trim() });
-      }
-      groups.set(key, group);
-    };
+    const candidates: CanvasAiModelCandidate[] = [];
     if (canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels) {
       const channels = canvasAiCloudImageModels.channels || [];
       if (channels.length > 0) {
-        channels.forEach(channel => channel.models.forEach(model => addCandidate({
+        channels.forEach(channel => channel.models.forEach(model => candidates.push({
           source: 'wallet', provider: canvasAiProviderForCloudKind(channel.provider), model, providerChannelId: channel.id,
         })));
       } else {
         const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-        canvasAiCloudImageModels.models.forEach(model => addCandidate({ source: 'wallet', provider, model }));
+        canvasAiCloudImageModels.models.forEach(model => candidates.push({ source: 'wallet', provider, model }));
       }
     }
     if (canvasAiCredentialSource === 'local') {
-      const localModelSources: Array<{ provider: CanvasAiProvider; models: string[] }> = [
-        { provider: 'new-api', models: canvasAiNewApiModels },
-        { provider: 'xais-chat', models: canvasAiXaisModels },
-        { provider: 'openai-compatible', models: canvasAiOpenAiModels },
-        { provider: 'custom', models: canvasAiOpenAiModels },
-      ];
-      localModelSources.forEach(({ provider, models }) => {
+      const modelSources = new Map<CanvasAiProvider, string[]>([
+        ['new-api', canvasAiNewApiModels],
+        ['xais-chat', canvasAiXaisModels],
+        ['openai-compatible', canvasAiOpenAiModels],
+        ['custom', canvasAiOpenAiModels],
+      ]);
+      const providers = [canvasAiProvider, ...Array.from(modelSources.keys()).filter(provider => provider !== canvasAiProvider)];
+      providers.forEach(provider => {
         const apiKey = provider === canvasAiProvider ? canvasAiApiKey.trim() : getStoredCanvasAiApiKey(provider).trim();
         if (!apiKey) return;
-        models.forEach(model => addCandidate({ source: 'local', provider, model }));
+        (modelSources.get(provider) || []).forEach(model => candidates.push({ source: 'local', provider, model }));
       });
     }
-    return Array.from(groups.values())
-      .sort((left, right) => (
-        getCanvasAiPublicImageModelPriority(left.candidates[0]?.provider, left.candidates[0]?.model)
-          - getCanvasAiPublicImageModelPriority(right.candidates[0]?.provider, right.candidates[0]?.model)
-        || left.label.localeCompare(right.label)
-      ))
-      .map(group => {
-      const first = group.candidates[0];
-      const routeCount = new Set(group.candidates.map(candidate => (
-        [candidate.source, candidate.provider, candidate.providerChannelId || ''].join('|')
-      ))).size;
-      const hint = routeCount > 1
-        ? ` · ${routeCount} 个可用渠道`
-        : '';
-      return {
-        value: canvasAiGroupedModelChoiceValue(canvasAiCredentialSource, first, group.candidates),
-        label: group.label,
-        hint: `${canvasAiCredentialSource === 'local' ? '使用本地额度' : '使用授权钱包额度'}${hint}`,
-        meta: canvasAiCredentialSource === 'local' ? '本地额度' : '钱包额度',
-        section: canvasAiCredentialSource === 'local' ? '本地 API' : '授权钱包',
+    return CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES.map(label => {
+      const modelCandidates = candidates.filter(candidate => (
+        isCanvasAiPublicImageModel(candidate.provider, candidate.model)
+        && getCanvasAiPublicImageModelName(candidate.provider, candidate.model) === label
+      ));
+      const fallbackProvider = canvasAiCredentialSource === 'wallet'
+        ? canvasAiCloudImageModels?.channels?.[0]
+          ? canvasAiProviderForCloudKind(canvasAiCloudImageModels.channels[0].provider)
+          : canvasAiCloudImageModels
+            ? canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider)
+            : canvasAiProvider
+        : canvasAiProvider;
+      const first = modelCandidates[0] || {
+        source: canvasAiCredentialSource,
+        provider: fallbackProvider,
+        model: getCanvasAiPublicImageModelId(fallbackProvider, label),
       };
-      });
+      const routes = modelCandidates.length > 0 ? modelCandidates : [first];
+      return {
+        value: canvasAiGroupedModelChoiceValue(first.source, first, routes),
+        label,
+      };
+    });
   }, [canvasAiApiKey, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiNewApiModels, canvasAiOpenAiModels, canvasAiProvider, canvasAiXaisModels]);
 
   useEffect(() => {
@@ -6761,10 +6584,6 @@ function MainApp() {
     const availableChoices = canvasAiUnifiedImageModelOptions
       .map(option => parseCanvasAiModelChoiceValue(option.value))
       .filter((choice): choice is NonNullable<ReturnType<typeof parseCanvasAiModelChoiceValue>> => !!choice);
-    const firstChoice = availableChoices.find(choice => (
-      getCanvasAiPublicImageModelName(choice.provider, choice.model) === 'Nano Banana Pro'
-    )) || availableChoices[0];
-    if (!firstChoice) return;
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
@@ -6774,18 +6593,26 @@ function MainApp() {
         ));
         if (hasSuccessfulOutput) return item;
         const candidates = item.ai.providerCandidates || [];
-        const currentPublicModel = getCanvasAiPublicImageModelName(item.ai.provider, item.ai.model);
-        const matchingChoice = availableChoices.find(choice => (
-          (choice.source === canvasAiCredentialSource
-            && choice.provider === item.ai?.provider
+        const preferredSource = canvasAiCredentialSource;
+        const sourceChoices = availableChoices.filter(choice => choice.source === preferredSource);
+        const firstChoice = sourceChoices.find(choice => (
+          getCanvasAiPublicImageModelName(choice.provider, choice.model) === 'Nano Banana Pro'
+        )) || sourceChoices[0] || availableChoices[0];
+        if (!firstChoice) return item;
+        const rawCurrentPublicModel = getCanvasAiPublicImageModelName(item.ai.provider, item.ai.model);
+        const currentPublicModel = rawCurrentPublicModel === 'GPT Image 2 H'
+          ? 'GPT Image 2'
+          : rawCurrentPublicModel;
+        const matchingChoice = sourceChoices.find(choice => (
+          (choice.provider === item.ai?.provider
             && choice.model === item.ai?.model)
           || choice.providerCandidates?.some(candidate => (
-            candidate.source === canvasAiCredentialSource
+            candidate.source === preferredSource
             && candidate.provider === item.ai?.provider
             && candidate.model === item.ai?.model
           ))
         )) || (currentPublicModel
-          ? availableChoices.find(choice => (
+          ? sourceChoices.find(choice => (
             getCanvasAiPublicImageModelName(choice.provider, choice.model) === currentPublicModel
           ))
           : undefined) || firstChoice;
@@ -6822,75 +6649,17 @@ function MainApp() {
     });
   }, [canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode]);
 
-  const getCanvasAiImageCredentialSource = (
+  const getCanvasAiUnifiedImageModelValue = (
     provider: CanvasAiProvider,
     model: string,
-    source?: CanvasAiCredentialSource,
-    providerChannelId?: string,
-  ): CanvasAiCredentialSource => {
-    if (source) return source;
-    if (!canvasAiCloudImageModels) return 'local';
-    if (providerChannelId) {
-      const channel = canvasAiCloudImageModels.channels?.find(item => item.id === providerChannelId);
-      return channel && canvasAiProviderForCloudKind(channel.provider) === provider && channel.models.includes(model)
-        ? 'wallet'
-        : 'local';
-    }
-    const cloudProvider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-    return cloudProvider === provider && canvasAiCloudImageModels.models.includes(model)
-      ? 'wallet'
-      : 'local';
-  };
-
-  const getCanvasAiUnifiedImageModelOptions = (
-    provider: CanvasAiProvider,
-    model: string,
-    source?: CanvasAiCredentialSource,
-    providerChannelId?: string,
-    providerCandidates?: CanvasAiModelCandidate[],
   ) => {
-    const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source, providerChannelId);
-    if (!isCanvasAiPublicImageModel(provider, model)) return canvasAiUnifiedImageModelOptions;
-    const selectedValue = providerCandidates && providerCandidates.length > 1
-      ? canvasAiGroupedModelChoiceValue(
-        providerCandidates[0].source,
-        { source: providerCandidates[0].source, provider, model, providerChannelId },
-        providerCandidates,
-      )
-      : canvasAiModelChoiceValue(resolvedSource, provider, model, providerChannelId);
-    if (canvasAiUnifiedImageModelOptions.some(option => option.value === selectedValue)) {
-      return canvasAiUnifiedImageModelOptions;
-    }
-    const label = getCanvasAiPublicImageModelName(provider, model);
-    if (!label) return canvasAiUnifiedImageModelOptions;
-    return [
-      ...canvasAiUnifiedImageModelOptions,
-      {
-        value: selectedValue,
-        label,
-        hint: resolvedSource === 'local' ? '使用本地额度' : '使用授权钱包额度',
-        meta: resolvedSource === 'local' ? '本地额度' : '钱包',
-        section: resolvedSource === 'local' ? '本地 API' : '授权钱包',
-      },
-    ];
+    const rawPublicName = getCanvasAiPublicImageModelName(provider, model);
+    const publicName = rawPublicName === 'GPT Image 2 H' ? 'GPT Image 2' : rawPublicName;
+    const matchingOption = canvasAiUnifiedImageModelOptions.find(option => option.label === publicName);
+    return matchingOption?.value || canvasAiUnifiedImageModelOptions[0]?.value
+      || canvasAiModelChoiceValue(canvasAiCredentialSource, provider, model);
   };
 
-  const getCanvasAiModelOptionsForProvider = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
-    mediaType === 'video' && canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels
-      ? Array.from(new Set((canvasAiCloudImageModels.channels || [])
-        .filter(channel => canvasAiProviderForCloudKind(channel.provider) === provider)
-        .flatMap(channel => channel.models.map(model => model.trim()).filter(Boolean))))
-        .map(value => ({ value, label: value }))
-      : mediaType === 'video'
-      ? provider === 'new-api' ? canvasAiNewApiVideoModelOptions : XAIS_CHAT_VIDEO_MODEL_OPTIONS
-      : provider === 'xais-chat'
-      ? canvasAiXaisModelOptions
-      : provider === 'new-api'
-      ? canvasAiNewApiModelOptions
-      : provider === 'openai-compatible'
-      ? canvasAiOpenAiModelOptions
-      : getCanvasAiModelOptions(provider, mediaType)
-  );
   const getCanvasAiResolvedModel = (provider: CanvasAiProvider, model?: string | null, mediaType: 'image' | 'video' = 'image') => {
     const trimmed = String(model || '').trim();
     if (provider === 'xais-chat' && mediaType === 'video') return XAIS_CHAT_VIDEO_MODEL_DEFAULT;
@@ -6901,10 +6670,9 @@ function MainApp() {
       return trimmed || getCanvasAiDefaultModel(provider, mediaType);
     }
     if (provider === 'new-api' && mediaType === 'video') {
-      const remoteModels = canvasAiNewApiModels.map(value => value.trim()).filter(Boolean);
-      const likelyVideoModels = remoteModels.filter(isLikelyNewApiVideoModel);
-      const availableModels = likelyVideoModels.length > 0 ? likelyVideoModels : remoteModels;
-      if (availableModels.length > 0 && (!trimmed || !remoteModels.includes(trimmed))) return availableModels[0];
+      return NEW_API_VIDEO_MODEL_OPTIONS.some(option => option.value === trimmed)
+        ? trimmed
+        : NEW_API_VIDEO_MODEL_DEFAULT;
     }
     return trimmed || getCanvasAiDefaultModel(provider, mediaType);
   };
@@ -7101,23 +6869,33 @@ function MainApp() {
       let detectedProvider = provider;
       let detectedDefaultModel = '';
       let detectedChannels: NonNullable<CloudImageModelsResult['channels']> = [];
+      let detectedPricing: CanvasAiCreditPricing | null | undefined;
       const successfulModels = canvasAiUsesCloudImageModels
         ? await (async () => {
           const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', { provider });
           detectedProvider = canvasAiProviderForCloudKind(result.provider);
           detectedDefaultModel = String(result.defaultModel || '').trim();
+          detectedPricing = result.pricing;
           detectedChannels = (result.channels || []).map(channel => {
             const channelProvider = canvasAiProviderForCloudKind(channel.provider);
+            const configuredDefaultModel = String(channel.defaultModel || '').trim();
+            const channelModels = [
+              ...(channel.models || []),
+              ...(configuredDefaultModel ? [configuredDefaultModel] : []),
+            ];
             const models = channelProvider === 'xais-chat'
-              ? sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set((channel.models || [])
+              ? sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set(channelModels
                 .map(model => normalizeXaisImage2Model(model.trim()))
                 .filter(Boolean))))
-              : sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set((channel.models || [])
+              : sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set(channelModels
                 .map(model => model.trim())
                 .filter(Boolean))));
             return { ...channel, provider: channelProvider, models };
           });
-          return result.models || [];
+          return [
+            ...(result.models || []),
+            ...detectedChannels.flatMap(channel => channel.models),
+          ];
         })()
         : await (async () => {
           const modelResults = await Promise.allSettled(apiKeys.map(apiKey => invoke<string[]>('get_openai_compatible_models', {
@@ -7141,12 +6919,13 @@ function MainApp() {
             .map(model => normalizeXaisImage2Model(model)))))
         : sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels)));
       if (canvasAiUsesCloudImageModels) {
-        setCanvasAiCloudImageModels({
+        setCanvasAiCloudImageModels(current => ({
           provider: detectedProvider,
           defaultModel: detectedDefaultModel || null,
           models: normalized,
           channels: detectedChannels,
-        });
+          pricing: detectedPricing ?? current?.pricing,
+        }));
       } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
       } else if (detectedProvider === 'new-api') {
@@ -7164,7 +6943,7 @@ function MainApp() {
       const nextDefaultModel = normalized.includes(preferredDefaultModel)
         ? preferredDefaultModel
         : (preferredImageModel || normalized[0] || preferredDefaultModel);
-      const nextVideoModel = normalized.find(isLikelyNewApiVideoModel) || normalized[0] || '';
+      const nextVideoModel = NEW_API_VIDEO_MODEL_DEFAULT;
       const defaultChannel = detectedChannels.find(channel => (
         !channel.error && channel.models.includes(nextDefaultModel)
       )) || detectedChannels.find(channel => !channel.error && channel.models.length > 0);
@@ -7193,7 +6972,7 @@ function MainApp() {
             && detectedProvider === 'new-api'
             && item.ai?.type === 'video-generator'
             && itemProvider === 'new-api'
-            && (!item.ai.model || !normalized.includes(item.ai.model));
+            && !NEW_API_VIDEO_MODEL_OPTIONS.some(option => option.value === item.ai?.model);
           if (!needsImageModel && !needsVideoModel) return item;
           return {
               ...item,
@@ -7262,13 +7041,29 @@ function MainApp() {
         provider: effectiveCanvasAiProvider,
       }).then((result) => {
         if (disposed) return;
-        setCanvasAiCloudImageModels(current => current
-          ? { ...current, pricing: result.pricing ?? current.pricing }
-          : result);
+        setCanvasAiCloudImageModels(current => {
+          if (current) return { ...current, pricing: result.pricing ?? current.pricing };
+          const channels = (result.channels || []).map(channel => ({
+            ...channel,
+            models: Array.from(new Set([
+              ...(channel.models || []).map(model => model.trim()).filter(Boolean),
+              ...(String(channel.defaultModel || '').trim() ? [String(channel.defaultModel).trim()] : []),
+            ])),
+          }));
+          return {
+            ...result,
+            channels,
+            models: Array.from(new Set([
+              ...(result.models || []).map(model => model.trim()).filter(Boolean),
+              ...channels.flatMap(channel => channel.models),
+            ])),
+          };
+        });
       }).catch(() => {
         // Keep the last known pricing while temporarily offline.
       });
     };
+    refreshCloudPricing();
     const onFocus = () => refreshCloudPricing();
     window.addEventListener('focus', onFocus);
     const interval = window.setInterval(refreshCloudPricing, 5 * 60_000);
@@ -16798,7 +16593,7 @@ function MainApp() {
       ? parseCanvasAiModelChoiceValue(canvasAiUnifiedImageModelOptions[0].value)
       : null;
     const provider = isVideo
-      ? canvasAiProvider === 'new-api' ? 'new-api' : 'xais-chat'
+      ? getCanvasAiVideoProviderForModel(NEW_API_VIDEO_MODEL_DEFAULT)
       : defaultImageChoice?.provider || canvasAiProvider;
     const model = defaultImageChoice?.model || getCanvasAiResolvedModel(provider, '', mediaType);
     const name = preset ? `AI ${preset.label}` : (isVideo ? 'AI 视频节点' : 'AI 生图节点');
@@ -16849,7 +16644,11 @@ function MainApp() {
           : supportsCanvasAiImageResolution(provider, model) ? CANVAS_AI_DEFAULT_IMAGE_RESOLUTION : undefined,
         outputFormat: preset?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         count,
-        duration: isVideo ? CANVAS_AI_DEFAULT_VIDEO_DURATION : undefined,
+        duration: isVideo
+          ? provider === 'new-api'
+            ? normalizeNewApiVideoDurationForModel(model, undefined)
+            : CANVAS_AI_DEFAULT_VIDEO_DURATION
+          : undefined,
         videoInputMode: isVideo ? 'REF' : undefined,
         videoCfrMode: isVideo ? 'auto' : undefined,
         imagePolicy,
@@ -19549,6 +19348,10 @@ function MainApp() {
           Boolean(choice && choice.source === imageCredentialSource)
         ))
       : [];
+    const targetRawPublicModel = getCanvasAiPublicImageModelName(targetProvider, targetAi.model);
+    const targetPublicModel = targetRawPublicModel === 'GPT Image 2 H'
+      ? 'GPT Image 2'
+      : targetRawPublicModel;
     const matchingSourceChoice = sourceChoices.find(choice => (
       choice.provider === targetProvider
       && choice.model === targetAi.model
@@ -19556,7 +19359,11 @@ function MainApp() {
       choice.providerCandidates?.some(candidate => (
         candidate.provider === targetProvider && candidate.model === targetAi.model
       ))
-    )) || sourceChoices[0];
+    )) || (targetPublicModel
+      ? sourceChoices.find(choice => (
+        getCanvasAiPublicImageModelName(choice.provider, choice.model) === targetPublicModel
+      ))
+      : undefined) || sourceChoices[0];
     const activeSourceCandidate = matchingSourceChoice?.providerCandidates?.find(candidate => (
       candidate.source === imageCredentialSource
       && candidate.provider === targetProvider
@@ -35042,6 +34849,28 @@ useEffect(() => {
                             canvasAiItemModel,
                             canvasItem.ai?.resolution,
                           );
+                          const isCanvasAiNewApiVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'new-api';
+                          const canvasAiVideoResolutionValues = isCanvasAiNewApiVideo
+                            ? getNewApiVideoResolutionValues(canvasAiItemModel)
+                            : CANVAS_AI_VIDEO_RESOLUTIONS;
+                          const canvasAiVideoResolutionOptions = CANVAS_AI_VIDEO_RESOLUTION_OPTIONS.filter(option => (
+                            canvasAiVideoResolutionValues.includes(option.value)
+                          ));
+                          const canvasAiVideoResolution = isCanvasAiNewApiVideo
+                            ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, canvasItem.ai?.resolution)
+                            : canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION;
+                          const canvasAiVideoDurationValues = isCanvasAiNewApiVideo
+                            ? getNewApiVideoDurationValues(canvasAiItemModel)
+                            : CANVAS_AI_VIDEO_DURATIONS;
+                          const canvasAiVideoDurationOptions = CANVAS_AI_VIDEO_DURATION_OPTIONS.filter(option => (
+                            canvasAiVideoDurationValues.includes(Number(option.value))
+                          ));
+                          const canvasAiVideoDuration = isCanvasAiNewApiVideo
+                            ? normalizeNewApiVideoDurationForModel(canvasAiItemModel, canvasItem.ai?.duration)
+                            : canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION;
+                          const canvasAiVideoSupportsFirstLastFrame = !(
+                            isCanvasAiNewApiVideo && canvasAiItemModel === 'sora-2'
+                          );
                           const canvasAiSupportsTransparentPng = supportsCanvasAiTransparentPng(
                             canvasAiItemProvider,
                             canvasAiItemModel,
@@ -35074,27 +34903,49 @@ useEffect(() => {
                             && isReplaceableInternalImageSlot(node)
                           ));
                           const canvasExpandedInternalSlot = canvasExpandedInternalSlotNode?.internalSlot;
-                          const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource);
+                          const canvasWalletPricing = canvasAiCloudImageModels?.pricing;
+                          const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource)
+                            && Boolean(canvasWalletPricing);
+                          const canvasImagePricingChoice = canvasItem.ai?.type === 'image-generator'
+                            ? parseCanvasAiModelChoiceValue(getCanvasAiUnifiedImageModelValue(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                            ))
+                            : null;
+                          const canvasImagePricingCandidates = canvasImagePricingChoice
+                            ? selectCanvasAiImageCandidatesForResolution(
+                              canvasImagePricingChoice.providerCandidates?.length
+                                ? canvasImagePricingChoice.providerCandidates
+                                : [{
+                                  source: canvasImagePricingChoice.source,
+                                  provider: canvasImagePricingChoice.provider,
+                                  model: canvasImagePricingChoice.model,
+                                  providerChannelId: canvasImagePricingChoice.providerChannelId,
+                                }],
+                              canvasAiItemImageResolution,
+                            )
+                            : [];
+                          const canvasImagePricingModel = canvasImagePricingCandidates[0]?.model || canvasAiItemModel;
                           const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
                             ? estimateCanvasWorkflowCredits(canvasWorkflow, {
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
                                 node.ai?.provider || canvasAiProvider,
                               )),
-                              pricing: canvasAiCloudImageModels?.pricing,
+                              pricing: canvasWalletPricing,
                             })
                             : null;
                           const canvasImageCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'image-generator'
                             ? estimateCanvasImageGenerationCredits({
-                              model: canvasAiItemModel,
+                              model: canvasImagePricingModel,
                               resolution: canvasAiItemImageResolution,
                               count: canvasItem.ai.count,
-                            }, canvasAiCloudImageModels?.pricing)
+                            }, canvasWalletPricing)
                             : null;
                           const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
                             ? estimateCanvasVideoGenerationCredits({
                               model: canvasAiItemModel,
                               count: canvasItem.ai.count,
-                            }, canvasAiCloudImageModels?.pricing)
+                            }, canvasWalletPricing)
                             : null;
                           const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate
                             ? [
@@ -35181,7 +35032,18 @@ useEffect(() => {
                           const canvasAiPromptHeight = isCanvasAiGeneratorItem && canvasAiNodeDesignSize
                             ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiMainColumnLayoutWidth, isCanvasAiPromptExpanded)
                             : 0;
-                          const canvasVideoInputMode = canvasItem.ai?.videoInputMode === 'FLF' ? 'FLF' : 'REF';
+                          const canvasVideoReferenceSlots = getCanvasAiVideoReferenceSlots(
+                            canvasAiItemModel,
+                            canvasItem.ai?.videoInputMode,
+                          );
+                          const canvasVideoInputMode = canvasVideoReferenceSlots.mode;
+                          const canvasVideoReferenceSlotLabels = getCanvasAiVideoReferenceSlotLabels(
+                            canvasAiItemModel,
+                            canvasVideoInputMode,
+                          );
+                          const isCanvasVeoIngredientMode = isCanvasAiNewApiVideo
+                            && canvasAiItemModel !== 'sora-2'
+                            && canvasVideoInputMode === 'REF';
                           const isCanvasVideoReferenceItem = (inputItem: CanvasImageItem) => {
                             const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem)[0];
                             return inputItem.item.type === 'video'
@@ -35258,8 +35120,12 @@ useEffect(() => {
                           const canvasVideoReferenceVideoItems = canvasAiMediaType === 'video'
                             ? canvasVisualInputPreviewItems.filter(isCanvasVideoReferencePreviewItem)
                             : [];
-                          const canvasVideoReferenceImageSlotCount = isCanvasSingleVideoInputItem ? 0 : canvasVideoInputMode === 'FLF' ? 2 : 9;
-                          const canvasVideoReferenceVideoSlotCount = isCanvasSingleVideoInputItem ? 1 : canvasVideoInputMode === 'FLF' ? 0 : 1;
+                          const canvasVideoReferenceImageSlotCount = isCanvasSingleVideoInputItem
+                            ? 0
+                            : canvasVideoReferenceSlots.imageSlots;
+                          const canvasVideoReferenceVideoSlotCount = isCanvasSingleVideoInputItem
+                            ? 1
+                            : canvasVideoReferenceSlots.videoSlots;
                           const canvasVideoReferenceSlotCount = canvasVideoReferenceImageSlotCount + canvasVideoReferenceVideoSlotCount;
                           const canvasVideoReferenceOverflowCount = Math.max(0, canvasVideoReferenceImageItems.length - canvasVideoReferenceImageSlotCount)
                             + Math.max(0, canvasVideoReferenceVideoItems.length - canvasVideoReferenceVideoSlotCount);
@@ -35399,11 +35265,11 @@ useEffect(() => {
                                                   ? '参考视频1'
                                                   : canvasVideoInputMode === 'FLF'
                                                   ? (inputIndex === 0 ? '首帧' : '尾帧')
-                                                  : `参考图${inputIndex + 1}`;
+                                                  : canvasVideoReferenceSlotLabels[inputIndex] || `参考图${inputIndex + 1}`;
                                                 return (
                                                   <span
                                                     key={inputItem?.id || `video-reference-${inputIndex}`}
-                                                    className={`group/reference-thumbnail relative flex h-14 ${canvasVideoInputMode === 'FLF' || isVideoReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[14px] text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60`}
+                                                    className={`group/reference-thumbnail relative flex h-14 ${isCanvasVeoIngredientMode ? 'w-[68px]' : canvasVideoInputMode === 'FLF' || isVideoReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[14px] text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60`}
                                                     aria-label={inputItem ? '双击移除输入' : `添加${slotLabel}`}
                                                     title={inputItem ? '双击移除输入' : `添加${slotLabel}`}
                                                     onPointerDown={(event) => event.stopPropagation()}
@@ -35447,6 +35313,11 @@ useEffect(() => {
                                                     <span className="pointer-events-none absolute left-1 top-1 z-10 flex h-4 min-w-4 items-center justify-center rounded bg-black/68 px-1 text-[9px] font-black leading-none text-white shadow-sm">
                                                       {inputIndex + 1}
                                                     </span>
+                                                    {isCanvasVeoIngredientMode && inputItem && (
+                                                      <span className="pointer-events-none absolute inset-x-1 bottom-1 z-10 rounded bg-black/68 px-1 py-0.5 text-center text-[8px] font-black leading-[10px] text-white shadow-sm">
+                                                        {slotLabel}
+                                                      </span>
+                                                    )}
                                                     {inputItem && (
                                                       <span
                                                         data-no-drag="true"
@@ -36561,100 +36432,60 @@ useEffect(() => {
                                             </>
                                           ) : (
                                             <>
-                                          {canvasAiMediaType === 'video' && (
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={canvasAiItemProvider}
-                                            options={canvasAiMediaType === 'video'
-                                              ? CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS
-                                              : CANVAS_AI_PROVIDER_SELECT_OPTIONS}
-                                            onChange={(value) => {
-                                              const provider = normalizeCanvasAiProvider(value);
-                                              const model = getCanvasAiResolvedModel(provider, '', canvasAiMediaType);
-                                              updateCanvasAiGeneratorData(canvasItem.id, {
-                                                provider,
-                                                model,
-                                                imageProtocol: undefined,
-                                                ...(supportsCanvasAiImageResolution(provider, model) ? {
-                                                  resolution: normalizeCanvasAiImageResolution(canvasItem.ai?.resolution),
-                                                } : {}),
-                                              });
-                                            }}
-                                            icon={<Settings className="h-3.5 w-3.5" />}
-                                            hideLabel
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`中转：${(canvasAiMediaType === 'video'
-                                              ? CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS
-                                              : CANVAS_AI_PROVIDER_SELECT_OPTIONS).find(option => option.value === canvasAiItemProvider)?.label || ''}`}
-                                            className={CANVAS_AI_NODE_ICON_SELECT_CLASS}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={190}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          )}
                                           <RoundedSelect
                                             data-no-drag="true"
                                             data-canvas-edit-control="true"
                                             value={canvasAiMediaType === 'image'
-                                              ? canvasItem.ai?.providerCandidates && canvasItem.ai.providerCandidates.length > 1
-                                                ? canvasAiGroupedModelChoiceValue(
-                                                  canvasItem.ai.providerCandidates[0].source,
-                                                  {
-                                                    source: canvasItem.ai.providerCandidates[0].source,
-                                                    provider: canvasAiItemProvider,
-                                                    model: canvasAiItemModel,
-                                                    providerChannelId: canvasItem.ai.providerChannelId,
-                                                  },
-                                                  canvasItem.ai.providerCandidates,
-                                                )
-                                                : canvasAiModelChoiceValue(
-                                                getCanvasAiImageCredentialSource(
-                                                  canvasAiItemProvider,
-                                                  canvasAiItemModel,
-                                                  canvasItem.ai?.credentialSource,
-                                                  canvasItem.ai?.providerChannelId,
-                                                ),
-                                                canvasAiItemProvider,
-                                                canvasAiItemModel,
-                                                canvasItem.ai?.providerChannelId,
-                                                )
+                                              ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel)
                                               : canvasAiItemModel}
                                             options={canvasAiMediaType === 'image'
-                                              ? getCanvasAiUnifiedImageModelOptions(
-                                                canvasAiItemProvider,
-                                                canvasAiItemModel,
-                                                canvasItem.ai?.credentialSource,
-                                                canvasItem.ai?.providerChannelId,
-                                                canvasItem.ai?.providerCandidates,
-                                              )
-                                              : getCanvasAiModelOptionsForProvider(canvasAiItemProvider, canvasAiMediaType)}
+                                              ? canvasAiUnifiedImageModelOptions
+                                              : CANVAS_AI_VIDEO_MODEL_OPTIONS}
                                             onChange={(value) => {
                                               const choice = canvasAiMediaType === 'image'
                                                 ? parseCanvasAiModelChoiceValue(value)
                                                 : null;
-                                              const provider = choice?.provider || canvasAiItemProvider;
+                                              const provider = choice?.provider
+                                                || (canvasAiMediaType === 'video'
+                                                  ? getCanvasAiVideoProviderForModel(value)
+                                                  : canvasAiItemProvider);
                                               const model = choice?.model || value;
+                                              const resolution = supportsCanvasAiImageResolution(provider, model)
+                                                ? normalizeCanvasAiImageResolutionForModel(
+                                                  provider,
+                                                  model,
+                                                  canvasItem.ai?.resolution,
+                                                )
+                                                : canvasAiMediaType === 'video' && provider === 'new-api'
+                                                  ? normalizeNewApiVideoResolutionForModel(model, canvasItem.ai?.resolution)
+                                                  : canvasItem.ai?.resolution;
                                               updateCanvasAiGeneratorData(canvasItem.id, {
                                                 ...(choice ? {
                                                   provider,
                                                   credentialSource: choice.source,
                                                   providerChannelId: choice.providerChannelId,
                                                   providerCandidates: choice.providerCandidates,
+                                                } : canvasAiMediaType === 'video' ? {
+                                                  provider,
+                                                  providerChannelId: undefined,
+                                                  providerCandidates: undefined,
                                                 } : {}),
                                                 model,
                                                 imageProtocol: undefined,
-                                                aspectRatio: normalizeCanvasAiAspectRatioForModel(
-                                                  model,
-                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
-                                                ),
-                                                ...(supportsCanvasAiImageResolution(provider, model) ? {
-                                                  resolution: normalizeCanvasAiImageResolutionForModel(
-                                                    provider,
+                                                aspectRatio: canvasAiMediaType === 'video' && provider === 'new-api'
+                                                  ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                  : normalizeCanvasAiAspectRatioForModel(
                                                     model,
-                                                    canvasItem.ai?.resolution,
+                                                    canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                    resolution,
                                                   ),
+                                                ...(canvasAiMediaType === 'video' && provider === 'new-api' ? {
+                                                  resolution,
+                                                  duration: normalizeNewApiVideoDurationForModel(model, canvasItem.ai?.duration),
+                                                  videoInputMode: model === 'sora-2' ? 'REF' : canvasItem.ai?.videoInputMode || 'REF',
+                                                } : {}),
+                                                ...(supportsCanvasAiImageResolution(provider, model) ? {
+                                                  resolution,
                                                 } : {}),
                                               });
                                             }}
@@ -36662,7 +36493,7 @@ useEffect(() => {
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
                                             title={`模型：${canvasAiMediaType === 'image'
                                               ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
-                                              : canvasAiItemModel}`}
+                                              : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === canvasAiItemModel)?.label || canvasAiItemModel}`}
                                             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -36672,25 +36503,34 @@ useEffect(() => {
                                           />
                                           <RoundedSelect
                                             data-no-drag="true"
-                                            value={normalizeCanvasAiAspectRatioForModel(
-                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
-                                              canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
-                                            )}
-                                            options={getCanvasAiAspectRatioOptionsForModel(
-                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))
-                                            )}
+                                            value={isCanvasAiNewApiVideo
+                                              ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                              : normalizeCanvasAiAspectRatioForModel(
+                                                canvasAiItemModel,
+                                                canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                canvasAiItemImageResolution,
+                                              )}
+                                            options={isCanvasAiNewApiVideo
+                                              ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
+                                              : getCanvasAiAspectRatioOptionsForModel(
+                                                canvasAiItemModel,
+                                                canvasAiItemImageResolution,
+                                              )}
                                             onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
                                             labelClassName="text-center leading-none"
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`${isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? '分辨率' : '比例'}：${normalizeCanvasAiAspectRatioForModel(
-                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
-                                              canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
-                                            )}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 'w-[156px]' : 'w-[62px]'}`}
+                                            title={`比例：${isCanvasAiNewApiVideo
+                                              ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                              : normalizeCanvasAiAspectRatioForModel(
+                                                canvasAiItemModel,
+                                                canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                canvasAiItemImageResolution,
+                                              )}`}
+                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution) ? 'w-[156px]' : 'w-[62px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                             selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 188 : 86}
+                                            menuMinWidth={usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution) ? 188 : 86}
                                                 menuScale={canvasAiMenuScale}
                                           />
                                           {canvasAiSupportsImageResolution && (
@@ -36698,13 +36538,21 @@ useEffect(() => {
                                             data-no-drag="true"
                                             value={canvasAiItemImageResolution}
                                             options={canvasAiImageResolutionOptions}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                              resolution: normalizeCanvasAiImageResolutionForModel(
+                                            onChange={(value) => {
+                                              const resolution = normalizeCanvasAiImageResolutionForModel(
                                                 canvasAiItemProvider,
                                                 canvasAiItemModel,
                                                 value,
-                                              ),
-                                            })}
+                                              );
+                                              updateCanvasAiGeneratorData(canvasItem.id, {
+                                                resolution,
+                                                aspectRatio: normalizeCanvasAiAspectRatioForModel(
+                                                  canvasAiItemModel,
+                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                  resolution,
+                                                ),
+                                              });
+                                            }}
                                             labelClassName="text-center leading-none"
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
                                             title={`清晰度：${canvasAiItemImageResolution.toUpperCase()}`}
@@ -36736,12 +36584,12 @@ useEffect(() => {
                                             <>
                                               <RoundedSelect
                                                 data-no-drag="true"
-                                                value={canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION}
-                                                options={CANVAS_AI_VIDEO_RESOLUTION_OPTIONS}
+                                                value={canvasAiVideoResolution}
+                                                options={canvasAiVideoResolutionOptions}
                                                 onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { resolution: value })}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`分辨率：${canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION}`}
+                                                title={`分辨率：${canvasAiVideoResolution}`}
                                                 className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[70px]`}
                                                 menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -36749,14 +36597,15 @@ useEffect(() => {
                                                 menuMinWidth={86}
                                                 menuScale={canvasAiMenuScale}
                                               />
+                                              {canvasAiVideoSupportsFirstLastFrame && (
                                               <RoundedSelect
                                                 data-no-drag="true"
-                                                value={canvasItem.ai?.videoInputMode || 'REF'}
+                                                value={canvasVideoInputMode}
                                                 options={CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS}
                                                 onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { videoInputMode: value === 'FLF' ? 'FLF' : 'REF' })}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`参考模式：${(canvasItem.ai?.videoInputMode || 'REF') === 'FLF' ? '首尾帧' : '参考图'}`}
+                                                title={`参考模式：${canvasVideoInputMode === 'FLF' ? '首尾帧' : '参考图'}`}
                                                 className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[76px]`}
                                                 menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
@@ -36764,14 +36613,15 @@ useEffect(() => {
                                                 menuMinWidth={92}
                                                 menuScale={canvasAiMenuScale}
                                               />
+                                              )}
                                               <RoundedSelect
                                                 data-no-drag="true"
-                                                value={String(canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION)}
-                                                options={CANVAS_AI_VIDEO_DURATION_OPTIONS}
+                                                value={String(canvasAiVideoDuration)}
+                                                options={canvasAiVideoDurationOptions}
                                                 onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { duration: Number(value) || CANVAS_AI_DEFAULT_VIDEO_DURATION })}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`时长：${canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION} 秒`}
+                                                title={`时长：${canvasAiVideoDuration} 秒`}
                                                 className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[64px]`}
                                                 menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                                 optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}

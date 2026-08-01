@@ -2,21 +2,32 @@ import { describe, expect, it } from 'vitest';
 import {
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
+  CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
+  CANVAS_AI_VIDEO_MODEL_OPTIONS,
+  NEW_API_VIDEO_MODEL_DEFAULT,
   NEW_API_IMAGE_TASK_MAX_WAIT_MS,
   NEW_API_IMAGE_RESPONSE_FORMAT,
   NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
+  buildNewApiVideoPrompt,
   buildCanvasAiIndexedReferencePrompt,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
   getCanvasAiPublicImageModelPriority,
   getCanvasAiPublicImageModelName,
+  getCanvasAiPublicImageModelId,
   getCanvasAiImageResolutionValues,
   getCanvasAiSlotClientRequestId,
+  getCanvasAiVideoReferenceSlotLabels,
+  getCanvasAiVideoReferenceSlots,
+  getCanvasAiVideoProviderForModel,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
   getNewApiVideoDimensions,
+  getNewApiVideoDurationValues,
+  getNewApiVideoReferenceLimit,
+  getNewApiVideoResolutionValues,
   getXaisImageModelDisplayName,
   formatNewApiVideoFailureMessage,
   gptImage2SizeFromAspectRatio,
@@ -30,6 +41,7 @@ import {
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
+  normalizeNewApiVideoDurationForModel,
   orderCanvasAiReferenceSources,
   reconcileWalletImageCandidates,
   resolveCanvasAiReferenceProvider,
@@ -47,6 +59,16 @@ import {
 } from './canvasAiImage';
 
 describe('NewAPI image model mapping', () => {
+  it('keeps the canvas model menu fixed to the three public image models', () => {
+    expect(CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES).toEqual([
+      'Nano Banana Pro',
+      'Nano Banana 2',
+      'GPT Image 2',
+    ]);
+    expect(getCanvasAiPublicImageModelId('new-api', 'Nano Banana 2')).toBe('gemini-3.1-flash-image');
+    expect(getCanvasAiPublicImageModelId('xais-chat', 'GPT Image 2')).toBe('Xais Img2_2K');
+  });
+
   it.each([
     'gemini-3-pro-image',
     'Gemini3Pro',
@@ -385,6 +407,8 @@ describe('image resolution routing', () => {
     expect(gptImage2SizeFromAspectRatio('16:9', '1K')).toBe('1280x720');
     expect(gptImage2SizeFromAspectRatio('16:9', '2K')).toBe('2048x1152');
     expect(gptImage2SizeFromAspectRatio('3:4', '4K')).toBe('2400x3200');
+    expect(gptImage2SizeFromAspectRatio('2064x1376', '2K')).toBe('2064x1376');
+    expect(gptImage2SizeFromAspectRatio('3520x2352', '4K')).toBe('3520x2352');
   });
 
   it('adds size and quality for mapped NewAPI models', () => {
@@ -413,6 +437,11 @@ describe('image resolution routing', () => {
       quality: 'medium',
       output_format: 'png',
       background: 'transparent',
+    });
+    expect(newApiImageRequestParams('gpt-image-2', 1, '3520x2352', '4K')).toEqual({
+      n: 1,
+      size: '3520x2352',
+      quality: 'medium',
     });
   });
 
@@ -536,6 +565,40 @@ describe('NewAPI image protocol errors', () => {
 });
 
 describe('NewAPI video routing', () => {
+  it('exposes one fixed video model list and resolves its underlying provider', () => {
+    expect(NEW_API_VIDEO_MODEL_DEFAULT).toBe('veo-3.1');
+    expect(CANVAS_AI_VIDEO_MODEL_OPTIONS.map(option => option.value)).toEqual([
+      'seedance2',
+      'sora-2',
+      'veo-3.1',
+      'veo-3.1-fast',
+    ]);
+    expect(getCanvasAiVideoProviderForModel('seedance2')).toBe('xais-chat');
+    expect(getCanvasAiVideoProviderForModel('veo-3.1-fast')).toBe('new-api');
+  });
+
+  it('adapts the reference UI slots to each video model', () => {
+    expect(getCanvasAiVideoReferenceSlots('sora-2', 'FLF')).toEqual({
+      mode: 'REF', imageSlots: 1, videoSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('veo-3.1', 'REF')).toEqual({
+      mode: 'REF', imageSlots: 3, videoSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('veo-3.1-fast', 'FLF')).toEqual({
+      mode: 'FLF', imageSlots: 2, videoSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('seedance2', 'REF')).toEqual({
+      mode: 'REF', imageSlots: 9, videoSlots: 1,
+    });
+    expect(getCanvasAiVideoReferenceSlotLabels('veo-3.1', 'REF')).toEqual([
+      '主体', '场景/背景', '风格/纹理',
+    ]);
+    const oneReferencePrompt = buildNewApiVideoPrompt('veo-3.1', '产品环绕镜头', 'REF', 1);
+    expect(oneReferencePrompt).toContain('参考图1为主体参考');
+    expect(oneReferencePrompt).not.toContain('参考图2为场景/背景参考');
+    expect(buildNewApiVideoPrompt('veo-3.1', '产品环绕镜头', 'FLF', 2)).toBe('产品环绕镜头');
+  });
+
   it('explains upstream Cloudflare channel failures without blaming local networking', () => {
     expect(formatNewApiVideoFailureMessage('list recipes failed: cloudflare 403 challenge (status=429)'))
       .toContain('NewAPI 上游视频渠道');
@@ -561,35 +624,70 @@ describe('NewAPI video routing', () => {
   it('normalizes video endpoints without duplicating v1', () => {
     expect(normalizeNewApiBaseEndpoint('https://api.example.com/v1/video/generations/task-123'))
       .toBe('https://api.example.com/v1');
+    expect(normalizeNewApiBaseEndpoint('https://api.example.com/v1/videos/task-123'))
+      .toBe('https://api.example.com/v1');
   });
 
-  it('builds standard NewAPI video parameters and preserves first/last frame metadata', () => {
+  it('applies the Sora 2 and Veo 3.1 model constraints', () => {
+    expect(getNewApiVideoResolutionValues('sora-2')).toEqual(['720p']);
+    expect(getNewApiVideoResolutionValues('veo-3.1')).toEqual(['720p', '1080p']);
+    expect(getNewApiVideoDurationValues('sora-2')).toEqual([8, 12]);
+    expect(getNewApiVideoDurationValues('veo-3.1-fast')).toEqual([4, 5, 6, 7, 8]);
+    expect(normalizeNewApiVideoDurationForModel('sora-2', 10)).toBe(8);
+    expect(getNewApiVideoReferenceLimit('sora-2')).toBe(1);
+    expect(getNewApiVideoReferenceLimit('veo-3.1')).toBe(3);
+  });
+
+  it('builds the /v1/videos payload for Veo with up to three ingredient references', () => {
     expect(getNewApiVideoDimensions('16:9', '1080p')).toEqual({ width: 1920, height: 1080 });
     expect(newApiVideoRequestParams({
-      model: 'seedance-1.5-pro',
+      model: 'veo-3.1-fast',
       prompt: 'Camera moves around the product',
-      inputImages: ['https://example.com/start.png', 'https://example.com/end.png'],
+      inputImages: [
+        'https://example.com/person.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+        'https://example.com/ignored.png',
+      ],
       aspectRatio: '16:9',
       resolution: '1080p',
       duration: 8,
-      inputMode: 'FLF',
+      inputMode: 'REF',
       count: 1,
     })).toEqual({
-      model: 'seedance-1.5-pro',
-      prompt: 'Camera moves around the product',
-      image: 'https://example.com/start.png',
+      model: 'veo-3.1-fast',
+      prompt: [
+        'Camera moves around the product',
+        '',
+        '参考图用途（请按编号分别使用，不要混淆）：',
+        '参考图1为主体参考：保持主体（人物、角色或产品等）的外观、结构、颜色和关键识别特征一致。',
+        '参考图2为场景/背景参考：保持环境、空间关系、构图和光线氛围。',
+        '参考图3为风格/纹理参考：保持材质、色彩、质感和整体视觉风格。',
+      ].join('\n'),
       duration: 8,
-      width: 1920,
-      height: 1080,
-      n: 1,
-      response_format: 'url',
-      metadata: {
-        aspect_ratio: '16:9',
-        resolution: '1080p',
-        input_mode: 'FLF',
-        end_image: 'https://example.com/end.png',
-        reference_images: ['https://example.com/start.png', 'https://example.com/end.png'],
-      },
+      size: '1920x1080',
+      images: [
+        'https://example.com/person.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+      ],
+    });
+  });
+
+  it('limits Sora 2 to one reference image and 720p', () => {
+    expect(newApiVideoRequestParams({
+      model: 'sora-2',
+      prompt: 'Slow push in',
+      inputImages: ['https://example.com/start.png', 'https://example.com/ignored.png'],
+      aspectRatio: '9:16',
+      resolution: '1080p',
+      duration: 12,
+    })).toEqual({
+      model: 'sora-2',
+      prompt: 'Slow push in',
+      duration: 12,
+      size: '720x1280',
+      images: ['https://example.com/start.png'],
     });
   });
 });
