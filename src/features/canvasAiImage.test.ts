@@ -4,6 +4,8 @@ import {
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
   CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
   CANVAS_AI_VIDEO_MODEL_OPTIONS,
+  NEW_API_SEEDANCE_2_FAST_MODEL,
+  NEW_API_SEEDANCE_2_MODEL,
   NEW_API_VIDEO_MODEL_DEFAULT,
   NEW_API_IMAGE_TASK_MAX_WAIT_MS,
   NEW_API_IMAGE_RESPONSE_FORMAT,
@@ -20,6 +22,8 @@ import {
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
   getCanvasAiVideoReferenceSlots,
+  getCanvasAiVideoModelCandidates,
+  getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
@@ -569,13 +573,21 @@ describe('NewAPI video routing', () => {
   it('exposes one fixed video model list and resolves its underlying provider', () => {
     expect(NEW_API_VIDEO_MODEL_DEFAULT).toBe('veo-3.1');
     expect(CANVAS_AI_VIDEO_MODEL_OPTIONS.map(option => option.value)).toEqual([
-      'seedance2',
+      'SourceMix2.0',
+      'SourceMix2.0-fast',
       'sora-2',
       'veo-3.1',
       'veo-3.1-fast',
     ]);
     expect(getCanvasAiVideoProviderForModel('seedance2')).toBe('xais-chat');
+    expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_MODEL)).toBe('new-api');
+    expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_FAST_MODEL)).toBe('new-api');
     expect(getCanvasAiVideoProviderForModel('veo-3.1-fast')).toBe('new-api');
+    expect(getCanvasAiVideoModelOptionValue('seedance2')).toBe('SourceMix2.0');
+    expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet')).toEqual([
+      { source: 'wallet', provider: 'new-api', model: 'SourceMix2.0' },
+      { source: 'wallet', provider: 'xais-chat', model: 'seedance2' },
+    ]);
   });
 
   it('adapts the reference UI slots to each video model', () => {
@@ -590,6 +602,9 @@ describe('NewAPI video routing', () => {
     });
     expect(getCanvasAiVideoReferenceSlots('seedance2', 'REF')).toEqual({
       mode: 'REF', imageSlots: 9, videoSlots: 1,
+    });
+    expect(getCanvasAiVideoReferenceSlots(NEW_API_SEEDANCE_2_MODEL, 'REF')).toEqual({
+      mode: 'REF', imageSlots: 3, videoSlots: 0,
     });
     expect(getCanvasAiVideoReferenceSlotLabels('veo-3.1', 'REF')).toEqual([
       '主体', '场景/背景', '风格/纹理',
@@ -672,6 +687,33 @@ describe('NewAPI video routing', () => {
       size: '1920x1080',
       images: [
         'https://example.com/person.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+      ],
+    });
+  });
+
+  it('uses the Veo request shape for NewAPI Seedance 2 models', () => {
+    expect(newApiVideoRequestParams({
+      model: NEW_API_SEEDANCE_2_MODEL,
+      prompt: 'Orbit around the product',
+      inputImages: [
+        'https://example.com/product.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+        'https://example.com/ignored.png',
+      ],
+      aspectRatio: '9:16',
+      resolution: '1080p',
+      duration: 6,
+      inputMode: 'REF',
+    })).toEqual({
+      model: 'SourceMix2.0',
+      prompt: 'Orbit around the product',
+      duration: 6,
+      size: '1080x1920',
+      images: [
+        'https://example.com/product.png',
         'https://example.com/scene.png',
         'https://example.com/style.png',
       ],

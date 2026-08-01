@@ -252,7 +252,7 @@ import {
   shouldShowCanvasGenerationCredits,
   type CanvasAiCreditPricing,
 } from './features/canvasGenerationCredits';
-import { getAutoRecoverableAiImageResultSource } from './features/aiImageResultRecovery';
+import { getAutoRecoverableAiMediaResultSource } from './features/aiImageResultRecovery';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -399,6 +399,7 @@ import {
   NEW_API_ENDPOINT_DEFAULT,
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
+  NEW_API_SEEDANCE_2_MODEL,
   NEW_API_VIDEO_MODEL_DEFAULT,
   NEW_API_VIDEO_MODEL_OPTIONS,
   OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
@@ -417,6 +418,8 @@ import {
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
   getCanvasAiVideoReferenceSlots,
+  getCanvasAiVideoModelCandidates,
+  getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelId,
@@ -6676,6 +6679,30 @@ function MainApp() {
     }
     return trimmed || getCanvasAiDefaultModel(provider, mediaType);
   };
+
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    updateCanvasItemsImmediate(previous => {
+      let changed = false;
+      const next = previous.map(item => {
+        if (item.ai?.type !== 'video-generator' || item.ai.model !== XAIS_CHAT_VIDEO_MODEL_DEFAULT) return item;
+        const candidates = getCanvasAiVideoModelCandidates(NEW_API_SEEDANCE_2_MODEL, canvasAiCredentialSource);
+        changed = true;
+        return {
+          ...item,
+          ai: {
+            ...item.ai,
+            provider: 'new-api' as const,
+            model: NEW_API_SEEDANCE_2_MODEL,
+            credentialSource: canvasAiCredentialSource,
+            providerChannelId: undefined,
+            providerCandidates: candidates,
+          },
+        };
+      });
+      return changed ? next : previous;
+    });
+  }, [canvasAiCredentialSource, isCanvasMode]);
   const canvasAiPromptPresets = useMemo(() => {
     const defaultIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
     const customById = new Map(customCanvasAiPromptPresets.map(preset => [preset.id, preset]));
@@ -19860,7 +19887,7 @@ function MainApp() {
                 ? recoverCanvasAiOutputWithUsableResult({ ...currentOutput, ...patch })
                 : currentOutput
             ));
-            options.updateAi({ outputs: currentOutputs });
+            (options.forceUpdateAi || options.updateAi)({ outputs: currentOutputs });
             if (drawerItem) {
               setItems(prev => prev.map(item => item.id === drawerItem.id
                 ? {
@@ -19870,6 +19897,11 @@ function MainApp() {
                     sourceUrl: source,
                   }
                 : item));
+            }
+            if (patch.path) {
+              window.setTimeout(() => {
+                setCanvasAiOutputSourceRecoveryTick(value => value + 1);
+              }, 0);
             }
           };
           void (async () => {
@@ -31269,26 +31301,32 @@ useEffect(() => {
     );
     if (availableSlots === 0) return;
 
+    const drawerItemsById = new Map(itemsRef.current.map(item => [item.id, item]));
     const candidates = canvasItems.flatMap((canvasItem) => (
       getCanvasAiOutputPreviewSlots(canvasItem).map((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         const source = output.sourceUrl || output.url || '';
-        const stableSource = getAutoRecoverableAiImageResultSource({
+        const drawerItem = output.id ? drawerItemsById.get(output.id) : undefined;
+        const drawerPath = drawerItem?.type === mediaType ? String(drawerItem.path || '').trim() : '';
+        const drawerCanRepair = output.status === 'success' && !output.path && !!drawerPath;
+        const stableSource = getAutoRecoverableAiMediaResultSource({
           mediaType,
           status: output.status,
           cacheStatus: output.cacheStatus,
           path: output.path,
           source,
         });
-        const recoveryKey = stableSource
-          ? `${canvasItem.id}:${output.id || outputIndex}:${stableSource}`
+        const recoveryKey = drawerCanRepair
+          ? `${canvasItem.id}:${output.id || outputIndex}:drawer:${drawerPath}`
+          : stableSource
+            ? `${canvasItem.id}:${output.id || outputIndex}:${stableSource}`
           : '';
-        const shouldRecover = !!stableSource
+        const shouldRecover = (drawerCanRepair || !!stableSource)
           && !!recoveryKey
           && !canvasAiOutputSourceRecoveryAttemptedRef.current.has(recoveryKey)
           && !canvasAiOutputSourceRecoveryInFlightRef.current.has(recoveryKey);
         return shouldRecover
-          ? { canvasItem, output, outputIndex, stableSource, recoveryKey }
+          ? { canvasItem, output, outputIndex, stableSource, recoveryKey, drawerItem, drawerPath, mediaType }
           : null;
       })
     )).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
@@ -31300,8 +31338,39 @@ useEffect(() => {
         outputIndex,
         stableSource,
         recoveryKey,
+        drawerItem,
+        drawerPath,
+        mediaType,
       } = candidate;
       canvasAiOutputSourceRecoveryAttemptedRef.current.add(recoveryKey);
+      if (drawerItem && drawerPath) {
+        const localUrl = convertFileSrc(drawerPath);
+        updateCanvasItemsImmediate(prev => prev.map((item) => {
+          if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
+          let changed = false;
+          const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
+            const matches = output.id
+              ? currentOutput.id === output.id
+              : currentIndex === outputIndex;
+            if (!matches) return currentOutput;
+            changed = true;
+            return {
+              ...currentOutput,
+              mediaType,
+              url: localUrl,
+              path: drawerPath,
+              sourceUrl: currentOutput.sourceUrl || drawerItem.sourceUrl || drawerItem.originalUrl,
+              thumbnail: currentOutput.thumbnail || drawerItem.thumbnail,
+              cacheStatus: 'ready' as const,
+            };
+          });
+          return changed ? { ...item, ai: { ...item.ai, outputs } } : item;
+        }));
+        scheduleCanvasChangedNodesPatchSave([canvasItem.id]);
+        scheduleCanvasStateSave({ syncNodes: false });
+        return;
+      }
+      if (!stableSource) return;
       canvasAiOutputSourceRecoveryInFlightRef.current.add(recoveryKey);
       void cacheCanvasGeneratedImageSource(
         stableSource,
@@ -31340,16 +31409,18 @@ useEffect(() => {
         }
         scheduleCanvasChangedNodesPatchSave([canvasItem.id]);
         scheduleCanvasStateSave({ syncNodes: false });
-        enqueueCanvasAiOutputThumbnailJob({
-          key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}`,
-          canvasItemId: canvasItem.id,
-          outputIndex,
-          outputId: output.id,
-          source: cached.url,
-          path: cached.path,
-        });
+        if (mediaType === 'image') {
+          enqueueCanvasAiOutputThumbnailJob({
+            key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}`,
+            canvasItemId: canvasItem.id,
+            outputIndex,
+            outputId: output.id,
+            source: cached.url,
+            path: cached.path,
+          });
+        }
       }).catch((error) => {
-        console.warn('旧 AI 图片节点自动恢复失败:', error);
+        console.warn('旧 AI 媒体节点自动恢复失败:', error);
       }).finally(() => {
         canvasAiOutputSourceRecoveryInFlightRef.current.delete(recoveryKey);
         window.setTimeout(() => {
@@ -36484,7 +36555,7 @@ useEffect(() => {
                                             data-canvas-edit-control="true"
                                             value={canvasAiMediaType === 'image'
                                               ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel)
-                                              : canvasAiItemModel}
+                                              : getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
                                             options={canvasAiMediaType === 'image'
                                               ? canvasAiUnifiedImageModelOptions
                                               : CANVAS_AI_VIDEO_MODEL_OPTIONS}
@@ -36492,11 +36563,15 @@ useEffect(() => {
                                               const choice = canvasAiMediaType === 'image'
                                                 ? parseCanvasAiModelChoiceValue(value)
                                                 : null;
+                                              const videoCandidates = canvasAiMediaType === 'video'
+                                                ? getCanvasAiVideoModelCandidates(value, canvasAiCredentialSource)
+                                                : [];
                                               const provider = choice?.provider
+                                                || videoCandidates[0]?.provider
                                                 || (canvasAiMediaType === 'video'
                                                   ? getCanvasAiVideoProviderForModel(value)
                                                   : canvasAiItemProvider);
-                                              const model = choice?.model || value;
+                                              const model = choice?.model || videoCandidates[0]?.model || value;
                                               const resolution = supportsCanvasAiImageResolution(provider, model)
                                                 ? normalizeCanvasAiImageResolutionForModel(
                                                   provider,
@@ -36514,8 +36589,9 @@ useEffect(() => {
                                                   providerCandidates: choice.providerCandidates,
                                                 } : canvasAiMediaType === 'video' ? {
                                                   provider,
+                                                  credentialSource: canvasAiCredentialSource,
                                                   providerChannelId: undefined,
-                                                  providerCandidates: undefined,
+                                                  providerCandidates: videoCandidates.length > 1 ? videoCandidates : undefined,
                                                 } : {}),
                                                 model,
                                                 imageProtocol: undefined,
@@ -36540,7 +36616,7 @@ useEffect(() => {
                                             chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
                                             title={`模型：${canvasAiMediaType === 'image'
                                               ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
-                                              : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === canvasAiItemModel)?.label || canvasAiItemModel}`}
+                                              : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === getCanvasAiVideoModelOptionValue(canvasAiItemModel))?.label || canvasAiItemModel}`}
                                             className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
                                             menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                             optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}

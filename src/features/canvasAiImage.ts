@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AiGatewayKind } from './agentModel';
-import type { CanvasAiModelCandidate, NewApiImageProtocol } from './canvasModel';
+import type { CanvasAiCredentialSource, CanvasAiModelCandidate, NewApiImageProtocol } from './canvasModel';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -12,23 +12,48 @@ export const NEW_API_ENDPOINT_PLACEHOLDER = 'https://your-new-api.example.com/v1
 export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://xais.dchai.cn';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Xais Nano Pro_2K';
 export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
+export const NEW_API_SEEDANCE_2_MODEL = 'SourceMix2.0';
+export const NEW_API_SEEDANCE_2_FAST_MODEL = 'SourceMix2.0-fast';
 export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
 export const NEW_API_VIDEO_MODEL_DEFAULT = 'veo-3.1';
 export const NEW_API_VIDEO_MODEL_OPTIONS = [
+  { value: NEW_API_SEEDANCE_2_MODEL, label: 'Seedance 2.0（不支持人脸）' },
+  { value: NEW_API_SEEDANCE_2_FAST_MODEL, label: 'Seedance 2.0 Mini（不支持人脸）' },
   { value: 'sora-2', label: 'Sora 2' },
   { value: 'veo-3.1', label: 'Veo 3.1' },
   { value: 'veo-3.1-fast', label: 'Veo 3.1 Fast' },
 ];
 export const CANVAS_AI_VIDEO_MODEL_OPTIONS = [
-  { value: XAIS_CHAT_VIDEO_MODEL_DEFAULT, label: 'Seedance 2.0' },
   ...NEW_API_VIDEO_MODEL_OPTIONS,
 ];
 
 export const getCanvasAiVideoProviderForModel = (model?: string | null): CanvasAiImageProvider => (
   String(model || '').trim() === XAIS_CHAT_VIDEO_MODEL_DEFAULT ? 'xais-chat' : 'new-api'
 );
+
+export const getCanvasAiVideoModelOptionValue = (model?: string | null) => (
+  String(model || '').trim() === XAIS_CHAT_VIDEO_MODEL_DEFAULT
+    ? NEW_API_SEEDANCE_2_MODEL
+    : String(model || '').trim()
+);
+
+export const getCanvasAiVideoModelCandidates = (
+  model?: string | null,
+  source: CanvasAiCredentialSource = 'wallet',
+): CanvasAiModelCandidate[] => {
+  const selectedModel = getCanvasAiVideoModelOptionValue(model);
+  if (selectedModel === NEW_API_SEEDANCE_2_MODEL) {
+    return [
+      { source, provider: 'new-api', model: NEW_API_SEEDANCE_2_MODEL },
+      { source, provider: 'xais-chat', model: XAIS_CHAT_VIDEO_MODEL_DEFAULT },
+    ];
+  }
+  return selectedModel
+    ? [{ source, provider: getCanvasAiVideoProviderForModel(selectedModel), model: selectedModel }]
+    : [];
+};
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES = 15;
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES * 60 * 1000;
@@ -141,7 +166,7 @@ const supportsNewApiImageFamilyResolution = (model?: string | null) => {
 
 export const isLikelyNewApiVideoModel = (model?: string | null) => {
   const normalized = String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  return /(?:^|-)(video|sora|veo|seedance|kling|hailuo|minimax|runway|luma|pixverse|vidu|jimeng)(?:$|-|\d)/.test(normalized)
+  return /(?:^|-)(video|sora|veo|seedance|sourcemix|kling|hailuo|minimax|runway|luma|pixverse|vidu|jimeng)(?:$|-|\d)/.test(normalized)
     || /(?:image2video|text2video|i2v|t2v|wan\d.*video|video.*wan\d)/.test(normalized);
 };
 
