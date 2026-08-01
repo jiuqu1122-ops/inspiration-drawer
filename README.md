@@ -4,19 +4,17 @@
 
 ## 下载
 
-当前版本：**6.0.2**
+当前版本：**6.0.3**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.2/Inspiration.Drawer_6.0.2_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.2)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.3/Inspiration.Drawer_6.0.3_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.3)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 6.0.2 更新
+## 6.0.3 更新
 
-- 修复 GPT Image 2 钱包渠道选择宽屏或竖屏尺寸后仍按 `1:1` 生成的问题。
-- 新增 AI 分类视图，可按产品类别、造型参考与主色调快速筛选图片，并自动合并常见同义标签。
-- 优化画布生成节点、设置面板、本地增强工具和素材列表的组件结构，提升大型画布的维护性与交互稳定性。
-- 改进画布节点自动尺寸计算和大量生成结果的布局表现。
+- 新增图片和视频节点的提示词优化按钮，可直接在文本框中优化并回填提示词。
+- 优化提示词按钮的视觉样式，适配画布浅色和深色模式。
 
 ## 主要功能
 

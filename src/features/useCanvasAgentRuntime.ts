@@ -2458,6 +2458,39 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     }
   }, [busy, codexStatus, markWorkflowPlanningFailure, patchConversation, patchMessage, runCodexTurn, runOpenAiLoop, runWorkflowRemotePlanning]);
 
+  const optimizePrompt = useCallback(async (content: string, mediaType: 'image' | 'video') => {
+    const text = content.trim();
+    if (!text) return '';
+    if (settingsRef.current.provider !== 'openai-compatible') {
+      throw new Error('提示词优化需要先在 Agent 设置中切换到 API 模式');
+    }
+
+    const requestId = createAgentId('prompt-optimize');
+    const mediaInstruction = mediaType === 'video'
+      ? '这是视频生成提示词。补充并组织主体、动作与时间节奏、镜头运动、景别、运镜速度、场景、光线和视觉风格；不要凭空改变用户意图。'
+      : '这是图片生成提示词。补充并组织主体、构图、视角、材质、光线、色彩、背景和视觉风格；不要凭空改变用户意图。';
+    const result = await invoke<OpenAiChatResult>('agent_openai_chat', {
+      request: {
+        requestId,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              '你是专业的生成式媒体提示词优化器。',
+              mediaInstruction,
+              '保留原提示词的主体、核心动作和风格方向，只做必要的专业化补全与重组。',
+              '请沿用原提示词的主要语言，只返回一段可直接粘贴到生成模型的最终提示词，不要解释、不要标题、不要 Markdown。',
+            ].join('\n'),
+          },
+          { role: 'user', content: text },
+        ],
+        tools: [],
+        model: settingsRef.current.apiModel,
+      },
+    });
+    return result.content.trim();
+  }, []);
+
   const resolveToolCall = useCallback(async (toolCallId: string, approved: boolean) => {
     const run = [...pendingToolRunsRef.current.values()]
       .find(value => value.calls.some(call => call.id === toolCallId));
@@ -2732,6 +2765,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     activeConversationId,
     busy,
     sendMessage,
+    optimizePrompt,
     cancelCurrent,
     retryLast,
     resolveToolCall,

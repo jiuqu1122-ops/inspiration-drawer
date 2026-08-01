@@ -3731,6 +3731,7 @@ function MainApp() {
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
+  const [canvasPromptOptimizingId, setCanvasPromptOptimizingId] = useState<string | null>(null);
   const [canvasAiExpandedOutputNodeIds, setCanvasAiExpandedOutputNodeIds] = useState<Set<string>>(() => new Set());
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
   const [canvasBrushEditor, setCanvasBrushEditor] = useState<CanvasBrushEditorState | null>(null);
@@ -4004,6 +4005,7 @@ function MainApp() {
   const canvasScrollWriteFrameRef = useRef<number | null>(null);
   const canvasAiPromptDraftTimersRef = useRef<Record<string, number>>({});
   const canvasAiPromptDraftValuesRef = useRef<Record<string, string>>({});
+  const canvasAiPromptTextAreaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const canvasTextDraftTimersRef = useRef<Record<string, number>>({});
   const canvasTextDraftValuesRef = useRef<Record<string, string>>({});
   const canvasTextAreaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
@@ -17672,6 +17674,47 @@ function MainApp() {
     }, 900);
   };
 
+  const optimizeCanvasPrompt = async (canvasId: string) => {
+    if (canvasPromptOptimizingId) return;
+    const target = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!target || (target.ai?.type !== 'image-generator' && target.ai?.type !== 'video-generator')) return;
+
+    const prompt = canvasAiPromptDraftValuesRef.current[canvasId]
+      ?? canvasAiPromptTextAreaRefs.current[canvasId]?.value
+      ?? target.item.content
+      ?? '';
+    if (!prompt.trim()) {
+      showToast('请先在文本框中输入提示词');
+      return;
+    }
+
+    updateCanvasSelection([canvasId]);
+    setCanvasPromptOptimizingId(canvasId);
+    try {
+      const mediaType = target.ai.type === 'video-generator' ? 'video' : 'image';
+      const optimized = await canvasAgent.optimizePrompt(prompt, mediaType);
+      const nextPrompt = optimized.trim();
+      if (!nextPrompt) throw new Error('模型没有返回可用的优化结果');
+
+      const livePrompt = canvasAiPromptTextAreaRefs.current[canvasId]?.value
+        ?? canvasItemsRef.current.find(item => item.id === canvasId)?.item.content
+        ?? '';
+      if (livePrompt.trim() !== prompt.trim()) {
+        showToast('提示词已被修改，未覆盖当前内容');
+        return;
+      }
+
+      const textarea = canvasAiPromptTextAreaRefs.current[canvasId];
+      if (textarea) textarea.value = nextPrompt;
+      commitCanvasAiPromptDraft(canvasId, nextPrompt, true);
+      showToast('提示词已优化');
+    } catch (error) {
+      showToast(`提示词优化失败：${error instanceof Error ? error.message : String(error || '请稍后重试')}`);
+    } finally {
+      setCanvasPromptOptimizingId(current => current === canvasId ? null : current);
+    }
+  };
+
   const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => {
     updateCanvasItemsImmediate(prev => prev.map(item => {
       if (item.id !== canvasId || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')) return item;
@@ -30442,6 +30485,7 @@ useEffect(() => {
     if (canvasSingleSelectedItemForRender) ids.add(canvasSingleSelectedItemForRender.id);
     if (canvasInputMenuForId) ids.add(canvasInputMenuForId);
     if (canvasAiPromptEditingId) ids.add(canvasAiPromptEditingId);
+    if (canvasPromptOptimizingId) ids.add(canvasPromptOptimizingId);
     if (canvasInputPickTargetId) ids.add(canvasInputPickTargetId);
     if (canvasConnectionDraft) {
       ids.add(canvasConnectionDraft.fromId);
@@ -30455,6 +30499,7 @@ useEffect(() => {
     canvasInputActionDraft,
     canvasInputMenuForId,
     canvasInputPickTargetId,
+    canvasPromptOptimizingId,
     canvasSelectedIds,
     canvasSingleSelectedItemForRender,
   ]);
@@ -35581,7 +35626,15 @@ useEffect(() => {
                                           </div>
                                         </div>
                                       ) : (
-                                        <textarea
+                                        <div
+                                          className="relative shrink-0"
+                                          style={{ height: canvasAiPromptHeight || undefined }}
+                                        >
+                                          <textarea
+                                          ref={(element) => {
+                                            if (element) canvasAiPromptTextAreaRefs.current[canvasItem.id] = element;
+                                            else delete canvasAiPromptTextAreaRefs.current[canvasItem.id];
+                                          }}
                                           data-no-drag="true"
                                           data-canvas-node-prompt="true"
                                           rows={4}
@@ -35600,11 +35653,33 @@ useEffect(() => {
                                           onPointerDown={(event) => event.stopPropagation()}
                                           onWheel={(event) => event.stopPropagation()}
                                           placeholder={canvasItem.ai?.presetLabel ? '补充这个预设的细节，不填也可以直接生成。' : canvasAiMediaType === 'video' ? '描述你想要的视频运动、镜头和画面...' : '描述你想要的画面...'}
-                                          className="shrink-0 resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
-                                          style={{
-                                            height: canvasAiPromptHeight || undefined,
-                                          }}
-                                        />
+                                          className="block h-full w-full resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 pr-24 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
+                                          />
+                                          {(canvasAiMediaType === 'image' || canvasAiMediaType === 'video') && (
+                                            <button
+                                              data-no-drag="true"
+                                              type="button"
+                                              disabled={canvasPromptOptimizingId === canvasItem.id}
+                                              onPointerDown={(event) => {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                              }}
+                                              onClick={(event) => {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                void optimizeCanvasPrompt(canvasItem.id);
+                                              }}
+                                              className="group/prompt-optimize absolute bottom-2 right-1.5 inline-flex h-7 items-center gap-1.5 rounded-[9px] border border-stone-200/80 bg-white/82 px-2 text-[10px] font-bold text-stone-500 shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_1px_0_rgba(255,255,255,0.8)] transition-[border-color,background-color,color,transform,box-shadow] hover:-translate-y-px hover:border-cyan-300/80 hover:bg-white hover:text-cyan-700 hover:shadow-[0_3px_8px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] active:translate-y-0 active:scale-[0.97] disabled:cursor-wait disabled:opacity-55 dark:border-white/[0.12] dark:bg-stone-950/58 dark:text-white/55 dark:shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.08)] dark:hover:border-cyan-300/35 dark:hover:bg-stone-900/78 dark:hover:text-cyan-100 dark:hover:shadow-[0_4px_12px_rgba(0,0,0,0.24)] motion-reduce:transition-colors"
+                                              title="使用 Agent 优化提示词"
+                                              aria-label="优化提示词"
+                                            >
+                                              <span className="flex h-4 w-4 items-center justify-center rounded-[5px] bg-cyan-500/10 text-cyan-600 transition-colors group-hover/prompt-optimize:bg-cyan-500/15 group-hover/prompt-optimize:text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-200 dark:group-hover/prompt-optimize:bg-cyan-300/18 dark:group-hover/prompt-optimize:text-cyan-100">
+                                                <Sparkles className={`h-3 w-3 ${canvasPromptOptimizingId === canvasItem.id ? 'animate-pulse motion-reduce:animate-none' : ''}`} />
+                                              </span>
+                                              <span>{canvasPromptOptimizingId === canvasItem.id ? '优化中' : '优化'}</span>
+                                            </button>
+                                          )}
+                                        </div>
                                       )}
                                       {canvasItem.ai?.error && (
                                         <div
