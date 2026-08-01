@@ -177,6 +177,7 @@ struct R2Share {
 static CLOUDFLARED_SHARES: OnceLock<Mutex<HashMap<String, CloudflaredShare>>> = OnceLock::new();
 static R2_SHARES: OnceLock<Mutex<HashMap<String, R2Share>>> = OnceLock::new();
 static LOCAL_MEDIA_CACHE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static FFMPEG_TOOLS_INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static REAL_ESRGAN_ESTIMATE_TASKS: OnceLock<Mutex<HashMap<String, RealEsrganEstimateTaskHandle>>> =
     OnceLock::new();
 
@@ -2951,6 +2952,13 @@ fn ensure_ffmpeg_tools_installed(
     if ffmpeg_path.is_file() && ffprobe_path.is_file() {
         return Ok(());
     }
+    let _install_guard = FFMPEG_TOOLS_INSTALL_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "FFmpeg tools install lock is poisoned".to_string())?;
+    if ffmpeg_path.is_file() && ffprobe_path.is_file() {
+        return Ok(());
+    }
 
     let base_dir = media_tools_base_dir()?;
     let tools_dir = ffmpeg_tools_dir()?;
@@ -4692,6 +4700,18 @@ async fn run_rife_frame_interpolation(
 
     let _ = fs::remove_dir_all(&work_dir);
     result
+}
+
+#[tauri::command]
+async fn ensure_video_cfr_tools(
+    app_handle: tauri::AppHandle,
+    progress_id: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_media_tools_available(&app_handle, progress_id.as_deref()).map(|_| ())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -16965,6 +16985,7 @@ fn main() {
             install_rife_engine,
             get_rife_frame_interpolation_estimate,
             run_rife_frame_interpolation,
+            ensure_video_cfr_tools,
             normalize_video_cfr_if_needed,
             get_realesrgan_engine_status,
             install_realesrgan_engine,

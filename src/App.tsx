@@ -16650,7 +16650,7 @@ function MainApp() {
             : CANVAS_AI_DEFAULT_VIDEO_DURATION
           : undefined,
         videoInputMode: isVideo ? 'REF' : undefined,
-        videoCfrMode: isVideo ? 'auto' : undefined,
+        videoCfrMode: isVideo ? 'off' : undefined,
         imagePolicy,
         status: 'idle',
       },
@@ -19780,31 +19780,16 @@ function MainApp() {
       ) => {
         const source = url.trim();
         const durableOutputName = `${outputClientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
-        const publishRemoteImageImmediately = mediaType === 'image' && /^https?:\/\//i.test(source);
-        // Remote image results are usable as soon as the provider responds.
-        // Publish them immediately and let addGeneratedImagesToDrawer cache in
-        // the background so a slow OSS transfer never keeps the node working.
-        let cached = publishRemoteImageImmediately
+        const publishRemoteMediaImmediately = /^https?:\/\//i.test(source);
+        // Remote results are usable as soon as the provider responds. Publish
+        // them immediately so OSS caching and optional video CFR processing do
+        // not keep a completed generation in the working state.
+        const cached = publishRemoteMediaImmediately
           ? buildCanvasAiOutputRemoteResultPatch(source)
           : await cacheCanvasGeneratedImageSource(
             source,
             mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
           );
-        if (mediaType === 'video' && cached.path) {
-          try {
-            const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
-              inputPath: cached.path,
-              mode: (target.ai?.videoCfrMode || 'auto') === 'auto' ? 'auto-ai' : target.ai?.videoCfrMode,
-              progressId: target.id,
-            });
-            const normalizedPath = (normalized.outputPath || '').trim();
-            if (normalized.converted && normalizedPath) {
-              cached = { path: normalizedPath, url: convertFileSrc(normalizedPath), sourceUrl: source };
-            }
-          } catch (error) {
-            console.warn('AI 视频帧率自动检测/标准化失败，保留原视频:', error);
-          }
-        }
         const displayUrl = cached.url || source;
         // Avoid decoding a potentially huge generated image in the renderer
         // during result placement. Rust creates the small preview off-thread,
@@ -19829,7 +19814,7 @@ function MainApp() {
           name: durableOutputName,
           prompt,
           status: 'success',
-          cacheStatus: cached.path ? 'ready' : publishRemoteImageImmediately ? 'pending' : 'failed',
+          cacheStatus: cached.path ? 'ready' : publishRemoteMediaImmediately ? 'pending' : 'failed',
           error: undefined,
           generatedAt,
           width: size.width,
@@ -19866,6 +19851,62 @@ function MainApp() {
               currentOutputs = nextOutputs;
               options.updateAi({ outputs: nextOutputs });
             },
+          });
+        }
+        if (mediaType === 'video') {
+          const patchPublishedVideo = (patch: Partial<CanvasAiGeneratedOutput>) => {
+            currentOutputs = currentOutputs.map(currentOutput => (
+              currentOutput.id === output.id
+                ? recoverCanvasAiOutputWithUsableResult({ ...currentOutput, ...patch })
+                : currentOutput
+            ));
+            options.updateAi({ outputs: currentOutputs });
+            if (drawerItem) {
+              setItems(prev => prev.map(item => item.id === drawerItem.id
+                ? {
+                    ...item,
+                    ...(patch.url ? { url: patch.url } : {}),
+                    ...(patch.path ? { path: patch.path } : {}),
+                    sourceUrl: source,
+                  }
+                : item));
+            }
+          };
+          void (async () => {
+            const localCached = cached.path
+              ? cached
+              : await cacheCanvasGeneratedImageSource(source, `${durableOutputName}.mp4`);
+            if (!localCached.path) throw new Error('视频本地缓存没有返回文件路径');
+            const localUrl = localCached.url || convertFileSrc(localCached.path);
+            patchPublishedVideo({
+              url: localUrl,
+              path: localCached.path,
+              sourceUrl: source,
+              cacheStatus: 'ready',
+            });
+            const videoCfrMode = target.ai?.videoCfrMode || 'off';
+            if (videoCfrMode === 'off') return;
+            try {
+              const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
+                inputPath: localCached.path,
+                mode: videoCfrMode === 'auto' ? 'auto-ai' : videoCfrMode,
+                progressId: target.id,
+              });
+              const normalizedPath = (normalized.outputPath || '').trim();
+              if (normalized.converted && normalizedPath) {
+                patchPublishedVideo({
+                  url: convertFileSrc(normalizedPath),
+                  path: normalizedPath,
+                  sourceUrl: source,
+                  cacheStatus: 'ready',
+                });
+              }
+            } catch (error) {
+              console.warn('AI 视频帧率后台检测/标准化失败，保留原视频:', error);
+            }
+          })().catch((error) => {
+            console.warn('AI 生成视频后台缓存失败，保留 OSS 远程预览:', error);
+            patchPublishedVideo({ cacheStatus: 'failed' });
           });
         }
         return output;
@@ -36211,9 +36252,14 @@ useEffect(() => {
                                                 data-canvas-edit-control="true"
                                                 value={canvasItem.ai?.videoCfrMode || 'auto'}
                                                 options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  videoCfrMode: value === '24' || value === '30' || value === 'off' ? value : 'auto',
-                                                })}
+                                                onChange={(value) => {
+                                                  const videoCfrMode = value === '24' || value === '30' || value === 'off' ? value : 'auto';
+                                                  updateCanvasAiGeneratorData(canvasItem.id, { videoCfrMode });
+                                                  if (videoCfrMode !== 'off') {
+                                                    void invoke<void>('ensure_video_cfr_tools', { progressId: canvasItem.id })
+                                                      .catch(error => console.warn('FFmpeg / FFprobe 后台准备失败:', error));
+                                                  }
+                                                }}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
                                                 title="补帧前检测 VFR；自动模式只在需要时标准化"
@@ -36633,11 +36679,16 @@ useEffect(() => {
                                               <RoundedSelect
                                                 data-no-drag="true"
                                                 data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.videoCfrMode || 'auto'}
+                                                value={canvasItem.ai?.videoCfrMode || 'off'}
                                                 options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  videoCfrMode: value === '24' || value === '30' || value === 'off' ? value : 'auto',
-                                                })}
+                                                onChange={(value) => {
+                                                  const videoCfrMode = value === '24' || value === '30' || value === 'off' ? value : 'auto';
+                                                  updateCanvasAiGeneratorData(canvasItem.id, { videoCfrMode });
+                                                  if (videoCfrMode !== 'off') {
+                                                    void invoke<void>('ensure_video_cfr_tools', { progressId: canvasItem.id })
+                                                      .catch(error => console.warn('FFmpeg / FFprobe 后台准备失败:', error));
+                                                  }
+                                                }}
                                                 labelClassName="text-center leading-none"
                                                 chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
                                                 title="生成后检测帧率；自动模式只在需要时转 CFR"
