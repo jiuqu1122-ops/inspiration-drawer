@@ -6,6 +6,12 @@ import {
   isCanvasAiGeneratorType,
 } from './canvasAiRuntime';
 
+export const CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT = 6;
+
+export const getCanvasAiVisibleOutputs = <T>(outputs: T[], expanded = false) => (
+  expanded ? outputs : outputs.slice(0, CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT)
+);
+
 export const getCanvasItemDisplaySource = (item: BufferItem) => (
   item.url
   || (item.path ? convertFileSrc(item.path) : '')

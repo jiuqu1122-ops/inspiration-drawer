@@ -327,11 +327,14 @@ import {
   getDrawerExternalDragLocalCandidates,
 } from './features/drawerExternalDrag';
 import {
+  CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT,
   buildCanvasAiOutputLocalCachePatch,
   buildCanvasAiOutputRemoteResultPatch,
+  getCanvasAiVisibleOutputs,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './features/canvasAiOutputs';
+import { layoutCanvasItems } from './features/canvasAutoLayout';
 import { LruCache } from './features/lruCache';
 import {
   getPreviewOriginalSource,
@@ -4470,6 +4473,7 @@ function MainApp() {
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
+  const [canvasAiExpandedOutputNodeIds, setCanvasAiExpandedOutputNodeIds] = useState<Set<string>>(() => new Set());
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
   const [canvasBrushEditor, setCanvasBrushEditor] = useState<CanvasBrushEditorState | null>(null);
   const [canvasFolderPickerVisibleCount, setCanvasFolderPickerVisibleCount] = useState(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
@@ -12131,8 +12135,10 @@ function MainApp() {
   const getCanvasAiNodeDesignSizeForItem = (
     canvasItem: CanvasImageItem,
     promptExpanded = canvasAiPromptEditingId === canvasItem.id,
+    outputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id),
   ) => {
     const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
+    const visibleOutputs = getCanvasAiVisibleOutputs(canvasAiOutputs, outputsExpanded);
     const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
     const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
       ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
@@ -12141,7 +12147,7 @@ function MainApp() {
       type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
       aspectRatio: canvasAiOutputAspectRatio,
       count: canvasItem.ai?.count,
-      outputCount: canvasAiOutputs.length || undefined,
+      outputCount: visibleOutputs.length || undefined,
       hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
       hasError: !!canvasItem.ai?.error,
       promptText: canvasItem.item.content || '',
@@ -12155,6 +12161,45 @@ function MainApp() {
         : 0,
     });
   };
+
+  const canvasAiCompactOutputNodeSignature = canvasItems
+    .filter(item => (
+      (isCanvasAiGeneratorType(item.ai?.type) || item.ai?.type === 'workflow')
+      && (item.ai?.outputs?.length || 0) > CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
+    ))
+    .map(item => [
+      item.id,
+      item.ai?.outputs?.length || 0,
+      Math.round(item.width),
+      Math.round(item.height),
+      canvasAiExpandedOutputNodeIds.has(item.id) ? 1 : 0,
+    ].join(':'))
+    .join('|');
+
+  useEffect(() => {
+    if (!isCanvasMode || !canvasAiCompactOutputNodeSignature) return;
+    updateCanvasItemsImmediate(previous => {
+      let changed = false;
+      const next = previous.map(item => {
+        if (canvasAiExpandedOutputNodeIds.has(item.id)
+          || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')
+          || (item.ai?.outputs?.length || 0) <= CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT) return item;
+        const promptExpanded = canvasAiPromptEditingId === item.id;
+        const compactSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded, false);
+        const scale = Math.max(0.1, item.width / Math.max(1, compactSize.width));
+        const compactHeight = compactSize.height * scale;
+        if (item.height <= compactHeight + 8) return item;
+        changed = true;
+        return { ...item, height: compactHeight };
+      });
+      return changed ? next : previous;
+    });
+  }, [
+    canvasAiCompactOutputNodeSignature,
+    canvasAiExpandedOutputNodeIds,
+    canvasAiPromptEditingId,
+    isCanvasMode,
+  ]);
   void runAiAlchemyFromCard;
   void deleteAlchemyOnly;
 
@@ -13618,87 +13663,20 @@ function MainApp() {
       a.x - b.x ||
       (a.item.createdAt || 0) - (b.item.createdAt || 0)
     ));
-    const originalOrder = new Map(sortedItems.map((item, index) => [item.id, index]));
-    const itemById = new Map(sortedItems.map(item => [item.id, item]));
-    const placements = new Map<string, { x: number; y: number }>();
-    const hasInternalLinks = sortedItems.some(item => (item.inputs || []).some(inputId => targetIdSet.has(inputId)));
-    const columnGap = 104;
-    const rowGap = 46;
-
-    if (hasInternalLinks) {
-      const levelMemo = new Map<string, number>();
-      const visiting = new Set<string>();
-      const getLevel = (item: CanvasImageItem): number => {
-        const memo = levelMemo.get(item.id);
-        if (memo !== undefined) return memo;
-        if (visiting.has(item.id)) return 0;
-        visiting.add(item.id);
-        const parents = (item.inputs || [])
-          .map(inputId => itemById.get(inputId))
-          .filter((input): input is CanvasImageItem => !!input);
-        const level = parents.length > 0
-          ? Math.max(...parents.map(parent => getLevel(parent))) + 1
-          : 0;
-        visiting.delete(item.id);
-        levelMemo.set(item.id, level);
-        return level;
-      };
-
-      const grouped = new Map<number, CanvasImageItem[]>();
-      sortedItems.forEach(item => {
-        const level = getLevel(item);
-        grouped.set(level, [...(grouped.get(level) || []), item]);
-      });
-
-      let xCursor = startX;
-      Array.from(grouped.keys()).sort((a, b) => a - b).forEach(level => {
-        const column = [...(grouped.get(level) || [])].sort((a, b) => (
-          (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0)
-        ));
-        const columnWidth = Math.max(...column.map(item => item.width));
-        let yCursor = startY;
-
-        column.forEach(item => {
-          const parentCenters = (item.inputs || [])
-            .map(inputId => {
-              const parent = itemById.get(inputId);
-              const parentPos = placements.get(inputId);
-              return parent && parentPos ? parentPos.y + parent.height / 2 : null;
-            })
-            .filter((center): center is number => center !== null);
-          const parentAlignedY = parentCenters.length > 0
-            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length - item.height / 2
-            : null;
-          const y = snap(parentAlignedY === null ? yCursor : Math.max(yCursor, parentAlignedY));
-          placements.set(item.id, { x: snap(xCursor), y });
-          yCursor = y + item.height + rowGap;
-        });
-
-        xCursor += columnWidth + columnGap;
-      });
-    } else {
-      const maxWidth = Math.max(...sortedItems.map(item => item.width));
-      const maxHeight = Math.max(...sortedItems.map(item => item.height));
-      const columnCount = Math.max(1, Math.min(5, Math.ceil(Math.sqrt(sortedItems.length * 1.35))));
-      const cellWidth = maxWidth + 56;
-      const cellHeight = maxHeight + 56;
-
-      sortedItems.forEach((item, index) => {
-        const column = index % columnCount;
-        const row = Math.floor(index / columnCount);
-        placements.set(item.id, {
-          x: snap(startX + column * cellWidth),
-          y: snap(startY + row * cellHeight),
-        });
-      });
-    }
+    const { placements, bounds: arrangedBounds } = layoutCanvasItems(sortedItems, {
+      startX,
+      startY,
+      columnGap: 104,
+      masonryColumnGap: 56,
+      rowGap: 46,
+      sectionGap: 120,
+      maxLayerHeight: 1800,
+      maxMasonryWidth: 2400,
+      maxMasonryColumns: 5,
+      gridSize: 8,
+    });
 
     const arrangedIds = sortedItems.map(item => item.id);
-    const arrangedBoxes = sortedItems.map(item => {
-      const pos = placements.get(item.id) || { x: item.x, y: item.y };
-      return { ...item, x: pos.x, y: pos.y };
-    });
-    const arrangedBounds = getCanvasBoundsFromItems(arrangedBoxes);
     const previousSelection = [...selectedIds];
 
     pushCanvasUndoSnapshot('一键整理画布');
@@ -18401,6 +18379,28 @@ function MainApp() {
         height: nextSize.height * nodeScale,
       };
     }));
+  };
+
+  const toggleCanvasAiOutputsExpanded = (canvasId: string) => {
+    const wasExpanded = canvasAiExpandedOutputNodeIds.has(canvasId);
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== canvasId || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')) return item;
+      const promptExpanded = canvasAiPromptEditingId === item.id;
+      const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded, wasExpanded);
+      const nextSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded, !wasExpanded);
+      const nodeScale = getCanvasDesignScale(item, oldSize);
+      return {
+        ...item,
+        width: nextSize.width * nodeScale,
+        height: nextSize.height * nodeScale,
+      };
+    }));
+    setCanvasAiExpandedOutputNodeIds(previous => {
+      const next = new Set(previous);
+      if (wasExpanded) next.delete(canvasId);
+      else next.add(canvasId);
+      return next;
+    });
   };
 
   const setCanvasWorkflowOutputMode = (canvasId: string, mode: 'final' | 'all') => {
@@ -35096,6 +35096,9 @@ useEffect(() => {
                             || canvasWorkflowAllowsImages
                             || canvasWorkflowAllowsFiles;
                           const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
+                          const isCanvasAiOutputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id);
+                          const canvasAiVisibleOutputs = getCanvasAiVisibleOutputs(canvasAiOutputs, isCanvasAiOutputsExpanded);
+                          const canvasAiHiddenOutputCount = Math.max(0, canvasAiOutputs.length - canvasAiVisibleOutputs.length);
                           const canvasAiRealOutputs = isCanvasAiNodeItem ? canvasItem.ai?.outputs || [] : [];
                           const showCanvasAiOutputPreview = isCanvasWorkflowItem || canvasAiRealOutputs.length > 0;
                           const isCanvasAiPromptExpanded = canvasAiPromptEditingId === canvasItem.id;
@@ -35119,7 +35122,7 @@ useEffect(() => {
                             ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
                             : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
                           const canvasAiNodeDesignSize = isCanvasAiNodeItem
-                            ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded)
+                            ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded, isCanvasAiOutputsExpanded)
                             : null;
                           const canvasAiMainColumnLayoutWidth = canvasItem.ai?.type === 'image-generator'
                             ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
@@ -35130,7 +35133,7 @@ useEffect(() => {
                             ? getCanvasAiOutputTileLayout({
                               width: canvasAiMainColumnLayoutWidth,
                               aspectRatio: canvasAiOutputAspectRatio,
-                              outputCount: canvasAiOutputs.length || undefined,
+                              outputCount: canvasAiVisibleOutputs.length || undefined,
                               count: canvasItem.ai?.count,
                               isWorkflow: isCanvasWorkflowItem,
                             })
@@ -35866,6 +35869,22 @@ useEffect(() => {
                                                   {isCanvasWorkflowAllOutputMode ? '最终输出' : '全部节点'}
                                                 </button>
                                               )}
+                                              {canvasAiOutputs.length > CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT && (
+                                                <button
+                                                  data-no-drag="true"
+                                                  type="button"
+                                                  onPointerDown={(event) => event.stopPropagation()}
+                                                  onClick={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    toggleCanvasAiOutputsExpanded(canvasItem.id);
+                                                  }}
+                                                  className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-stone-500 transition-colors hover:bg-white hover:text-stone-900 dark:bg-white/10 dark:text-white/58 dark:hover:bg-white/16 dark:hover:text-white"
+                                                  title={isCanvasAiOutputsExpanded ? '收起输出预览' : `展开其余 ${canvasAiHiddenOutputCount} 个输出`}
+                                                >
+                                                  {isCanvasAiOutputsExpanded ? '收起' : `展开全部 +${canvasAiHiddenOutputCount}`}
+                                                </button>
+                                              )}
                                               <span>{canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}</span>
                                             </div>
                                           </div>
@@ -35875,7 +35894,7 @@ useEffect(() => {
                                               gridTemplateColumns: `repeat(${canvasAiOutputTileLayout.columns}, ${canvasAiOutputTileLayout.tileWidth}px)`,
                                             }}
                                           >
-                                            {canvasAiOutputs.map((output, outputIndex) => {
+                                            {canvasAiVisibleOutputs.map((output, outputIndex) => {
                                               const outputSource = getCanvasAiOutputDisplaySource(output);
                                               const outputPreviewSource = getCanvasAiOutputThumbnailSource(output);
                                               const outputPreviewItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);

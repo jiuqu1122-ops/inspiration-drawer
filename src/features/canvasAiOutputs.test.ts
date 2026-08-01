@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT,
   buildCanvasAiOutputLocalCachePatch,
   buildCanvasAiOutputRemoteResultPatch,
   createCanvasAiOutputBufferItem,
+  getCanvasAiVisibleOutputs,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './canvasAiOutputs';
 import type { CanvasImageItem } from './canvasModel';
 
 describe('canvas AI output cache patches', () => {
+  it('keeps generator nodes compact until the user expands all outputs', () => {
+    const outputs = Array.from({ length: 20 }, (_, index) => index);
+    expect(CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT).toBe(6);
+    expect(getCanvasAiVisibleOutputs(outputs)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(getCanvasAiVisibleOutputs(outputs, true)).toEqual(outputs);
+  });
+
   it('adds the local path without replacing the remote generation URL', () => {
     const patch = buildCanvasAiOutputLocalCachePatch('C:\\cache\\generated.png');
 
