@@ -3,7 +3,7 @@ import type { CanvasWorkflowTemplate } from './canvasTemplates';
 
 export const CANVAS_LLM_NODE_CREDITS = 10;
 export const CANVAS_DEFAULT_IMAGE_UNIT_CREDITS = 100;
-export const CANVAS_DEFAULT_VIDEO_UNIT_CREDITS = 500;
+export const CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND = 500;
 
 export type CanvasAiCreditPricing = {
   agentRequestCredits: string;
@@ -152,7 +152,7 @@ export const estimateCanvasImageGenerationCredits = (
   };
 };
 
-export const getCanvasVideoUnitCredits = (
+export const getCanvasVideoCreditsPerSecond = (
   model?: string | null,
   pricing?: CanvasAiCreditPricing | null,
 ) => {
@@ -161,19 +161,21 @@ export const getCanvasVideoUnitCredits = (
   const configuredCredits = Number(configuredModel?.credits ?? pricing?.videoDefaultCredits);
   return Number.isSafeInteger(configuredCredits) && configuredCredits >= 0
     ? configuredCredits
-    : CANVAS_DEFAULT_VIDEO_UNIT_CREDITS;
+    : CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND;
 };
 
 export const estimateCanvasVideoGenerationCredits = (
-  ai?: Pick<NonNullable<CanvasImageItem['ai']>, 'model' | 'count'> | null,
+  ai?: Pick<NonNullable<CanvasImageItem['ai']>, 'model' | 'count' | 'duration'> | null,
   pricing?: CanvasAiCreditPricing | null,
 ) => {
   const outputCount = getImageOutputCount(ai?.count);
-  const unitCredits = getCanvasVideoUnitCredits(ai?.model, pricing);
+  const durationSeconds = Math.max(1, Math.ceil(Number(ai?.duration) || 15));
+  const creditsPerSecond = getCanvasVideoCreditsPerSecond(ai?.model, pricing);
   return {
     outputCount,
-    unitCredits,
-    totalCredits: outputCount * unitCredits,
+    durationSeconds,
+    creditsPerSecond,
+    totalCredits: outputCount * durationSeconds * creditsPerSecond,
   };
 };
 
@@ -246,6 +248,7 @@ export const estimateCanvasWorkflowCredits = (
     const estimate = estimateCanvasVideoGenerationCredits({
       model: node.ai?.model,
       count: node.ai?.count,
+      duration: node.ai?.duration,
     }, options.pricing);
     return {
       outputCount: summary.outputCount + estimate.outputCount,

@@ -59,11 +59,17 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasVideoGenerationCredits({
       model: 'seedance2',
       count: 2,
+      duration: 8,
     }, {
       ...pricing,
       videoDefaultCredits: '320',
       videoModels: [{ model: 'seedance2', credits: '48' }],
-    })).toEqual({ outputCount: 2, unitCredits: 48, totalCredits: 96 });
+    })).toEqual({
+      outputCount: 2,
+      durationSeconds: 8,
+      creditsPerSecond: 48,
+      totalCredits: 768,
+    });
     expect(getCanvasImageUnitCredits('custom-model', '2k', pricing)).toBe(55);
 
     const workflow = {
