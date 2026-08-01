@@ -263,7 +263,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
         inputImages: (options.inputImages || []).filter(Boolean).slice(0, options.provider === 'new-api' ? 9 : 8),
-        aspectRatio: normalizeImageAspectRatio(options.aspectRatio),
+        aspectRatio: normalizeCloudWalletImageAspectRatio(options.aspectRatio),
         resolution: options.resolution?.trim() || undefined,
         outputFormat: normalizeOutputFormat(options.outputFormat),
         background: normalizeOutputFormat(options.outputFormat) === 'png' ? 'transparent' : undefined,
@@ -770,6 +770,28 @@ const ensureNewApiReferenceUrlsReady = async (urls: string[]): Promise<NewApiRef
 const normalizeImageAspectRatio = (aspectRatio?: string | null) => {
   const value = String(aspectRatio || '').trim();
   return ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(value) ? value : '1:1';
+};
+
+const CLOUD_WALLET_IMAGE_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'] as const;
+
+export const normalizeCloudWalletImageAspectRatio = (aspectRatio?: string | null) => {
+  const value = String(aspectRatio || '').trim();
+  if ((CLOUD_WALLET_IMAGE_ASPECT_RATIOS as readonly string[]).includes(value)) return value;
+
+  const match = value.match(/^(\d+(?:\.\d+)?)\s*(?::|x|×)\s*(\d+(?:\.\d+)?)$/i);
+  if (!match) return '1:1';
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return '1:1';
+
+  const requestedRatio = width / height;
+  return CLOUD_WALLET_IMAGE_ASPECT_RATIOS.reduce((best, candidate) => {
+    const [bestWidth, bestHeight] = best.split(':').map(Number);
+    const [candidateWidth, candidateHeight] = candidate.split(':').map(Number);
+    const bestDifference = Math.abs(Math.log(requestedRatio / (bestWidth / bestHeight)));
+    const candidateDifference = Math.abs(Math.log(requestedRatio / (candidateWidth / candidateHeight)));
+    return candidateDifference < bestDifference ? candidate : best;
+  }, CLOUD_WALLET_IMAGE_ASPECT_RATIOS[0]);
 };
 
 export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {

@@ -4,20 +4,19 @@
 
 ## 下载
 
-当前版本：**6.0.1**
+当前版本：**6.0.2**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.1/Inspiration.Drawer_6.0.1_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.1)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.2/Inspiration.Drawer_6.0.2_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.2)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 6.0.1 更新
+## 6.0.2 更新
 
-- 新增 Veo 3.1、Veo 3.1 Fast、Sora 2 与 NewAPI Seedance 2.0 视频链路，支持模型对应的参考图、比例、时长和按秒积分。
-- 完善 Nano Banana Pro、Nano Banana 2 与 GPT Image 2 渠道路由，GPT Image 2 支持透明 PNG 输出。
-- 优化图片与视频异步任务回收，生成结果会转存 OSS，减少上游已完成但画布长时间等待的问题。
-- 重做画布一键整理：连接节点按层级排列，零散素材使用瀑布流；大量生成结果默认折叠，避免节点无限变长。
-- 补帧、FFmpeg 和 Real-ESRGAN 增强依赖改由 OSS 按需下载，并继续使用本地缓存与完整性校验。
+- 修复 GPT Image 2 钱包渠道选择宽屏或竖屏尺寸后仍按 `1:1` 生成的问题。
+- 新增 AI 分类视图，可按产品类别、造型参考与主色调快速筛选图片，并自动合并常见同义标签。
+- 优化画布生成节点、设置面板、本地增强工具和素材列表的组件结构，提升大型画布的维护性与交互稳定性。
+- 改进画布节点自动尺寸计算和大量生成结果的布局表现。
 
 ## 主要功能
 

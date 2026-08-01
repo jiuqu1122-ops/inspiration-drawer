@@ -44,6 +44,7 @@ import {
   newApiVideoRequestParams,
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
+  normalizeCloudWalletImageAspectRatio,
   normalizeNewApiBaseEndpoint,
   normalizeNewApiVideoDurationForModel,
   validateCanvasAiVideoReferences,
@@ -414,6 +415,14 @@ describe('image resolution routing', () => {
     expect(gptImage2SizeFromAspectRatio('3:4', '4K')).toBe('2400x3200');
     expect(gptImage2SizeFromAspectRatio('2064x1376', '2K')).toBe('2064x1376');
     expect(gptImage2SizeFromAspectRatio('3520x2352', '4K')).toBe('3520x2352');
+  });
+
+  it('converts GPT Image 2 dimension options into wallet aspect ratios', () => {
+    expect(normalizeCloudWalletImageAspectRatio('2048x1152')).toBe('16:9');
+    expect(normalizeCloudWalletImageAspectRatio('1152×2048')).toBe('9:16');
+    expect(normalizeCloudWalletImageAspectRatio('2048x2048')).toBe('1:1');
+    expect(normalizeCloudWalletImageAspectRatio('1536x2048')).toBe('3:4');
+    expect(normalizeCloudWalletImageAspectRatio('2048x1536')).toBe('4:3');
   });
 
   it('adds size and quality for mapped NewAPI models', () => {

@@ -3,6 +3,29 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallba
 import { flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CanvasSelectionVideo } from './components/CanvasSelectionVideo';
+import { CanvasAiSettingsPanel } from './components/CanvasAiSettingsPanel';
+import { CanvasLocalMediaControls } from './components/CanvasLocalMediaControls';
+import { CanvasGeneratorControls } from './components/CanvasGeneratorControls';
+import { CanvasAiRunButton } from './components/CanvasAiRunButton';
+import {
+  CANVAS_AI_NODE_CHEVRON_CLASS,
+  CANVAS_AI_NODE_SELECT_MENU_CLASS,
+  CANVAS_AI_NODE_SELECT_OPTION_CLASS,
+  CANVAS_AI_NODE_TEXT_SELECT_CLASS,
+} from './components/canvasAiNodeControlStyles';
+import {
+  SNIP_CAPTURE_LOCK_STORAGE_KEY,
+  SNIP_RESTORE_DRAWER_STORAGE_KEY,
+  SnipOverlay,
+} from './components/SnipOverlay';
+import { DrawerOrganizationPanel } from './components/DrawerOrganizationPanel';
+import { DrawerAiClassificationBar } from './components/DrawerAiClassificationBar';
+import {
+  CanvasListItem,
+  CanvasRailItem,
+  CanvasTrashListItem,
+} from './components/CanvasListItems';
+import type { CanvasActionMenuPlacement } from './components/CanvasListItems';
 import {
   File as FileIcon, X, Download, Check, Pin, FolderOpen, Lightbulb,
   Sun, RotateCcw, Settings, Image as ImageIcon, Type, Film, LayoutGrid,
@@ -10,7 +33,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp, MessageCircle,
+  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, ArchiveRestore, ArrowUp, MessageCircle,
   LogOut
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
@@ -58,6 +81,44 @@ import {
   type CanvasRecord,
 } from './services/canvasApi';
 import { clamp } from './features/common';
+import { useEventCallback } from './features/useEventCallback';
+import {
+  acquireTimedLocalLock,
+  localLockKeyPart,
+  releaseTimedLocalLock,
+} from './features/localLock';
+import {
+  CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,
+  CANVAS_AI_MAX_OUTPUT_COUNT,
+  getCanvasAiNodeAutoSize,
+  getCanvasAiOutputTileLayout,
+  getCanvasAiPromptAutoHeight,
+  CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS,
+} from './features/canvasAiNodeLayout';
+import {
+  enhancementEstimateCache,
+  formatCanvasWorkingElapsed,
+  formatEnhancementEstimateVideoMeta,
+  formatRifeEstimateRange,
+  formatRifeEstimateVideoMeta,
+  getCanvasRifeRateRequest,
+  getRifeEngineProgressPercent,
+  isCanvasAiEnhancementType,
+  isCanvasAiFrameInterpolationType,
+  isCanvasAiLocalMediaToolType,
+  isFrameProcessingProgress,
+  isRifeFixed2xMode,
+  rifeEstimateCache,
+  shouldShowCanvasAiLocalMediaProgress,
+  shouldShowRifeEngineProgress,
+  type QuickVideoEnhancementResult,
+  type RealEsrganEnhancementEstimate,
+  type RealEsrganEnhancementResult,
+  type RifeEngineProgress,
+  type RifeFrameInterpolationEstimate,
+  type RifeFrameInterpolationResult,
+  type VideoCfrNormalizationResult,
+} from './features/canvasLocalMediaTools';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
 import {
@@ -165,6 +226,12 @@ import {
   isDrawerFolderDescendant,
   normalizeDrawerFolders,
 } from './features/folderModel';
+import {
+  AI_CLASSIFICATION_DIMENSIONS,
+  buildAiClassificationGroups,
+  itemMatchesAiClassification,
+  type AiClassificationDimension,
+} from './features/aiClassification';
 import { listFolders, moveFolders, replaceFolders } from './services/libraryApi';
 import {
   CANVAS_BASE_HEIGHT,
@@ -555,6 +622,8 @@ const LazyFloatingNoteHost = React.lazy(() => (
 const CANVAS_WORKBENCH_MODE_STORAGE_KEY = 'drawer_canvas_workbench_mode';
 const DRAWER_WORKBENCH_MODE_STORAGE_KEY = 'drawer_workbench_mode';
 const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
+const DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY = 'drawer_classification_view';
+const DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY = 'drawer_ai_classification_dimension';
 const DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_folder_sidebar_width';
 const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 178;
 const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 116;
@@ -567,6 +636,7 @@ const FOLDER_DRAG_MIME = 'application/x-inspiration-drawer-folder-ids';
 const WORKFLOW_SLOT_ASSET_DRAG_MIME = 'application/x-inspiration-workflow-slot-asset-index';
 type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
 type DrawerSidebarLayout = 'icons' | 'folders';
+type DrawerClassificationView = 'folders' | 'ai';
 type EagleImportStatus = {
   phase: 'idle' | 'checking' | 'reading' | 'importing' | 'caching' | 'done' | 'error';
   message: string;
@@ -1111,7 +1181,6 @@ const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown
 const APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY = 'drawer_app_update_last_automatic_check';
 const APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
-const SNIP_RESTORE_DRAWER_STORAGE_KEY = 'drawer_snip_restore_drawer';
 const CANVAS_FALLBACK_IMAGE_WIDTH = 360;
 const CANVAS_FALLBACK_IMAGE_HEIGHT = 260;
 const CANVAS_INITIAL_IMAGE_MAX_WIDTH = 720;
@@ -1140,7 +1209,6 @@ const VIDEO_THUMBNAIL_MAX_HEIGHT = 220;
 const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
 const VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES = 24 * 1024 * 1024;
 const BLANK_NOTE_CREATE_LOCK_STORAGE_KEY = 'drawer_blank_note_create_lock';
-const SNIP_CAPTURE_LOCK_STORAGE_KEY = 'drawer_snip_capture_lock';
 const FLOATING_NOTE_CREATE_LOCK_STORAGE_PREFIX = 'drawer_floating_note_create_lock_';
 const DRAWER_INITIAL_RENDER_LIMIT = 48;
 const DRAWER_RENDER_BATCH_SIZE = 32;
@@ -1168,7 +1236,6 @@ const CANVAS_AI_NEW_API_MODELS_STORAGE_KEY = 'drawer_canvas_ai_new_api_models';
 const CANVAS_AI_XAIS_MODELS_STORAGE_KEY = 'drawer_canvas_ai_xais_models';
 const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
-const CANVAS_AI_COUNTS = [1, 2, 3, 4];
 const CANVAS_AI_IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 const CANVAS_AI_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
 const CANVAS_AI_VIDEO_DURATIONS = Array.from({ length: 12 }, (_, index) => index + 4);
@@ -1221,10 +1288,6 @@ const CANVAS_AI_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_OUTPUT_
   value: format,
   label: format.toUpperCase(),
 }));
-const CANVAS_AI_COUNT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_COUNTS.map(count => ({
-  value: String(count),
-  label: String(count),
-}));
 const CANVAS_AI_IMAGE_RESOLUTION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_IMAGE_RESOLUTIONS.map(resolution => ({
   value: resolution,
   label: resolution.toUpperCase(),
@@ -1237,78 +1300,6 @@ const CANVAS_AI_VIDEO_DURATION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_
   value: String(duration),
   label: `${duration}秒`,
 }));
-const CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'REF', label: '参考图' },
-  { value: 'FLF', label: '首尾帧' },
-];
-const CANVAS_RIFE_RATE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'factor-2', label: '2× 补帧' },
-  { value: 'factor-4', label: '4× 补帧' },
-  { value: 'target-30', label: '目标 30fps' },
-  { value: 'target-48', label: '目标 48fps' },
-  { value: 'target-60', label: '目标 60fps' },
-  { value: 'target-120', label: '目标 120fps' },
-];
-const CANVAS_VIDEO_CFR_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'auto', label: '自动标准化' },
-  { value: '24', label: '24fps CFR' },
-  { value: '30', label: '30fps CFR' },
-  { value: 'off', label: '不处理' },
-];
-const CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS: RoundedSelectOption[] = [
-  { value: 'auto-2x', label: '自动 2x' },
-];
-const CANVAS_RIFE_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'normal', label: '普通' },
-  { value: 'hd', label: 'HD' },
-  { value: 'uhd', label: 'UHD' },
-];
-const CANVAS_RIFE_QUALITY_OPTIONS: RoundedSelectOption[] = [
-  { value: 'fast', label: '快速' },
-  { value: 'standard', label: '标准' },
-  { value: 'high', label: '高质量' },
-];
-const CANVAS_RIFE_KEEP_AUDIO_OPTIONS: RoundedSelectOption[] = [
-  { value: 'yes', label: '保留音频' },
-  { value: 'no', label: '静音输出' },
-];
-const CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = [
-  { value: 'mp4', label: 'MP4' },
-  { value: 'mov', label: 'MOV' },
-  { value: 'webm', label: 'WebM' },
-];
-const CANVAS_ESRGAN_SCALE_OPTIONS: RoundedSelectOption[] = [
-  { value: '2', label: '2× 增强' },
-  { value: '4', label: '4× · 较慢' },
-];
-const CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'ai', label: 'AI 清晰增强' },
-  { value: 'quick', label: '快速增强' },
-];
-const CANVAS_QUICK_ENHANCEMENT_SCALE_OPTIONS: RoundedSelectOption[] = [
-  { value: '1', label: '保持分辨率' },
-  { value: '2', label: '2× 放大' },
-];
-const CANVAS_ESRGAN_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'general', label: '通用增强' },
-  { value: 'anime', label: '动漫插画' },
-];
-const CANVAS_ESRGAN_RESIZE_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'upscale', label: '放大并增强' },
-  { value: 'keep', label: '保持原尺寸' },
-];
-const CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS: RoundedSelectOption[] = [
-  { value: 'png', label: 'PNG' },
-  { value: 'jpg', label: 'JPG' },
-  { value: 'webp', label: 'WebP' },
-];
-const CANVAS_AI_NODE_TEXT_SELECT_CLASS = 'h-8 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-2 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
-const CANVAS_AI_NODE_COUNT_SELECT_CLASS = 'h-8 w-11 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-1.5 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
-const CANVAS_AI_NODE_CHEVRON_CLASS = 'h-2.5 w-2.5';
-const CANVAS_AI_NODE_SELECT_MENU_CLASS = '!border-stone-200/80 !bg-white/98 !text-stone-700 shadow-2xl shadow-black/15 dark:!border-white/10 dark:!bg-[#171717]/98 dark:!text-white dark:shadow-black/35';
-const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-600 hover:!bg-stone-100 hover:!text-stone-950 dark:!text-white/78 dark:hover:!bg-white/10 dark:hover:!text-white';
-const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-stone-900 !text-white dark:!bg-white/14 dark:!text-white';
-const CANVAS_AI_PANEL_SELECT_CLASS = 'h-[34px] w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 text-xs font-medium text-stone-700 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:hover:bg-stone-900/70';
 const DESIGN_AGENT_ROLE_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_ROLES.map(value => ({
   value,
   label: DESIGN_AGENT_ROLE_LABELS[value],
@@ -1336,6 +1327,12 @@ const FOLDERS_CACHE_UPDATED_AT_STORAGE_KEY = `${FOLDERS_CACHE_STORAGE_KEY}_updat
 const normalizeDrawerSidebarLayout = (value: string | null): DrawerSidebarLayout => (
   value === 'icons' ? 'icons' : 'folders'
 );
+const normalizeDrawerClassificationView = (value: string | null): DrawerClassificationView => (
+  value === 'ai' ? 'ai' : 'folders'
+);
+const normalizeAiClassificationDimension = (value: string | null): AiClassificationDimension => (
+  AI_CLASSIFICATION_DIMENSIONS.some(option => option.id === value) ? value as AiClassificationDimension : 'product'
+);
 const readFoldersFromCache = (): { folders: Folder[]; isValid: boolean; updatedAt: number } => {
   const raw = localStorage.getItem(FOLDERS_CACHE_STORAGE_KEY);
   const updatedAt = Number(localStorage.getItem(FOLDERS_CACHE_UPDATED_AT_STORAGE_KEY) || 0) || 0;
@@ -1351,25 +1348,6 @@ const readFoldersFromCache = (): { folders: Folder[]; isValid: boolean; updatedA
     return { folders: [], isValid: false, updatedAt };
   }
 };
-const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
-const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
-const CANVAS_IMAGE_RULE_COLLAPSED_WIDTH = 34;
-const CANVAS_IMAGE_RULE_PANEL_GAP = 12;
-const CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
-  + CANVAS_IMAGE_RULE_PANEL_WIDTH
-  + CANVAS_IMAGE_RULE_PANEL_GAP
-  + 32;
-const CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
-  + CANVAS_IMAGE_RULE_COLLAPSED_WIDTH
-  + CANVAS_IMAGE_RULE_PANEL_GAP
-  + 32;
-const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
-const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
-const CANVAS_AI_NODE_GRID_GAP = 8;
-const CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT = 108;
-const CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT = 142;
-const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
-const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
 const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
   const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Number(value));
   return rawW > 0 && rawH > 0 ? rawW / rawH : 16 / 9;
@@ -1435,125 +1413,6 @@ const normalizeCanvasAiAspectRatioForModel = (
   }
   if (/^\d+\s*[x×]\s*\d+$/i.test(value)) return getClosestCanvasAiStandardAspectRatio(value);
   return CANVAS_AI_ASPECT_RATIOS.includes(value) ? value : CANVAS_AI_DEFAULT_ASPECT_RATIO;
-};
-const getCanvasAiOutputTileLayout = (options?: {
-  width?: number;
-  aspectRatio?: string;
-  count?: number;
-  outputCount?: number;
-  isWorkflow?: boolean;
-}) => {
-  const width = options?.width || CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
-  const outputCount = clamp(
-    Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
-    1,
-    options?.isWorkflow ? CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS : CANVAS_AI_MAX_OUTPUT_COUNT
-  );
-  const columns = outputCount <= 1 ? 1 : outputCount > 12 ? 4 : outputCount > 4 ? 3 : 2;
-  const ratio = parseCanvasAspectRatioValue(options?.aspectRatio);
-  const gridWidth = width - 36 - 18;
-  const columnWidth = (gridWidth - CANVAS_AI_NODE_GRID_GAP * (columns - 1)) / columns;
-  const maxTileHeight = outputCount <= 1 ? 360 : outputCount > 8 ? 190 : 330;
-  const minTileHeight = outputCount <= 1 ? 230 : outputCount > 8 ? 108 : outputCount > 4 ? 124 : 150;
-  const rawHeight = columnWidth / ratio;
-  const tileHeight = clamp(rawHeight, minTileHeight, maxTileHeight);
-  const tileWidth = Math.min(columnWidth, tileHeight * ratio);
-  const rows = Math.max(1, Math.ceil(outputCount / columns));
-  return {
-    columns,
-    rows,
-    tileWidth: Math.round(tileWidth),
-    tileHeight: Math.round(tileHeight),
-    gridHeight: Math.round(rows * tileHeight + (rows - 1) * CANVAS_AI_NODE_GRID_GAP),
-  };
-};
-const getCanvasAiPromptAutoHeight = (promptText = '', width = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH, expanded = false) => {
-  if (!expanded) return 108;
-  const text = promptText.trim();
-  const charsPerLine = Math.max(26, Math.floor((width - 44) / 14));
-  const visualLines = text
-    ? Math.max(3, text.split(/\r?\n/).reduce((total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)), 0))
-    : 3;
-  return clamp(visualLines * 28 + 24, 180, 320);
-};
-const getCanvasAiNodeAutoSize = (options?: {
-  type?: 'image-generator' | 'video-generator' | 'workflow';
-  aspectRatio?: string;
-  count?: number;
-  outputCount?: number;
-  hasPreset?: boolean;
-  hasError?: boolean;
-  promptText?: string;
-  promptExpanded?: boolean;
-  showOutputPreview?: boolean;
-  localMediaTool?: boolean;
-  showLocalMediaProgress?: boolean;
-  imageRulePanelExpanded?: boolean;
-  internalSlotCount?: number;
-}) => {
-  const isWorkflow = options?.type === 'workflow';
-  const isVideo = options?.type === 'video-generator';
-  const width = isWorkflow
-    ? CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH
-    : isVideo
-      ? CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH
-      : options?.imageRulePanelExpanded
-        ? CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH
-        : CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH;
-  const outputCount = clamp(
-    Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
-    1,
-    isWorkflow ? CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS : CANVAS_AI_MAX_OUTPUT_COUNT
-  );
-  const outputLayout = options?.showOutputPreview
-    ? getCanvasAiOutputTileLayout({
-      width: !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
-      aspectRatio: options?.aspectRatio,
-      outputCount,
-      isWorkflow,
-    })
-    : null;
-  const headerSectionHeight = 58;
-  const outputSectionHeight = outputLayout ? 36 + outputLayout.gridHeight : 220;
-  const metaSectionHeight = isWorkflow || options?.hasPreset ? 44 : 0;
-  const promptHeight = isWorkflow
-    ? 118
-    : options?.localMediaTool
-      ? options?.showLocalMediaProgress
-        ? CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT
-        : CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT
-      : getCanvasAiPromptAutoHeight(
-        options?.promptText,
-        !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
-        !!options?.promptExpanded
-      );
-  const inputHeight = 52;
-  const errorHeight = options?.hasError ? 48 : 0;
-  const internalSlotHeight = isWorkflow && Number(options?.internalSlotCount) > 0
-    ? Math.max(0, Math.round(Number(options?.internalSlotCount))) * 86 + 16
-    : 0;
-  const bodyGapCount = [
-    headerSectionHeight,
-    outputSectionHeight,
-    metaSectionHeight,
-    promptHeight,
-    inputHeight,
-    internalSlotHeight,
-    errorHeight,
-  ].filter(Boolean).length - 1;
-  const bodyHeight = headerSectionHeight
-    + outputSectionHeight
-    + metaSectionHeight
-    + promptHeight
-    + inputHeight
-    + internalSlotHeight
-    + errorHeight
-    + Math.max(0, bodyGapCount) * 12
-    + 32;
-  return {
-    width,
-    height: Math.ceil(bodyHeight),
-  };
 };
 type CanvasAiPromptPreset = {
   id: string;
@@ -3514,65 +3373,6 @@ const getCanvasAiApiKeyPlaceholder = (provider: CanvasAiProvider) => (
       ? 'New API Key'
       : 'API Key'
 );
-type RifeFrameInterpolationResult = {
-  outputPath: string;
-  engineDir?: string;
-  fps?: number;
-  outputFps?: number;
-  factor?: number;
-  inputFrames?: number;
-};
-type VideoCfrNormalizationResult = {
-  outputPath: string;
-  converted?: boolean;
-  isVfr?: boolean;
-  sourceFps?: number | null;
-  normalizedFps?: number | null;
-  reason?: string;
-};
-type QuickVideoEnhancementResult = RealEsrganEnhancementResult & {
-  encoder?: string;
-};
-type RifeFrameInterpolationEstimate = {
-  durationSec?: number | null;
-  width?: number | null;
-  height?: number | null;
-  fps?: number | null;
-  frameCount?: number | null;
-  outputFps?: number | null;
-  outputFrameCount?: number | null;
-  sampleFrames?: number | null;
-  estimatedSecondsMin?: number | null;
-  estimatedSecondsMax?: number | null;
-  sourceFps?: number | null;
-  cfrConverted?: boolean;
-  cfrReason?: string;
-};
-type RealEsrganEnhancementResult = {
-  outputPath: string;
-  engineDir?: string;
-  scale?: number;
-  mode?: string;
-  resizeMode?: string;
-  outputFormat?: string;
-  fps?: number | null;
-  width?: number | null;
-  height?: number | null;
-  preview?: boolean;
-  processedDurationSec?: number | null;
-};
-type RealEsrganEnhancementEstimate = RifeFrameInterpolationEstimate & {
-  outputWidth?: number | null;
-  outputHeight?: number | null;
-};
-type RifeEngineProgress = {
-  progressId?: string;
-  stage?: string;
-  label?: string;
-  loaded?: number;
-  total?: number;
-  progress?: number;
-};
 type AppUpdateProgress = {
   progressId?: string;
   stage?: string;
@@ -3596,127 +3396,6 @@ type AppUpdateInstallResult = {
   version?: string | null;
   installed: boolean;
 };
-const rifeEstimateCache = new Map<string, Promise<RifeFrameInterpolationEstimate>>();
-const enhancementEstimateCache = new Map<string, Promise<RealEsrganEnhancementEstimate>>();
-const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
-  Math.max(0, Math.min(100, Math.round(Number(progress?.progress || 0) * 100)))
-);
-const shouldShowRifeEngineProgress = (progress?: RifeEngineProgress | null) => {
-  if (!progress?.stage) return false;
-  if (progress.stage.endsWith('-ready')) return false;
-  if (progress.stage.startsWith('downloading-')) return getRifeEngineProgressPercent(progress) < 100;
-  return true;
-};
-const isFrameProcessingProgress = (progress?: RifeEngineProgress | null) => (
-  !!progress?.stage && /(?:extracting|interpolating|enhancing)-.*frames/.test(progress.stage)
-);
-const isRifeFixed2xMode = (mode?: string | null) => (
-  mode === 'hd' || mode === 'uhd' || mode === 'hd-slow'
-);
-const getCanvasRifeRateValue = (ai?: CanvasImageItem['ai'] | null) => (
-  ai?.interpolationRateMode === 'target-fps'
-    ? `target-${Math.round(Number(ai?.interpolationTargetFps) || 60)}`
-    : `factor-${clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4)}`
-);
-const getCanvasRifeRateRequest = (ai?: CanvasImageItem['ai'] | null) => {
-  if (isRifeFixed2xMode(ai?.interpolationMode)) {
-    return { factor: 2, targetFps: undefined as number | undefined };
-  }
-  if (ai?.interpolationRateMode === 'target-fps') {
-    return {
-      factor: 4,
-      targetFps: clamp(Math.round(Number(ai?.interpolationTargetFps) || 60), 1, 240),
-    };
-  }
-  return {
-    factor: clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4),
-    targetFps: undefined as number | undefined,
-  };
-};
-const formatRifeEstimateSeconds = (seconds?: number | null) => {
-  if (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return '';
-  const safeSeconds = Math.max(1, Math.round(Number(seconds)));
-  if (safeSeconds < 60) return `${safeSeconds}秒`;
-  const minutes = Math.max(1, Math.round(safeSeconds / 60));
-  if (minutes < 60) return `${minutes}分钟`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest > 0 ? `${hours}小时${rest}分钟` : `${hours}小时`;
-};
-const formatCanvasWorkingElapsed = (startedAt?: number | null, now = Date.now()) => {
-  const start = Number(startedAt) || 0;
-  if (!start) return '0秒';
-  const elapsed = Math.max(0, Math.floor((now - start) / 1000));
-  return `${elapsed}秒`;
-};
-const formatRifeEstimateRange = (estimate?: RifeFrameInterpolationEstimate | null) => {
-  const min = Number(estimate?.estimatedSecondsMin);
-  const max = Number(estimate?.estimatedSecondsMax);
-  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) return '接入视频后自动估算';
-  const minText = formatRifeEstimateSeconds(min);
-  const maxText = formatRifeEstimateSeconds(max);
-  return minText && maxText && minText !== maxText ? `约 ${minText}～${maxText}` : `约 ${maxText || minText}`;
-};
-const formatRifeEstimateVideoMeta = (estimate?: RifeFrameInterpolationEstimate | null) => {
-  const parts: string[] = [];
-  if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
-    parts.push(formatRifeEstimateSeconds(estimate?.durationSec));
-  }
-  if (Number.isFinite(Number(estimate?.width)) && Number.isFinite(Number(estimate?.height)) && Number(estimate?.width) > 0 && Number(estimate?.height) > 0) {
-    parts.push(`${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`);
-  }
-  if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
-    const fps = Number(estimate?.fps);
-    const sourceFps = Number(estimate?.sourceFps);
-    if (estimate?.cfrConverted && Number.isFinite(sourceFps) && sourceFps > 0) {
-      parts.push(`${sourceFps.toFixed(sourceFps >= 10 ? 0 : 1)}fps → CFR ${fps.toFixed(fps >= 10 ? 0 : 1)}fps`);
-    } else {
-      parts.push(`${fps.toFixed(fps >= 10 ? 0 : 1)}fps`);
-    }
-  }
-  if (Number.isFinite(Number(estimate?.outputFps)) && Number(estimate?.outputFps) > 0) {
-    parts.push(`→ ${Number(estimate?.outputFps).toFixed(0)}fps`);
-  }
-  if (Number.isFinite(Number(estimate?.frameCount)) && Number(estimate?.frameCount) > 0) {
-    parts.push(`${Math.round(Number(estimate?.frameCount))}帧`);
-  }
-  return parts.join(' · ');
-};
-const formatEnhancementEstimateVideoMeta = (estimate?: RealEsrganEnhancementEstimate | null) => {
-  const parts: string[] = [];
-  if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
-    parts.push(formatRifeEstimateSeconds(estimate?.durationSec));
-  }
-  const hasInputResolution = Number(estimate?.width) > 0 && Number(estimate?.height) > 0;
-  const hasOutputResolution = Number(estimate?.outputWidth) > 0 && Number(estimate?.outputHeight) > 0;
-  if (hasInputResolution) {
-    const inputResolution = `${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`;
-    const outputResolution = hasOutputResolution
-      ? `${Math.round(Number(estimate?.outputWidth))}×${Math.round(Number(estimate?.outputHeight))}`
-      : '';
-    parts.push(outputResolution ? `${inputResolution} → ${outputResolution}` : inputResolution);
-  }
-  if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
-    parts.push(`${Number(estimate?.fps).toFixed(Number(estimate?.fps) >= 10 ? 0 : 1)}fps`);
-  }
-  if (Number.isFinite(Number(estimate?.frameCount)) && Number(estimate?.frameCount) > 0) {
-    parts.push(`${Math.round(Number(estimate?.frameCount))}帧`);
-  }
-  return parts.join(' · ');
-};
-const isCanvasAiFrameInterpolationType = (type?: string | null) => type === 'frame-interpolation';
-const isCanvasAiEnhancementType = (type?: string | null) => type === 'image-enhancement' || type === 'video-enhancement';
-const isCanvasAiLocalMediaToolType = (type?: string | null) => (
-  isCanvasAiFrameInterpolationType(type) || isCanvasAiEnhancementType(type)
-);
-const getCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null): RifeEngineProgress | undefined => {
-  if (ai?.type === 'frame-interpolation') return ai.interpolationProgress as RifeEngineProgress | undefined;
-  if (isCanvasAiEnhancementType(ai?.type)) return ai.enhancementProgress as RifeEngineProgress | undefined;
-  return undefined;
-};
-const shouldShowCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null) => (
-  shouldShowRifeEngineProgress(getCanvasAiLocalMediaProgress(ai))
-);
 const isCanvasAiGeneratorType = (type?: string | null) => (
   type === 'image-generator'
   || type === 'video-generator'
@@ -3768,31 +3447,6 @@ type FolderContextMenuState = {
   folderId: string;
 };
 
-const acquireTimedLocalLock = (key: string, ttlMs: number) => {
-  const now = Date.now();
-  const owner = `${now}_${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    const raw = localStorage.getItem(key);
-    const existing = raw ? JSON.parse(raw) : null;
-    const existingTime = Number(existing?.time || 0);
-    if (existingTime && now - existingTime < ttlMs) return null;
-    localStorage.setItem(key, JSON.stringify({ owner, time: now }));
-    const current = JSON.parse(localStorage.getItem(key) || '{}');
-    return current?.owner === owner ? owner : null;
-  } catch (_) {
-    return owner;
-  }
-};
-
-const releaseTimedLocalLock = (key: string, owner: string | null) => {
-  if (!owner) return;
-  try {
-    const current = JSON.parse(localStorage.getItem(key) || '{}');
-    if (current?.owner === owner) localStorage.removeItem(key);
-  } catch (_) {}
-};
-
-const localLockKeyPart = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
 const emitFloatingNoteUpdated = (label: string, snapshot: FloatingNoteSnapshot) => (
   emitTo({ kind: 'WebviewWindow', label }, 'floating-note-updated', { ...snapshot, targetLabel: label })
 );
@@ -3857,175 +3511,6 @@ const getFastCanvasImageDisplaySize = (item: BufferItem) => {
 
 
 
-
-function SnipOverlay() {
-  const [selection, setSelection] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [isCaptureOverlayHidden, setIsCaptureOverlayHidden] = useState(false);
-  const isMouseDownRef = useRef(false);
-  const startRef = useRef({ x: 0, y: 0 });
-  const captureInFlightRef = useRef(false);
-
-  const waitForTransparentSnipFrame = () => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => {
-      window.setTimeout(resolve, 0);
-    });
-  });
-
-  const recoverAfterSnip = async () => {
-    const size = getStoredDrawerSize();
-    const mode = getStoredTriggerMode();
-    const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
-    await invoke('recover_after_snip', {
-      restoreDrawer,
-      width: size.width,
-      height: size.height,
-      mode,
-    }).catch(() => invoke('hide_snip_window').catch(() => appWindow.hide().catch(() => {})));
-  };
-
-  const cancelSnip = async () => {
-    if (captureInFlightRef.current) return;
-    isMouseDownRef.current = false;
-    setIsCaptureOverlayHidden(false);
-    setSelection(null);
-    await emitTo('main', 'snip-cancelled', {}).catch(() => {});
-    await recoverAfterSnip();
-  };
-
-  useEffect(() => {
-    const unlisteners: Array<() => void> = [];
-    listen('snip-reset', () => {
-      captureInFlightRef.current = false;
-      isMouseDownRef.current = false;
-      setIsCaptureOverlayHidden(false);
-      setSelection(null);
-    }).then(unlisten => unlisteners.push(unlisten));
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      void cancelSnip();
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-      unlisteners.forEach(unlisten => unlisten());
-    };
-  }, []);
-
-  const finishSelection = async (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!isMouseDownRef.current || captureInFlightRef.current) return;
-    isMouseDownRef.current = false;
-    const rect = selection;
-    if (!rect || rect.w < 10 || rect.h < 10) {
-      await cancelSnip();
-      return;
-    }
-    const selectionLockKey = `${SNIP_CAPTURE_LOCK_STORAGE_KEY}_selection_${localLockKeyPart([
-      Math.round(rect.x),
-      Math.round(rect.y),
-      Math.round(rect.w),
-      Math.round(rect.h),
-      Math.round(window.innerWidth),
-      Math.round(window.innerHeight),
-    ].join('_'))}`;
-    const selectionLockOwner = acquireTimedLocalLock(selectionLockKey, 5000);
-    if (!selectionLockOwner) return;
-
-    const noteX = event.screenX - (event.clientX - rect.x);
-    const noteY = event.screenY - (event.clientY - rect.y);
-    captureInFlightRef.current = true;
-    flushSync(() => {
-      setIsCaptureOverlayHidden(true);
-      setSelection(null);
-    });
-    await waitForTransparentSnipFrame();
-
-    const payload = {
-      x: rect.x,
-      y: rect.y,
-      width: rect.w,
-      height: rect.h,
-      noteX,
-      noteY,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    };
-    try {
-      const size = getStoredDrawerSize();
-      const mode = getStoredTriggerMode();
-      const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
-      await invoke('complete_snip_selection', {
-        ...payload,
-        restoreDrawer,
-        drawerWidth: size.width,
-        drawerHeight: size.height,
-        mode,
-      });
-    } catch (err) {
-      await emitTo('main', 'snip-failed', { message: err instanceof Error ? err.message : String(err) }).catch(() => {});
-      await recoverAfterSnip();
-    } finally {
-      captureInFlightRef.current = false;
-      setIsCaptureOverlayHidden(false);
-      setSelection(null);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-[9999] cursor-crosshair select-none bg-transparent"
-      onContextMenu={(event) => {
-        event.preventDefault();
-        void cancelSnip();
-      }}
-      onMouseDown={(event) => {
-        if (event.button !== 0 || captureInFlightRef.current) return;
-        isMouseDownRef.current = true;
-        setIsCaptureOverlayHidden(false);
-        startRef.current = { x: event.clientX, y: event.clientY };
-        setSelection({ x: event.clientX, y: event.clientY, w: 0, h: 0 });
-      }}
-      onMouseMove={(event) => {
-        if (!isMouseDownRef.current || captureInFlightRef.current) return;
-        const x = Math.min(event.clientX, startRef.current.x);
-        const y = Math.min(event.clientY, startRef.current.y);
-        const w = Math.abs(event.clientX - startRef.current.x);
-        const h = Math.abs(event.clientY - startRef.current.y);
-        setSelection({ x, y, w, h });
-      }}
-      onMouseUp={finishSelection}
-    >
-      {isCaptureOverlayHidden ? null : selection ? (
-        <>
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute left-0 right-0 top-0 bg-black/38" style={{ height: selection.y }} />
-            <div className="absolute left-0 bg-black/38" style={{ top: selection.y, width: selection.x, height: selection.h }} />
-            <div className="absolute right-0 bg-black/38" style={{ top: selection.y, left: selection.x + selection.w, height: selection.h }} />
-            <div className="absolute left-0 right-0 bottom-0 bg-black/38" style={{ top: selection.y + selection.h }} />
-          </div>
-          <div
-            className="absolute pointer-events-none rounded-[4px] border-2 border-emerald-400 shadow-[0_0_0_1px_rgba(255,255,255,0.7)]"
-            style={{ left: selection.x, top: selection.y, width: selection.w, height: selection.h }}
-          >
-            <div className="absolute inset-0 bg-white/10" />
-            <div className="absolute -top-7 right-0 rounded-md bg-emerald-500/95 px-2 py-1 text-[10px] font-semibold text-white shadow-lg whitespace-nowrap">
-              {Math.max(0, Math.round(selection.w))} x {Math.max(0, Math.round(selection.h))}
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="absolute inset-0 bg-black/38 pointer-events-none" />
-          <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-full bg-black/55 px-4 py-2 text-[12px] font-medium text-white shadow-lg pointer-events-none backdrop-blur-sm">
-            Drag to capture, Esc to cancel
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
 
 let agentUiElementSequence = 0;
 
@@ -4120,233 +3605,6 @@ const insertDrawerFolderAtTop = (currentFolders: Folder[], folder: Folder) => {
   ];
 };
 
-type CanvasActionMenuPlacement = 'floating' | 'inline' | 'plain';
-
-function useEventCallback<T extends (...args: any[]) => any>(handler: T): T {
-  const handlerRef = useRef(handler);
-  useLayoutEffect(() => {
-    handlerRef.current = handler;
-  });
-  return useCallback(((...args: Parameters<T>) => handlerRef.current(...args)) as T, []);
-}
-
-const formatCanvasDeletedAt = (value?: number | null) => {
-  if (!value) return '删除时间未知';
-  return new Date(value).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-};
-
-const sameCanvasForList = (previous: CanvasRecord, next: CanvasRecord) => (
-  previous.id === next.id
-  && previous.name === next.name
-  && previous.isSnapshot === next.isSnapshot
-  && previous.deletedAt === next.deletedAt
-);
-
-type CanvasListItemProps = {
-  canvas: CanvasRecord;
-  isActive: boolean;
-  canDelete: boolean;
-  isSwitching: boolean;
-  isMenuOpen: boolean;
-  onOpen: (canvasId: string) => void;
-  onOpenMenu: (canvasId: string) => void;
-  onToggleMenu: (canvasId: string) => void;
-  onDelete: (canvas: CanvasRecord) => void;
-  renderMenu: (canvas: CanvasRecord, placement: CanvasActionMenuPlacement) => React.ReactNode;
-};
-
-const CanvasListItem = React.memo(function CanvasListItem({
-  canvas,
-  isActive,
-  canDelete,
-  isSwitching,
-  isMenuOpen,
-  onOpen,
-  onOpenMenu,
-  onToggleMenu,
-  onDelete,
-  renderMenu,
-}: CanvasListItemProps) {
-  return (
-    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true">
-      <div className="relative">
-        <button
-          type="button"
-          disabled={isSwitching}
-          onClick={() => onOpen(canvas.id)}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenMenu(canvas.id);
-          }}
-          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-16 text-left text-[12px] font-bold transition-colors ${isActive ? 'bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'} disabled:cursor-wait disabled:opacity-60`}
-          title={canvas.name}
-        >
-          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${isActive ? 'bg-white/18 text-white dark:bg-stone-950/82 dark:text-indigo-200 dark:ring-1 dark:ring-white/15' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/12 dark:text-indigo-200'}`}>
-            <Layers className="h-3.5 w-3.5" />
-          </span>
-          <span className="min-w-0 flex-1 truncate">{canvas.name || '画布'}</span>
-          {canvas.isSnapshot && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black ${isActive ? 'bg-white/18 text-white/80 dark:text-stone-950/70' : 'bg-indigo-100 text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-200'}`}>快照</span>}
-        </button>
-        <button
-          type="button"
-          disabled={!canDelete}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onDelete(canvas);
-          }}
-          className="absolute right-8 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-red-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-stone-300 disabled:opacity-0 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-red-300 dark:ring-stone-700 dark:hover:bg-red-950/35 dark:hover:text-red-200 dark:disabled:text-stone-600"
-          title={canDelete ? '删除画布' : '正在切换画布'}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onToggleMenu(canvas.id);
-          }}
-          className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-stone-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:text-stone-900 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700 dark:hover:text-white"
-          title="画布菜单"
-        >
-          <MoreVertical className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {isMenuOpen && renderMenu(canvas, 'inline')}
-    </div>
-  );
-}, (previous, next) => (
-  sameCanvasForList(previous.canvas, next.canvas)
-  && previous.isActive === next.isActive
-  && previous.canDelete === next.canDelete
-  && previous.isSwitching === next.isSwitching
-  && previous.isMenuOpen === next.isMenuOpen
-  && previous.onOpen === next.onOpen
-  && previous.onOpenMenu === next.onOpenMenu
-  && previous.onToggleMenu === next.onToggleMenu
-  && previous.onDelete === next.onDelete
-  && previous.renderMenu === next.renderMenu
-));
-
-type CanvasRailItemProps = Omit<CanvasListItemProps, 'canDelete' | 'onDelete'>;
-
-const CanvasRailItem = React.memo(function CanvasRailItem({
-  canvas,
-  isActive,
-  isSwitching,
-  isMenuOpen,
-  onOpen,
-  onOpenMenu,
-  onToggleMenu,
-  renderMenu,
-}: CanvasRailItemProps) {
-  return (
-    <div className="group/canvas-rail relative flex w-full shrink-0 flex-col items-center" data-canvas-list-item="true">
-      <button
-        type="button"
-        disabled={isSwitching}
-        onClick={() => onOpen(canvas.id)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onOpenMenu(canvas.id);
-        }}
-        className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border transition-colors ${isActive ? 'border-indigo-300 bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'border-white/70 bg-white/65 text-indigo-500 hover:bg-indigo-50 dark:border-stone-700/60 dark:bg-stone-800/65 dark:text-indigo-200 dark:hover:bg-indigo-400/12'} disabled:cursor-wait disabled:opacity-60`}
-        title={canvas.name}
-      >
-        <Layers className="h-5 w-5" />
-      </button>
-      <span className={`w-14 truncate px-0.5 pb-1 text-center text-[10px] ${isActive ? 'font-bold text-indigo-700 dark:text-indigo-200' : 'text-stone-500 dark:text-stone-400'}`}>
-        {canvas.name || '画布'}
-      </span>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onToggleMenu(canvas.id);
-        }}
-        className="absolute right-0 top-0 hidden h-5 w-5 items-center justify-center rounded-full bg-white/88 text-stone-500 ring-1 ring-stone-200 group-hover/canvas-rail:flex dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700"
-        title="画布菜单"
-      >
-        <MoreVertical className="h-3 w-3" />
-      </button>
-      {isMenuOpen && (
-        <div className="absolute left-10 top-0 z-[100060]">
-          {renderMenu(canvas, 'plain')}
-        </div>
-      )}
-    </div>
-  );
-}, (previous, next) => (
-  sameCanvasForList(previous.canvas, next.canvas)
-  && previous.isActive === next.isActive
-  && previous.isSwitching === next.isSwitching
-  && previous.isMenuOpen === next.isMenuOpen
-  && previous.onOpen === next.onOpen
-  && previous.onOpenMenu === next.onOpenMenu
-  && previous.onToggleMenu === next.onToggleMenu
-  && previous.renderMenu === next.renderMenu
-));
-
-type CanvasTrashListItemProps = {
-  canvas: CanvasRecord;
-  onRestore: (canvas: CanvasRecord) => void;
-  onPermanentlyDelete: (canvas: CanvasRecord) => void;
-};
-
-const CanvasTrashListItem = React.memo(function CanvasTrashListItem({
-  canvas,
-  onRestore,
-  onPermanentlyDelete,
-}: CanvasTrashListItemProps) {
-  return (
-    <div className="rounded-[10px] border border-stone-200/80 bg-white/70 p-2 text-stone-700 dark:border-stone-700/70 dark:bg-stone-900/50 dark:text-stone-200">
-      <div className="flex items-start gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-stone-100 text-stone-500 dark:bg-stone-800 dark:text-stone-300">
-          <Layers className="h-3.5 w-3.5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-bold">{canvas.name || '画布'}</div>
-          <div className="mt-0.5 truncate text-[10px] font-medium text-stone-400 dark:text-stone-500">
-            {formatCanvasDeletedAt(canvas.deletedAt)}
-          </div>
-        </div>
-      </div>
-      <div className="mt-2 grid grid-cols-2 gap-1.5">
-        <button
-          type="button"
-          onClick={() => onRestore(canvas)}
-          className="inline-flex h-7 items-center justify-center gap-1 rounded-[8px] bg-emerald-50 text-[10px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:bg-emerald-400/12 dark:text-emerald-200 dark:hover:bg-emerald-400/20"
-        >
-          <ArchiveRestore className="h-3 w-3" />
-          恢复
-        </button>
-        <button
-          type="button"
-          onClick={() => onPermanentlyDelete(canvas)}
-          className="inline-flex h-7 items-center justify-center gap-1 rounded-[8px] bg-red-50 text-[10px] font-black text-red-600 transition-colors hover:bg-red-100 dark:bg-red-400/12 dark:text-red-200 dark:hover:bg-red-400/20"
-        >
-          <Trash2 className="h-3 w-3" />
-          永久删除
-        </button>
-      </div>
-    </div>
-  );
-}, (previous, next) => (
-  sameCanvasForList(previous.canvas, next.canvas)
-  && previous.onRestore === next.onRestore
-  && previous.onPermanentlyDelete === next.onPermanentlyDelete
-));
 
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
@@ -5186,6 +4444,20 @@ function MainApp() {
     localStorage.setItem(DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY, drawerSidebarLayout);
   }, [drawerSidebarLayout]);
   const isFolderSidebarLayout = drawerSidebarLayout === 'folders';
+  const [drawerClassificationView, setDrawerClassificationView] = useState<DrawerClassificationView>(() => (
+    normalizeDrawerClassificationView(localStorage.getItem(DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY))
+  ));
+  useEffect(() => {
+    localStorage.setItem(DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY, drawerClassificationView);
+  }, [drawerClassificationView]);
+  const isDrawerAiClassificationMode = drawerClassificationView === 'ai';
+  const [drawerAiClassificationDimension, setDrawerAiClassificationDimension] = useState<AiClassificationDimension>(() => (
+    normalizeAiClassificationDimension(localStorage.getItem(DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY))
+  ));
+  useEffect(() => {
+    localStorage.setItem(DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY, drawerAiClassificationDimension);
+  }, [drawerAiClassificationDimension]);
+  const [activeDrawerAiClassificationLabel, setActiveDrawerAiClassificationLabel] = useState('all');
   const [drawerFolderSidebarWidth, setDrawerFolderSidebarWidth] = useState(() => (
     clamp(
       Number(localStorage.getItem(DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY)) || DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH,
@@ -8669,7 +7941,7 @@ function MainApp() {
       total: images.length,
     };
   }, [items]);
-  const displayItems = useMemo(() => {
+  const drawerScopedItems = useMemo(() => {
     let result = items as AlchemyBufferItem[];
     const hasSearchQuery = Boolean(searchQuery.trim());
     if (hasSearchQuery) {
@@ -8689,6 +7961,40 @@ function MainApp() {
     }
     return result.filter(item => activeTab === 'all' || item.type === activeTab);
   }, [items, folders, activeTab, searchQuery, activeFolderId]);
+  const drawerAiClassificationGroups = useMemo(() => (
+    buildAiClassificationGroups(drawerScopedItems, drawerAiClassificationDimension)
+  ), [drawerAiClassificationDimension, drawerScopedItems]);
+  const displayItems = useMemo(() => {
+    if (!isDrawerAiClassificationMode || activeDrawerAiClassificationLabel === 'all') {
+      return drawerScopedItems;
+    }
+    return drawerScopedItems.filter(item => itemMatchesAiClassification(
+      item,
+      drawerAiClassificationDimension,
+      activeDrawerAiClassificationLabel,
+    ));
+  }, [
+    activeDrawerAiClassificationLabel,
+    drawerAiClassificationDimension,
+    drawerScopedItems,
+    isDrawerAiClassificationMode,
+  ]);
+  useEffect(() => {
+    if (!isDrawerAiClassificationMode) {
+      setActiveDrawerAiClassificationLabel('all');
+      return;
+    }
+    if (
+      activeDrawerAiClassificationLabel !== 'all'
+      && !drawerAiClassificationGroups.some(group => group.label === activeDrawerAiClassificationLabel)
+    ) {
+      setActiveDrawerAiClassificationLabel('all');
+    }
+  }, [
+    activeDrawerAiClassificationLabel,
+    drawerAiClassificationGroups,
+    isDrawerAiClassificationMode,
+  ]);
   const canvasSearchMediaResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!isCanvasMode || !isSearchActive || !query) {
@@ -33364,6 +32670,11 @@ useEffect(() => {
                         ? <Lightbulb className="w-4 h-4 text-blue-500 dark:text-blue-300" />
                         : <FolderOpen className="w-4 h-4 text-emerald-500" />}
                     {isCanvasMode ? '无限画布' : activeFolderId === 'all' ? '灵感抽屉' : getDrawerFolderPathName(folders, activeFolderId) || '未知分类'}
+                    {!isCanvasMode && isDrawerAiClassificationMode && (
+                      <span className="ml-1 rounded-full bg-violet-100 px-2 py-0.5 text-[9px] font-black text-violet-600 dark:bg-violet-400/14 dark:text-violet-200">
+                        AI 分类
+                      </span>
+                    )}
 
                     {/* 小圆点：阻止冒泡，防止触发拖拽 */}
                     <div
@@ -33634,6 +32945,16 @@ useEffect(() => {
                     </>
                   )}
                 </div>
+                {!isCanvasMode && isDrawerAiClassificationMode && activeTab !== 'notes' && activeTab !== 'calendar' && (
+                  <DrawerAiClassificationBar
+                    dimension={drawerAiClassificationDimension}
+                    activeLabel={activeDrawerAiClassificationLabel}
+                    total={drawerScopedItems.length}
+                    groups={drawerAiClassificationGroups}
+                    onDimensionChange={setDrawerAiClassificationDimension}
+                    onLabelChange={setActiveDrawerAiClassificationLabel}
+                  />
+                )}
                 <AnimatePresence>
                   {isSearchActive && (
                     <motion.div
@@ -33805,6 +33126,12 @@ useEffect(() => {
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
+                                  <DrawerOrganizationPanel
+                                    classificationView={drawerClassificationView}
+                                    onChange={setDrawerClassificationView}
+                                    onResetLabel={() => setActiveDrawerAiClassificationLabel('all')}
+                                    onToast={showToast}
+                                  />
                                 </div>
                               </motion.div>
                             )}
@@ -36305,548 +35632,155 @@ useEffect(() => {
                                     <div className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}>
                                       {!isCanvasWorkflowItem && (
                                         <>
-                                          {isCanvasFrameInterpolationItem ? (
-                                            <>
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={isFrameInterpolationFixed2xMode ? 'auto-2x' : getCanvasRifeRateValue(canvasItem.ai)}
-                                                options={isFrameInterpolationFixed2xMode ? CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS : CANVAS_RIFE_RATE_OPTIONS}
-                                                onChange={(value) => {
-                                                  if (value.startsWith('target-')) {
-                                                    updateCanvasAiGeneratorData(canvasItem.id, {
-                                                      interpolationRateMode: 'target-fps',
-                                                      interpolationTargetFps: Number(value.slice('target-'.length)) || 60,
-                                                    });
-                                                  } else {
-                                                    updateCanvasAiGeneratorData(canvasItem.id, {
-                                                      interpolationRateMode: 'multiplier',
-                                                      interpolationFactor: Number(value.slice('factor-'.length)) || 2,
-                                                    });
-                                                  }
-                                                }}
-                                                disabled={isFrameInterpolationFixed2xMode}
-                                                icon={<RefreshCw className="h-3.5 w-3.5" />}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 固定使用原帧率 × 2' : '倍率补帧与目标帧率二选一'}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={138}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.videoCfrMode || 'auto'}
-                                                options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
-                                                onChange={(value) => {
-                                                  const videoCfrMode = value === '24' || value === '30' || value === 'off' ? value : 'auto';
-                                                  updateCanvasAiGeneratorData(canvasItem.id, { videoCfrMode });
-                                                  if (videoCfrMode !== 'off') {
-                                                    void invoke<void>('ensure_video_cfr_tools', { progressId: canvasItem.id })
-                                                      .catch(error => console.warn('FFmpeg / FFprobe 后台准备失败:', error));
-                                                  }
-                                                }}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title="补帧前检测 VFR；自动模式只在需要时标准化"
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[104px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.interpolationMode || 'normal'}
-                                                options={CANVAS_RIFE_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  interpolationMode: value,
-                                                  ...(isRifeFixed2xMode(value) ? { interpolationFactor: 2 } : {}),
-                                                })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`模式：${CANVAS_RIFE_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.interpolationMode || 'normal'))?.label || '普通'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[82px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={118}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.interpolationQuality || 'standard'}
-                                                options={CANVAS_RIFE_QUALITY_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationQuality: value })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`质量：${CANVAS_RIFE_QUALITY_OPTIONS.find(option => option.value === (canvasItem.ai?.interpolationQuality || 'standard'))?.label || '标准'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[76px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={104}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.interpolationKeepAudio === false ? 'no' : 'yes'}
-                                                options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationKeepAudio: value !== 'no' })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={canvasItem.ai?.interpolationKeepAudio === false ? '不保留音频' : '保留音频'}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[88px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={112}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={String(canvasItem.ai?.outputFormat || 'mp4').toLowerCase()}
-                                                options={CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                                labelClassName="text-center leading-none uppercase"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`输出格式：${String(canvasItem.ai?.outputFormat || 'mp4').toUpperCase()}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[66px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={88}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                            </>
-                                          ) : isCanvasEnhancementItem ? (
-                                            <>
-                                              {isCanvasVideoEnhancementItem && (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={canvasItem.ai?.enhancementEngine || 'ai'}
-                                                  options={CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS}
-                                                  onChange={(value) => {
-                                                    if (value === 'quick') {
-                                                      void cancelCanvasEnhancementEstimate(canvasItem.id);
-                                                    }
-                                                    updateCanvasAiGeneratorData(canvasItem.id, {
-                                                      enhancementEngine: value === 'quick' ? 'quick' : 'ai',
-                                                      enhancementEstimate: undefined,
-                                                      enhancementEstimateKey: undefined,
-                                                      enhancementProgress: undefined,
-                                                    });
-                                                  }}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title={isQuickVideoEnhancementItem ? 'FFmpeg 滤镜 + NVENC 优先' : 'Real-ESRGAN AI 清晰度增强'}
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[104px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                                />
-                                              )}
-                                              {isQuickVideoEnhancementItem ? (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={String(canvasItem.ai?.quickEnhancementScale || 2)}
-                                                  options={CANVAS_QUICK_ENHANCEMENT_SCALE_OPTIONS}
-                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { quickEnhancementScale: Number(value) >= 2 ? 2 : 1 })}
-                                                  icon={<Maximize2 className="h-3.5 w-3.5" />}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title="快速增强输出分辨率"
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                                />
-                                              ) : (
-                                                <>
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={String(canvasItem.ai?.enhancementScale || 2)}
-                                                options={CANVAS_ESRGAN_SCALE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementScale: Number(value) || 2 })}
-                                                icon={<Maximize2 className="h-3.5 w-3.5" />}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`增强倍率：${canvasItem.ai?.enhancementScale || 2}×`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[102px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={118}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.enhancementMode || 'general'}
-                                                options={CANVAS_ESRGAN_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  enhancementMode: value,
-                                                  model: value === 'anime' ? 'realesr-animevideov3' : 'realesrgan-x4plus',
-                                                })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`模式：${CANVAS_ESRGAN_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.enhancementMode || 'general'))?.label || '通用增强'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={128}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.enhancementResizeMode || 'upscale'}
-                                                options={CANVAS_ESRGAN_RESIZE_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementResizeMode: value })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`增强方式：${CANVAS_ESRGAN_RESIZE_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.enhancementResizeMode || 'upscale'))?.label || '放大并增强'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={142}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                                </>
-                                              )}
-                                              {isCanvasVideoEnhancementItem && (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={canvasItem.ai?.enhancementKeepAudio === false ? 'no' : 'yes'}
-                                                  options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
-                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementKeepAudio: value !== 'no' })}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title={canvasItem.ai?.enhancementKeepAudio === false ? '不保留音频' : '保留音频'}
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[88px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={112}
-                                                menuScale={canvasAiMenuScale}
-                                                />
-                                              )}
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={String(canvasItem.ai?.outputFormat || (isCanvasVideoEnhancementItem ? 'mp4' : 'png')).toLowerCase()}
-                                                options={isCanvasVideoEnhancementItem ? CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS : CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                                labelClassName="text-center leading-none uppercase"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`输出格式：${String(canvasItem.ai?.outputFormat || (isCanvasVideoEnhancementItem ? 'mp4' : 'png')).toUpperCase()}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[68px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={88}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                            </>
+                                          {isCanvasFrameInterpolationItem || isCanvasEnhancementItem ? (
+                                            <CanvasLocalMediaControls
+                                              canvasItem={canvasItem}
+                                              isCanvasFrameInterpolationItem={isCanvasFrameInterpolationItem}
+                                              isFrameInterpolationFixed2xMode={isFrameInterpolationFixed2xMode}
+                                              isCanvasEnhancementItem={isCanvasEnhancementItem}
+                                              isCanvasVideoEnhancementItem={isCanvasVideoEnhancementItem}
+                                              isQuickVideoEnhancementItem={isQuickVideoEnhancementItem}
+                                              canvasAiMenuScale={canvasAiMenuScale}
+                                              updateCanvasAiGeneratorData={updateCanvasAiGeneratorData}
+                                              cancelCanvasEnhancementEstimate={cancelCanvasEnhancementEstimate}
+                                            />
                                           ) : (
-                                            <>
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            data-canvas-edit-control="true"
-                                            value={canvasAiMediaType === 'image'
-                                              ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel)
-                                              : getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
-                                            options={canvasAiMediaType === 'image'
-                                              ? canvasAiUnifiedImageModelOptions
-                                              : CANVAS_AI_VIDEO_MODEL_OPTIONS}
-                                            onChange={(value) => {
-                                              const choice = canvasAiMediaType === 'image'
-                                                ? parseCanvasAiModelChoiceValue(value)
-                                                : null;
-                                              const videoCandidates = canvasAiMediaType === 'video'
-                                                ? getCanvasAiVideoModelCandidates(value, canvasAiCredentialSource)
-                                                : [];
-                                              const provider = choice?.provider
-                                                || videoCandidates[0]?.provider
-                                                || (canvasAiMediaType === 'video'
-                                                  ? getCanvasAiVideoProviderForModel(value)
-                                                  : canvasAiItemProvider);
-                                              const model = choice?.model || videoCandidates[0]?.model || value;
-                                              const resolution = supportsCanvasAiImageResolution(provider, model)
-                                                ? normalizeCanvasAiImageResolutionForModel(
-                                                  provider,
+                                            <CanvasGeneratorControls
+                                              mediaType={canvasAiMediaType}
+                                              menuScale={canvasAiMenuScale}
+                                              modelValue={canvasAiMediaType === 'image'
+                                                ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel)
+                                                : getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
+                                              modelOptions={canvasAiMediaType === 'image'
+                                                ? canvasAiUnifiedImageModelOptions
+                                                : CANVAS_AI_VIDEO_MODEL_OPTIONS}
+                                              modelTitle={`模型：${canvasAiMediaType === 'image'
+                                                ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
+                                                : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === getCanvasAiVideoModelOptionValue(canvasAiItemModel))?.label || canvasAiItemModel}`}
+                                              onModelChange={(value) => {
+                                                const choice = canvasAiMediaType === 'image'
+                                                  ? parseCanvasAiModelChoiceValue(value)
+                                                  : null;
+                                                const videoCandidates = canvasAiMediaType === 'video'
+                                                  ? getCanvasAiVideoModelCandidates(value, canvasAiCredentialSource)
+                                                  : [];
+                                                const provider = choice?.provider
+                                                  || videoCandidates[0]?.provider
+                                                  || (canvasAiMediaType === 'video'
+                                                    ? getCanvasAiVideoProviderForModel(value)
+                                                    : canvasAiItemProvider);
+                                                const model = choice?.model || videoCandidates[0]?.model || value;
+                                                const resolution = supportsCanvasAiImageResolution(provider, model)
+                                                  ? normalizeCanvasAiImageResolutionForModel(provider, model, canvasItem.ai?.resolution)
+                                                  : canvasAiMediaType === 'video' && provider === 'new-api'
+                                                    ? normalizeNewApiVideoResolutionForModel(model, canvasItem.ai?.resolution)
+                                                    : canvasItem.ai?.resolution;
+                                                updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  ...(choice ? {
+                                                    provider,
+                                                    credentialSource: choice.source,
+                                                    providerChannelId: choice.providerChannelId,
+                                                    providerCandidates: choice.providerCandidates,
+                                                  } : canvasAiMediaType === 'video' ? {
+                                                    provider,
+                                                    credentialSource: canvasAiCredentialSource,
+                                                    providerChannelId: undefined,
+                                                    providerCandidates: videoCandidates.length > 1 ? videoCandidates : undefined,
+                                                  } : {}),
                                                   model,
-                                                  canvasItem.ai?.resolution,
-                                                )
-                                                : canvasAiMediaType === 'video' && provider === 'new-api'
-                                                  ? normalizeNewApiVideoResolutionForModel(model, canvasItem.ai?.resolution)
-                                                  : canvasItem.ai?.resolution;
-                                              updateCanvasAiGeneratorData(canvasItem.id, {
-                                                ...(choice ? {
-                                                  provider,
-                                                  credentialSource: choice.source,
-                                                  providerChannelId: choice.providerChannelId,
-                                                  providerCandidates: choice.providerCandidates,
-                                                } : canvasAiMediaType === 'video' ? {
-                                                  provider,
-                                                  credentialSource: canvasAiCredentialSource,
-                                                  providerChannelId: undefined,
-                                                  providerCandidates: videoCandidates.length > 1 ? videoCandidates : undefined,
-                                                } : {}),
-                                                model,
-                                                imageProtocol: undefined,
-                                                aspectRatio: canvasAiMediaType === 'video' && provider === 'new-api'
-                                                  ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
-                                                  : normalizeCanvasAiAspectRatioForModel(
-                                                    model,
+                                                  imageProtocol: undefined,
+                                                  aspectRatio: canvasAiMediaType === 'video' && provider === 'new-api'
+                                                    ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                    : normalizeCanvasAiAspectRatioForModel(
+                                                      model,
+                                                      canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                      resolution,
+                                                    ),
+                                                  ...(canvasAiMediaType === 'video' && provider === 'new-api' ? {
+                                                    resolution,
+                                                    duration: normalizeNewApiVideoDurationForModel(model, canvasItem.ai?.duration),
+                                                    videoInputMode: model === 'sora-2' ? 'REF' : canvasItem.ai?.videoInputMode || 'REF',
+                                                  } : {}),
+                                                  ...(supportsCanvasAiImageResolution(provider, model) ? { resolution } : {}),
+                                                });
+                                              }}
+                                              aspectRatioValue={isCanvasAiNewApiVideo
+                                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                : normalizeCanvasAiAspectRatioForModel(
+                                                  canvasAiItemModel,
+                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                  canvasAiItemImageResolution,
+                                                )}
+                                              aspectRatioOptions={isCanvasAiNewApiVideo
+                                                ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
+                                                : getCanvasAiAspectRatioOptionsForModel(canvasAiItemModel, canvasAiItemImageResolution)}
+                                              aspectRatioTitle={`比例：${isCanvasAiNewApiVideo
+                                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                : normalizeCanvasAiAspectRatioForModel(
+                                                  canvasAiItemModel,
+                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                  canvasAiItemImageResolution,
+                                                )}`}
+                                              useWideAspectRatioMenu={usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution)}
+                                              onAspectRatioChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
+                                              supportsImageResolution={canvasAiSupportsImageResolution}
+                                              imageResolutionValue={canvasAiItemImageResolution}
+                                              imageResolutionOptions={canvasAiImageResolutionOptions}
+                                              onImageResolutionChange={(value) => {
+                                                const resolution = normalizeCanvasAiImageResolutionForModel(canvasAiItemProvider, canvasAiItemModel, value);
+                                                updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  resolution,
+                                                  aspectRatio: normalizeCanvasAiAspectRatioForModel(
+                                                    canvasAiItemModel,
                                                     canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                     resolution,
                                                   ),
-                                                ...(canvasAiMediaType === 'video' && provider === 'new-api' ? {
-                                                  resolution,
-                                                  duration: normalizeNewApiVideoDurationForModel(model, canvasItem.ai?.duration),
-                                                  videoInputMode: model === 'sora-2' ? 'REF' : canvasItem.ai?.videoInputMode || 'REF',
-                                                } : {}),
-                                                ...(supportsCanvasAiImageResolution(provider, model) ? {
-                                                  resolution,
-                                                } : {}),
-                                              });
-                                            }}
-                                            labelClassName={`${canvasAiMediaType === 'video' ? 'max-w-[104px]' : 'max-w-[150px]'} truncate text-center leading-none`}
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`模型：${canvasAiMediaType === 'image'
-                                              ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
-                                              : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === getCanvasAiVideoModelOptionValue(canvasAiItemModel))?.label || canvasAiItemModel}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={260}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={isCanvasAiNewApiVideo
-                                              ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
-                                              : normalizeCanvasAiAspectRatioForModel(
-                                                canvasAiItemModel,
-                                                canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                canvasAiItemImageResolution,
-                                              )}
-                                            options={isCanvasAiNewApiVideo
-                                              ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
-                                              : getCanvasAiAspectRatioOptionsForModel(
-                                                canvasAiItemModel,
-                                                canvasAiItemImageResolution,
-                                              )}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
-                                            labelClassName="text-center leading-none"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`比例：${isCanvasAiNewApiVideo
-                                              ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
-                                              : normalizeCanvasAiAspectRatioForModel(
-                                                canvasAiItemModel,
-                                                canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                canvasAiItemImageResolution,
-                                              )}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution) ? 'w-[156px]' : 'w-[62px]'}`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution) ? 188 : 86}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          {canvasAiSupportsImageResolution && (
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={canvasAiItemImageResolution}
-                                            options={canvasAiImageResolutionOptions}
-                                            onChange={(value) => {
-                                              const resolution = normalizeCanvasAiImageResolutionForModel(
-                                                canvasAiItemProvider,
-                                                canvasAiItemModel,
-                                                value,
-                                              );
-                                              updateCanvasAiGeneratorData(canvasItem.id, {
-                                                resolution,
-                                                aspectRatio: normalizeCanvasAiAspectRatioForModel(
-                                                  canvasAiItemModel,
-                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-                                                  resolution,
-                                                ),
-                                              });
-                                            }}
-                                            labelClassName="text-center leading-none"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`清晰度：${canvasAiItemImageResolution.toUpperCase()}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[62px]`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={78}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          )}
-                                          {canvasAiMediaType !== 'video' ? (
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={canvasAiOutputFormat}
-                                            options={canvasAiOutputFormatOptions}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                            labelClassName="text-center leading-none uppercase"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[68px]`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={78}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          ) : (
-                                            <>
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                value={canvasAiVideoResolution}
-                                                options={canvasAiVideoResolutionOptions}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { resolution: value })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`分辨率：${canvasAiVideoResolution}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[70px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={86}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              {canvasAiVideoSupportsFirstLastFrame && (
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                value={canvasVideoInputMode}
-                                                options={CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { videoInputMode: value === 'FLF' ? 'FLF' : 'REF' })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`参考模式：${canvasVideoInputMode === 'FLF' ? '首尾帧' : '参考图'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[76px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={92}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              )}
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                value={String(canvasAiVideoDuration)}
-                                                options={canvasAiVideoDurationOptions}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { duration: Number(value) || CANVAS_AI_DEFAULT_VIDEO_DURATION })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`时长：${canvasAiVideoDuration} 秒`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[64px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={82}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.videoCfrMode || 'off'}
-                                                options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
-                                                onChange={(value) => {
-                                                  const videoCfrMode = value === '24' || value === '30' || value === 'off' ? value : 'auto';
-                                                  updateCanvasAiGeneratorData(canvasItem.id, { videoCfrMode });
-                                                  if (videoCfrMode !== 'off') {
-                                                    void invoke<void>('ensure_video_cfr_tools', { progressId: canvasItem.id })
-                                                      .catch(error => console.warn('FFmpeg / FFprobe 后台准备失败:', error));
-                                                  }
-                                                }}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title="生成后检测帧率；自动模式只在需要时转 CFR"
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                            </>
-                                          )}
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={String(canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT)}
-                                            options={CANVAS_AI_COUNT_OPTIONS}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { count: Number(value) || CANVAS_AI_DEFAULT_COUNT })}
-                                            labelClassName="text-center text-[11px] leading-none"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`${canvasAiMediaType === 'video' ? '条数' : '张数'}：${canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT}`}
-                                            className={CANVAS_AI_NODE_COUNT_SELECT_CLASS}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={86}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                            </>
+                                                });
+                                              }}
+                                              outputFormatValue={canvasAiOutputFormat}
+                                              outputFormatOptions={canvasAiOutputFormatOptions}
+                                              outputFormatTitle={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
+                                              onOutputFormatChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
+                                              videoResolutionValue={canvasAiVideoResolution}
+                                              videoResolutionOptions={canvasAiVideoResolutionOptions}
+                                              onVideoResolutionChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { resolution: value })}
+                                              videoSupportsFirstLastFrame={canvasAiVideoSupportsFirstLastFrame}
+                                              videoInputMode={canvasVideoInputMode}
+                                              onVideoInputModeChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { videoInputMode: value === 'FLF' ? 'FLF' : 'REF' })}
+                                              videoDuration={canvasAiVideoDuration}
+                                              videoDurationOptions={canvasAiVideoDurationOptions}
+                                              onVideoDurationChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { duration: Number(value) || CANVAS_AI_DEFAULT_VIDEO_DURATION })}
+                                              videoCfrMode={canvasItem.ai?.videoCfrMode || 'off'}
+                                              onVideoCfrModeChange={(value) => {
+                                                const videoCfrMode = value === '24' || value === '30' || value === 'off' ? value : 'auto';
+                                                updateCanvasAiGeneratorData(canvasItem.id, { videoCfrMode });
+                                                if (videoCfrMode !== 'off') {
+                                                  void invoke<void>('ensure_video_cfr_tools', { progressId: canvasItem.id })
+                                                    .catch(error => console.warn('FFmpeg / FFprobe 后台准备失败:', error));
+                                                }
+                                              }}
+                                              count={canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT}
+                                              onCountChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { count: Number(value) || CANVAS_AI_DEFAULT_COUNT })}
+                                            />
                                           )}
                                         </>
                                       )}
-                                      <button
-                                        data-no-drag="true"
-                                        data-canvas-run-control="true"
-                                        type="button"
+                                      <CanvasAiRunButton
                                         disabled={canvasItem.ai?.status === 'working' || isLocalMediaBenchmarking}
+                                        isWorking={canvasItem.ai?.status === 'working'}
+                                        isFrameInterpolation={isCanvasFrameInterpolationItem}
+                                        isEnhancement={isCanvasEnhancementItem}
+                                        isVideoEnhancement={isCanvasVideoEnhancementItem}
+                                        isQuickVideoEnhancement={isQuickVideoEnhancementItem}
+                                        isWorkflow={isCanvasWorkflowItem}
+                                        hasResults={hasCanvasAiGeneratedResults(canvasItem)}
+                                        workingElapsedText={canvasAiWorkingElapsedText}
+                                        workingStatusText={canvasAiWorkingStatusText}
+                                        creditLabel={canvasRunCreditLabel}
+                                        creditTitle={canvasRunCreditTitle}
                                         onPointerDown={(event) => handleCanvasAiRunPointerDown(event, canvasItem.id)}
                                         onClick={(event) => handleCanvasAiRunClick(event, canvasItem.id)}
-                                        title={canvasRunCreditTitle}
-                                        className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
-                                      >
-                                        <Play className={`h-4 w-4 fill-current ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
-                                        {isCanvasFrameInterpolationItem
-                                          ? (canvasItem.ai?.status === 'working' ? `补帧中 ${canvasAiWorkingElapsedText}` : hasCanvasAiGeneratedResults(canvasItem) ? '再次补帧' : '补帧')
-                                          : isCanvasEnhancementItem
-                                            ? (isCanvasVideoEnhancementItem
-                                              ? (canvasItem.ai?.status === 'working'
-                                                ? `${isQuickVideoEnhancementItem ? '快速增强中' : '后台增强中'} ${canvasAiWorkingElapsedText}`
-                                                : (isQuickVideoEnhancementItem ? '快速增强' : '完整增强'))
-                                              : (canvasItem.ai?.status === 'working' ? `增强中 ${canvasAiWorkingElapsedText}` : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强'))
-                                          : canvasItem.ai?.status === 'working'
-                                          ? canvasAiWorkingStatusText
-                                          : isCanvasWorkflowItem
-                                            ? (hasCanvasAiGeneratedResults(canvasItem) ? '再次运行' : '运行')
-                                            : hasCanvasAiGeneratedResults(canvasItem)
-                                              ? '再次生成'
-                                              : '生成'}
-                                        {canvasItem.ai?.status !== 'working' && canvasRunCreditLabel && (
-                                          <span className="whitespace-nowrap text-[10px] font-bold text-amber-600 dark:text-amber-300">
-                                            · {canvasRunCreditLabel}
-                                          </span>
-                                        )}
-                                      </button>
+                                      />
                                     </div>
                                   </div>
                                 </div>
@@ -37710,187 +36644,64 @@ useEffect(() => {
                     </div>
                   )}
                   {isCanvasMode && isCanvasAiPanelOpen && (
-                    <motion.div
-                      data-no-drag="true"
-                      data-canvas-floating-layer="true"
-                      data-canvas-soft-panel="true"
-                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="absolute left-4 top-4 z-[100050] w-[320px] rounded-[22px] border border-white/60 bg-white/86 p-3 text-stone-700 shadow-[0_16px_42px_rgba(0,0,0,0.16)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-900/84 dark:text-stone-200"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onWheel={(event) => event.stopPropagation()}
-                    >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-black">
-                          <Settings className="h-4 w-4 text-cyan-500" />
-                          <span>AI API 设置</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setIsCanvasAiPanelOpen(false)}
-                          className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
-                          title="关闭"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-
-                      <div className="grid gap-2">
-                        {isCanvasAiLicenseManaged ? (
-                          <div
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            className="rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs font-bold text-stone-700 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
-                          >
-                            {managedCanvasAiProviderLabel}
-                          </div>
-                        ) : (
-                          <RoundedSelect
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            value={effectiveCanvasAiProvider}
-                            options={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
-                            onChange={(value) => {
-                              const provider = normalizeCanvasAiProvider(value);
-                              setCanvasAiProvider(provider);
-                              setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
-                              setCanvasAiHeadersText(getStoredCanvasAiHeadersText(provider));
-                              setCanvasAiApiProvider(getStoredCanvasAiApiProvider(provider));
-                              const endpoint = getStoredCanvasAiEndpoint(provider);
-                              if (endpoint) setCanvasAiEndpoint(endpoint);
-                            }}
-                            className={CANVAS_AI_PANEL_SELECT_CLASS}
-                            menuMinWidth={220}
-                          />
-                        )}
-                        <input
-                          data-no-drag="true"
-                          data-canvas-edit-control="true"
-                          value={effectiveCanvasAiApiProvider}
-                          onPointerDown={stopCanvasEditEvent}
-                          onMouseDown={stopCanvasEditEvent}
-                          onDoubleClick={stopCanvasEditEvent}
-                          onKeyDown={stopCanvasEditEvent}
-                          onChange={event => {
-                            if (!isCanvasAiLicenseManaged) setCanvasAiApiProvider(event.target.value);
-                          }}
-                          disabled={isCanvasAiLicenseManaged}
-                          placeholder="Provider"
-                          className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 disabled:opacity-75 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
-                        />
-                        <input
-                          data-no-drag="true"
-                          data-canvas-edit-control="true"
-                          type={isCanvasAiLicenseManaged ? 'text' : 'password'}
-                          value={isCanvasAiLicenseManaged ? `由高级版授权提供${licenseAiAccess?.canvas_api_key_last4 ? ` · ****${licenseAiAccess.canvas_api_key_last4}` : ''}` : canvasAiApiKey}
-                          onPointerDown={stopCanvasEditEvent}
-                          onMouseDown={stopCanvasEditEvent}
-                          onDoubleClick={stopCanvasEditEvent}
-                          onKeyDown={stopCanvasEditEvent}
-                          onChange={(event) => {
-                            if (!isCanvasAiLicenseManaged) setCanvasAiApiKey(event.target.value);
-                          }}
-                          disabled={isCanvasAiLicenseManaged}
-                          placeholder={isCanvasAiLicenseManaged ? 'API 配置由高级版授权提供' : getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
-                          className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                        />
-                        {!isCanvasAiLicenseManaged && effectiveCanvasAiProvider === 'new-api' && (
-                          <input
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            type="password"
-                            value={canvasAiNewApiVideoKey}
-                            onPointerDown={stopCanvasEditEvent}
-                            onMouseDown={stopCanvasEditEvent}
-                            onDoubleClick={stopCanvasEditEvent}
-                            onKeyDown={stopCanvasEditEvent}
-                            onChange={event => setCanvasAiNewApiVideoKey(event.target.value)}
-                            placeholder="视频 API Key（可留空，默认复用主 Key）"
-                            className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                          />
-                        )}
-                        {isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider) && (
-                          <div className="flex items-center justify-between gap-2 rounded-[14px] border border-stone-200/80 bg-white/64 px-2.5 py-2 dark:border-stone-700 dark:bg-stone-950/34">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <Wallet className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
-                              <span className={`truncate text-[10px] font-bold ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-stone-500 dark:text-stone-300'}`}>
-                                {canvasAiXaisBalanceText}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              data-canvas-edit-control="true"
-                              onPointerDown={stopCanvasEditEvent}
-                              onMouseDown={stopCanvasEditEvent}
-                              onClick={() => void checkCanvasAiXaisBalance()}
-                              disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiHasApiCredential}
-                              className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-cyan-100 px-2 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-900/42 dark:text-cyan-100 dark:hover:bg-cyan-900/70"
-                              title="查询 Gateway 余额"
-                            >
-                              <RefreshCw className={`h-3 w-3 ${canvasAiXaisBalance.status === 'loading' ? 'animate-spin' : ''}`} />
-                              查询
-                            </button>
-                          </div>
-                        )}
-                        {isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider) && (
-                          <div className="grid gap-1">
-                            <div className="flex items-center gap-1.5">
-                              {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
-                                <input
-                                  data-no-drag="true"
-                                  data-canvas-edit-control="true"
-                                  value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
-                                  onPointerDown={stopCanvasEditEvent}
-                                  onMouseDown={stopCanvasEditEvent}
-                                  onDoubleClick={stopCanvasEditEvent}
-                                  onKeyDown={stopCanvasEditEvent}
-                                  onChange={(event) => {
-                                    if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
-                                  }}
-                                  disabled={isCanvasAiLicenseManaged}
-                                  placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
-                                  className="min-w-0 flex-1 rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                                />
-                              )}
-                              <button
-                                type="button"
-                                data-no-drag="true"
-                                data-canvas-edit-control="true"
-                                onPointerDown={stopCanvasEditEvent}
-                                onMouseDown={stopCanvasEditEvent}
-                                onClick={() => refreshCanvasAiOpenAiModels(false)}
-                                disabled={isRefreshingCanvasAiOpenAiModels || !canvasAiCanRefreshModels}
-                                className="h-[30px] shrink-0 rounded-[13px] bg-cyan-100 px-2 text-[10px] font-bold text-cyan-700 disabled:opacity-45 dark:bg-cyan-900/35 dark:text-cyan-200"
-                              >
-                                {isRefreshingCanvasAiOpenAiModels ? '刷新中' : '模型'}
-                              </button>
-                            </div>
-                            <span className={`px-1 text-[10px] leading-4 ${canvasAiOpenAiModelError ? 'text-red-500 dark:text-red-300' : 'text-stone-400 dark:text-stone-500'}`}>
-                              {canvasAiOpenAiModelError || (canvasAiRemoteModelCount > 0 ? `已读取 ${canvasAiRemoteModelCount} 个模型` : canvasAiRemoteModelEmptyHint)}
-                            </span>
-                          </div>
-                        )}
-                        {!isCanvasAiLicenseManaged && (
-                          <textarea
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            value={canvasAiHeadersText}
-                            onPointerDown={stopCanvasEditEvent}
-                            onMouseDown={stopCanvasEditEvent}
-                            onDoubleClick={stopCanvasEditEvent}
-                            onKeyDown={stopCanvasEditEvent}
-                            onChange={event => setCanvasAiHeadersText(event.target.value)}
-                            rows={2}
-                            spellCheck={false}
-                            placeholder='Headers JSON，例如 {"X-Tenant":"demo"}'
-                            className="w-full resize-y rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-2 font-mono text-[10px] text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
-                          />
-                        )}
-                      </div>
-                    </motion.div>
+                    <CanvasAiSettingsPanel
+                      licenseManaged={isCanvasAiLicenseManaged}
+                      managedProviderLabel={managedCanvasAiProviderLabel}
+                      providerValue={effectiveCanvasAiProvider}
+                      providerOptions={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
+                      onProviderChange={(value) => {
+                        const provider = normalizeCanvasAiProvider(value);
+                        setCanvasAiProvider(provider);
+                        setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
+                        setCanvasAiHeadersText(getStoredCanvasAiHeadersText(provider));
+                        setCanvasAiApiProvider(getStoredCanvasAiApiProvider(provider));
+                        const endpoint = getStoredCanvasAiEndpoint(provider);
+                        if (endpoint) setCanvasAiEndpoint(endpoint);
+                      }}
+                      apiProviderValue={effectiveCanvasAiApiProvider}
+                      onApiProviderChange={(value) => {
+                        if (!isCanvasAiLicenseManaged) setCanvasAiApiProvider(value);
+                      }}
+                      apiKeyType={isCanvasAiLicenseManaged ? 'text' : 'password'}
+                      apiKeyValue={isCanvasAiLicenseManaged
+                        ? `由高级版授权提供${licenseAiAccess?.canvas_api_key_last4 ? ` · ****${licenseAiAccess.canvas_api_key_last4}` : ''}`
+                        : canvasAiApiKey}
+                      onApiKeyChange={(value) => {
+                        if (!isCanvasAiLicenseManaged) setCanvasAiApiKey(value);
+                      }}
+                      apiKeyPlaceholder={isCanvasAiLicenseManaged
+                        ? 'API 配置由高级版授权提供'
+                        : getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
+                      showVideoKey={!isCanvasAiLicenseManaged && effectiveCanvasAiProvider === 'new-api'}
+                      videoKeyValue={canvasAiNewApiVideoKey}
+                      onVideoKeyChange={setCanvasAiNewApiVideoKey}
+                      showBalance={isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)}
+                      balanceStatus={canvasAiXaisBalance.status}
+                      balanceText={canvasAiXaisBalanceText}
+                      canCheckBalance={canvasAiHasApiCredential}
+                      onCheckBalance={() => void checkCanvasAiXaisBalance()}
+                      showEndpoint={isCanvasAiEndpointVisible(effectiveCanvasAiProvider)}
+                      endpointValue={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
+                      onEndpointChange={(value) => {
+                        if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(value);
+                      }}
+                      endpointPlaceholder={isCanvasAiLicenseManaged
+                        ? 'API Base URL 由高级版授权提供'
+                        : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
+                      showRemoteModels={isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)}
+                      isRefreshingModels={isRefreshingCanvasAiOpenAiModels}
+                      canRefreshModels={canvasAiCanRefreshModels}
+                      onRefreshModels={() => refreshCanvasAiOpenAiModels(false)}
+                      modelHint={canvasAiOpenAiModelError
+                        || (canvasAiRemoteModelCount > 0
+                          ? `已读取 ${canvasAiRemoteModelCount} 个模型`
+                          : canvasAiRemoteModelEmptyHint)}
+                      modelError={!!canvasAiOpenAiModelError}
+                      showHeaders={!isCanvasAiLicenseManaged}
+                      headersValue={canvasAiHeadersText}
+                      onHeadersChange={setCanvasAiHeadersText}
+                      onClose={() => setIsCanvasAiPanelOpen(false)}
+                    />
                   )}
                   {isCanvasMode && isCanvasPresetEditorOpen && (
                     <motion.div
@@ -39574,8 +38385,16 @@ useEffect(() => {
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-80 px-6">
                       <Search className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
-                        <p className="text-xs font-bold text-stone-500 dark:text-stone-400">当前分类没有匹配卡片</p>
-                        <p className="text-[11px] leading-5">试试切到“全部”、清空搜索，或把素材拖到当前文件夹。</p>
+                        <p className="text-xs font-bold text-stone-500 dark:text-stone-400">
+                          {isDrawerAiClassificationMode && activeDrawerAiClassificationLabel !== 'all'
+                            ? `AI 分类“${activeDrawerAiClassificationLabel}”没有匹配素材`
+                            : '当前分类没有匹配卡片'}
+                        </p>
+                        <p className="text-[11px] leading-5">
+                          {isDrawerAiClassificationMode
+                            ? '切换上方分类标签、清空搜索，或选择“未分析”查看尚未生成标签的素材。'
+                            : '试试切到“全部”、清空搜索，或把素材拖到当前文件夹。'}
+                        </p>
                         <p className="text-[11px] leading-5">
                           也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span> 进入画布整理参考。
                         </p>
@@ -39689,7 +38508,7 @@ useEffect(() => {
                                   onEnsureThumbnail={ensureMediaThumbnail}
                                   onCreateFloatingNote={createFloatingNote}
                                   onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
-                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}`}
+                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}|${drawerClassificationView}|${drawerAiClassificationDimension}|${activeDrawerAiClassificationLabel}`}
                                   actionContext={drawerCardActionContext}
                             />
                           </div>
