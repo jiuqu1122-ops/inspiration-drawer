@@ -42,6 +42,7 @@ import {
   normalizeCanvasAiImageResolutionForModel,
   normalizeNewApiBaseEndpoint,
   normalizeNewApiVideoDurationForModel,
+  validateCanvasAiVideoReferences,
   orderCanvasAiReferenceSources,
   reconcileWalletImageCandidates,
   resolveCanvasAiReferenceProvider,
@@ -636,6 +637,9 @@ describe('NewAPI video routing', () => {
     expect(normalizeNewApiVideoDurationForModel('sora-2', 10)).toBe(8);
     expect(getNewApiVideoReferenceLimit('sora-2')).toBe(1);
     expect(getNewApiVideoReferenceLimit('veo-3.1')).toBe(3);
+    expect(validateCanvasAiVideoReferences('veo-3.1-fast', 'FLF', 1)).toContain('首帧和尾帧');
+    expect(validateCanvasAiVideoReferences('veo-3.1-fast', 'FLF', 2)).toBe('');
+    expect(validateCanvasAiVideoReferences('veo-3.1-fast', 'REF', 1)).toBe('');
   });
 
   it('builds the /v1/videos payload for Veo with up to three ingredient references', () => {

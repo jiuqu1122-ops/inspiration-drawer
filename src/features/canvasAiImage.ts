@@ -289,6 +289,9 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const provider = options.provider === 'xais-chat' ? 'xais-chat' : 'new-api';
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const inputImages = (options.inputImages || []).filter(Boolean);
+  const referenceError = validateCanvasAiVideoReferences(options.model, options.inputMode, inputImages.length);
+  if (referenceError) throw new Error(referenceError);
   try {
     const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
       request: {
@@ -297,7 +300,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
-        inputImages: (options.inputImages || []).filter(Boolean).slice(0, provider === 'xais-chat' ? 13 : 8),
+        inputImages: inputImages.slice(0, provider === 'xais-chat' ? 13 : 8),
         aspectRatio: String(options.aspectRatio || '16:9'),
         resolution: options.resolution?.trim() || undefined,
         duration: options.duration,
@@ -911,6 +914,17 @@ export const getCanvasAiVideoReferenceSlotLabels = (
     return ['主体', '场景/背景', '风格/纹理'].slice(0, slots.imageSlots);
   }
   return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+};
+
+export const validateCanvasAiVideoReferences = (
+  model: string | null | undefined,
+  inputMode: CanvasAiVideoInputMode | string | null | undefined,
+  imageCount: number,
+) => {
+  if (inputMode === 'FLF' && !isSora2VideoModel(model) && imageCount !== 2) {
+    return '首尾帧模式需要同时连接首帧和尾帧两张图片；如果只使用一张图片，请切换到“参考图”模式';
+  }
+  return '';
 };
 
 export const buildNewApiVideoPrompt = (
@@ -2695,6 +2709,8 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
 
   const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'videos');
   const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
+  const referenceError = validateCanvasAiVideoReferences(model, options.inputMode, inputImages.length);
+  if (referenceError) throw new Error(referenceError);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const output: string[] = [];
 
