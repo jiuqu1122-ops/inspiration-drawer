@@ -6245,6 +6245,193 @@ fn image_mime_extension(mime: &str) -> &'static str {
     }
 }
 
+// Keep the raw file below provider limits even after Base64/JSON overhead.
+const AI_REFERENCE_IMAGE_TARGET_BYTES: usize = 6 * 1024 * 1024;
+
+fn is_ai_upload_compatible_image_mime(mime: &str) -> bool {
+    matches!(
+        mime.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
+    )
+}
+
+fn should_normalize_ai_reference_image(mime: &str, byte_len: usize) -> bool {
+    !is_ai_upload_compatible_image_mime(mime) || byte_len > AI_REFERENCE_IMAGE_TARGET_BYTES
+}
+
+fn flatten_dynamic_image_to_white_rgb(
+    image: &screenshots::image::DynamicImage,
+) -> screenshots::image::RgbImage {
+    let rgba = image.to_rgba8();
+    let mut rgb = screenshots::image::RgbImage::new(rgba.width(), rgba.height());
+    for (target, source) in rgb.pixels_mut().zip(rgba.pixels()) {
+        let alpha = u32::from(source[3]);
+        for channel in 0..3 {
+            target[channel] = ((u32::from(source[channel]) * alpha
+                + 255 * (255 - alpha)
+                + 127)
+                / 255) as u8;
+        }
+    }
+    rgb
+}
+
+fn encode_ai_reference_jpeg(
+    image: &screenshots::image::DynamicImage,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
+    let rgb = flatten_dynamic_image_to_white_rgb(image);
+    let mut bytes = Vec::new();
+    let encoder = screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut bytes,
+        quality,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        screenshots::image::ColorType::Rgb8,
+    )
+    .map_err(|error| format!("参考图 JPEG 压缩失败：{error}"))?;
+    Ok(bytes)
+}
+
+fn normalize_ai_reference_image_bytes(
+    bytes: Vec<u8>,
+    mime: String,
+) -> Result<(Vec<u8>, String), String> {
+    if !should_normalize_ai_reference_image(&mime, bytes.len()) {
+        return Ok((bytes, mime));
+    }
+
+    let image = screenshots::image::load_from_memory(&bytes)
+        .map_err(|error| format!("参考图格式转换失败：{error}"))?;
+    let original_max_edge = image.width().max(image.height()).max(1);
+    let max_edges = [4096_u32, 3072, 2560, 2048, 1600, 1280, 1024];
+    let qualities = [92_u8, 86, 80, 72, 64];
+    let mut smallest: Option<Vec<u8>> = None;
+    let mut last_dimensions: Option<(u32, u32)> = None;
+
+    for max_edge in max_edges {
+        let prepared = if original_max_edge > max_edge {
+            image.resize(
+                max_edge,
+                max_edge,
+                screenshots::image::imageops::FilterType::Lanczos3,
+            )
+        } else {
+            image.clone()
+        };
+        let dimensions = (prepared.width(), prepared.height());
+        if last_dimensions == Some(dimensions) {
+            continue;
+        }
+        last_dimensions = Some(dimensions);
+        for quality in qualities {
+            let candidate = encode_ai_reference_jpeg(&prepared, quality)?;
+            if candidate.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES {
+                return Ok((candidate, "image/jpeg".to_string()));
+            }
+            if smallest
+                .as_ref()
+                .map(|current| candidate.len() < current.len())
+                .unwrap_or(true)
+            {
+                smallest = Some(candidate);
+            }
+        }
+    }
+
+    smallest
+        .map(|candidate| (candidate, "image/jpeg".to_string()))
+        .ok_or_else(|| "参考图压缩没有生成可用文件".to_string())
+}
+
+#[cfg(test)]
+mod ai_reference_image_preparation_tests {
+    use super::{
+        normalize_ai_reference_image_bytes, should_normalize_ai_reference_image,
+        AI_REFERENCE_IMAGE_TARGET_BYTES,
+    };
+
+    #[test]
+    fn normalizes_bmp_reference_images_to_jpeg() {
+        let image = screenshots::image::RgbaImage::from_pixel(
+            4,
+            3,
+            screenshots::image::Rgba([30, 80, 140, 255]),
+        );
+        let mut bmp = Vec::new();
+        let encoder = screenshots::image::codecs::bmp::BmpEncoder::new(&mut bmp);
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgba8,
+        )
+        .expect("encode bmp fixture");
+
+        let (prepared, mime) =
+            normalize_ai_reference_image_bytes(bmp, "image/bmp".to_string())
+                .expect("normalize bmp");
+
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(&prepared[..2], &[0xff, 0xd8]);
+        assert!(prepared.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES);
+    }
+
+    #[test]
+    fn only_reencodes_compatible_images_when_they_are_too_large() {
+        assert!(!should_normalize_ai_reference_image("image/png", 1024));
+        assert!(should_normalize_ai_reference_image(
+            "image/png",
+            AI_REFERENCE_IMAGE_TARGET_BYTES + 1,
+        ));
+        assert!(should_normalize_ai_reference_image("image/gif", 1024));
+        assert!(should_normalize_ai_reference_image("image/bmp", 1024));
+    }
+
+    #[test]
+    fn compresses_an_oversized_png_below_the_upload_target() {
+        let width = 1920;
+        let height = 1440;
+        let mut seed = 0x1234_5678_u32;
+        let image = screenshots::image::RgbaImage::from_fn(width, height, |_x, _y| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let red = (seed >> 24) as u8;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let green = (seed >> 24) as u8;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let blue = (seed >> 24) as u8;
+            screenshots::image::Rgba([red, green, blue, 255])
+        });
+        let mut png = Vec::new();
+        let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+            &mut png,
+            screenshots::image::codecs::png::CompressionType::Fast,
+            screenshots::image::codecs::png::FilterType::NoFilter,
+        );
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgba8,
+        )
+        .expect("encode oversized png fixture");
+        assert!(png.len() > AI_REFERENCE_IMAGE_TARGET_BYTES);
+
+        let (prepared, mime) =
+            normalize_ai_reference_image_bytes(png, "image/png".to_string())
+                .expect("compress oversized png");
+
+        assert_eq!(mime, "image/jpeg");
+        assert!(prepared.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES);
+    }
+}
+
 fn decode_data_image(input: &str) -> Result<(Vec<u8>, String), String> {
     let value = input.trim();
     let Some((header, payload)) = value.split_once(',') else {
@@ -6268,18 +6455,16 @@ fn decode_data_image(input: &str) -> Result<(Vec<u8>, String), String> {
 
 fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, String), String> {
     let value = input.trim();
-    if value.starts_with("data:image/") {
-        return decode_data_image(value);
-    }
-
-    if let Some(path) = local_path_from_url_like(value) {
+    let loaded = if value.starts_with("data:image/") {
+        decode_data_image(value)
+    } else if let Some(path) = local_path_from_url_like(value) {
         if path.is_file() {
             let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
-            return Ok((bytes, guess_mime_from_path(&path).to_string()));
+            Ok((bytes, guess_mime_from_path(&path).to_string()))
+        } else {
+            Err("参考图本地文件不存在".to_string())
         }
-    }
-
-    if value.starts_with("http://") || value.starts_with("https://") {
+    } else if value.starts_with("http://") || value.starts_with("https://") {
         let response = client
             .get(value)
             .header("accept", "image/*,*/*")
@@ -6311,16 +6496,18 @@ fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, 
             .bytes()
             .map_err(|e| format!("读取参考图失败：{}", e))?
             .to_vec();
-        return Ok((bytes, mime));
-    }
+        Ok((bytes, mime))
+    } else {
+        let path = PathBuf::from(value);
+        if path.is_file() {
+            let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
+            Ok((bytes, guess_mime_from_path(&path).to_string()))
+        } else {
+            Err("参考图必须是公网 URL、data URL 或本地图片路径".to_string())
+        }
+    }?;
 
-    let path = PathBuf::from(value);
-    if path.is_file() {
-        let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
-        return Ok((bytes, guess_mime_from_path(&path).to_string()));
-    }
-
-    Err("参考图必须是公网 URL、data URL 或本地图片路径".to_string())
+    normalize_ai_reference_image_bytes(loaded.0, loaded.1)
 }
 
 #[derive(Clone)]
@@ -9740,7 +9927,12 @@ fn source_to_cloudflared_image_file(
 
     if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
         let (mime, bytes) = decode_data_url(trimmed)?;
-        let ext = image_ext_from_mime(&mime);
+        let (bytes, mime) = if mime.starts_with("image/") {
+            normalize_ai_reference_image_bytes(bytes, mime)?
+        } else {
+            (bytes, mime)
+        };
+        let ext = media_ext_from_mime(&mime).unwrap_or_else(|| image_ext_from_mime(&mime));
         let file_name = format!("{}.{}", cloudflared_ref_stem(index), ext);
         fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
         return Ok(file_name);
@@ -9751,14 +9943,25 @@ fn source_to_cloudflared_image_file(
         return Err("本地参考需要本地图片、视频或 data URL".to_string());
     }
 
-    let ext = local
+    let mime = guess_mime_from_path(&local).to_string();
+    let fallback_ext = local
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .filter(|value| is_supported_media_ext(value))
         .unwrap_or_else(|| "jpg".to_string());
+    if !mime.starts_with("image/") {
+        let file_name = format!("{}.{}", cloudflared_ref_stem(index), fallback_ext);
+        fs::copy(local, dir.join(&file_name)).map_err(|e| e.to_string())?;
+        return Ok(file_name);
+    }
+    let bytes = fs::read(&local).map_err(|e| e.to_string())?;
+    let (bytes, mime) = normalize_ai_reference_image_bytes(bytes, mime)?;
+    let ext = media_ext_from_mime(&mime)
+        .map(str::to_string)
+        .unwrap_or(fallback_ext);
     let file_name = format!("{}.{}", cloudflared_ref_stem(index), ext);
-    fs::copy(local, dir.join(&file_name)).map_err(|e| e.to_string())?;
+    fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
     Ok(file_name)
 }
 
@@ -9870,6 +10073,11 @@ fn source_to_r2_object(source: &str) -> Result<R2PreparedObject, String> {
 
     if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
         let (mime, bytes) = decode_data_url(trimmed)?;
+        let (bytes, mime) = if mime.starts_with("image/") {
+            normalize_ai_reference_image_bytes(bytes, mime)?
+        } else {
+            (bytes, mime)
+        };
         let ext = media_ext_from_mime(&mime).unwrap_or("png").to_string();
         return Ok(R2PreparedObject {
             bytes,
@@ -9885,12 +10093,20 @@ fn source_to_r2_object(source: &str) -> Result<R2PreparedObject, String> {
 
     let bytes = fs::read(&path).map_err(|e| format!("读取 R2 参考文件失败：{}", e))?;
     let content_type = guess_mime_from_path(&path).to_string();
-    let ext = path
+    let fallback_ext = path
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .filter(|value| is_supported_media_ext(value))
         .unwrap_or_else(|| image_ext_from_mime(&content_type).to_string());
+    let (bytes, content_type) = if content_type.starts_with("image/") {
+        normalize_ai_reference_image_bytes(bytes, content_type)?
+    } else {
+        (bytes, content_type)
+    };
+    let ext = media_ext_from_mime(&content_type)
+        .map(str::to_string)
+        .unwrap_or(fallback_ext);
     Ok(R2PreparedObject {
         bytes,
         content_type,
@@ -15116,7 +15332,7 @@ async fn complete_snip_selection(
 
     let app_for_capture = app_handle.clone();
     let capture_result = tauri::async_runtime::spawn_blocking(move || {
-        capture_physical_area_to_bmp_file(
+        capture_physical_area_to_file(
             Some(&app_for_capture),
             physical_x,
             physical_y,
@@ -15232,54 +15448,6 @@ fn capture_physical_area_to_file(
         screenshots::image::codecs::png::CompressionType::Fast,
         screenshots::image::codecs::png::FilterType::NoFilter,
     );
-    screenshots::image::ImageEncoder::write_image(
-        encoder,
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        screenshots::image::ColorType::Rgba8,
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(out_path.to_string_lossy().to_string())
-}
-
-fn capture_physical_area_to_bmp_file(
-    app_handle: Option<&tauri::AppHandle>,
-    physical_x: i32,
-    physical_y: i32,
-    physical_w: u32,
-    physical_h: u32,
-) -> Result<String, String> {
-    let screen =
-        screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
-    let display = screen.display_info;
-    let rel_x = physical_x - display.x;
-    let rel_y = physical_y - display.y;
-
-    let max_w = (display.width as i32 - rel_x).max(1) as u32;
-    let max_h = (display.height as i32 - rel_y).max(1) as u32;
-    let safe_w = physical_w.min(max_w).max(1);
-    let safe_h = physical_h.min(max_h).max(1);
-
-    let image = screen
-        .capture_area(rel_x.max(0), rel_y.max(0), safe_w, safe_h)
-        .map_err(|e| e.to_string())?;
-    let file_name = format!(
-        "drawer_snip_area_{}.bmp",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_millis()
-    );
-    let out_dir = app_handle
-        .map(read_web_image_cache_dir)
-        .unwrap_or_else(std::env::temp_dir);
-    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-    let out_path = out_dir.join(file_name);
-    let file = File::create(&out_path).map_err(|e| e.to_string())?;
-    let mut writer = BufWriter::new(file);
-    let encoder = screenshots::image::codecs::bmp::BmpEncoder::new(&mut writer);
     screenshots::image::ImageEncoder::write_image(
         encoder,
         image.as_raw(),

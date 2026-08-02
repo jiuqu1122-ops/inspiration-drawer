@@ -5,6 +5,7 @@ import {
   buildCanvasAiOutputRemoteResultPatch,
   createCanvasAiOutputBufferItem,
   getCanvasAiVisibleOutputs,
+  isCanvasAiImageOutputReadyForWorkflowDependency,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './canvasAiOutputs';
@@ -35,6 +36,23 @@ describe('canvas AI output cache patches', () => {
       path: undefined,
       cacheStatus: 'pending',
     });
+  });
+
+  it('does not release a workflow image dependency until the local file exists', () => {
+    expect(isCanvasAiImageOutputReadyForWorkflowDependency({
+      id: 'remote-output',
+      status: 'success',
+      url: 'https://example.com/generated.png',
+      cacheStatus: 'pending',
+    })).toBe(false);
+
+    expect(isCanvasAiImageOutputReadyForWorkflowDependency({
+      id: 'local-output',
+      status: 'success',
+      url: 'asset://localhost/generated.png',
+      path: 'C:\\cache\\generated.png',
+      cacheStatus: 'pending',
+    })).toBe(true);
   });
 
   it('keeps the stable API result URL when the preview uses a signed OSS URL', () => {

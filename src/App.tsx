@@ -398,6 +398,7 @@ import {
   buildCanvasAiOutputLocalCachePatch,
   buildCanvasAiOutputRemoteResultPatch,
   getCanvasAiVisibleOutputs,
+  isCanvasAiImageOutputReadyForWorkflowDependency,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './features/canvasAiOutputs';
@@ -8983,17 +8984,15 @@ function MainApp() {
 
       const cacheGeneratedImage = async () => {
         let lastError: unknown = new Error('网页图片缓存没有返回文件路径');
-        let resolvedSource = source;
-        if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
-          resolvedSource = await invoke<string>('resolve_ai_image_result_url', { url: source });
-        }
         const retryDelays = /^https?:\/\//i.test(source)
           ? GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS
           : [];
         for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
           try {
             const cachedPath = await invoke<string>('cache_web_image', {
-              url: resolvedSource,
+              // Keep the stable result URL intact. The backend refreshes signed
+              // wallet/OSS URLs on every attempt before downloading.
+              url: source,
               name: item.name || item.content || AI_GENERATED_FOLDER_NAME,
               dir: latestCacheDir || undefined,
             });
@@ -14848,7 +14847,11 @@ function MainApp() {
     return { width: Math.round(height * ratio), height };
   };
 
-  const cacheCanvasGeneratedImageSource = async (source: string, name: string) => {
+  const cacheCanvasGeneratedImageSource = async (
+    source: string,
+    name: string,
+    options?: { throwOnFailure?: boolean },
+  ) => {
     const trimmed = source.trim();
     if (!trimmed || (!/^data:(?:image|video)\//i.test(trimmed) && !/^https?:\/\//i.test(trimmed))) {
       return { url: trimmed, path: '', sourceUrl: trimmed };
@@ -14859,27 +14862,36 @@ function MainApp() {
       localStorage.getItem('drawer_web_image_cache_dir') ||
       ''
     ).trim();
-    let resolvedUrl = trimmed;
-    if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(trimmed)) {
+    const retryDelays = /^https?:\/\//i.test(trimmed)
+      ? GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS
+      : [];
+    let lastError: unknown = new Error('AI 生成媒体本地缓存没有返回文件路径');
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
       try {
-        resolvedUrl = await invoke<string>('resolve_ai_image_result_url', { url: trimmed });
+        const cachedPath = await invoke<string>('cache_web_image', {
+          // cache_web_image recognizes stable wallet URLs and refreshes their
+          // temporary OSS signature for each retry.
+          url: trimmed,
+          name: name || AI_GENERATED_FOLDER_NAME,
+          dir: latestCacheDir || undefined,
+        });
+        if (cachedPath) {
+          return { url: convertFileSrc(cachedPath), path: cachedPath, sourceUrl: trimmed };
+        }
+        lastError = new Error('AI 生成媒体本地缓存没有返回文件路径');
       } catch (err) {
-        console.warn('解析 AI 图片 OSS 临时地址失败:', err);
+        lastError = err;
+      }
+      if (attempt < retryDelays.length) {
+        await new Promise<void>(resolve => window.setTimeout(resolve, retryDelays[attempt]));
       }
     }
 
-    try {
-      const cachedPath = await invoke<string>('cache_web_image', {
-        url: resolvedUrl,
-        name: name || AI_GENERATED_FOLDER_NAME,
-        dir: latestCacheDir || undefined,
-      });
-      if (!cachedPath) return { url: resolvedUrl, path: '', sourceUrl: trimmed };
-      return { url: convertFileSrc(cachedPath), path: cachedPath, sourceUrl: trimmed };
-    } catch (err) {
-      console.warn('AI 生成媒体本地缓存失败，保留 OSS 远程预览:', err);
-      return { url: resolvedUrl, path: '', sourceUrl: trimmed };
+    if (options?.throwOnFailure) {
+      throw lastError;
     }
+    console.warn('AI 生成媒体本地缓存失败，保留远程预览:', lastError);
+    return { url: trimmed, path: '', sourceUrl: trimmed };
   };
 
   const createCanvasImagePreviewThumbnail = async (
@@ -18677,6 +18689,7 @@ function MainApp() {
       showResultToast?: boolean;
       toastLabel?: string;
       clientRequestId?: string;
+      requireLocalImageOutputs?: boolean;
     }
   ) => {
     const latestTarget = options.getLatestTarget?.();
@@ -19156,16 +19169,18 @@ function MainApp() {
       ) => {
         const source = url.trim();
         const durableOutputName = `${outputClientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
-        const publishRemoteMediaImmediately = /^https?:\/\//i.test(source);
-        // Remote results are usable as soon as the provider responds. Publish
-        // them immediately so OSS caching and optional video CFR processing do
-        // not keep a completed generation in the working state.
+        const requireLocalImage = mediaType === 'image' && options.requireLocalImageOutputs === true;
+        const publishRemoteMediaImmediately = /^https?:\/\//i.test(source) && !requireLocalImage;
         const cached = publishRemoteMediaImmediately
           ? buildCanvasAiOutputRemoteResultPatch(source)
           : await cacheCanvasGeneratedImageSource(
             source,
-            mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
+            mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName,
+            { throwOnFailure: requireLocalImage },
           );
+        if (requireLocalImage && !cached.path) {
+          throw new Error('图片已生成，但下载到本地失败，已停止后续工作流节点');
+        }
         const displayUrl = cached.url || source;
         // Avoid decoding a potentially huge generated image in the renderer
         // during result placement. Rust creates the small preview off-thread,
@@ -20335,10 +20350,11 @@ function MainApp() {
         updateAi: (patch, content) => updateRunNodeAi(nodeId, patch, content),
         getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
         showResultToast: false,
+        requireLocalImageOutputs: true,
       });
 
       const latest = getRunCanvasItems().find(item => item.id === nodeId);
-      if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
         successCount += 1;
       } else {
         failedIds.add(nodeId);
@@ -20434,10 +20450,12 @@ function MainApp() {
         getLatestTarget: getSingleTarget,
         showResultToast: false,
         clientRequestId: runToken,
+        requireLocalImageOutputs: true,
       });
       const latest = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
-      const succeeded = latest?.ai?.outputs?.[outputIndex]?.status === 'success'
-        && !!getCanvasAiOutputDisplaySource(latest.ai.outputs[outputIndex]);
+      const succeeded = isCanvasAiImageOutputReadyForWorkflowDependency(
+        latest?.ai?.outputs?.[outputIndex],
+      );
       if (!succeeded) {
         updateCanvasNodeForCanvas(runCanvasId, targetId, item => {
           if (item.ai?.type !== 'image-generator') return item;
@@ -20629,11 +20647,11 @@ function MainApp() {
         getLatestTarget: getSingleTarget,
         showResultToast: false,
         clientRequestId: runToken,
+        requireLocalImageOutputs: true,
       });
       const latestOutput = runtimeItems.find(item => item.id === runtimeTargetId)
         ?.ai?.outputs?.[selectedSlot.index];
-      const succeeded = latestOutput?.status === 'success'
-        && !!getCanvasAiOutputDisplaySource(latestOutput);
+      const succeeded = isCanvasAiImageOutputReadyForWorkflowDependency(latestOutput);
       if (!succeeded) {
         runtimeItems = runtimeItems.map(item => {
           if (item.id !== runtimeTargetId || item.ai?.type !== 'image-generator') return item;
@@ -21284,7 +21302,7 @@ function MainApp() {
         publishWorkflowProgress();
         return;
       }
-      if (getCanvasAiSuccessfulOutputs(current).length > 0) {
+      if (getCanvasAiSuccessfulOutputs(current).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         publishWorkflowProgress();
@@ -21295,9 +21313,10 @@ function MainApp() {
         updateAi: (patch, content) => updateRuntimeItemAi(nodeId, patch, content),
         getLatestTarget: () => runtimeItems.find(item => item.id === nodeId),
         showResultToast: false,
+        requireLocalImageOutputs: true,
       });
       const latest = runtimeItems.find(item => item.id === nodeId);
-      if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         updateModuleAi({
@@ -26240,7 +26259,11 @@ useEffect(() => {
     if (!isCanvasMode) return;
     const handleCanvasPointerDownForBlur = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('[data-canvas-run-control="true"]')) return;
+      if (target?.closest([
+        '[data-canvas-run-control="true"]',
+        '[data-canvas-edit-control="true"]',
+        '[data-canvas-floating-layer="true"]',
+      ].join(','))) return;
       blurCanvasActiveTextEntry(event.target);
     };
     document.addEventListener('pointerdown', handleCanvasPointerDownForBlur, true);
@@ -35653,11 +35676,12 @@ useEffect(() => {
                                           onPointerDown={(event) => event.stopPropagation()}
                                           onWheel={(event) => event.stopPropagation()}
                                           placeholder={canvasItem.ai?.presetLabel ? '补充这个预设的细节，不填也可以直接生成。' : canvasAiMediaType === 'video' ? '描述你想要的视频运动、镜头和画面...' : '描述你想要的画面...'}
-                                          className="block h-full w-full resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 pr-24 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
+                                          className="block h-full w-full resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 pr-10 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
                                           />
                                           {(canvasAiMediaType === 'image' || canvasAiMediaType === 'video') && (
                                             <button
                                               data-no-drag="true"
+                                              data-canvas-edit-control="true"
                                               type="button"
                                               disabled={canvasPromptOptimizingId === canvasItem.id}
                                               onPointerDown={(event) => {
@@ -35669,14 +35693,13 @@ useEffect(() => {
                                                 event.stopPropagation();
                                                 void optimizeCanvasPrompt(canvasItem.id);
                                               }}
-                                              className="group/prompt-optimize absolute bottom-2 right-1.5 inline-flex h-7 items-center gap-1.5 rounded-[9px] border border-stone-200/80 bg-white/82 px-2 text-[10px] font-bold text-stone-500 shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_1px_0_rgba(255,255,255,0.8)] transition-[border-color,background-color,color,transform,box-shadow] hover:-translate-y-px hover:border-cyan-300/80 hover:bg-white hover:text-cyan-700 hover:shadow-[0_3px_8px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.9)] active:translate-y-0 active:scale-[0.97] disabled:cursor-wait disabled:opacity-55 dark:border-white/[0.12] dark:bg-stone-950/58 dark:text-white/55 dark:shadow-[0_2px_6px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.08)] dark:hover:border-cyan-300/35 dark:hover:bg-stone-900/78 dark:hover:text-cyan-100 dark:hover:shadow-[0_4px_12px_rgba(0,0,0,0.24)] motion-reduce:transition-colors"
-                                              title="使用 Agent 优化提示词"
-                                              aria-label="优化提示词"
+                                              className="group/prompt-optimize absolute bottom-1.5 right-1.5 inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent bg-transparent text-stone-400 transition-[border-color,background-color,color,transform] hover:border-cyan-500/15 hover:bg-cyan-500/[0.07] hover:text-cyan-600 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/30 disabled:cursor-wait disabled:opacity-55 dark:text-white/36 dark:hover:border-cyan-300/15 dark:hover:bg-cyan-300/[0.08] dark:hover:text-cyan-200 motion-reduce:transition-colors"
+                                              title={canvasPromptOptimizingId === canvasItem.id ? '正在优化提示词' : '使用 Agent 优化提示词'}
+                                              aria-label={canvasPromptOptimizingId === canvasItem.id ? '正在优化提示词' : '优化提示词'}
                                             >
-                                              <span className="flex h-4 w-4 items-center justify-center rounded-[5px] bg-cyan-500/10 text-cyan-600 transition-colors group-hover/prompt-optimize:bg-cyan-500/15 group-hover/prompt-optimize:text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-200 dark:group-hover/prompt-optimize:bg-cyan-300/18 dark:group-hover/prompt-optimize:text-cyan-100">
-                                                <Sparkles className={`h-3 w-3 ${canvasPromptOptimizingId === canvasItem.id ? 'animate-pulse motion-reduce:animate-none' : ''}`} />
-                                              </span>
-                                              <span>{canvasPromptOptimizingId === canvasItem.id ? '优化中' : '优化'}</span>
+                                              {canvasPromptOptimizingId === canvasItem.id
+                                                ? <RefreshCw className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                                                : <Sparkles className="h-4 w-4" strokeWidth={2.1} />}
                                             </button>
                                           )}
                                         </div>
@@ -35704,7 +35727,10 @@ useEffect(() => {
                                         </div>
                                       )}
                                     </div>
-                                    <div className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}>
+                                    <div
+                                      data-canvas-edit-control="true"
+                                      className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}
+                                    >
                                       {!isCanvasWorkflowItem && (
                                         <>
                                           {isCanvasFrameInterpolationItem || isCanvasEnhancementItem ? (

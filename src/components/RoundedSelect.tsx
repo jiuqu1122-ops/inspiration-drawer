@@ -92,21 +92,32 @@ function RoundedSelect({
 
     const availableBelow = window.innerHeight - rect.bottom - 8 * scale;
     const openUp = availableBelow < visualEstimatedHeight && rect.top > availableBelow;
-    const top = openUp
-      ? Math.max(8, rect.top - visualEstimatedHeight - 6 * scale)
-      : Math.min(window.innerHeight - 8, rect.bottom + 6 * scale);
     const left = Math.min(
       Math.max(8, rect.left),
       Math.max(8, window.innerWidth - visualMinWidth - 8),
     );
 
+    if (openUp) {
+      setMenuStyle({
+        left,
+        top: undefined,
+        bottom: Math.max(8, window.innerHeight - rect.top + 6 * scale),
+        minWidth,
+        maxHeight: Math.min(380, (rect.top - 14) / scale),
+        transform: scale === 1 ? undefined : `scale(${scale})`,
+        transformOrigin: 'left bottom',
+      });
+      return;
+    }
+
     setMenuStyle({
       left,
-      top,
+      top: Math.min(window.innerHeight - 8, rect.bottom + 6 * scale),
+      bottom: undefined,
       minWidth,
-      maxHeight: Math.min(380, (openUp ? rect.top - 14 : window.innerHeight - rect.bottom - 14) / scale),
+      maxHeight: Math.min(380, (window.innerHeight - rect.bottom - 14) / scale),
       transform: scale === 1 ? undefined : `scale(${scale})`,
-      transformOrigin: openUp ? 'left bottom' : 'left top',
+      transformOrigin: 'left top',
     });
   };
 
@@ -143,6 +154,7 @@ function RoundedSelect({
   }, [open, menuScale, menuPlacement]);
 
   const hasSwappedLabel = !hideLabel && (collapsedLabel || expandedLabel);
+  const menuUsesDarkTheme = !!buttonRef.current?.closest('.dark');
   const labelClasses = hideLabel
     ? 'sr-only'
     : hasSwappedLabel
@@ -267,26 +279,28 @@ function RoundedSelect({
         <ChevronDown className={chevronClasses} />
       </button>
       {open && createPortal(
-        <div
-          ref={menuRef}
-          data-canvas-floating-layer="true"
-          style={menuStyle}
-          className={`fixed z-[1000000] overflow-y-auto overflow-x-hidden rounded-[14px] border border-stone-200/80 bg-white/97 p-1.5 text-[11px] font-bold text-stone-600 shadow-[0_18px_48px_rgba(15,23,42,0.18)] backdrop-blur-xl dark:border-stone-700/70 dark:bg-stone-950/97 dark:text-stone-200 ${menuClassName}`}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        >
-          <div className="grid gap-0.5">
-            {regularOptions.map((option, index) => renderOption(option, index, regularOptions))}
-          </div>
-          {actionOptions.length > 0 && (
-            <div className="mt-1.5 border-t border-stone-100 pt-1.5 dark:border-white/8">
-              <div className="grid gap-0.5">
-                {actionOptions.map((option, index) => renderOption(option, index, actionOptions))}
-              </div>
+        <div className={menuUsesDarkTheme ? 'dark' : undefined}>
+          <div
+            ref={menuRef}
+            data-canvas-floating-layer="true"
+            style={menuStyle}
+            className={`fixed z-[1000000] overflow-y-auto overflow-x-hidden rounded-[14px] border border-stone-200/80 bg-white/97 p-1.5 text-[11px] font-bold text-stone-600 shadow-[0_18px_48px_rgba(15,23,42,0.18)] backdrop-blur-xl dark:border-stone-700/70 dark:bg-stone-950/97 dark:text-stone-200 ${menuClassName}`}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+          >
+            <div className="grid gap-0.5">
+              {regularOptions.map((option, index) => renderOption(option, index, regularOptions))}
             </div>
-          )}
+            {actionOptions.length > 0 && (
+              <div className="mt-1.5 border-t border-stone-100 pt-1.5 dark:border-white/8">
+                <div className="grid gap-0.5">
+                  {actionOptions.map((option, index) => renderOption(option, index, actionOptions))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>,
         document.body,
       )}

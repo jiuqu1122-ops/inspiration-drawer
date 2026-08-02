@@ -4,17 +4,19 @@
 
 ## 下载
 
-当前版本：**6.0.3**
+当前版本：**6.0.4**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.3/Inspiration.Drawer_6.0.3_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.3)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.4/Inspiration.Drawer_6.0.4_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.4)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
 
-## 6.0.3 更新
+## 6.0.4 更新
 
-- 新增图片和视频节点的提示词优化按钮，可直接在文本框中优化并回填提示词。
-- 优化提示词按钮的视觉样式，适配画布浅色和深色模式。
+- 修复生成工作流在图片尚未下载到本地时提前运行下游节点的问题，并改进临时图片地址的下载重试。
+- 截图统一保存为 PNG；AI 上传前自动转换 BMP 等不兼容格式，并压缩超大参考图。
+- 修复节点文本框展开时控制栏需要点击两次的问题。
+- 优化节点下拉菜单的暗黑模式与缩放定位，并重新设计提示词优化按钮。
 
 ## 主要功能
 

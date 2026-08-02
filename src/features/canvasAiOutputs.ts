@@ -84,6 +84,15 @@ export const buildCanvasAiOutputRemoteResultPatch = (source: string) => {
   };
 };
 
+/**
+ * Workflow image dependencies must be durable before downstream nodes can use
+ * them. A remote preview URL is not enough because it may still require an
+ * authenticated download or expire before the next provider reads it.
+ */
+export const isCanvasAiImageOutputReadyForWorkflowDependency = (
+  output?: CanvasAiGeneratedOutput | null,
+) => output?.status === 'success' && !!String(output.path || '').trim();
+
 export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
   (isCanvasAiGeneratorType(canvasItem?.ai?.type) || canvasItem?.ai?.type === 'workflow')
     ? (canvasItem.ai.outputs || []).map(recoverCanvasAiOutputWithUsableResult).filter(
