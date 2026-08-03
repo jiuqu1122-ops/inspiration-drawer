@@ -9858,8 +9858,26 @@ fn media_ext_from_mime(mime: &str) -> Option<&'static str> {
         Some("avi")
     } else if lower.contains("matroska") || lower.contains("mkv") {
         Some("mkv")
+    } else if lower.contains("audio/mp4") || lower.contains("mp4a") || lower.contains("m4a") {
+        Some("m4a")
     } else if lower.contains("mp4") || lower.contains("video/") {
         Some("mp4")
+    } else if lower.contains("mpeg") || lower.contains("mp3") {
+        Some("mp3")
+    } else if lower.contains("wav") || lower.contains("wave") {
+        Some("wav")
+    } else if lower.contains("ogg") || lower.contains("opus") {
+        Some("ogg")
+    } else if lower.contains("flac") {
+        Some("flac")
+    } else if lower.contains("aac") {
+        Some("aac")
+    } else if lower.contains("aiff") {
+        Some("aiff")
+    } else if lower.contains("wma") {
+        Some("wma")
+    } else if lower.contains("audio/") {
+        Some("bin")
     } else {
         None
     }
@@ -9885,6 +9903,15 @@ fn is_supported_media_ext(ext: &str) -> bool {
             | "m4v"
             | "avi"
             | "mkv"
+            | "mp3"
+            | "wav"
+            | "ogg"
+            | "opus"
+            | "flac"
+            | "aac"
+            | "m4a"
+            | "aiff"
+            | "wma"
     )
 }
 
@@ -9925,7 +9952,10 @@ fn source_to_cloudflared_image_file(
         return Err("参考文件为空".to_string());
     }
 
-    if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
+    if trimmed.starts_with("data:image/")
+        || trimmed.starts_with("data:video/")
+        || trimmed.starts_with("data:audio/")
+    {
         let (mime, bytes) = decode_data_url(trimmed)?;
         let (bytes, mime) = if mime.starts_with("image/") {
             normalize_ai_reference_image_bytes(bytes, mime)?
@@ -10071,7 +10101,10 @@ fn source_to_r2_object(source: &str) -> Result<R2PreparedObject, String> {
         return Err("R2 参考文件为空".to_string());
     }
 
-    if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
+    if trimmed.starts_with("data:image/")
+        || trimmed.starts_with("data:video/")
+        || trimmed.starts_with("data:audio/")
+    {
         let (mime, bytes) = decode_data_url(trimmed)?;
         let (bytes, mime) = if mime.starts_with("image/") {
             normalize_ai_reference_image_bytes(bytes, mime)?
@@ -11923,6 +11956,14 @@ fn guess_mime_from_path(path: &std::path::Path) -> &'static str {
         "mov" => "video/quicktime",
         "avi" => "video/x-msvideo",
         "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "m4a" => "audio/mp4",
+        "aiff" => "audio/aiff",
+        "wma" => "audio/x-ms-wma",
         "json" => "application/json; charset=utf-8",
         "wasm" => "application/wasm",
         "onnx" => "application/octet-stream",

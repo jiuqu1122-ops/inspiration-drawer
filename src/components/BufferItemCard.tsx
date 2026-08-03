@@ -13,7 +13,162 @@ import {
   writeLocalImageFileToClipboard,
 } from '../features/imageClipboard';
 import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
-import { isLocalAlchemyResult } from '../features/alchemy';
+import type { InspirationProfile } from '../features/appAgent/inspirationMemory/types';
+
+const normalizeAiTextEntry = (value: unknown): string => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entry = value as Record<string, unknown>;
+    const nestedValue = entry.name ?? entry.label ?? entry.title ?? entry.value ?? entry.color ?? entry.hex;
+    return normalizeAiTextEntry(nestedValue);
+  }
+
+  const text = String(value ?? '').trim();
+  return /^\[object\s.+\]$/i.test(text) ? '' : text;
+};
+
+const toTextList = (value: unknown): string[] => {
+  return toValueList(value).map(normalizeAiTextEntry).filter(Boolean);
+};
+
+const toValueList = (value: unknown): unknown[] => (
+  Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? /^(?:rgb|rgba|hsl|hsla)\s*\(/i.test(value.trim())
+        ? [value]
+        : value.split(/[,，、\n]/)
+      : []
+);
+
+type AiColorSource = {
+  label: string;
+  value: string;
+};
+
+const toAiColorSource = (value: unknown): AiColorSource | null => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entry = value as Record<string, unknown>;
+    const label = normalizeAiTextEntry(entry.name ?? entry.label ?? entry.title);
+    const cssColor = normalizeAiTextEntry(entry.hex ?? entry.color ?? entry.value);
+    if (!label && !cssColor) return null;
+    return {
+      label: label || cssColor,
+      value: cssColor ? `${label} ${cssColor}`.trim() : label,
+    };
+  }
+
+  const text = normalizeAiTextEntry(value);
+  return text ? { label: text, value: text } : null;
+};
+
+const AI_COLOR_SWATCH_RULES: Array<[RegExp, string]> = [
+  [/(?:米白|暖白|乳白|象牙|奶白|off[-\s]?white|ivory|cream)/i, '#eee8dc'],
+  [/(?:玫瑰金|rose\s*gold)/i, '#c88f83'],
+  [/(?:黄铜|青铜|铜色|brass|bronze|copper)/i, '#a97945'],
+  [/(?:炭黑|墨黑|曜石|煤黑|charcoal|graphite|black)/i, '#2b2b2a'],
+  [/(?:深灰|铁灰|枪灰|铅灰|dark\s*gr[ae]y)/i, '#555754'],
+  [/(?:银色|银灰|浅灰|灰色|灰|silver|gr[ae]y)/i, '#a9aaa7'],
+  [/(?:米色|沙色|卡其|燕麦|杏色|beige|sand|khaki|oat)/i, '#d2c0a2'],
+  [/(?:棕色|褐色|咖色|咖啡|木色|原木|胡桃|brown|coffee|walnut|wood)/i, '#8b6248'],
+  [/(?:酒红|砖红|赤褐|burgundy|maroon)/i, '#7f3638'],
+  [/(?:红色|红|red|crimson)/i, '#c94c4c'],
+  [/(?:橙色|橙|orange|tangerine)/i, '#dd8543'],
+  [/(?:金色|金黄|gold|amber)/i, '#c69a45'],
+  [/(?:黄色|黄|yellow)/i, '#d8bb4b'],
+  [/(?:橄榄|军绿|olive)/i, '#777b4b'],
+  [/(?:绿色|绿|green|emerald)/i, '#5f8c68'],
+  [/(?:青色|青绿|薄荷|湖蓝|cyan|teal|mint|turquoise)/i, '#5c9996'],
+  [/(?:藏蓝|海军蓝|靛蓝|navy|indigo)/i, '#384d68'],
+  [/(?:蓝色|蓝|blue)/i, '#5b7fa3'],
+  [/(?:紫色|紫|purple|violet|lavender)/i, '#806a97'],
+  [/(?:粉色|粉|pink|blush)/i, '#d99aa3'],
+  [/(?:白色|白|white)/i, '#f4f3ef'],
+  [/(?:透明|半透明|transparent|clear)/i, '#d9dee2'],
+];
+
+export type AiImageColorSwatch = {
+  label: string;
+  color: string;
+};
+
+export const resolveAiImageColorSwatch = (value: unknown): AiImageColorSwatch | null => {
+  const label = String(value || '').trim();
+  if (!label) return null;
+
+  const directColor = label.match(/#[0-9a-f]{8}\b|#[0-9a-f]{6}\b|#[0-9a-f]{4}\b|#[0-9a-f]{3}\b|(?:rgb|hsl)a?\([^)]*\)/i)?.[0];
+  if (directColor) return { label, color: directColor };
+
+  const matchedRule = AI_COLOR_SWATCH_RULES.find(([pattern]) => pattern.test(label));
+  return { label, color: matchedRule?.[1] || '#a8a29e' };
+};
+
+export const getAiImageAnalysisPalette = (
+  profile?: InspirationProfile | null,
+  limit = 4,
+): AiImageColorSwatch[] => {
+  if (!profile || limit <= 0) return [];
+
+  // Keep the card tolerant of older/newer AI response shapes. The normalized
+  // profile uses cmf.colors, while some server responses expose the same
+  // palette as colors, colorPalette, palette, or dominantColors.
+  const profileRecord = profile as unknown as Record<string, unknown>;
+  const cmfRecord = profileRecord.cmf && typeof profileRecord.cmf === 'object'
+    ? profileRecord.cmf as Record<string, unknown>
+    : {};
+  const cmfColors = [
+    ...toValueList(cmfRecord.colors),
+    ...toValueList(profileRecord.colors),
+    ...toValueList(profileRecord.colorPalette),
+    ...toValueList(profileRecord.palette),
+    ...toValueList(profileRecord.dominantColors),
+  ];
+  const aiColorTags = Array.isArray(profile.aiTags)
+    ? profile.aiTags
+      .filter(tag => /^(?:色彩|颜色|配色|colou?r?s?|palette)$/i.test(String(tag?.category || '').trim()))
+      .map(tag => tag?.name)
+    : [];
+  const uniqueSources = new Map<string, AiColorSource>();
+  [...cmfColors, ...aiColorTags].forEach((value) => {
+    const source = toAiColorSource(value);
+    if (!source) return;
+    const key = source.label.toLocaleLowerCase();
+    if (!uniqueSources.has(key)) uniqueSources.set(key, source);
+  });
+
+  return Array.from(uniqueSources.values())
+    .map(source => {
+      const swatch = resolveAiImageColorSwatch(source.value);
+      return swatch ? { ...swatch, label: source.label } : null;
+    })
+    .filter((swatch): swatch is AiImageColorSwatch => !!swatch)
+    .slice(0, limit);
+};
+
+export const getAiImageAnalysisTerms = (
+  profile?: InspirationProfile | null,
+  limit = 11,
+): string[] => {
+  if (!profile || limit <= 0) return [];
+
+  const profileRecord = profile as unknown as Record<string, unknown>;
+  const cmfRecord = profileRecord.cmf && typeof profileRecord.cmf === 'object'
+    ? profileRecord.cmf as Record<string, unknown>
+    : {};
+  const aiTagNames = Array.isArray(profile.aiTags)
+    ? profile.aiTags.map(tag => String(tag?.name || '').trim()).filter(Boolean)
+    : [];
+
+  return Array.from(new Set([
+    ...toTextList(cmfRecord.colors),
+    ...toTextList(profileRecord.colors),
+    ...toTextList(profileRecord.colorPalette),
+    ...toTextList(profileRecord.palette),
+    ...toTextList(profileRecord.dominantColors),
+    ...toTextList(cmfRecord.materials),
+    ...toTextList(cmfRecord.finishes),
+    ...aiTagNames,
+  ])).slice(0, limit);
+};
 
 type LazyCardImageProps = {
   src?: string;
@@ -153,9 +308,8 @@ function BufferItemCard({
   })();
   const shouldShowRemarkToggle = remarkEntries.length > 2 || remarkEntries.some(remark => remark.length > 48);
   const areRemarksClamped = shouldShowRemarkToggle && !areRemarksExpanded;
-  const aiTagNames = Array.isArray(item.inspirationProfile?.aiTags)
-    ? item.inspirationProfile.aiTags.map((tag: any) => String(tag?.name || '').trim()).filter(Boolean).slice(0, 8)
-    : [];
+  const imageAnalysisTerms = getAiImageAnalysisTerms(item.inspirationProfile);
+  const imageAnalysisPalette = getAiImageAnalysisPalette(item.inspirationProfile);
 
   const commitRemarkEdit = (options: { keepOpen?: boolean } = {}) => {
     skipRemarkEditSaveRef.current = false;
@@ -449,16 +603,8 @@ function BufferItemCard({
   const paletteGap = scaleSize(6, 4);
   const btnClass = `${isSmallCard ? 'p-1 rounded-[10px]' : 'p-1.5 rounded-[12px]'} bg-white/80 dark:bg-stone-700/80 backdrop-blur-xl text-stone-500 dark:text-stone-300 hover:text-amber-500 hover:bg-white dark:hover:bg-stone-700 shadow-[0_2px_10px_rgba(0,0,0,0.08)] transition-all pointer-events-auto`;
   const iconClass = isSmallCard ? 'w-3 h-3' : 'w-3.5 h-3.5';
-  const alchemyState = item.alchemy?.state || 'raw';
-  const alchemyResult = item.alchemy?.result;
-  const isAlchemyLoading = alchemyState === 'analyzing';
   const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
-  const alchemyColors = Array.isArray(alchemyResult?.colors) ? alchemyResult.colors.slice(0, 4) : [];
-  const alchemyKeywords = !isLocalAlchemyResult(alchemyResult) && Array.isArray(alchemyResult?.keywords)
-    ? alchemyResult.keywords.slice(0, 3)
-    : [];
-  const imageKeywords = Array.from(new Set([...alchemyKeywords, ...aiTagNames])).slice(0, 11);
-  const hasCompactPalette = item.type === 'image' && (isAlchemyLoading || alchemyColors.length > 0 || imageKeywords.length > 0);
+  const hasCompactAiTerms = item.type === 'image' && imageAnalysisTerms.length > 0;
   const imageCardSource = getImageListSource(item, { allowOriginalFallback: !!preferFullImageSource });
   const imagePreviewSource = getPreviewOriginalSource(item);
   const imagePreviewPlaceholderSource = getPreviewPlaceholderSource(item);
@@ -770,9 +916,9 @@ return (
       )}
 
       <AnimatePresence initial={false}>
-        {hasCompactPalette && isHovered && (
+        {hasCompactAiTerms && isHovered && (
           <motion.div
-            key="compact-palette"
+            key="compact-ai-terms"
             data-no-drag="true"
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
@@ -783,45 +929,32 @@ return (
             transition={{ type: 'tween', duration: 0.14, ease: 'easeOut' }}
           >
             <div className="rounded-[16px] border border-stone-200/70 dark:border-stone-700/60 bg-stone-50/75 dark:bg-stone-900/28 px-2.5 py-2 shadow-sm" style={{ borderRadius: panelRadius }}>
-              {isAlchemyLoading ? (
-                <div className="flex items-center gap-1.5" style={{ gap: paletteGap }}>
-                  {[0, 1, 2, 3].map((idx) => (
-                    <span key={idx} className="rounded-full bg-stone-200/80 dark:bg-stone-700/80 animate-pulse" style={{ height: paletteDotSize, width: paletteDotSize }} />
-                  ))}
-                </div>
-              ) : (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ duration: 0.12, ease: 'easeOut' }}
-                >
-                  <div className="flex items-center gap-1.5" style={{ gap: paletteGap }}>
-                    {alchemyColors.map((color: string, idx: number) => (
-                      <motion.span
-                        key={`${color}-${idx}`}
-                        className="rounded-full border border-black/10 dark:border-white/10 shadow-inner"
-                        style={{ backgroundColor: color, height: paletteDotSize, width: paletteDotSize }}
-                        title={color}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ type: 'tween', duration: 0.12, delay: idx * 0.015, ease: 'easeOut' }}
-                      />
-                    ))}
-                  </div>
-                  {imageKeywords.length > 0 && (
-                    <motion.div
-                      className="mt-2 flex flex-wrap gap-1 overflow-hidden"
+              {imageAnalysisPalette.length > 0 && (
+                <div className="flex items-center" style={{ gap: paletteGap }}>
+                  {imageAnalysisPalette.map((swatch) => (
+                    <motion.span
+                      key={swatch.label}
+                      data-ai-color-swatch={swatch.label}
+                      className="rounded-full border border-black/10 dark:border-white/15 shadow-inner"
+                      style={{ backgroundColor: swatch.color, height: paletteDotSize, width: paletteDotSize }}
+                      title={swatch.label}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       transition={{ type: 'tween', duration: 0.12, ease: 'easeOut' }}
-                    >
-                      {imageKeywords.map((tag: string) => (
-                        <span key={tag} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300" style={{ borderRadius: chipRadius }}>{tag}</span>
-                      ))}
-                    </motion.div>
-                  )}
-                </motion.div>
+                    />
+                  ))}
+                </div>
               )}
+              <motion.div
+                className={`${imageAnalysisPalette.length > 0 ? 'mt-2 ' : ''}flex flex-wrap gap-1 overflow-hidden`}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.12, ease: 'easeOut' }}
+              >
+                {imageAnalysisTerms.map((term: string) => (
+                  <span key={term} className="rounded-full bg-white/75 dark:bg-stone-800/75 border border-stone-200/70 dark:border-stone-700/60 px-1.5 py-0.5 text-[9px] font-bold text-stone-500 dark:text-stone-300" style={{ borderRadius: chipRadius }}>{term}</span>
+                ))}
+              </motion.div>
             </div>
           </motion.div>
         )}

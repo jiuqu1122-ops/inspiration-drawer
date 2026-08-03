@@ -7,10 +7,13 @@ import {
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
   NEW_API_IMAGE_MODEL_OPTIONS,
+  CANVAS_SEEDANCE_2_MODEL,
+  MIKOTO_VIDEO_MODEL_OPTIONS,
   OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
   OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS,
   XAIS_CHAT_ENDPOINT_DEFAULT,
+  MIKOTO_ENDPOINT_DEFAULT,
   XAIS_CHAT_IMAGE_MODEL_DEFAULT,
   XAIS_CHAT_IMAGE_MODEL_OPTIONS,
   XAIS_CHAT_VIDEO_MODEL_DEFAULT,
@@ -34,6 +37,7 @@ export const CANVAS_AI_ENDPOINT_STORAGE_PREFIX = 'drawer_canvas_ai_endpoint_';
 export const CANVAS_AI_OPENAI_MODELS_STORAGE_KEY = 'drawer_canvas_ai_openai_models';
 export const CANVAS_AI_NEW_API_MODELS_STORAGE_KEY = 'drawer_canvas_ai_new_api_models';
 export const CANVAS_AI_XAIS_MODELS_STORAGE_KEY = 'drawer_canvas_ai_xais_models';
+export const CANVAS_AI_MIKOTO_MODELS_STORAGE_KEY = 'drawer_canvas_ai_mikoto_models';
 
 export const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 export const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
@@ -63,7 +67,7 @@ export const CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CA
   label: provider.label,
 }));
 export const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'openai-compatible', 'custom'];
+export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'openai-compatible', 'custom'];
 export const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_RATIOS.map(ratio => ({
   value: ratio,
   label: ratio,
@@ -212,11 +216,15 @@ export const getCanvasAiDefaultModel = (
   mediaType: 'image' | 'video' = 'image'
 ) => (
   mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : ''
+    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT
+      : provider === 'mikoto' ? CANVAS_SEEDANCE_2_MODEL
+      : ''
     : provider === 'xais-chat'
       ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
-      : provider === 'new-api'
+    : provider === 'new-api'
           ? NEW_API_IMAGE_MODEL_DEFAULT
+        : provider === 'mikoto'
+          ? ''
         : OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT
 );
 
@@ -225,6 +233,8 @@ export const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
     ? XAIS_CHAT_ENDPOINT_DEFAULT
     : provider === 'new-api'
         ? NEW_API_ENDPOINT_DEFAULT
+      : provider === 'mikoto'
+        ? MIKOTO_ENDPOINT_DEFAULT
       : provider === 'openai-compatible'
         ? OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
         : ''
@@ -235,11 +245,15 @@ export const getCanvasAiModelOptions = (
   mediaType: 'image' | 'video' = 'image'
 ) => (
   mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_OPTIONS : []
+    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_OPTIONS
+      : provider === 'mikoto' ? MIKOTO_VIDEO_MODEL_OPTIONS
+      : []
     : provider === 'xais-chat'
       ? XAIS_CHAT_IMAGE_MODEL_OPTIONS
       : provider === 'new-api'
           ? NEW_API_IMAGE_MODEL_OPTIONS
+        : provider === 'mikoto'
+          ? []
         : OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS
 );
 
@@ -275,6 +289,16 @@ export const readStoredCanvasAiXaisModels = () => {
     return [];
   }
 };
+export const readStoredCanvasAiMikotoModels = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_MIKOTO_MODELS_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+  } catch (_) {
+    return [];
+  }
+};
 
 export const isCanvasAiEndpointEditable = (provider: CanvasAiProvider) => (
   isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat'
@@ -288,6 +312,8 @@ export const getCanvasAiEndpointPlaceholder = (provider: CanvasAiProvider) => (
     ? XAIS_CHAT_ENDPOINT_DEFAULT
     : provider === 'new-api'
       ? NEW_API_ENDPOINT_PLACEHOLDER
+      : provider === 'mikoto'
+        ? MIKOTO_ENDPOINT_DEFAULT
       : OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
 );
 
@@ -357,6 +383,8 @@ export const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (
     ? CANVAS_AI_XAIS_MODELS_STORAGE_KEY
     : provider === 'new-api'
       ? CANVAS_AI_NEW_API_MODELS_STORAGE_KEY
+      : provider === 'mikoto'
+        ? CANVAS_AI_MIKOTO_MODELS_STORAGE_KEY
       : CANVAS_AI_OPENAI_MODELS_STORAGE_KEY
 );
 
@@ -413,5 +441,7 @@ export const getCanvasAiApiKeyPlaceholder = (provider: CanvasAiProvider) => (
     ? 'Xais / DCHAI API Key'
     : provider === 'new-api'
       ? 'New API Key'
+      : provider === 'mikoto'
+        ? 'Mikoto API Key'
       : 'API Key'
 );

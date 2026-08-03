@@ -1,111 +1,50 @@
-﻿import type { BufferItem } from '../types';
-import type {
-  CanvasAiProvider,
-  CanvasImageItem,
-  CanvasItemBox,
-  DesignAgentConfig,
-} from './canvasModel';
-import type { CanvasAiPromptPreset } from '../types/canvasWorkflow';
-import { getCanvasAiNodeAutoSize } from './canvasAiNodeLayout';
+import type { CanvasAiPromptPreset, CanvasWorkflowValidationResult } from '../types/canvasWorkflow';
 import {
-  PRODUCT_DETAILS_FIVE_IMAGES_OUTPUT_SPECS,
-  PRODUCT_DETAILS_FIVE_IMAGES_STRATEGY_PROMPT,
-  PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_HINT,
-  PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_ID,
-  PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_LABEL,
-} from './productDetailsFiveImagesWorkflow';
-import { INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW } from './workflows/industrialDesignFullProcessWorkflow';
-import type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
-import { removeRetiredCanvasWorkflows } from './canvasWorkflowRetirement';
-
-export type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
-export type { CanvasAiPromptPreset, CanvasWorkflowExpandedGroup } from '../types/canvasWorkflow';
-export type {
-  CanvasWorkflowRuntime,
-  CanvasWorkflowRuntimeNodeSnapshot,
-  CanvasWorkflowSlotAsset,
-  CanvasWorkflowSlotBinding,
-} from './canvasModel';
-
-export type CanvasWorkflowInternalSlot = {
-  id: string;
-  label: string;
-  mediaType: 'image';
-  mode: 'replaceable_internal';
-  multiple?: boolean;
-  minItems?: number;
-  maxItems?: number;
-  required?: boolean;
-  description?: string;
-  emptyHint?: string;
-  role?: string;
-  order?: number;
-  defaultValue?: {
-    url?: string;
-    path?: string;
-    sourceItemId?: string;
-  };
-  clearable?: boolean;
-};
-
-export type CanvasWorkflowNodeTemplate = {
-  id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  item: Pick<BufferItem, 'type' | 'content'> & Partial<BufferItem>;
-  inputs?: string[];
-  fixedInput?: boolean;
-  textMode?: CanvasImageItem['textMode'];
-  designAgentConfig?: DesignAgentConfig;
-  acceptsExternalInputs?: boolean;
-  externalInputTypes?: Array<'image' | 'text' | 'video'>;
-  outputType?: 'image' | 'image[]' | 'text' | 'video' | 'video[]';
-  bridgeType?: 'reference_image';
-  internalSlot?: CanvasWorkflowInternalSlot;
-  ai?: Partial<NonNullable<CanvasImageItem['ai']>>;
-};
-
-export type CanvasWorkflowTemplate = {
-  id: string;
-  label: string;
-  hint: string;
-  nodes: CanvasWorkflowNodeTemplate[];
-  userInput?: CanvasWorkflowUserInputConfig;
-  createdAt?: number;
-  builtin?: boolean;
-};
-
-export type CanvasWorkflowSaveDraft = {
-  label: string;
-  defaultLabel: string;
-  nodes: CanvasWorkflowNodeTemplate[];
-  bounds: CanvasItemBox;
-  externalInputIds: string[];
-  selectedItemIds: string[];
-  aiCount: number;
-  fixedImageCount: number;
-  fixedTextCount: number;
-  imageNodeModes?: Record<string, CanvasWorkflowImageNodeModeDraft>;
-};
-
-export type CanvasWorkflowImageNodeMode = 'normal' | 'fixed' | 'internal_slot' | 'external_bridge';
-
-export type CanvasWorkflowImageNodeModeDraft = {
-  mode: CanvasWorkflowImageNodeMode;
-  slotId?: string;
-  label?: string;
-  required?: boolean;
-  multiple?: boolean;
-  maxItems?: number;
-  role?: string;
-  emptyHint?: string;
-  keepDefault?: boolean;
-};
+  CANVAS_AI_DEFAULT_ASPECT_RATIO,
+  normalizeCanvasAiAspectRatioForModel,
+} from './canvasAiAspectRatio';
+import {
+  CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+  CANVAS_AI_OUTPUT_FORMATS,
+  getCanvasAiDefaultModel,
+  normalizeCanvasAiProvider,
+} from './canvasAiConfig';
+import { clamp } from '../features/common';
+import {
+  CANVAS_AI_MAX_OUTPUT_COUNT,
+  getCanvasAiNodeAutoSize,
+} from '../features/canvasAiNodeLayout';
+import type { CanvasAiProvider, CanvasImageItem } from '../features/canvasModel';
+import {
+  mergeImageRuleStates,
+  normalizeImageRuleState,
+  type ImagePolicy,
+  type ImageRuleState,
+} from '../features/appAgent/imageQuality/imageRuleCapsules';
+import {
+  getDefaultImageRuleState,
+  resolveImageRuleState,
+  type ImageRuleDefaultContext,
+} from '../features/appAgent/imageQuality/imageRuleDefaults';
+import {
+  DESIGN_AGENT_ROLE_LABELS,
+  normalizeDesignAgentConfig,
+} from '../features/designAgentNode';
+import {
+  PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
+  type CanvasWorkflowNodeTemplate,
+  type CanvasWorkflowTemplate,
+} from '../features/canvasTemplates';
+import { removeRetiredCanvasWorkflows } from '../features/canvasWorkflowRetirement';
+import { INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW } from '../features/workflows/industrialDesignFullProcessWorkflow';
+import { hasCanvasWorkflowConcreteFixedImage } from '../features/canvasWorkflowPortableImages';
+import { isReplaceableInternalImageSlot } from '../features/canvasWorkflowInternalSlots';
+import { normalizeXaisImage2Model } from '../features/canvasAiImage';
 
 const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性：
 - Treat connected image(s) as SUBJECT_REF: preserve silhouette, proportions, key parts, functional layout, CMF boundaries and material logic
+- Product-adaptive visual direction: before rendering, infer product category, CMF, main colors, material hardness/softness, use scene, target user and price tier; choose background, lighting, composition density, graphic language and color palette from that product logic
+- Do not reuse one default style across products: no fixed pale gray/blue rounded-card template, no forced dark tech mood, no generic glow lines, no unrelated premium props, no same layout for every category
 - 4k resolution, highly detailed, photorealistic, premium industrial design render
 - Physically credible geometry: clean parting lines, realistic wall thickness, subtle micro-bevels, no melted or warped edges
 - Controlled studio lighting: coherent key/fill/rim light, natural contact shadows, readable dark areas, no blown highlights
@@ -116,6 +55,7 @@ const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性�
 const BUILT_IN_WORKFLOW_QUALITY_FOOTER = `通用工作流质量约束：
 - 上游连接图是最高优先级参考。只在当前节点职责内变化，不重设计主体，不随意增删结构、角色、场景或零件。
 - 多节点 workflow 必须保持同一主体身份、比例、材质、色彩体系、光线方向和版式节奏；后续节点继承前序节点已经确认的信息。
+- 如果节点处理产品/商品/CMF/工业设计/电商图，必须先根据产品品类、CMF、主色、材质、使用场景和目标用户建立自适应视觉系统；不要复用固定浅灰蓝、固定暗科技、固定圆角卡片或同一套版式。
 - 画面要有清晰主次、干净边缘、稳定曝光和可信接触阴影；避免低清、脏噪、过度锐化、塑料蜡感、随机装饰和无意义特效。
 - 除非节点明确要求文字或说明栏，不生成可读文字、品牌 logo、水印、虚假参数、认证章、乱码或空白文本框。
 - 输出前自检：数量/版式正确，主体一致，关键结构没有漂移，细节真实，构图服务当前节点目标。`;
@@ -124,7 +64,7 @@ const appendBuiltInWorkflowQualityPrompt = (prompt: string) => [
   prompt.trim(),
   BUILT_IN_WORKFLOW_QUALITY_FOOTER,
 ].filter(Boolean).join('\n\n');
-export const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
+const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
   {
     id: 'product-render',
     label: '产品渲染',
@@ -135,25 +75,24 @@ export const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
 
 执行顺序：
 1. 先读取 SUBJECT_REF：锁定产品外轮廓、比例、关键零件、按键/接口/开孔、分件线、主色、材质和功能关系。
-2. 判断产品类型、价格感、使用环境和情绪气质，再选择浅色或深色渲染场景。
+2. 判断产品类型、价格感、使用环境和情绪气质，再为该产品选择专属场景、背景色、光影强度、道具密度和视觉语言。
 3. 只提升光影、材质、背景层次和摄影质感，不重新设计产品，不添加参考图不存在的功能。
 
 ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
-场景选择规则：
-- 浅色场景：白色、浅灰、米色或柔和自然光背景；适合浅色产品、生活方式产品、家居小物、医疗/清洁感产品、柔和材质、温暖亲和或清爽高级的产品
-- 深色场景：深灰、黑色或暗调渐变背景；适合黑色/深色产品、金属质感、性能感、专业设备、电竞/科技感、力量感或奢华冷峻的产品
-- 如果产品没有明显暗调气质，优先使用浅色场景；只有产品本身适合深色氛围时才选择深色场景
-- 场景只做简洁背景、台面、地面或柔和空间暗示，不扩展成复杂生活空间，不加入无关道具
+自适应场景规则：
+- 从产品主色、材质、品类和使用场景推导背景：可以是浅色、深色、暖色、冷色、材质台面、真实空间或克制抽象背景，但必须服务产品气质
+- 游戏/性能/专业设备可使用更强对比、暗调、锐利轮廓光或功能氛围；家居/生活/母婴/清洁类更适合温和自然光、亲和材质和生活空间；美妆/精品可更精致、杂志化、低噪高质感；工具/户外可更坚实、场景化和结构清晰
+- 场景只做产品价值的语境，不扩展成复杂生活空间，不加入无关道具，不让背景抢主体
+- 禁止固定二选一模板：不要所有产品都浅灰白底，也不要所有产品都黑色科技风
 
 视觉要求：
 - 产品是绝对主角，场景服务于产品，不喧宾夺主
 - 产品占画面约 55%-75%，主体完整清晰，不被裁切，不被景深遮挡关键结构
-- 背景在深色或浅色中二选一，并与产品主色、材质和价格带匹配
-- 浅色场景使用柔和棚光或自然窗光；深色场景使用克制轮廓光和受控高光
+- 背景、光影、构图密度、阴影和道具由产品品类自适应决定，并与产品主色、材质和价格带匹配
 - 保留产品原有主色和材质气质，不要强行改成黑色科技风
 - 轻微虚焦背景，真实材质表现，干净、克制、有质感；暗部仍能看清产品结构
-- 禁止默认深色背景；也不要为了浅色而把深色产品洗白，必须根据产品适配
+- 禁止默认深色背景、默认浅灰背景、默认蓝色强调色；必须根据产品适配
 
 产品要求：
 - 保持原产品结构、比例、按键、接口、分件线、屏幕/灯带/孔位位置不变
@@ -176,8 +115,9 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 要求：
 - 三个方案使用同一外轮廓、同一比例、同一按键/接口/分件线和同一功能布局
 - 每个方案只改变颜色、材质、粗糙度、纹理或表面工艺，不改变造型和零件数量
-- 方案之间差异清楚但克制：例如哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层
-- 排版像高级设计评审板：三栏或三组等宽视图，背景干净，光线统一，材质样本可辅助但不抢主体
+- 先判断产品品类、目标用户、价格带和使用场景，再设计 3 个 CMF 方向；不要把所有产品都套成同一组黑白灰/金属/蓝色科技感
+- 方案之间差异清楚但克制，可来自品类逻辑：哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层、木纹、皮革、陶瓷、橡胶、防滑纹理等，但必须适合该产品
+- 排版像高级设计评审板，但版式、背景色、样本形态和图形语言要随产品风格自适应；材质样本可辅助但不抢主体
 - 不生成品牌 logo、虚假参数、复杂说明箭头；除非用户要求，不生成可读文字标签`,
   },
   {
@@ -194,6 +134,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 场景方向：
 - 根据产品类型选择现代居家、办公桌面、厨房浴室、户外、运动、宠物、母婴或专业工作环境
+- 根据产品 CMF 和目标用户决定场景气质、配色、道具、光线和空间密度；不要所有产品都使用同一套干净桌面或浅灰背景
 - 环境干净、有真实生活痕迹但不杂乱；道具数量克制，不能抢产品主体
 - 产品占据清晰视觉中心，人物或手只作为辅助尺度参考，不遮挡核心结构
 - 光线柔和自然，产品与桌面/地面/手部接触可信，有真实阴影和正确透视
@@ -219,9 +160,9 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 画面要求：
 - 聚焦真实可见的关键边缘、倒角、按键、接口、分件线、纹理、转轴、握持区或材质交界
 - 画面只讲一个细节，主体区域清晰锐利，背景和非关键区域轻微虚化
-- 微距产品摄影质感，边缘高光干净，材质粗糙度、反射和纹理尺度可信
+- 微距产品摄影质感，边缘高光、背景色、光比和景深根据产品材质自适应；材质粗糙度、反射和纹理尺度可信
 - 特写与原产品整体结构保持可追溯关系，不把局部渲染成另一种产品
-- 画面克制，不要过度锐化或赛博风
+- 画面克制，不要过度锐化；除非产品确实属于电竞/科技/性能品类，不要套赛博风
 
 产品约束：
 - 不改变原结构、比例、功能布局
@@ -229,6 +170,94 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 - 不要文字、不要 logo 乱生成、不要说明标签、不要虚构参数`,
   },
 ];
+const getCanvasImageRuleDefaultContext = (
+  item: Pick<CanvasImageItem, 'inputs' | 'item'> & { ai?: CanvasImageItem['ai'] | null },
+  hasReferenceImage = (item.inputs || []).length > 0
+): ImageRuleDefaultContext => ({
+  hasReferenceImage,
+  presetId: item.ai?.presetId,
+  presetLabel: item.ai?.presetLabel,
+  outputRole: typeof item.ai?.skillMeta?.workflowOutputType === 'string'
+    ? item.ai.skillMeta.workflowOutputType
+    : item.item.remark,
+  workflowTemplateId: typeof item.ai?.skillMeta?.workflowTemplateId === 'string'
+    ? item.ai.skillMeta.workflowTemplateId
+    : undefined,
+  qualityProfileId: typeof item.ai?.skillMeta?.qualityProfileId === 'string'
+    ? item.ai.skillMeta.qualityProfileId
+    : undefined,
+  prompt: [
+    item.ai?.presetPrompt,
+    item.ai?.prompt,
+    item.item.content,
+    item.item.name,
+  ].filter(Boolean).join('\n'),
+});
+
+const getCanvasImageRuleState = (
+  item: Pick<CanvasImageItem, 'inputs' | 'item'> & { ai?: CanvasImageItem['ai'] | null },
+  hasReferenceImage?: boolean
+): ImageRuleState => resolveImageRuleState(
+  item.ai?.imagePolicy?.rules,
+  getCanvasImageRuleDefaultContext(item, hasReferenceImage),
+);
+
+const canvasAiProviderSupportsNegativePrompt = (_provider: CanvasAiProvider) => (
+  // Xais / DCHAI and many New API deployments reject `negative_prompt`
+  // with backend schema errors. Keep negative constraints inline in prompt.
+  false
+);
+
+const createCanvasImagePolicy = (
+  context: ImageRuleDefaultContext,
+  explicitRulesOrPolicy?: ImageRuleState | ImagePolicy | null
+) => ({
+  ...(
+    explicitRulesOrPolicy
+    && typeof explicitRulesOrPolicy === 'object'
+    && !Array.isArray(explicitRulesOrPolicy)
+    && 'rules' in explicitRulesOrPolicy
+      ? explicitRulesOrPolicy as ImagePolicy
+      : {}
+  ),
+  rules: mergeImageRuleStates(
+    getDefaultImageRuleState(context),
+    normalizeImageRuleState(
+      explicitRulesOrPolicy
+      && typeof explicitRulesOrPolicy === 'object'
+      && !Array.isArray(explicitRulesOrPolicy)
+      && 'rules' in explicitRulesOrPolicy
+        ? (explicitRulesOrPolicy as ImagePolicy).rules
+        : explicitRulesOrPolicy
+    )
+  ),
+  defaultPreset: (
+    explicitRulesOrPolicy
+    && typeof explicitRulesOrPolicy === 'object'
+    && !Array.isArray(explicitRulesOrPolicy)
+    && 'rules' in explicitRulesOrPolicy
+    && typeof (explicitRulesOrPolicy as ImagePolicy).defaultPreset === 'string'
+      ? (explicitRulesOrPolicy as ImagePolicy).defaultPreset
+      : context.workflowTemplateId || context.qualityProfileId || context.outputRole || 'product_image_generator'
+  ),
+  panelExpanded: (
+    explicitRulesOrPolicy
+    && typeof explicitRulesOrPolicy === 'object'
+    && !Array.isArray(explicitRulesOrPolicy)
+    && 'rules' in explicitRulesOrPolicy
+    && typeof (explicitRulesOrPolicy as ImagePolicy).panelExpanded === 'boolean'
+      ? (explicitRulesOrPolicy as ImagePolicy).panelExpanded
+      : true
+  ),
+});
+const getImagePolicyFromRecord = (value: unknown): ImagePolicy | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as ImagePolicy;
+  return {
+    ...record,
+    rules: normalizeImageRuleState(record.rules),
+  };
+};
 const makeCanvasWorkflowAiNode = (
   id: string,
   label: string,
@@ -253,6 +282,9 @@ const makeCanvasWorkflowAiNode = (
     width: size.width,
     height: size.height,
     inputs,
+    acceptsExternalInputs: inputs.length === 0,
+    externalInputTypes: inputs.length === 0 ? ['image', 'text'] : undefined,
+    outputType: (options.count || 1) > 1 ? 'image[]' : 'image',
     item: {
       id,
       type: 'text',
@@ -272,30 +304,287 @@ const makeCanvasWorkflowAiNode = (
       count: options.count || 1,
       provider: options.provider,
       model: options.model,
+      imagePolicy: createCanvasImagePolicy({
+        hasReferenceImage: inputs.length > 0,
+        presetId: options.presetId || `workflow-${id}`,
+        presetLabel: label,
+        outputRole: id,
+        prompt,
+      }),
       status: 'idle',
     },
   };
 };
+const CANVAS_PRODUCT_DETAILS_NODE_IDS = [
+  'hero_main',
+  'lifestyle_scene',
+  'detail_macro',
+  'exploded_view',
+  'usage_instruction',
+] as const;
+const getCanvasWorkflowTextBlob = (workflow: CanvasWorkflowTemplate) => (
+  [
+    workflow.label,
+    workflow.hint,
+    ...workflow.nodes.flatMap(node => [
+      node.id,
+      node.item.name,
+      node.item.content,
+      node.item.remark,
+      node.ai?.presetLabel,
+      node.ai?.prompt,
+      node.ai?.presetPrompt,
+    ]),
+  ].filter(Boolean).join('\n').toLowerCase()
+);
+const doesWorkflowTextRequireImageReference = (text: string) => (
+  /产品一致性|参考图|外部连接|产品图|product\s*(reference|refs?)|image\s*(reference|refs?)|subject_ref|based on connected/i.test(text)
+);
+const isCanvasProductDetailsWorkflowIntent = (label: string, hint: string, steps: unknown[]) => {
+  const text = [
+    label,
+    hint,
+    ...steps.map(step => {
+      const record = step && typeof step === 'object' ? step as Record<string, unknown> : {};
+      return [record.id, record.label, record.kind, record.prompt].filter(Boolean).join(' ');
+    }),
+  ].join('\n').toLowerCase();
+  return /详情页|五图|5图|五张|product detail|detail page|e[-\s]?commerce|商品详情|主图|卖点图/i.test(text)
+    && /产品一致性|产品参考|参考图|product|cmf|结构约束|外部连接|product_strategy|product_refs/i.test(text);
+};
+const collectWorkflowText = (value: unknown, depth = 0): string[] => {
+  if (depth > 3 || value === null || value === undefined) return [];
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return [String(value)];
+  if (Array.isArray(value)) return value.flatMap(item => collectWorkflowText(item, depth + 1));
+  if (typeof value !== 'object') return [];
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !/^(?:id|stepId|inputStepIds|visualInputStepIds|textInputStepIds|product_strategy|product_refs)$/i.test(key))
+    .flatMap(([, item]) => collectWorkflowText(item, depth + 1));
+};
+const doesWorkflowExplicitlyRequestProductAnalysis = (...values: unknown[]) => {
+  const text = values.flatMap(value => collectWorkflowText(value)).join('\n').toLowerCase();
+  return /(?:先|前置|首先|先行)?\s*(?:分析|解析|评估|提炼|总结|识别|理解)\s*(?:产品|参考图|设计|cmf|结构|卖点|特征|风格|材质)/i.test(text)
+    || /(?:产品|参考图|设计|cmf|结构|卖点|特征|风格|材质)\s*(?:分析|解析|评估|策略|提炼|总结)/i.test(text)
+    || /(?:analy[sz]e|analysis)\s+(?:the\s+)?(?:product|reference|design|cmf|structure)/i.test(text)
+    || /(?:product|reference|design|cmf|structure)\s+(?:analysis|strategy)/i.test(text)
+    || /(?:analy[sz]e first|strategy first|strategy before|先做策略|先出策略|先做分析)/i.test(text);
+};
+const buildCanvasProductDetailsWorkflowTemplate = (options: {
+  label: string;
+  hint: string;
+  steps?: unknown[];
+  provider: CanvasAiProvider;
+  model?: string;
+  includeStrategy?: boolean;
+}): CanvasWorkflowTemplate => {
+  const label = (options.label || '详情页五图 workflow').slice(0, 32);
+  const includeStrategy = options.includeStrategy === true;
+  const hint = (options.hint || (includeStrategy ? 'product_refs -> product_strategy -> five parallel detail-page images' : 'product_refs -> five parallel detail-page images')).slice(0, 80);
+  const stepRecords = (options.steps || [])
+    .map(step => step && typeof step === 'object' ? step as Record<string, unknown> : null)
+    .filter((step): step is Record<string, unknown> => !!step);
+  const stepById = new Map(stepRecords.map(step => [String(step.id || '').trim(), step]));
+  const findStep = (id: string, fallbackLabel: string) => (
+    stepById.get(id)
+    || stepRecords.find(step => {
+      const text = [step.id, step.label, step.prompt].filter(Boolean).join(' ').toLowerCase();
+      return text.includes(id.toLowerCase()) || text.includes(fallbackLabel.toLowerCase());
+    })
+    || null
+  );
+  const specs = [
+    ['hero_main', 'Hero main', '主视觉首图', 'Create a premium ecommerce hero image for the same product: complete silhouette, clear subject hierarchy, product occupies the visual center, background supports the product without clutter, no fake logo or random text.'],
+    ['lifestyle_scene', 'Lifestyle scene', '真实使用氛围图', 'Create a realistic lifestyle scene for the same product: choose a credible environment based on product type, keep product scale/contact/shadow believable, product remains the main subject, materials and proportions unchanged.'],
+    ['detail_macro', 'Detail macro', '材质/结构细节特写', 'Create a macro detail image from a real visible part of PRODUCT_REF: focus on one key edge, material transition, button, port, texture, hinge, grip or construction detail; do not invent hidden mechanisms.'],
+    ['exploded_view', 'Exploded view', '结构拆解/卖点说明图', 'Create a clean layered structure or selling-point explanation image: show only plausible visible components and functional relationships, preserve real product geometry, avoid fake internal structures and unsupported technical claims.'],
+    ['usage_instruction', 'Usage instruction', '使用方式/步骤图', 'Create a usage or installation instruction image: 2-3 simple visual steps, product structure remains consistent, hand/contact positions believable, no unreadable text blocks, no invented folding/removal method.'],
+  ] as const;
+  const commonReferenceInstruction = [
+    'Use the connected product reference images as SUBJECT_REF / PRODUCT_REF.',
+    ...(includeStrategy ? ['Use the upstream product_strategy text as the CMF, structure, proportion, and visual strategy constraint.'] : []),
+    'Do not invent a different product. Preserve silhouette, proportions, materials, buttons, ports, holes, screens, parting lines, color logic, accessories, and functional layout from PRODUCT_REF.',
+    'If multiple product reference images are connected, reconcile them as the same product and prioritize the clearest structure.',
+    'Before generating, infer product category, CMF, main colors, material, usage scene, target user and price tier; establish a product-adaptive ecommerce visual system.',
+    'Across all five outputs, keep the same product identity, CMF, lighting direction, product-adaptive background language and premium ecommerce quality.',
+    'Do not reuse a fixed pale gray/blue rounded-card template, fixed dark tech style, fixed white hero layout, or the same composition for unrelated product categories.',
+    'No random logo, malformed text, fake certification, unsupported numerical claims, unrelated props that hide product details, or extra components not visible in PRODUCT_REF.',
+  ].join('\n');
+  return {
+    id: 'product-details-workflow-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+    label,
+    hint,
+    createdAt: Date.now(),
+    nodes: [
+      {
+        id: 'product_refs',
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 220,
+        item: { id: 'product_refs', type: 'image', content: '', name: 'Product references', remark: 'External image[] input for product consistency', createdAt: 0, isQuickAccess: false },
+        inputs: [],
+        fixedInput: true,
+        acceptsExternalInputs: true,
+        externalInputTypes: ['image'],
+        outputType: 'image[]',
+      },
+      ...(includeStrategy ? [
+      {
+        id: 'product_strategy',
+        x: 420,
+        y: 0,
+        width: 460,
+        height: 260,
+        item: {
+          id: 'product_strategy',
+          type: 'text',
+          content: [
+            'Analyze the connected PRODUCT_REF images and write a compact product detail-page strategy.',
+            'Must include: product identity, silhouette/proportion locks, CMF/material constraints, key structural details, functional selling points, product category, target user, usage scene, and product-adaptive visual direction for the five downstream images.',
+            'The visual direction must specify product-derived palette, background mood, lighting, card/label style and layout rhythm. Do not default to pale gray/blue, dark tech, or generic premium minimalism.',
+            'Return only the strategy text. Do not generate JSON.',
+          ].join('\n'),
+          name: 'Product strategy',
+          remark: '',
+          createdAt: 0,
+          isQuickAccess: false,
+        },
+        inputs: ['product_refs'],
+        fixedInput: false,
+        textMode: 'agent',
+        designAgentConfig: {
+          agentRole: 'design_strategist',
+          outputArtifactType: 'DesignStrategy',
+          thinkingMode: 'analysis',
+        },
+        outputType: 'text',
+      } as CanvasWorkflowNodeTemplate,
+      ] : []),
+      ...specs.map(([id, specLabel, specHint, fallbackPrompt], index) => {
+        const step = findStep(id, specLabel);
+        const prompt = typeof step?.prompt === 'string' && step.prompt.trim() ? step.prompt.trim() : fallbackPrompt;
+        const stepModel = typeof step?.model === 'string' && step.model.trim()
+          ? normalizeXaisImage2Model(step.model.trim())
+          : normalizeXaisImage2Model(options.model || 'gpt-image-2');
+        const requestedAspectRatio = typeof step?.aspectRatio === 'string' ? step.aspectRatio.trim() : '';
+        const aspectRatio = requestedAspectRatio
+          ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
+          : CANVAS_AI_DEFAULT_ASPECT_RATIO;
+        const requestedOutputFormat = typeof step?.outputFormat === 'string' ? step.outputFormat.trim().toLowerCase() : '';
+        const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
+          ? requestedOutputFormat
+          : CANVAS_AI_DEFAULT_OUTPUT_FORMAT;
+        const rawCount = typeof step?.count === 'number' || typeof step?.count === 'string' ? Number(step.count) : 1;
+        const count = Number.isFinite(rawCount) ? clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT) : 1;
+        return {
+          id,
+          x: includeStrategy ? 980 : 420,
+          y: index * (430 + 100),
+          width: 560,
+          height: 430,
+          item: { id, type: 'text', content: '', name: `AI ${specLabel}`, remark: specHint, createdAt: 0, isQuickAccess: false },
+          inputs: includeStrategy ? ['product_refs', 'product_strategy'] : ['product_refs'],
+          acceptsExternalInputs: false,
+          outputType: count > 1 ? 'image[]' as const : 'image' as const,
+          ai: {
+            type: 'image-generator' as const,
+            provider: options.provider,
+            model: stepModel,
+            presetId: `workflow-product-details-${id}`,
+            presetLabel: specLabel,
+            presetPrompt: [commonReferenceInstruction, '', `Task: ${prompt}`].join('\n'),
+            aspectRatio,
+            targetSize: typeof step?.targetSize === 'string' ? step.targetSize : undefined,
+            resolution: typeof step?.resolution === 'string' ? step.resolution : undefined,
+            outputFormat,
+            count,
+            imagePolicy: createCanvasImagePolicy({
+              hasReferenceImage: true,
+              presetId: `workflow-product-details-${id}`,
+              presetLabel: specLabel,
+              outputRole: id,
+              workflowTemplateId: 'product-detail-page',
+              prompt,
+            }, getImagePolicyFromRecord(step?.imagePolicy)),
+            status: 'idle' as const,
+            outputs: [],
+          },
+        } as CanvasWorkflowNodeTemplate;
+      }),
+    ],
+  };
+};
 
-export const PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW: CanvasWorkflowTemplate = {
-  id: PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_ID,
-  label: PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_LABEL,
-  hint: PRODUCT_DETAILS_FIVE_IMAGES_WORKFLOW_HINT,
-  builtin: true,
-  createdAt: 0,
-  nodes: [
+const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
+  definition: Record<string, unknown>;
+  provider: CanvasAiProvider;
+  model?: string;
+}): CanvasWorkflowTemplate | null => {
+  const definition = options.definition;
+  const templateId = String(definition.templateId || 'industrial-design-review');
+  const isDetailPageWorkflow = templateId === 'ecommerce-detail-page' || templateId === 'product-detail-page';
+  const label = String(definition.name || definition.label || (isDetailPageWorkflow ? '产品详情页图片工作流' : '工业设计评审工作流')).trim().slice(0, 32);
+  const hint = String(definition.description || definition.hint || (isDetailPageWorkflow ? '根据产品参考图生成电商产品详情页图片' : '根据参考产品图自动生成工业设计评审图组')).trim().slice(0, 80);
+  const metadata = definition.metadata && typeof definition.metadata === 'object' && !Array.isArray(definition.metadata)
+    ? definition.metadata as Record<string, unknown>
+    : {};
+  const strategyStepMode = String(definition.strategyStepMode || metadata.strategyStepMode || 'disabled');
+  const rawSteps = Array.isArray(definition.steps) ? definition.steps : [];
+  const stepRecords = rawSteps
+    .map(step => step && typeof step === 'object' && !Array.isArray(step) ? step as Record<string, unknown> : null)
+    .filter((step): step is Record<string, unknown> => !!step);
+  const bridgeStep = stepRecords.find(step => {
+    const type = String(step.type || step.kind || '').toLowerCase();
+    return type === 'reference_image_bridge'
+      || type === 'reference-image-bridge'
+      || step.bridgeType === 'reference_image';
+  });
+  const explicitTextSteps = stepRecords.filter(step => String(step.type || step.kind || '').toLowerCase() === 'text_agent');
+  const strategyStepRequested = strategyStepMode === 'enabled'
+    || (strategyStepMode !== 'disabled' && doesWorkflowExplicitlyRequestProductAnalysis(
+      definition.name,
+      definition.label,
+      definition.description,
+      definition.hint,
+      definition.originalRequest,
+      metadata.originalRequest,
+      metadata.userRequest,
+      metadata.prompt
+    ));
+  const textAgentSteps = explicitTextSteps.length > 0
+    ? explicitTextSteps
+    : strategyStepRequested
+      ? [{
+      id: 'industrial_design_review_strategy',
+      title: '工业设计评审策略',
+      prompt: 'Analyze the connected PRODUCT_REF images and write a compact industrial design review strategy before image generation.',
+      designAgentConfig: {
+        agentRole: 'design_strategist',
+        outputArtifactType: 'DesignStrategy',
+        thinkingMode: 'analysis',
+      },
+    }]
+      : [];
+  const generatorSteps = stepRecords.filter(step => /image[-_]?generator/.test(String(step.type || step.kind || '').toLowerCase()));
+  if (!label || generatorSteps.length === 0) return null;
+
+  const productInputId = 'product_reference_image';
+  const textAgentStepIds = new Set(textAgentSteps.map((step, index) => String(step.id || `design_agent_${index + 1}`)));
+  const generatorStepIds = new Set(generatorSteps.map((step, index) => String(step.id || `industrial_review_output_${index + 1}`)));
+  const declaredStepIds = new Set([productInputId, ...textAgentStepIds, ...generatorStepIds]);
+  const workflowNodes: CanvasWorkflowNodeTemplate[] = [
     {
-      id: 'product_refs',
+      id: productInputId,
       x: 0,
       y: 0,
       width: 320,
       height: 220,
       item: {
-        id: 'product_refs',
-        type: 'image',
-        content: '',
-        name: '产品参考图',
-        remark: '连接一张或多张同款产品参考图',
+        id: productInputId,
+        type: 'file',
+        content: String(bridgeStep?.title || bridgeStep?.label || '参考图桥接'),
+        name: String(bridgeStep?.title || bridgeStep?.label || '参考图桥接').slice(0, 80),
+        remark: 'Reference image bridge; forwards external product images to workflow steps.',
         createdAt: 0,
         isQuickAccess: false,
       },
@@ -306,66 +595,302 @@ export const PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW: CanvasWorkflowTempla
       outputType: 'image[]',
       bridgeType: 'reference_image',
     },
-    {
-      id: 'product_strategy',
-      x: 420,
-      y: 0,
-      width: 460,
-      height: 320,
+  ];
+
+  textAgentSteps.forEach((step, index) => {
+    const stepId = String(step.id || `design_agent_${index + 1}`);
+    const title = String(step.title || step.label || DESIGN_AGENT_ROLE_LABELS[normalizeDesignAgentConfig(step.designAgentConfig).agentRole] || `Design Agent ${index + 1}`).trim();
+    const prompt = String(step.prompt || title).trim();
+    const requestedInputs = Array.isArray(step.inputStepIds)
+      ? step.inputStepIds.map(String).filter(id => id !== stepId && declaredStepIds.has(id))
+      : [];
+    workflowNodes.push({
+      id: stepId,
+      x: 420 + index * 480,
+      y: index % 2 === 0 ? 0 : 300,
+      width: 440,
+      height: 260,
       item: {
-        id: 'product_strategy',
+        id: stepId,
         type: 'text',
-        content: PRODUCT_DETAILS_FIVE_IMAGES_STRATEGY_PROMPT,
-        name: '产品识别与详情页视觉策略',
-        remark: '先锁定产品身份、视觉系统和五图排版策略',
+        content: prompt,
+        name: title.slice(0, 80),
         createdAt: 0,
         isQuickAccess: false,
       },
-      inputs: ['product_refs'],
+      inputs: requestedInputs.length > 0 ? requestedInputs : [productInputId],
       fixedInput: false,
       textMode: 'agent',
-      designAgentConfig: {
-        agentRole: 'design_strategist',
-        outputArtifactType: 'DesignStrategy',
-        thinkingMode: 'analysis',
-      },
-      acceptsExternalInputs: false,
+      designAgentConfig: normalizeDesignAgentConfig(step.designAgentConfig),
       outputType: 'text',
-    },
-    ...PRODUCT_DETAILS_FIVE_IMAGES_OUTPUT_SPECS.map((spec, index) => {
-      const node = makeCanvasWorkflowAiNode(
-        spec.id,
-        spec.label,
-        spec.hint,
-        spec.prompt,
-        980,
-        index * 560,
-        ['product_refs', 'product_strategy'],
-        spec.aspectRatio,
-        {
-          provider: 'xais-chat',
-          model: 'Xais Nano Pro_2K',
-          presetId: `workflow-product-details-${spec.id}`,
-        },
-      );
-      return {
-        ...node,
-        acceptsExternalInputs: false,
-        outputType: 'image' as const,
-        ai: {
-          ...node.ai,
-          skillMeta: {
-            workflowTemplateId: 'ecommerce-detail-page',
-            workflowOutputType: spec.id,
-            qualityProfileId: 'ecommerce_detail_page',
-          },
-        },
-      };
-    }),
-  ],
-};
+    });
+  });
 
-export const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = removeRetiredCanvasWorkflows([
+  const generatorX = textAgentSteps.length > 0 ? 480 + textAgentSteps.length * 480 : 420;
+  generatorSteps.forEach((step, index) => {
+    const title = String(step.title || step.label || step.id || `Review output ${index + 1}`).trim();
+    const prompt = String(step.prompt || title).trim();
+    const rawInputStepIds = Array.isArray(step.inputStepIds)
+      ? step.inputStepIds.map(String).filter(id => declaredStepIds.has(id))
+      : [];
+    const rawVisualInputIds = Array.isArray(step.visualInputStepIds)
+      ? step.visualInputStepIds.map(String).filter(Boolean)
+      : rawInputStepIds.filter(id => id === productInputId || generatorStepIds.has(id));
+    const requiresReferenceImages = step.requiresReferenceImages !== false;
+    const visualInputIds = Array.from(new Set([
+      ...(requiresReferenceImages ? [productInputId] : []),
+      ...rawVisualInputIds.filter(id => id === productInputId || generatorStepIds.has(id)),
+    ]));
+    const rawTextInputIds = Array.isArray(step.textInputStepIds)
+      ? step.textInputStepIds.map(String).filter(Boolean)
+      : rawInputStepIds.filter(id => textAgentStepIds.has(id));
+    const matchedTextInputIds = rawTextInputIds.filter(inputId => textAgentStepIds.has(inputId));
+    const textInputIds = matchedTextInputIds.length > 0
+      ? matchedTextInputIds
+      : textAgentSteps.length === 1
+        ? Array.from(textAgentStepIds)
+        : [];
+    const inputs = Array.from(new Set([
+      ...visualInputIds,
+      ...textInputIds,
+    ]));
+    const requestedAspectRatio = String(step.aspectRatio || metadata.aspectRatio || '').trim();
+    const stepProvider = normalizeCanvasAiProvider(
+      typeof step.provider === 'string' && step.provider.trim()
+        ? step.provider
+        : typeof metadata.provider === 'string' && metadata.provider.trim()
+        ? metadata.provider
+        : options.provider
+    );
+    const rawStepModel = typeof step.model === 'string' && step.model.trim()
+      ? step.model.trim()
+      : typeof metadata.model === 'string' && metadata.model.trim()
+      ? metadata.model.trim()
+      : options.model || '';
+    const stepModel = stepProvider === 'xais-chat'
+      ? normalizeXaisImage2Model(rawStepModel || getCanvasAiDefaultModel(stepProvider))
+      : rawStepModel || getCanvasAiDefaultModel(stepProvider);
+    const aspectRatio = requestedAspectRatio
+      ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
+      : CANVAS_AI_DEFAULT_ASPECT_RATIO;
+    const requestedOutputFormat = String(step.outputFormat || '').trim().toLowerCase();
+    const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
+      ? requestedOutputFormat
+      : CANVAS_AI_DEFAULT_OUTPUT_FORMAT;
+    const rawCount = typeof step.count === 'number' || typeof step.count === 'string' ? Number(step.count) : 1;
+    const count = Number.isFinite(rawCount) ? clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT) : 1;
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: 'image-generator',
+      aspectRatio,
+      count,
+      promptText: prompt,
+      promptExpanded: true,
+    });
+    workflowNodes.push({
+      id: String(step.id || `industrial_review_output_${index + 1}`),
+      x: generatorX,
+      y: index * (nodeSize.height + 80),
+      width: nodeSize.width,
+      height: nodeSize.height,
+      item: {
+        id: String(step.id || `industrial_review_output_${index + 1}`),
+        type: 'text',
+        content: prompt.length > 120 ? '' : prompt,
+        name: title.slice(0, 80),
+        remark: String(step.outputRole || ''),
+        createdAt: 0,
+        isQuickAccess: false,
+      },
+      inputs,
+      acceptsExternalInputs: false,
+      outputType: count > 1 ? 'image[]' : 'image',
+      ai: {
+        type: 'image-generator',
+        provider: stepProvider,
+        model: stepModel,
+        presetId: `workflow-${templateId}-${String(step.id || index + 1)}`,
+        presetLabel: title,
+        presetPrompt: prompt,
+        aspectRatio,
+        targetSize: typeof step.targetSize === 'string' ? step.targetSize : undefined,
+        resolution: typeof step.resolution === 'string' ? step.resolution : undefined,
+        toolHint: typeof step.toolHint === 'string' ? step.toolHint : undefined,
+        skillMeta: step.skillMeta && typeof step.skillMeta === 'object' && !Array.isArray(step.skillMeta)
+          ? step.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
+          : undefined,
+        imagePolicy: createCanvasImagePolicy({
+          hasReferenceImage: inputs.length > 0,
+          presetId: `workflow-${templateId}-${String(step.id || index + 1)}`,
+          presetLabel: title,
+          outputRole: String(step.outputRole || step.id || ''),
+          workflowTemplateId: templateId,
+          qualityProfileId: typeof metadata.qualityProfileId === 'string' ? metadata.qualityProfileId : undefined,
+          prompt,
+        }, getImagePolicyFromRecord(step.imagePolicy)),
+        outputFormat,
+        count,
+        status: 'idle',
+        outputs: [],
+      },
+    });
+  });
+
+  return {
+    id: `${templateId}-workflow-` + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+    label,
+    hint,
+    createdAt: Date.now(),
+    nodes: workflowNodes,
+  };
+};
+const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): CanvasWorkflowValidationResult => {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const nodesById = new Map<string, CanvasWorkflowNodeTemplate>();
+  const duplicateIds = new Set<string>();
+  const internalSlotIds = new Set<string>();
+  const allowedItemTypes = new Set(['text', 'image', 'file', 'video']);
+  const allowedAiTypes = new Set(['image-generator', 'video-generator', 'frame-interpolation', 'image-enhancement', 'video-enhancement', 'generated-image', 'generated-video', 'workflow']);
+
+  workflow.nodes.forEach(node => {
+    if (!node.id) errors.push('Workflow node is missing id.');
+    if (nodesById.has(node.id)) duplicateIds.add(node.id);
+    nodesById.set(node.id, node);
+    if (!allowedItemTypes.has(node.item?.type || '')) errors.push(`Node "${node.id}" has unknown item type "${node.item?.type || ''}".`);
+    if (node.ai?.type && !allowedAiTypes.has(node.ai.type)) errors.push(`Node "${node.id}" has unknown ai type "${node.ai.type}".`);
+    if (node.internalSlot) {
+      if (!isReplaceableInternalImageSlot(node)) {
+        errors.push(`Node "${node.id}" has an invalid internal image slot.`);
+      } else if (internalSlotIds.has(node.internalSlot.id)) {
+        errors.push(`Duplicate workflow internal slot id "${node.internalSlot.id}".`);
+      } else {
+        internalSlotIds.add(node.internalSlot.id);
+      }
+      if (node.fixedInput !== true) warnings.push(`Internal slot node "${node.id}" should keep fixedInput=true.`);
+      if (node.acceptsExternalInputs === true) errors.push(`Internal slot node "${node.id}" cannot accept external inputs.`);
+    }
+  });
+  duplicateIds.forEach(id => errors.push(`Duplicate workflow node id "${id}".`));
+  workflow.nodes.forEach(node => {
+    (node.inputs || []).forEach(inputId => {
+      if (!nodesById.has(inputId)) errors.push(`Node "${node.id}" references missing input "${inputId}".`);
+    });
+  });
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (nodeId: string, path: string[]) => {
+    if (visiting.has(nodeId)) {
+      errors.push(`Workflow has a cycle: ${[...path, nodeId].join(' -> ')}.`);
+      return;
+    }
+    if (visited.has(nodeId)) return;
+    const node = nodesById.get(nodeId);
+    if (!node) return;
+    visiting.add(nodeId);
+    (node.inputs || []).forEach(inputId => visit(inputId, [...path, nodeId]));
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+  workflow.nodes.forEach(node => visit(node.id, []));
+
+  const nodeOutputsImage = (node?: CanvasWorkflowNodeTemplate) => (
+    !!node && (
+      node.item.type === 'image'
+      || node.bridgeType === 'reference_image'
+      || node.outputType === 'image'
+      || node.outputType === 'image[]'
+      || node.ai?.type === 'image-generator'
+      || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('image'))
+    )
+  );
+  const nodeOutputsText = (node?: CanvasWorkflowNodeTemplate) => (
+    !!node && (
+      node.item.type === 'text'
+      || node.outputType === 'text'
+      || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('text'))
+    )
+  );
+  const hasUpstreamImageInput = (node: CanvasWorkflowNodeTemplate) => {
+    const seen = new Set<string>();
+    const walk = (sourceId: string): boolean => {
+      if (seen.has(sourceId)) return false;
+      seen.add(sourceId);
+      const source = nodesById.get(sourceId);
+      if (!source) return false;
+      if (nodeOutputsImage(source)) return true;
+      return (source.inputs || []).some(walk);
+    };
+    return (node.inputs || []).some(walk);
+  };
+  const workflowText = getCanvasWorkflowTextBlob(workflow);
+  const workflowRequiresImageReference = doesWorkflowTextRequireImageReference(workflowText);
+  const nodeAcceptsExternalImageInput = (node: CanvasWorkflowNodeTemplate) => {
+    if (node.acceptsExternalInputs !== true) return false;
+    if ((node.externalInputTypes || []).includes('image')) return true;
+    if (!node.externalInputTypes?.length) return true;
+    return workflowRequiresImageReference && !(
+      node.externalInputTypes.length === 1
+      && node.externalInputTypes[0] === 'video'
+    );
+  };
+  const hasExternalImageInputNode = workflow.nodes.some(node => (
+    nodeAcceptsExternalImageInput(node)
+    || (
+      node.acceptsExternalInputs === true
+      && (node.item.type === 'image' || node.bridgeType === 'reference_image' || node.outputType === 'image[]' || node.outputType === 'image')
+    )
+  ));
+  if (
+    workflowRequiresImageReference
+    && !hasExternalImageInputNode
+    && !hasCanvasWorkflowConcreteFixedImage(workflow)
+  ) {
+    errors.push('Workflow prompt mentions external/reference product images but no acceptsExternalInputs=true image input node exists.');
+  }
+
+  workflow.nodes.forEach(node => {
+    if (node.ai?.type !== 'image-generator') return;
+    const prompt = [node.ai.presetPrompt, node.ai.prompt, node.item.content, node.item.remark].filter(Boolean).join('\n');
+    if (!String(node.ai.presetPrompt || node.ai.prompt || node.item.content || '').trim()) errors.push(`Image-generator node "${node.id}" is missing executable prompt.`);
+    if (!node.ai.aspectRatio) errors.push(`Image-generator node "${node.id}" is missing aspectRatio.`);
+    if (!node.ai.outputFormat) errors.push(`Image-generator node "${node.id}" is missing outputFormat.`);
+    if (!Number.isFinite(Number(node.ai.count)) || Number(node.ai.count) <= 0) errors.push(`Image-generator node "${node.id}" is missing valid count.`);
+    const acceptsExternalImageInput = nodeAcceptsExternalImageInput(node)
+      || (node.acceptsExternalInputs === true && (node.outputType === 'image' || node.outputType === 'image[]'));
+    if (doesWorkflowTextRequireImageReference(prompt) && !hasUpstreamImageInput(node) && !acceptsExternalImageInput) {
+      errors.push(`Image-generator node "${node.id}" requires product/reference images but has no connected image input.`);
+    }
+  });
+
+  const productStrategy = nodesById.get('product_strategy');
+  if (productStrategy && workflow.nodes.some(node => (node.inputs || []).includes('product_strategy')) && productStrategy.textMode !== 'agent') {
+    warnings.push('product_strategy is used downstream but is not an executable text-agent node; downstream prompts will only see static text.');
+  }
+
+  for (let index = 0; index < workflow.nodes.length; index += 1) {
+    const a = workflow.nodes[index];
+    for (let j = index + 1; j < workflow.nodes.length; j += 1) {
+      const b = workflow.nodes[j];
+      if (a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y) {
+        warnings.push(`Workflow layout overlap: "${a.id}" overlaps "${b.id}".`);
+      }
+    }
+  }
+
+  workflow.nodes.forEach(node => {
+    if (node.ai?.type !== 'image-generator') return;
+    (node.inputs || []).forEach(inputId => {
+      const source = nodesById.get(inputId);
+      if (source && !nodeOutputsImage(source) && !nodeOutputsText(source)) {
+        warnings.push(`Input "${inputId}" connected to image-generator "${node.id}" has no declared compatible output type.`);
+      }
+    });
+  });
+
+  return { errors: Array.from(new Set(errors)), warnings: Array.from(new Set(warnings)) };
+};
+const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = removeRetiredCanvasWorkflows([
   INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   {
@@ -579,6 +1104,11 @@ Original request: "一开始我会把场景设定和角色设定一起输入，�
 - 文字脚本只用于确认核心卖点、必要功能状态、使用情境、广告气质与光线方向，不得借脚本重新设计产品
 - 多图是同一产品的多角度依据；冲突时以最清晰、结构最完整的参考为准，不融合矛盾特征
 
+产品自适应视觉系统：
+- 先判断产品品类、CMF、主色、材质、使用场景、目标用户和价格带，再确定母版的背景、色温、台面/空间、光比、道具密度和图形语言
+- 游戏/性能产品可更高对比和更锐利；家居/生活产品可更温暖自然；美妆/精品可更精致杂志化；工具/户外产品可更坚实场景化
+- 不要把所有产品都放进中性浅灰背景，也不要强行套黑色科技风、蓝色标签、HUD 或同款圆角卡片
+
 严格2×2版式：
 - 输出一张 16:9 横版画布，严格 2 行 × 2 列，共 4 个完全等大的 16:9 画面
 - 左上：最准确的三分之四主视角，完整展示外轮廓与主要体块
@@ -592,7 +1122,7 @@ Original request: "一开始我会把场景设定和角色设定一起输入，�
 - 四格必须是同一产品、同一结构、同一比例、同一 CMF、同一功能布局
 - 不重新设计、不镜像、不增减按键、接口、屏幕、灯带、开孔、分件线或部件，不添加新 Logo 和不存在的功能
 - 看不清的局部保持简洁，不凭空补造；脚本未要求时不添加人物、手和复杂道具
-- 统一色温、光线方向、中性高级背景、自然产品摄影透视、真实材质、清楚边缘和可信接地
+- 统一产品自适应色温和光线方向；背景、台面和空间语言来自产品气质，不固定中性高级背景；自然产品摄影透视、真实材质、清楚边缘和可信接地
 
 输出是无字的 2×2 产品身份母版，作为后续所有节点的 SUBJECT_REF。
 
@@ -646,7 +1176,8 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
         `将第一张连接图作为 CONTENT_REF：继承八镜头故事内容、顺序和主体关系。将第二张连接图作为 SUBJECT_REF：校准产品结构。把故事板转换成明显不同的技术运镜预演板，不要只替换说明文字。
 
 阶段视觉语言：
-- 使用蓝灰色或深灰色技术预演风格、简化场景、清楚轮廓、半透明起止位置、相机图标、运动路径和方向箭头
+- 使用与产品母版气质兼容的技术预演风格；可用蓝灰、深灰、暖灰、纸面草图或品牌强调色作为技术标注系统，但必须来自产品视觉系统，不固定蓝灰模板
+- 简化场景、清楚轮廓、半透明起止位置、相机图标、运动路径和方向箭头
 - 每个 16:9 图解至少出现一种可见技术信息：相机位置与朝向、起点与终点残影、运动路径、焦点平面或转场方向
 - 不是最终商业渲染；不要原样复制故事板图片，应保留同一镜头含义但转换成技术图解
 
@@ -684,14 +1215,15 @@ Original request: "产品母版改成2*2，然后注意最终分镜细节和质�
 镜头与版式：
 - 上游两张 2×4 板均按上排镜头1-4、下排镜头5-8读取，最终必须逐格一一对应，不交换、遗漏、重复、合并或新增镜头
 - 输出一张 16:9 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 每卡上方是严格 16:9 全彩关键帧，下方是同宽浅色说明栏
+- 每卡上方是严格 16:9 全彩关键帧，下方是同宽说明栏；说明栏底色、分隔线和文字颜色跟随产品母版视觉系统保持清晰可读，不强制浅色
 - 四列等宽、两行等高；禁止英雄大格、跨格、合并、重叠、自由拼贴、缺格、重复格或第九格
 
 2K高质量商业渲染：
 - 八个关键帧必须清晰、锐利、细节充足，具备高端产品广告成片质感，不使用草图、低清贴图、过度降噪、塑料蜡感或模糊材质
 - 材质必须可辨：金属、哑光塑料、橡胶、玻璃、织物、皮革或涂层要有正确的粗糙度、反射、纹理尺度与边缘高光
 - 保持自然产品摄影透视、真实接地阴影、合理景深、干净轮廓、克制高光和稳定曝光；暗部仍要看清结构
-- 使用统一世界观、色温和光线逻辑，但每格应有明确景别与机位变化，不能反复使用同一正视产品图
+- 使用从产品母版继承的产品自适应世界观、色温、背景和光线逻辑，但每格应有明确景别与机位变化，不能反复使用同一正视产品图
+- 最终商业分镜必须延续该产品自己的视觉气质；不要回落到固定浅灰蓝、固定黑科技或普通白底产品图
 - 使用 MOTION_REF 确定相机角度、主体位置、空间方向与运动趋势，但最终画面不保留相机图标、箭头、残影、蓝图线或技术界面
 - 不继承故事板的草图质感，也不继承运镜板的蓝灰技术图风格
 
@@ -746,7 +1278,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 - 只提升完成度，不重新发明产品；模糊区域保持克制，不凭空增加复杂机构
 - 主体完整展示，三分之二或正侧结合视角，关键比例和轮廓清楚
 - 材质、倒角、分件线、按键、接口、支撑/握持/开合关系表现清晰
-- 背景简洁高级，产品与地面/台面接触可信，光影服务结构可读性
+- 背景、台面、空间和光影根据产品品类、CMF、主色、使用场景和目标用户自适应；产品与地面/台面接触可信，光影服务结构可读性
 - 不要文字、不要 logo 乱生成、不要说明标签、不要装饰性 HUD`,
         0,
         0,
@@ -787,7 +1319,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 要求：
 - 展示正面、侧面、背面、俯视或 3/4 角度中的 3-4 个互补视角
 - 所有视角必须是同一产品：结构、比例、CMF、分件线、按键/接口数量和位置一致
-- 视角之间等距排列，尺度统一，背景简洁，像干净的工业设计评审板
+- 视角之间尺度统一，版式密度、背景色、分隔方式和材质样本样式根据产品气质自适应，像为该产品定制的工业设计评审板
 - 不做爆炸图，不新增内部结构，不使用夸张透视
 - 不要文字标签、不要说明箭头、不要品牌 logo 乱生成、不要虚假参数`,
         480,
@@ -807,6 +1339,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 根据产品类型选择居家、办公、桌面、厨房、浴室、户外或专业工作环境
+- 根据产品 CMF、主色、材质和目标用户决定空间色彩、道具密度和光线气质，不固定同一套桌面/浅灰背景
 - 产品是画面主角，环境现代、干净、有审美，人物/手/道具只作为辅助尺度参考
 - 产品与环境接触可信，有真实阴影、正确透视和合理景深
 - 保持产品结构、比例、颜色、材质、按键、接口和分件线一致
@@ -847,7 +1380,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 要求：
 - 强调材质纹理、表面工艺、倒角高光、颜色过渡、粗糙度和真实反射
 - 保持产品结构、比例、CMF 方向和材质边界一致
-- 画面像设计评审中的材质细节页：干净、聚焦、可判断工艺
+- 画面像设计评审中的材质细节页：背景、光比、样本/局部框和构图根据该 CMF 方向自适应，干净、聚焦、可判断工艺
 - 不要文字、不要品牌标识、不要说明箭头、不要虚构材料标签`,
         480,
         0,
@@ -874,7 +1407,7 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
 
 要求：
 - 产品居中或轻微偏中，完整展示，轮廓清晰，材质真实，关键卖点区域可读
-- 背景简洁但不空洞，可使用柔和渐变、台面、阴影或轻量图形层次
+- 背景、配色、台面/空间、阴影和轻量图形层次根据产品品类、CMF、主色、使用场景和价格带自适应；不要所有商品都使用同一套浅灰蓝主图
 - 保持产品结构、比例、颜色、材质和功能布局一致，不新增配件或虚假功能
 - 不要促销文字、不要价格、不要 logo 乱生成、不要水印、不要虚假认证`,
         0,
@@ -905,3 +1438,19 @@ ${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
     ],
   },
 ]);
+
+export {
+  CANVAS_AI_PROMPT_PRESETS,
+  CANVAS_BUILT_IN_WORKFLOWS,
+  getCanvasImageRuleState,
+  canvasAiProviderSupportsNegativePrompt,
+  createCanvasImagePolicy,
+  getImagePolicyFromRecord,
+  CANVAS_PRODUCT_DETAILS_NODE_IDS,
+  doesWorkflowTextRequireImageReference,
+  isCanvasProductDetailsWorkflowIntent,
+  doesWorkflowExplicitlyRequestProductAnalysis,
+  buildCanvasProductDetailsWorkflowTemplate,
+  buildIndustrialDesignReviewWorkflowTemplateFromDefinition,
+  validateCanvasWorkflowTemplate,
+};

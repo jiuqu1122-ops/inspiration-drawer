@@ -19,6 +19,11 @@ export type CanvasAiCreditPricing = {
   videoModels: Array<{
     model: string;
     credits: string;
+    creditsPerSecond?: string;
+    creditsPerVideo?: string;
+    creditsByDuration?: Record<string, string>;
+    creditsByResolution?: Record<string, string>;
+    creditsByCount?: Record<string, string>;
   }>;
   updatedAt?: string | null;
 };
@@ -35,6 +40,7 @@ const imageModelToken = (model?: string | null) => String(model || '')
 
 const supportsImageOneK = (model?: string | null) => {
   const token = imageModelToken(model);
+  if (token.includes('img2') && token.includes('1k')) return true;
   return !token.startsWith('xais')
     && !token.includes('nanobananapro')
     && !token.includes('nanobanana2')
@@ -158,14 +164,51 @@ export const getCanvasVideoCreditsPerSecond = (
 ) => {
   const token = imageModelToken(model);
   const configuredModel = pricing?.videoModels.find(item => imageModelToken(item.model) === token);
-  const configuredCredits = Number(configuredModel?.credits ?? pricing?.videoDefaultCredits);
+  const configuredCredits = Number(
+    configuredModel?.creditsPerSecond
+      ?? configuredModel?.credits
+      ?? pricing?.videoDefaultCredits,
+  );
   return Number.isSafeInteger(configuredCredits) && configuredCredits >= 0
     ? configuredCredits
     : CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND;
 };
 
+export const getCanvasVideoRequestCredits = (
+  model?: string | null,
+  duration?: number | null,
+  count?: number | null,
+  resolution?: string | null,
+  pricing?: CanvasAiCreditPricing | null,
+) => {
+  const token = imageModelToken(model);
+  const configuredModel = pricing?.videoModels.find(item => imageModelToken(item.model) === token);
+  const safeDuration = Math.max(1, Math.ceil(Number(duration) || 15));
+  const safeCount = Math.max(1, Math.ceil(Number(count) || 1));
+  const durationKey = String(safeDuration);
+  const resolutionKey = String(resolution || '720p').trim().toLowerCase() || '720p';
+  const countKey = String(safeCount);
+  const countOverride = configuredModel?.creditsByCount?.[countKey];
+  if (countOverride !== undefined) {
+    const parsed = Number(countOverride);
+    if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+  }
+
+  const perSecond = getCanvasVideoCreditsPerSecond(model, pricing);
+  const durationOverride = configuredModel?.creditsByDuration?.[durationKey];
+  const durationCredits = durationOverride !== undefined
+    ? Number(durationOverride)
+    : safeDuration * perSecond;
+  const perVideo = Number(configuredModel?.creditsPerVideo ?? 0);
+  const resolutionSurcharge = Number(configuredModel?.creditsByResolution?.[resolutionKey] ?? 0);
+  if (![durationCredits, perVideo, resolutionSurcharge].every(value => Number.isSafeInteger(value) && value >= 0)) {
+    return safeCount * safeDuration * perSecond;
+  }
+  return (durationCredits + perVideo + resolutionSurcharge) * safeCount;
+};
+
 export const estimateCanvasVideoGenerationCredits = (
-  ai?: Pick<NonNullable<CanvasImageItem['ai']>, 'model' | 'count' | 'duration'> | null,
+  ai?: Pick<NonNullable<CanvasImageItem['ai']>, 'model' | 'count' | 'duration' | 'resolution'> | null,
   pricing?: CanvasAiCreditPricing | null,
 ) => {
   const outputCount = getImageOutputCount(ai?.count);
@@ -175,7 +218,13 @@ export const estimateCanvasVideoGenerationCredits = (
     outputCount,
     durationSeconds,
     creditsPerSecond,
-    totalCredits: outputCount * durationSeconds * creditsPerSecond,
+    totalCredits: getCanvasVideoRequestCredits(
+      ai?.model,
+      durationSeconds,
+      outputCount,
+      ai?.resolution,
+      pricing,
+    ),
   };
 };
 

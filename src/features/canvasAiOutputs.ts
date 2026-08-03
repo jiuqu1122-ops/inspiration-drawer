@@ -20,8 +20,8 @@ export const getCanvasItemDisplaySource = (item: BufferItem) => (
 );
 
 export const getCanvasAiOutputDisplaySource = (output?: CanvasAiGeneratedOutput | null) => (
-  output?.url
-  || (output?.path ? convertFileSrc(output.path) : '')
+  (output?.path ? convertFileSrc(output.path) : '')
+  || output?.url
   || ''
 );
 

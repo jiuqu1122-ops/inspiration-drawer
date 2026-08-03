@@ -204,6 +204,16 @@ pub struct CloudImageModelPricing {
 pub struct CloudVideoModelPricing {
     model: String,
     credits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_second: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_video: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_duration: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_resolution: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_count: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +224,8 @@ pub struct CloudImageModelChannel {
     provider: String,
     default_model: Option<String>,
     models: Vec<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
     error: Option<String>,
 }
 
@@ -228,6 +240,10 @@ pub struct CloudVideoGenerationRequest {
     model: String,
     prompt: String,
     input_images: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    input_videos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    input_audios: Vec<String>,
     aspect_ratio: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
@@ -839,7 +855,7 @@ pub async fn get_cloud_image_models(
 #[tauri::command]
 pub async fn generate_cloud_videos(
     app_handle: tauri::AppHandle,
-    request: CloudVideoGenerationRequest,
+    mut request: CloudVideoGenerationRequest,
 ) -> Result<CloudVideoGenerationResult, String> {
     let client_request_id = request.client_request_id.trim();
     let model = request.model.trim();
@@ -850,8 +866,50 @@ pub async fn generate_cloud_videos(
     if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
         return Err("invalid_request: 视频模型或提示词无效".to_string());
     }
-    if !(1..=4).contains(&request.count) || request.input_images.len() > 13 {
+    let model_token = model
+        .to_ascii_lowercase()
+        .replace([' ', '_', '-', '.'], "");
+    let is_seedance20 = matches!(
+        model_token.as_str(),
+        "seedance2"
+            | "seedance20"
+            | "seedance2fast"
+            | "seedance20fast"
+            | "sourcemix20"
+            | "sourcemix20fast"
+    );
+    let is_first_last_frame = request
+        .input_mode
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case("FLF"))
+        .unwrap_or(false);
+    let max_image_references = if is_first_last_frame {
+        2
+    } else if is_seedance20 {
+        9
+    } else {
+        13
+    };
+    if !(1..=4).contains(&request.count)
+        || request.input_images.len() > max_image_references
+        || request.input_videos.len() > 3
+        || request.input_audios.len() > 3
+    {
         return Err("invalid_request: 视频数量或参考素材数量无效".to_string());
+    }
+    if is_first_last_frame && request.input_images.len() != 2 {
+        return Err("invalid_request: FLF requires exactly two reference images".to_string());
+    }
+    if is_first_last_frame {
+        request.input_videos.clear();
+        request.input_audios.clear();
+    }
+    if is_seedance20 {
+        request.input_mode = Some(if is_first_last_frame {
+            "FLF".to_string()
+        } else {
+            "REF".to_string()
+        });
     }
     let access_token = cloud_access_token(&app_handle).await?;
     post_cloud_with_bearer_timeout::<CloudVideoGenerationResult>(

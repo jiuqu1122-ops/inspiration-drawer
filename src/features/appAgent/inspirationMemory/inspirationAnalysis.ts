@@ -63,9 +63,35 @@ export function shouldSkipInspirationAnalysis(failure?: InspirationAnalysisFailu
   );
 }
 
-const stringList = (value: unknown, max = 16): string[] => Array.isArray(value)
-  ? Array.from(new Set(value.map(item => String(item || '').trim()).filter(Boolean))).slice(0, max)
-  : String(value || '').trim() ? [String(value).trim()] : [];
+const normalizeListEntry = (value: unknown): string => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entry = value as Record<string, unknown>;
+    const label = String(entry.name ?? entry.label ?? entry.title ?? '').trim();
+    const color = String(entry.hex ?? entry.color ?? entry.value ?? '').trim();
+    if (label && color && label.toLocaleLowerCase() !== color.toLocaleLowerCase()) return `${label} ${color}`;
+    return label || color;
+  }
+
+  const text = String(value || '').trim();
+  return /^\[object\s.+\]$/i.test(text) ? '' : text;
+};
+
+const stringList = (value: unknown, max = 16): string[] => {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? [value]
+      : [];
+  return Array.from(new Set(values.map(normalizeListEntry).filter(Boolean))).slice(0, max);
+};
+
+const listValues = (...values: unknown[]): unknown[] => values.flatMap(value => (
+  Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? [value]
+      : []
+));
 
 const record = (value: unknown): Record<string, unknown> => (
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -175,7 +201,14 @@ export function normalizeInspirationProfile(
       proportion: stringList(form.proportion ?? existing?.form.proportion),
     },
     cmf: {
-      colors: stringList(cmf.colors ?? existing?.cmf.colors),
+      colors: stringList(listValues(
+        cmf.colors,
+        source.colors,
+        source.colorPalette,
+        source.palette,
+        source.dominantColors,
+        existing?.cmf.colors,
+      )),
       materials: stringList(cmf.materials ?? existing?.cmf.materials),
       finishes: stringList(cmf.finishes ?? existing?.cmf.finishes),
     },

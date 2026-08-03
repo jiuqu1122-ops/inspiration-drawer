@@ -5,6 +5,7 @@ import {
   estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   getCanvasImageUnitCredits,
+  getCanvasVideoRequestCredits,
   shouldShowCanvasGenerationCredits,
 } from './canvasGenerationCredits';
 
@@ -90,6 +91,30 @@ describe('canvas generation credits', () => {
       ],
     } as CanvasWorkflowTemplate;
     expect(estimateCanvasWorkflowCredits(workflow, { pricing }).totalCredits).toBe(13);
+  });
+
+  it('uses dimensional video pricing overrides from the wallet', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '2',
+      imageModels: [],
+      videoModels: [{
+        model: 'kling-video',
+        credits: '2',
+        creditsPerSecond: '3',
+        creditsPerVideo: '5',
+        creditsByDuration: { '10': '40' },
+        creditsByResolution: { '1080p': '8' },
+        creditsByCount: { '3': '200' },
+      }],
+    };
+    expect(getCanvasVideoRequestCredits('kling-video', 10, 2, '1080p', pricing)).toBe(106);
+    expect(getCanvasVideoRequestCredits('kling-video', 10, 3, '720p', pricing)).toBe(200);
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'kling-video', count: 2, duration: 10, resolution: '1080p',
+    }, pricing).totalCredits).toBe(106);
   });
 
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {

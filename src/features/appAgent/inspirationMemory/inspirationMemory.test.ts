@@ -133,6 +133,16 @@ assert(normalizedProfile.itemId === 'warm-appliance', 'profile normalization mus
 assert(normalizedProfile.cmf.colors.includes('暖白'), 'profile normalization should preserve LLM CMF output');
 assert(normalizedProfile.userNotes.includes('保留用户备注'), 'profile normalization should preserve user notes');
 
+const objectColorProfile = normalizeInspirationProfile({
+  summary: 'object palette response',
+  colorPalette: [
+    { name: '主色', hex: '#123456' },
+    { label: '辅色', color: '#abcdef' },
+  ],
+}, { itemId: 'object-palette' });
+assert(objectColorProfile.cmf.colors.includes('主色 #123456'), 'profile normalization should preserve AI color objects');
+assert(objectColorProfile.cmf.colors.includes('辅色 #abcdef'), 'profile normalization should preserve AI color labels and hex values');
+
 assert(
   ['analyze_inspiration', 'analyze_inspirations_batch', 'get_inspiration_analysis_job']
     .every(name => CANVAS_AGENT_TOOL_DEFINITIONS.some(tool => tool.function.name === name)),

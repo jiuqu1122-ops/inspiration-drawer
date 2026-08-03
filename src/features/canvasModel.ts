@@ -77,7 +77,7 @@ export interface DesignAgentConfig {
   thinkingMode?: 'analysis' | 'generation' | 'review';
 }
 
-export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'custom';
+export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'mikoto' | 'custom';
 export type CanvasAiCredentialSource = 'wallet' | 'local';
 
 export type CanvasAiModelCandidate = {
@@ -85,6 +85,7 @@ export type CanvasAiModelCandidate = {
   provider: CanvasAiProvider;
   model: string;
   providerChannelId?: string;
+  capabilities?: string[];
 };
 
 export type CanvasAiMediaType = 'image' | 'video';

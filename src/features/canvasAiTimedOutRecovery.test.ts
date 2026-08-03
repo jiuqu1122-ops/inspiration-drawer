@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CanvasImageItem } from './canvasModel';
 import {
+  CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS,
   getCanvasAiTimedOutRecoveryCandidates,
   isCanvasAiImageLookupPending,
 } from './canvasAiTimedOutRecovery';
@@ -34,6 +35,18 @@ const imageNode = (overrides: Partial<CanvasImageItem> = {}): CanvasImageItem =>
 });
 
 describe('canvas AI timed-out recovery', () => {
+  it('keeps timed-out recovery candidates for at most 30 minutes', () => {
+    expect(CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS).toBe(30 * 60 * 1000);
+    expect(getCanvasAiTimedOutRecoveryCandidates(
+      [imageNode()],
+      10_000 + CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS,
+    )).toHaveLength(1);
+    expect(getCanvasAiTimedOutRecoveryCandidates(
+      [imageNode()],
+      10_001 + CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS,
+    )).toHaveLength(0);
+  });
+
   it('finds a recent wallet output that still has no result source', () => {
     const candidates = getCanvasAiTimedOutRecoveryCandidates([imageNode()], 20_000);
     expect(candidates).toHaveLength(1);
