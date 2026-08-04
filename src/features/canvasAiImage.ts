@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AiGatewayKind } from './agentModel';
-import type { CanvasAiCredentialSource, CanvasAiModelCandidate, NewApiImageProtocol } from './canvasModel';
+import type {
+  CanvasAiCredentialSource,
+  CanvasAiModelCandidate,
+  CanvasAiProvider,
+  NewApiImageProtocol,
+} from './canvasModel';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -25,6 +30,8 @@ export const SEEDANCE_2_REFERENCE_SLOTS = {
 export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
+export const BIGMODEL_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image-preview';
+export const BIGMODEL_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_VIDEO_MODEL_DEFAULT = 'veo-3.1';
 export const NEW_API_VIDEO_MODEL_OPTIONS = [
   { value: CANVAS_SEEDANCE_2_MODEL, label: 'Seedance 2.0' },
@@ -141,6 +148,7 @@ export const XAIS_CHAT_VIDEO_MODEL_OPTIONS = [
 
 export const CANVAS_AI_PROVIDER_OPTIONS = [
   { value: 'mikoto', label: 'Mikoto' },
+  { value: 'bigmodel', label: 'Bigmodel' },
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
   { value: 'new-api', label: 'New API 中转' },
   { value: 'openai-compatible', label: 'OpenAI Compatible' },
@@ -152,7 +160,7 @@ export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
   { value: 'new-api', label: 'New API 中转' },
 ] as const;
 
-export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
+export type CanvasAiImageProvider = CanvasAiProvider;
 
 export const resolveCanvasAiReferenceProvider = (
   runtimeProvider: CanvasAiImageProvider | null | undefined,
@@ -171,6 +179,17 @@ export const mergeCanvasAiReferenceSourceItems = <T extends { id: string }>(
 
 export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
 export type CanvasAiImageResolution = '1k' | '2k' | '4k';
+export const CANVAS_AI_NANO_BANANA_PRO_1K_CAPABILITY = 'IMAGE_NANO_BANANA_PRO_1K';
+
+const normalizeCanvasAiCapabilities = (capabilities?: readonly string[] | null) => (
+  new Set((capabilities || []).map(value => String(value).trim().toUpperCase()).filter(Boolean))
+);
+
+const hasFullNanoBananaProCapability = (capabilities: ReadonlySet<string>) => (
+  capabilities.has('IMAGE')
+  || capabilities.has('IMAGE_NANO_BANANA_PRO')
+  || capabilities.has('IMAGE_NANO_BANANA')
+);
 
 const toImageModelToken = (model?: string | null) => (
   String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
@@ -231,7 +250,7 @@ export const supportsCanvasAiImageResolution = (
   capabilities?: readonly string[] | null,
 ) => {
   const family = getCanvasAiImageModelFamily(provider, model);
-  const normalizedCapabilities = new Set((capabilities || []).map(value => String(value).trim().toUpperCase()));
+  const normalizedCapabilities = normalizeCanvasAiCapabilities(capabilities);
   if (family === 'gpt-image-2'
     && normalizedCapabilities.has('IMAGE_GPT_1K')
     && !normalizedCapabilities.has('IMAGE_GPT')
@@ -243,7 +262,11 @@ export const supportsCanvasAiImageResolution = (
 };
 
 export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
-  provider === 'openai-compatible' || provider === 'new-api' || provider === 'mikoto' || provider === 'custom'
+  provider === 'openai-compatible'
+  || provider === 'new-api'
+  || provider === 'mikoto'
+  || provider === 'bigmodel'
+  || provider === 'custom'
 );
 
 export type CanvasAiBaseImageOptions = {
@@ -1351,7 +1374,7 @@ export const getCanvasAiImageModelFamily = (
   provider?: string | null,
   model?: string | null,
 ): CanvasAiImageModelFamily | null => {
-  if (provider === 'new-api') {
+  if (provider === 'new-api' || provider === 'bigmodel') {
     const newApiFamily = getNewApiImageModelFamily(model);
     if (newApiFamily) return newApiFamily;
     const token = toImageModelToken(model);
@@ -1450,6 +1473,12 @@ export const getCanvasAiPublicImageModelId = (
     if (publicName === 'Nano Banana 2') return 'Xais Nano2_2K';
     return 'Xais Img2_2K';
   }
+  if (provider === 'bigmodel' && publicName === 'Nano Banana Pro') {
+    return BIGMODEL_NANO_BANANA_PRO_MODEL;
+  }
+  if (provider === 'bigmodel' && publicName === 'GPT Image 2') {
+    return BIGMODEL_GPT_IMAGE_2_MODEL;
+  }
   if (publicName === 'Nano Banana Pro') return NEW_API_NANO_BANANA_PRO_MODEL;
   if (publicName === 'Nano Banana 2') return NEW_API_NANO_BANANA_2_MODEL;
   return NEW_API_GPT_IMAGE_2_MODEL;
@@ -1470,14 +1499,20 @@ export const getCanvasAiImageResolutionValues = (
   capabilities?: readonly string[] | null,
 ): CanvasAiImageResolution[] => {
   const family = getCanvasAiImageModelFamily(provider, model);
-  const normalizedCapabilities = new Set((capabilities || []).map(value => String(value).trim().toUpperCase()));
+  const normalizedCapabilities = normalizeCanvasAiCapabilities(capabilities);
   if (family === 'gpt-image-2') {
     if (normalizedCapabilities.has('IMAGE_GPT_1K')
       && !normalizedCapabilities.has('IMAGE_GPT')
       && !normalizedCapabilities.has('IMAGE')) return ['1k'];
     return ['1k', '2k', '4k'];
   }
-  if (family === 'nano-banana-pro' || family === 'nano-banana-2' || family === 'gpt-image-2-h') {
+  if (family === 'nano-banana-pro') {
+    const supportsOneK = normalizedCapabilities.has(CANVAS_AI_NANO_BANANA_PRO_1K_CAPABILITY);
+    const supportsFull = hasFullNanoBananaProCapability(normalizedCapabilities);
+    if (supportsOneK && !supportsFull) return ['1k'];
+    return supportsOneK ? ['1k', '2k', '4k'] : ['2k', '4k'];
+  }
+  if (family === 'nano-banana-2' || family === 'gpt-image-2-h') {
     return ['2k', '4k'];
   }
   return [];
@@ -1495,6 +1530,25 @@ export const normalizeCanvasAiImageResolutionForModel = (
   return allowed.includes('2k') ? '2k' : allowed[0] ?? normalized;
 };
 
+export const getCanvasAiImageResolutionValuesForCandidates = (
+  candidates?: readonly CanvasAiModelCandidate[] | null,
+): CanvasAiImageResolution[] => {
+  const supported = new Set((candidates || []).flatMap(candidate => (
+    getCanvasAiImageResolutionValues(candidate.provider, candidate.model, candidate.capabilities)
+  )));
+  return (['1k', '2k', '4k'] as const).filter(resolution => supported.has(resolution));
+};
+
+export const normalizeCanvasAiImageResolutionForCandidates = (
+  candidates: readonly CanvasAiModelCandidate[],
+  resolution?: string | null,
+) => {
+  const allowed = getCanvasAiImageResolutionValuesForCandidates(candidates);
+  const normalized = normalizeCanvasAiImageResolution(resolution);
+  if (allowed.includes(normalized)) return normalized;
+  return allowed.includes('2k') ? '2k' : allowed[0] ?? normalized;
+};
+
 export const selectCanvasAiImageCandidatesForResolution = (
   candidates: CanvasAiModelCandidate[],
   resolution?: string | null,
@@ -1502,13 +1556,13 @@ export const selectCanvasAiImageCandidatesForResolution = (
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
   const visible = candidates.filter(candidate => {
     if (isHiddenCanvasAiImageModel(candidate.provider, candidate.model)) return false;
-    const capabilities = new Set((candidate.capabilities || []).map(value => String(value).trim().toUpperCase()));
-    const image2OneKOnly = capabilities.has('IMAGE_GPT_1K')
-      && !capabilities.has('IMAGE_GPT')
-      && !capabilities.has('IMAGE');
-    return !image2OneKOnly
-      || getCanvasAiImageModelFamily(candidate.provider, candidate.model) !== 'gpt-image-2'
-      || normalizedResolution === '1k';
+    const family = getCanvasAiImageModelFamily(candidate.provider, candidate.model);
+    if (!family) return true;
+    return getCanvasAiImageResolutionValues(
+      candidate.provider,
+      candidate.model,
+      candidate.capabilities,
+    ).includes(normalizedResolution);
   });
   const routes = new Map<string, CanvasAiModelCandidate[]>();
   for (const candidate of visible) {
@@ -1578,6 +1632,7 @@ const normalizeWalletChannelProvider = (provider?: string | null): CanvasAiModel
   if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
   if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
   if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'BIGMODEL' || normalized === 'BIG_MODEL') return 'bigmodel';
   if (normalized === 'OPENAI-COMPATIBLE') return 'openai-compatible';
   return 'custom';
 };

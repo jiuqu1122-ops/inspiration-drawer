@@ -7,6 +7,7 @@ import type {
 } from '../features/canvasModel';
 import {
   CANVAS_AI_PROVIDER_OPTIONS,
+  BIGMODEL_NANO_BANANA_PRO_MODEL,
   NEW_API_ENDPOINT_DEFAULT,
   NEW_API_ENDPOINT_PLACEHOLDER,
   NEW_API_IMAGE_MODEL_DEFAULT,
@@ -59,7 +60,7 @@ export const CANVAS_AI_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_A
   label: provider.label,
 }));
 export const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'openai-compatible', 'custom'];
+export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'bigmodel', 'openai-compatible', 'custom'];
 export const CANVAS_AI_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_OUTPUT_FORMATS.map(format => ({
   value: format,
   label: format.toUpperCase(),
@@ -84,6 +85,8 @@ export const getCanvasAiDefaultModel = (provider: CanvasAiProvider, mediaType: '
     ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
     : provider === 'new-api'
       ? NEW_API_IMAGE_MODEL_DEFAULT
+    : provider === 'bigmodel'
+      ? BIGMODEL_NANO_BANANA_PRO_MODEL
     : provider === 'mikoto'
       ? ''
     : OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT
@@ -254,6 +257,7 @@ export const canvasAiProviderForCloudKind = (provider?: string | null): CanvasAi
   if (normalized === 'NEW_API') return 'new-api';
   if (normalized === 'XAIS') return 'xais-chat';
   if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'BIGMODEL' || normalized === 'BIG_MODEL') return 'bigmodel';
   return normalizeCanvasAiProvider(provider);
 };
 export const canvasAiModelChoiceValue = (

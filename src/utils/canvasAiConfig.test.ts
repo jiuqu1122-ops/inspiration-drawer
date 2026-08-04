@@ -51,6 +51,7 @@ describe('canvas AI config', () => {
     expect(getCanvasAiDefaultModel('new-api', 'video')).toBe('veo-3.1');
     expect(getCanvasAiDefaultModel('custom', 'video')).toBe('');
     expect(getCanvasAiDefaultModel('mikoto')).toBe('');
+    expect(getCanvasAiDefaultModel('bigmodel')).toBe('gemini-3-pro-image-preview');
   });
 
   it('keeps XAIS remote-model support without exposing its endpoint field', () => {
@@ -67,6 +68,8 @@ describe('canvas AI config', () => {
     expect(canvasAiProviderForGateway('custom', 'openai-compatible')).toBe('openai-compatible');
     expect(canvasAiProviderForCloudKind('XAIS')).toBe('xais-chat');
     expect(canvasAiProviderForCloudKind('MIKOTO')).toBe('mikoto');
+    expect(canvasAiProviderForCloudKind('Bigmodel')).toBe('bigmodel');
+    expect(normalizeCanvasAiProvider('bigmodel')).toBe('bigmodel');
     expect(getCanvasAiRemoteStorageKey('mikoto')).toBe('drawer_canvas_ai_mikoto_models');
   });
 

@@ -38,8 +38,14 @@ const imageModelToken = (model?: string | null) => String(model || '')
   .replace(/preview/g, '')
   .replace(/[^a-z0-9]+/g, '');
 
-const supportsImageOneK = (model?: string | null) => {
+const supportsImageOneK = (
+  model?: string | null,
+  capabilities?: readonly string[] | null,
+) => {
   const token = imageModelToken(model);
+  const normalizedCapabilities = new Set((capabilities || [])
+    .map(value => String(value).trim().toUpperCase()));
+  if (normalizedCapabilities.has('IMAGE_NANO_BANANA_PRO_1K')) return true;
   if (token.includes('img2') && token.includes('1k')) return true;
   return !token.startsWith('xais')
     && !token.includes('nanobananapro')
@@ -58,11 +64,12 @@ type PricedImageResolution = '1k' | '2k' | '4k';
 const getPricedImageResolution = (
   model?: string | null,
   resolution?: string | null,
+  capabilities?: readonly string[] | null,
 ): PricedImageResolution => {
   const requested = String(resolution || '').trim().toLowerCase();
   const token = imageModelToken(model);
   if (requested === '1k' || requested === '2k' || requested === '4k') {
-    if (requested === '1k' && !supportsImageOneK(model)) return '2k';
+    if (requested === '1k' && !supportsImageOneK(model, capabilities)) return '2k';
     return requested;
   }
   if (token.includes('4k')) return '4k';
@@ -75,10 +82,11 @@ export const getCanvasImageUnitCredits = (
   model?: string | null,
   resolution?: string | null,
   pricing?: CanvasAiCreditPricing | null,
+  capabilities?: readonly string[] | null,
 ) => {
   const rawModel = String(model || '');
   const token = imageModelToken(rawModel);
-  const selectedResolution = getPricedImageResolution(rawModel, resolution);
+  const selectedResolution = getPricedImageResolution(rawModel, resolution, capabilities);
   const configuredModel = pricing?.imageModels.find(item => imageModelToken(item.model) === token);
   if (configuredModel) {
     const configuredCredits = selectedResolution === '1k'
@@ -143,14 +151,16 @@ const hasConfiguredImageModel = (
 type CanvasImageCreditInput = Pick<
   NonNullable<CanvasImageItem['ai']>,
   'model' | 'resolution' | 'count'
->;
+> & {
+  capabilities?: readonly string[] | null;
+};
 
 export const estimateCanvasImageGenerationCredits = (
   ai?: CanvasImageCreditInput | null,
   pricing?: CanvasAiCreditPricing | null,
 ) => {
   const outputCount = getImageOutputCount(ai?.count);
-  const unitCredits = getCanvasImageUnitCredits(ai?.model, ai?.resolution, pricing);
+  const unitCredits = getCanvasImageUnitCredits(ai?.model, ai?.resolution, pricing, ai?.capabilities);
   return {
     outputCount,
     unitCredits,

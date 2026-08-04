@@ -19,6 +19,7 @@ import {
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelId,
   getCanvasAiImageResolutionValues,
+  getCanvasAiImageResolutionValuesForCandidates,
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
   getCanvasAiVideoReferenceSlots,
@@ -48,6 +49,7 @@ import {
   newApiVideoRequestParams,
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
+  normalizeCanvasAiImageResolutionForCandidates,
   normalizeCloudWalletImageAspectRatio,
   normalizeNewApiBaseEndpoint,
   normalizeSeedanceVideoAspectRatio,
@@ -78,6 +80,8 @@ describe('NewAPI image model mapping', () => {
     ]);
     expect(getCanvasAiPublicImageModelId('new-api', 'Nano Banana 2')).toBe('gemini-3.1-flash-image');
     expect(getCanvasAiPublicImageModelId('xais-chat', 'GPT Image 2')).toBe('Xais Img2_2K');
+    expect(getCanvasAiPublicImageModelId('bigmodel', 'Nano Banana Pro')).toBe('gemini-3-pro-image-preview');
+    expect(getCanvasAiPublicImageModelId('bigmodel', 'GPT Image 2')).toBe('gpt-image-2');
   });
 
   it.each([
@@ -362,6 +366,46 @@ describe('unified wallet image model families', () => {
     }])).toEqual(candidates);
   });
 
+  it('preserves Bigmodel Gemini wallet channels when refreshing candidate routes', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'bigmodel' as const,
+      providerChannelId: 'bigmodel-banana-pro',
+      model: 'gemini-3-pro-image-preview',
+    }];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'bigmodel-banana-pro',
+      provider: 'BIGMODEL',
+      models: ['gemini-3-pro-image-preview'],
+    }])).toEqual(candidates);
+  });
+
+  it('keeps Bigmodel Banana Pro and Image2 models on the same wallet channel', () => {
+    const candidates = [
+      {
+        source: 'wallet' as const,
+        provider: 'bigmodel' as const,
+        providerChannelId: 'bigmodel-main',
+        model: 'gemini-3-pro-image-preview',
+      },
+      {
+        source: 'wallet' as const,
+        provider: 'bigmodel' as const,
+        providerChannelId: 'bigmodel-main',
+        model: 'gpt-image-2',
+      },
+    ];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'bigmodel-main',
+      provider: 'BIGMODEL',
+      models: ['gemini-3-pro-image-preview', 'gpt-image-2'],
+      capabilities: ['IMAGE', 'IMAGE_NANO_BANANA_PRO'],
+    }])).toEqual(candidates.map(candidate => ({
+      ...candidate,
+      capabilities: ['IMAGE', 'IMAGE_NANO_BANANA_PRO'],
+    })));
+  });
+
   it('skips Image2 channels that only advertise the 1K capability for higher resolutions', () => {
     const candidates = [
       {
@@ -383,6 +427,31 @@ describe('unified wallet image model families', () => {
       .toHaveLength(2);
     expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k'))
       .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
+  });
+
+  it('routes Banana Pro 1K channels independently from full-resolution channels', () => {
+    const candidates = [
+      {
+        source: 'wallet' as const,
+        provider: 'bigmodel' as const,
+        providerChannelId: 'bigmodel-1k',
+        model: 'gemini-3-pro-image-preview',
+        capabilities: ['IMAGE_NANO_BANANA_PRO_1K'],
+      },
+      {
+        source: 'wallet' as const,
+        provider: 'new-api' as const,
+        providerChannelId: 'new-api-full',
+        model: 'gemini-3-pro-image',
+        capabilities: ['IMAGE_NANO_BANANA_PRO'],
+      },
+    ];
+    expect(selectCanvasAiImageCandidatesForResolution(candidates, '1k'))
+      .toEqual([expect.objectContaining({ providerChannelId: 'bigmodel-1k' })]);
+    expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k'))
+      .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
+    expect(getCanvasAiImageResolutionValuesForCandidates(candidates)).toEqual(['1k', '2k', '4k']);
+    expect(normalizeCanvasAiImageResolutionForCandidates(candidates, '4k')).toBe('4k');
   });
 
   it('only fails over after an explicit rejection', () => {
@@ -459,6 +528,9 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('new-api', 'gpt-image-2')).toBe(true);
     expect(supportsCanvasAiImageResolution('custom', 'gpt_image_2_guan')).toBe(true);
     expect(supportsCanvasAiImageResolution('openai-compatible', 'gptimage2')).toBe(true);
+    expect(getCanvasAiImageModelFamily('bigmodel', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
+    expect(getCanvasAiImageModelFamily('bigmodel', 'gpt-image-2')).toBe('gpt-image-2');
+    expect(getCanvasAiImageModelFamily('bigmodel', 'gpt_image_2')).toBe('gpt-image-2');
   });
 
   it('enables clarity routing for XAIS families and leaves unrelated models unchanged', () => {
@@ -470,6 +542,20 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toBe(true);
     expect(getCanvasAiImageResolutionValues('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toEqual(['1k']);
     expect(normalizeCanvasAiImageResolutionForModel('mikoto', 'gpt-image-2', '4k', ['IMAGE_GPT_1K'])).toBe('1k');
+  });
+
+  it('exposes Banana Pro 1K only when the dedicated channel capability is present', () => {
+    const model = 'gemini-3-pro-image-preview';
+    expect(getCanvasAiImageResolutionValues('bigmodel', model, ['IMAGE_NANO_BANANA_PRO_1K']))
+      .toEqual(['1k']);
+    expect(normalizeCanvasAiImageResolutionForModel(
+      'bigmodel', model, '4k', ['IMAGE_NANO_BANANA_PRO_1K'],
+    )).toBe('1k');
+    expect(getCanvasAiImageResolutionValues(
+      'bigmodel', model, ['IMAGE_NANO_BANANA_PRO_1K', 'IMAGE_NANO_BANANA_PRO'],
+    )).toEqual(['1k', '2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', model, ['IMAGE_NANO_BANANA_PRO']))
+      .toEqual(['2k', '4k']);
   });
 
   it('normalizes resolution casing and calculates GPT Image 2 sizes', () => {

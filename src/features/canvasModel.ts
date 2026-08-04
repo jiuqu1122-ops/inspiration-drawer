@@ -77,7 +77,7 @@ export interface DesignAgentConfig {
   thinkingMode?: 'analysis' | 'generation' | 'review';
 }
 
-export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'mikoto' | 'custom';
+export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'mikoto' | 'bigmodel' | 'custom';
 export type CanvasAiCredentialSource = 'wallet' | 'local';
 
 export type CanvasAiModelCandidate = {

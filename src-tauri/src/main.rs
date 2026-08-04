@@ -6259,21 +6259,48 @@ fn should_normalize_ai_reference_image(mime: &str, byte_len: usize) -> bool {
     !is_ai_upload_compatible_image_mime(mime) || byte_len > AI_REFERENCE_IMAGE_TARGET_BYTES
 }
 
-fn flatten_dynamic_image_to_white_rgb(
+fn flatten_dynamic_image_to_rgb(
     image: &screenshots::image::DynamicImage,
+    background: impl Fn(u32, u32) -> [u8; 3],
 ) -> screenshots::image::RgbImage {
     let rgba = image.to_rgba8();
     let mut rgb = screenshots::image::RgbImage::new(rgba.width(), rgba.height());
-    for (target, source) in rgb.pixels_mut().zip(rgba.pixels()) {
+    for (index, (target, source)) in rgb.pixels_mut().zip(rgba.pixels()).enumerate() {
+        let x = (index as u32) % rgba.width().max(1);
+        let y = (index as u32) / rgba.width().max(1);
+        let background = background(x, y);
         let alpha = u32::from(source[3]);
         for channel in 0..3 {
             target[channel] = ((u32::from(source[channel]) * alpha
-                + 255 * (255 - alpha)
+                + u32::from(background[channel]) * (255 - alpha)
                 + 127)
                 / 255) as u8;
         }
     }
     rgb
+}
+
+fn flatten_dynamic_image_to_white_rgb(
+    image: &screenshots::image::DynamicImage,
+) -> screenshots::image::RgbImage {
+    flatten_dynamic_image_to_rgb(image, |_, _| [255, 255, 255])
+}
+
+fn flatten_dynamic_image_to_transparency_preview_rgb(
+    image: &screenshots::image::DynamicImage,
+) -> screenshots::image::RgbImage {
+    // Keep transparent thumbnails readable without exposing the magenta matte
+    // that some PNG encoders store in fully transparent pixels.
+    const LIGHT: [u8; 3] = [230, 230, 230];
+    const DARK: [u8; 3] = [207, 207, 207];
+    const TILE_SIZE: u32 = 16;
+    flatten_dynamic_image_to_rgb(image, |x, y| {
+        if ((x / TILE_SIZE) + (y / TILE_SIZE)) % 2 == 0 {
+            LIGHT
+        } else {
+            DARK
+        }
+    })
 }
 
 fn encode_ai_reference_jpeg(
@@ -9679,8 +9706,7 @@ fn save_thumbnail_jpeg(
     image: &screenshots::image::DynamicImage,
     path: &Path,
 ) -> Result<(), String> {
-    image
-        .to_rgb8()
+    flatten_dynamic_image_to_transparency_preview_rgb(image)
         .save_with_format(path, screenshots::image::ImageFormat::Jpeg)
         .map_err(|e| e.to_string())
 }
@@ -9697,7 +9723,9 @@ fn ensure_image_thumbnail_file_impl(
         .join(thumb_size.to_string());
     fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
 
-    let out_path = cache_root.join(format!("{}.jpg", metadata.fingerprint));
+    // Bump the filename when thumbnail compositing changes so old JPEGs with
+    // baked-in transparent magenta mattes are not reused.
+    let out_path = cache_root.join(format!("{}.alpha-v2.jpg", metadata.fingerprint));
     if out_path.is_file() {
         if let Ok((thumb_width, thumb_height)) = screenshots::image::image_dimensions(&out_path) {
             if thumb_width > 0 && thumb_height > 0 {
@@ -9762,6 +9790,31 @@ mod image_thumbnail_tests {
             screenshots::image::image_dimensions(&output).unwrap(),
             (32, 24)
         );
+        let _ = fs::remove_file(output);
+    }
+
+    #[test]
+    fn jpeg_thumbnail_writer_neutralizes_transparent_magenta_pixels() {
+        let output = std::env::temp_dir().join(format!(
+            "inspiration-drawer-transparent-thumbnail-{}-{}.jpg",
+            std::process::id(),
+            now_millis_u64()
+        ));
+        let rgba = screenshots::image::RgbaImage::from_pixel(
+            32,
+            16,
+            screenshots::image::Rgba([255, 0, 255, 0]),
+        );
+        let image = screenshots::image::DynamicImage::ImageRgba8(rgba);
+
+        save_thumbnail_jpeg(&image, &output).unwrap();
+        let preview = screenshots::image::open(&output).unwrap().to_rgb8();
+        let first = preview.get_pixel(0, 0).0;
+        let second_tile = preview.get_pixel(16, 0).0;
+        assert!(first[0] > 205 && first[1] > 205 && first[2] > 205);
+        assert!(second_tile[0] > 180 && second_tile[1] > 180 && second_tile[2] > 180);
+        assert!((i16::from(first[0]) - i16::from(first[1])).abs() < 12);
+        assert!((i16::from(first[1]) - i16::from(first[2])).abs() < 12);
         let _ = fs::remove_file(output);
     }
 }

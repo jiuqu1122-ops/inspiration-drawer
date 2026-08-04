@@ -93,6 +93,33 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasWorkflowCredits(workflow, { pricing }).totalCredits).toBe(13);
   });
 
+  it('uses Banana Pro 1K pricing only for the dedicated channel capability', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [{
+        model: 'gemini-3-pro-image',
+        credits1k: '7',
+        credits2k: '18',
+        credits4k: '20',
+      }],
+      videoModels: [],
+    };
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'gemini-3-pro-image-preview',
+      resolution: '1k',
+      count: 2,
+      capabilities: ['IMAGE_NANO_BANANA_PRO_1K'],
+    }, pricing)).toEqual({ outputCount: 2, unitCredits: 7, totalCredits: 14 });
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'gemini-3-pro-image-preview',
+      resolution: '1k',
+      count: 1,
+    }, pricing)).toEqual({ outputCount: 1, unitCredits: 18, totalCredits: 18 });
+  });
+
   it('uses dimensional video pricing overrides from the wallet', () => {
     const pricing = {
       agentRequestCredits: '7',

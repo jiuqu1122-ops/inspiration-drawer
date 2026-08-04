@@ -688,6 +688,7 @@ import {
   getCloudWalletImageGenerationByRequest,
   getCloudWalletImageLookupImages,
   getCanvasAiImageResolutionValues,
+  getCanvasAiImageResolutionValuesForCandidates,
   normalizeCanvasAiOutputFormat,
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
@@ -709,6 +710,7 @@ import {
   isOpenAiLikeCanvasAiProvider,
   mergeCanvasAiReferenceSourceItems,
   normalizeCanvasAiImageResolutionForModel,
+  normalizeCanvasAiImageResolutionForCandidates,
   normalizeNewApiVideoAspectRatio,
   normalizeNewApiVideoDurationForModel,
   normalizeNewApiVideoResolutionForModel,
@@ -3236,7 +3238,7 @@ function MainApp() {
   };
 
   const refreshCanvasAiOpenAiModels = async (silent = false) => {
-    if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) return;
+    if (!canvasAiUsesCloudImageModels && !isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) return;
     const provider = effectiveCanvasAiProvider;
     const endpoint = getCanvasAiEndpointForModels(provider, effectiveCanvasAiEndpoint || canvasAiEndpoint);
     const apiKeys = isCanvasAiLicenseManaged
@@ -3398,7 +3400,7 @@ function MainApp() {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
-    if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) {
+    if (!canvasAiUsesCloudImageModels && !isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
@@ -14143,6 +14145,9 @@ function MainApp() {
     const selectedModel = activeSourceCandidate?.model || matchingSourceChoice?.model || targetAi.model;
     const selectedProviderCandidates = (matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
       .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource);
+    const selectedCandidateImageResolutionValues = mediaType === 'image'
+      ? getCanvasAiImageResolutionValuesForCandidates(selectedProviderCandidates)
+      : [];
     const selectedModelCapabilities = activeSourceCandidate?.capabilities
       || selectedProviderCandidates.find(candidate => (
         candidate.provider === requestedProvider && candidate.model === selectedModel
@@ -14459,14 +14464,19 @@ function MainApp() {
         aspectRatio: targetAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
         resolution: mediaType === 'video'
           ? targetAi.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION
-          : supportsCanvasAiImageResolution(provider, requestModel, selectedModelCapabilities)
-            ? normalizeCanvasAiImageResolutionForModel(
-              provider,
-              requestModel,
+          : selectedCandidateImageResolutionValues.length > 0
+            ? normalizeCanvasAiImageResolutionForCandidates(
+              selectedProviderCandidates,
               targetAi.resolution,
-              selectedModelCapabilities,
             )
-            : targetAi.resolution,
+            : supportsCanvasAiImageResolution(provider, requestModel, selectedModelCapabilities)
+              ? normalizeCanvasAiImageResolutionForModel(
+                provider,
+                requestModel,
+                targetAi.resolution,
+                selectedModelCapabilities,
+              )
+              : targetAi.resolution,
         outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         duration: targetAi.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION,
         inputMode: targetAi.videoInputMode || 'REF',
@@ -29617,22 +29627,33 @@ useEffect(() => {
                                 && candidate.model === canvasAiItemModel
                               ))?.capabilities
                             : undefined;
-                          const canvasAiSupportsImageResolution = canvasAiMediaType === 'image'
-                            && supportsCanvasAiImageResolution(canvasAiItemProvider, canvasAiItemModel, canvasAiItemCapabilities);
-                          const canvasAiImageResolutionValues = getCanvasAiImageResolutionValues(
-                            canvasAiItemProvider,
-                            canvasAiItemModel,
-                            canvasAiItemCapabilities,
+                          const canvasAiItemProviderCandidates = canvasItem.ai?.providerCandidates || [];
+                          const canvasAiCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
+                            canvasAiItemProviderCandidates,
                           );
+                          const canvasAiImageResolutionValues = canvasAiCandidateImageResolutionValues.length > 0
+                            ? canvasAiCandidateImageResolutionValues
+                            : getCanvasAiImageResolutionValues(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                              canvasAiItemCapabilities,
+                            );
+                          const canvasAiSupportsImageResolution = canvasAiMediaType === 'image'
+                            && canvasAiImageResolutionValues.length > 0;
                           const canvasAiImageResolutionOptions = CANVAS_AI_IMAGE_RESOLUTION_OPTIONS.filter(option => (
                             canvasAiImageResolutionValues.includes(option.value as '1k' | '2k' | '4k')
                           ));
-                          const canvasAiItemImageResolution = normalizeCanvasAiImageResolutionForModel(
-                            canvasAiItemProvider,
-                            canvasAiItemModel,
-                            canvasItem.ai?.resolution,
-                            canvasAiItemCapabilities,
-                          );
+                          const canvasAiItemImageResolution = canvasAiCandidateImageResolutionValues.length > 0
+                            ? normalizeCanvasAiImageResolutionForCandidates(
+                              canvasAiItemProviderCandidates,
+                              canvasItem.ai?.resolution,
+                            )
+                            : normalizeCanvasAiImageResolutionForModel(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                              canvasItem.ai?.resolution,
+                              canvasAiItemCapabilities,
+                            );
                           const isCanvasAiNewApiVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'new-api';
                           const isCanvasAiSeedanceVideo = canvasAiMediaType === 'video'
                             && isSeedance20VideoModel(canvasAiItemModel);
@@ -29717,6 +29738,8 @@ useEffect(() => {
                             )
                             : [];
                           const canvasImagePricingModel = canvasImagePricingCandidates[0]?.model || canvasAiItemModel;
+                          const canvasImagePricingCapabilities = canvasImagePricingCandidates[0]?.capabilities
+                            || canvasAiItemCapabilities;
                           const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
                             ? estimateCanvasWorkflowCredits(canvasWorkflow, {
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
@@ -29730,6 +29753,7 @@ useEffect(() => {
                               model: canvasImagePricingModel,
                               resolution: canvasAiItemImageResolution,
                               count: canvasItem.ai.count,
+                              capabilities: canvasImagePricingCapabilities,
                             }, canvasWalletPricing)
                             : null;
                           const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
@@ -31097,8 +31121,17 @@ useEffect(() => {
                                                 const modelCapabilities = choice?.providerCandidates?.find(candidate => (
                                                   candidate.provider === provider && candidate.model === model
                                                 ))?.capabilities;
-                                                const resolution = supportsCanvasAiImageResolution(provider, model, modelCapabilities)
-                                                  ? normalizeCanvasAiImageResolutionForModel(provider, model, canvasItem.ai?.resolution, modelCapabilities)
+                                                const modelResolutionCandidates = choice?.providerCandidates || [];
+                                                const modelResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
+                                                  modelResolutionCandidates,
+                                                );
+                                                const resolution = modelResolutionValues.length > 0
+                                                  ? normalizeCanvasAiImageResolutionForCandidates(
+                                                    modelResolutionCandidates,
+                                                    canvasItem.ai?.resolution,
+                                                  )
+                                                  : supportsCanvasAiImageResolution(provider, model, modelCapabilities)
+                                                    ? normalizeCanvasAiImageResolutionForModel(provider, model, canvasItem.ai?.resolution, modelCapabilities)
                                                   : canvasAiMediaType === 'video' && provider === 'new-api'
                                                     ? isSeedance20VideoModel(model)
                                                       ? normalizeMikotoVideoResolution(model, canvasItem.ai?.resolution)
@@ -31135,7 +31168,10 @@ useEffect(() => {
                                                     videoInputMode: model === 'sora-2' ? 'REF' : canvasItem.ai?.videoInputMode || 'REF',
                                                   } : {}),
                                                   ...(canvasAiMediaType === 'video' && provider === 'mikoto' ? { resolution } : {}),
-                                                  ...(supportsCanvasAiImageResolution(provider, model, modelCapabilities) ? { resolution } : {}),
+                                                  ...(modelResolutionValues.length > 0
+                                                    || supportsCanvasAiImageResolution(provider, model, modelCapabilities)
+                                                    ? { resolution }
+                                                    : {}),
                                                 });
                                               }}
                                               aspectRatioValue={isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo
@@ -31161,12 +31197,17 @@ useEffect(() => {
                                               imageResolutionValue={canvasAiItemImageResolution}
                                               imageResolutionOptions={canvasAiImageResolutionOptions}
                                               onImageResolutionChange={(value) => {
-                                                const resolution = normalizeCanvasAiImageResolutionForModel(
-                                                  canvasAiItemProvider,
-                                                  canvasAiItemModel,
-                                                  value,
-                                                  canvasAiItemCapabilities,
-                                                );
+                                                const resolution = canvasAiCandidateImageResolutionValues.length > 0
+                                                  ? normalizeCanvasAiImageResolutionForCandidates(
+                                                    canvasAiItemProviderCandidates,
+                                                    value,
+                                                  )
+                                                  : normalizeCanvasAiImageResolutionForModel(
+                                                    canvasAiItemProvider,
+                                                    canvasAiItemModel,
+                                                    value,
+                                                    canvasAiItemCapabilities,
+                                                  );
                                                 updateCanvasAiGeneratorData(canvasItem.id, {
                                                   resolution,
                                                   aspectRatio: normalizeCanvasAiAspectRatioForModel(

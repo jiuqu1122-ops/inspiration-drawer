@@ -787,7 +787,7 @@ return (
             style={{ height: mediaHeight, ...roundedTopStyle }}
             title="点击预览"
             onVisible={() => {
-              if (!item.thumbnail) onEnsureThumbnail?.(item);
+              onEnsureThumbnail?.(item);
             }}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource, item, imagePreviewPlaceholderSource); }}
           />

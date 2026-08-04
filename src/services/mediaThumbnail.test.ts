@@ -257,6 +257,11 @@ describe('media thumbnail service', () => {
     expect(dom.images).toHaveLength(5);
   });
 
+  it('marks old native JPEG thumbnails for transparent-preview regeneration', async () => {
+    await expect(isLegacyImageThumbnail('asset://localhost/C:/cache/thumbs/512/old.jpg')).resolves.toBe(true);
+    await expect(isLegacyImageThumbnail('asset://localhost/C:/cache/thumbs/512/new.alpha-v2.jpg')).resolves.toBe(false);
+  });
+
   it('keeps navigation image source conversion, SVG pass-through, CORS, and sizing rules', async () => {
     const dom = installImageDom(() => ({ width: 1920, height: 1080 }));
     const svg = 'data:image/svg+xml;base64,PHN2Zz4=';

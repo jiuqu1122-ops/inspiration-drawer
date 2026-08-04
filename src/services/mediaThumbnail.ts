@@ -461,7 +461,16 @@ export const readDataImageSize = (source?: string) => new Promise<{ width: numbe
   image.src = rawSource;
 });
 
+const isStaleNativeImageThumbnail = (thumbnail?: string) => {
+  const rawSource = (thumbnail || '').trim();
+  if (!rawSource || /^data:image\//i.test(rawSource)) return false;
+  return /(?:^|[/\\])thumbs[/\\]/i.test(rawSource)
+    && /\.jpe?g(?:[?#]|$)/i.test(rawSource)
+    && !/\.alpha-v2\.jpg(?:[?#]|$)/i.test(rawSource);
+};
+
 export const isLegacyImageThumbnail = async (thumbnail?: string) => {
+  if (isStaleNativeImageThumbnail(thumbnail)) return true;
   const size = await readDataImageSize(thumbnail);
   if (!size) return false;
   return (
