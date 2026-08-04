@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,
   CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
   CANVAS_AI_VIDEO_MODEL_OPTIONS,
   NEW_API_SEEDANCE_2_FAST_MODEL,
@@ -39,6 +41,8 @@ import {
   normalizeMikotoVideoResolution,
   getXaisImageModelDisplayName,
   formatNewApiVideoFailureMessage,
+  getNewApiVideoTaskState,
+  isNewApiVideoFailureState,
   gptImage2SizeFromAspectRatio,
   isLikelyNewApiVideoModel,
   isNewApiImageProtocolUnsupportedError,
@@ -732,6 +736,21 @@ describe('NewAPI image protocol errors', () => {
 });
 
 describe('NewAPI video routing', () => {
+  it('uses a bounded total timeout for image and video generator nodes', () => {
+    expect(CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES).toBe(30);
+    expect(CANVAS_AI_VIDEO_TASK_TIMEOUT_MS).toBe(30 * 60 * 1000);
+  });
+
+  it('recognizes nested terminal failure states from provider status payloads', () => {
+    expect(getNewApiVideoTaskState({
+      status: 'processing',
+      payload: { job: { taskStatus: 'FAILED', errorMessage: 'upstream rejected' } },
+    })).toBe('failed');
+    expect(isNewApiVideoFailureState('task_failed')).toBe(true);
+    expect(isNewApiVideoFailureState('timed-out')).toBe(true);
+    expect(formatNewApiVideoFailureMessage('upstream model overloaded')).toBe('upstream model overloaded');
+  });
+
   it('limits Mikoto Seedance resolutions by the public model family', () => {
     expect(getMikotoVideoResolutionValues('seedance2')).toEqual(['720p', '1080p']);
     expect(getMikotoVideoResolutionValues('seedance2fast')).toEqual(['480p', '720p']);

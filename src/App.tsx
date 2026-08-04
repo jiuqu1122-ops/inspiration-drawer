@@ -677,6 +677,8 @@ import {
   MIKOTO_VIDEO_MODEL_OPTIONS,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,
   NEW_API_SEEDANCE_2_MODEL,
   NEW_API_SEEDANCE_2_FAST_MODEL,
   NEW_API_VIDEO_MODEL_DEFAULT,
@@ -14078,14 +14080,18 @@ function MainApp() {
     const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
 
     const mediaType = getCanvasAiMediaType(targetAi);
-    const imageTaskDeadlineAt = mediaType === 'image'
-      ? Date.now() + CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
-      : 0;
+    const taskTimeoutMinutes = mediaType === 'image'
+      ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES
+      : CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES;
+    const taskTimeoutMs = mediaType === 'image'
+      ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
+      : CANVAS_AI_VIDEO_TASK_TIMEOUT_MS;
+    const taskDeadlineAt = Date.now() + taskTimeoutMs;
     const waitForCanvasAiProviderTask = async <T,>(request: Promise<T>): Promise<T> => {
-      if (!imageTaskDeadlineAt) return request;
-      const remainingMs = imageTaskDeadlineAt - Date.now();
+      const remainingMs = taskDeadlineAt - Date.now();
       if (remainingMs <= 0) {
-        throw new Error(`图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消`);
+        void request.catch(() => {});
+        throw new Error(`${mediaType === 'image' ? '图片' : '视频'}生成任务等待超过 ${taskTimeoutMinutes} 分钟，已自动取消`);
       }
       let timeoutId: number | null = null;
       try {
@@ -14093,7 +14099,7 @@ function MainApp() {
           request,
           new Promise<never>((_, reject) => {
             timeoutId = window.setTimeout(() => {
-              reject(new Error(`图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消`));
+              reject(new Error(`${mediaType === 'image' ? '图片' : '视频'}生成任务等待超过 ${taskTimeoutMinutes} 分钟，已自动取消`));
             }, remainingMs);
           }),
         ]);
@@ -15438,29 +15444,45 @@ function MainApp() {
 
   useEffect(() => {
     if (!isCanvasMode) return;
-    const settleStaleImageNodes = () => {
+    const settleStaleGeneratorNodes = () => {
       const now = Date.now();
-      const staleNodes = canvasItemsRef.current.filter(item => {
+      const generalizedStaleNodes = canvasItemsRef.current.filter(item => {
         const ai = item.ai;
-        if (ai?.type !== 'image-generator' || ai.status !== 'working' || !ai.generatedAt) return false;
-        return now - ai.generatedAt >= CANVAS_AI_IMAGE_TASK_TIMEOUT_MS;
+        if (
+          (ai?.type !== 'image-generator' && ai?.type !== 'video-generator')
+          || ai.status !== 'working'
+          || !ai.generatedAt
+        ) return false;
+        const timeoutMs = ai.type === 'image-generator'
+          ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
+          : CANVAS_AI_VIDEO_TASK_TIMEOUT_MS;
+        return now - ai.generatedAt >= timeoutMs;
       });
-      staleNodes.forEach(item => {
-        canvasAiRunTokensRef.current.delete(item.id);
-        const error = `图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消，请手动重试。`;
-        updateCanvasAiGeneratorData(item.id, {
-          status: 'error',
-          error,
-          generatedAt: now,
-          outputs: (item.ai?.outputs || []).map(output => output.status === 'working'
-            ? { ...output, status: 'error' as const, error, generatedAt: output.generatedAt || now }
-            : output),
+      if (generalizedStaleNodes.length > 0) {
+        generalizedStaleNodes.forEach(item => {
+          for (const key of canvasAiRunTokensRef.current.keys()) {
+            if (key === item.id || key.endsWith(`:${item.id}`)) canvasAiRunTokensRef.current.delete(key);
+          }
+          const isVideo = item.ai?.type === 'video-generator';
+          const timeoutMinutes = isVideo
+            ? CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES
+            : CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES;
+          const mediaLabel = isVideo ? '视频' : '图片';
+          const error = `${mediaLabel}生成任务等待超过 ${timeoutMinutes} 分钟，已自动取消，请手动重试。`;
+          updateCanvasAiGeneratorData(item.id, {
+            status: 'error',
+            error,
+            generatedAt: now,
+            outputs: (item.ai?.outputs || []).map(output => output.status === 'working'
+              ? { ...output, status: 'error' as const, error, generatedAt: output.generatedAt || now }
+              : output),
+          });
         });
-      });
-      if (staleNodes.length > 0) showToast(`已自动取消 ${staleNodes.length} 个超时的图片生成任务，可手动重试`);
+        showToast(`已自动取消 ${generalizedStaleNodes.length} 个超时的图片/视频生成任务，可手动重试`);
+      }
     };
-    settleStaleImageNodes();
-    const timer = window.setInterval(settleStaleImageNodes, 5000);
+    settleStaleGeneratorNodes();
+    const timer = window.setInterval(settleStaleGeneratorNodes, 5000);
     return () => window.clearInterval(timer);
   }, [isCanvasMode]);
 

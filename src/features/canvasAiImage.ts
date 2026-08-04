@@ -112,6 +112,8 @@ export const getCanvasAiVideoModelCandidates = (
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES = 15;
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES * 60 * 1000;
+export const CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES = 30;
+export const CANVAS_AI_VIDEO_TASK_TIMEOUT_MS = CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES * 60 * 1000;
 export const NEW_API_IMAGE_REQUEST_TIMEOUT_SECS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MS / 1000;
 export const NEW_API_IMAGE_TASK_MAX_WAIT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MS;
 export const NEW_API_IMAGE_TASK_POLL_INTERVAL_MS = 3000;
@@ -492,7 +494,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         output.push(...collectVideoStrings(lastStatus));
         if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
         const state = getNewApiVideoTaskState(lastStatus);
-        if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+        if (isNewApiVideoFailureState(state)) {
           throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
         }
       }
@@ -2739,7 +2741,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
       const images = collectResults(lastStatus);
       if (images.length > 0) return images.slice(0, count);
       const state = getNewApiVideoTaskState(lastStatus);
-      if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+      if (isNewApiVideoFailureState(state)) {
         throw new Error(getNewApiVideoFailureMessage(lastStatus) || `NewAPI image task failed: ${taskId}`);
       }
       if (/^(?:completed|complete|succeeded|success|finished|done)$/.test(state)) {
@@ -2934,28 +2936,161 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   throw new Error(`Xais 调用失败：${errors.filter(Boolean).join('；') || '接口没有返回图片链接'}`);
 };
 
-const getNewApiVideoTaskState = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  const direct = record.status ?? record.state;
-  if (typeof direct === 'string') return direct.trim().toLowerCase();
-  for (const nested of [record.data, record.result, record.task, record.response]) {
-    const state = getNewApiVideoTaskState(nested);
-    if (state) return state;
+const NEW_API_VIDEO_FAILURE_STATES = new Set([
+  'failed',
+  'failure',
+  'error',
+  'cancelled',
+  'canceled',
+  'rejected',
+  'aborted',
+  'expired',
+  'timeout',
+  'timed_out',
+]);
+
+const NEW_API_VIDEO_STATE_KEYS = new Set([
+  'status',
+  'state',
+  'task_status',
+  'taskstatus',
+  'phase',
+]);
+
+const NEW_API_VIDEO_NESTED_KEYS = new Set([
+  'data',
+  'result',
+  'results',
+  'task',
+  'tasks',
+  'response',
+  'payload',
+  'job',
+  'operation',
+  'meta',
+]);
+
+const normalizeNewApiVideoTaskState = (value: unknown) => (
+  typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+    : ''
+);
+
+const collectNewApiVideoTaskStates = (
+  value: unknown,
+  states: string[] = [],
+  seen = new Set<object>(),
+  depth = 0,
+): string[] => {
+  if (!value || typeof value !== 'object' || depth > 8) return states;
+  if (seen.has(value)) return states;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach(item => collectNewApiVideoTaskStates(item, states, seen, depth + 1));
+    return states;
   }
-  return '';
+  const record = value as Record<string, unknown>;
+  for (const [key, nested] of Object.entries(record)) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (NEW_API_VIDEO_STATE_KEYS.has(normalizedKey)) {
+      const state = normalizeNewApiVideoTaskState(nested);
+      if (state) states.push(state);
+    }
+    if (NEW_API_VIDEO_NESTED_KEYS.has(normalizedKey) || (nested && typeof nested === 'object')) {
+      collectNewApiVideoTaskStates(nested, states, seen, depth + 1);
+    }
+  }
+  return states;
 };
 
-const getNewApiVideoFailureMessage = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  const direct = record.error ?? record.fail_reason ?? record.failure_reason;
-  if (direct) return getErrorMessage(direct);
-  for (const nested of [record.data, record.result, record.task, record.response]) {
-    const message = getNewApiVideoFailureMessage(nested);
-    if (message) return message;
+export const isNewApiVideoFailureState = (state: unknown) => (
+  NEW_API_VIDEO_FAILURE_STATES.has(normalizeNewApiVideoTaskState(state))
+  || /(?:^|_)(?:failed|failure|error|cancelled|canceled|rejected|aborted|expired|timeout|timed_out)(?:_|$)/.test(
+    normalizeNewApiVideoTaskState(state),
+  )
+);
+
+export const getNewApiVideoTaskState = (value: unknown): string => {
+  const states = collectNewApiVideoTaskStates(value);
+  return states.find(state => isNewApiVideoFailureState(state))
+    || states[0]
+    || '';
+};
+
+const getNewApiVideoFailureMessage = (
+  value: unknown,
+  seen = new Set<object>(),
+  depth = 0,
+): string => {
+  if (!value || typeof value !== 'object' || depth > 8) return '';
+  if (seen.has(value)) return '';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = getNewApiVideoFailureMessage(item, seen, depth + 1);
+      if (message) return message;
+    }
+    return '';
   }
-  return typeof record.message === 'string' ? record.message : '';
+  const record = value as Record<string, unknown>;
+  const state = getNewApiVideoTaskState(record);
+  const directFailure = [
+    'error',
+    'err',
+    'fail_reason',
+    'failure_reason',
+    'failureReason',
+    'error_message',
+    'errorMessage',
+  ];
+  for (const key of directFailure) {
+    const candidate = record[key];
+    if (candidate === undefined || candidate === null || candidate === '') continue;
+    const message = getErrorMessage(candidate).trim();
+    if (message && !/^unknown error$/i.test(message)) return message;
+  }
+  if (isNewApiVideoFailureState(state)) {
+    for (const key of ['message', 'msg', 'detail']) {
+      const candidate = record[key];
+      if (typeof candidate !== 'string') continue;
+      const message = candidate.trim();
+      if (message && !/^(?:pending|processing|queued|running|in_progress)$/i.test(message)) return message;
+    }
+    return state;
+  }
+  if (record.success === false || record.ok === false) {
+    for (const key of ['message', 'msg', 'detail']) {
+      const candidate = record[key];
+      if (typeof candidate !== 'string') continue;
+      const message = candidate.trim();
+      if (message && !/^(?:pending|processing|queued|running|in_progress)$/i.test(message)) return message;
+    }
+    return 'upstream request failed';
+  }
+  const numericCode = Number(record.code ?? record.statusCode ?? record.errorCode ?? record.status);
+  if (Number.isFinite(numericCode) && numericCode >= 400) {
+    for (const key of ['message', 'msg', 'detail']) {
+      const candidate = record[key];
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    }
+    return `HTTP ${numericCode}`;
+  }
+  for (const key of ['message', 'msg', 'detail']) {
+    const candidate = record[key];
+    if (typeof candidate !== 'string') continue;
+    const message = candidate.trim();
+    if (/(?:fail(?:ed|ure)?|error|exception|cancelled?|rejected|aborted|expired|timed?[_ -]?out)/i.test(message)) {
+      return message;
+    }
+  }
+  for (const [key, nested] of Object.entries(record)) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (NEW_API_VIDEO_NESTED_KEYS.has(normalizedKey) || (nested && typeof nested === 'object')) {
+      const message = getNewApiVideoFailureMessage(nested, seen, depth + 1);
+      if (message) return message;
+    }
+  }
+  return '';
 };
 
 export const formatNewApiVideoFailureMessage = (message?: string | null) => {
@@ -3031,7 +3166,7 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
         break;
       }
       const state = getNewApiVideoTaskState(status);
-      if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+      if (isNewApiVideoFailureState(state)) {
         const failure = formatNewApiVideoFailureMessage(getNewApiVideoFailureMessage(status));
         throw new Error(failure || `NewAPI 视频任务失败：${taskId}`);
       }
