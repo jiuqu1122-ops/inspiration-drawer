@@ -8769,7 +8769,39 @@ function MainApp() {
       a.x - b.x ||
       (a.item.createdAt || 0) - (b.item.createdAt || 0)
     ));
-    const { placements, bounds: arrangedBounds } = layoutCanvasItems(sortedItems, {
+    const normalizeLayoutMediaSource = (source?: string | null) => {
+      const value = String(source || '').trim();
+      if (!value) return '';
+      return /^[a-z]:[\\/]/i.test(value)
+        ? value.replace(/\\/g, '/').toLowerCase()
+        : value;
+    };
+    const outputOwnerBySource = new Map<string, string>();
+    sortedItems.forEach(item => {
+      if (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow') return;
+      (item.ai.outputs || []).forEach(output => {
+        [output.path, output.url, output.sourceUrl].forEach(source => {
+          const key = normalizeLayoutMediaSource(source);
+          if (key && !outputOwnerBySource.has(key)) outputOwnerBySource.set(key, item.id);
+        });
+      });
+    });
+    const layoutItems = sortedItems.map(item => {
+      const isGenerator = isCanvasAiGeneratorType(item.ai?.type) || item.ai?.type === 'workflow';
+      const outputOf = isCanvasAiGeneratedType(item.ai?.type)
+        ? [item.item.path, item.item.url, item.item.sourceUrl, item.item.originalUrl]
+          .map(normalizeLayoutMediaSource)
+          .filter(Boolean)
+          .map(source => outputOwnerBySource.get(source))
+          .find((ownerId): ownerId is string => !!ownerId)
+        : undefined;
+      return {
+        ...item,
+        layoutRole: isGenerator ? 'generator' as const : outputOf ? 'output' as const : undefined,
+        outputOf,
+      };
+    });
+    const { placements, bounds: arrangedBounds } = layoutCanvasItems(layoutItems, {
       startX,
       startY,
       columnGap: 104,
@@ -8779,6 +8811,11 @@ function MainApp() {
       maxLayerHeight: 1800,
       maxMasonryWidth: 2400,
       maxMasonryColumns: 5,
+      maxReferenceColumns: 3,
+      maxGroupColumns: 3,
+      looseGroupSize: 9,
+      groupColumnGap: 176,
+      groupRowGap: 152,
       gridSize: 8,
     });
 

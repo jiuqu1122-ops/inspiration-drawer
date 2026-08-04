@@ -92,4 +92,113 @@ describe('canvas auto layout', () => {
     expect(result.placements.get('loose-b')!.y).toBeGreaterThan(connectedBottom);
     expectNoOverlaps(items, result.placements);
   });
+
+  it('keeps reference inputs, a generator, and copied outputs in one compact work unit', () => {
+    const references: CanvasAutoLayoutItem[] = Array.from({ length: 7 }, (_, index) => ({
+      id: `reference-${index}`,
+      x: index * 10,
+      y: index * 10,
+      width: index % 2 === 0 ? 180 : 240,
+      height: index % 3 === 0 ? 260 : 180,
+    }));
+    const generator: CanvasAutoLayoutItem = {
+      id: 'generator',
+      x: 0,
+      y: 0,
+      width: 360,
+      height: 520,
+      inputs: references.map(item => item.id),
+      layoutRole: 'generator',
+    };
+    const outputs: CanvasAutoLayoutItem[] = Array.from({ length: 3 }, (_, index) => ({
+      id: `output-${index}`,
+      x: 0,
+      y: 0,
+      width: 220,
+      height: 220,
+      layoutRole: 'output',
+      outputOf: generator.id,
+    }));
+    const items = [...references, generator, ...outputs];
+    const result = layoutCanvasItems(items, { startX: 80, startY: 80 });
+    const generatorPosition = result.placements.get(generator.id)!;
+    const referenceRight = Math.max(...references.map(item => (
+      result.placements.get(item.id)!.x + item.width
+    )));
+    const outputLeft = Math.min(...outputs.map(item => result.placements.get(item.id)!.x));
+
+    expect(referenceRight).toBeLessThan(generatorPosition.x);
+    expect(outputLeft).toBeGreaterThan(generatorPosition.x + generator.width);
+    expect(new Set(references.map(item => result.placements.get(item.id)!.x)).size).toBe(3);
+    expectNoOverlaps(items, result.placements);
+  });
+
+  it('wraps multiple generator work units into balanced rows and columns', () => {
+    const items: CanvasAutoLayoutItem[] = [];
+    for (let groupIndex = 0; groupIndex < 6; groupIndex += 1) {
+      const inputIds = Array.from({ length: 2 }, (_, inputIndex) => `g${groupIndex}-ref-${inputIndex}`);
+      inputIds.forEach((id, inputIndex) => items.push({
+        id,
+        x: groupIndex * 30,
+        y: inputIndex * 30,
+        width: 180,
+        height: 180,
+      }));
+      items.push({
+        id: `generator-${groupIndex}`,
+        x: groupIndex * 20,
+        y: groupIndex * 20,
+        width: 300,
+        height: 320,
+        inputs: inputIds,
+        layoutRole: 'generator',
+      });
+    }
+
+    const result = layoutCanvasItems(items, {
+      startX: 80,
+      startY: 80,
+      maxGroupColumns: 3,
+    });
+    const generatorPositions = Array.from({ length: 6 }, (_, index) => (
+      result.placements.get(`generator-${index}`)!
+    ));
+    const distinctXs = new Set(generatorPositions.map(position => position.x));
+    const distinctYs = new Set(generatorPositions.map(position => position.y));
+
+    expect(distinctXs.size).toBeGreaterThan(1);
+    expect(distinctXs.size).toBeLessThanOrEqual(3);
+    expect(distinctYs.size).toBeGreaterThan(1);
+    expect(result.bounds!.width / result.bounds!.height).toBeLessThan(3);
+    expectNoOverlaps(items, result.placements);
+  });
+
+  it('places a shared reference once while keeping both generator groups valid', () => {
+    const items: CanvasAutoLayoutItem[] = [
+      { id: 'shared', x: 0, y: 0, width: 220, height: 220 },
+      {
+        id: 'generator-a',
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 360,
+        inputs: ['shared'],
+        layoutRole: 'generator',
+      },
+      {
+        id: 'generator-b',
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 360,
+        inputs: ['shared'],
+        layoutRole: 'generator',
+      },
+    ];
+    const result = layoutCanvasItems(items, { startX: 80, startY: 80 });
+
+    expect(result.placements.size).toBe(items.length);
+    expect(result.placements.get('shared')!.x).toBeLessThan(result.placements.get('generator-a')!.x);
+    expectNoOverlaps(items, result.placements);
+  });
 });

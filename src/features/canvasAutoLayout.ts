@@ -5,6 +5,8 @@ export type CanvasAutoLayoutItem = {
   width: number;
   height: number;
   inputs?: string[];
+  layoutRole?: 'generator' | 'output';
+  outputOf?: string;
 };
 
 export type CanvasAutoLayoutOptions = {
@@ -17,6 +19,11 @@ export type CanvasAutoLayoutOptions = {
   maxLayerHeight?: number;
   maxMasonryWidth?: number;
   maxMasonryColumns?: number;
+  maxReferenceColumns?: number;
+  maxGroupColumns?: number;
+  looseGroupSize?: number;
+  groupColumnGap?: number;
+  groupRowGap?: number;
   gridSize?: number;
 };
 
@@ -93,6 +100,257 @@ const layoutMasonry = (
     column.items.forEach(({ item, y }) => placements.set(item.id, { x, y }));
     x += column.width + options.masonryColumnGap;
   });
+  return placements;
+};
+
+type CanvasLayoutBlock = {
+  placements: Map<string, { x: number; y: number }>;
+  width: number;
+  height: number;
+};
+
+const layoutCompactGrid = (
+  items: CanvasAutoLayoutItem[],
+  maxColumns: number,
+  columnGap: number,
+  rowGap: number,
+): CanvasLayoutBlock => {
+  const placements = new Map<string, { x: number; y: number }>();
+  if (items.length === 0) return { placements, width: 0, height: 0 };
+
+  const columnCount = Math.max(1, Math.min(maxColumns, Math.ceil(Math.sqrt(items.length))));
+  const rowCount = Math.ceil(items.length / columnCount);
+  const columnWidths = Array.from({ length: columnCount }, () => 0);
+  const rowHeights = Array.from({ length: rowCount }, () => 0);
+
+  items.forEach((item, index) => {
+    const column = index % columnCount;
+    const row = Math.floor(index / columnCount);
+    columnWidths[column] = Math.max(columnWidths[column]!, positiveSize(item.width));
+    rowHeights[row] = Math.max(rowHeights[row]!, positiveSize(item.height));
+  });
+
+  const columnXs: number[] = [];
+  const rowYs: number[] = [];
+  columnWidths.forEach((_, index) => {
+    columnXs[index] = index === 0
+      ? 0
+      : columnXs[index - 1]! + columnWidths[index - 1]! + columnGap;
+  });
+  rowHeights.forEach((_, index) => {
+    rowYs[index] = index === 0
+      ? 0
+      : rowYs[index - 1]! + rowHeights[index - 1]! + rowGap;
+  });
+
+  items.forEach((item, index) => {
+    const column = index % columnCount;
+    const row = Math.floor(index / columnCount);
+    placements.set(item.id, {
+      x: columnXs[column]!,
+      y: rowYs[row]!,
+    });
+  });
+
+  return {
+    placements,
+    width: columnWidths.reduce((total, width) => total + width, 0) + columnGap * (columnCount - 1),
+    height: rowHeights.reduce((total, height) => total + height, 0) + rowGap * (rowCount - 1),
+  };
+};
+
+const layoutGeneratorGroups = (
+  items: CanvasAutoLayoutItem[],
+  startX: number,
+  startY: number,
+  options: Required<Pick<
+    CanvasAutoLayoutOptions,
+    | 'columnGap'
+    | 'masonryColumnGap'
+    | 'rowGap'
+    | 'maxReferenceColumns'
+    | 'maxGroupColumns'
+    | 'looseGroupSize'
+    | 'groupColumnGap'
+    | 'groupRowGap'
+  >>,
+) => {
+  const placements = new Map<string, { x: number; y: number }>();
+  const itemById = new Map(items.map(item => [item.id, item]));
+  const order = new Map(items.map((item, index) => [item.id, index]));
+  const generators = items.filter(item => item.layoutRole === 'generator');
+  const generatorIds = new Set(generators.map(item => item.id));
+
+  const upstreamGeneratorCache = new Map<string, Set<string>>();
+  const findUpstreamGenerators = (itemId: string, visiting = new Set<string>()): Set<string> => {
+    const cached = upstreamGeneratorCache.get(itemId);
+    if (cached) return cached;
+    if (visiting.has(itemId)) return new Set();
+    const item = itemById.get(itemId);
+    if (!item) return new Set();
+    const nextVisiting = new Set(visiting).add(itemId);
+    const found = new Set<string>();
+    (item.inputs || []).forEach(inputId => {
+      if (generatorIds.has(inputId)) {
+        found.add(inputId);
+        return;
+      }
+      findUpstreamGenerators(inputId, nextVisiting).forEach(id => found.add(id));
+    });
+    upstreamGeneratorCache.set(itemId, found);
+    return found;
+  };
+
+  const depthCache = new Map<string, number>();
+  const getGeneratorDepth = (generatorId: string, visiting = new Set<string>()): number => {
+    const cached = depthCache.get(generatorId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(generatorId)) return 0;
+    const upstream = Array.from(findUpstreamGenerators(generatorId));
+    if (upstream.length === 0) {
+      depthCache.set(generatorId, 0);
+      return 0;
+    }
+    const nextVisiting = new Set(visiting).add(generatorId);
+    const depth = Math.max(...upstream.map(id => getGeneratorDepth(id, nextVisiting))) + 1;
+    depthCache.set(generatorId, depth);
+    return depth;
+  };
+
+  const sortedGenerators = [...generators].sort((left, right) => (
+    getGeneratorDepth(left.id) - getGeneratorDepth(right.id)
+    || (order.get(left.id) || 0) - (order.get(right.id) || 0)
+  ));
+  const groups = sortedGenerators.map(generator => ({
+    generator,
+    inputs: [] as CanvasAutoLayoutItem[],
+    outputs: [] as CanvasAutoLayoutItem[],
+  }));
+  const groupByGeneratorId = new Map(groups.map(group => [group.generator.id, group]));
+  const assigned = new Set(sortedGenerators.map(item => item.id));
+
+  const collectReferenceInputs = (
+    itemId: string,
+    collected: CanvasAutoLayoutItem[],
+    visiting: Set<string>,
+  ) => {
+    if (visiting.has(itemId) || generatorIds.has(itemId)) return;
+    const item = itemById.get(itemId);
+    if (!item) return;
+    visiting.add(itemId);
+    if (!assigned.has(itemId)) {
+      assigned.add(itemId);
+      collected.push(item);
+    }
+    (item.inputs || []).forEach(inputId => collectReferenceInputs(inputId, collected, visiting));
+  };
+
+  groups.forEach(group => {
+    (group.generator.inputs || []).forEach(inputId => (
+      collectReferenceInputs(inputId, group.inputs, new Set([group.generator.id]))
+    ));
+    group.inputs.sort((left, right) => (
+      (order.get(left.id) || 0) - (order.get(right.id) || 0)
+    ));
+  });
+
+  items.forEach(item => {
+    if (assigned.has(item.id) || item.layoutRole !== 'output' || !item.outputOf) return;
+    const group = groupByGeneratorId.get(item.outputOf);
+    if (!group) return;
+    assigned.add(item.id);
+    group.outputs.push(item);
+  });
+
+  const blocks: CanvasLayoutBlock[] = groups.map(group => {
+    const inputGrid = layoutCompactGrid(
+      group.inputs,
+      options.maxReferenceColumns,
+      options.masonryColumnGap,
+      options.rowGap,
+    );
+    const outputGrid = layoutCompactGrid(
+      group.outputs,
+      Math.min(2, options.maxReferenceColumns),
+      options.masonryColumnGap,
+      options.rowGap,
+    );
+    const generatorWidth = positiveSize(group.generator.width);
+    const generatorHeight = positiveSize(group.generator.height);
+    const contentHeight = Math.max(inputGrid.height, generatorHeight, outputGrid.height);
+    const generatorX = inputGrid.width > 0 ? inputGrid.width + options.columnGap : 0;
+    const outputX = generatorX + generatorWidth + (outputGrid.width > 0 ? options.columnGap : 0);
+    const blockPlacements = new Map<string, { x: number; y: number }>();
+    const inputY = Math.max(0, (contentHeight - inputGrid.height) / 2);
+    const generatorY = Math.max(0, (contentHeight - generatorHeight) / 2);
+    const outputY = Math.max(0, (contentHeight - outputGrid.height) / 2);
+    inputGrid.placements.forEach((position, id) => blockPlacements.set(id, {
+      x: position.x,
+      y: position.y + inputY,
+    }));
+    blockPlacements.set(group.generator.id, { x: generatorX, y: generatorY });
+    outputGrid.placements.forEach((position, id) => blockPlacements.set(id, {
+      x: position.x + outputX,
+      y: position.y + outputY,
+    }));
+    return {
+      placements: blockPlacements,
+      width: outputGrid.width > 0 ? outputX + outputGrid.width : generatorX + generatorWidth,
+      height: contentHeight,
+    };
+  });
+
+  const looseItems = items.filter(item => !assigned.has(item.id));
+  for (let index = 0; index < looseItems.length; index += options.looseGroupSize) {
+    blocks.push(layoutCompactGrid(
+      looseItems.slice(index, index + options.looseGroupSize),
+      options.maxReferenceColumns,
+      options.masonryColumnGap,
+      options.rowGap,
+    ));
+  }
+
+  const averageBlockWidth = blocks.reduce((total, block) => total + block.width, 0) / Math.max(1, blocks.length);
+  const averageBlockHeight = blocks.reduce((total, block) => total + block.height, 0) / Math.max(1, blocks.length);
+  const groupColumnCount = Math.max(1, Math.min(
+    options.maxGroupColumns,
+    Math.ceil(Math.sqrt(
+      blocks.length * positiveSize(averageBlockHeight) * 1.6 / positiveSize(averageBlockWidth),
+    )),
+  ));
+  const groupRowCount = Math.ceil(blocks.length / groupColumnCount);
+  const groupColumnWidths = Array.from({ length: groupColumnCount }, () => 0);
+  const groupRowHeights = Array.from({ length: groupRowCount }, () => 0);
+  blocks.forEach((block, index) => {
+    const column = index % groupColumnCount;
+    const row = Math.floor(index / groupColumnCount);
+    groupColumnWidths[column] = Math.max(groupColumnWidths[column]!, block.width);
+    groupRowHeights[row] = Math.max(groupRowHeights[row]!, block.height);
+  });
+  const groupColumnXs: number[] = [];
+  const groupRowYs: number[] = [];
+  groupColumnWidths.forEach((_, index) => {
+    groupColumnXs[index] = index === 0
+      ? startX
+      : groupColumnXs[index - 1]! + groupColumnWidths[index - 1]! + options.groupColumnGap;
+  });
+  groupRowHeights.forEach((_, index) => {
+    groupRowYs[index] = index === 0
+      ? startY
+      : groupRowYs[index - 1]! + groupRowHeights[index - 1]! + options.groupRowGap;
+  });
+
+  blocks.forEach((block, index) => {
+    const column = index % groupColumnCount;
+    const row = Math.floor(index / groupColumnCount);
+    const offsetX = groupColumnXs[column]! + (groupColumnWidths[column]! - block.width) / 2;
+    const offsetY = groupRowYs[row]! + (groupRowHeights[row]! - block.height) / 2;
+    block.placements.forEach((position, id) => placements.set(id, {
+      x: offsetX + position.x,
+      y: offsetY + position.y,
+    }));
+  });
+
   return placements;
 };
 
@@ -209,6 +467,11 @@ export const layoutCanvasItems = (
     maxLayerHeight: rawOptions.maxLayerHeight ?? 1800,
     maxMasonryWidth: rawOptions.maxMasonryWidth ?? 2400,
     maxMasonryColumns: rawOptions.maxMasonryColumns ?? 5,
+    maxReferenceColumns: rawOptions.maxReferenceColumns ?? 3,
+    maxGroupColumns: rawOptions.maxGroupColumns ?? 3,
+    looseGroupSize: rawOptions.looseGroupSize ?? 9,
+    groupColumnGap: rawOptions.groupColumnGap ?? 160,
+    groupRowGap: rawOptions.groupRowGap ?? 144,
     gridSize: rawOptions.gridSize ?? 8,
   };
   const snap = (value: number) => Math.max(24, Math.round(value / options.gridSize) * options.gridSize);
@@ -217,24 +480,29 @@ export const layoutCanvasItems = (
     width: positiveSize(item.width),
     height: positiveSize(item.height),
   }));
-  const ids = new Set(items.map(item => item.id));
-  const connectedIds = new Set<string>();
-  items.forEach(item => {
-    (item.inputs || []).forEach(parentId => {
-      if (!ids.has(parentId) || parentId === item.id) return;
-      connectedIds.add(parentId);
-      connectedIds.add(item.id);
+  let placements: Map<string, { x: number; y: number }>;
+  if (items.some(item => item.layoutRole === 'generator')) {
+    placements = layoutGeneratorGroups(items, options.startX, options.startY, options);
+  } else {
+    const ids = new Set(items.map(item => item.id));
+    const connectedIds = new Set<string>();
+    items.forEach(item => {
+      (item.inputs || []).forEach(parentId => {
+        if (!ids.has(parentId) || parentId === item.id) return;
+        connectedIds.add(parentId);
+        connectedIds.add(item.id);
+      });
     });
-  });
-  const connected = items.filter(item => connectedIds.has(item.id));
-  const isolated = items.filter(item => !connectedIds.has(item.id));
-  const placements = layoutDag(connected, options.startX, options.startY, options);
-  const connectedBounds = getBounds(connected, placements);
-  const isolatedStartY = connectedBounds
-    ? connectedBounds.y + connectedBounds.height + options.sectionGap
-    : options.startY;
-  const masonry = layoutMasonry(isolated, options.startX, isolatedStartY, options);
-  masonry.forEach((position, id) => placements.set(id, position));
+    const connected = items.filter(item => connectedIds.has(item.id));
+    const isolated = items.filter(item => !connectedIds.has(item.id));
+    placements = layoutDag(connected, options.startX, options.startY, options);
+    const connectedBounds = getBounds(connected, placements);
+    const isolatedStartY = connectedBounds
+      ? connectedBounds.y + connectedBounds.height + options.sectionGap
+      : options.startY;
+    const masonry = layoutMasonry(isolated, options.startX, isolatedStartY, options);
+    masonry.forEach((position, id) => placements.set(id, position));
+  }
   placements.forEach((position, id) => placements.set(id, {
     x: snap(position.x),
     y: snap(position.y),

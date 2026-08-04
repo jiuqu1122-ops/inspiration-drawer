@@ -1884,7 +1884,7 @@ const hasImageFileExtension = (value: string) => {
   return /\.(?:jpe?g|png|webp|gif|bmp|svg)$/i.test(clean);
 };
 
-const collectVideoStrings = (value: unknown, output: string[] = []): string[] => {
+export const collectVideoStrings = (value: unknown, output: string[] = []): string[] => {
   if (!value) return output;
 
   if (typeof value === 'string') {
@@ -1908,6 +1908,10 @@ const collectVideoStrings = (value: unknown, output: string[] = []): string[] =>
 
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
+    if (Array.isArray(record.walletVideoResults) && record.walletVideoResults.length > 0) {
+      collectVideoStrings(record.walletVideoResults, output);
+      return output;
+    }
     for (const [key, nested] of Object.entries(record)) {
       const normalizedKey = key.toLowerCase();
       if (/^(?:error|err|message|msg|detail|upret|trace|stack|raw|debug)$/i.test(normalizedKey)) {

@@ -14,6 +14,7 @@ import {
   NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
   buildNewApiVideoPrompt,
   buildCanvasAiIndexedReferencePrompt,
+  collectVideoStrings,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
@@ -75,6 +76,26 @@ import {
   supportsCanvasAiTransparentPng,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
+
+describe('cloud wallet video result parsing', () => {
+  it('prefers mirrored OSS results without duplicating upstream video URLs', () => {
+    expect(collectVideoStrings({
+      walletVideoResults: [
+        'https://api.unmind.art/v1/ai/video-results/stable-1.mp4',
+        'https://api.unmind.art/v1/ai/video-results/stable-2.mp4',
+      ],
+      upstream: {
+        results: [
+          'https://upstream.example/video-1.mp4',
+          'https://upstream.example/video-2.mp4',
+        ],
+      },
+    })).toEqual([
+      'https://api.unmind.art/v1/ai/video-results/stable-1.mp4',
+      'https://api.unmind.art/v1/ai/video-results/stable-2.mp4',
+    ]);
+  });
+});
 
 describe('NewAPI image model mapping', () => {
   it('keeps the canvas model menu fixed to the three public image models', () => {

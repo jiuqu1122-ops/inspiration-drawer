@@ -916,7 +916,7 @@ pub async fn generate_cloud_videos(
         "/v1/ai/videos",
         &access_token,
         &request,
-        Duration::from_secs(6 * 60),
+        Duration::from_secs(25 * 60),
     )
     .await
 }
@@ -941,7 +941,7 @@ pub async fn get_cloud_video_status(
     let access_token = cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(25 * 60))
         .build()
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
     let mut request = client

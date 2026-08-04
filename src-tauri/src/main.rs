@@ -681,6 +681,14 @@ fn is_wallet_ai_image_result_url(value: &str) -> bool {
     })
 }
 
+fn is_wallet_ai_video_result_url(value: &str) -> bool {
+    Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
+            && url.path().starts_with("/v1/ai/video-results/")
+    })
+}
+
 fn generated_oss_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
     if url.scheme() != "https"
@@ -700,8 +708,30 @@ fn generated_oss_result_key(value: &str) -> Option<String> {
     valid.then(|| key.to_string())
 }
 
+fn generated_oss_video_result_key(value: &str) -> Option<String> {
+    let url = Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || !url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case(
+                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
+            )
+        })
+    {
+        return None;
+    }
+    let key = url.path().strip_prefix("/generated-videos/")?;
+    let valid = key.len() <= 80
+        && key
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_');
+    valid.then(|| key.to_string())
+}
+
 fn is_wallet_ai_image_result_source(value: &str) -> bool {
-    is_wallet_ai_image_result_url(value) || generated_oss_result_key(value).is_some()
+    is_wallet_ai_image_result_url(value)
+        || is_wallet_ai_video_result_url(value)
+        || generated_oss_result_key(value).is_some()
+        || generated_oss_video_result_key(value).is_some()
 }
 
 fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
@@ -712,7 +742,8 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
                 "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
             )
         })
-        && url.path().starts_with("/generated-images/");
+        && (url.path().starts_with("/generated-images/")
+            || url.path().starts_with("/generated-videos/"));
     if !allowed {
         return Err("OSS 签名地址不属于允许的生成结果 Bucket".to_string());
     }
@@ -723,7 +754,12 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
 }
 
 fn image_result_json_url(value: &str) -> Result<Url, String> {
-    let mut url = if let Some(key) = generated_oss_result_key(value) {
+    let mut url = if let Some(key) = generated_oss_video_result_key(value) {
+        Url::parse(&format!(
+            "https://api.unmind.art/v1/ai/video-results/{key}"
+        ))
+        .map_err(|error| error.to_string())?
+    } else if let Some(key) = generated_oss_result_key(value) {
         Url::parse(&format!(
             "https://api.unmind.art/v1/ai/image-results/{key}"
         ))
@@ -827,7 +863,8 @@ async fn resolve_ai_image_result_url(
 mod ai_image_result_url_tests {
     use super::{
         build_direct_http_client, download_url_to_file_with_client, image_result_json_url,
-        generated_oss_result_key, is_wallet_ai_image_result_url,
+        generated_oss_result_key, generated_oss_video_result_key, is_wallet_ai_image_result_source,
+        is_wallet_ai_image_result_url, is_wallet_ai_video_result_url,
         should_prefer_direct_generated_image_download, validate_generated_image_oss_url,
     };
     use std::fs;
@@ -873,11 +910,35 @@ mod ai_image_result_url_tests {
     }
 
     #[test]
-    fn only_accepts_https_signed_urls_from_the_generated_image_bucket() {
+    fn recognizes_wallet_video_results_and_rebuilds_the_stable_api_url() {
+        let stable = "https://api.unmind.art/v1/ai/video-results/abc.mp4";
+        assert!(is_wallet_ai_video_result_url(stable));
+        assert!(is_wallet_ai_image_result_source(stable));
+
+        let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/abc.mp4?token=expired";
+        assert_eq!(generated_oss_video_result_key(signed).as_deref(), Some("abc.mp4"));
+        assert!(is_wallet_ai_image_result_source(signed));
+        let endpoint = image_result_json_url(signed).expect("stable video API endpoint");
+        assert_eq!(endpoint.path(), "/v1/ai/video-results/abc.mp4");
+        assert_eq!(
+            endpoint.query_pairs()
+                .find(|(key, _)| key == "redirect")
+                .map(|(_, value)| value.into_owned()),
+            Some("0".to_string())
+        );
+    }
+
+    #[test]
+    fn only_accepts_https_signed_urls_from_the_generated_media_bucket() {
         let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=a%2Bb";
         assert_eq!(
             validate_generated_image_oss_url(signed).expect("allowed signed URL"),
             signed
+        );
+        let video = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/a.mp4?token=a%2Bb";
+        assert_eq!(
+            validate_generated_image_oss_url(video).expect("allowed signed video URL"),
+            video
         );
         assert!(validate_generated_image_oss_url(
             "https://evil.example/generated-images/a.png?token=x"
