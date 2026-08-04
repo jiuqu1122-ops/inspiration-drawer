@@ -463,7 +463,8 @@ describe('unified wallet image model families', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('service overloaded: no available worker'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, operation copy failed: source path does not exist'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, Provided image is not valid'))).toBe(true);
-    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, internal server error'))).toBe(false);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, internal server error'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 502: upstream provider failed'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('channel returned no image data'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
