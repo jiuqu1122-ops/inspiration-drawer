@@ -691,6 +691,7 @@ import {
   getCloudWalletImageLookupImages,
   getCanvasAiImageResolutionValues,
   getCanvasAiImageResolutionValuesForCandidates,
+  hydrateCanvasAiModelCandidateCapabilities,
   normalizeCanvasAiOutputFormat,
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
@@ -14149,15 +14150,25 @@ function MainApp() {
       || (mediaType === 'video' ? 'xais-chat' : canvasAiProvider)
     );
     const selectedModel = activeSourceCandidate?.model || matchingSourceChoice?.model || targetAi.model;
-    const selectedProviderCandidates = (matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
-      .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource);
+    const selectedProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
+      (matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
+        .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource),
+      canvasAiCloudImageModels?.channels,
+    );
+    const selectedChannelId = activeSourceCandidate?.providerChannelId
+      || matchingSourceChoice?.providerChannelId
+      || targetAi.providerChannelId;
+    const selectedChannelCapabilities = selectedChannelId
+      ? canvasAiCloudImageModels?.channels?.find(channel => channel.id === selectedChannelId)?.capabilities
+      : undefined;
     const selectedCandidateImageResolutionValues = mediaType === 'image'
       ? getCanvasAiImageResolutionValuesForCandidates(selectedProviderCandidates)
       : [];
-    const selectedModelCapabilities = activeSourceCandidate?.capabilities
-      || selectedProviderCandidates.find(candidate => (
+    const selectedModelCapabilities = selectedProviderCandidates.find(candidate => (
         candidate.provider === requestedProvider && candidate.model === selectedModel
-      ))?.capabilities;
+      ))?.capabilities
+      || activeSourceCandidate?.capabilities
+      || selectedChannelCapabilities;
     const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
       && !isCanvasAiLicenseManaged
       && Boolean(cloudAccount)
@@ -29649,7 +29660,10 @@ useEffect(() => {
                                 && candidate.model === canvasAiItemModel
                               ))?.capabilities
                             : undefined;
-                          const canvasAiItemProviderCandidates = canvasItem.ai?.providerCandidates || [];
+                          const canvasAiItemProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
+                            canvasItem.ai?.providerCandidates || [],
+                            canvasAiCloudImageModels?.channels,
+                          );
                           const canvasAiCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
                             canvasAiItemProviderCandidates,
                           );
@@ -30309,9 +30323,9 @@ useEffect(() => {
                                                   </span>
                                                 );
                                               })}
-                                              {canvasInputPreviewItems.length > 6 && (
+                                              {canvasVideoReferenceOverflowCount > 0 && (
                                                 <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[14px] text-[11px] font-black text-stone-500 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:text-white/68 dark:shadow-[0_12px_28px_rgba(0,0,0,0.28)]">
-                                                  +{canvasInputPreviewItems.length - 6}
+                                                  +{canvasVideoReferenceOverflowCount}
                                                 </span>
                                               )}
                                             </span>

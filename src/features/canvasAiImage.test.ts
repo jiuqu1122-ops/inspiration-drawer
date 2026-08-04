@@ -22,6 +22,7 @@ import {
   getCanvasAiPublicImageModelId,
   getCanvasAiImageResolutionValues,
   getCanvasAiImageResolutionValuesForCandidates,
+  hydrateCanvasAiModelCandidateCapabilities,
   getCanvasAiSlotClientRequestId,
   getCanvasAiVideoReferenceSlotLabels,
   getCanvasAiVideoReferenceSlots,
@@ -458,6 +459,21 @@ describe('unified wallet image model families', () => {
     expect(normalizeCanvasAiImageResolutionForCandidates(candidates, '4k')).toBe('4k');
   });
 
+  it('rehydrates dedicated 1K capabilities for legacy node candidates', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'bigmodel' as const,
+      providerChannelId: 'banana-1k',
+      model: 'gemini-3-pro-image-preview',
+    }];
+    const hydrated = hydrateCanvasAiModelCandidateCapabilities(candidates, [{
+      id: 'banana-1k',
+      capabilities: ['IMAGE_NANO_BANANA_PRO_1K'],
+    }]);
+    expect(getCanvasAiImageResolutionValuesForCandidates(hydrated)).toEqual(['1k']);
+    expect(normalizeCanvasAiImageResolutionForCandidates(hydrated, '4k')).toBe('1k');
+  });
+
   it('only fails over after an explicit rejection', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
@@ -766,6 +782,8 @@ describe('NewAPI video routing', () => {
       'sora-2',
       'veo-3.1',
       'veo-3.1-fast',
+      'kling-video',
+      'kling-omni-video',
     ]);
     expect(getCanvasAiVideoProviderForModel('seedance2')).toBe('xais-chat');
     expect(getCanvasAiVideoProviderForModel('seedance2.0')).toBe('xais-chat');

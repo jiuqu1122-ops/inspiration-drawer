@@ -22,6 +22,8 @@ export const CANVAS_SEEDANCE_2_MODEL = 'seedance2';
 export const CANVAS_SEEDANCE_2_FAST_MODEL = 'seedance2fast';
 export const NEW_API_SEEDANCE_2_MODEL = 'SourceMix2.0';
 export const NEW_API_SEEDANCE_2_FAST_MODEL = 'SourceMix2.0-fast';
+export const KLING_VIDEO_MODEL = 'kling-video';
+export const KLING_OMNI_VIDEO_MODEL = 'kling-omni-video';
 export const SEEDANCE_2_REFERENCE_SLOTS = {
   imageSlots: 9,
   videoSlots: 3,
@@ -39,8 +41,17 @@ export const NEW_API_VIDEO_MODEL_OPTIONS = [
   { value: 'sora-2', label: 'Sora 2' },
   { value: 'veo-3.1', label: 'Veo 3.1' },
   { value: 'veo-3.1-fast', label: 'Veo 3.1 Fast' },
+  { value: KLING_VIDEO_MODEL, label: 'Kling Video' },
+  { value: KLING_OMNI_VIDEO_MODEL, label: 'Kling Omni Video' },
 ];
-export const MIKOTO_VIDEO_MODEL_OPTIONS = NEW_API_VIDEO_MODEL_OPTIONS.slice(0, 2);
+export const MIKOTO_VIDEO_MODEL_OPTIONS = [
+  ...NEW_API_VIDEO_MODEL_OPTIONS.filter(option => (
+    option.value === CANVAS_SEEDANCE_2_MODEL
+      || option.value === CANVAS_SEEDANCE_2_FAST_MODEL
+      || option.value === KLING_VIDEO_MODEL
+      || option.value === KLING_OMNI_VIDEO_MODEL
+  )),
+];
 export const CANVAS_AI_VIDEO_MODEL_OPTIONS = [
   ...NEW_API_VIDEO_MODEL_OPTIONS,
 ];
@@ -158,6 +169,7 @@ export const CANVAS_AI_PROVIDER_OPTIONS = [
 ] as const;
 
 export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
+  { value: 'mikoto', label: 'Mikoto' },
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
   { value: 'new-api', label: 'New API 中转' },
 ] as const;
@@ -1540,6 +1552,22 @@ export const getCanvasAiImageResolutionValuesForCandidates = (
   )));
   return (['1k', '2k', '4k'] as const).filter(resolution => supported.has(resolution));
 };
+
+/**
+ * Older canvas nodes may persist provider candidates without channel
+ * capabilities. Rehydrate those capabilities from the current wallet channel
+ * snapshot before resolving a resolution, otherwise a dedicated 1K channel is
+ * incorrectly treated as a full 2K/4K channel.
+ */
+export const hydrateCanvasAiModelCandidateCapabilities = (
+  candidates: readonly CanvasAiModelCandidate[],
+  channels?: ReadonlyArray<{ id?: string | null; capabilities?: readonly string[] | null }> | null,
+) => candidates.map(candidate => {
+  if (candidate.capabilities && candidate.capabilities.length > 0) return candidate;
+  const channel = channels?.find(item => item.id && item.id === candidate.providerChannelId);
+  if (!channel?.capabilities || channel.capabilities.length === 0) return candidate;
+  return { ...candidate, capabilities: [...channel.capabilities] };
+});
 
 export const normalizeCanvasAiImageResolutionForCandidates = (
   candidates: readonly CanvasAiModelCandidate[],

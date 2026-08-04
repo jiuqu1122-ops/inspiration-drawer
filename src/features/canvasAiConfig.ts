@@ -42,7 +42,7 @@ export const CANVAS_AI_MIKOTO_MODELS_STORAGE_KEY = 'drawer_canvas_ai_mikoto_mode
 export const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
 export const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
 export const CANVAS_AI_COUNTS = [1, 2, 3, 4];
-export const CANVAS_AI_IMAGE_RESOLUTIONS = ['2k', '4k'];
+export const CANVAS_AI_IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
 export const CANVAS_AI_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
 export const CANVAS_AI_VIDEO_DURATIONS = Array.from({ length: 12 }, (_, index) => index + 4);
 export const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
@@ -67,7 +67,7 @@ export const CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CA
   label: provider.label,
 }));
 export const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'openai-compatible', 'custom'];
+export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'bigmodel', 'openai-compatible', 'custom'];
 export const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_RATIOS.map(ratio => ({
   value: ratio,
   label: ratio,
