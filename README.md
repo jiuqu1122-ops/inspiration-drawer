@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**6.0.4**
+当前版本：**6.0.5**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.4/Inspiration.Drawer_6.0.4_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.4)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.5/Inspiration.Drawer_6.0.5_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.5)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.5 更新
+
+- 优化画布整理：按参考输入、生成节点和生成结果组成紧凑工作单元，并采用二维网格排布。
+- 修复生成结果在 worker/API 容器分离时的稳定地址恢复，并改进视频结果解析。
+- 修复多输出视频被上游地址重复识别的问题。
 
 ## 6.0.4 更新
 
