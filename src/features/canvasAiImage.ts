@@ -29,6 +29,28 @@ export const SEEDANCE_2_REFERENCE_SLOTS = {
   videoSlots: 3,
   audioSlots: 3,
 } as const;
+
+export const normalizeCloudWalletImageProvider = (
+  provider?: CanvasAiImageProvider | string | null,
+): 'new-api' | 'xais-chat' | 'openai-compatible' | 'custom' | undefined => {
+  const normalized = String(provider || '').trim().toLowerCase();
+  return normalized === 'new-api'
+    || normalized === 'xais-chat'
+    || normalized === 'openai-compatible'
+    || normalized === 'custom'
+    ? normalized
+    : undefined;
+};
+
+export const normalizeCloudWalletVideoProvider = (
+  provider?: CanvasAiImageProvider | string | null,
+): 'new-api' | 'xais-chat' | undefined => {
+  const normalized = String(provider || '').trim().toLowerCase();
+  return normalized === 'new-api' || normalized === 'xais-chat'
+    ? normalized
+    : undefined;
+};
+
 export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
@@ -438,7 +460,10 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
-        provider: options.provider,
+        // The channel id is authoritative for wallet routing. New channel
+        // types such as Mikoto and Bigmodel are intentionally omitted here
+        // because the wallet API provider field is legacy protocol metadata.
+        provider: normalizeCloudWalletImageProvider(options.provider),
         providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
@@ -513,10 +538,9 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
 const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  // Wallet channels are selected server-side by provider + channel id. Keep the
-  // provider value intact so Mikoto (and future channel types) are not silently
-  // routed through New API.
-  const provider = options.provider;
+  // Wallet channels are selected server-side by channel id. Only legacy
+  // protocol provider values are sent; newer channel labels are metadata.
+  const provider = normalizeCloudWalletVideoProvider(options.provider);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const isSeedance = isSeedance20VideoModel(options.model);
   const isFirstLastFrame = options.inputMode === 'FLF';

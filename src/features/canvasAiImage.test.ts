@@ -59,6 +59,8 @@ import {
   normalizeCanvasAiImageResolutionForModel,
   normalizeCanvasAiImageResolutionForCandidates,
   normalizeCloudWalletImageAspectRatio,
+  normalizeCloudWalletImageProvider,
+  normalizeCloudWalletVideoProvider,
   normalizeNewApiBaseEndpoint,
   normalizeSeedanceVideoAspectRatio,
   normalizeNewApiVideoDurationForModel,
@@ -78,6 +80,20 @@ import {
   supportsCanvasAiTransparentPng,
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
+
+describe('wallet provider protocol compatibility', () => {
+  it('omits newer channel labels from the legacy image request provider field', () => {
+    expect(normalizeCloudWalletImageProvider('mikoto')).toBeUndefined();
+    expect(normalizeCloudWalletImageProvider('bigmodel')).toBeUndefined();
+    expect(normalizeCloudWalletImageProvider('new-api')).toBe('new-api');
+  });
+
+  it('keeps only legacy provider values for video requests', () => {
+    expect(normalizeCloudWalletVideoProvider('mikoto')).toBeUndefined();
+    expect(normalizeCloudWalletVideoProvider('bigmodel')).toBeUndefined();
+    expect(normalizeCloudWalletVideoProvider('xais-chat')).toBe('xais-chat');
+  });
+});
 
 describe('cloud wallet video result parsing', () => {
   it('prefers mirrored OSS results without duplicating upstream video URLs', () => {

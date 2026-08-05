@@ -29819,8 +29819,10 @@ useEffect(() => {
                           ));
                           const canvasExpandedInternalSlot = canvasExpandedInternalSlotNode?.internalSlot;
                           const canvasWalletPricing = canvasAiCloudImageModels?.pricing;
-                          const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource)
-                            && Boolean(canvasWalletPricing);
+                          // Keep the estimate visible while pricing is being
+                          // refreshed. The credit helpers provide conservative
+                          // client defaults until the wallet pricing arrives.
+                          const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource);
                           const canvasImagePricingChoice = canvasItem.ai?.type === 'image-generator'
                             ? parseCanvasAiModelChoiceValue(getCanvasAiUnifiedImageModelValue(
                               canvasAiItemProvider,
