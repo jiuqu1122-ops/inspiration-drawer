@@ -30174,7 +30174,7 @@ useEffect(() => {
                                             event.stopPropagation();
                                             setCanvasInputMenuForId(prev => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
-                                          className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'max-w-[600px] flex-1' : 'max-w-[330px] shrink-0'} items-center justify-start overflow-visible rounded-[14px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
+                                          className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'max-w-[600px] flex-initial' : 'max-w-[330px] shrink-0'} items-center justify-start overflow-visible rounded-[14px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
                                           title={isCanvasWorkflowItem ? '添加或管理工作流素材' : '添加或管理参考图'}
                                         >
                                           {canvasAiMediaType === 'video' ? (
