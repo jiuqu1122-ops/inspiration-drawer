@@ -4,12 +4,17 @@
 
 ## 下载
 
-当前版本：**6.0.5**
+当前版本：**6.0.7**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.5/Inspiration.Drawer_6.0.5_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.5)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.7/Inspiration.Drawer_6.0.7_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.7)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.7 更新
+
+- 统一客户端公共模型的额度定价显示，不再暴露渠道内部模型名。
+- 应用重启后会重新加入历史分析失败或跳过、且没有有效 AI 标签的图片。
 
 ## 6.0.5 更新
 
