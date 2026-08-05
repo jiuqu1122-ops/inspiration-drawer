@@ -108,12 +108,62 @@ export const getCanvasAiVideoModelOptionValue = (model?: string | null) => {
   return String(model || '').trim();
 };
 
+export type CanvasAiVideoChannelSnapshot = {
+  id?: string | null;
+  provider?: string | null;
+  capabilities?: readonly string[] | null;
+  error?: string | null;
+};
+
+const normalizeVideoChannelProvider = (provider?: string | null): CanvasAiProvider | undefined => {
+  const normalized = String(provider || '').trim().toUpperCase();
+  if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
+  if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
+  return undefined;
+};
+
+const videoModelForProvider = (provider: CanvasAiProvider, fast: boolean) => {
+  if (provider === 'new-api') return fast ? NEW_API_SEEDANCE_2_FAST_MODEL : NEW_API_SEEDANCE_2_MODEL;
+  return fast ? CANVAS_SEEDANCE_2_FAST_MODEL : CANVAS_SEEDANCE_2_MODEL;
+};
+
 export const getCanvasAiVideoModelCandidates = (
   model?: string | null,
   source: CanvasAiCredentialSource = 'wallet',
   preferredProvider?: CanvasAiImageProvider | null,
+  videoChannels?: readonly CanvasAiVideoChannelSnapshot[] | null,
 ): CanvasAiModelCandidate[] => {
   const selectedModel = getCanvasAiVideoModelOptionValue(model);
+  const isFast = selectedModel === CANVAS_SEEDANCE_2_FAST_MODEL;
+  if (source === 'wallet' && videoChannels && videoChannels.length > 0) {
+    const availableChannels = videoChannels
+      .filter(channel => !channel.error)
+      .map(channel => ({
+        channel,
+        provider: normalizeVideoChannelProvider(channel.provider),
+      }))
+      .filter((entry): entry is { channel: CanvasAiVideoChannelSnapshot; provider: CanvasAiProvider } => (
+        !!entry.provider
+          && (!entry.channel.capabilities || entry.channel.capabilities.some(capability => String(capability).toUpperCase() === 'VIDEO'))
+          && !!String(entry.channel.id || '').trim()
+      ));
+    if (availableChannels.length > 0) {
+      const orderedChannels = preferredProvider
+        ? [
+          ...availableChannels.filter(entry => entry.provider === preferredProvider),
+          ...availableChannels.filter(entry => entry.provider !== preferredProvider),
+        ]
+        : availableChannels;
+      return orderedChannels.map(({ channel, provider }) => ({
+        source,
+        provider,
+        model: videoModelForProvider(provider, isFast),
+        providerChannelId: String(channel.id).trim(),
+        capabilities: channel.capabilities ? [...channel.capabilities].map(value => String(value).toUpperCase()) : undefined,
+      }));
+    }
+  }
   if (preferredProvider === 'mikoto' && selectedModel) {
     return [{ source, provider: 'mikoto', model: selectedModel }];
   }

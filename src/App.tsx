@@ -1015,6 +1015,7 @@ function MainApp() {
   const autoInspirationAnalysisAttemptedRef = useRef(new Set<string>());
   const autoInspirationAnalysisPendingIdsRef = useRef(new Set<string>());
   const autoInspirationAnalysisRunningRef = useRef(false);
+  const autoInspirationAnalysisStartupRequeueRef = useRef(false);
   const autoInspirationAnalysisRetryTimersRef = useRef(new Set<number>());
   const agentModelRef = useRef('unmind-agent');
   const foldersRef = useRef<Folder[]>([]);
@@ -1912,6 +1913,23 @@ function MainApp() {
       return { ...item, inspirationAnalysisFailure: undefined };
     });
     localStorage.setItem(AUTO_INSPIRATION_ANALYSIS_RETRY_MIGRATION_KEY, '1');
+    if (!changed) return;
+    itemsRef.current = nextItems;
+    startTransition(() => setItems(nextItems));
+  }, [isDataLoaded]);
+  useEffect(() => {
+    if (!isDataLoaded || autoInspirationAnalysisStartupRequeueRef.current) return;
+    autoInspirationAnalysisStartupRequeueRef.current = true;
+    let changed = false;
+    const nextItems = itemsRef.current.map(item => {
+      if (item.type !== 'image' || hasUsableInspirationAiTags(item.inspirationProfile) || !item.inspirationAnalysisFailure) {
+        return item;
+      }
+      changed = true;
+      autoInspirationAnalysisAttemptedRef.current.delete(item.id);
+      autoInspirationAnalysisPendingIdsRef.current.delete(item.id);
+      return { ...item, inspirationAnalysisFailure: undefined };
+    });
     if (!changed) return;
     itemsRef.current = nextItems;
     startTransition(() => setItems(nextItems));
@@ -3263,12 +3281,14 @@ function MainApp() {
       let detectedProvider = provider;
       let detectedDefaultModel = '';
       let detectedChannels: NonNullable<CloudImageModelsResult['channels']> = [];
+      let detectedVideoChannels: NonNullable<CloudImageModelsResult['videoChannels']> = [];
       let detectedPricing: CanvasAiCreditPricing | null | undefined;
       const successfulModels = canvasAiUsesCloudImageModels
         ? await (async () => {
           const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', { provider });
           detectedProvider = canvasAiProviderForCloudKind(result.provider);
           detectedDefaultModel = String(result.defaultModel || '').trim();
+          detectedVideoChannels = result.videoChannels || [];
           detectedPricing = result.pricing;
           detectedChannels = (result.channels || []).map(channel => {
             const channelProvider = canvasAiProviderForCloudKind(channel.provider);
@@ -3318,6 +3338,7 @@ function MainApp() {
           defaultModel: detectedDefaultModel || null,
           models: normalized,
           channels: detectedChannels,
+          videoChannels: detectedVideoChannels,
           pricing: detectedPricing ?? current?.pricing,
         }));
       } else if (detectedProvider === 'xais-chat') {

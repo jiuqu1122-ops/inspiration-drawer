@@ -172,6 +172,8 @@ pub struct CloudImageModelsResponse {
     #[serde(default)]
     channels: Vec<CloudImageModelChannel>,
     #[serde(default)]
+    video_channels: Vec<CloudVideoModelChannel>,
+    #[serde(default)]
     pricing: Option<CloudAiPricing>,
 }
 
@@ -223,6 +225,20 @@ pub struct CloudImageModelChannel {
     name: String,
     provider: String,
     default_model: Option<String>,
+    models: Vec<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudVideoModelChannel {
+    id: String,
+    name: String,
+    provider: String,
+    default_model: Option<String>,
+    #[serde(default)]
     models: Vec<String>,
     #[serde(default)]
     capabilities: Vec<String>,

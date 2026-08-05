@@ -18,11 +18,11 @@ describe('canvas generation credits', () => {
 
   it('uses the wallet image pricing table', () => {
     expect(getCanvasImageUnitCredits('gpt-image-2', '1k')).toBe(10);
-    expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(100);
+    expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(18);
     expect(getCanvasImageUnitCredits('gpt-image-2', '2k')).toBe(15);
     expect(getCanvasImageUnitCredits('Xais Img2_4K', '2k')).toBe(15);
-    expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(30);
-    expect(getCanvasImageUnitCredits('legacy-gpt-image-2-high-quality', '4k')).toBe(35);
+    expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(15);
+    expect(getCanvasImageUnitCredits('legacy-gpt-image-2-high-quality', '4k')).toBe(18);
     expect(getCanvasImageUnitCredits('Xais Nano Pro_2K', '4k')).toBe(20);
     expect(getCanvasImageUnitCredits('Xais Nano Pro_4K', '2k')).toBe(18);
     expect(getCanvasImageUnitCredits('Nano Banana Pro', '4k')).toBe(20);
@@ -71,6 +71,15 @@ describe('canvas generation credits', () => {
       creditsPerSecond: 48,
       totalCredits: 768,
     });
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'SourceMix2.0',
+      count: 1,
+      duration: 4,
+    }, {
+      ...pricing,
+      videoDefaultCredits: '320',
+      videoModels: [{ model: 'seedance2', credits: '48' }],
+    }).totalCredits).toBe(192);
     expect(getCanvasImageUnitCredits('custom-model', '2k', pricing)).toBe(55);
 
     const workflow = {

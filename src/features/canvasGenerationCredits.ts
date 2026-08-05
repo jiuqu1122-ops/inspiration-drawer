@@ -32,31 +32,45 @@ export const shouldShowCanvasGenerationCredits = (
   credentialSource?: CanvasAiCredentialSource | null,
 ) => credentialSource === 'wallet';
 
-const imageModelToken = (model?: string | null) => String(model || '')
+const rawImageModelToken = (model?: string | null) => String(model || '')
   .trim()
   .toLowerCase()
   .replace(/preview/g, '')
   .replace(/[^a-z0-9]+/g, '');
 
+const imageModelToken = (model?: string | null) => {
+  const token = rawImageModelToken(model);
+  if (token.includes('nanobananapro')
+    || token.includes('xaisnanopro')
+    || token.includes('gemini3proimage')
+    || token.includes('gemini31proimage')) return 'nanobananapro';
+  if (token.includes('nanobanana2')
+    || token.includes('xaisnano2')
+    || token.includes('gemini31flashimage')
+    || token.includes('gemini3flashimage')) return 'nanobanana2';
+  if (token.includes('gptimage2') || token.includes('image2') || token.includes('img2')) return 'image2';
+  return token;
+};
+
+const videoModelToken = (model?: string | null) => {
+  const token = imageModelToken(model);
+  if (token === 'sourcemix20' || token === 'seedance20') return 'seedance2';
+  if (token === 'sourcemix20fast' || token === 'seedance20fast') return 'seedance2fast';
+  return token;
+};
+
 const supportsImageOneK = (
   model?: string | null,
   capabilities?: readonly string[] | null,
 ) => {
+  const rawToken = rawImageModelToken(model);
   const token = imageModelToken(model);
   const normalizedCapabilities = new Set((capabilities || [])
     .map(value => String(value).trim().toUpperCase()));
   if (normalizedCapabilities.has('IMAGE_NANO_BANANA_PRO_1K')) return true;
-  if (token.includes('img2') && token.includes('1k')) return true;
-  return !token.startsWith('xais')
-    && !token.includes('nanobananapro')
-    && !token.includes('nanobanana2')
-    && !token.includes('nanopro')
-    && !token.includes('nano2')
-    && !token.includes('nanolite')
-    && !token.includes('gemini3proimage')
-    && !token.includes('gemini31proimage')
-    && !token.includes('gemini31flashimage')
-    && !token.includes('gemini3flashimage');
+  if (rawToken.includes('img2') && rawToken.includes('1k')) return false;
+  if (rawToken.startsWith('xais') && rawToken.includes('1k')) return false;
+  return token !== 'nanobanana2' && token !== 'nanobananapro';
 };
 
 type PricedImageResolution = '1k' | '2k' | '4k';
@@ -67,7 +81,7 @@ const getPricedImageResolution = (
   capabilities?: readonly string[] | null,
 ): PricedImageResolution => {
   const requested = String(resolution || '').trim().toLowerCase();
-  const token = imageModelToken(model);
+  const token = rawImageModelToken(model);
   if (requested === '1k' || requested === '2k' || requested === '4k') {
     if (requested === '1k' && !supportsImageOneK(model, capabilities)) return '2k';
     return requested;
@@ -95,12 +109,7 @@ export const getCanvasImageUnitCredits = (
     const parsedCredits = Number(configuredCredits);
     if (Number.isSafeInteger(parsedCredits) && parsedCredits >= 0) return parsedCredits;
   }
-  const isRetiredXaisImage2OneK = token === 'xaisimg21k' || token === 'xaisimage21k';
-  const isGptImage2 = !isRetiredXaisImage2OneK && (
-    token.includes('gptimage2')
-    || token.includes('image2')
-    || token.includes('img2')
-  );
+  const isGptImage2 = token === 'image2';
   const isHighQuality = isGptImage2 && (
     /高画质|高品質|high[\s_-]*quality/i.test(rawModel)
     || token.endsWith('h')
@@ -108,25 +117,17 @@ export const getCanvasImageUnitCredits = (
     || token.includes('img2h')
     || token.includes('highquality')
   );
+  void isHighQuality;
 
-  if (isHighQuality) return selectedResolution === '4k' ? 35 : 30;
   if (isGptImage2) {
     if (selectedResolution === '1k') return 10;
     return selectedResolution === '4k' ? 18 : 15;
   }
 
-  const isNanoBananaPro = token.includes('nanobananapro')
-    || token.includes('xaisnanopro')
-    || token.includes('nanopro')
-    || token.includes('gemini3proimage')
-    || token.includes('gemini31proimage');
+  const isNanoBananaPro = token === 'nanobananapro';
   if (isNanoBananaPro) return selectedResolution === '4k' ? 20 : 18;
 
-  const isNanoBanana2 = token.includes('nanobanana2')
-    || token.includes('xaisnano2')
-    || token.includes('nano2')
-    || token.includes('gemini31flashimage')
-    || token.includes('gemini3flashimage');
+  const isNanoBanana2 = token === 'nanobanana2';
   if (isNanoBanana2) return selectedResolution === '4k' ? 18 : 15;
 
   const configuredDefault = Number(pricing?.imageDefaultCredits);
@@ -172,8 +173,8 @@ export const getCanvasVideoCreditsPerSecond = (
   model?: string | null,
   pricing?: CanvasAiCreditPricing | null,
 ) => {
-  const token = imageModelToken(model);
-  const configuredModel = pricing?.videoModels.find(item => imageModelToken(item.model) === token);
+  const token = videoModelToken(model);
+  const configuredModel = pricing?.videoModels.find(item => videoModelToken(item.model) === token);
   const configuredCredits = Number(
     configuredModel?.creditsPerSecond
       ?? configuredModel?.credits
@@ -191,8 +192,8 @@ export const getCanvasVideoRequestCredits = (
   resolution?: string | null,
   pricing?: CanvasAiCreditPricing | null,
 ) => {
-  const token = imageModelToken(model);
-  const configuredModel = pricing?.videoModels.find(item => imageModelToken(item.model) === token);
+  const token = videoModelToken(model);
+  const configuredModel = pricing?.videoModels.find(item => videoModelToken(item.model) === token);
   const safeDuration = Math.max(1, Math.ceil(Number(duration) || 15));
   const safeCount = Math.max(1, Math.ceil(Number(count) || 1));
   const durationKey = String(safeDuration);

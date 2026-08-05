@@ -69,6 +69,15 @@ export type CloudImageModelsResult = {
     capabilities?: string[];
     error?: string | null;
   }>;
+  videoChannels?: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    defaultModel?: string | null;
+    models?: string[];
+    capabilities?: string[];
+    error?: string | null;
+  }>;
   pricing?: CanvasAiCreditPricing | null;
 };
 
