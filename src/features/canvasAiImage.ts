@@ -427,6 +427,9 @@ const CLOUD_WALLET_IMAGE_LOOKUP_RESULT_STATUSES = new Set([
 
 const shouldReconcileCloudWalletImageError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error || '');
+  if (/(?:duplicate_request|request already submitted|already been submitted|璇ョ敓鍥捐姹傚凡缁忔彁浜よ繃)/i.test(message)) {
+    return true;
+  }
   return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d)/i.test(message);
 };
 
