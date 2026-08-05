@@ -40,7 +40,9 @@ import {
   getNewApiVideoReferenceLimit,
   getNewApiVideoResolutionValues,
   getMikotoVideoResolutionValues,
+  getMikotoVideoDurationValues,
   normalizeMikotoVideoResolution,
+  normalizeMikotoVideoDuration,
   getXaisImageModelDisplayName,
   formatNewApiVideoFailureMessage,
   getNewApiVideoTaskState,
@@ -392,6 +394,20 @@ describe('unified wallet image model families', () => {
     }])).toEqual(candidates);
   });
 
+  it('keeps Mikoto native Gemini Banana models visible to the canvas', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'mikoto' as const,
+      providerChannelId: 'mikoto-banana',
+      model: 'gemini-3-pro-image-preview',
+    }];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'mikoto-banana',
+      provider: 'MIKOTO',
+      models: ['gemini-3-pro-image-preview'],
+    }])).toEqual(candidates);
+  });
+
   it('preserves Bigmodel Gemini wallet channels when refreshing candidate routes', () => {
     const candidates = [{
       source: 'wallet' as const,
@@ -571,6 +587,8 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('custom', 'gpt_image_2_guan')).toBe(true);
     expect(supportsCanvasAiImageResolution('openai-compatible', 'gptimage2')).toBe(true);
     expect(getCanvasAiImageModelFamily('bigmodel', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
+    expect(getCanvasAiImageModelFamily('mikoto', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
+    expect(getCanvasAiImageModelFamily('mikoto', 'gemini-3.1-flash-image-preview')).toBe('nano-banana-2');
     expect(getCanvasAiImageModelFamily('bigmodel', 'gpt-image-2')).toBe('gpt-image-2');
     expect(getCanvasAiImageModelFamily('bigmodel', 'gpt_image_2')).toBe('gpt-image-2');
   });
@@ -584,6 +602,12 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toBe(true);
     expect(getCanvasAiImageResolutionValues('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toEqual(['1k']);
     expect(normalizeCanvasAiImageResolutionForModel('mikoto', 'gpt-image-2', '4k', ['IMAGE_GPT_1K'])).toBe('1k');
+  });
+
+  it('uses Mikoto-specific Kling duration choices', () => {
+    expect(getMikotoVideoDurationValues('kling-video')).toEqual([5, 10, 15]);
+    expect(normalizeMikotoVideoDuration('kling-video', 4)).toBe(5);
+    expect(normalizeMikotoVideoDuration('seedance2', 4)).toBe(4);
   });
 
   it('exposes Banana Pro 1K only when the dedicated channel capability is present', () => {
@@ -842,6 +866,12 @@ describe('NewAPI video routing', () => {
     });
     expect(getCanvasAiVideoReferenceSlots(NEW_API_SEEDANCE_2_MODEL, 'REF')).toEqual({
       mode: 'REF', imageSlots: 9, videoSlots: 3, audioSlots: 3,
+    });
+    expect(getCanvasAiVideoReferenceSlots('kling-video', 'REF', 'mikoto')).toEqual({
+      mode: 'REF', imageSlots: 2, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('kling-omni-video', 'REF', 'mikoto')).toEqual({
+      mode: 'REF', imageSlots: 3, videoSlots: 0, audioSlots: 0,
     });
     expect(getCanvasAiVideoReferenceSlotLabels(NEW_API_SEEDANCE_2_MODEL, 'REF')).toHaveLength(9);
     expect(getCanvasAiVideoReferenceSlotLabels('veo-3.1', 'REF')).toEqual([

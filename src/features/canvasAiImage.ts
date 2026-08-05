@@ -87,6 +87,16 @@ export const normalizeMikotoVideoResolution = (model?: string | null, resolution
   return (values as readonly string[]).includes(requested) ? requested : values[0];
 };
 
+export const getMikotoVideoDurationValues = (model?: string | null): number[] => (
+  /kling/i.test(String(model || '')) ? [5, 10, 15] : Array.from({ length: 12 }, (_, index) => index + 4)
+);
+
+export const normalizeMikotoVideoDuration = (model?: string | null, duration?: number | null) => {
+  const values = getMikotoVideoDurationValues(model);
+  const requested = Math.round(Number(duration) || values[values.length - 1] || 15);
+  return values.find(value => value >= requested) || values[values.length - 1] || 15;
+};
+
 export const getCanvasAiVideoModelOptionValue = (model?: string | null) => {
   const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
   if (token === 'seedance2fast' || token === 'seedance20fast' || token === 'sourcemix20fast') {
@@ -1103,11 +1113,18 @@ export const getNewApiVideoReferenceLimit = (model?: string | null) => (
 export const getCanvasAiVideoReferenceSlots = (
   model?: string | null,
   inputMode?: CanvasAiVideoInputMode | string | null,
+  provider?: CanvasAiImageProvider | string | null,
 ) => {
   const supportsFirstLastFrame = !isSora2VideoModel(model);
   const mode: CanvasAiVideoInputMode = inputMode === 'FLF' && supportsFirstLastFrame ? 'FLF' : 'REF';
   if (mode === 'FLF') return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
   if (isSeedance20VideoModel(model)) return { mode, ...SEEDANCE_2_REFERENCE_SLOTS };
+  if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) {
+    return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
+  }
+  if (provider === 'mikoto' && /^kling-omni-video$/i.test(String(model || '').trim())) {
+    return { mode, imageSlots: 3, videoSlots: 0, audioSlots: 0 };
+  }
   if (getCanvasAiVideoProviderForModel(model) === 'new-api') {
     return { mode, imageSlots: getNewApiVideoReferenceLimit(model), videoSlots: 0, audioSlots: 0 };
   }
@@ -1117,9 +1134,14 @@ export const getCanvasAiVideoReferenceSlots = (
 export const getCanvasAiVideoReferenceSlotLabels = (
   model?: string | null,
   inputMode?: CanvasAiVideoInputMode | string | null,
+  provider?: CanvasAiImageProvider | string | null,
 ) => {
-  const slots = getCanvasAiVideoReferenceSlots(model, inputMode);
+  const slots = getCanvasAiVideoReferenceSlots(model, inputMode, provider);
   if (slots.mode === 'FLF') return ['首帧', '尾帧'];
+  if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) return ['首帧', '尾帧'];
+  if (provider === 'mikoto' && /^kling-omni-video$/i.test(String(model || '').trim())) {
+    return Array.from({ length: slots.imageSlots }, (_, index) => `主体${index + 1}`);
+  }
   if (isSeedance20VideoModel(model)) {
     return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
   }
@@ -1388,7 +1410,7 @@ export const getCanvasAiImageModelFamily = (
   provider?: string | null,
   model?: string | null,
 ): CanvasAiImageModelFamily | null => {
-  if (provider === 'new-api' || provider === 'bigmodel') {
+  if (provider === 'new-api' || provider === 'bigmodel' || provider === 'mikoto') {
     const newApiFamily = getNewApiImageModelFamily(model);
     if (newApiFamily) return newApiFamily;
     const token = toImageModelToken(model);

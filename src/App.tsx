@@ -700,7 +700,9 @@ import {
   getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
   getMikotoVideoResolutionValues,
+  getMikotoVideoDurationValues,
   normalizeMikotoVideoResolution,
+  normalizeMikotoVideoDuration,
   normalizeSeedanceVideoAspectRatio,
   isSeedance20VideoModel,
   getCanvasAiPublicImageModelName,
@@ -10659,10 +10661,9 @@ function MainApp() {
     const mediaInputs: BufferItem[] = [];
     const isVideoGenerator = canvasItem.ai?.type === 'video-generator';
     const canvasVideoReferenceSlots = isVideoGenerator
-      ? getCanvasAiVideoReferenceSlots(canvasItem.ai?.model, canvasItem.ai?.videoInputMode)
+      ? getCanvasAiVideoReferenceSlots(canvasItem.ai?.model, canvasItem.ai?.videoInputMode, canvasItem.ai?.provider)
       : null;
-    const isFirstLastFrameMode = isVideoGenerator && canvasVideoReferenceSlots?.mode === 'FLF';
-    const maxImageInputs = isVideoGenerator ? (isFirstLastFrameMode ? 2 : 9) : 8;
+    const maxImageInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.imageSlots || 9) : 8;
     const maxVideoInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.videoSlots || 0) : 0;
     const maxAudioInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.audioSlots || 0) : 0;
     let imageInputCount = 0;
@@ -29731,7 +29732,9 @@ useEffect(() => {
                           const isCanvasAiSeedanceVideo = canvasAiMediaType === 'video'
                             && isSeedance20VideoModel(canvasAiItemModel);
                           const isCanvasAiMikotoVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'mikoto';
-                          const canvasAiVideoResolutionValues = isCanvasAiSeedanceVideo
+                          const canvasAiVideoResolutionValues = isCanvasAiMikotoVideo
+                            ? getMikotoVideoResolutionValues(canvasAiItemModel)
+                            : isCanvasAiSeedanceVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
                             : isCanvasAiNewApiVideo
                               ? getNewApiVideoResolutionValues(canvasAiItemModel)
@@ -29739,18 +29742,24 @@ useEffect(() => {
                           const canvasAiVideoResolutionOptions = CANVAS_AI_VIDEO_RESOLUTION_OPTIONS.filter(option => (
                             canvasAiVideoResolutionValues.includes(option.value)
                           ));
-                          const canvasAiVideoResolution = isCanvasAiSeedanceVideo
+                          const canvasAiVideoResolution = isCanvasAiMikotoVideo
+                            ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
+                            : isCanvasAiSeedanceVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
                             : isCanvasAiNewApiVideo
                               ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, canvasItem.ai?.resolution)
                               : canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION;
-                          const canvasAiVideoDurationValues = isCanvasAiNewApiVideo
+                          const canvasAiVideoDurationValues = isCanvasAiMikotoVideo
+                            ? getMikotoVideoDurationValues(canvasAiItemModel)
+                            : isCanvasAiNewApiVideo
                             ? getNewApiVideoDurationValues(canvasAiItemModel)
                             : CANVAS_AI_VIDEO_DURATIONS;
                           const canvasAiVideoDurationOptions = CANVAS_AI_VIDEO_DURATION_OPTIONS.filter(option => (
                             canvasAiVideoDurationValues.includes(Number(option.value))
                           ));
-                          const canvasAiVideoDuration = isCanvasAiNewApiVideo
+                          const canvasAiVideoDuration = isCanvasAiMikotoVideo
+                            ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
+                            : isCanvasAiNewApiVideo
                             ? normalizeNewApiVideoDurationForModel(canvasAiItemModel, canvasItem.ai?.duration)
                             : canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION;
                           const canvasAiVideoSupportsFirstLastFrame = !(
@@ -29927,11 +29936,13 @@ useEffect(() => {
                           const canvasVideoReferenceSlots = getCanvasAiVideoReferenceSlots(
                             canvasAiItemModel,
                             canvasItem.ai?.videoInputMode,
+                            canvasAiItemProvider,
                           );
                           const canvasVideoInputMode = canvasVideoReferenceSlots.mode;
                           const canvasVideoReferenceSlotLabels = getCanvasAiVideoReferenceSlotLabels(
                             canvasAiItemModel,
                             canvasVideoInputMode,
+                            canvasAiItemProvider,
                           );
                           const canvasAllowsSeedanceOmniReferences = !isCanvasAiSeedanceVideo
                             || canvasVideoReferenceSlots.mode === 'REF';
