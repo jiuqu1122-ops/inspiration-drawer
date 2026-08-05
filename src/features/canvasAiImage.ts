@@ -272,7 +272,8 @@ export const mergeCanvasAiReferenceSourceItems = <T extends { id: string }>(
 
 export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
 export type CanvasAiImageResolution = '1k' | '2k' | '4k';
-export const CANVAS_AI_NANO_BANANA_PRO_1K_CAPABILITY = 'IMAGE_NANO_BANANA_PRO_1K';
+export const CANVAS_AI_NANO_BANANA_DUAL_2K_CAPABILITY = 'IMAGE_NANO_BANANA_DUAL_2K';
+const LEGACY_NANO_BANANA_PRO_1K_CAPABILITY = 'IMAGE_NANO_BANANA_PRO_1K';
 
 const normalizeCanvasAiCapabilities = (capabilities?: readonly string[] | null) => (
   new Set((capabilities || []).map(value => String(value).trim().toUpperCase()).filter(Boolean))
@@ -282,6 +283,15 @@ const hasFullNanoBananaProCapability = (capabilities: ReadonlySet<string>) => (
   capabilities.has('IMAGE')
   || capabilities.has('IMAGE_NANO_BANANA_PRO')
   || capabilities.has('IMAGE_NANO_BANANA')
+);
+
+const hasFullNanoBanana2Capability = (capabilities: ReadonlySet<string>) => (
+  capabilities.has('IMAGE') || capabilities.has('IMAGE_NANO_BANANA_2')
+);
+
+const hasNanoBananaDual2KCapability = (capabilities: ReadonlySet<string>) => (
+  capabilities.has(CANVAS_AI_NANO_BANANA_DUAL_2K_CAPABILITY)
+  || capabilities.has(LEGACY_NANO_BANANA_PRO_1K_CAPABILITY)
 );
 
 const toImageModelToken = (model?: string | null) => (
@@ -1617,12 +1627,18 @@ export const getCanvasAiImageResolutionValues = (
     return ['1k', '2k', '4k'];
   }
   if (family === 'nano-banana-pro') {
-    const supportsOneK = normalizedCapabilities.has(CANVAS_AI_NANO_BANANA_PRO_1K_CAPABILITY);
+    const supportsDual2K = hasNanoBananaDual2KCapability(normalizedCapabilities);
     const supportsFull = hasFullNanoBananaProCapability(normalizedCapabilities);
-    if (supportsOneK && !supportsFull) return ['1k'];
-    return supportsOneK ? ['1k', '2k', '4k'] : ['2k', '4k'];
+    if (supportsDual2K && !supportsFull) return ['2k'];
+    return ['2k', '4k'];
   }
-  if (family === 'nano-banana-2' || family === 'gpt-image-2-h') {
+  if (family === 'nano-banana-2') {
+    const supportsDual2K = hasNanoBananaDual2KCapability(normalizedCapabilities);
+    const supportsFull = hasFullNanoBanana2Capability(normalizedCapabilities);
+    if (supportsDual2K && !supportsFull) return ['2k'];
+    return ['2k', '4k'];
+  }
+  if (family === 'gpt-image-2-h') {
     return ['2k', '4k'];
   }
   return [];

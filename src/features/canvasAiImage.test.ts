@@ -487,14 +487,14 @@ describe('unified wallet image model families', () => {
       .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
   });
 
-  it('routes Banana Pro 1K channels independently from full-resolution channels', () => {
-    const candidates = [
+  it('routes the dual Banana 2K channel to both public models at 2K only', () => {
+    const proCandidates = [
       {
         source: 'wallet' as const,
         provider: 'bigmodel' as const,
-        providerChannelId: 'bigmodel-1k',
+        providerChannelId: 'bigmodel-dual-2k',
         model: 'gemini-3-pro-image-preview',
-        capabilities: ['IMAGE_NANO_BANANA_PRO_1K'],
+        capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
       },
       {
         source: 'wallet' as const,
@@ -504,27 +504,37 @@ describe('unified wallet image model families', () => {
         capabilities: ['IMAGE_NANO_BANANA_PRO'],
       },
     ];
-    expect(selectCanvasAiImageCandidatesForResolution(candidates, '1k'))
-      .toEqual([expect.objectContaining({ providerChannelId: 'bigmodel-1k' })]);
-    expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k'))
+    const banana2Candidates = [{
+      source: 'wallet' as const,
+      provider: 'bigmodel' as const,
+      providerChannelId: 'bigmodel-dual-2k',
+      model: 'gemini-3.1-flash-image-preview',
+      capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
+    }];
+    expect(selectCanvasAiImageCandidatesForResolution(proCandidates, '2k'))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ providerChannelId: 'bigmodel-dual-2k' })]));
+    expect(selectCanvasAiImageCandidatesForResolution(banana2Candidates, '2k'))
+      .toEqual([expect.objectContaining({ providerChannelId: 'bigmodel-dual-2k' })]);
+    expect(selectCanvasAiImageCandidatesForResolution(proCandidates, '1k')).toEqual([]);
+    expect(selectCanvasAiImageCandidatesForResolution(proCandidates, '4k'))
       .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
-    expect(getCanvasAiImageResolutionValuesForCandidates(candidates)).toEqual(['1k', '2k', '4k']);
-    expect(normalizeCanvasAiImageResolutionForCandidates(candidates, '4k')).toBe('4k');
+    expect(getCanvasAiImageResolutionValuesForCandidates(proCandidates)).toEqual(['2k', '4k']);
+    expect(normalizeCanvasAiImageResolutionForCandidates(banana2Candidates, '4k')).toBe('2k');
   });
 
-  it('rehydrates dedicated 1K capabilities for legacy node candidates', () => {
+  it('rehydrates dedicated dual 2K capabilities for legacy node candidates', () => {
     const candidates = [{
       source: 'wallet' as const,
       provider: 'bigmodel' as const,
-      providerChannelId: 'banana-1k',
+      providerChannelId: 'banana-dual-2k',
       model: 'gemini-3-pro-image-preview',
     }];
     const hydrated = hydrateCanvasAiModelCandidateCapabilities(candidates, [{
-      id: 'banana-1k',
-      capabilities: ['IMAGE_NANO_BANANA_PRO_1K'],
+      id: 'banana-dual-2k',
+      capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
     }]);
-    expect(getCanvasAiImageResolutionValuesForCandidates(hydrated)).toEqual(['1k']);
-    expect(normalizeCanvasAiImageResolutionForCandidates(hydrated, '4k')).toBe('1k');
+    expect(getCanvasAiImageResolutionValuesForCandidates(hydrated)).toEqual(['2k']);
+    expect(normalizeCanvasAiImageResolutionForCandidates(hydrated, '4k')).toBe('2k');
   });
 
   it('only fails over after an explicit rejection', () => {
@@ -626,17 +636,22 @@ describe('image resolution routing', () => {
     expect(normalizeMikotoVideoDuration('seedance2', 4)).toBe(4);
   });
 
-  it('exposes Banana Pro 1K only when the dedicated channel capability is present', () => {
-    const model = 'gemini-3-pro-image-preview';
-    expect(getCanvasAiImageResolutionValues('bigmodel', model, ['IMAGE_NANO_BANANA_PRO_1K']))
-      .toEqual(['1k']);
+  it('exposes the dual Banana channel at 2K for Pro and Banana 2', () => {
+    const pro = 'gemini-3-pro-image-preview';
+    const banana2 = 'gemini-3.1-flash-image-preview';
+    expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_DUAL_2K']))
+      .toEqual(['2k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', banana2, ['IMAGE_NANO_BANANA_DUAL_2K']))
+      .toEqual(['2k']);
     expect(normalizeCanvasAiImageResolutionForModel(
-      'bigmodel', model, '4k', ['IMAGE_NANO_BANANA_PRO_1K'],
-    )).toBe('1k');
+      'bigmodel', pro, '4k', ['IMAGE_NANO_BANANA_DUAL_2K'],
+    )).toBe('2k');
     expect(getCanvasAiImageResolutionValues(
-      'bigmodel', model, ['IMAGE_NANO_BANANA_PRO_1K', 'IMAGE_NANO_BANANA_PRO'],
-    )).toEqual(['1k', '2k', '4k']);
-    expect(getCanvasAiImageResolutionValues('bigmodel', model, ['IMAGE_NANO_BANANA_PRO']))
+      'bigmodel', pro, ['IMAGE_NANO_BANANA_DUAL_2K', 'IMAGE_NANO_BANANA_PRO'],
+    )).toEqual(['2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_PRO_1K']))
+      .toEqual(['2k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_PRO']))
       .toEqual(['2k', '4k']);
   });
 

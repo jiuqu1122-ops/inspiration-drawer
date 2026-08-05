@@ -59,15 +59,9 @@ const videoModelToken = (model?: string | null) => {
   return token;
 };
 
-const supportsImageOneK = (
-  model?: string | null,
-  capabilities?: readonly string[] | null,
-) => {
+const supportsImageOneK = (model?: string | null) => {
   const rawToken = rawImageModelToken(model);
   const token = imageModelToken(model);
-  const normalizedCapabilities = new Set((capabilities || [])
-    .map(value => String(value).trim().toUpperCase()));
-  if (normalizedCapabilities.has('IMAGE_NANO_BANANA_PRO_1K')) return true;
   if (rawToken.includes('img2') && rawToken.includes('1k')) return false;
   if (rawToken.startsWith('xais') && rawToken.includes('1k')) return false;
   return token !== 'nanobanana2' && token !== 'nanobananapro';
@@ -78,12 +72,11 @@ type PricedImageResolution = '1k' | '2k' | '4k';
 const getPricedImageResolution = (
   model?: string | null,
   resolution?: string | null,
-  capabilities?: readonly string[] | null,
 ): PricedImageResolution => {
   const requested = String(resolution || '').trim().toLowerCase();
   const token = rawImageModelToken(model);
   if (requested === '1k' || requested === '2k' || requested === '4k') {
-    if (requested === '1k' && !supportsImageOneK(model, capabilities)) return '2k';
+    if (requested === '1k' && !supportsImageOneK(model)) return '2k';
     return requested;
   }
   if (token.includes('4k')) return '4k';
@@ -96,11 +89,11 @@ export const getCanvasImageUnitCredits = (
   model?: string | null,
   resolution?: string | null,
   pricing?: CanvasAiCreditPricing | null,
-  capabilities?: readonly string[] | null,
+  _capabilities?: readonly string[] | null,
 ) => {
   const rawModel = String(model || '');
   const token = imageModelToken(rawModel);
-  const selectedResolution = getPricedImageResolution(rawModel, resolution, capabilities);
+  const selectedResolution = getPricedImageResolution(rawModel, resolution);
   const configuredModel = pricing?.imageModels.find(item => imageModelToken(item.model) === token);
   if (configuredModel) {
     const configuredCredits = selectedResolution === '1k'
