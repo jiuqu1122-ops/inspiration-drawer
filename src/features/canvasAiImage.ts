@@ -66,14 +66,9 @@ export const NEW_API_VIDEO_MODEL_OPTIONS = [
   { value: KLING_VIDEO_MODEL, label: 'Kling Video' },
   { value: KLING_OMNI_VIDEO_MODEL, label: 'Kling Omni Video' },
 ];
-export const MIKOTO_VIDEO_MODEL_OPTIONS = [
-  ...NEW_API_VIDEO_MODEL_OPTIONS.filter(option => (
-    option.value === CANVAS_SEEDANCE_2_MODEL
-      || option.value === CANVAS_SEEDANCE_2_FAST_MODEL
-      || option.value === KLING_VIDEO_MODEL
-      || option.value === KLING_OMNI_VIDEO_MODEL
-  )),
-];
+// The canvas exposes one public video model list regardless of the selected
+// channel. Channel capabilities and model aliases decide the actual route.
+export const MIKOTO_VIDEO_MODEL_OPTIONS = [...NEW_API_VIDEO_MODEL_OPTIONS];
 export const CANVAS_AI_VIDEO_MODEL_OPTIONS = [
   ...NEW_API_VIDEO_MODEL_OPTIONS,
 ];
@@ -133,6 +128,7 @@ export const getCanvasAiVideoModelOptionValue = (model?: string | null) => {
 export type CanvasAiVideoChannelSnapshot = {
   id?: string | null;
   provider?: string | null;
+  models?: readonly string[] | null;
   capabilities?: readonly string[] | null;
   error?: string | null;
 };
@@ -142,12 +138,32 @@ const normalizeVideoChannelProvider = (provider?: string | null): CanvasAiProvid
   if (normalized === 'MIKOTO') return 'mikoto';
   if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
   if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
+  if (normalized === 'BIGMODEL' || normalized === 'BIG-MODEL') return 'bigmodel';
   return undefined;
 };
 
-const videoModelForProvider = (provider: CanvasAiProvider, fast: boolean) => {
-  if (provider === 'new-api') return fast ? NEW_API_SEEDANCE_2_FAST_MODEL : NEW_API_SEEDANCE_2_MODEL;
-  return fast ? CANVAS_SEEDANCE_2_FAST_MODEL : CANVAS_SEEDANCE_2_MODEL;
+const videoModelForProvider = (provider: CanvasAiProvider, selectedModel: string) => {
+  if (selectedModel === CANVAS_SEEDANCE_2_MODEL) {
+    if (provider === 'new-api') return NEW_API_SEEDANCE_2_MODEL;
+    if (provider === 'xais-chat' || provider === 'mikoto') return CANVAS_SEEDANCE_2_MODEL;
+  }
+  if (selectedModel === CANVAS_SEEDANCE_2_FAST_MODEL) {
+    if (provider === 'new-api') return NEW_API_SEEDANCE_2_FAST_MODEL;
+    if (provider === 'xais-chat' || provider === 'mikoto') return CANVAS_SEEDANCE_2_FAST_MODEL;
+  }
+  return selectedModel;
+};
+
+const providerSupportsPublicVideoModel = (provider: CanvasAiProvider, model: string) => {
+  if (provider === 'new-api') return true;
+  if (provider === 'mikoto') {
+    return model === CANVAS_SEEDANCE_2_MODEL
+      || model === CANVAS_SEEDANCE_2_FAST_MODEL
+      || model === KLING_VIDEO_MODEL
+      || model === KLING_OMNI_VIDEO_MODEL;
+  }
+  if (provider === 'xais-chat') return model === CANVAS_SEEDANCE_2_MODEL;
+  return false;
 };
 
 export const getCanvasAiVideoModelCandidates = (
@@ -157,7 +173,6 @@ export const getCanvasAiVideoModelCandidates = (
   videoChannels?: readonly CanvasAiVideoChannelSnapshot[] | null,
 ): CanvasAiModelCandidate[] => {
   const selectedModel = getCanvasAiVideoModelOptionValue(model);
-  const isFast = selectedModel === CANVAS_SEEDANCE_2_FAST_MODEL;
   if (source === 'wallet' && videoChannels && videoChannels.length > 0) {
     const availableChannels = videoChannels
       .filter(channel => !channel.error)
@@ -171,19 +186,40 @@ export const getCanvasAiVideoModelCandidates = (
           && !!String(entry.channel.id || '').trim()
       ));
     if (availableChannels.length > 0) {
+      const hasModelMetadata = availableChannels.some(({ channel }) => (
+        Array.isArray(channel.models) && channel.models.some(modelId => String(modelId || '').trim())
+      ));
+      const compatibleChannels = availableChannels.filter(({ channel, provider }) => {
+        const channelModels = (channel.models || [])
+          .map(value => String(value || '').trim())
+          .filter(Boolean);
+        if (channelModels.length > 0) {
+          return channelModels.some(channelModel => (
+            getCanvasAiVideoModelOptionValue(channelModel) === selectedModel
+          ));
+        }
+        return providerSupportsPublicVideoModel(provider, selectedModel);
+      });
+      // Older wallet servers did not return channel model lists. Preserve
+      // their priority order while still avoiding obviously incompatible XAIS
+      // and Mikoto routes for models they do not expose.
+      const isKnownPublicModel = NEW_API_VIDEO_MODEL_OPTIONS.some(option => option.value === selectedModel);
+      const routedChannels = compatibleChannels.length > 0
+        ? compatibleChannels
+        : (hasModelMetadata || isKnownPublicModel ? [] : availableChannels);
       // The wallet service already returns channels in quota-manager priority
       // order. Keep that order authoritative; `preferredProvider` is only a
       // compatibility hint for the fallback path without channel snapshots.
-      return availableChannels.map(({ channel, provider }) => ({
+      return routedChannels.map(({ channel, provider }) => ({
         source,
         provider,
-        model: videoModelForProvider(provider, isFast),
+        model: videoModelForProvider(provider, selectedModel),
         providerChannelId: String(channel.id).trim(),
         capabilities: channel.capabilities ? [...channel.capabilities].map(value => String(value).toUpperCase()) : undefined,
       }));
     }
   }
-  if (preferredProvider === 'mikoto' && selectedModel) {
+  if (preferredProvider === 'mikoto' && selectedModel && providerSupportsPublicVideoModel(preferredProvider, selectedModel)) {
     return [{ source, provider: 'mikoto', model: selectedModel }];
   }
   if (selectedModel === CANVAS_SEEDANCE_2_MODEL) {

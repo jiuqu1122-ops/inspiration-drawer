@@ -890,6 +890,18 @@ describe('NewAPI video routing', () => {
         providerChannelId: 'source-mix', capabilities: ['VIDEO'],
       },
     ]);
+    expect(getCanvasAiVideoModelCandidates('kling-video', 'wallet', 'mikoto', [
+      { id: 'mikoto-kling', provider: 'MIKOTO', models: ['kling-video'], capabilities: ['VIDEO'] },
+      { id: 'source-mix', provider: 'NEW_API', models: ['SourceMix2.0'], capabilities: ['VIDEO'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'mikoto', model: 'kling-video', providerChannelId: 'mikoto-kling' }),
+    ]);
+    expect(getCanvasAiVideoModelCandidates('veo-3.1', 'wallet', 'new-api', [
+      { id: 'mikoto-kling', provider: 'MIKOTO', models: ['kling-video'], capabilities: ['VIDEO'] },
+      { id: 'veo-channel', provider: 'NEW_API', models: ['veo-3.1'], capabilities: ['VIDEO'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'new-api', model: 'veo-3.1', providerChannelId: 'veo-channel' }),
+    ]);
   });
 
   it('adapts the reference UI slots to each video model', () => {

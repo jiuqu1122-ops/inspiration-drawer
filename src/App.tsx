@@ -674,7 +674,6 @@ import { publishCanvasReferencesInOrder } from './features/canvasReferencePublic
 import {
   CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
   CANVAS_AI_VIDEO_MODEL_OPTIONS,
-  MIKOTO_VIDEO_MODEL_OPTIONS,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
   CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,
@@ -3037,7 +3036,12 @@ function MainApp() {
 
   const getCanvasAiResolvedModel = (provider: CanvasAiProvider, model?: string | null, mediaType: 'image' | 'video' = 'image') => {
     const trimmed = String(model || '').trim();
-    if (provider === 'xais-chat' && mediaType === 'video') return XAIS_CHAT_VIDEO_MODEL_DEFAULT;
+    if (provider === 'xais-chat' && mediaType === 'video') {
+      // Keep the public model selected in the node. XAIS only advertises
+      // Seedance, but forcing every video node to the XAIS default here made
+      // a Kling/Veo selection silently turn back into Seedance.
+      return getCanvasAiVideoModelOptionValue(trimmed || XAIS_CHAT_VIDEO_MODEL_DEFAULT);
+    }
     if (provider === 'xais-chat' && mediaType === 'image') {
       return normalizeXaisImage2Model(trimmed || getCanvasAiDefaultModel(provider, mediaType));
     }
@@ -29758,6 +29762,8 @@ useEffect(() => {
                           const isCanvasAiSeedanceVideo = canvasAiMediaType === 'video'
                             && isSeedance20VideoModel(canvasAiItemModel);
                           const isCanvasAiMikotoVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'mikoto';
+                          const isCanvasAiMikotoKlingVideo = isCanvasAiMikotoVideo
+                            && /^kling(?:-omni)?-video$/i.test(String(canvasAiItemModel || '').trim());
                           const canvasAiVideoResolutionValues = isCanvasAiMikotoVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
                             : isCanvasAiSeedanceVideo
@@ -31211,9 +31217,7 @@ useEffect(() => {
                                                 : getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
                                               modelOptions={canvasAiMediaType === 'image'
                                                 ? canvasAiUnifiedImageModelOptions
-                                                : canvasAiItemProvider === 'mikoto'
-                                                  ? MIKOTO_VIDEO_MODEL_OPTIONS
-                                                  : CANVAS_AI_VIDEO_MODEL_OPTIONS}
+                                                : CANVAS_AI_VIDEO_MODEL_OPTIONS}
                                               modelTitle={`模型：${canvasAiMediaType === 'image'
                                                 ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
                                                 : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === getCanvasAiVideoModelOptionValue(canvasAiItemModel))?.label || canvasAiItemModel}`}
@@ -31270,7 +31274,9 @@ useEffect(() => {
                                                   } : {}),
                                                   model,
                                                   imageProtocol: undefined,
-                                                  aspectRatio: canvasAiMediaType === 'video' && provider === 'new-api'
+                                                  aspectRatio: canvasAiMediaType === 'video'
+                                                    && (provider === 'new-api'
+                                                      || (provider === 'mikoto' && /^kling(?:-omni)?-video$/i.test(model)))
                                                     ? isSeedance20VideoModel(model)
                                                       ? normalizeSeedanceVideoAspectRatio(canvasItem.ai?.aspectRatio)
                                                       : normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
@@ -31291,17 +31297,17 @@ useEffect(() => {
                                                     : {}),
                                                 });
                                               }}
-                                              aspectRatioValue={isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo
+                                              aspectRatioValue={(isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
                                                 ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
                                                 : normalizeCanvasAiAspectRatioForModel(
                                                   canvasAiItemModel,
                                                   canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
                                                   canvasAiItemImageResolution,
                                                 )}
-                                              aspectRatioOptions={isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo
+                                              aspectRatioOptions={(isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
                                                 ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
                                                 : getCanvasAiAspectRatioOptionsForModel(canvasAiItemModel, canvasAiItemImageResolution)}
-                                              aspectRatioTitle={`比例：${isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo
+                                              aspectRatioTitle={`比例：${(isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
                                                 ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
                                                 : normalizeCanvasAiAspectRatioForModel(
                                                   canvasAiItemModel,
