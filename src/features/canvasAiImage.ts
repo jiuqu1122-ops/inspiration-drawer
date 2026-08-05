@@ -44,9 +44,9 @@ export const normalizeCloudWalletImageProvider = (
 
 export const normalizeCloudWalletVideoProvider = (
   provider?: CanvasAiImageProvider | string | null,
-): 'new-api' | 'xais-chat' | undefined => {
+): 'new-api' | 'xais-chat' | 'mikoto' | undefined => {
   const normalized = String(provider || '').trim().toLowerCase();
-  return normalized === 'new-api' || normalized === 'xais-chat'
+  return normalized === 'new-api' || normalized === 'xais-chat' || normalized === 'mikoto'
     ? normalized
     : undefined;
 };
@@ -171,13 +171,10 @@ export const getCanvasAiVideoModelCandidates = (
           && !!String(entry.channel.id || '').trim()
       ));
     if (availableChannels.length > 0) {
-      const orderedChannels = preferredProvider
-        ? [
-          ...availableChannels.filter(entry => entry.provider === preferredProvider),
-          ...availableChannels.filter(entry => entry.provider !== preferredProvider),
-        ]
-        : availableChannels;
-      return orderedChannels.map(({ channel, provider }) => ({
+      // The wallet service already returns channels in quota-manager priority
+      // order. Keep that order authoritative; `preferredProvider` is only a
+      // compatibility hint for the fallback path without channel snapshots.
+      return availableChannels.map(({ channel, provider }) => ({
         source,
         provider,
         model: videoModelForProvider(provider, isFast),
@@ -541,8 +538,8 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
 const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  // Wallet channels are selected server-side by channel id. Only legacy
-  // protocol provider values are sent; newer channel labels are metadata.
+  // The channel id is authoritative, while the provider keeps the server's
+  // capability constraint intact when a node has no persisted channel id.
   const provider = normalizeCloudWalletVideoProvider(options.provider);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const isSeedance = isSeedance20VideoModel(options.model);

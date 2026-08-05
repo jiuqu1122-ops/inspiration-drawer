@@ -3069,7 +3069,12 @@ function MainApp() {
         if (item.ai?.type !== 'video-generator'
           || item.ai.provider !== 'xais-chat'
           || item.ai.model !== XAIS_CHAT_VIDEO_MODEL_DEFAULT) return item;
-        const candidates = getCanvasAiVideoModelCandidates(NEW_API_SEEDANCE_2_MODEL, canvasAiCredentialSource, 'new-api');
+        const candidates = getCanvasAiVideoModelCandidates(
+          NEW_API_SEEDANCE_2_MODEL,
+          canvasAiCredentialSource,
+          'new-api',
+          canvasAiCloudImageModels?.videoChannels,
+        );
         changed = true;
         return {
           ...item,
@@ -3085,7 +3090,7 @@ function MainApp() {
       });
       return changed ? next : previous;
     });
-  }, [canvasAiCredentialSource, isCanvasMode]);
+  }, [canvasAiCloudImageModels?.videoChannels, canvasAiCredentialSource, isCanvasMode]);
   const canvasAiPromptPresets = useMemo(() => {
     const defaultIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
     const customById = new Map(customCanvasAiPromptPresets.map(preset => [preset.id, preset]));
@@ -31217,7 +31222,12 @@ useEffect(() => {
                                                   ? parseCanvasAiModelChoiceValue(value)
                                                   : null;
                                                 const videoCandidates = canvasAiMediaType === 'video'
-                                                  ? getCanvasAiVideoModelCandidates(value, canvasAiCredentialSource, canvasAiItemProvider)
+                                                  ? getCanvasAiVideoModelCandidates(
+                                                    value,
+                                                    canvasAiCredentialSource,
+                                                    canvasAiItemProvider,
+                                                    canvasAiCloudImageModels?.videoChannels,
+                                                  )
                                                   : [];
                                                 const provider = choice?.provider
                                                   || videoCandidates[0]?.provider
@@ -31255,7 +31265,7 @@ useEffect(() => {
                                                   } : canvasAiMediaType === 'video' ? {
                                                     provider,
                                                     credentialSource: canvasAiCredentialSource,
-                                                    providerChannelId: undefined,
+                                                    providerChannelId: videoCandidates[0]?.providerChannelId,
                                                     providerCandidates: videoCandidates.length > 1 ? videoCandidates : undefined,
                                                   } : {}),
                                                   model,

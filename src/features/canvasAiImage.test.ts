@@ -88,8 +88,8 @@ describe('wallet provider protocol compatibility', () => {
     expect(normalizeCloudWalletImageProvider('new-api')).toBe('new-api');
   });
 
-  it('keeps only legacy provider values for video requests', () => {
-    expect(normalizeCloudWalletVideoProvider('mikoto')).toBeUndefined();
+  it('preserves the selected video channel provider', () => {
+    expect(normalizeCloudWalletVideoProvider('mikoto')).toBe('mikoto');
     expect(normalizeCloudWalletVideoProvider('bigmodel')).toBeUndefined();
     expect(normalizeCloudWalletVideoProvider('xais-chat')).toBe('xais-chat');
   });
@@ -861,6 +861,19 @@ describe('NewAPI video routing', () => {
     ]);
     expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet', 'mikoto')).toEqual([
       { source: 'wallet', provider: 'mikoto', model: 'seedance2' },
+    ]);
+    expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet', 'mikoto', [
+      { id: 'mikoto-sd2', provider: 'MIKOTO', capabilities: ['VIDEO'] },
+      { id: 'source-mix', provider: 'NEW_API', capabilities: ['VIDEO'] },
+    ])).toEqual([
+      {
+        source: 'wallet', provider: 'mikoto', model: 'seedance2',
+        providerChannelId: 'mikoto-sd2', capabilities: ['VIDEO'],
+      },
+      {
+        source: 'wallet', provider: 'new-api', model: 'SourceMix2.0',
+        providerChannelId: 'source-mix', capabilities: ['VIDEO'],
+      },
     ]);
   });
 
