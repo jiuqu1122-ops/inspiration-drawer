@@ -16,6 +16,7 @@ export const NEW_API_ENDPOINT_DEFAULT = '';
 export const NEW_API_ENDPOINT_PLACEHOLDER = 'https://your-new-api.example.com/v1';
 export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://xais.dchai.cn';
 export const MIKOTO_ENDPOINT_DEFAULT = 'https://api.mikoto.vip';
+export const MINIMAX_H3_VIDEO_MODEL = 'MiniMax-H3';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Xais Nano Pro_2K';
 export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
 export const CANVAS_SEEDANCE_2_MODEL = 'seedance2';
@@ -44,9 +45,9 @@ export const normalizeCloudWalletImageProvider = (
 
 export const normalizeCloudWalletVideoProvider = (
   provider?: CanvasAiImageProvider | string | null,
-): 'new-api' | 'xais-chat' | 'mikoto' | undefined => {
+): 'new-api' | 'xais-chat' | 'mikoto' | 'minimax' | undefined => {
   const normalized = String(provider || '').trim().toLowerCase();
-  return normalized === 'new-api' || normalized === 'xais-chat' || normalized === 'mikoto'
+  return normalized === 'new-api' || normalized === 'xais-chat' || normalized === 'mikoto' || normalized === 'minimax'
     ? normalized
     : undefined;
 };
@@ -71,13 +72,14 @@ export const NEW_API_VIDEO_MODEL_OPTIONS = [
 export const MIKOTO_VIDEO_MODEL_OPTIONS = [...NEW_API_VIDEO_MODEL_OPTIONS];
 export const CANVAS_AI_VIDEO_MODEL_OPTIONS = [
   ...NEW_API_VIDEO_MODEL_OPTIONS,
+  { value: MINIMAX_H3_VIDEO_MODEL, label: 'MiniMax H3' },
 ];
 
-export const getCanvasAiVideoProviderForModel = (model?: string | null): CanvasAiImageProvider => (
-  ['seedance2', 'seedance20'].includes(
-    String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, ''),
-  ) ? 'xais-chat' : 'new-api'
-);
+export const getCanvasAiVideoProviderForModel = (model?: string | null): CanvasAiImageProvider => {
+  const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
+  if (token === 'minimaxh3') return 'minimax';
+  return ['seedance2', 'seedance20'].includes(token) ? 'xais-chat' : 'new-api';
+};
 
 export const isSeedance20VideoModel = (model?: string | null) => {
   const value = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
@@ -87,6 +89,14 @@ export const isSeedance20VideoModel = (model?: string | null) => {
     || value === 'sourcemix20'
     || value === 'sourcemix20fast';
 };
+
+export const isMiniMaxH3VideoModel = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '') === 'minimaxh3'
+);
+
+export const isSeedanceLikeVideoModel = (model?: string | null) => (
+  isSeedance20VideoModel(model) || isMiniMaxH3VideoModel(model)
+);
 
 export const getMikotoVideoResolutionValues = (model?: string | null): string[] => {
   const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
@@ -136,6 +146,7 @@ export type CanvasAiVideoChannelSnapshot = {
 const normalizeVideoChannelProvider = (provider?: string | null): CanvasAiProvider | undefined => {
   const normalized = String(provider || '').trim().toUpperCase();
   if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'MINIMAX') return 'minimax';
   if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
   if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
   if (normalized === 'BIGMODEL' || normalized === 'BIG-MODEL') return 'bigmodel';
@@ -151,11 +162,12 @@ const videoModelForProvider = (provider: CanvasAiProvider, selectedModel: string
     if (provider === 'new-api') return NEW_API_SEEDANCE_2_FAST_MODEL;
     if (provider === 'xais-chat' || provider === 'mikoto') return CANVAS_SEEDANCE_2_FAST_MODEL;
   }
+  if (selectedModel === MINIMAX_H3_VIDEO_MODEL && provider === 'minimax') return MINIMAX_H3_VIDEO_MODEL;
   return selectedModel;
 };
 
 const providerSupportsPublicVideoModel = (provider: CanvasAiProvider, model: string) => {
-  if (provider === 'new-api') return true;
+  if (provider === 'new-api') return model !== MINIMAX_H3_VIDEO_MODEL;
   if (provider === 'mikoto') {
     return model === CANVAS_SEEDANCE_2_MODEL
       || model === CANVAS_SEEDANCE_2_FAST_MODEL
@@ -163,6 +175,7 @@ const providerSupportsPublicVideoModel = (provider: CanvasAiProvider, model: str
       || model === KLING_OMNI_VIDEO_MODEL;
   }
   if (provider === 'xais-chat') return model === CANVAS_SEEDANCE_2_MODEL;
+  if (provider === 'minimax') return model === MINIMAX_H3_VIDEO_MODEL;
   return false;
 };
 
@@ -182,7 +195,10 @@ export const getCanvasAiVideoModelCandidates = (
       }))
       .filter((entry): entry is { channel: CanvasAiVideoChannelSnapshot; provider: CanvasAiProvider } => (
         !!entry.provider
-          && (!entry.channel.capabilities || entry.channel.capabilities.some(capability => String(capability).toUpperCase() === 'VIDEO'))
+          && (!entry.channel.capabilities || entry.channel.capabilities.some(capability => {
+            const normalizedCapability = String(capability).toUpperCase();
+            return normalizedCapability === 'VIDEO' || normalizedCapability === 'VIDEO_MINIMAX';
+          }))
           && !!String(entry.channel.id || '').trim()
       ));
     if (availableChannels.length > 0) {
@@ -221,6 +237,9 @@ export const getCanvasAiVideoModelCandidates = (
   }
   if (preferredProvider === 'mikoto' && selectedModel && providerSupportsPublicVideoModel(preferredProvider, selectedModel)) {
     return [{ source, provider: 'mikoto', model: selectedModel }];
+  }
+  if (selectedModel === MINIMAX_H3_VIDEO_MODEL) {
+    return [{ source, provider: 'minimax', model: MINIMAX_H3_VIDEO_MODEL }];
   }
   if (selectedModel === CANVAS_SEEDANCE_2_MODEL) {
     return [
@@ -285,6 +304,7 @@ export const CANVAS_AI_PROVIDER_OPTIONS = [
 
 export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
   { value: 'mikoto', label: 'Mikoto' },
+  { value: 'minimax', label: 'MiniMax' },
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
   { value: 'new-api', label: 'New API 中转' },
 ] as const;
@@ -588,7 +608,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   // capability constraint intact when a node has no persisted channel id.
   const provider = normalizeCloudWalletVideoProvider(options.provider);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
-  const isSeedance = isSeedance20VideoModel(options.model);
+  const isSeedanceLike = isSeedanceLikeVideoModel(options.model);
   const isFirstLastFrame = options.inputMode === 'FLF';
   const inputImages = (options.inputImages || []).filter(Boolean);
   const inputVideos = (options.inputVideos || []).filter(Boolean);
@@ -603,9 +623,9 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
-        inputImages: inputImages.slice(0, isFirstLastFrame ? 2 : isSeedance ? 9 : provider === 'xais-chat' ? 13 : 8),
-        inputVideos: isSeedance && !isFirstLastFrame ? inputVideos.slice(0, 3) : [],
-        inputAudios: isSeedance && !isFirstLastFrame ? inputAudios.slice(0, 3) : [],
+        inputImages: inputImages.slice(0, isFirstLastFrame ? 2 : isSeedanceLike ? 9 : provider === 'xais-chat' ? 13 : 8),
+        inputVideos: isSeedanceLike && !isFirstLastFrame ? inputVideos.slice(0, 3) : [],
+        inputAudios: isSeedanceLike && !isFirstLastFrame ? inputAudios.slice(0, 3) : [],
         aspectRatio: String(options.aspectRatio || '16:9'),
         resolution: options.resolution?.trim() || undefined,
         duration: options.duration,
@@ -1238,7 +1258,7 @@ export const getCanvasAiVideoReferenceSlots = (
   const supportsFirstLastFrame = !isSora2VideoModel(model);
   const mode: CanvasAiVideoInputMode = inputMode === 'FLF' && supportsFirstLastFrame ? 'FLF' : 'REF';
   if (mode === 'FLF') return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
-  if (isSeedance20VideoModel(model)) return { mode, ...SEEDANCE_2_REFERENCE_SLOTS };
+  if (isSeedanceLikeVideoModel(model)) return { mode, ...SEEDANCE_2_REFERENCE_SLOTS };
   if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) {
     return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
   }
@@ -1262,7 +1282,7 @@ export const getCanvasAiVideoReferenceSlotLabels = (
   if (provider === 'mikoto' && /^kling-omni-video$/i.test(String(model || '').trim())) {
     return Array.from({ length: slots.imageSlots }, (_, index) => `主体${index + 1}`);
   }
-  if (isSeedance20VideoModel(model)) {
+  if (isSeedanceLikeVideoModel(model)) {
     return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
   }
   if (getCanvasAiVideoProviderForModel(model) === 'new-api' && !isSora2VideoModel(model)) {

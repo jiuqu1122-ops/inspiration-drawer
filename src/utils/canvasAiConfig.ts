@@ -16,6 +16,7 @@ import {
   OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
   XAIS_CHAT_ENDPOINT_DEFAULT,
   MIKOTO_ENDPOINT_DEFAULT,
+  MINIMAX_H3_VIDEO_MODEL,
   XAIS_CHAT_IMAGE_MODEL_DEFAULT,
   XAIS_CHAT_IMAGE_MODEL_OPTIONS,
   XAIS_CHAT_VIDEO_MODEL_DEFAULT,
@@ -60,7 +61,7 @@ export const CANVAS_AI_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_A
   label: provider.label,
 }));
 export const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'bigmodel', 'openai-compatible', 'custom'];
+export const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'mikoto', 'minimax', 'bigmodel', 'openai-compatible', 'custom'];
 export const CANVAS_AI_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_OUTPUT_FORMATS.map(format => ({
   value: format,
   label: format.toUpperCase(),
@@ -80,7 +81,7 @@ export const CANVAS_AI_VIDEO_DURATION_OPTIONS: RoundedSelectOption[] = CANVAS_AI
 
 export const getCanvasAiDefaultModel = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
   mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : provider === 'new-api' ? NEW_API_VIDEO_MODEL_DEFAULT : ''
+    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : provider === 'new-api' ? NEW_API_VIDEO_MODEL_DEFAULT : provider === 'minimax' ? MINIMAX_H3_VIDEO_MODEL : ''
     : provider === 'xais-chat'
     ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
     : provider === 'new-api'
@@ -104,6 +105,8 @@ export const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
       ? NEW_API_ENDPOINT_DEFAULT
     : provider === 'mikoto'
       ? MIKOTO_ENDPOINT_DEFAULT
+    : provider === 'minimax'
+      ? 'https://metaso.cn'
     : provider === 'openai-compatible'
       ? OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
       : ''
@@ -152,6 +155,8 @@ export const getCanvasAiEndpointPlaceholder = (provider: CanvasAiProvider) => (
       ? NEW_API_ENDPOINT_PLACEHOLDER
       : provider === 'mikoto'
         ? MIKOTO_ENDPOINT_DEFAULT
+      : provider === 'minimax'
+        ? 'https://metaso.cn'
       : OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
 );
 export const normalizeCanvasAiXaisEndpoint = (endpoint: string) => {
@@ -257,6 +262,7 @@ export const canvasAiProviderForCloudKind = (provider?: string | null): CanvasAi
   if (normalized === 'NEW_API') return 'new-api';
   if (normalized === 'XAIS') return 'xais-chat';
   if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'MINIMAX') return 'minimax';
   if (normalized === 'BIGMODEL' || normalized === 'BIG_MODEL') return 'bigmodel';
   return normalizeCanvasAiProvider(provider);
 };

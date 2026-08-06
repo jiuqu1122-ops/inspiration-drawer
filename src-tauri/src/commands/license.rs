@@ -894,6 +894,7 @@ pub async fn generate_cloud_videos(
             | "sourcemix20"
             | "sourcemix20fast"
     );
+    let is_minimax_h3 = model_token == "minimaxh3";
     let is_first_last_frame = request
         .input_mode
         .as_deref()
@@ -901,7 +902,7 @@ pub async fn generate_cloud_videos(
         .unwrap_or(false);
     let max_image_references = if is_first_last_frame {
         2
-    } else if is_seedance20 {
+    } else if is_seedance20 || is_minimax_h3 {
         9
     } else {
         13
@@ -920,7 +921,7 @@ pub async fn generate_cloud_videos(
         request.input_videos.clear();
         request.input_audios.clear();
     }
-    if is_seedance20 {
+    if is_seedance20 || is_minimax_h3 {
         request.input_mode = Some(if is_first_last_frame {
             "FLF".to_string()
         } else {

@@ -704,6 +704,7 @@ import {
   normalizeMikotoVideoDuration,
   normalizeSeedanceVideoAspectRatio,
   isSeedance20VideoModel,
+  isSeedanceLikeVideoModel,
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelId,
   getDefaultNewApiImageProtocol,
@@ -13817,7 +13818,7 @@ function MainApp() {
         .filter((value): value is string => typeof value === 'string' && !!value);
       if (paths.length === 0) return;
 
-      const maxVideoReferences = target.ai?.type === 'video-generator' && isSeedance20VideoModel(target.ai.model) ? 3 : 1;
+      const maxVideoReferences = target.ai?.type === 'video-generator' && isSeedanceLikeVideoModel(target.ai.model) ? 3 : 1;
       const created = await Promise.all(paths.slice(0, maxVideoReferences).map((path, index) => createCanvasVideoItemFromPath(path, index)));
       const videos = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
         ...item,
@@ -13840,7 +13841,7 @@ function MainApp() {
 
   const chooseLocalAudiosForCanvasGenerator = async (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!target || target.ai?.type !== 'video-generator' || !isSeedance20VideoModel(target.ai.model)) return;
+    if (!target || target.ai?.type !== 'video-generator' || !isSeedanceLikeVideoModel(target.ai.model)) return;
     try {
       const selected = await open({
         multiple: true,
@@ -13875,7 +13876,7 @@ function MainApp() {
     const allowVideoReference = target.ai?.type === 'video-generator' && target.ai?.videoInputMode !== 'FLF';
     const allowAudioReference = target.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && isSeedance20VideoModel(target.ai.model);
+      && isSeedanceLikeVideoModel(target.ai.model);
     const isFrameInterpolationTarget = target.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target.ai?.type === 'image-enhancement';
@@ -13902,7 +13903,7 @@ function MainApp() {
     const allowVideoReference = target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF';
     const allowAudioReference = target?.ai?.type === 'video-generator'
       && target.ai.videoInputMode !== 'FLF'
-      && isSeedance20VideoModel(target.ai.model);
+      && isSeedanceLikeVideoModel(target.ai.model);
     const isFrameInterpolationTarget = target?.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target?.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target?.ai?.type === 'image-enhancement';
@@ -29761,12 +29762,14 @@ useEffect(() => {
                           const isCanvasAiNewApiVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'new-api';
                           const isCanvasAiSeedanceVideo = canvasAiMediaType === 'video'
                             && isSeedance20VideoModel(canvasAiItemModel);
+                          const isCanvasAiSeedanceLikeVideo = canvasAiMediaType === 'video'
+                            && isSeedanceLikeVideoModel(canvasAiItemModel);
                           const isCanvasAiMikotoVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'mikoto';
                           const isCanvasAiMikotoKlingVideo = isCanvasAiMikotoVideo
                             && /^kling(?:-omni)?-video$/i.test(String(canvasAiItemModel || '').trim());
                           const canvasAiVideoResolutionValues = isCanvasAiMikotoVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
-                            : isCanvasAiSeedanceVideo
+                            : isCanvasAiSeedanceLikeVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
                             : isCanvasAiNewApiVideo
                               ? getNewApiVideoResolutionValues(canvasAiItemModel)
@@ -29776,12 +29779,14 @@ useEffect(() => {
                           ));
                           const canvasAiVideoResolution = isCanvasAiMikotoVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
-                            : isCanvasAiSeedanceVideo
+                            : isCanvasAiSeedanceLikeVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
                             : isCanvasAiNewApiVideo
                               ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, canvasItem.ai?.resolution)
                               : canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION;
                           const canvasAiVideoDurationValues = isCanvasAiMikotoVideo
+                            ? getMikotoVideoDurationValues(canvasAiItemModel)
+                            : isCanvasAiSeedanceLikeVideo
                             ? getMikotoVideoDurationValues(canvasAiItemModel)
                             : isCanvasAiNewApiVideo
                             ? getNewApiVideoDurationValues(canvasAiItemModel)
@@ -29790,6 +29795,8 @@ useEffect(() => {
                             canvasAiVideoDurationValues.includes(Number(option.value))
                           ));
                           const canvasAiVideoDuration = isCanvasAiMikotoVideo
+                            ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
+                            : isCanvasAiSeedanceLikeVideo
                             ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
                             : isCanvasAiNewApiVideo
                             ? normalizeNewApiVideoDurationForModel(canvasAiItemModel, canvasItem.ai?.duration)
@@ -30052,13 +30059,13 @@ useEffect(() => {
                           const canvasVisualInputPreviewItems = expandedCanvasInputPreviewItems.filter(item => (
                             isCanvasImageReferencePreviewItem(item)
                             || (canvasAllowsSeedanceOmniReferences && isCanvasVideoReferencePreviewItem(item))
-                            || (canvasAllowsSeedanceOmniReferences && isSeedance20VideoModel(canvasAiItemModel) && isCanvasAudioReferencePreviewItem(item))
+                            || (canvasAllowsSeedanceOmniReferences && isCanvasAiSeedanceLikeVideo && isCanvasAudioReferencePreviewItem(item))
                           ));
                           const canvasInputPreviewItems = isCanvasAiNodeItem
                             ? expandedCanvasInputPreviewItems.filter(item => (
                               isCanvasImageReferencePreviewItem(item)
                               || (canvasAllowsSeedanceOmniReferences && isCanvasVideoReferencePreviewItem(item))
-                              || (canvasAllowsSeedanceOmniReferences && isSeedance20VideoModel(canvasAiItemModel) && isCanvasAudioReferencePreviewItem(item))
+                              || (canvasAllowsSeedanceOmniReferences && isCanvasAiSeedanceLikeVideo && isCanvasAudioReferencePreviewItem(item))
                               || isCanvasTextReferencePreviewItem(item)
                               || (isCanvasWorkflowItem && isCanvasFileReferencePreviewItem(item))
                             ))
@@ -31290,7 +31297,7 @@ useEffect(() => {
                                                     duration: normalizeNewApiVideoDurationForModel(model, canvasItem.ai?.duration),
                                                     videoInputMode: model === 'sora-2' ? 'REF' : canvasItem.ai?.videoInputMode || 'REF',
                                                   } : {}),
-                                                  ...(canvasAiMediaType === 'video' && provider === 'mikoto' ? { resolution } : {}),
+                                                  ...(canvasAiMediaType === 'video' && (provider === 'mikoto' || provider === 'minimax') ? { resolution } : {}),
                                                   ...(modelResolutionValues.length > 0
                                                     || supportsCanvasAiImageResolution(provider, model, modelCapabilities)
                                                     ? { resolution }
@@ -31347,7 +31354,7 @@ useEffect(() => {
                                               videoResolutionValue={canvasAiVideoResolution}
                                               videoResolutionOptions={canvasAiVideoResolutionOptions}
                                               onVideoResolutionChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                resolution: isCanvasAiSeedanceVideo
+                                                resolution: isCanvasAiSeedanceLikeVideo
                                                   ? normalizeMikotoVideoResolution(canvasAiItemModel, value)
                                                   : isCanvasAiNewApiVideo
                                                     ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, value)
@@ -32072,7 +32079,7 @@ useEffect(() => {
                           );
                           const canUploadReferenceAudio = canvasItem.ai?.type === 'video-generator'
                             && canvasItem.ai?.videoInputMode !== 'FLF'
-                            && isSeedance20VideoModel(canvasItem.ai?.model);
+                            && isSeedanceLikeVideoModel(canvasItem.ai?.model);
                           const isVideoOnlyInput = canvasItem.ai?.type === 'frame-interpolation' || canvasItem.ai?.type === 'video-enhancement';
                           const workflowUserInput = canvasItem.ai?.type === 'workflow'
                             ? normalizeCanvasWorkflowUserInput(getCanvasWorkflowTemplateFromNode(canvasItem)?.userInput)

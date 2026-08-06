@@ -860,6 +860,7 @@ describe('NewAPI video routing', () => {
       'veo-3.1-fast',
       'kling-video',
       'kling-omni-video',
+      'MiniMax-H3',
     ]);
     expect(getCanvasAiVideoProviderForModel('seedance2')).toBe('xais-chat');
     expect(getCanvasAiVideoProviderForModel('seedance2.0')).toBe('xais-chat');
@@ -869,6 +870,15 @@ describe('NewAPI video routing', () => {
     expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_MODEL)).toBe('new-api');
     expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_FAST_MODEL)).toBe('new-api');
     expect(getCanvasAiVideoProviderForModel('veo-3.1-fast')).toBe('new-api');
+    expect(getCanvasAiVideoProviderForModel('MiniMax-H3')).toBe('minimax');
+    expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet')).toEqual([
+      { source: 'wallet', provider: 'minimax', model: 'MiniMax-H3' },
+    ]);
+    expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet', undefined, [
+      { id: 'minimax-h3', provider: 'MINIMAX', capabilities: ['VIDEO_MINIMAX'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'minimax', model: 'MiniMax-H3', providerChannelId: 'minimax-h3' }),
+    ]);
     expect(getCanvasAiVideoModelOptionValue('seedance2')).toBe('seedance2');
     expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet')).toEqual([
       { source: 'wallet', provider: 'new-api', model: 'SourceMix2.0' },
@@ -921,6 +931,9 @@ describe('NewAPI video routing', () => {
       mode: 'FLF', imageSlots: 2, videoSlots: 0, audioSlots: 0,
     });
     expect(getCanvasAiVideoReferenceSlots(NEW_API_SEEDANCE_2_MODEL, 'REF')).toEqual({
+      mode: 'REF', imageSlots: 9, videoSlots: 3, audioSlots: 3,
+    });
+    expect(getCanvasAiVideoReferenceSlots('MiniMax-H3', 'REF', 'minimax')).toEqual({
       mode: 'REF', imageSlots: 9, videoSlots: 3, audioSlots: 3,
     });
     expect(getCanvasAiVideoReferenceSlots('kling-video', 'REF', 'mikoto')).toEqual({
