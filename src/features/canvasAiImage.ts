@@ -126,6 +126,9 @@ export const normalizeMikotoVideoDuration = (model?: string | null, duration?: n
 
 export const getCanvasAiVideoModelOptionValue = (model?: string | null) => {
   const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
+  if (token === 'minimaxh3') {
+    return MINIMAX_H3_VIDEO_MODEL;
+  }
   if (token === 'seedance2fast' || token === 'seedance20fast' || token === 'sourcemix20fast') {
     return CANVAS_SEEDANCE_2_FAST_MODEL;
   }
@@ -206,6 +209,7 @@ export const getCanvasAiVideoModelCandidates = (
         Array.isArray(channel.models) && channel.models.some(modelId => String(modelId || '').trim())
       ));
       const compatibleChannels = availableChannels.filter(({ channel, provider }) => {
+        if (selectedModel === MINIMAX_H3_VIDEO_MODEL && provider !== 'minimax') return false;
         const channelModels = (channel.models || [])
           .map(value => String(value || '').trim())
           .filter(Boolean);
@@ -254,6 +258,33 @@ export const getCanvasAiVideoModelCandidates = (
     ? [{ source, provider: getCanvasAiVideoProviderForModel(selectedModel), model: selectedModel }]
     : [];
 };
+
+const normalizeVideoModelToken = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '')
+);
+
+/**
+ * Drop persisted video routes that belong to a different public model.
+ * Nodes can retain candidates after their model is changed, so trusting the
+ * saved array would allow a MiniMax H3 request to fall through to Seedance or
+ * another channel.
+ */
+export const filterCanvasAiVideoModelCandidates = (
+  model: string | null | undefined,
+  candidates: readonly CanvasAiModelCandidate[] | null | undefined,
+) => {
+  const selectedModel = getCanvasAiVideoModelOptionValue(model);
+  const selectedToken = normalizeVideoModelToken(selectedModel);
+  if (!selectedToken) return [];
+  return (candidates || []).filter(candidate => {
+    const provider = String(candidate.provider || '').trim().toLowerCase();
+    const candidateModel = getCanvasAiVideoModelOptionValue(candidate.model);
+    if (normalizeVideoModelToken(candidateModel) !== selectedToken) return false;
+    if (selectedToken === 'minimaxh3') return provider === 'minimax';
+    return providerSupportsPublicVideoModel(provider as CanvasAiProvider, selectedModel);
+  });
+};
+
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES = 15;
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES * 60 * 1000;
@@ -3449,9 +3480,13 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
-  if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 1) {
+  const compatibleCandidates = filterCanvasAiVideoModelCandidates(
+    options.model,
+    options.providerCandidates,
+  );
+  if (!options.singleAttempt && compatibleCandidates.length > 0) {
     let lastError: unknown = null;
-    for (const candidate of options.providerCandidates) {
+    for (const candidate of compatibleCandidates) {
       try {
         const runtime = options.providerRuntime?.[candidate.provider];
         return await generateCanvasAiProviderVideos({
@@ -3474,6 +3509,15 @@ export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptio
       }
     }
     throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
+  }
+  if (isMiniMaxH3VideoModel(options.model) && options.provider !== 'minimax') {
+    return generateCanvasAiProviderVideos({
+      ...options,
+      provider: 'minimax',
+      model: MINIMAX_H3_VIDEO_MODEL,
+      providerChannelId: undefined,
+      providerCandidates: undefined,
+    });
   }
   if (options.cloudWallet) return generateCloudWalletVideos(options);
   if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);

@@ -30,6 +30,7 @@ import {
   getCanvasAiVideoModelCandidates,
   getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
+  filterCanvasAiVideoModelCandidates,
   isSeedance20VideoModel,
   getCloudWalletImageLookupImages,
   getDefaultNewApiImageProtocol,
@@ -871,6 +872,7 @@ describe('NewAPI video routing', () => {
     expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_FAST_MODEL)).toBe('new-api');
     expect(getCanvasAiVideoProviderForModel('veo-3.1-fast')).toBe('new-api');
     expect(getCanvasAiVideoProviderForModel('MiniMax-H3')).toBe('minimax');
+    expect(getCanvasAiVideoModelOptionValue('MiniMax H3')).toBe('MiniMax-H3');
     expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet')).toEqual([
       { source: 'wallet', provider: 'minimax', model: 'MiniMax-H3' },
     ]);
@@ -878,6 +880,12 @@ describe('NewAPI video routing', () => {
       { id: 'minimax-h3', provider: 'MINIMAX', capabilities: ['VIDEO_MINIMAX'] },
     ])).toEqual([
       expect.objectContaining({ provider: 'minimax', model: 'MiniMax-H3', providerChannelId: 'minimax-h3' }),
+    ]);
+    expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet', undefined, [
+      { id: 'wrong-channel', provider: 'NEW_API', models: ['MiniMax-H3'], capabilities: ['VIDEO'] },
+      { id: 'minimax-h3', provider: 'MINIMAX', models: ['MiniMax-H3'], capabilities: ['VIDEO_MINIMAX'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'minimax', providerChannelId: 'minimax-h3' }),
     ]);
     expect(getCanvasAiVideoModelOptionValue('seedance2')).toBe('seedance2');
     expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet')).toEqual([
@@ -911,6 +919,23 @@ describe('NewAPI video routing', () => {
       { id: 'veo-channel', provider: 'NEW_API', models: ['veo-3.1'], capabilities: ['VIDEO'] },
     ])).toEqual([
       expect.objectContaining({ provider: 'new-api', model: 'veo-3.1', providerChannelId: 'veo-channel' }),
+    ]);
+  });
+
+  it('filters persisted video candidates by the selected public model and provider', () => {
+    const staleCandidates = [
+      { source: 'wallet' as const, provider: 'new-api' as const, model: 'veo-3.1', providerChannelId: 'veo' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, model: 'seedance2', providerChannelId: 'seedance' },
+      { source: 'wallet' as const, provider: 'minimax' as const, model: 'MiniMax-H3', providerChannelId: 'minimax' },
+    ];
+    expect(filterCanvasAiVideoModelCandidates('MiniMax H3', staleCandidates)).toEqual([
+      staleCandidates[2],
+    ]);
+    expect(filterCanvasAiVideoModelCandidates('seedance2', staleCandidates)).toEqual([
+      staleCandidates[1],
+    ]);
+    expect(filterCanvasAiVideoModelCandidates('veo-3.1', staleCandidates)).toEqual([
+      staleCandidates[0],
     ]);
   });
 

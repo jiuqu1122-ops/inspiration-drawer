@@ -698,6 +698,7 @@ import {
   getCanvasAiVideoModelCandidates,
   getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
+  filterCanvasAiVideoModelCandidates,
   getMikotoVideoResolutionValues,
   getMikotoVideoDurationValues,
   normalizeMikotoVideoResolution,
@@ -705,6 +706,7 @@ import {
   normalizeSeedanceVideoAspectRatio,
   isSeedance20VideoModel,
   isSeedanceLikeVideoModel,
+  isMiniMaxH3VideoModel,
   getCanvasAiPublicImageModelName,
   getCanvasAiPublicImageModelId,
   getDefaultNewApiImageProtocol,
@@ -14212,23 +14214,59 @@ function MainApp() {
       && candidate.provider === targetProvider
       && candidate.model === targetAi.model
     )) || matchingSourceChoice?.providerCandidates?.find(candidate => candidate.source === imageCredentialSource);
+    const storedVideoCandidates = mediaType === 'video'
+      ? filterCanvasAiVideoModelCandidates(targetAi.model, targetAi.providerCandidates)
+      : [];
+    const resolvedVideoCandidates = mediaType === 'video' && isMiniMaxH3VideoModel(targetAi.model)
+      ? (() => {
+        const walletCandidates = getCanvasAiVideoModelCandidates(
+          targetAi.model,
+          canvasAiCredentialSource,
+          targetProvider,
+          canvasAiCloudImageModels?.videoChannels,
+        );
+        // A wallet response may temporarily omit the MiniMax channel. Keep the
+        // provider explicit and let the server select its configured channel;
+        // never reuse a stale channel id from the previous video model.
+        return walletCandidates.length > 0
+          ? walletCandidates
+          : [{
+            source: canvasAiCredentialSource,
+            provider: 'minimax' as const,
+            model: 'MiniMax-H3',
+          }];
+      })()
+      : storedVideoCandidates;
+    const activeVideoCandidate = mediaType === 'video'
+      ? resolvedVideoCandidates.find(candidate => candidate.provider === targetProvider)
+        || resolvedVideoCandidates[0]
+      : undefined;
     const requestedProvider = normalizeCanvasAiProvider(
-      activeSourceCandidate?.provider
+      activeVideoCandidate?.provider
+      || activeSourceCandidate?.provider
       || matchingSourceChoice?.provider
       || targetAi.provider
       || (mediaType === 'video' ? 'xais-chat' : canvasAiProvider)
     );
-    const selectedModel = activeSourceCandidate?.model || matchingSourceChoice?.model || targetAi.model;
+    const selectedModel = activeVideoCandidate?.model
+      || activeSourceCandidate?.model
+      || matchingSourceChoice?.model
+      || targetAi.model;
     const selectedProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
-      (matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
+      (mediaType === 'video'
+        ? resolvedVideoCandidates
+        : matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
         .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource),
-      canvasAiCloudImageModels?.channels,
+      mediaType === 'video' ? canvasAiCloudImageModels?.videoChannels : canvasAiCloudImageModels?.channels,
     );
-    const selectedChannelId = activeSourceCandidate?.providerChannelId
+    const selectedChannelId = activeVideoCandidate?.providerChannelId
+      || activeSourceCandidate?.providerChannelId
       || matchingSourceChoice?.providerChannelId
-      || targetAi.providerChannelId;
+      || (mediaType === 'video' ? undefined : targetAi.providerChannelId);
     const selectedChannelCapabilities = selectedChannelId
-      ? canvasAiCloudImageModels?.channels?.find(channel => channel.id === selectedChannelId)?.capabilities
+      ? (mediaType === 'video'
+        ? canvasAiCloudImageModels?.videoChannels?.find(channel => channel.id === selectedChannelId)?.capabilities
+        : canvasAiCloudImageModels?.channels?.find(channel => channel.id === selectedChannelId)?.capabilities)
       : undefined;
     const selectedCandidateImageResolutionValues = mediaType === 'image'
       ? getCanvasAiImageResolutionValuesForCandidates(selectedProviderCandidates)
@@ -14236,6 +14274,7 @@ function MainApp() {
     const selectedModelCapabilities = selectedProviderCandidates.find(candidate => (
         candidate.provider === requestedProvider && candidate.model === selectedModel
       ))?.capabilities
+      || activeVideoCandidate?.capabilities
       || activeSourceCandidate?.capabilities
       || selectedChannelCapabilities;
     const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
@@ -14504,9 +14543,7 @@ function MainApp() {
         provider,
         apiKey,
         cloudWallet: useCloudWallet,
-        providerChannelId: useCloudWallet
-          ? activeSourceCandidate?.providerChannelId || matchingSourceChoice?.providerChannelId || targetAi.providerChannelId
-          : undefined,
+        providerChannelId: useCloudWallet ? selectedChannelId : undefined,
         providerCandidates: selectedProviderCandidates.length > 1
           ? selectedProviderCandidates
           : undefined,
