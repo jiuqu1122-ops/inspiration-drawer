@@ -32,6 +32,20 @@ describe('Design Agent Node', () => {
     expect(prompt).toContain('不要输出 JSON');
   });
 
+  it('invokes the built-in Seedance optimizer for the dedicated text-node role', () => {
+    const config = normalizeDesignAgentConfig({ agentRole: 'seedance_video_analyzer' });
+    expect(config).toEqual({
+      agentRole: 'seedance_video_analyzer',
+      outputArtifactType: 'SeedancePrompt',
+      thinkingMode: 'analysis',
+    });
+
+    const prompt = buildDesignAgentSystemPrompt(config);
+    expect(prompt).toContain('seedance-prompt-optimizer v3');
+    expect(prompt).toContain('@图片N、@视频N、@音频N');
+    expect(prompt).toContain('最终只输出一份可直接复制到 Seedance 2.0');
+  });
+
   it('preserves a multi-stage Design Agent chain in the industrial workflow definition', () => {
     const draft: WorkflowRecipeDraft = {
       id: 'design-agent-workflow',

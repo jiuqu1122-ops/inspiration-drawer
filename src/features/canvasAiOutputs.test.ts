@@ -187,4 +187,46 @@ describe('canvas AI output cache patches', () => {
     expect(complete.ai?.error).toBeUndefined();
     expect(complete.ai?.outputs?.every(output => output.status === 'success')).toBe(true);
   });
+
+  it('settles a working node after every requested output has completed', () => {
+    const workingItem = {
+      id: 'node-working',
+      x: 0,
+      y: 0,
+      width: 320,
+      height: 320,
+      item: {
+        id: 'item-working',
+        type: 'image',
+        content: 'result',
+        createdAt: 1,
+      },
+      ai: {
+        type: 'image-generator',
+        status: 'working',
+        count: 2,
+        outputs: [
+          { id: 'output-1', status: 'success', url: 'https://example.com/one.png' },
+          { id: 'output-2', status: 'working' },
+        ],
+      },
+    } as CanvasImageItem;
+
+    const partial = recoverCanvasAiNodeWithUsableResults(workingItem);
+    expect(partial).toBe(workingItem);
+    expect(partial.ai?.status).toBe('working');
+
+    const complete = recoverCanvasAiNodeWithUsableResults({
+      ...workingItem,
+      ai: {
+        ...workingItem.ai!,
+        outputs: [
+          ...workingItem.ai!.outputs!.slice(0, 1),
+          { id: 'output-2', status: 'success', path: 'C:\\cache\\two.png' },
+        ],
+      },
+    });
+    expect(complete.ai?.status).toBe('success');
+    expect(complete.ai?.error).toBeUndefined();
+  });
 });

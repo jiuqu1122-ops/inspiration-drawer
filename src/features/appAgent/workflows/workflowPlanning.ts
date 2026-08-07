@@ -444,8 +444,8 @@ export function buildWorkflowDraftProposalMessages(input: {
       inputRoles: ['input_or_previous_output_id'],
       requiresReferenceImages: true,
       designAgentConfig: {
-        agentRole: 'requirement_analyzer|inspiration_analyzer|design_strategist|design_reviewer|presentation_writer|general',
-        outputArtifactType: 'DesignBrief|ResearchReport|InspirationAnalysis|DesignStrategy|DesignReview|PromptPackage|Document',
+        agentRole: 'requirement_analyzer|inspiration_analyzer|design_strategist|design_reviewer|presentation_writer|seedance_video_analyzer|general',
+        outputArtifactType: 'DesignBrief|ResearchReport|InspirationAnalysis|DesignStrategy|DesignReview|PromptPackage|SeedancePrompt|Document',
         thinkingMode: 'analysis|generation|review',
       },
     }],

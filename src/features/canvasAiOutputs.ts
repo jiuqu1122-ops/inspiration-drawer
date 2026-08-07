@@ -57,7 +57,9 @@ export const recoverCanvasAiNodeWithUsableResults = (
   const allOutputsSucceeded = outputs.length >= expectedOutputCount && outputs.every(output => (
     output.status === 'success' && hasCanvasAiOutputUsableSource(output)
   ));
-  const shouldRecoverNode = canvasItem.ai.status === 'error' && allOutputsSucceeded;
+  const shouldRecoverNode = (
+    canvasItem.ai.status === 'error' || canvasItem.ai.status === 'working'
+  ) && allOutputsSucceeded;
   if (!outputsChanged && !shouldRecoverNode) return canvasItem;
   return {
     ...canvasItem,

@@ -171,6 +171,7 @@ const DESIGN_AGENT_ROLE_VALUES = [
   'design_strategist',
   'design_reviewer',
   'presentation_writer',
+  'seedance_video_analyzer',
   'general',
 ] as const;
 const DESIGN_AGENT_ARTIFACT_VALUES = [
@@ -180,6 +181,7 @@ const DESIGN_AGENT_ARTIFACT_VALUES = [
   'DesignStrategy',
   'DesignReview',
   'PromptPackage',
+  'SeedancePrompt',
   'Document',
 ] as const;
 const DESIGN_AGENT_THINKING_MODE_VALUES = ['analysis', 'generation', 'review'] as const;

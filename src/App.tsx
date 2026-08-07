@@ -16657,7 +16657,7 @@ function MainApp() {
     ) => {
       runtimeItems = runtimeItems.map(item => {
         if (item.id !== nodeId) return item;
-        return {
+        const nextItem: CanvasImageItem = {
           ...item,
           ai: item.ai
             ? {
@@ -16672,6 +16672,7 @@ function MainApp() {
             name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || item.item.name,
           },
         };
+        return recoverCanvasAiNodeWithUsableResults(nextItem);
       });
     };
     const markRuntimeNodeSkipped = (nodeId: string, reason = '上游依赖失败') => {
@@ -21682,10 +21683,6 @@ useEffect(() => {
     return true;
   };
 
-  const stopCanvasEditEvent = (event: React.SyntheticEvent) => {
-    event.stopPropagation();
-  };
-
   const runCanvasAiNodeFromControl = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || target.ai?.status === 'working') return;
@@ -22657,6 +22654,7 @@ useEffect(() => {
           sourceItemId: canvasItem.item.sourceItemId,
           name: canvasItem.item.name || canvasItem.item.content || '选中图片',
           mediaType: 'image',
+          sourceMediaType: 'image',
           source: source || canvasItem.item.thumbnail,
           path: canvasItem.item.path,
           thumbnail: getCanvasItemNavSource(canvasItem.item) || source || canvasItem.item.thumbnail,
@@ -22669,6 +22667,7 @@ useEffect(() => {
         sourceItemId: canvasItem.item.sourceItemId,
         name: `${canvasItem.item.name || canvasItem.item.content || '选中视频'} 预览图`,
         mediaType: 'image',
+        sourceMediaType: 'video',
         source: canvasItem.item.thumbnail,
         thumbnail: canvasItem.item.thumbnail,
       });
@@ -22679,6 +22678,22 @@ useEffect(() => {
       .forEach((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         const source = getCanvasAiOutputDisplaySource(output);
+        if (mediaType === 'video') {
+          const thumbnail = output.thumbnail?.trim();
+          if (!thumbnail) return;
+          pushReference({
+            id: `${canvasItem.id}:${output.id || outputIndex}:video-preview`,
+            nodeId: canvasItem.id,
+            sourceItemId: output.id || canvasItem.item.sourceItemId,
+            outputId: output.id || `${outputIndex}`,
+            name: `${output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `节点输出视频 ${outputIndex + 1}`} 预览图`,
+            mediaType: 'image',
+            sourceMediaType: 'video',
+            source: thumbnail,
+            thumbnail,
+          });
+          return;
+        }
         if (mediaType !== 'image' || !source) return;
         pushReference({
           id: `${canvasItem.id}:${output.id || outputIndex}`,
@@ -22687,6 +22702,7 @@ useEffect(() => {
           outputId: output.id || `${outputIndex}`,
           name: output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `节点输出图 ${outputIndex + 1}`,
           mediaType: 'image',
+          sourceMediaType: 'image',
           source,
           path: output.path,
           thumbnail: source,
@@ -22806,9 +22822,11 @@ useEffect(() => {
   const prepareCanvasAgentVisualReferences = async (
     references: AgentCanvasVisualReference[],
     provider: 'openai-compatible' | 'codex',
+    maxReferences = 6,
   ): Promise<AgentCanvasVisualReference[]> => prepareAgentVisualReferences(references, {
     provider,
     toModelDataUrl: imageSourceToModelDataUrl,
+    maxReferences,
   });
 
   const analyzeDrawerInspirationWithLlm = async (input: {
@@ -25626,25 +25644,41 @@ useEffect(() => {
   const buildCanvasTextAgentUserContent = (
     text: string,
     references: AgentCanvasVisualReference[],
+    seedanceMode = false,
   ) => {
     const imageReferences = references
       .filter(reference => reference.mediaType === 'image' && /^data:image\/|^https?:\/\//i.test(reference.source || ''))
-      .slice(0, 6);
+      .slice(0, seedanceMode ? 9 : 6);
+    let imageIndex = 0;
+    let videoIndex = 0;
+    const labeledReferences = imageReferences.map((reference, index) => {
+      if (!seedanceMode) return { reference, label: '图' + String(index + 1) + '（Image ' + String(index + 1) + '）' };
+      if (reference.sourceMediaType === 'video') {
+        videoIndex += 1;
+        return { reference, label: '@视频' + String(videoIndex) + '的预览帧' };
+      }
+      imageIndex += 1;
+      return { reference, label: '@图片' + String(imageIndex) };
+    });
     const notice = imageReferences.length > 0
       ? [
-        '已连接 ' + imageReferences.length + ' 张参考图，并随本次请求附加：',
-        ...imageReferences.map((reference, index) => (
-          '图' + String(index + 1) + '（Image ' + String(index + 1) + '）：' + reference.name + '（nodeId: ' + reference.nodeId + (reference.outputId ? ', outputId: ' + reference.outputId : '') + '）'
+        seedanceMode
+          ? '已连接以下 Seedance 视觉素材，并随本次请求附加：'
+          : '已连接 ' + imageReferences.length + ' 张参考图，并随本次请求附加：',
+        ...labeledReferences.map(({ reference, label }) => (
+          label + '：' + reference.name + '（nodeId: ' + reference.nodeId + (reference.outputId ? ', outputId: ' + reference.outputId : '') + '）'
         )),
-        '图号严格对应附件顺序，不得交换或重排。',
+        seedanceMode
+          ? '图片和视频编号分别按上述清单递增，不得交换或重排；视频附件这里只提供预览帧，不得臆测未展示的动作、运镜或声音。'
+          : '图号严格对应附件顺序，不得交换或重排。',
       ].join('\n')
       : '';
     const textPart = [text, notice].filter(Boolean).join('\n\n');
     if (imageReferences.length === 0) return textPart;
     return [
       { type: 'text', text: textPart },
-      ...imageReferences.flatMap((reference, index) => ([
-        { type: 'text', text: '紧随此文字的图片附件是图' + String(index + 1) + '（Image ' + String(index + 1) + '）：' + reference.name },
+      ...labeledReferences.flatMap(({ reference, label }) => ([
+        { type: 'text', text: '紧随此文字的图片附件对应' + label + '：' + reference.name },
         {
           type: 'image_url',
           image_url: {
@@ -25669,6 +25703,8 @@ useEffect(() => {
     if (!isCanvasAgentTextTarget(target)) return '';
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const latestTarget = options.getLatestTarget?.() || target;
+    const designAgentConfig = normalizeDesignAgentConfig(latestTarget.designAgentConfig);
+    const isSeedanceVideoAnalysis = designAgentConfig.agentRole === 'seedance_video_analyzer';
     const userRequest = (latestTarget.item.content || target.item.content || '').trim();
     if (!userRequest) {
       throw new Error('先在文字节点里输入需求');
@@ -25681,7 +25717,11 @@ useEffect(() => {
 
     if (visualReferences.length > 0) {
       try {
-        preparedReferences = await prepareCanvasAgentVisualReferences(visualReferences, 'openai-compatible');
+        preparedReferences = await prepareCanvasAgentVisualReferences(
+          visualReferences,
+          'openai-compatible',
+          isSeedanceVideoAnalysis ? 9 : 6,
+        );
         if (preparedReferences.length === 0 && options.showReferenceToast !== false) {
             showToast('连接的参考图暂时无法读取，本次仅使用文字运行');
         }
@@ -25697,7 +25737,7 @@ useEffect(() => {
     const customAgentPrompt = isBuiltInAgentSystemPrompt(canvasAgent.settings.systemPrompt)
       ? ''
       : canvasAgent.settings.systemPrompt.trim();
-    const designAgentPrompt = buildDesignAgentSystemPrompt(latestTarget.designAgentConfig);
+    const designAgentPrompt = buildDesignAgentSystemPrompt(designAgentConfig);
     const systemPrompt = truncatePromptToUtf8ByteLimit([
       customAgentPrompt,
       [
@@ -25727,7 +25767,7 @@ useEffect(() => {
         model: requestedAgentModel,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences) },
+          { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
         ],
       },
     });
@@ -30019,6 +30059,15 @@ useEffect(() => {
                           const canvasRenderedItemWidth = canvasAiNodeDesignSize
                             ? canvasAiNodeDesignSize.width * (canvasAiNodeScale || 1)
                             : canvasItem.width;
+                          const canvasRenderedItemHeight = canvasAiNodeDesignSize
+                            ? canvasAiNodeDesignSize.height * (canvasAiNodeScale || 1)
+                            : canvasItem.height;
+                          const isCanvasConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
+                          const isCanvasConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
+                          const showCanvasSourceHandle = canUseCanvasItemAsAiInput(canvasItem)
+                            && (isSelected || isCanvasConnectedSource);
+                          const showCanvasTargetHandle = canUseCanvasItemAsAiTarget(canvasItem)
+                            && !!(canvasConnectionDraft || canvasInputActionDraft || isSelected || isCanvasConnectedTarget || canvasInputMenuForId === canvasItem.id);
                           const canvasAiPromptHeight = isCanvasAiGeneratorItem && canvasAiNodeDesignSize
                             ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiMainColumnLayoutWidth, isCanvasAiPromptExpanded)
                             : 0;
@@ -30201,7 +30250,7 @@ useEffect(() => {
                             key={canvasItem.id}
                             data-canvas-item-id={canvasItem.id}
                             data-canvas-ai-input-id={isCanvasAiNodeItem && canvasConnectionDraft ? canvasItem.id : undefined}
-                            className="group/canvas-item absolute overflow-visible"
+                            className="group/canvas-item absolute isolate overflow-visible"
                             style={{
                               left: canvasItem.x,
                               top: canvasItem.y,
@@ -31527,7 +31576,9 @@ useEffect(() => {
                                 >
                                   <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stone-950/[0.045] px-3 text-[11px] font-black text-stone-500 dark:border-white/[0.055] dark:text-white/58">
                                     <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[7px] bg-stone-950/[0.055] text-stone-500 dark:bg-white/[0.07] dark:text-white/62">
-                                      <Type className="h-3.5 w-3.5" />
+                                      {canvasDesignAgentConfig.agentRole === 'seedance_video_analyzer'
+                                        ? <Film className="h-3.5 w-3.5" />
+                                        : <Type className="h-3.5 w-3.5" />}
                                     </span>
                                     <span className="truncate">{canvasItem.item.name || '文字卡片'}</span>
                                     <button
@@ -31548,7 +31599,7 @@ useEffect(() => {
                                       简洁
                                     </button>
                                     <span className="rounded-full bg-stone-950/[0.045] px-2 py-0.5 text-[9px] font-black tracking-[0.12em] text-stone-400 dark:bg-white/[0.07] dark:text-white/38">
-                                      DESIGN
+                                      {canvasDesignAgentConfig.agentRole === 'seedance_video_analyzer' ? 'SEEDANCE' : 'DESIGN'}
                                     </span>
                                   </div>
                                   <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-stone-950/[0.045] bg-white/38 px-2.5 dark:border-white/[0.055] dark:bg-white/[0.025]">
@@ -31561,6 +31612,7 @@ useEffect(() => {
                                       className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[1.25]`}
                                       labelClassName="truncate text-left"
                                       chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
                                       menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="Design Agent 角色"
@@ -31577,6 +31629,7 @@ useEffect(() => {
                                       className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[1.1]`}
                                       labelClassName="truncate text-left"
                                       chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
                                       menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="输出设计资产"
@@ -31593,6 +31646,7 @@ useEffect(() => {
                                       className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[0.72]`}
                                       labelClassName="truncate text-left"
                                       chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
                                       menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="思考模式"
@@ -32034,84 +32088,51 @@ useEffect(() => {
                             >
                               <X className="h-3 w-3" />
                             </button>}
-                            </div>
-                          );
-                        })}
-                        {canvasRenderableItems.map(canvasItem => {
-                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
-                          const isCanvasConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
-                          if (!canUseCanvasItemAsAiInput(canvasItem) || (!isSelected && !isCanvasConnectedSource)) return null;
-                          const itemBox = getCanvasItemRenderedBox(canvasItem);
-                          const centerX = itemBox.x + itemBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
-                          const centerY = itemBox.y + itemBox.height / 2;
-                          return (
-                            <button
-                              key={`canvas-source-handle-${canvasItem.id}`}
-                              data-no-drag="true"
-                              type="button"
-                              className="absolute z-[90] flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
-                              style={{
-                                left: centerX - 18,
-                                top: centerY - 18,
-                              }}
-                              onPointerDown={(event) => startCanvasConnectionDrag(event, canvasItem.id)}
-                              title="拖出连接线到生图/视频、工作流或文字节点"
-                            >
-                              <span className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-cyan-500/95 text-white shadow-[0_5px_13px_rgba(8,145,178,0.28)] ring-2 ring-cyan-200/25 backdrop-blur-sm dark:border-white/20 dark:bg-cyan-400 dark:ring-cyan-900/30">
-                                <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
-                              </span>
-                            </button>
-                          );
-                        })}
-                        {canvasRenderableItems.map(canvasItem => {
-                          if (!canUseCanvasItemAsAiTarget(canvasItem)) return null;
-                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
-                          const isCanvasConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
-                          const showCanvasTargetHandle = canvasConnectionDraft || canvasInputActionDraft || isSelected || isCanvasConnectedTarget || canvasInputMenuForId === canvasItem.id;
-                          if (!showCanvasTargetHandle) return null;
-                          const itemBox = getCanvasItemRenderedBox(canvasItem);
-                          const centerX = itemBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
-                          const centerY = itemBox.y + itemBox.height / 2;
-                          return (
-                            <div
-                              key={`canvas-target-handle-${canvasItem.id}`}
-                              data-no-drag="true"
-                              data-canvas-ai-input-id={canvasItem.id}
-                              className="absolute z-[90] flex h-9 w-9 items-center justify-center rounded-full text-white"
-                              style={{
-                                left: centerX - 18,
-                                top: centerY - 18,
-                              }}
-                              onPointerDown={(event) => {
-                                if (canvasConnectionDraft) {
-                                  event.stopPropagation();
-                                  return;
-                                }
-                                startCanvasInputActionDrag(event, canvasItem.id);
-                              }}
-                              title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
-                            >
+                            {showCanvasSourceHandle && (
                               <button
-                                type="button"
                                 data-no-drag="true"
-                                data-canvas-edit-control="true"
-                                onPointerDown={stopCanvasEditEvent}
-                                onMouseDown={stopCanvasEditEvent}
-                                onClick={() => void testCanvasAiConnection()}
-                                disabled={isTestingCanvasAiConnection || (!canvasAiUsesCloudImageModels && (!(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential))}
-                                className="h-[30px] shrink-0 rounded-[13px] bg-violet-100 px-2 text-[10px] font-bold text-violet-700 disabled:opacity-45 dark:bg-violet-400/15 dark:text-violet-100"
-                                title="测试连接"
-                              >
-                                {isTestingCanvasAiConnection ? '测试中' : '测试'}
-                              </button>
-                              <button
                                 type="button"
-                                data-canvas-ai-input-id={canvasItem.id}
-                                title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
-                                className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-blue-500 text-white shadow-[0_5px_13px_rgba(59,130,246,0.28)] ring-2 ring-blue-300/45 transition-all hover:scale-105 hover:bg-blue-400 dark:border-white/20 dark:bg-blue-400 dark:text-stone-950"
+                                className="absolute z-20 flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
+                                style={{
+                                  left: canvasRenderedItemWidth + CANVAS_CONNECTION_HANDLE_OUTSET - 18,
+                                  top: canvasRenderedItemHeight / 2 - 18,
+                                }}
+                                onPointerDown={(event) => startCanvasConnectionDrag(event, canvasItem.id)}
+                                title="拖出连接线到生图/视频、工作流或文字节点"
                               >
-                                <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
+                                <span className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-cyan-500/95 text-white shadow-[0_5px_13px_rgba(8,145,178,0.28)] ring-2 ring-cyan-200/25 backdrop-blur-sm dark:border-white/20 dark:bg-cyan-400 dark:ring-cyan-900/30">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
+                                </span>
                               </button>
+                            )}
+                            {showCanvasTargetHandle && (
+                              <div
+                                data-no-drag="true"
+                                data-canvas-ai-input-id={canvasItem.id}
+                                className="absolute z-20 flex h-9 w-9 items-center justify-center rounded-full text-white"
+                                style={{
+                                  left: -CANVAS_CONNECTION_HANDLE_OUTSET - 18,
+                                  top: canvasRenderedItemHeight / 2 - 18,
+                                }}
+                                onPointerDown={(event) => {
+                                  if (canvasConnectionDraft) {
+                                    event.stopPropagation();
+                                    return;
+                                  }
+                                  startCanvasInputActionDrag(event, canvasItem.id);
+                                }}
+                                title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
+                              >
+                                <button
+                                  type="button"
+                                  data-canvas-ai-input-id={canvasItem.id}
+                                  title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
+                                  className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-blue-500 text-white shadow-[0_5px_13px_rgba(59,130,246,0.28)] ring-2 ring-blue-300/45 transition-all hover:scale-105 hover:bg-blue-400 dark:border-white/20 dark:bg-blue-400 dark:text-stone-950"
+                                >
+                                  <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
+                                </button>
+                              </div>
+                            )}
                             </div>
                           );
                         })}

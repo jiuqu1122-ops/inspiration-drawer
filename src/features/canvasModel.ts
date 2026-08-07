@@ -65,6 +65,7 @@ export interface DesignAgentConfig {
     | 'design_strategist'
     | 'design_reviewer'
     | 'presentation_writer'
+    | 'seedance_video_analyzer'
     | 'general';
   outputArtifactType?:
     | 'DesignBrief'
@@ -73,6 +74,7 @@ export interface DesignAgentConfig {
     | 'DesignStrategy'
     | 'DesignReview'
     | 'PromptPackage'
+    | 'SeedancePrompt'
     | 'Document';
   thinkingMode?: 'analysis' | 'generation' | 'review';
 }
