@@ -204,11 +204,11 @@ export const getCanvasVideoRequestCredits = (
     ? Number(durationOverride)
     : safeDuration * perSecond;
   const perVideo = Number(configuredModel?.creditsPerVideo ?? 0);
-  const resolutionSurcharge = Number(configuredModel?.creditsByResolution?.[resolutionKey] ?? 0);
-  if (![durationCredits, perVideo, resolutionSurcharge].every(value => Number.isSafeInteger(value) && value >= 0)) {
+  const resolutionSurchargePerSecond = Number(configuredModel?.creditsByResolution?.[resolutionKey] ?? 0);
+  if (![durationCredits, perVideo, resolutionSurchargePerSecond].every(value => Number.isSafeInteger(value) && value >= 0)) {
     return safeCount * safeDuration * perSecond;
   }
-  return (durationCredits + perVideo + resolutionSurcharge) * safeCount;
+  return (durationCredits + perVideo + resolutionSurchargePerSecond * safeDuration) * safeCount;
 };
 
 export const estimateCanvasVideoGenerationCredits = (
