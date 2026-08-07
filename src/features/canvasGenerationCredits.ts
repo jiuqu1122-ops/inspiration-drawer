@@ -302,6 +302,7 @@ export const estimateCanvasWorkflowCredits = (
       model: node.ai?.model,
       count: node.ai?.count,
       duration: node.ai?.duration,
+      resolution: node.ai?.resolution,
     }, options.pricing);
     return {
       outputCount: summary.outputCount + estimate.outputCount,

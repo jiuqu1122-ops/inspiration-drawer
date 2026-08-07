@@ -29972,6 +29972,7 @@ useEffect(() => {
                               model: canvasAiItemModel,
                               count: canvasItem.ai.count,
                               duration: canvasAiVideoDuration,
+                              resolution: canvasAiVideoResolution,
                             }, canvasWalletPricing)
                             : null;
                           const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate

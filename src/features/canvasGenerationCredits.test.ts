@@ -159,6 +159,27 @@ describe('canvas generation credits', () => {
     }, pricing).totalCredits).toBe(106);
   });
 
+  it('uses MiniMax H3 native resolution pricing in the client estimate', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '2',
+      imageModels: [],
+      videoModels: [{
+        model: 'MiniMax-H3',
+        credits: '15',
+        creditsByResolution: { '2k': '10' },
+      }],
+    };
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'MiniMax-H3',
+      duration: 5,
+      count: 1,
+      resolution: '2K',
+    }, pricing).totalCredits).toBe(85);
+  });
+
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {
     const workflow = {
       id: 'priced-workflow',
