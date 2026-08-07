@@ -905,7 +905,7 @@ const INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE = 768;
 const INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES = 700 * 1024;
 const STARTUP_CONSENT_DELAY_MS = 15000;
 const CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY = 'drawer_cloudflared_disclaimer_accepted';
-const CANVAS_CONNECTION_HANDLE_OUTSET = 10;
+const CANVAS_CONNECTION_HANDLE_OUTSET = 0;
 const CANVAS_SELECTION_RADIUS = 18;
 const CANVAS_NODE_RADIUS = 20;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
@@ -30059,15 +30059,6 @@ useEffect(() => {
                           const canvasRenderedItemWidth = canvasAiNodeDesignSize
                             ? canvasAiNodeDesignSize.width * (canvasAiNodeScale || 1)
                             : canvasItem.width;
-                          const canvasRenderedItemHeight = canvasAiNodeDesignSize
-                            ? canvasAiNodeDesignSize.height * (canvasAiNodeScale || 1)
-                            : canvasItem.height;
-                          const isCanvasConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
-                          const isCanvasConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
-                          const showCanvasSourceHandle = canUseCanvasItemAsAiInput(canvasItem)
-                            && (isSelected || isCanvasConnectedSource);
-                          const showCanvasTargetHandle = canUseCanvasItemAsAiTarget(canvasItem)
-                            && !!(canvasConnectionDraft || canvasInputActionDraft || isSelected || isCanvasConnectedTarget || canvasInputMenuForId === canvasItem.id);
                           const canvasAiPromptHeight = isCanvasAiGeneratorItem && canvasAiNodeDesignSize
                             ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiMainColumnLayoutWidth, isCanvasAiPromptExpanded)
                             : 0;
@@ -30256,6 +30247,7 @@ useEffect(() => {
                               top: canvasItem.y,
                               width: canvasItem.width,
                               height: canvasItem.height,
+                              zIndex: isSelected ? 2 : 0,
                               touchAction: 'none',
                             }}
                             onPointerDown={(e) => startCanvasItemDrag(e, canvasItem.id)}
@@ -32088,51 +32080,72 @@ useEffect(() => {
                             >
                               <X className="h-3 w-3" />
                             </button>}
-                            {showCanvasSourceHandle && (
+                            </div>
+                          );
+                        })}
+                        {canvasRenderableItems.map(canvasItem => {
+                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
+                          const isConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
+                          if (!canUseCanvasItemAsAiInput(canvasItem) || (!isSelected && !isConnectedSource)) return null;
+                          const itemBox = getCanvasItemRenderedBox(canvasItem);
+                          const centerX = itemBox.x + itemBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
+                          const centerY = itemBox.y + itemBox.height / 2;
+                          return (
+                            <button
+                              key={`canvas-source-handle-${canvasItem.id}`}
+                              data-no-drag="true"
+                              type="button"
+                              className="absolute z-[3] flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
+                              style={{
+                                left: centerX - 18,
+                                top: centerY - 18,
+                              }}
+                              onPointerDown={(event) => startCanvasConnectionDrag(event, canvasItem.id)}
+                              title="拖出连接线到生图/视频、工作流或文字节点"
+                            >
+                              <span className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-cyan-500/95 text-white shadow-[0_5px_13px_rgba(8,145,178,0.28)] ring-2 ring-cyan-200/25 backdrop-blur-sm dark:border-white/20 dark:bg-cyan-400 dark:ring-cyan-900/30">
+                                <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {canvasRenderableItems.map(canvasItem => {
+                          if (!canUseCanvasItemAsAiTarget(canvasItem)) return null;
+                          const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
+                          const isConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
+                          const showTargetHandle = canvasConnectionDraft || canvasInputActionDraft || isSelected
+                            || isConnectedTarget || canvasInputMenuForId === canvasItem.id;
+                          if (!showTargetHandle) return null;
+                          const itemBox = getCanvasItemRenderedBox(canvasItem);
+                          const centerX = itemBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
+                          const centerY = itemBox.y + itemBox.height / 2;
+                          return (
+                            <div
+                              key={`canvas-target-handle-${canvasItem.id}`}
+                              data-no-drag="true"
+                              data-canvas-ai-input-id={canvasItem.id}
+                              className="absolute z-[3] flex h-9 w-9 items-center justify-center rounded-full text-white"
+                              style={{
+                                left: centerX - 18,
+                                top: centerY - 18,
+                              }}
+                              onPointerDown={(event) => {
+                                if (canvasConnectionDraft) {
+                                  event.stopPropagation();
+                                  return;
+                                }
+                                startCanvasInputActionDrag(event, canvasItem.id);
+                              }}
+                              title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
+                            >
                               <button
-                                data-no-drag="true"
                                 type="button"
-                                className="absolute z-20 flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
-                                style={{
-                                  left: canvasRenderedItemWidth + CANVAS_CONNECTION_HANDLE_OUTSET - 18,
-                                  top: canvasRenderedItemHeight / 2 - 18,
-                                }}
-                                onPointerDown={(event) => startCanvasConnectionDrag(event, canvasItem.id)}
-                                title="拖出连接线到生图/视频、工作流或文字节点"
-                              >
-                                <span className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-cyan-500/95 text-white shadow-[0_5px_13px_rgba(8,145,178,0.28)] ring-2 ring-cyan-200/25 backdrop-blur-sm dark:border-white/20 dark:bg-cyan-400 dark:ring-cyan-900/30">
-                                  <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
-                                </span>
-                              </button>
-                            )}
-                            {showCanvasTargetHandle && (
-                              <div
-                                data-no-drag="true"
                                 data-canvas-ai-input-id={canvasItem.id}
-                                className="absolute z-20 flex h-9 w-9 items-center justify-center rounded-full text-white"
-                                style={{
-                                  left: -CANVAS_CONNECTION_HANDLE_OUTSET - 18,
-                                  top: canvasRenderedItemHeight / 2 - 18,
-                                }}
-                                onPointerDown={(event) => {
-                                  if (canvasConnectionDraft) {
-                                    event.stopPropagation();
-                                    return;
-                                  }
-                                  startCanvasInputActionDrag(event, canvasItem.id);
-                                }}
                                 title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
+                                className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-blue-500 text-white shadow-[0_5px_13px_rgba(59,130,246,0.28)] ring-2 ring-blue-300/45 transition-all hover:scale-105 hover:bg-blue-400 dark:border-white/20 dark:bg-blue-400 dark:text-stone-950"
                               >
-                                <button
-                                  type="button"
-                                  data-canvas-ai-input-id={canvasItem.id}
-                                  title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
-                                  className="flex h-5 w-5 items-center justify-center rounded-full border border-white/95 bg-blue-500 text-white shadow-[0_5px_13px_rgba(59,130,246,0.28)] ring-2 ring-blue-300/45 transition-all hover:scale-105 hover:bg-blue-400 dark:border-white/20 dark:bg-blue-400 dark:text-stone-950"
-                                >
-                                  <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
-                                </button>
-                              </div>
-                            )}
+                                <span className="h-1.5 w-1.5 rounded-full bg-white shadow-sm dark:bg-stone-950" />
+                              </button>
                             </div>
                           );
                         })}
