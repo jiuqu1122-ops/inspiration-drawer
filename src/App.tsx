@@ -698,6 +698,8 @@ import {
   getCanvasAiVideoModelCandidates,
   getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
+  getMiniMaxH3VideoResolutionValues,
+  normalizeMiniMaxH3VideoResolution,
   filterCanvasAiVideoModelCandidates,
   getMikotoVideoResolutionValues,
   getMikotoVideoDurationValues,
@@ -29801,21 +29803,30 @@ useEffect(() => {
                             && isSeedance20VideoModel(canvasAiItemModel);
                           const isCanvasAiSeedanceLikeVideo = canvasAiMediaType === 'video'
                             && isSeedanceLikeVideoModel(canvasAiItemModel);
+                          const isCanvasAiMiniMaxVideo = canvasAiMediaType === 'video'
+                            && canvasAiItemProvider === 'minimax'
+                            && isMiniMaxH3VideoModel(canvasAiItemModel);
                           const isCanvasAiMikotoVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'mikoto';
                           const isCanvasAiMikotoKlingVideo = isCanvasAiMikotoVideo
                             && /^kling(?:-omni)?-video$/i.test(String(canvasAiItemModel || '').trim());
                           const canvasAiVideoResolutionValues = isCanvasAiMikotoVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
+                            : isCanvasAiMiniMaxVideo
+                            ? getMiniMaxH3VideoResolutionValues()
                             : isCanvasAiSeedanceLikeVideo
                             ? getMikotoVideoResolutionValues(canvasAiItemModel)
                             : isCanvasAiNewApiVideo
                               ? getNewApiVideoResolutionValues(canvasAiItemModel)
                               : CANVAS_AI_VIDEO_RESOLUTIONS;
-                          const canvasAiVideoResolutionOptions = CANVAS_AI_VIDEO_RESOLUTION_OPTIONS.filter(option => (
-                            canvasAiVideoResolutionValues.includes(option.value)
-                          ));
+                          const canvasAiVideoResolutionOptions = isCanvasAiMiniMaxVideo
+                            ? canvasAiVideoResolutionValues.map(value => ({ value, label: value }))
+                            : CANVAS_AI_VIDEO_RESOLUTION_OPTIONS.filter(option => (
+                              canvasAiVideoResolutionValues.includes(option.value)
+                            ));
                           const canvasAiVideoResolution = isCanvasAiMikotoVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
+                            : isCanvasAiMiniMaxVideo
+                            ? normalizeMiniMaxH3VideoResolution(canvasItem.ai?.resolution)
                             : isCanvasAiSeedanceLikeVideo
                             ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
                             : isCanvasAiNewApiVideo
@@ -31301,6 +31312,8 @@ useEffect(() => {
                                                     ? isSeedance20VideoModel(model)
                                                       ? normalizeMikotoVideoResolution(model, canvasItem.ai?.resolution)
                                                       : normalizeNewApiVideoResolutionForModel(model, canvasItem.ai?.resolution)
+                                                    : canvasAiMediaType === 'video' && provider === 'minimax'
+                                                      ? normalizeMiniMaxH3VideoResolution(canvasItem.ai?.resolution)
                                                     : canvasAiMediaType === 'video' && provider === 'mikoto'
                                                       ? normalizeMikotoVideoResolution(model, canvasItem.ai?.resolution)
                                                     : canvasItem.ai?.resolution;
@@ -31391,8 +31404,10 @@ useEffect(() => {
                                               videoResolutionValue={canvasAiVideoResolution}
                                               videoResolutionOptions={canvasAiVideoResolutionOptions}
                                               onVideoResolutionChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                resolution: isCanvasAiSeedanceLikeVideo
-                                                  ? normalizeMikotoVideoResolution(canvasAiItemModel, value)
+                                                resolution: isCanvasAiMiniMaxVideo
+                                                  ? normalizeMiniMaxH3VideoResolution(value)
+                                                  : isCanvasAiSeedanceLikeVideo
+                                                    ? normalizeMikotoVideoResolution(canvasAiItemModel, value)
                                                   : isCanvasAiNewApiVideo
                                                     ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, value)
                                                     : isCanvasAiMikotoVideo

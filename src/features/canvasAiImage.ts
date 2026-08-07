@@ -94,6 +94,14 @@ export const isMiniMaxH3VideoModel = (model?: string | null) => (
   String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '') === 'minimaxh3'
 );
 
+export const getMiniMaxH3VideoResolutionValues = (): string[] => ['768P', '2K'];
+
+export const normalizeMiniMaxH3VideoResolution = (resolution?: string | null) => (
+  String(resolution || '').trim().toUpperCase() === '2K' || String(resolution || '').trim().toLowerCase() === '1080p'
+    ? '2K'
+    : '768P'
+);
+
 export const isSeedanceLikeVideoModel = (model?: string | null) => (
   isSeedance20VideoModel(model) || isMiniMaxH3VideoModel(model)
 );
@@ -667,7 +675,7 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     const output: string[] = [];
     const taskIds: string[] = [];
     for (const item of result.results || []) {
-      output.push(...collectVideoStrings(item));
+      if (isNewApiVideoResultReady(item)) output.push(...collectVideoStrings(item));
       const taskId = getTaskIdFromResponse(item);
       if (taskId) taskIds.push(taskId);
     }
@@ -684,12 +692,13 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
           clientRequestId,
           providerChannelId: options.providerChannelId?.trim() || undefined,
         });
-        output.push(...collectVideoStrings(lastStatus));
-        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
-        const state = getNewApiVideoTaskState(lastStatus);
-        if (isNewApiVideoFailureState(state)) {
+        const statusState = getNewApiVideoTaskState(lastStatus);
+        if (isNewApiVideoFailureState(statusState)) {
           throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
         }
+        if (!isNewApiVideoResultReady(lastStatus)) continue;
+        output.push(...collectVideoStrings(lastStatus));
+        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
       if (failure) throw new Error(failure);
@@ -3241,11 +3250,31 @@ export const isNewApiVideoFailureState = (state: unknown) => (
   )
 );
 
+const NEW_API_VIDEO_SUCCESS_STATES = new Set([
+  'complete',
+  'completed',
+  'done',
+  'finished',
+  'published',
+  'ready',
+  'success',
+  'succeeded',
+]);
+
+export const isNewApiVideoSuccessState = (state: unknown) => (
+  NEW_API_VIDEO_SUCCESS_STATES.has(normalizeNewApiVideoTaskState(state))
+);
+
 export const getNewApiVideoTaskState = (value: unknown): string => {
   const states = collectNewApiVideoTaskStates(value);
   return states.find(state => isNewApiVideoFailureState(state))
     || states[0]
     || '';
+};
+
+export const isNewApiVideoResultReady = (value: unknown) => {
+  const state = getNewApiVideoTaskState(value);
+  return !state || isNewApiVideoSuccessState(state);
 };
 
 const getNewApiVideoFailureMessage = (
@@ -3378,7 +3407,7 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
     });
     const started = await postJsonViaTauri(endpoint, apiKey, body, options);
     const immediate = collectNewApiVideoResults(started, [...inputImages, ...inputVideos, ...inputAudios]);
-    if (immediate.length > 0) {
+    if (isNewApiVideoResultReady(started) && immediate.length > 0) {
       output.push(...immediate);
       continue;
     }
@@ -3391,7 +3420,9 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
       await delay(NEW_API_VIDEO_TASK_POLL_INTERVAL_MS);
       const status = await getJsonViaTauri(`${endpoint}/${encodeURIComponent(taskId)}`, apiKey, options);
       lastStatus = status;
-      const videos = collectNewApiVideoResults(status, [...inputImages, ...inputVideos, ...inputAudios]);
+      const videos = isNewApiVideoResultReady(status)
+        ? collectNewApiVideoResults(status, [...inputImages, ...inputVideos, ...inputAudios])
+        : [];
       if (videos.length > 0) {
         output.push(...videos);
         break;

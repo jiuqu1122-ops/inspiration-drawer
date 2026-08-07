@@ -30,6 +30,8 @@ import {
   getCanvasAiVideoModelCandidates,
   getCanvasAiVideoModelOptionValue,
   getCanvasAiVideoProviderForModel,
+  getMiniMaxH3VideoResolutionValues,
+  normalizeMiniMaxH3VideoResolution,
   filterCanvasAiVideoModelCandidates,
   isSeedance20VideoModel,
   getCloudWalletImageLookupImages,
@@ -47,6 +49,8 @@ import {
   getXaisImageModelDisplayName,
   formatNewApiVideoFailureMessage,
   getNewApiVideoTaskState,
+  isNewApiVideoResultReady,
+  isNewApiVideoSuccessState,
   isNewApiVideoFailureState,
   gptImage2SizeFromAspectRatio,
   isLikelyNewApiVideoModel,
@@ -937,6 +941,22 @@ describe('NewAPI video routing', () => {
     expect(filterCanvasAiVideoModelCandidates('veo-3.1', staleCandidates)).toEqual([
       staleCandidates[0],
     ]);
+  });
+
+  it('uses MiniMax H3 native resolution labels in the video control', () => {
+    expect(getMiniMaxH3VideoResolutionValues()).toEqual(['768P', '2K']);
+    expect(normalizeMiniMaxH3VideoResolution('720p')).toBe('768P');
+    expect(normalizeMiniMaxH3VideoResolution('1080p')).toBe('2K');
+    expect(normalizeMiniMaxH3VideoResolution('2K')).toBe('2K');
+  });
+
+  it('does not accept media from a still-processing task response', () => {
+    const oldResult = { status: 'processing', video_url: 'https://example.com/old.mp4' };
+    expect(isNewApiVideoSuccessState('processing')).toBe(false);
+    expect(isNewApiVideoResultReady(oldResult)).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'succeeded', video_url: 'https://example.com/new.mp4' })).toBe(true);
+    expect(isNewApiVideoResultReady({ video_url: 'https://example.com/legacy.mp4' })).toBe(true);
+    expect(isNewApiVideoResultReady({ status: 'failed', video_url: 'https://example.com/old.mp4' })).toBe(false);
   });
 
   it('adapts the reference UI slots to each video model', () => {
