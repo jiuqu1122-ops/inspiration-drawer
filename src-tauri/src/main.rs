@@ -1144,10 +1144,12 @@ fn download_url_to_file_with_client(
 const RIFE_ENGINE_VERSION: &str = "20221029";
 const RIFE_ENGINE_DIR_NAME: &str = "rife-ncnn-vulkan-20221029-windows";
 const RIFE_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
+const RIFE_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_SHA256: &str = "A4DA55EC5629DBD5E9C6594D96225308325FC39A3DF67CD8E77010207525CE77";
 const RIFE_ENGINE_ZIP_SIZE: u64 = 123_750_542;
 const FFMPEG_TOOLS_DIR_NAME: &str = "ffmpeg-tools-n8.1-win64-gpl";
 const FFMPEG_TOOLS_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
+const FFMPEG_TOOLS_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_SHA256: &str =
     "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
 const FFMPEG_TOOLS_ZIP_SIZE: u64 = 109_205_730;
@@ -1160,6 +1162,7 @@ const REALESRGAN_SAFE_FINAL_MAX_EDGE: u32 = 4_096;
 const REALESRGAN_SAFE_FINAL_MAX_PIXELS: u64 = 16_000_000;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
 const REALESRGAN_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
+const REALESRGAN_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
     "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D";
 const REALESRGAN_ENGINE_ZIP_SIZE: u64 = 45_474_481;
@@ -2811,56 +2814,154 @@ fn copy_response_to_file_with_progress(
     Ok(())
 }
 
+fn download_engine_archive_from_sources(
+    app_handle: &tauri::AppHandle,
+    archive_path: &Path,
+    progress_id: Option<&str>,
+    display_name: &str,
+    connecting_stage: &str,
+    downloading_stage: &str,
+    sources: &[(&str, &str)],
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 {display_name} 下载目录失败：{e}"))?;
+    }
+
+    let temporary_path = archive_path.with_extension("download.tmp");
+    let has_configured_proxy = effective_proxy(Some(app_handle), None).is_some();
+    let mut failures = Vec::new();
+
+    for (source_name, source_url) in sources {
+        let prefer_direct = should_prefer_direct_generated_image_download(source_url);
+        let network_modes: &[&str] = if has_configured_proxy && prefer_direct {
+            &["直连", "代理"]
+        } else if has_configured_proxy {
+            &["代理", "直连"]
+        } else {
+            &["直连"]
+        };
+
+        for network_mode in network_modes {
+            let _ = fs::remove_file(&temporary_path);
+            emit_rife_engine_progress(
+                app_handle,
+                progress_id,
+                connecting_stage,
+                &format!("连接 {display_name} 下载源（{source_name} / {network_mode}）"),
+                0,
+                expected_size,
+            );
+
+            let client = match *network_mode {
+                "代理" => build_engine_download_http_client(app_handle, 1800),
+                _ => build_direct_http_client(1800),
+            };
+            let client = match client {
+                Ok(value) => value,
+                Err(error) => {
+                    failures.push(format!("{source_name} / {network_mode}: {error}"));
+                    continue;
+                }
+            };
+
+            let attempt = (|| -> Result<(), String> {
+                let mut response = client
+                    .get(*source_url)
+                    .send()
+                    .map_err(|e| format!("连接失败：{e}"))?;
+                if !response.status().is_success() {
+                    return Err(format!("HTTP {}", response.status()));
+                }
+                if let Some(content_length) = response.content_length() {
+                    if content_length != expected_size {
+                        return Err(format!(
+                            "文件大小不符：期望 {expected_size}，服务器返回 {content_length}"
+                        ));
+                    }
+                }
+
+                {
+                    let mut file = File::create(&temporary_path)
+                        .map_err(|e| format!("创建临时下载文件失败：{e}"))?;
+                    copy_response_to_file_with_progress(
+                        &mut response,
+                        &mut file,
+                        app_handle,
+                        progress_id,
+                        downloading_stage,
+                        &format!("下载 {display_name}（{source_name}）"),
+                        expected_size,
+                    )?;
+                    file.flush()
+                        .map_err(|e| format!("写入临时下载文件失败：{e}"))?;
+                }
+
+                let actual_size = fs::metadata(&temporary_path)
+                    .map_err(|e| format!("读取临时下载文件失败：{e}"))?
+                    .len();
+                if actual_size != expected_size {
+                    return Err(format!(
+                        "下载不完整：期望 {expected_size} 字节，实际 {actual_size} 字节"
+                    ));
+                }
+                let actual_sha256 = sha256_file_upper(&temporary_path)?;
+                if actual_sha256 != expected_sha256 {
+                    return Err(format!(
+                        "SHA-256 校验失败：期望 {expected_sha256}，实际 {actual_sha256}"
+                    ));
+                }
+
+                fs::rename(&temporary_path, archive_path)
+                    .or_else(|_| {
+                        fs::copy(&temporary_path, archive_path).map(|_| ())?;
+                        let _ = fs::remove_file(&temporary_path);
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .map_err(|e| format!("保存 {display_name} 失败：{e}"))
+            })();
+
+            match attempt {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let _ = fs::remove_file(&temporary_path);
+                    failures.push(format!("{source_name} / {network_mode}: {error}"));
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "{display_name} 下载失败，已尝试 OSS 主源和备用源：\n{}",
+        failures
+            .iter()
+            .map(|failure| format!("- {failure}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
 fn download_rife_engine_archive(
     app_handle: &tauri::AppHandle,
     archive_path: &Path,
     progress_id: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建引擎下载目录失败: {}", e))?;
-    }
-    emit_rife_engine_progress(
+    download_engine_archive_from_sources(
         app_handle,
+        archive_path,
         progress_id,
+        "RIFE 引擎",
         "connecting-rife",
-        "连接 RIFE 下载源",
-        0,
-        0,
-    );
-    let client = build_engine_download_http_client(app_handle, 1800)?;
-    let mut response = client.get(RIFE_ENGINE_ASSET_URL).send().map_err(|e| {
-        format!(
-            "下载 RIFE 引擎失败: {}。请检查网络/代理后重试，或稍后再试。",
-            e
-        )
-    })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载 RIFE 引擎失败，HTTP 状态码: {}",
-            response.status()
-        ));
-    }
-
-    let tmp_path = archive_path.with_extension("download.tmp");
-    {
-        let mut file = File::create(&tmp_path).map_err(|e| format!("创建下载文件失败: {}", e))?;
-        copy_response_to_file_with_progress(
-            &mut response,
-            &mut file,
-            app_handle,
-            progress_id,
-            "downloading-rife",
-            "下载 RIFE 引擎",
-            RIFE_ENGINE_ZIP_SIZE,
-        )?;
-    }
-    fs::rename(&tmp_path, archive_path)
-        .or_else(|_| {
-            fs::copy(&tmp_path, archive_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("保存 RIFE 引擎失败: {}", e))
+        "downloading-rife",
+        &[
+            ("OSS 主源", RIFE_ENGINE_ASSET_URL),
+            ("GitHub 备用源", RIFE_ENGINE_ASSET_FALLBACK_URL),
+        ],
+        RIFE_ENGINE_ZIP_SIZE,
+        RIFE_ENGINE_SHA256,
+    )
 }
 
 fn download_realesrgan_engine_archive(
@@ -2868,54 +2969,20 @@ fn download_realesrgan_engine_archive(
     archive_path: &Path,
     progress_id: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建 Real-ESRGAN 下载目录失败: {}", e))?;
-    }
-    emit_rife_engine_progress(
+    download_engine_archive_from_sources(
         app_handle,
+        archive_path,
         progress_id,
+        "Real-ESRGAN 引擎",
         "connecting-realesrgan",
-        "连接 Real-ESRGAN 下载源",
-        0,
-        0,
-    );
-    let client = build_engine_download_http_client(app_handle, 120)?;
-    let mut response = client
-        .get(REALESRGAN_ENGINE_ASSET_URL)
-        .send()
-        .map_err(|e| {
-            format!(
-                "下载 Real-ESRGAN 引擎失败: {}。请检查网络/代理后重试，或稍后再试。",
-                e
-            )
-        })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载 Real-ESRGAN 引擎失败，HTTP 状态码: {}",
-            response.status()
-        ));
-    }
-
-    let tmp_path = archive_path.with_extension("download.tmp");
-    {
-        let mut file = File::create(&tmp_path).map_err(|e| format!("创建下载文件失败: {}", e))?;
-        copy_response_to_file_with_progress(
-            &mut response,
-            &mut file,
-            app_handle,
-            progress_id,
-            "downloading-realesrgan",
-            "下载 Real-ESRGAN 引擎",
-            REALESRGAN_ENGINE_ZIP_SIZE,
-        )?;
-    }
-    fs::rename(&tmp_path, archive_path)
-        .or_else(|_| {
-            fs::copy(&tmp_path, archive_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("保存 Real-ESRGAN 引擎失败: {}", e))
+        "downloading-realesrgan",
+        &[
+            ("OSS 主源", REALESRGAN_ENGINE_ASSET_URL),
+            ("GitHub 备用源", REALESRGAN_ENGINE_ASSET_FALLBACK_URL),
+        ],
+        REALESRGAN_ENGINE_ZIP_SIZE,
+        REALESRGAN_ENGINE_SHA256,
+    )
 }
 
 fn extract_rife_engine_archive(archive_path: &Path, base_dir: &Path) -> Result<(), String> {
@@ -2956,52 +3023,20 @@ fn download_ffmpeg_tools_archive(
     archive_path: &Path,
     progress_id: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建 FFmpeg 工具下载目录失败: {}", e))?;
-    }
-    emit_rife_engine_progress(
+    download_engine_archive_from_sources(
         app_handle,
+        archive_path,
         progress_id,
+        "FFmpeg / FFprobe 工具",
         "connecting-ffmpeg-tools",
-        "连接 FFmpeg / FFprobe 下载源",
-        0,
-        0,
-    );
-    let client = build_engine_download_http_client(app_handle, 1800)?;
-    let mut response = client.get(FFMPEG_TOOLS_ASSET_URL).send().map_err(|e| {
-        format!(
-            "下载 FFmpeg / FFprobe 工具失败: {}。请检查网络/代理后重试，或稍后再试。",
-            e
-        )
-    })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载 FFmpeg / FFprobe 工具失败，HTTP 状态码: {}",
-            response.status()
-        ));
-    }
-
-    let tmp_path = archive_path.with_extension("download.tmp");
-    {
-        let mut file =
-            File::create(&tmp_path).map_err(|e| format!("创建工具下载文件失败: {}", e))?;
-        copy_response_to_file_with_progress(
-            &mut response,
-            &mut file,
-            app_handle,
-            progress_id,
-            "downloading-ffmpeg-tools",
-            "下载 FFmpeg / FFprobe",
-            FFMPEG_TOOLS_ZIP_SIZE,
-        )?;
-    }
-    fs::rename(&tmp_path, archive_path)
-        .or_else(|_| {
-            fs::copy(&tmp_path, archive_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("保存 FFmpeg / FFprobe 工具失败: {}", e))
+        "downloading-ffmpeg-tools",
+        &[
+            ("OSS 主源", FFMPEG_TOOLS_ASSET_URL),
+            ("GitHub 备用源", FFMPEG_TOOLS_ASSET_FALLBACK_URL),
+        ],
+        FFMPEG_TOOLS_ZIP_SIZE,
+        FFMPEG_TOOLS_SHA256,
+    )
 }
 
 fn ensure_ffmpeg_tools_installed(
