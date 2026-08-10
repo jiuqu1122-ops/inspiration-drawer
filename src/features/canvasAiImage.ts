@@ -675,8 +675,9 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
     const output: string[] = [];
     const taskIds: string[] = [];
     for (const item of result.results || []) {
-      if (isNewApiVideoResultReady(item)) output.push(...collectVideoStrings(item));
       const taskId = getTaskIdFromResponse(item);
+      const currentTask = taskId ? selectCloudWalletVideoTaskPayload(item, taskId) : item;
+      if (isNewApiVideoResultReady(currentTask)) output.push(...collectVideoStrings(currentTask));
       if (taskId) taskIds.push(taskId);
     }
     if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
@@ -686,12 +687,16 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       let lastStatus: unknown = null;
       while (Date.now() < deadline) {
         await delay(2500);
-        lastStatus = await invoke<unknown>('get_cloud_video_status', {
+        const statusResponse = await invoke<unknown>('get_cloud_video_status', {
           taskId,
           provider,
           clientRequestId,
           providerChannelId: options.providerChannelId?.trim() || undefined,
         });
+        // Some upstream video APIs return a task list instead of one task.
+        // Never let a historical task's terminal state or media URLs decide
+        // the outcome of the task that this request actually started.
+        lastStatus = selectCloudWalletVideoTaskPayload(statusResponse, taskId);
         const statusState = getNewApiVideoTaskState(lastStatus);
         if (isNewApiVideoFailureState(statusState)) {
           throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
@@ -3209,6 +3214,61 @@ const NEW_API_VIDEO_NESTED_KEYS = new Set([
   'operation',
   'meta',
 ]);
+
+const CLOUD_WALLET_VIDEO_TASK_ID_KEYS = new Set([
+  'id',
+  'task_id',
+  'taskid',
+  'video_id',
+  'videoid',
+]);
+
+const normalizeVideoTaskFieldKey = (value: string) => (
+  value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+);
+
+const findCloudWalletVideoTaskPayload = (
+  value: unknown,
+  expectedTaskId: string,
+  seen = new Set<object>(),
+  depth = 0,
+): unknown | undefined => {
+  if (!value || typeof value !== 'object' || depth > 10 || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const matched = findCloudWalletVideoTaskPayload(item, expectedTaskId, seen, depth + 1);
+      if (matched !== undefined) return matched;
+    }
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const hasExpectedTaskId = Object.entries(record).some(([key, nested]) => (
+    CLOUD_WALLET_VIDEO_TASK_ID_KEYS.has(normalizeVideoTaskFieldKey(key))
+      && (typeof nested === 'string' || typeof nested === 'number')
+      && String(nested).trim() === expectedTaskId
+  ));
+  if (hasExpectedTaskId) return record;
+
+  for (const nested of Object.values(record)) {
+    if (!nested || typeof nested !== 'object') continue;
+    const matched = findCloudWalletVideoTaskPayload(nested, expectedTaskId, seen, depth + 1);
+    if (matched !== undefined) return matched;
+  }
+  return undefined;
+};
+
+/**
+ * Isolate the task requested by the client from provider responses that also
+ * contain history. Without this guard, one old failed H3 task can make a new
+ * processing task look failed and old result URLs can be cached as new media.
+ */
+export const selectCloudWalletVideoTaskPayload = (value: unknown, taskId: string): unknown => {
+  const expectedTaskId = String(taskId || '').trim();
+  if (!expectedTaskId) return value;
+  return findCloudWalletVideoTaskPayload(value, expectedTaskId) ?? value;
+};
 
 const normalizeNewApiVideoTaskState = (value: unknown) => (
   typeof value === 'string'

@@ -15,6 +15,7 @@ import {
   buildNewApiVideoPrompt,
   buildCanvasAiIndexedReferencePrompt,
   collectVideoStrings,
+  selectCloudWalletVideoTaskPayload,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
@@ -117,6 +118,44 @@ describe('cloud wallet video result parsing', () => {
       'https://api.unmind.art/v1/ai/video-results/stable-1.mp4',
       'https://api.unmind.art/v1/ai/video-results/stable-2.mp4',
     ]);
+  });
+
+  it('isolates the current H3 task from failed history and old result URLs', () => {
+    const response = {
+      status: 'processing',
+      walletVideoResults: [
+        'https://api.unmind.art/v1/ai/video-results/old.mp4',
+      ],
+      tasks: [
+        {
+          task_id: 'old-task',
+          status: 'failed',
+          errorMessage: 'HTTP 402: H3 积分余额不足 (1008)',
+          video_url: 'https://upstream.example/old.mp4',
+        },
+        {
+          task_id: 'current-task',
+          status: 'processing',
+        },
+      ],
+    };
+
+    const current = selectCloudWalletVideoTaskPayload(response, 'current-task');
+    expect(getNewApiVideoTaskState(current)).toBe('processing');
+    expect(collectVideoStrings(current)).toEqual([]);
+
+    const completed = selectCloudWalletVideoTaskPayload({
+      tasks: [
+        ...response.tasks,
+        {
+          task_id: 'completed-task',
+          status: 'succeeded',
+          video_url: 'https://upstream.example/current.mp4',
+        },
+      ],
+    }, 'completed-task');
+    expect(getNewApiVideoTaskState(completed)).toBe('succeeded');
+    expect(collectVideoStrings(completed)).toEqual(['https://upstream.example/current.mp4']);
   });
 });
 

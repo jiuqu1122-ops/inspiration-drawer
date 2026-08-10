@@ -180,6 +180,40 @@ describe('canvas generation credits', () => {
     }, pricing).totalCredits).toBe(125);
   });
 
+  it('includes MiniMax H3 reference material pricing in the client estimate', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '2',
+      imageModels: [],
+      videoModels: [{
+        model: 'MiniMax-H3',
+        credits: '15',
+        creditsByResolution: { '2k': '10' },
+        includedReferenceImages: 5,
+        creditsPerExtraReferenceImage: '9',
+        creditsPerReferenceVideoSecond: '15',
+        referenceVideoCreditsByResolution: { '2k': '10' },
+      }],
+    };
+
+    expect(getCanvasVideoRequestCredits(
+      'MiniMax-H3',
+      4,
+      1,
+      '768P',
+      pricing,
+      { imageCount: 7, videoCount: 1 },
+    )).toBe(138);
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'MiniMax-H3',
+      duration: 4,
+      count: 2,
+      resolution: '2K',
+    }, pricing, { imageCount: 6, videoCount: 1 }).totalCredits).toBe(418);
+  });
+
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {
     const workflow = {
       id: 'priced-workflow',

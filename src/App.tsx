@@ -29967,13 +29967,20 @@ useEffect(() => {
                               capabilities: canvasImagePricingCapabilities,
                             }, canvasWalletPricing)
                             : null;
+                          const canvasVideoPricingReferences = canvasItem.ai?.type === 'video-generator'
+                            ? getCanvasImageInputBufferItemsForNode(canvasItem, canvasItems)
+                            : [];
+                          const canvasVideoPricingReferenceCounts = {
+                            imageCount: canvasVideoPricingReferences.filter(item => item.type === 'image').length,
+                            videoCount: canvasVideoPricingReferences.filter(item => item.type === 'video').length,
+                          };
                           const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
                             ? estimateCanvasVideoGenerationCredits({
                               model: canvasAiItemModel,
                               count: canvasItem.ai.count,
                               duration: canvasAiVideoDuration,
                               resolution: canvasAiVideoResolution,
-                            }, canvasWalletPricing)
+                            }, canvasWalletPricing, canvasVideoPricingReferenceCounts)
                             : null;
                           const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate
                             ? [
@@ -30000,7 +30007,7 @@ useEffect(() => {
                             : canvasImageCreditEstimate
                               ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
                               : canvasVideoCreditEstimate
-                                ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：${canvasVideoCreditEstimate.creditsPerSecond} 积分/秒 × ${canvasVideoCreditEstimate.durationSeconds} 秒 × ${canvasVideoCreditEstimate.outputCount} 条`
+                                ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：${canvasVideoCreditEstimate.creditsPerSecond} 积分/秒 × ${canvasVideoCreditEstimate.durationSeconds} 秒 × ${canvasVideoCreditEstimate.outputCount} 条；已计入 ${canvasVideoPricingReferenceCounts.imageCount} 张参考图和 ${canvasVideoPricingReferenceCounts.videoCount} 段参考视频`
                               : undefined;
                           const canvasWorkflowUserInput = isCanvasWorkflowItem
                             ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)

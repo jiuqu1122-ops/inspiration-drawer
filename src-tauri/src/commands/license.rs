@@ -216,6 +216,14 @@ pub struct CloudVideoModelPricing {
     credits_by_resolution: Option<std::collections::HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credits_by_count: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    included_reference_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_extra_reference_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_reference_video_second: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_video_credits_by_resolution: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
