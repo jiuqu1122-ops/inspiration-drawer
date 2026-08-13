@@ -285,6 +285,7 @@ export const getComparableCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemp
       inputs: [...(node.inputs || [])].sort(),
       fixedInput: !!node.fixedInput,
       textMode: node.textMode || '',
+      contextRouting: node.contextRouting || '',
       acceptsExternalInputs: !!node.acceptsExternalInputs,
       externalInputTypes: [...(node.externalInputTypes || [])].sort(),
       outputType: node.outputType || '',

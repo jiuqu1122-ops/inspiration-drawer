@@ -247,6 +247,11 @@ export function validateLegacyAgentAction(
     });
   }
 
+  if (action.tool === 'canvas_create_design_pipeline') {
+    if (!String(args.request || '').trim()) errors.push('product design pipeline request is required.');
+    validateIds(asStringArray(args.inputIds), nodeIds, 'input nodeId', errors);
+  }
+
   if (['canvas_run_workflow', 'canvas_organize', 'canvas_run_text_agent'].includes(action.tool)) {
     validateIds(asStringArray(args.nodeIds), nodeIds, 'nodeId', errors);
     const nodeId = String(args.nodeId || '');

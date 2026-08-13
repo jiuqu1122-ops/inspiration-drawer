@@ -3,6 +3,7 @@ import type { AppAgentPlan, AppAgentCommand } from '../commands/commandTypes';
 import type { AgentSkillId, ContextScope, RiskLevel } from '../skills/types';
 import {
   buildOriginalRequestLine,
+  buildProductDesignAnalysisPrompt,
   extractCreativeBrief,
   isDirectCreativeExecutionRequest,
   isExplicitVideoGenerationRequest,
@@ -92,9 +93,7 @@ const buildStoryboardTextAgentPrompt = (brief: CreativeBrief) => [
 ].join('\n');
 
 const buildProductStrategyTextAgentPrompt = (brief: CreativeBrief) => [
-  '产品设计策略',
-  '请先产出产品外观/CMF 策略，覆盖产品类型、使用方式、造型重点、CMF 边界、结构可信度和主要设计风险。',
-  brief.generatorPrompt,
+  buildProductDesignAnalysisPrompt(brief),
 ].join('\n');
 
 const buildWorkflowCreativeContext = (brief: CreativeBrief) => [
@@ -1480,7 +1479,40 @@ export function buildAppAgentPlan(input: {
     const selectedImageNodeIds = getSelectedImageNodeIds(input.context);
     const textAgentStepId = brief.requiresStoryboardFirst ? 'storyboardScript' : 'productStrategy';
     const textAgentOutputRef = `$${textAgentStepId}.nodeId`;
-    if (brief.requiresStoryboardFirst || brief.requiresStrategyFirst) {
+    const shouldCreateProductDesignPipeline = brief.requiresStrategyFirst
+      && brief.mediaType === 'image'
+      && !brief.isEdit
+      && !brief.requiresStoryboardFirst
+      && isDirectCreativeExecutionRequest(text);
+    if (shouldCreateProductDesignPipeline) {
+      commands.push(command('canvas', 'create_design_pipeline', {
+        request: text,
+        projectBrief: brief.projectBrief,
+        analysisPrompt: buildProductDesignAnalysisPrompt(brief),
+        generatorPrompt: brief.generatorPrompt,
+        inputIds: selectedImageNodeIds,
+        referenceCount: 5,
+        autoRunAnalysis: true,
+        autoRunGenerator: true,
+        aspectRatio: brief.dimensions.aspectRatio || null,
+        targetSize: brief.dimensions.targetSize || null,
+        resolution: brief.dimensions.resolution || null,
+        toolHint: brief.toolHint || null,
+        skillMeta: {
+          skillId: 'creative-product-design-skill',
+          originalRequest: text,
+          taskKind: brief.taskKind,
+          fidelity: brief.fidelity,
+          productCategory: brief.product.category,
+          focus: brief.product.focus,
+        },
+      }, 'costly', 'creative-product-design-skill', {
+        stepId: 'productDesignPipeline',
+        createsNode: true,
+        outputRef: '$productDesignPipeline.nodeId',
+      }));
+    }
+    if (!shouldCreateProductDesignPipeline && (brief.requiresStoryboardFirst || brief.requiresStrategyFirst)) {
       commands.push(command('canvas', 'create_text_agent', {
         prompt: brief.requiresStoryboardFirst
           ? buildStoryboardTextAgentPrompt(brief)
@@ -1504,7 +1536,7 @@ export function buildAppAgentPlan(input: {
         outputRef: textAgentOutputRef,
       }));
     }
-    if (brief.requiresStoryboardFirst && !isExplicitVideoGenerationRequest(text)) {
+    if (!shouldCreateProductDesignPipeline && brief.requiresStoryboardFirst && !isExplicitVideoGenerationRequest(text)) {
       commands.push(command('canvas', 'create_generator', {
         mediaType: 'image',
         prompt: buildStoryboardSheetPrompt(brief),
@@ -1536,7 +1568,7 @@ export function buildAppAgentPlan(input: {
         createsNode: true,
         outputRef: '$storyboardSheet.nodeId',
       }));
-    } else if (!brief.requiresStoryboardFirst || isDirectCreativeExecutionRequest(text)) {
+    } else if (!shouldCreateProductDesignPipeline && (!brief.requiresStoryboardFirst || isDirectCreativeExecutionRequest(text))) {
       commands.push(command('canvas', 'create_generator', {
         mediaType: brief.mediaType,
         prompt: brief.generatorPrompt,

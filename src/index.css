@@ -67,6 +67,20 @@ body,
   backdrop-filter: none !important;
 }
 
+/*
+ * WebView2 can rasterize text into a softened compositor layer when a canvas
+ * node combines backdrop-filter with the scaled canvas transform. The old
+ * interaction-only override made the text look sharp while the pointer was
+ * held down, then blurry again after release. Keep backdrop blur disabled for
+ * nodes inside the transformed canvas; panels outside the canvas retain their
+ * glass effect.
+ */
+[data-canvas-content-layer="true"] [data-canvas-item-id],
+[data-canvas-content-layer="true"] [data-canvas-item-id] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 [data-canvas-item-id] {
   contain: layout paint style;
 }

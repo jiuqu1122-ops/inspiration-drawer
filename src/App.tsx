@@ -7,6 +7,7 @@ import { CanvasAiSettingsPanel } from './components/CanvasAiSettingsPanel';
 import { CanvasLocalMediaControls } from './components/CanvasLocalMediaControls';
 import { CanvasGeneratorControls } from './components/CanvasGeneratorControls';
 import { CanvasAiRunButton } from './components/CanvasAiRunButton';
+import { CanvasImageFusionControls } from './components/CanvasImageFusionControls';
 import {
   CANVAS_AI_NODE_CHEVRON_CLASS,
   CANVAS_AI_NODE_SELECT_MENU_CLASS,
@@ -144,6 +145,12 @@ import {
   isCanvasWorkflowReadableTextFileName,
   normalizeLocalDragPath,
 } from './utils/localMediaPaths';
+import {
+  AI_GENERATED_FOLDER_NAME,
+  ensureCanvasGeneratedImageFolders,
+  getAiGeneratedImageFolderIds,
+  getCanvasGeneratedImageFolderName,
+} from './utils/canvasGeneratedFolders';
 import {
   CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE,
   canUseCanvasItemAsAiInput,
@@ -438,6 +445,30 @@ import {
   buildFinalImagePrompt,
   truncatePromptToUtf8ByteLimit,
 } from './features/appAgent/imageQuality/imageRulePromptBuilder';
+import {
+  applyCanvasTextContextRouting,
+  buildCanvasContextRoutingInstruction,
+  type CanvasContextRoutingTarget,
+} from './utils/canvasTextContextRouting';
+import {
+  assignCanvasImageFusionInputs,
+  buildCanvasImageFusionPrompt,
+  getCanvasImageFusionInputIds,
+  isCanvasImageFusionAi,
+  normalizeCanvasImageFusionConfig,
+  removeCanvasImageFusionInput,
+  type CanvasImageFusionRole,
+} from './utils/canvasImageFusion';
+import {
+  buildProductDesignPipelineAnalysisPrompt,
+  buildProductDesignPipelineGeneratorPrompt,
+  expandProductStyleSearchTerms,
+  extractExplicitProductStyleTerms,
+  filterExplicitStyleReferences,
+  mapInspirationRoleToGeneratorRole,
+  selectProductDesignReferencesByAxis,
+  type ProductDesignSelectedReference,
+} from './features/productDesignPipeline';
 
 const sortCanvasesNewestFirst = (items: CanvasRecord[]) => (
   [...items].sort((a, b) => (
@@ -911,9 +942,6 @@ const CANVAS_NODE_RADIUS = 20;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
 const CANVAS_INTERACTION_OVERSCAN_PX = 680;
 const CANVAS_GENERATED_LIST_RENDER_LIMIT = 60;
-const AI_GENERATED_FOLDER_ID = 'ai_generated_images';
-const AI_GENERATED_FOLDER_NAME = 'AI生图';
-const AI_GENERATED_FOLDER_COLOR = '#06b6d4';
 const AI_GENERATED_VIDEO_FOLDER_ID = 'ai_generated_videos';
 const AI_GENERATED_VIDEO_FOLDER_NAME = 'AI视频';
 const AI_GENERATED_VIDEO_FOLDER_COLOR = '#10b981';
@@ -929,6 +957,10 @@ const DESIGN_AGENT_THINKING_MODE_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_T
   value,
   label: DESIGN_AGENT_THINKING_MODE_LABELS[value],
 }));
+const CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS: RoundedSelectOption[] = [
+  { value: 'full', label: '完整传递' },
+  { value: 'auto', label: '自动分流' },
+];
 const DRAWER_TOOL_BUTTON_BASE_CLASS = 'p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400';
 const DRAWER_FOLDER_TONES = [
   {
@@ -1233,6 +1265,7 @@ function MainApp() {
   const [canvasPresetPromptDraft, setCanvasPresetPromptDraft] = useState('');
   const [canvasWorkflowSingleEditGroupIds, setCanvasWorkflowSingleEditGroupIds] = useState<string[]>([]);
   const isCanvasModeRef = useRef(false);
+  const canvasesRef = useRef<CanvasRecord[]>([]);
   const activeCanvasIdRef = useRef(DEFAULT_CANVAS_ID);
   const isSwitchingCanvasRef = useRef(false);
   const canvasItemsRef = useRef<CanvasImageItem[]>([]);
@@ -1366,6 +1399,14 @@ function MainApp() {
   } | null>(null);
   const canvasUploadInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasUploadTargetIdRef = useRef<string | null>(null);
+  const pendingCanvasFusionRoleRef = useRef<{
+    targetId: string;
+    role: CanvasImageFusionRole;
+  } | null>(null);
+  const pendingCanvasFusionUploadRoleRef = useRef<{
+    targetId: string;
+    role: CanvasImageFusionRole;
+  } | null>(null);
   const pendingCanvasWorkflowSlotUploadRef = useRef<{
     moduleId: string;
     slotId: string;
@@ -1467,6 +1508,7 @@ function MainApp() {
       setCanvasActionMenuId(null);
       setCanvasInputMenuForId(null);
       setCanvasInputPickTargetId(null);
+      pendingCanvasFusionRoleRef.current = null;
       setIsCanvasAiPanelOpen(false);
       setIsCanvasChromeHidden(false);
       Object.values(canvasAiPromptDraftTimersRef.current).forEach(timer => window.clearTimeout(timer));
@@ -1520,6 +1562,7 @@ function MainApp() {
     const timer = window.setInterval(() => setCanvasWorkingTimerTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [canvasItems]);
+  useEffect(() => { canvasesRef.current = canvases; }, [canvases]);
   useEffect(() => { activeCanvasIdRef.current = activeCanvasId; }, [activeCanvasId]);
   useEffect(() => { isSwitchingCanvasRef.current = isSwitchingCanvas; }, [isSwitchingCanvas]);
   useEffect(() => { canvasSelectedIdsRef.current = canvasSelectedIds; }, [canvasSelectedIds]);
@@ -1536,6 +1579,7 @@ function MainApp() {
     const closeCanvasClickWindows = () => {
       setCanvasContextMenu(null);
       setCanvasInputMenuForId(null);
+      pendingCanvasFusionRoleRef.current = null;
       setCanvasFolderImportPrompt(null);
       setIsCanvasAiPanelOpen(false);
       setIsCanvasPresetEditorOpen(false);
@@ -1957,12 +2001,7 @@ function MainApp() {
       || !isFoldersLoaded
       || localStorage.getItem(AI_GENERATED_IMAGE_PROMPT_NOTE_CLEANUP_KEY) === '1'
     ) return;
-    const generatedImageFolderIds = new Set([
-      AI_GENERATED_FOLDER_ID,
-      ...foldersRef.current
-        .filter(folder => folder.name === AI_GENERATED_FOLDER_NAME)
-        .map(folder => folder.id),
-    ]);
+    const generatedImageFolderIds = getAiGeneratedImageFolderIds(foldersRef.current);
     let changed = false;
     const nextItems = itemsRef.current.map(item => {
       const isLegacyGeneratedImage = item.type === 'image' && (
@@ -2523,6 +2562,7 @@ function MainApp() {
   const localVisionModelEnsurePromiseRef = useRef<Promise<void> | null>(null);
   const [localVisionModelLastError, setLocalVisionModelLastError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = React.useDeferredValue(searchQuery);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [canvasSearchCandidateLimit, setCanvasSearchCandidateLimit] = useState(CANVAS_SEARCH_CANDIDATE_LIMIT);
   const [canvasWorkflowSlotPickTarget, setCanvasWorkflowSlotPickTarget] = useState<{
@@ -2534,7 +2574,7 @@ function MainApp() {
 
   useEffect(() => {
     setCanvasSearchCandidateLimit(CANVAS_SEARCH_CANDIDATE_LIMIT);
-  }, [isCanvasMode, isSearchActive, searchQuery]);
+  }, [deferredSearchQuery, isCanvasMode, isSearchActive]);
 
   useEffect(() => { isCollectingWebImagesRef.current = isCollectingWebImages; }, [isCollectingWebImages]);
 
@@ -4981,6 +5021,10 @@ function MainApp() {
   const activeCanvas = useMemo(() => (
     canvases.find(canvas => canvas.id === activeCanvasId) || canvases.find(canvas => canvas.isActive) || null
   ), [canvases, activeCanvasId]);
+  const aiGeneratedImageFolderIds = useMemo(
+    () => getAiGeneratedImageFolderIds(folders),
+    [folders],
+  );
   const folderItemCounts = useMemo(() => {
     const directCounts = new Map<string, number>();
     items.forEach(item => {
@@ -5023,12 +5067,31 @@ function MainApp() {
       total: images.length,
     };
   }, [items]);
+  const normalizedDeferredSearchQuery = useMemo(
+    () => deferredSearchQuery.trim().toLowerCase(),
+    [deferredSearchQuery],
+  );
+  const drawerItemSearchTextCacheRef = useRef(new WeakMap<BufferItem, string>());
+  const drawerSearchIndex = useMemo(() => {
+    if (!isSearchActive) return [] as Array<{ item: BufferItem; text: string }>;
+    const cache = drawerItemSearchTextCacheRef.current;
+    return items.map(item => {
+      let text = cache.get(item);
+      if (text === undefined) {
+        text = getDrawerItemSearchText(item);
+        cache.set(item, text);
+      }
+      return { item, text };
+    });
+  }, [isSearchActive, items]);
   const drawerScopedItems = useMemo(() => {
+    if (isCanvasMode) return [];
     let result = items;
-    const hasSearchQuery = Boolean(searchQuery.trim());
+    const hasSearchQuery = Boolean(normalizedDeferredSearchQuery);
     if (hasSearchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(item => getDrawerItemSearchText(item).includes(q));
+      result = drawerSearchIndex
+        .filter(entry => entry.text.includes(normalizedDeferredSearchQuery))
+        .map(entry => entry.item);
     }
     if (!hasSearchQuery) {
       if (activeFolderId === 'all') {
@@ -5042,7 +5105,15 @@ function MainApp() {
       return [];
     }
     return result.filter(item => activeTab === 'all' || item.type === activeTab);
-  }, [items, folders, activeTab, searchQuery, activeFolderId]);
+  }, [
+    activeFolderId,
+    activeTab,
+    drawerSearchIndex,
+    folders,
+    isCanvasMode,
+    items,
+    normalizedDeferredSearchQuery,
+  ]);
   const drawerAiClassificationGroups = useMemo(() => (
     buildAiClassificationGroups(drawerScopedItems, drawerAiClassificationDimension)
   ), [drawerAiClassificationDimension, drawerScopedItems]);
@@ -5078,19 +5149,31 @@ function MainApp() {
     isDrawerAiClassificationMode,
   ]);
   const canvasSearchMediaResults = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const query = normalizedDeferredSearchQuery;
     if (!isCanvasMode || !isSearchActive || !query) {
       return { candidates: [] as BufferItem[], total: 0 };
     }
-    const matches = items.filter(item => (
-      isCanvasDrawerMediaItem(item)
-      && getDrawerItemSearchText(item).includes(query)
-    ));
-    return {
-      candidates: matches.slice(0, canvasSearchCandidateLimit),
-      total: matches.length,
-    };
-  }, [canvasSearchCandidateLimit, isCanvasMode, isSearchActive, items, searchQuery]);
+    const candidates: BufferItem[] = [];
+    let total = 0;
+    drawerSearchIndex.forEach(entry => {
+      if (!isCanvasDrawerMediaItem(entry.item) || !entry.text.includes(query)) return;
+      total += 1;
+      if (candidates.length < canvasSearchCandidateLimit) candidates.push(entry.item);
+    });
+    return { candidates, total };
+  }, [
+    canvasSearchCandidateLimit,
+    drawerSearchIndex,
+    isCanvasMode,
+    isSearchActive,
+    normalizedDeferredSearchQuery,
+  ]);
+  const canvasDrawerSourceItemIds = useMemo(() => {
+    if (!isCanvasMode || !isSearchActive || !normalizedDeferredSearchQuery) return new Set<string>();
+    return new Set(canvasItems.flatMap(canvasItem => (
+      canvasItem.item.sourceItemId ? [canvasItem.item.sourceItemId] : []
+    )));
+  }, [canvasItems, isCanvasMode, isSearchActive, normalizedDeferredSearchQuery]);
 
   const quickAccessItems = useMemo(() => items.filter(item => item.isQuickAccess), [items]);
   const drawerCardActionContext = useMemo(() => ({}), []);
@@ -5184,7 +5267,7 @@ function MainApp() {
       observer?.disconnect();
       window.removeEventListener('resize', updateDrawerViewportMetrics);
     };
-  }, [activeFolderId, activeTab, displayItems.length, isCanvasMode, searchQuery]);
+  }, [activeFolderId, activeTab, deferredSearchQuery, displayItems.length, isCanvasMode]);
 
   const handleDrawerContentScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const node = event.currentTarget;
@@ -5200,7 +5283,7 @@ function MainApp() {
     setDrawerRenderLimit(DRAWER_INITIAL_RENDER_LIMIT);
     setDrawerScrollTop(0);
     drawerScrollRef.current?.scrollTo({ top: 0 });
-  }, [activeTab, activeFolderId, searchQuery, isCanvasMode]);
+  }, [activeFolderId, activeTab, deferredSearchQuery, isCanvasMode]);
 
   const calendarEvents = useMemo<CalendarScheduleEvent[]>(() => {
     const sourceById = new Map(items.map(item => [item.id, item]));
@@ -5689,22 +5772,29 @@ function MainApp() {
     );
   };
 
-  const ensureAiGeneratedFolder = () => {
-    const existing = foldersRef.current.find(folder => folder.name === AI_GENERATED_FOLDER_NAME);
-    if (existing) return existing.id;
+  const ensureCanvasAiGeneratedFolder = (canvasId?: string | null) => {
+    const normalizedCanvasId = canvasId?.trim() || DEFAULT_CANVAS_ID;
+    const canvasName = canvasesRef.current.find(canvas => canvas.id === normalizedCanvasId)?.name;
+    const current = ensureCanvasGeneratedImageFolders(
+      foldersRef.current,
+      normalizedCanvasId,
+      canvasName,
+    );
+    if (current.folders === foldersRef.current) return current.folderId;
 
-    const newFolder: Folder = {
-      id: AI_GENERATED_FOLDER_ID,
-      name: AI_GENERATED_FOLDER_NAME,
-      color: AI_GENERATED_FOLDER_COLOR,
-    };
+    foldersRef.current = current.folders;
     setFolders(prev => {
-      if (prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)) return prev;
-      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
-      persistFoldersSnapshot(nextFolders);
-      return nextFolders;
+      const ensured = ensureCanvasGeneratedImageFolders(
+        prev,
+        normalizedCanvasId,
+        canvasName,
+      );
+      if (ensured.folders === prev) return prev;
+      foldersRef.current = ensured.folders;
+      persistFoldersSnapshot(ensured.folders);
+      return ensured.folders;
     });
-    return newFolder.id;
+    return current.folderId;
   };
 
   const ensureAiGeneratedVideoFolder = () => {
@@ -5728,6 +5818,7 @@ function MainApp() {
   const addGeneratedImagesToDrawer = (
     generatedItems: BufferItem[],
     options?: {
+      canvasId?: string;
       onOutputCachePatch?: (
         outputId: string,
         matchSources: string[],
@@ -5743,7 +5834,9 @@ function MainApp() {
     const cleanItems = generatedItems.filter(item => item.type === 'image');
     if (cleanItems.length === 0) return;
 
-    const folderId = ensureAiGeneratedFolder();
+    const folderId = ensureCanvasAiGeneratedFolder(
+      options?.canvasId || activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
+    );
     const now = Date.now();
     const savedItems = cleanItems.map((item, index) => {
       const savedItem = stripHeavyDataThumbnail(item);
@@ -7464,6 +7557,7 @@ function MainApp() {
       localMediaTool: isCanvasAiLocalMediaToolType(canvasItem.ai?.type),
       showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
       imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded !== false,
+      imageFusion: isCanvasImageFusionAi(canvasItem.ai),
       internalSlotCount: canvasItem.ai?.type === 'workflow'
         ? getCanvasWorkflowInternalSlotNodes(getCanvasWorkflowTemplateFromNode(canvasItem)).length
         : 0,
@@ -8068,6 +8162,7 @@ function MainApp() {
     setCanvasContextMenu(null);
     setCanvasInputMenuForId(null);
     setCanvasInputPickTargetId(null);
+    pendingCanvasFusionRoleRef.current = null;
     setCanvasConnectionDraft(null);
     setCanvasInputActionDraft(null);
     clearCanvasUndoStack();
@@ -8885,11 +8980,24 @@ function MainApp() {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target?.inputs?.includes(sourceId)) return false;
     pushCanvasUndoSnapshot(label);
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId
-        ? { ...item, inputs: (item.inputs || []).filter(inputId => inputId !== sourceId) }
-        : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      if (!isCanvasImageFusionAi(item.ai)) {
+        return { ...item, inputs: (item.inputs || []).filter(inputId => inputId !== sourceId) };
+      }
+      const fusion = removeCanvasImageFusionInput(item.ai?.imageFusion, item.inputs || [], sourceId);
+      return {
+        ...item,
+        inputs: fusion.inputs,
+        ai: item.ai ? {
+          ...item.ai,
+          imageFusion: fusion.config,
+          sourceImageNodeId: fusion.config.baseNodeId,
+          referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+          referenceRoles: fusion.referenceRoles,
+        } : item.ai,
+      };
+    }));
     return true;
   };
 
@@ -9427,6 +9535,22 @@ function MainApp() {
         ? { ...item, designAgentConfig: normalized }
         : item
     )));
+  };
+
+  const setCanvasTextContextRouting = (canvasId: string, mode: 'full' | 'auto') => {
+    const current = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!current || !isCanvasAgentTextTarget(current)) return;
+    const contextRouting = mode === 'auto' ? 'auto' as const : undefined;
+    if (current.contextRouting === contextRouting) return;
+    pushCanvasUndoSnapshot(mode === 'auto' ? '开启 Agent 下游上下文自动分流' : '关闭 Agent 下游上下文自动分流');
+    updateCanvasItemsImmediate(items => items.map(item => (
+      item.id === canvasId && isCanvasAgentTextTarget(item)
+        ? { ...item, contextRouting }
+        : item
+    )));
+    showToast(mode === 'auto'
+      ? '已开启自动分流，连接下游生图节点后生效'
+      : '已改为向下游传递完整 Agent 输出');
   };
 
   const commitCanvasTextDraft = (canvasId: string, content?: string, sync = false) => {
@@ -10660,16 +10784,59 @@ function MainApp() {
       .filter((item): item is CanvasImageItem => !!item && item.id !== canvasItem.id);
   };
 
+  const getCanvasContextRoutingTargetKeys = (canvasItem: CanvasImageItem) => Array.from(new Set([
+    getCanvasWorkflowGroup(canvasItem)?.templateId,
+    canvasItem.workflowTemplateNodeId,
+    canvasItem.id,
+  ].map(value => String(value || '').trim()).filter(Boolean)));
+
+  const getCanvasContextRoutingTargetsForAgent = (
+    agentItem: CanvasImageItem,
+    sourceItems: CanvasImageItem[],
+  ): CanvasContextRoutingTarget[] => {
+    if (agentItem.contextRouting !== 'auto') return [];
+    const targets: CanvasContextRoutingTarget[] = [];
+    const queuedIds = [agentItem.id];
+    const visitedIds = new Set<string>(queuedIds);
+
+    while (queuedIds.length > 0 && targets.length < 32) {
+      const sourceId = queuedIds.shift() || '';
+      sourceItems.forEach(candidate => {
+        if (!(candidate.inputs || []).includes(sourceId) || visitedIds.has(candidate.id)) return;
+        visitedIds.add(candidate.id);
+        if (candidate.ai?.type === 'image-generator') {
+          const stableId = getCanvasContextRoutingTargetKeys(candidate)[0];
+          if (!stableId) return;
+          targets.push({
+            id: stableId,
+            label: candidate.ai.presetLabel || candidate.item.name || stableId,
+            task: candidate.ai.presetPrompt || candidate.ai.prompt || candidate.item.content || '',
+          });
+          return;
+        }
+        if (!candidate.ai && !isCanvasAgentTextTarget(candidate)) queuedIds.push(candidate.id);
+      });
+    }
+    return targets;
+  };
+
   const getCanvasTextInputsForNode = (
     canvasItem: CanvasImageItem,
     sourceItems: CanvasImageItem[] = canvasItemsRef.current
   ) => {
+    const targetKeys = getCanvasContextRoutingTargetKeys(canvasItem);
     const textInputs: string[] = [];
     const seenTextKeys = new Set<string>();
     const pushTextInput = (inputItem: CanvasImageItem) => {
       if (isCanvasWorkflowReferenceBridge(inputItem)) return;
       if ((inputItem.item.type !== 'text' && inputItem.item.type !== 'file') || inputItem.ai) return;
-      const content = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
+      const rawContent = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
+      const content = isCanvasAgentTextTarget(inputItem)
+        ? applyCanvasTextContextRouting(rawContent, {
+          bindings: canvasItem.ai?.strategyBindings,
+          targetKeys,
+        })
+        : rawContent;
       if (!content) return;
       const key = content;
       if (seenTextKeys.has(key)) return;
@@ -10695,20 +10862,22 @@ function MainApp() {
   ) => {
     const mediaInputs: BufferItem[] = [];
     const isVideoGenerator = canvasItem.ai?.type === 'video-generator';
+    const isImageFusion = isCanvasImageFusionAi(canvasItem.ai);
     const canvasVideoReferenceSlots = isVideoGenerator
       ? getCanvasAiVideoReferenceSlots(canvasItem.ai?.model, canvasItem.ai?.videoInputMode, canvasItem.ai?.provider)
       : null;
-    const maxImageInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.imageSlots || 9) : 8;
+    const maxImageInputs = isImageFusion ? 2 : isVideoGenerator ? (canvasVideoReferenceSlots?.imageSlots || 9) : 8;
     const maxVideoInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.videoSlots || 0) : 0;
     const maxAudioInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.audioSlots || 0) : 0;
     let imageInputCount = 0;
     let videoInputCount = 0;
     let audioInputCount = 0;
+    let currentSourceImageLimit = maxImageInputs;
     const seenMediaKeys = new Set<string>();
     const pushInput = (item: BufferItem) => {
       const key = item.id || item.path || item.url || item.thumbnail || item.content;
       if (key && seenMediaKeys.has(key)) return;
-      if (item.type === 'image' && imageInputCount < maxImageInputs) {
+      if (item.type === 'image' && imageInputCount < maxImageInputs && imageInputCount < currentSourceImageLimit) {
         if (key) seenMediaKeys.add(key);
         mediaInputs.push(item);
         imageInputCount += 1;
@@ -10751,12 +10920,12 @@ function MainApp() {
           pushInput(inputItem.item);
         }
       } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
-        getCanvasAiSuccessfulOutputs(inputItem).forEach((output, index) => {
+        getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);
         });
       } else if (inputItem.ai?.type === 'video-generator') {
-        getCanvasAiSuccessfulOutputs(inputItem).forEach((output, index) => {
+        getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);
         });
@@ -10764,7 +10933,11 @@ function MainApp() {
         getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visitInputItem(upstreamItem, seenNodeIds));
       }
     };
-    for (const inputItem of getCanvasInputItemsForNode(canvasItem, sourceItems)) {
+    const orderedCanvasItem = isImageFusion
+      ? { ...canvasItem, inputs: getCanvasImageFusionInputIds(canvasItem.ai?.imageFusion, canvasItem.inputs || []) }
+      : canvasItem;
+    for (const inputItem of getCanvasInputItemsForNode(orderedCanvasItem, sourceItems)) {
+      currentSourceImageLimit = isImageFusion ? Math.min(maxImageInputs, imageInputCount + 1) : maxImageInputs;
       visitInputItem(inputItem, new Set([canvasItem.id]));
       if (
         imageInputCount >= maxImageInputs
@@ -11644,6 +11817,85 @@ function MainApp() {
     };
   };
 
+  const buildCanvasImageFusionNode = (
+    pos: { x: number; y: number },
+    inputIds: string[] = [],
+  ): CanvasImageItem => {
+    const validInputIds = Array.from(new Set(inputIds))
+      .filter(inputId => {
+        const source = canvasItemsRef.current.find(item => item.id === inputId);
+        return canUseCanvasItemAsImageEnhancementInput(source);
+      })
+      .slice(0, 2);
+    const canvasItem = buildCanvasAiGeneratorNode(pos, undefined, validInputIds);
+    const fusion = assignCanvasImageFusionInputs({ enabled: true }, [], validInputIds);
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: 'image-generator',
+      aspectRatio: canvasItem.ai?.aspectRatio,
+      count: canvasItem.ai?.count,
+      imageFusion: true,
+    });
+    return {
+      ...canvasItem,
+      width: nodeSize.width,
+      height: nodeSize.height,
+      inputs: fusion.inputs,
+      item: {
+        ...canvasItem.item,
+        name: 'AI 溶图节点',
+      },
+      ai: canvasItem.ai ? {
+        ...canvasItem.ai,
+        imageFusion: fusion.config,
+        sourceImageNodeId: fusion.config.baseNodeId,
+        referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+        referenceRoles: fusion.referenceRoles,
+      } : canvasItem.ai,
+    };
+  };
+
+  const getSelectedCanvasImageFusionInputIds = () => (
+    getSelectedCanvasAiInputIds()
+      .filter(inputId => {
+        const source = canvasItemsRef.current.find(item => item.id === inputId);
+        return canUseCanvasItemAsImageEnhancementInput(source);
+      })
+      .slice(0, 2)
+  );
+
+  const addCanvasImageFusionNode = (client?: { x: number; y: number }) => {
+    const inputIds = getSelectedCanvasImageFusionInputIds();
+    const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+    const pos = inputBounds && !client
+      ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+      : getCanvasDropPosition(0, client);
+    const canvasItem = buildCanvasImageFusionNode(pos, inputIds);
+    if (appendCanvasItems([canvasItem], '新增 AI 溶图节点') > 0) {
+      updateCanvasSelection([canvasItem.id]);
+      showToast(inputIds.length === 2
+        ? '已添加 AI 溶图节点，并按选择顺序设置基图与意向图'
+        : inputIds.length === 1
+          ? '已添加 AI 溶图节点，所选图片已设为基图'
+          : '已添加 AI 溶图节点');
+    }
+  };
+
+  const addCanvasImageFusionNodeAtWorld = (
+    world: { x: number; y: number },
+    sourceIds: string[] = getSelectedCanvasImageFusionInputIds(),
+  ) => {
+    const canvasItem = buildCanvasImageFusionNode({
+      x: Math.max(24, world.x),
+      y: Math.max(24, world.y),
+    }, sourceIds);
+    if (appendCanvasItems([canvasItem], '新增 AI 溶图节点') > 0) {
+      updateCanvasSelection([canvasItem.id]);
+      showToast((canvasItem.inputs || []).length >= 2
+        ? '已添加 AI 溶图节点，并设置基图与意向图'
+        : '已添加 AI 溶图节点');
+    }
+  };
+
   const addCanvasAiGeneratorNode = (client?: { x: number; y: number }, preset?: CanvasAiPromptPreset) => {
     const inputIds = preset ? getSelectedCanvasAiInputIds() : [];
     const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
@@ -11961,6 +12213,8 @@ function MainApp() {
           ...(shouldAttachExternalInputs ? externalInputIds : []),
         ])),
         textMode: isAgentTextNode ? 'agent' : node.textMode,
+        contextRouting: node.contextRouting,
+        workflowTemplateNodeId: node.id,
         designAgentConfig: isAgentTextNode
           ? normalizeDesignAgentConfig(node.designAgentConfig)
           : undefined,
@@ -12152,6 +12406,7 @@ function MainApp() {
         inputs: internalInputs,
         fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
+        contextRouting: item.contextRouting,
         designAgentConfig: item.designAgentConfig
           ? normalizeDesignAgentConfig(item.designAgentConfig)
           : undefined,
@@ -12644,6 +12899,7 @@ function MainApp() {
           ? true
           : !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
+        contextRouting: item.contextRouting || originalNode?.contextRouting,
         designAgentConfig: item.designAgentConfig
           ? normalizeDesignAgentConfig(item.designAgentConfig)
           : originalNode?.designAgentConfig,
@@ -13222,9 +13478,39 @@ function MainApp() {
     showToast(mode === 'all' ? '已显示工作流全部节点输出' : '已显示工作流最终输出');
   };
 
+  const getCanvasImageFusionPreferredRole = (targetId: string) => {
+    const pending = pendingCanvasFusionRoleRef.current;
+    return pending?.targetId === targetId ? pending.role : null;
+  };
+
+  const applyCanvasImageFusionConnectionPatch = (
+    item: CanvasImageItem,
+    sourceIds: string[],
+    preferredRole?: CanvasImageFusionRole | null,
+  ): CanvasImageItem => {
+    if (!isCanvasImageFusionAi(item.ai)) return item;
+    const fusion = assignCanvasImageFusionInputs(
+      item.ai?.imageFusion,
+      item.inputs || [],
+      sourceIds,
+      preferredRole,
+    );
+    return {
+      ...item,
+      inputs: fusion.inputs,
+      ai: item.ai ? {
+        ...item.ai,
+        imageFusion: fusion.config,
+        sourceImageNodeId: fusion.config.baseNodeId,
+        referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+        referenceRoles: fusion.referenceRoles,
+      } : item.ai,
+    };
+  };
+
   const connectSelectedCanvasItemsToGenerator = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!canUseCanvasItemAsAiTarget(target)) {
+    if (!target || !canUseCanvasItemAsAiTarget(target)) {
       showToast('目标节点不能接入输入');
       return;
     }
@@ -13232,20 +13518,29 @@ function MainApp() {
       .filter(id => id !== targetId)
       .filter(id => {
         const source = canvasItemsRef.current.find(item => item.id === id);
-        return canUseCanvasItemAsInputForTarget(source, target);
+        return isCanvasImageFusionAi(target.ai)
+          ? canUseCanvasItemAsImageEnhancementInput(source)
+          : canUseCanvasItemAsInputForTarget(source, target);
       });
     if (sourceIds.length === 0) {
       showToast('先多选要接入的图片或文字节点');
       return;
     }
     pushCanvasUndoSnapshot('连接 AI 输入');
+    const preferredRole = getCanvasImageFusionPreferredRole(targetId);
     updateCanvasItemsImmediate(prev => prev.map(item => {
       if (item.id !== targetId) return item;
+      if (isCanvasImageFusionAi(item.ai)) {
+        return applyCanvasImageFusionConnectionPatch(item, sourceIds.slice(0, 2), preferredRole);
+      }
       const nextInputs = Array.from(new Set([...(item.inputs || []), ...sourceIds]));
       return { ...item, inputs: nextInputs };
     }));
+    pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
-    showToast(`已连接 ${sourceIds.length} 个输入到 ${getCanvasInputTargetLabel(target)}`);
+    showToast(isCanvasImageFusionAi(target.ai)
+      ? '已设置溶图输入槽位'
+      : `已连接 ${sourceIds.length} 个输入到 ${getCanvasInputTargetLabel(target)}`);
   };
 
   const connectCanvasItems = (sourceId: string, targetId: string) => {
@@ -13253,19 +13548,29 @@ function MainApp() {
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!source || !target || !canUseCanvasItemAsAiTarget(target) || !canUseCanvasItemAsInputForTarget(source, target)) return false;
+    if (isCanvasImageFusionAi(target.ai) && !canUseCanvasItemAsImageEnhancementInput(source)) {
+      showToast('溶图节点的基图和意向图都必须是图片素材或图片生成结果');
+      return false;
+    }
     const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
-    if ((target.inputs || []).includes(sourceId)) {
+    const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
+    if (!isCanvasImageFusionAi(target.ai) && (target.inputs || []).includes(sourceId)) {
       updateCanvasSelection([targetId]);
       return true;
     }
     pushCanvasUndoSnapshot('连接 AI 输入');
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId
-        ? { ...item, inputs: isSingleMediaInputTarget ? [sourceId] : Array.from(new Set([...(item.inputs || []), sourceId])) }
-        : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      if (isCanvasImageFusionAi(item.ai)) {
+        return applyCanvasImageFusionConnectionPatch(item, [sourceId], fusionPreferredRole);
+      }
+      return { ...item, inputs: isSingleMediaInputTarget ? [sourceId] : Array.from(new Set([...(item.inputs || []), sourceId])) };
+    }));
+    pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
-    showToast(`已连接到 ${getCanvasInputTargetLabel(target)}`);
+    showToast(isCanvasImageFusionAi(target.ai)
+      ? fusionPreferredRole === 'STYLE_REF' ? '已设置意向图' : fusionPreferredRole === 'BASE' ? '已设置基图' : '已连接到溶图节点'
+      : `已连接到 ${getCanvasInputTargetLabel(target)}`);
     return true;
   };
 
@@ -13276,30 +13581,41 @@ function MainApp() {
       .filter(sourceId => sourceId && sourceId !== targetId)
       .filter(sourceId => {
         const source = canvasItemsRef.current.find(item => item.id === sourceId);
-        return canUseCanvasItemAsInputForTarget(source, target);
+        return isCanvasImageFusionAi(target.ai)
+          ? canUseCanvasItemAsImageEnhancementInput(source)
+          : canUseCanvasItemAsInputForTarget(source, target);
       });
     if (validSourceIds.length === 0) return false;
 
     const previousInputs = target.inputs || [];
     const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
-    const nextInputs = isSingleMediaInputTarget
+    const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
+    const fusionPatch = isCanvasImageFusionAi(target.ai)
+      ? applyCanvasImageFusionConnectionPatch(target, validSourceIds.slice(0, 2), fusionPreferredRole)
+      : null;
+    const nextInputs = fusionPatch?.inputs || (isSingleMediaInputTarget
       ? validSourceIds.slice(0, 1)
-      : Array.from(new Set([...previousInputs, ...validSourceIds]));
+      : Array.from(new Set([...previousInputs, ...validSourceIds])));
     const inputsChanged = previousInputs.length !== nextInputs.length
       || previousInputs.some((inputId, index) => inputId !== nextInputs[index]);
     const addedCount = nextInputs.length - previousInputs.length;
     if (!inputsChanged) {
+      pendingCanvasFusionRoleRef.current = null;
       updateCanvasSelection([targetId]);
-      showToast('这些输入已经连接过了');
+      showToast(isCanvasImageFusionAi(target.ai) ? '两个溶图槽位均已设置，请点击对应槽位进行更换' : '这些输入已经连接过了');
       return true;
     }
 
     pushCanvasUndoSnapshot('连接 AI 输入');
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId ? { ...item, inputs: nextInputs } : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      return fusionPatch || { ...item, inputs: nextInputs };
+    }));
+    pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
-    showToast(isSingleMediaInputTarget ? '已更换输入素材' : `已连接 ${Math.max(1, addedCount)} 个输入到 ${getCanvasInputTargetLabel(target)}`);
+    showToast(isCanvasImageFusionAi(target.ai)
+      ? '已设置溶图输入槽位'
+      : isSingleMediaInputTarget ? '已更换输入素材' : `已连接 ${Math.max(1, addedCount)} 个输入到 ${getCanvasInputTargetLabel(target)}`);
     return true;
   };
 
@@ -13661,6 +13977,11 @@ function MainApp() {
       void chooseLocalVideosForCanvasGenerator(targetId);
       return;
     }
+    const pendingFusionRole = pendingCanvasFusionRoleRef.current;
+    pendingCanvasFusionUploadRoleRef.current = pendingFusionRole?.targetId === targetId
+      ? pendingFusionRole
+      : null;
+    pendingCanvasFusionRoleRef.current = null;
     pendingCanvasUploadTargetIdRef.current = targetId;
     setCanvasInputMenuForId(null);
     canvasUploadInputRef.current?.click();
@@ -13671,6 +13992,8 @@ function MainApp() {
     pendingCanvasWorkflowSlotUploadRef.current = null;
     const targetId = pendingCanvasUploadTargetIdRef.current;
     pendingCanvasUploadTargetIdRef.current = null;
+    const fusionUploadRole = pendingCanvasFusionUploadRoleRef.current;
+    pendingCanvasFusionUploadRoleRef.current = null;
     const files = Array.from(event.target.files || []);
     event.target.value = '';
     if (slotTarget) {
@@ -13716,7 +14039,10 @@ function MainApp() {
       return;
     }
 
-    const created = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index)));
+    const selectedImageFiles = isCanvasImageFusionAi(target.ai)
+      ? imageFiles.slice(0, fusionUploadRole?.targetId === targetId ? 1 : 2)
+      : imageFiles;
+    const created = await Promise.all(selectedImageFiles.map((file, index) => createCanvasImageItemFromFile(file, index)));
     const images = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
       ...item,
       x: Math.max(24, target.x - item.width - 72 - (index % 2) * 22),
@@ -13729,6 +14055,9 @@ function MainApp() {
 
     const addedCount = appendCanvasItems(images, '添加 AI 输入图片', false);
     if (addedCount <= 0) return;
+    if (fusionUploadRole?.targetId === targetId) {
+      pendingCanvasFusionRoleRef.current = fusionUploadRole;
+    }
     connectCanvasItemsToGenerator(images.map(item => item.id), targetId);
   };
 
@@ -14078,9 +14407,24 @@ function MainApp() {
   const disconnectCanvasInput = (targetId: string, inputId: string) => {
     if (removeCanvasConnection(targetId, inputId, '移除 AI 输入')) return;
     pushCanvasUndoSnapshot('移除 AI 输入');
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId ? { ...item, inputs: (item.inputs || []).filter(id => id !== inputId) } : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      if (!isCanvasImageFusionAi(item.ai)) {
+        return { ...item, inputs: (item.inputs || []).filter(id => id !== inputId) };
+      }
+      const fusion = removeCanvasImageFusionInput(item.ai?.imageFusion, item.inputs || [], inputId);
+      return {
+        ...item,
+        inputs: fusion.inputs,
+        ai: item.ai ? {
+          ...item.ai,
+          imageFusion: fusion.config,
+          sourceImageNodeId: fusion.config.baseNodeId,
+          referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+          referenceRoles: fusion.referenceRoles,
+        } : item.ai,
+      };
+    }));
   };
 
   const getCanvasAiRerunNodePosition = (source: CanvasImageItem) => {
@@ -14135,6 +14479,7 @@ function MainApp() {
   const runCanvasAiGeneratorTarget = async (
     target: CanvasImageItem,
     options: {
+      canvasId?: string;
       sourceItems?: () => CanvasImageItem[];
       updateAi: (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => void;
       forceUpdateAi?: (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => void;
@@ -14150,6 +14495,14 @@ function MainApp() {
     if (latestTarget?.id === target.id) target = latestTarget;
     const targetAi = target.ai;
     if (!isCanvasAiGeneratorType(targetAi?.type)) return [] as CanvasAiGeneratedOutput[];
+    const generatedCanvasId = options.canvasId?.trim()
+      || activeCanvasIdRef.current
+      || DEFAULT_CANVAS_ID;
+    const generatedCanvasName = canvasesRef.current.find(canvas => canvas.id === generatedCanvasId)?.name;
+    const generatedImageFolderLabel = `${AI_GENERATED_FOLDER_NAME} / ${getCanvasGeneratedImageFolderName(
+      generatedCanvasName,
+      generatedCanvasId,
+    )}`;
 
     const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
 
@@ -14301,11 +14654,39 @@ function MainApp() {
     };
     const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
-    const textInputPrompts = getCanvasTextInputsForNode(target, getSourceItems());
+    const isImageFusion = mediaType === 'image' && isCanvasImageFusionAi(targetAi);
+    const imageFusionConfig = isImageFusion
+      ? normalizeCanvasImageFusionConfig(targetAi.imageFusion, target.inputs || [])
+      : null;
+    if (isImageFusion) {
+      const fusionInputIds = getCanvasImageFusionInputIds(imageFusionConfig, target.inputs || []);
+      const resolvedFusionImages = getCanvasImageInputBufferItemsForNode(target, getSourceItems())
+        .filter(item => item.type === 'image');
+      if (fusionInputIds.length < 2 || resolvedFusionImages.length < 2) {
+        const error = fusionInputIds.length < 2
+          ? '请先分别设置基图和意向图'
+          : '基图或意向图暂时没有可用图片；如果连接的是生图节点，请先让它生成成功';
+        options.updateAi({ status: 'error', error });
+        options.selectTarget?.();
+        showToast(error);
+        return [] as CanvasAiGeneratedOutput[];
+      }
+    }
+    const fusionPrompt = imageFusionConfig
+      ? buildCanvasImageFusionPrompt({
+        baseWeight: imageFusionConfig.baseWeight,
+        styleWeight: imageFusionConfig.styleWeight,
+        originalRequest: manualPrompt,
+      })
+      : '';
+    const textInputPrompts = [
+      fusionPrompt,
+      ...getCanvasTextInputsForNode(target, getSourceItems()),
+    ].filter(Boolean);
     const promptParts = [
       ...textInputPrompts,
       targetAi.presetPrompt || '',
-      manualPrompt,
+      isImageFusion ? '' : manualPrompt,
     ].map(text => text.trim()).filter(Boolean);
     let prompt = promptParts.join('\n\n');
     if (!prompt) {
@@ -14410,6 +14791,9 @@ function MainApp() {
         usePortableWalletReferences,
         provider,
       );
+      if (isImageFusion && preparedInputs.images.length < 2) {
+        throw new Error('基图或意向图读取失败，溶图需要两张可用图片');
+      }
       if (provider === 'xais-chat') {
         debugXaisImage2('referencePreparation', {
           clientRequestId,
@@ -14443,7 +14827,7 @@ function MainApp() {
         const finalPrompt = buildFinalImagePrompt({
           textInputs: textInputPrompts,
           presetPrompt: targetAi.presetPrompt || '',
-          userPrompt: manualPrompt,
+          userPrompt: isImageFusion ? '' : manualPrompt,
           qualityProfile: typeof targetAi.skillMeta?.qualityProfileId === 'string'
             ? targetAi.skillMeta.qualityProfileId
             : '',
@@ -14518,6 +14902,9 @@ function MainApp() {
           candidatePortableReferences,
           candidate.provider,
         );
+        if (isImageFusion && candidatePreparedInputs.images.length < 2) {
+          throw new Error('候选模型未能读取完整的基图与意向图，已停止本次溶图');
+        }
         temporaryReferenceShares = [
           ...temporaryReferenceShares,
           ...candidatePreparedInputs.temporaryShareIds,
@@ -14766,6 +15153,7 @@ function MainApp() {
         if (drawerItem) {
           if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
           else addGeneratedImagesToDrawer([drawerItem], {
+            canvasId: generatedCanvasId,
             canvasOutputClientRequestId: outputClientRequestId,
             onOutputCachePatch: (outputId, matchSources, patch) => {
               const sourceSet = new Set(matchSources);
@@ -14989,7 +15377,7 @@ function MainApp() {
       options.selectTarget?.();
       if (options.showResultToast !== false) {
         showToast(generatedOutputs.length >= requestedCount
-          ? `${resultLabel}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : AI_GENERATED_FOLDER_NAME}」`
+          ? `${resultLabel}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : generatedImageFolderLabel}」`
           : `${resultLabel}生成 ${generatedOutputs.length}/${requestedCount} ${unit}`);
         notifyCanvasAiGenerationResult({
           status: generatedOutputs.length >= requestedCount ? 'success' : 'partial',
@@ -15372,6 +15760,7 @@ function MainApp() {
   }, [canvasItems, isCanvasMode]);
 
   const runCanvasEnhancementNode = async (targetId: string) => {
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !isCanvasAiEnhancementType(target.ai?.type)) return;
 
@@ -15487,7 +15876,7 @@ function MainApp() {
       const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, 0);
       if (drawerItem) {
         if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
-        else addGeneratedImagesToDrawer([drawerItem]);
+        else addGeneratedImagesToDrawer([drawerItem], { canvasId: runCanvasId });
       }
       showToast(isQuickVideoEnhancement
         ? `快速视频增强完成（${(result as QuickVideoEnhancementResult).encoder || '高质量编码'}）`
@@ -15526,6 +15915,7 @@ function MainApp() {
     };
     try {
       await runCanvasAiGeneratorTarget(target, {
+        canvasId: runCanvasId,
         sourceItems: () => getCanvasSessionItems(runCanvasId),
         updateAi: updateAiIfCurrent,
         forceUpdateAi: updateAiIfCurrent,
@@ -15556,8 +15946,11 @@ function MainApp() {
         }
         releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       }
-      await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, targetId);
+      // The visible generation result is already committed. Let durable background
+      // writes finish asynchronously so they cannot keep the App Agent tool card
+      // stuck in "running" after the image has completed.
+      void waitForCanvasBackgroundPatches(runCanvasId);
     }
   };
 
@@ -15818,6 +16211,7 @@ function MainApp() {
       if (current.ai?.type !== 'image-generator') continue;
 
       await runCanvasAiGeneratorTarget(current, {
+        canvasId: runCanvasId,
         sourceItems: getExpandedWorkflowSourceItems,
         updateAi: (patch, content) => updateRunNodeAi(nodeId, patch, content),
         getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
@@ -15917,6 +16311,7 @@ function MainApp() {
       const singleTarget = getSingleTarget();
       if (!singleTarget) return true;
       await runCanvasAiGeneratorTarget(singleTarget, {
+        canvasId: runCanvasId,
         sourceItems: () => getCanvasSessionItems(runCanvasId),
         updateAi: updateRetrySlot,
         getLatestTarget: getSingleTarget,
@@ -16114,6 +16509,7 @@ function MainApp() {
       const singleTarget = getSingleTarget();
       if (!singleTarget) return true;
       await runCanvasAiGeneratorTarget(singleTarget, {
+        canvasId: runCanvasId,
         sourceItems: getRuntimeSourceItems,
         updateAi: updateRuntimeRetrySlot,
         getLatestTarget: getSingleTarget,
@@ -16782,6 +17178,7 @@ function MainApp() {
         return;
       }
       await runCanvasAiGeneratorTarget(current, {
+        canvasId: runCanvasId,
         sourceItems: getRuntimeSourceItems,
         updateAi: (patch, content) => updateRuntimeItemAi(nodeId, patch, content),
         getLatestTarget: () => runtimeItems.find(item => item.id === nodeId),
@@ -18612,6 +19009,7 @@ function MainApp() {
           setCanvasContextMenu(null);
           setCanvasInputMenuForId(null);
           setCanvasInputPickTargetId(null);
+          pendingCanvasFusionRoleRef.current = null;
           setCanvasConnectionDraft(null);
           updateCanvasSelection([]);
           hideCanvasSelectionOverlay();
@@ -24289,6 +24687,260 @@ useEffect(() => {
         };
       }
 
+      if (name === 'canvas_create_design_pipeline') {
+        const request = String(args.request || executionUserRequest || '').trim();
+        if (!request) throw new Error('产品设计链路需要明确的设计需求');
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        setIsAgentChatOpen(true);
+
+        const referenceCount = 5;
+        const projectBrief = args.projectBrief && typeof args.projectBrief === 'object'
+          ? args.projectBrief as Record<string, unknown>
+          : String(args.projectBrief || request);
+        const folderNames = Object.fromEntries(foldersRef.current.map(folder => [
+          folder.id,
+          getDrawerFolderPathName(foldersRef.current, folder.id) || folder.name,
+        ]));
+        const explicitStyleTerms = extractExplicitProductStyleTerms(request);
+        const expandedStyleSearchTerms = expandProductStyleSearchTerms(explicitStyleTerms);
+        const searchTaggedReferences = (
+          query: string,
+          referenceRole: DrawerSearchInspirationsInput['referenceRole'],
+        ) => searchDrawerInspirations(itemsRef.current, {
+          query,
+          projectBrief,
+          folderNames,
+          referenceRole,
+          topK: 8,
+        });
+        const categoryCandidates = searchTaggedReferences(
+          `${request}\n品类参考：同类产品、产品身份、核心功能和使用场景`,
+          'SUBJECT_REF',
+        );
+        const formCandidates = searchTaggedReferences(
+          `${request}\n造型参考：外轮廓、比例、体块、几何和曲面语言`,
+          'FORM_REF',
+        );
+        const cmfCandidates = searchTaggedReferences(
+          `${request}\n颜色与 CMF 参考：主色、配色、材质、表面处理和质感`,
+          'CMF_REF',
+        );
+        const styleCandidates = explicitStyleTerms.length > 0
+          ? filterExplicitStyleReferences(searchTaggedReferences(
+            `${request}\n明确风格及相近标签：${expandedStyleSearchTerms.join('、')}，必须优先匹配已有风格标签`,
+            'MOOD_REF',
+          ), explicitStyleTerms)
+          : [];
+        const selectedReferences = selectProductDesignReferencesByAxis({
+          category: categoryCandidates,
+          form: formCandidates,
+          color: [...styleCandidates, ...cmfCandidates],
+          count: referenceCount,
+        });
+        const candidates = Array.from(new Map(
+          [...categoryCandidates, ...formCandidates, ...styleCandidates, ...cmfCandidates]
+            .map(candidate => [candidate.itemId, candidate]),
+        ).values());
+        const explicitInputIds = Array.isArray(args.inputIds)
+          ? Array.from(new Set(args.inputIds.map(String))).filter(id => (
+            canUseCanvasItemAsAiInput(canvasItemsRef.current.find(item => item.id === id))
+          ))
+          : [];
+        const explicitInputBounds = explicitInputIds.length > 0 ? getCanvasItemsBounds(explicitInputIds) : null;
+        const referenceBase = explicitInputBounds
+          ? { x: explicitInputBounds.x + explicitInputBounds.width + 96, y: explicitInputBounds.y }
+          : getCanvasDropPosition(0);
+        const resolvedReferences: Array<{ match: ProductDesignSelectedReference; nodeId: string }> = [];
+
+        for (let index = 0; index < selectedReferences.length; index += 1) {
+          const match = selectedReferences[index];
+          const nodeId = await createDrawerMediaCanvasNode(match.itemId, undefined, {
+            reuseExisting: false,
+            select: false,
+            toast: false,
+            dropIndex: index,
+            label: 'Agent 自动加入设计意向图',
+          });
+          if (nodeId) resolvedReferences.push({ match, nodeId });
+        }
+
+        const referenceNodeIdSet = new Set(resolvedReferences.map(item => item.nodeId));
+        if (referenceNodeIdSet.size > 0) {
+          pushCanvasUndoSnapshot('Agent 整理设计意向图');
+          updateCanvasItemsImmediate(prev => prev.map(item => {
+            if (!referenceNodeIdSet.has(item.id)) return item;
+            const referenceIndex = resolvedReferences.findIndex(reference => reference.nodeId === item.id);
+            const width = 240;
+            const aspectHeight = item.width > 0 ? width * (item.height / item.width) : 200;
+            return {
+              ...item,
+              x: Math.max(24, referenceBase.x + (referenceIndex % 2) * 272),
+              y: Math.max(24, referenceBase.y + Math.floor(referenceIndex / 2) * 216),
+              width,
+              height: clamp(aspectHeight, 148, 192),
+            };
+          }));
+        }
+
+        const referenceNodeIds = resolvedReferences.map(item => item.nodeId);
+        const analysisInputIds = Array.from(new Set([...referenceNodeIds, ...explicitInputIds]));
+        const analysisPrompt = buildProductDesignPipelineAnalysisPrompt({
+          request,
+          basePrompt: typeof args.analysisPrompt === 'string' ? args.analysisPrompt : undefined,
+          references: resolvedReferences.map(item => item.match),
+          explicitStyleTerms,
+        });
+        const analysisItemId = Math.random().toString(36).substring(2, 9);
+        const analysisX = Math.max(24, referenceBase.x + 640);
+        const analysisY = Math.max(24, referenceBase.y);
+        const analysisNode: CanvasImageItem = {
+          id: makeCanvasNodeId(analysisItemId, 'text'),
+          item: {
+            id: analysisItemId,
+            type: 'text',
+            content: analysisPrompt,
+            name: '设计需求与意向图分析',
+            createdAt: Date.now(),
+            isQuickAccess: false,
+          },
+          inputs: analysisInputIds,
+          textMode: 'agent',
+          designAgentConfig: {
+            agentRole: 'design_strategist',
+            outputArtifactType: 'DesignStrategy',
+            thinkingMode: 'analysis',
+          },
+          x: analysisX,
+          y: analysisY,
+          width: 560,
+          height: 520,
+        };
+
+        const requestedPresetId = typeof args.presetId === 'string' ? args.presetId.trim() : '';
+        const preset = canvasAiPromptPresets.find(item => item.id === requestedPresetId);
+        const generatorPrompt = buildProductDesignPipelineGeneratorPrompt({
+          request,
+          basePrompt: typeof args.generatorPrompt === 'string' ? args.generatorPrompt : undefined,
+        });
+        const generatorInputIds = Array.from(new Set([analysisNode.id, ...analysisInputIds]));
+        const generatorNode = buildCanvasAiGeneratorNode(
+          { x: analysisX + 632, y: analysisY },
+          preset,
+          generatorInputIds,
+          'image',
+        );
+        const visualReferenceIds = analysisInputIds.filter(id => (
+          canUseCanvasItemAsImageEnhancementInput(canvasItemsRef.current.find(item => item.id === id))
+        ));
+        const autoReferenceRoles = resolvedReferences.map(({ match, nodeId }) => ({
+          nodeId,
+          role: mapInspirationRoleToGeneratorRole(match.recommendedRole),
+        }));
+        const explicitReferenceRoles = explicitInputIds
+          .filter(id => visualReferenceIds.includes(id) && !referenceNodeIds.includes(id))
+          .map(nodeId => ({ nodeId, role: 'SUBJECT_REF' as const }));
+        const designReferencePlan = {
+          references: resolvedReferences.map(({ match }) => ({
+            itemId: match.itemId,
+            role: match.recommendedRole,
+            selectionAxis: match.selectionAxis,
+            reason: match.reason,
+            matchedFeatures: match.matchedFeatures,
+            confidence: match.confidence,
+          })),
+        };
+        const requestedSkillMeta = args.skillMeta && typeof args.skillMeta === 'object' && !Array.isArray(args.skillMeta)
+          ? args.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
+          : undefined;
+        const requestedProvider = typeof args.provider === 'string' ? args.provider.trim() : '';
+        const requestedModel = typeof args.model === 'string' ? args.model.trim() : '';
+        const requestedAspectRatio = typeof args.aspectRatio === 'string' ? args.aspectRatio.trim() : '';
+        const requestedTargetSize = typeof args.targetSize === 'string' ? args.targetSize.trim() : '';
+        const requestedResolution = typeof args.resolution === 'string' ? args.resolution.trim() : '';
+        const requestedToolHint = typeof args.toolHint === 'string' ? args.toolHint.trim() : '';
+        generatorNode.item = {
+          ...generatorNode.item,
+          content: generatorPrompt,
+          name: '产品设计生图',
+        };
+        generatorNode.ai = {
+          ...generatorNode.ai!,
+          prompt: generatorPrompt,
+          referenceImageNodeIds: visualReferenceIds,
+          referenceRoles: [...autoReferenceRoles, ...explicitReferenceRoles],
+          ...(requestedProvider ? { provider: normalizeCanvasAiProvider(requestedProvider) } : {}),
+          ...(requestedModel ? { model: requestedModel } : {}),
+          ...(requestedAspectRatio ? {
+            aspectRatio: normalizeCanvasAiAspectRatioForModel(requestedModel || generatorNode.ai?.model, requestedAspectRatio),
+          } : {}),
+          ...(requestedTargetSize ? { targetSize: requestedTargetSize } : {}),
+          ...(requestedResolution ? { resolution: requestedResolution } : {}),
+          ...(requestedToolHint ? { toolHint: requestedToolHint } : {}),
+          skillMeta: {
+            ...(requestedSkillMeta || {}),
+            skillId: requestedSkillMeta?.skillId || 'creative-product-design-skill',
+            originalRequest: request,
+            taskKind: 'product_design_pipeline',
+            designReferencePlan,
+            inspirationCandidates: candidates.map(candidate => ({
+              itemId: candidate.itemId,
+              state: referenceNodeIds.some((_, index) => resolvedReferences[index]?.match.itemId === candidate.itemId)
+                ? 'selected'
+                : candidate.state,
+              confidence: candidate.confidence,
+              referenceRole: candidate.recommendedRole,
+              reason: candidate.reason,
+            })),
+          },
+        };
+
+        if (appendCanvasItems([analysisNode, generatorNode], 'Agent 创建产品设计分析与生图链路') <= 0) {
+          throw new Error('创建产品设计链路失败');
+        }
+        updateCanvasItemsImmediate(prev => prev.map(item => {
+          if (item.id === analysisNode.id) return { ...item, inputs: [...analysisInputIds] };
+          if (item.id === generatorNode.id) return { ...item, inputs: [...generatorInputIds] };
+          return item;
+        }));
+        const linkedAnalysisNode = canvasItemsRef.current.find(item => item.id === analysisNode.id);
+        const missingAnalysisReferenceIds = referenceNodeIds.filter(id => !(linkedAnalysisNode?.inputs || []).includes(id));
+        if (missingAnalysisReferenceIds.length > 0) {
+          throw new Error(`设计分析节点缺少 ${missingAnalysisReferenceIds.length} 条参考图连接`);
+        }
+        updateCanvasSelection([generatorNode.id]);
+
+        const autoRunGenerator = args.autoRunGenerator === true;
+        const autoRunAnalysis = args.autoRunAnalysis !== false || autoRunGenerator;
+        let analysisCompleted = false;
+        if (autoRunAnalysis) {
+          await runCanvasTextAgentNode(analysisNode.id);
+          analysisCompleted = Boolean(canvasItemsRef.current.find(item => item.id === analysisNode.id)?.item.remark?.trim());
+        }
+        if (autoRunGenerator && analysisCompleted) {
+          await generateCanvasAiGeneratorNode(generatorNode.id);
+        }
+        const latestGenerator = canvasItemsRef.current.find(item => item.id === generatorNode.id);
+        if (resolvedReferences.length < referenceCount) {
+          showToast(`仅找到 ${resolvedReferences.length} 张相关意向图，链路已按现有素材建立`);
+        } else {
+          showToast('已按品类、造型、颜色/风格检索 5 张意向图，并连接设计分析与生图节点');
+        }
+        return {
+          nodeId: generatorNode.id,
+          analysisNodeId: analysisNode.id,
+          generatorNodeId: generatorNode.id,
+          referenceNodeIds,
+          analysisInputIds,
+          selectedInspirationItemIds: resolvedReferences.map(item => item.match.itemId),
+          requestedReferenceCount: referenceCount,
+          resolvedReferenceCount: resolvedReferences.length,
+          analysisCompleted,
+          generatorAutoRunRequested: autoRunGenerator,
+          generatorStatus: latestGenerator?.ai?.status,
+          outputCount: latestGenerator?.ai?.outputs?.length || 0,
+        };
+      }
+
       if (name === 'canvas_create_generator') {
         const mediaType = args.mediaType === 'video' ? 'video' : 'image';
         const autoRun = args.autoRun === true;
@@ -25738,12 +26390,17 @@ useEffect(() => {
       ? ''
       : canvasAgent.settings.systemPrompt.trim();
     const designAgentPrompt = buildDesignAgentSystemPrompt(designAgentConfig);
+    const contextRoutingInstruction = buildCanvasContextRoutingInstruction(
+      getCanvasContextRoutingTargetsForAgent(latestTarget, getSourceItems()),
+    );
     const systemPrompt = truncatePromptToUtf8ByteLimit([
       customAgentPrompt,
       [
         '你是画布中的 Design Agent Node 执行器。',
         '用户会在当前文字节点里写需求，也可能连接上游文字和参考图。',
-        '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
+        contextRoutingInstruction
+          ? '请直接产出要写回当前文字节点的结果，不要调用工具，不要寒暄；严格遵守用户消息末尾的上下文自动路由协议，只输出协议要求的 JSON。'
+          : '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
         '如果参考图存在，请把它们作为视觉依据；如果没有参考图，就只根据文字需求完成。',
       ].join('\n'),
       designAgentPrompt,
@@ -25751,6 +26408,7 @@ useEffect(() => {
     const promptParts = [
       '当前文字节点需求：\n' + userRequest,
       upstreamTexts.length > 0 ? upstreamTexts.join('\n\n') : '',
+      contextRoutingInstruction,
     ].filter(Boolean);
     const requestId = 'canvas_text_agent_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
     const selectedAgentModel = agentModelRef.current.trim();
@@ -26136,6 +26794,7 @@ useEffect(() => {
           );
           if (drawerItem) {
             addGeneratedImagesToDrawer([drawerItem], {
+              canvasId: activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
               canvasOutputClientRequestId: clientRequestId,
             });
           }
@@ -28573,7 +29232,7 @@ useEffect(() => {
                 </AnimatePresence>
 
                 <AnimatePresence initial={false}>
-                  {isCanvasMode && isSearchActive && searchQuery.trim() && (
+                  {isCanvasMode && isSearchActive && searchQuery.trim() && normalizedDeferredSearchQuery && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
@@ -28606,7 +29265,7 @@ useEffect(() => {
                             const preview = getCanvasDrawerMediaPreviewSource(candidate)
                               || (candidate.type === 'image' && candidate.path ? convertFileSrc(candidate.path) : '');
                             const mediaLabel = candidate.type === 'video' ? '视频' : '图片';
-                            const isOnCanvas = canvasItems.some(canvasItem => canvasItem.item.sourceItemId === candidate.id);
+                            const isOnCanvas = canvasDrawerSourceItemIds.has(candidate.id);
                             return (
                               <button
                                 key={candidate.id}
@@ -29640,11 +30299,18 @@ useEffect(() => {
                             className="fixed left-1/2 top-5 z-[100090] flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-200/70 bg-stone-950/86 px-3 py-2 text-[11px] font-bold text-white shadow-[0_12px_32px_rgba(0,0,0,0.24)] backdrop-blur-xl"
                           >
                             {allowVideoReference ? <Film className="h-3.5 w-3.5 text-emerald-300" /> : <ImageIcon className="h-3.5 w-3.5 text-cyan-300" />}
-                            {allowVideoReference ? '点击画布图片/视频作为输入' : '点击画布图片作为输入'}
+                            {pendingCanvasFusionRoleRef.current?.targetId === canvasInputPickTargetId
+                              ? pendingCanvasFusionRoleRef.current.role === 'BASE'
+                                ? '点击画布图片设置为基图'
+                                : '点击画布图片设置为意向图'
+                              : allowVideoReference ? '点击画布图片/视频作为输入' : '点击画布图片作为输入'}
                             <button
                               type="button"
                               className="ml-1 rounded-full bg-white/10 px-2 py-0.5 text-white/70 hover:bg-white/16 hover:text-white"
-                              onClick={() => setCanvasInputPickTargetId(null)}
+                              onClick={() => {
+                                pendingCanvasFusionRoleRef.current = null;
+                                setCanvasInputPickTargetId(null);
+                              }}
                             >
                               取消
                             </button>
@@ -30166,6 +30832,16 @@ useEffect(() => {
                               || (isCanvasWorkflowItem && isCanvasFileReferencePreviewItem(item))
                             ))
                             : expandedCanvasInputPreviewItems;
+                          const isCanvasImageFusionItem = isCanvasImageFusionAi(canvasItem.ai);
+                          const canvasImageFusionConfig = isCanvasImageFusionItem
+                            ? normalizeCanvasImageFusionConfig(canvasItem.ai?.imageFusion, canvasItem.inputs || [])
+                            : null;
+                          const canvasImageFusionBasePreview = canvasImageFusionConfig?.baseNodeId
+                            ? canvasInputPreviewItems.find(item => item.disconnectId === canvasImageFusionConfig.baseNodeId)
+                            : undefined;
+                          const canvasImageFusionStylePreview = canvasImageFusionConfig?.styleNodeId
+                            ? canvasInputPreviewItems.find(item => item.disconnectId === canvasImageFusionConfig.styleNodeId)
+                            : undefined;
                           const canvasTextMediaInputItems = isTextCanvasItem
                             ? canvasVisualInputPreviewItems
                             : [];
@@ -30303,6 +30979,37 @@ useEffect(() => {
                                       <div className="flex min-w-0 flex-1 flex-col gap-3">
                                       <div className="flex items-start justify-between gap-3">
                                         {showCanvasAiAttachmentControl && (
+                                        isCanvasImageFusionItem && canvasImageFusionConfig ? (
+                                          <CanvasImageFusionControls
+                                            basePreviewSource={canvasImageFusionBasePreview ? getCanvasReferencePreviewSource(canvasImageFusionBasePreview) : undefined}
+                                            stylePreviewSource={canvasImageFusionStylePreview ? getCanvasReferencePreviewSource(canvasImageFusionStylePreview) : undefined}
+                                            baseConnected={!!canvasImageFusionConfig.baseNodeId}
+                                            styleConnected={!!canvasImageFusionConfig.styleNodeId}
+                                            baseWeight={canvasImageFusionConfig.baseWeight || 0}
+                                            styleWeight={canvasImageFusionConfig.styleWeight || 0}
+                                            disabled={canvasItem.ai?.status === 'working'}
+                                            onOpenSlot={(role) => {
+                                              pendingCanvasFusionRoleRef.current = { targetId: canvasItem.id, role };
+                                              setCanvasInputMenuForId(canvasItem.id);
+                                            }}
+                                            onRemoveBase={() => {
+                                              if (canvasImageFusionConfig.baseNodeId) {
+                                                disconnectCanvasInput(canvasItem.id, canvasImageFusionConfig.baseNodeId);
+                                              }
+                                            }}
+                                            onRemoveStyle={() => {
+                                              if (canvasImageFusionConfig.styleNodeId) {
+                                                disconnectCanvasInput(canvasItem.id, canvasImageFusionConfig.styleNodeId);
+                                              }
+                                            }}
+                                            onBaseWeightChange={(baseWeight) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                              imageFusion: { ...canvasImageFusionConfig, baseWeight },
+                                            })}
+                                            onStyleWeightChange={(styleWeight) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                              imageFusion: { ...canvasImageFusionConfig, styleWeight },
+                                            })}
+                                          />
+                                        ) : (
                                         <button
                                           data-no-drag="true"
                                           type="button"
@@ -30524,6 +31231,7 @@ useEffect(() => {
                                             </span>
                                           )}
                                         </button>
+                                        )
                                         )}
                                         <div className="ml-auto flex min-w-[132px] flex-col items-end gap-1.5 pt-0.5">
                                           <span className="max-w-[250px] truncate text-[11px] font-black text-stone-500 dark:text-white/58">
@@ -31651,6 +32359,23 @@ useEffect(() => {
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="思考模式"
                                     />
+                                    <RoundedSelect
+                                      data-no-drag="true"
+                                      data-canvas-edit-control="true"
+                                      value={canvasItem.contextRouting === 'auto' ? 'auto' : 'full'}
+                                      options={CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS}
+                                      onChange={(value) => setCanvasTextContextRouting(
+                                        canvasItem.id,
+                                        value === 'auto' ? 'auto' : 'full',
+                                      )}
+                                      className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[0.86]`}
+                                      labelClassName="truncate text-left"
+                                      chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
+                                      menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                      optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                      title="下游上下文：完整传递或按生图节点自动分流"
+                                    />
                                   </div>
                                   {canvasTextMediaInputItems.length > 0 && (
                                     <div className="shrink-0 border-b border-stone-950/[0.045] bg-white/42 px-3 py-2 dark:border-white/[0.055] dark:bg-white/[0.035]">
@@ -32180,6 +32905,9 @@ useEffect(() => {
                             : null;
                           const canUploadWorkflowImages = canvasItem.ai?.type !== 'workflow' || workflowUserInput?.acceptImages !== false;
                           const canUploadWorkflowFiles = canvasItem.ai?.type === 'workflow' && workflowUserInput?.acceptFiles === true;
+                          const pendingFusionRole = pendingCanvasFusionRoleRef.current?.targetId === canvasItem.id
+                            ? pendingCanvasFusionRoleRef.current.role
+                            : null;
                           return (
                             <div
                               key={`canvas-input-menu-${canvasItem.id}`}
@@ -32195,6 +32923,11 @@ useEffect(() => {
                                 event.stopPropagation();
                               }}
                             >
+                              {pendingFusionRole && (
+                                <div className="px-2.5 pb-1 pt-1 text-[9px] font-black uppercase tracking-[0.14em] text-fuchsia-500 dark:text-fuchsia-300">
+                                  {pendingFusionRole === 'BASE' ? '设置基图' : '设置意向图'}
+                                </div>
+                              )}
                               {!isVideoOnlyInput && canUploadWorkflowImages && (
                                 <button
                                   type="button"
@@ -32858,6 +33591,17 @@ useEffect(() => {
                               </button>
                               <button
                                 type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-fuchsia-500/18 hover:text-fuchsia-200"
+                                onClick={() => {
+                                  addCanvasImageFusionNodeAtWorld({ x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <Layers className="h-3.5 w-3.5 text-fuchsia-300" />
+                                AI 溶图节点
+                              </button>
+                              <button
+                                type="button"
                                 className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-emerald-500/18 hover:text-emerald-200"
                                 onClick={() => {
                                   addCanvasAiVideoGeneratorNodeAtWorld({ x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
@@ -33184,6 +33928,20 @@ useEffect(() => {
                             </button>
                             <button
                               type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-fuchsia-500/18 hover:text-fuchsia-200"
+                              onClick={() => {
+                                addCanvasImageFusionNodeAtWorld(
+                                  { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY },
+                                  sourceIds,
+                                );
+                                setCanvasContextMenu(null);
+                              }}
+                            >
+                              <Layers className="h-3.5 w-3.5 text-fuchsia-300" />
+                              新建 AI 溶图节点
+                            </button>
+                            <button
+                              type="button"
                               className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-emerald-500/18 hover:text-emerald-200"
                               onClick={() => {
                                 addCanvasAiVideoGeneratorNodeForSources(sourceIds, { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
@@ -33406,6 +34164,7 @@ useEffect(() => {
                       isAgentChatOpen={isAgentChatOpen}
                       onToggleAgentChat={() => setIsAgentChatOpen(value => !value)}
                       onAddImage={() => addCanvasAiGeneratorNode()}
+                      onAddFusion={() => addCanvasImageFusionNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
                       onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}
                       onAddEnhancement={mediaType => addCanvasEnhancementNode(mediaType)}
@@ -34199,7 +34958,7 @@ useEffect(() => {
                                       displayItems.length < DRAWER_VIRTUALIZATION_THRESHOLD
                                       || item.type !== 'image'
                                       || !!item.thumbnail
-                                      || item.folderId === AI_GENERATED_FOLDER_ID
+                                      || aiGeneratedImageFolderIds.has(item.folderId || '')
                                       || String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
                                     )
                                   }
@@ -34238,7 +34997,7 @@ useEffect(() => {
                                   onEnsureThumbnail={ensureMediaThumbnail}
                                   onCreateFloatingNote={createFloatingNote}
                                   onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
-                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}|${drawerClassificationView}|${drawerAiClassificationDimension}|${activeDrawerAiClassificationLabel}`}
+                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${deferredSearchQuery}|${drawerClassificationView}|${drawerAiClassificationDimension}|${activeDrawerAiClassificationLabel}`}
                                   actionContext={drawerCardActionContext}
                             />
                           </div>

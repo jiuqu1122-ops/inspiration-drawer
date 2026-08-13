@@ -65,6 +65,7 @@ const makeReferenceWorkflow = (id: string, builtin = false) => ({
         provider: 'custom',
         model: 'test-model',
         prompt: 'Generate a product image',
+        strategyBindings: ['global', 'hero'],
         status: 'idle',
         outputs: [],
       },
@@ -123,6 +124,7 @@ describe('canvasTemplateStorage', () => {
       ai: {
         prompt: undefined,
         presetPrompt: 'Generate a product image',
+        strategyBindings: ['global', 'hero'],
         outputs: [],
         status: 'idle',
       },
@@ -133,5 +135,73 @@ describe('canvasTemplateStorage', () => {
       makeReferenceWorkflow('stored-built-in', true),
     ]));
     expect(readCustomCanvasWorkflows().map(workflow => workflow.id)).toEqual(['custom-reference']);
+  });
+
+  it('preserves generic automatic context routing on text Agent nodes', () => {
+    const normalized = normalizeCanvasWorkflowTemplate({
+      id: 'routed-context',
+      label: 'Routed context workflow',
+      hint: 'Analyze once and route context by downstream node ID',
+      nodes: [
+        {
+          id: 'analysis',
+          item: { type: 'text', content: 'Analyze the input.' },
+          textMode: 'agent',
+          contextRouting: 'auto',
+        },
+        {
+          id: 'render-a',
+          item: { type: 'text', content: '' },
+          inputs: ['analysis'],
+          ai: { type: 'image-generator', presetPrompt: 'Render A.' },
+        },
+      ],
+    });
+
+    expect(normalized?.nodes.find(node => node.id === 'analysis')?.contextRouting).toBe('auto');
+  });
+
+  it('preserves image fusion roles and independent weights in workflows', () => {
+    const normalized = normalizeCanvasWorkflowTemplate({
+      id: 'fusion-workflow',
+      label: 'Fusion workflow',
+      nodes: [
+        { id: 'base', item: { type: 'image', content: '' } },
+        { id: 'style', item: { type: 'image', content: '' } },
+        {
+          id: 'fusion',
+          item: { type: 'text', content: '融合为一款产品' },
+          inputs: ['base', 'style'],
+          ai: {
+            type: 'image-generator',
+            imageFusion: {
+              enabled: true,
+              baseNodeId: 'base',
+              styleNodeId: 'style',
+              baseWeight: 82,
+              styleWeight: 47,
+            },
+            referenceRoles: [
+              { nodeId: 'base', role: 'BASE' },
+              { nodeId: 'style', role: 'STYLE_REF' },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(normalized?.nodes.find(node => node.id === 'fusion')?.ai).toMatchObject({
+      imageFusion: {
+        enabled: true,
+        baseNodeId: 'base',
+        styleNodeId: 'style',
+        baseWeight: 82,
+        styleWeight: 47,
+      },
+      referenceRoles: [
+        { nodeId: 'base', role: 'BASE' },
+        { nodeId: 'style', role: 'STYLE_REF' },
+      ],
+    });
   });
 });

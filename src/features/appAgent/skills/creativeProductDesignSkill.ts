@@ -275,6 +275,8 @@ export const isCreativeEditRequest = (userText: string) => (
 export const isDirectCreativeExecutionRequest = (userText: string) => (
   findKeywordHits(userText, DIRECT_EXECUTION_KEYWORDS).length > 0
   || /(?:生成|出图|渲染|运行|执行|run|generate)/i.test(userText)
+  || /(?:我要|我想|帮我|请|给我).{0,12}(?:设计|做)(?:一个|一款|个|款)/i.test(userText)
+  || /(?:设计|做)(?:一个|一款|个|款).{0,24}(?:产品|设备|家具|家电|工具|玩具|包装)/i.test(userText)
 );
 
 export const isExplicitVideoGenerationRequest = (userText: string) => (
@@ -429,7 +431,9 @@ export function inferProductDesignContext(userText: string): ProductDesignContex
     rule.keywords.some(keyword => lower.includes(keyword.toLowerCase()))
   ));
   const productKeywordHits = findKeywordHits(userText, PRODUCT_KEYWORDS);
-  const isProductTask = productKeywordHits.length > 0 || !!matchedRule;
+  const explicitProductCreationIntent = /(?:我要|我想|帮我|请|给我).{0,12}(?:设计|做)(?:一个|一款|个|款)/i.test(userText)
+    && !/(?:logo|标志|图标|字体|网页|页面|界面|海报|banner|插画|表情包)/i.test(userText);
+  const isProductTask = productKeywordHits.length > 0 || !!matchedRule || explicitProductCreationIntent;
   const usageMode = matchedRule?.usageMode
     || (/手持|握持|handheld/.test(lower) ? '手持'
       : /佩戴|wear/.test(lower) ? '佩戴'
@@ -635,6 +639,23 @@ export function buildCreativeGeneratorPrompt(brief: Omit<CreativeBrief, 'generat
   return lines.join('\n');
 }
 
+export function buildProductDesignAnalysisPrompt(brief: CreativeBrief): string {
+  return [
+    '工业设计意向分析与生图策略',
+    '请同时分析用户设计需求和当前节点实际连接的每一张参考图，不能只根据图片名称或元数据推断。',
+    '图 1 至图 5 默认是系统从灵感抽屉自动检索的意向参考；若还有其他连接图，将其作为用户显式提供的产品/主体参考。',
+    '逐图说明：参考角色、可提取的造型/比例/结构/CMF/交互/氛围特征、适用原因，以及不得照搬的品牌标识或偶然细节。',
+    '随后综合输出：',
+    '1. 产品类型、目标用户、使用场景、设计目标和当前迭代阶段；',
+    '2. 核心概念和差异化机会；',
+    '3. silhouette、body、surface、function/interaction、CMF、结构与可制造性策略；',
+    '4. 主要设计风险、冲突取舍和明确禁区；',
+    '5. 可直接供下游生图模型执行的完整渲染提示词，明确主体、形态、CMF、视角、构图、灯光、背景和保持项。',
+    '参考图只作为定向依据，必须融合为一个连贯的新设计，不要拼贴，不要复制 logo、文字、水印或无法验证的结构。',
+    brief.generatorPrompt,
+  ].join('\n');
+}
+
 export function extractCreativeBrief(input: SkillMatchInput, imageIds?: string[]): CreativeBrief {
   const originalRequest = input.userText.trim();
   const explicitVideoGeneration = isExplicitVideoGenerationRequest(originalRequest);
@@ -819,9 +840,21 @@ export const creativeProductDesignSkill: AppAgentSkill = {
   description: '视觉生成/编辑、产品设计、CMF、参考图、分镜和视频生产。',
   match: input => {
     const hits = findKeywordHits(input.userText, CREATIVE_KEYWORDS);
+    const product = inferProductDesignContext(input.userText);
+    const hasProductDesignIntent = product.isProductTask
+      && /(?:设计|做(?:一个|一款|个|款)|方案|外观|造型|design)/i.test(input.userText);
     const selectedImageBonus = input.hasSelectedImages && hits.length > 0 ? 0.12 : 0;
-    if (hits.length === 0) return noSkillMatch();
-    return createSkillMatch(Math.min(0.98, 0.58 + hits.length * 0.06 + selectedImageBonus), hits.map(hit => `keyword:${hit}`));
+    if (hits.length === 0 && !hasProductDesignIntent) return noSkillMatch();
+    const score = hasProductDesignIntent
+      ? 0.92 + selectedImageBonus
+      : 0.58 + hits.length * 0.06 + selectedImageBonus;
+    return createSkillMatch(
+      Math.min(0.98, score),
+      [
+        ...hits.map(hit => `keyword:${hit}`),
+        ...(hasProductDesignIntent ? [`product:${product.category}`] : []),
+      ],
+    );
   },
   getRequiredContext: (input): ContextScope[] => {
     const scopes: ContextScope[] = ['canvas'];
@@ -849,6 +882,8 @@ export const creativeProductDesignSkill: AppAgentSkill = {
       '- If workflow-builder-skill detects workflow creation or multi-output intent, treat CMF/detail/scene/storyboard terms as separate workflow nodes, not as one global CMF task.',
       '- Exception: when applying industrial-design-full-process, do not call drawer_search_inspirations, analyze_inspiration, analyze_inspirations_batch, external search, or the web collector beforehand. Pass the exact request in projectBrief; that built-in workflow performs its own pure local metadata retrieval at run time.',
       '- For other product generators or workflows, extract Project Brief fields, then call drawer_search_inspirations for a metadata-only search of at most 8 compact candidates.',
+      '- When canvas_create_design_pipeline is used, retrieve exactly five tagged references when available: two category/identity, two form/silhouette, and one color/CMF or explicit style. If the user explicitly says mechanical, minimal, retro, industrial, organic, etc., prioritize that tag in the style slot.',
+      '- All five automatically added reference image nodes must be direct inputs of the Design Agent analysis and also remain direct visual inputs of the downstream generator.',
       '- Never call analyze_inspiration or analyze_inspirations_batch for an ordinary creative request. Image analysis is only for an explicit durable-library maintenance request.',
       '- Candidate policy: confidence > 0.9 is selected automatically; 0.5-0.9 remains candidate and requires user confirmation; below 0.5 is rejected.',
       '- LLM ranking, when present, receives only the user request and compact candidate summaries. It must not inspect images or expand drawer context.',

@@ -58,6 +58,7 @@ export type CanvasWorkflowNodeTemplate = {
   inputs?: string[];
   fixedInput?: boolean;
   textMode?: CanvasImageItem['textMode'];
+  contextRouting?: CanvasImageItem['contextRouting'];
   designAgentConfig?: DesignAgentConfig;
   acceptsExternalInputs?: boolean;
   externalInputTypes?: Array<'image' | 'text' | 'video'>;

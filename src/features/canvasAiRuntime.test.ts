@@ -43,5 +43,9 @@ describe('canvasAiRuntime metadata helpers', () => {
     expect(getCanvasAiNodeTitle(aiWithType('image-enhancement'))).toBe('图片清晰度增强');
     expect(getCanvasAiNodeTitle(aiWithType('video-generator'))).toBe('AI 视频节点');
     expect(getCanvasAiNodeTitle(aiWithType('image-generator'))).toBe('AI 生图节点');
+    expect(getCanvasAiNodeTitle({
+      ...aiWithType('image-generator'),
+      imageFusion: { enabled: true },
+    })).toBe('AI 溶图节点');
   });
 });

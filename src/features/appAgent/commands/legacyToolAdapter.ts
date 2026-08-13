@@ -48,6 +48,7 @@ export function adaptCommandToLegacyAction(command: AppAgentCommand): LegacyAgen
     if (command.action === 'run') return withCommandMeta({ tool: 'canvas_run_workflow', arguments: command.args }, command);
   }
   if (command.domain === 'canvas') {
+    if (command.action === 'create_design_pipeline') return withCommandMeta({ tool: 'canvas_create_design_pipeline', arguments: command.args }, command);
     if (command.action === 'create_generator') return withCommandMeta({ tool: 'canvas_create_generator', arguments: command.args }, command);
     if (command.action === 'create_text_agent') return withCommandMeta({ tool: 'canvas_create_text_agent', arguments: command.args }, command);
     if (command.action === 'add_text') return withCommandMeta({ tool: 'canvas_add_text', arguments: command.args }, command);

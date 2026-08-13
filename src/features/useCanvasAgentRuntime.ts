@@ -252,7 +252,7 @@ const collectWorkflowTraceFromCalls = (calls: AgentToolCall[]) => {
 const CANVAS_AGENT_CODEX_THREAD_PROTOCOL = 'software-agent-full-control-v5';
 const AGENT_MAX_TOOL_ROUNDS = 10;
 const AGENT_THINKING_STEP_LIMIT = 24;
-const AGENT_TOOL_TIMEOUT_MS = 3 * 60 * 1000;
+const AGENT_TOOL_TIMEOUT_MS = 10 * 60 * 1000;
 const AGENT_THINKING_TERMINAL_STATUSES = new Set<AgentThinkingStepStatus>([
   'completed',
   'cancelled',
@@ -2433,7 +2433,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
             appAgentTurn.compactContext,
             appAgentTurn.activeSkillPrompt,
           ),
-          'OpenAI-compatible 兼容提示：优先使用 tools/function calling。若当前 API 或模型不返回 tool_calls，请只输出一个 JSON 对象：{"reply":"给用户看的简短说明","actions":[{"tool":"app_get_context","arguments":{}}]}。actions 可使用 app_navigate、analyze_inspiration、analyze_inspirations_batch、get_inspiration_analysis_job、drawer_search_inspirations、drawer_manage、calendar_manage、canvas_manage、canvas_create_text_agent、canvas_create_generator、canvas_apply_workflow 等已列工具；tool 与 arguments 必须对应可用软件工具。',
+          'OpenAI-compatible 兼容提示：优先使用 tools/function calling。若当前 API 或模型不返回 tool_calls，请只输出一个 JSON 对象：{"reply":"给用户看的简短说明","actions":[{"tool":"app_get_context","arguments":{}}]}。actions 可使用 app_navigate、analyze_inspiration、analyze_inspirations_batch、get_inspiration_analysis_job、drawer_search_inspirations、drawer_manage、calendar_manage、canvas_manage、canvas_create_design_pipeline、canvas_create_text_agent、canvas_create_generator、canvas_apply_workflow 等已列工具；tool 与 arguments 必须对应可用软件工具。',
         ].join('\n\n');
         const providerMessages: Array<Record<string, unknown>> = [
           { role: 'system', content: systemPrompt },

@@ -239,6 +239,7 @@ const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate
         : node.textMode === 'agent' || (inferredExternalImageInput && itemType === 'text' && !rawAi)
           ? 'agent'
           : undefined,
+      contextRouting: node.contextRouting === 'auto' ? 'auto' : undefined,
       designAgentConfig: node.designAgentConfig
         ? normalizeDesignAgentConfig(node.designAgentConfig)
         : undefined,

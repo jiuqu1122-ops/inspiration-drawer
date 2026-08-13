@@ -28,6 +28,7 @@ export function getLegacyActionRiskLevel(action: LegacyAgentAction): RiskLevel {
   if (tool === 'canvas_manage' && ['delete_nodes', 'clear_canvas'].includes(toolAction)) return 'destructive';
   if (tool === 'canvas_manage' && ['run_nodes'].includes(toolAction)) return 'costly';
   if (tool === 'canvas_run_workflow' || tool === 'canvas_run_text_agent') return 'costly';
+  if (tool === 'canvas_create_design_pipeline' && (args.autoRunAnalysis !== false || args.autoRunGenerator === true)) return 'costly';
   if (tool === 'canvas_create_generator' && args.autoRun === true) return 'costly';
   if (tool === 'canvas_create_media_tool' && args.autoRun === true) return 'costly';
   if (tool === 'app_navigate' && ['start_service', 'stop_service', 'restart_service'].includes(toolAction)) return 'system_process';

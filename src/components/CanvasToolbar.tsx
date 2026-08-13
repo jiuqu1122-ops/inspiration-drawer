@@ -3,6 +3,7 @@ import {
   Film,
   Image as ImageIcon,
   LayoutGrid,
+  Layers,
   Link,
   Palette,
   RefreshCw,
@@ -32,6 +33,7 @@ type CanvasToolbarProps = {
   isAgentChatOpen: boolean;
   onToggleAgentChat: () => void;
   onAddImage: () => void;
+  onAddFusion: () => void;
   onAddVideo: () => void;
   onAddFrameInterpolation: () => void;
   onAddEnhancement: (mediaType: 'image' | 'video') => void;
@@ -56,6 +58,7 @@ export function CanvasToolbar({
   isAgentChatOpen,
   onToggleAgentChat,
   onAddImage,
+  onAddFusion,
   onAddVideo,
   onAddFrameInterpolation,
   onAddEnhancement,
@@ -84,6 +87,15 @@ export function CanvasToolbar({
       >
         <ImageIcon className="h-3.5 w-3.5 shrink-0 text-violet-500 dark:text-violet-300" />
         <span className="min-w-0 flex-1 truncate text-left">图片</span>
+      </button>
+      <button
+        type="button"
+        onClick={onAddFusion}
+        className={`${CANVAS_SIDE_TOOL_CLASS} border-fuchsia-200/80 hover:border-fuchsia-300 hover:bg-fuchsia-50/90 dark:hover:border-fuchsia-400/30`}
+        title="新增 AI 溶图节点"
+      >
+        <Layers className="h-3.5 w-3.5 shrink-0 text-fuchsia-500 dark:text-fuchsia-300" />
+        <span className="min-w-0 flex-1 truncate text-left">溶图</span>
       </button>
       <button
         type="button"

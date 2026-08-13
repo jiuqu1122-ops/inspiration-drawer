@@ -4,6 +4,12 @@ const cleanTextList = (values?: string[]) => (
   Array.isArray(values) ? values.map(value => String(value || '').trim()).filter(Boolean) : []
 );
 
+const getSearchableLocation = (value?: string) => {
+  const text = String(value || '').trim();
+  if (!text || /^(?:data:|blob:)/i.test(text)) return '';
+  return text;
+};
+
 const getItemRemarkEntries = (item: Pick<BufferItem, 'remark' | 'remarks'>) => {
   const fromList = cleanTextList(item.remarks);
   if (fromList.length > 0) return fromList;
@@ -52,8 +58,8 @@ export const getDrawerItemSearchText = (item: BufferItem) => {
     item.name,
     item.content,
     ...searchableRemarks,
-    item.path,
-    item.url,
+    getSearchableLocation(item.path),
+    getSearchableLocation(item.url),
     ...profileText,
   ].filter(Boolean).join(' ').toLowerCase();
 };

@@ -92,6 +92,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
   localMediaTool?: boolean;
   showLocalMediaProgress?: boolean;
   imageRulePanelExpanded?: boolean;
+  imageFusion?: boolean;
   internalSlotCount?: number;
 }) => {
   const isWorkflow = options?.type === 'workflow';
@@ -116,7 +117,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
       isWorkflow,
     })
     : null;
-  const headerSectionHeight = 58;
+  const headerSectionHeight = options?.imageFusion ? 112 : 58;
   const outputSectionHeight = outputLayout ? 36 + outputLayout.gridHeight : 220;
   const metaSectionHeight = isWorkflow || options?.hasPreset ? 44 : 0;
   const promptHeight = isWorkflow

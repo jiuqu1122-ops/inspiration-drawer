@@ -198,7 +198,11 @@ export const getCanvasAiNodeAutoSizeType = (ai?: CanvasImageItem['ai'] | null): 
       : 'image-generator'
 );
 export const getCanvasAiNodeTitleBase = (ai?: CanvasImageItem['ai'] | null) => (
-  getCanvasAiMediaType(ai) === 'video' ? 'AI 视频节点' : 'AI 生图节点'
+  getCanvasAiMediaType(ai) === 'video'
+    ? 'AI 视频节点'
+    : ai?.imageFusion?.enabled
+      ? 'AI 溶图节点'
+      : 'AI 生图节点'
 );
 export const getCanvasAiNodeTitle = (ai?: CanvasImageItem['ai'] | null) => (
   ai?.type === 'frame-interpolation'
@@ -209,4 +213,3 @@ export const getCanvasAiNodeTitle = (ai?: CanvasImageItem['ai'] | null) => (
         ? '图片清晰度增强'
         : getCanvasAiNodeTitleBase(ai)
 );
-

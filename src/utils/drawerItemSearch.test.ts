@@ -53,6 +53,18 @@ describe('drawer item search', () => {
     }))).toContain('searchable note');
   });
 
+  it('does not copy image data URLs or blob URLs into the search index', () => {
+    const searchText = getDrawerItemSearchText(createItem({
+      name: 'Product reference',
+      path: 'blob:http://localhost/large-preview',
+      url: `data:image/png;base64,${'ABCDEF'.repeat(10_000)}`,
+    }));
+
+    expect(searchText).toBe('product reference generated image');
+    expect(searchText).not.toContain('abcdef');
+    expect(searchText.length).toBeLessThan(100);
+  });
+
   it('replaces only the first remark while preserving the remaining entries', () => {
     expect(replaceFirstItemRemark({ remarks: ['old title', 'detail'] }, 'new title')).toEqual({
       remark: 'new title\ndetail',
