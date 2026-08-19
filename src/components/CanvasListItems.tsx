@@ -49,7 +49,7 @@ export const CanvasListItem = React.memo(function CanvasListItem({
   renderMenu,
 }: CanvasListItemProps) {
   return (
-    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true">
+    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true" data-active={isActive ? 'true' : 'false'}>
       <div className="relative">
         <button
           type="button"
@@ -60,14 +60,14 @@ export const CanvasListItem = React.memo(function CanvasListItem({
             event.stopPropagation();
             onOpenMenu(canvas.id);
           }}
-          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-16 text-left text-[12px] font-bold transition-colors ${isActive ? 'bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'} disabled:cursor-wait disabled:opacity-60`}
+          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[8px] px-2 pr-16 text-left text-[12px] font-semibold transition-colors ${isActive ? 'bg-blue-50 text-blue-700 dark:bg-blue-400/14 dark:text-blue-200' : 'text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'} disabled:cursor-wait disabled:opacity-60`}
           title={canvas.name}
         >
-          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${isActive ? 'bg-white/18 text-white dark:bg-stone-950/82 dark:text-indigo-200 dark:ring-1 dark:ring-white/15' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/12 dark:text-indigo-200'}`}>
+          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] ${isActive ? 'text-blue-600 dark:text-blue-300' : 'text-stone-500 dark:text-stone-400'}`}>
             <Layers className="h-3.5 w-3.5" />
           </span>
           <span className="min-w-0 flex-1 truncate">{canvas.name || '画布'}</span>
-          {canvas.isSnapshot && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black ${isActive ? 'bg-white/18 text-white/80 dark:text-stone-950/70' : 'bg-indigo-100 text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-200'}`}>快照</span>}
+          {canvas.isSnapshot && <span className={`shrink-0 rounded-[5px] px-1.5 py-0.5 text-[9px] font-semibold ${isActive ? 'bg-blue-100 text-blue-600 dark:bg-blue-400/20 dark:text-blue-200' : 'bg-stone-200 text-stone-500 dark:bg-stone-700 dark:text-stone-300'}`}>快照</span>}
         </button>
         <button
           type="button"
@@ -77,7 +77,7 @@ export const CanvasListItem = React.memo(function CanvasListItem({
             event.stopPropagation();
             onDelete(canvas);
           }}
-          className="absolute right-8 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-red-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-stone-300 disabled:opacity-0 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-red-300 dark:ring-stone-700 dark:hover:bg-red-950/35 dark:hover:text-red-200 dark:disabled:text-stone-600"
+          className="absolute right-8 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[6px] bg-white text-stone-400 opacity-0 ring-1 ring-stone-200 transition-opacity hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-stone-300 disabled:opacity-0 group-hover/canvas:opacity-100 dark:bg-stone-800 dark:text-stone-400 dark:ring-stone-700 dark:hover:bg-red-950/35 dark:hover:text-red-200 dark:disabled:text-stone-600"
           title={canDelete ? '删除画布' : '正在切换画布'}
         >
           <Trash2 className="h-3.5 w-3.5" />
@@ -89,7 +89,7 @@ export const CanvasListItem = React.memo(function CanvasListItem({
             event.stopPropagation();
             onToggleMenu(canvas.id);
           }}
-          className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-stone-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:text-stone-900 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700 dark:hover:text-white"
+          className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[6px] bg-white text-stone-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:bg-stone-50 hover:text-stone-900 group-hover/canvas:opacity-100 dark:bg-stone-800 dark:text-stone-300 dark:ring-stone-700 dark:hover:text-white"
           title="画布菜单"
         >
           <MoreVertical className="h-3.5 w-3.5" />

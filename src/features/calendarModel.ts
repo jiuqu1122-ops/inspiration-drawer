@@ -277,15 +277,15 @@ const getScheduleTextContent = (items?: FloatingNoteScheduleItem[]) => (
 const getSchedulePriorityClass = (priority?: string) => {
   switch (normalizeSchedulePriority(priority)) {
     case 'S':
-      return 'border-rose-200 bg-rose-100/92 text-rose-700 dark:border-rose-700/50 dark:bg-rose-900/38 dark:text-rose-200';
+      return 'bg-red-600 text-white dark:bg-red-600 dark:text-white';
     case 'A':
-      return 'border-amber-200 bg-amber-100/92 text-amber-700 dark:border-amber-700/50 dark:bg-amber-900/36 dark:text-amber-200';
+      return 'bg-orange-600 text-white dark:bg-orange-600 dark:text-white';
     case 'B':
-      return 'border-sky-200 bg-sky-100/92 text-sky-700 dark:border-sky-700/50 dark:bg-sky-900/36 dark:text-sky-200';
+      return 'bg-blue-600 text-white dark:bg-blue-600 dark:text-white';
     case 'C':
-      return 'border-stone-200 bg-stone-100/88 text-stone-600 dark:border-stone-700 dark:bg-stone-800/60 dark:text-stone-300';
+      return 'bg-green-700 text-white dark:bg-green-700 dark:text-white';
     default:
-      return 'border-stone-200 bg-stone-100/88 text-stone-600 dark:border-stone-700 dark:bg-stone-800/60 dark:text-stone-300';
+      return 'bg-green-700 text-white dark:bg-green-700 dark:text-white';
   }
 };
 

@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**6.0.7**
+当前版本：**6.0.14**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.7/Inspiration.Drawer_6.0.7_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.7)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.14/Inspiration.Drawer_6.0.14_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.14)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.14 更新
+
+- 统一抽屉、设置、弹窗、日历与无限画布的 UI 风格。
+- 优化素材卡片、侧栏、搜索和窗口控件的视觉与交互。
+- 修复画布拖拽偶发失焦与视口跳移，并增加窗口最小尺寸。
 
 ## 6.0.7 更新
 

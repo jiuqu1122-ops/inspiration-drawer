@@ -15654,8 +15654,8 @@ const EDGE_WINDOW_WIDTH: f64 = 20.0;
 const EDGE_STRIP_HEIGHT: f64 = 96.0;
 const FLOAT_TRIGGER_SIZE: f64 = 56.0;
 const FLOAT_MARGIN: f64 = 12.0;
-const DRAWER_MIN_WIDTH: f64 = 360.0;
-const DRAWER_MIN_HEIGHT: f64 = 220.0;
+const DRAWER_MIN_WIDTH: f64 = 880.0;
+const DRAWER_MIN_HEIGHT: f64 = 560.0;
 const DRAWER_EDGE_MARGIN: f64 = 12.0;
 static EDGE_STRIP_Y: OnceLock<Mutex<Option<f64>>> = OnceLock::new();
 

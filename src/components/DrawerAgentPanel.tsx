@@ -146,13 +146,13 @@ export function DrawerAgentPanel({
       onKeyDown={stopAgentKeyboardEvent}
       onKeyUp={stopAgentKeyboardEvent}
     >
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-blue-100/70 px-3 dark:border-white/8">
+      <header data-drawer-dialog-header="true" className="flex h-12 shrink-0 items-center justify-between border-b border-blue-100/70 px-3 dark:border-white/8">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-blue-500 text-white shadow-[0_6px_16px_rgba(59,130,246,0.25)]">
+          <span data-drawer-dialog-icon="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-blue-500 text-white shadow-[0_6px_16px_rgba(59,130,246,0.25)]">
             <Bot className="h-4 w-4" />
           </span>
           <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-[12px] font-bold text-stone-800 dark:text-stone-100">
+            <div data-drawer-dialog-title="true" className="flex items-center gap-1.5 text-[12px] font-bold text-stone-800 dark:text-stone-100">
               <span className="max-w-[180px] truncate">{activeConversation?.title || '软件 Agent'}</span>
               {busy && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
             </div>
@@ -166,7 +166,7 @@ export function DrawerAgentPanel({
           <button type="button" data-drawer-agent-history-toggle="true" onClick={() => setShowHistory(value => !value)} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-50 text-blue-600 dark:bg-blue-400/10 dark:text-blue-200' : 'text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300'}`} title="会话历史"><History className="h-3.5 w-3.5" /></button>
           <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-white/7 dark:hover:text-blue-300" title="新对话"><MessageSquarePlus className="h-3.5 w-3.5" /></button>
           <button type="button" onClick={onClearConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-white/7" title="清空对话"><Trash2 className="h-3.5 w-3.5" /></button>
-          <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-white/7 dark:hover:text-stone-200" title="收起 Agent"><X className="h-4 w-4" /></button>
+          <button data-drawer-dialog-close="true" type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-white/7 dark:hover:text-stone-200" title="收起 Agent"><X className="h-4 w-4" /></button>
         </div>
         {showHistory && (
           <div data-drawer-agent-history-menu="true" className="absolute left-3 right-3 top-[50px] z-20 max-h-[280px] overflow-y-auto rounded-[16px] border border-blue-100/90 bg-white/96 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
@@ -205,7 +205,7 @@ export function DrawerAgentPanel({
 
       <main className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-3 [scrollbar-width:thin]">
         {messages.length === 0 && (
-          <div className="rounded-[18px] border border-dashed border-blue-200/80 bg-blue-50/55 px-3 py-3 text-[10px] leading-5 text-stone-500 dark:border-blue-400/20 dark:bg-blue-400/8 dark:text-stone-400">
+          <div data-drawer-agent-empty="true" className="rounded-[18px] border border-dashed border-blue-200/80 bg-blue-50/55 px-3 py-3 text-[10px] leading-5 text-stone-500 dark:border-blue-400/20 dark:bg-blue-400/8 dark:text-stone-400">
             可以直接说“新建一个产品项目文件夹”“把选中的图片加到画布并创建生图节点”“搜索所有方向盘素材”。Agent 会实际操作软件。
           </div>
         )}
@@ -304,7 +304,7 @@ export function DrawerAgentPanel({
             {selectedItems.length > 4 && <span className="flex h-6 items-center rounded-[9px] bg-stone-100 px-2 text-[8px] text-stone-500 dark:bg-white/7 dark:text-stone-400">+{selectedItems.length - 4}</span>}
           </div>
         )}
-        <div className="relative rounded-[20px] border border-blue-100/90 bg-white/92 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-white/8">
+        <div data-drawer-agent-composer="true" className="relative rounded-[20px] border border-blue-100/90 bg-white/92 p-2 shadow-[0_10px_28px_rgba(49,82,120,0.10)] focus-within:border-blue-300 dark:border-white/10 dark:bg-white/8">
           {showPlanningMenu && (
             <div data-drawer-agent-planning-menu="true" className="absolute bottom-12 right-11 z-30 w-[210px] overflow-hidden rounded-[16px] border border-blue-100/90 bg-white/98 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/98">
               <div className="px-2 pb-1 pt-1 text-[9px] font-semibold text-stone-400 dark:text-stone-500">本次规划方式</div>
@@ -373,7 +373,7 @@ export function DrawerAgentPanel({
               {busy ? (
                 <button type="button" onClick={onCancel} className="flex h-8 w-8 items-center justify-center rounded-full bg-stone-800 text-white dark:bg-stone-100 dark:text-stone-900" title="停止"><Square className="h-3 w-3 fill-current" /></button>
               ) : (
-                <button type="button" onClick={send} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-30" title={workflowPlanningMode === 'quick' ? '使用快速规划发送' : '使用 AI 规划发送'}><ArrowUp className="h-4 w-4" /></button>
+                <button data-drawer-dialog-primary="true" type="button" onClick={send} disabled={!inputValue.trim()} className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500 text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-30" title={workflowPlanningMode === 'quick' ? '使用快速规划发送' : '使用 AI 规划发送'}><ArrowUp className="h-4 w-4" /></button>
               )}
             </div>
           </div>

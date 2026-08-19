@@ -27,13 +27,10 @@ function FusionSlot({
   onWeightChange,
 }: FusionSlotProps) {
   const isBase = role === 'BASE';
-  const accent = isBase
-    ? 'text-blue-600 dark:text-blue-200'
-    : 'text-fuchsia-600 dark:text-fuchsia-200';
-  const trackAccent = isBase ? 'accent-blue-500' : 'accent-fuchsia-500';
   return (
     <div
       data-no-drag="true"
+      data-canvas-fusion-slot={role.toLowerCase()}
       className="flex min-w-0 flex-1 flex-col gap-1.5 rounded-[15px] border border-stone-950/[0.055] bg-white/54 p-2 dark:border-white/[0.07] dark:bg-white/[0.035]"
       onPointerDown={event => event.stopPropagation()}
     >
@@ -72,7 +69,7 @@ function FusionSlot({
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1">
-            <span className={`truncate text-[10px] font-black ${accent}`}>{label}</span>
+            <span className="truncate text-[10px] font-bold text-stone-700 dark:text-stone-200">{label}</span>
             {connected && (
               <button
                 type="button"
@@ -103,7 +100,7 @@ function FusionSlot({
           step="1"
           value={weight}
           disabled={disabled}
-          className={`h-1.5 min-w-0 flex-1 cursor-pointer disabled:cursor-not-allowed ${trackAccent}`}
+          className="h-1.5 min-w-0 flex-1 cursor-pointer accent-stone-800 disabled:cursor-not-allowed dark:accent-stone-200"
           onPointerDown={event => event.stopPropagation()}
           onChange={event => onWeightChange(Number(event.target.value))}
         />
@@ -143,7 +140,7 @@ export function CanvasImageFusionControls({
   onStyleWeightChange,
 }: CanvasImageFusionControlsProps) {
   return (
-    <div className="flex min-w-0 flex-1 items-stretch gap-2">
+    <div data-canvas-fusion-controls="true" className="flex min-w-0 flex-1 items-stretch gap-2">
       <FusionSlot
         role="BASE"
         label="基图"

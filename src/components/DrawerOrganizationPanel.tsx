@@ -23,19 +23,19 @@ export const DrawerOrganizationPanel = React.memo(function DrawerOrganizationPan
   };
 
   return (
-    <div className="rounded-[16px] border border-violet-100 bg-violet-50/45 p-2.5 dark:border-violet-400/20 dark:bg-violet-400/8">
+    <div data-drawer-organization-panel="true" className="rounded-[12px] border border-stone-200 bg-white p-2.5 dark:border-stone-700 dark:bg-stone-900">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-[11px] font-black text-stone-700 dark:text-stone-200">
-          <Sparkles className="h-3.5 w-3.5 text-violet-500" /> 素材分类方式
+          <Sparkles className="h-3.5 w-3.5 text-stone-500" /> 素材分类方式
         </span>
-        <span className="text-[9px] font-bold text-violet-500 dark:text-violet-300">不改文件夹</span>
+        <span className="text-[9px] font-medium text-stone-400 dark:text-stone-500">不改文件夹</span>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-1 rounded-[12px] border border-white/80 bg-white/70 p-1 shadow-sm dark:border-stone-700/70 dark:bg-stone-900/45">
+      <div className="mt-2 grid grid-cols-2 gap-1 rounded-[10px] border border-stone-200 bg-stone-100 p-1 dark:border-stone-700 dark:bg-stone-950">
         <button
           type="button"
           aria-pressed={classificationView === 'folders'}
           onClick={() => selectView('folders')}
-          className={`h-8 rounded-[9px] text-[10px] font-black transition-all ${classificationView === 'folders' ? 'bg-stone-900 text-white shadow-sm dark:bg-white dark:text-stone-900' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-200'}`}
+          className={`h-8 rounded-[7px] text-[10px] font-semibold transition-colors ${classificationView === 'folders' ? 'bg-stone-900 text-white shadow-sm dark:bg-stone-100 dark:text-stone-950' : 'text-stone-500 hover:bg-white hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-stone-100'}`}
         >
           文件夹
         </button>
@@ -43,7 +43,7 @@ export const DrawerOrganizationPanel = React.memo(function DrawerOrganizationPan
           type="button"
           aria-pressed={classificationView === 'ai'}
           onClick={() => selectView('ai')}
-          className={`h-8 rounded-[9px] text-[10px] font-black transition-all ${classificationView === 'ai' ? 'bg-violet-500 text-white shadow-sm shadow-violet-500/20' : 'text-stone-400 hover:bg-violet-50 hover:text-violet-600 dark:text-stone-500 dark:hover:bg-violet-400/10 dark:hover:text-violet-200'}`}
+          className={`h-8 rounded-[7px] text-[10px] font-semibold transition-colors ${classificationView === 'ai' ? 'bg-stone-900 text-white shadow-sm dark:bg-stone-100 dark:text-stone-950' : 'text-stone-500 hover:bg-white hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-stone-100'}`}
         >
           AI 分类
         </button>

@@ -578,10 +578,8 @@ import {
   formatCalendarPreviewTitle,
   formatScheduleDateLabel,
   getCalendarDayMeta,
-  getCalendarMiniEventClass,
   getCalendarNotificationBody,
   getLocalDateKey,
-  getSchedulePriorityClass,
   getScheduleTextContent,
   normalizeSchedulePriority,
   parseDateInputValue,
@@ -795,9 +793,9 @@ const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
 const DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY = 'drawer_classification_view';
 const DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY = 'drawer_ai_classification_dimension';
 const DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_folder_sidebar_width';
-const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 178;
-const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 116;
-const DRAWER_FOLDER_SIDEBAR_MAX_WIDTH = 260;
+const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 260;
+const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 250;
+const DRAWER_FOLDER_SIDEBAR_MAX_WIDTH = 320;
 const EAGLE_API_V2_BASE_URL = 'http://127.0.0.1:41595/api/v2';
 const EAGLE_API_V1_BASE_URL = 'http://127.0.0.1:41595/api';
 const EAGLE_IMPORT_PAGE_LIMIT = 200;
@@ -961,7 +959,7 @@ const CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS: RoundedSelectOption[] = [
   { value: 'full', label: '完整传递' },
   { value: 'auto', label: '自动分流' },
 ];
-const DRAWER_TOOL_BUTTON_BASE_CLASS = 'p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400';
+const DRAWER_TOOL_BUTTON_BASE_CLASS = 'inline-flex h-9 min-w-9 items-center justify-center rounded-[9px] border border-stone-200/80 bg-white px-2 text-stone-500 transition-[background-color,border-color,color,transform] duration-200 cursor-pointer hover:bg-stone-50 hover:text-stone-900 active:translate-y-px dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-stone-100';
 const DRAWER_FOLDER_TONES = [
   {
     active: 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30',
@@ -1423,6 +1421,7 @@ function MainApp() {
     startScrollLeft: number;
     startScrollTop: number;
   } | null>(null);
+  const canvasPanCleanupRef = useRef<(() => void) | null>(null);
   const canvasScrollLockRef = useRef<{ left: number; top: number } | null>(null);
   const canvasScrollWriteGuardRef = useRef(false);
   const canvasScrollWriteFrameRef = useRef<number | null>(null);
@@ -1523,6 +1522,8 @@ function MainApp() {
       cancelCanvasImageSourceUpgradeQueue();
       canvasImageSourceCacheRef.current.clear();
       canvasPreviewSourceIdsRef.current.clear();
+      canvasPanCleanupRef.current?.();
+      canvasPanCleanupRef.current = null;
       canvasPanRef.current = null;
       cancelCanvasItemDragVisuals();
       canvasSelectionDragRef.current = null;
@@ -4277,12 +4278,21 @@ function MainApp() {
     setQuickText('');
     handleCloseTextInput();
   };
+  const activateSearch = () => {
+    setIsSearchActive(true);
+    setShowSettings(false);
+    setShowTextInput(false);
+    setShowWebImageCollector(false);
+    setShowFolderModal(false);
+  };
   const toggleSearch = () => {
     if (!isSearchActive) {
-      setIsSearchActive(true); setShowSettings(false); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
+      activateSearch();
       setTimeout(() => searchInputRef.current?.focus(), 100);
     } else {
-      setIsSearchActive(false); setSearchQuery('');
+      setIsSearchActive(false);
+      setSearchQuery('');
+      searchInputRef.current?.blur();
     }
   };
   const toggleSettings = () => {
@@ -5018,9 +5028,6 @@ function MainApp() {
   const visibleFolderRailEntryCount = useMemo(() => (
     visibleFolderEntries.length
   ), [visibleFolderEntries]);
-  const activeCanvas = useMemo(() => (
-    canvases.find(canvas => canvas.id === activeCanvasId) || canvases.find(canvas => canvas.isActive) || null
-  ), [canvases, activeCanvasId]);
   const aiGeneratedImageFolderIds = useMemo(
     () => getAiGeneratedImageFolderIds(folders),
     [folders],
@@ -5192,7 +5199,7 @@ function MainApp() {
       return { start: 0, end: Math.min(displayItems.length, drawerRenderLimit), top: 0, bottom: 0 };
     }
     const totalRows = Math.ceil(displayItems.length / drawerGridColumnCount);
-    const compactMediaRowHeight = Math.max(1, cardMediaHeight + 10);
+    const compactMediaRowHeight = Math.max(1, cardMediaHeight + 48);
     const detailedRowHeight = Math.max(compactMediaRowHeight, cardMediaHeight + 118);
     const rowOffsets = new Array<number>(totalRows + 1).fill(0);
     for (let row = 0; row < totalRows; row += 1) {
@@ -5715,7 +5722,11 @@ function MainApp() {
     const primaryTagId = event.tagIds[0];
     const priority = normalizeSchedulePriority(event.schedule.priority);
     return (
-      <div key={event.id} className="group/calendar-event rounded-[18px] border border-stone-200/60 bg-white/58 px-3 py-2.5 shadow-sm shadow-black/[0.02] transition-colors hover:bg-white/78 dark:border-stone-700/60 dark:bg-stone-950/24 dark:hover:bg-stone-900/46">
+      <div
+        key={event.id}
+        data-calendar-event="true"
+        className="group/calendar-event rounded-[14px] border border-stone-200 bg-white px-3 py-2.5 shadow-none transition-[background-color,border-color] hover:border-stone-300 hover:bg-stone-50/80 dark:border-stone-700 dark:bg-stone-900/72 dark:hover:border-stone-600 dark:hover:bg-stone-800/72"
+      >
         <div className="flex items-start gap-2">
           <button
             type="button"
@@ -5736,7 +5747,10 @@ function MainApp() {
             title="打开来源便签"
           >
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-black leading-none ${getSchedulePriorityClass(priority)}`}>
+              <span
+                data-calendar-priority={priority}
+                className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] px-1 text-[9px] font-black leading-none"
+              >
                 {priority}
               </span>
               <div className={`min-w-0 flex-1 truncate text-xs font-bold ${event.schedule.done ? 'text-stone-400 line-through dark:text-stone-500' : 'text-stone-800 dark:text-stone-100'}`}>
@@ -5744,11 +5758,11 @@ function MainApp() {
               </div>
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold">
-              <span className="inline-flex items-center gap-1 text-amber-600/85 dark:text-amber-300/85">
+              <span className="inline-flex items-center gap-1 text-stone-500 dark:text-stone-400">
                 <Clock className="h-3 w-3" />
                 {formatScheduleDateLabel(event.schedule.startAt)}
               </span>
-              <span className="inline-flex items-center gap-1 text-emerald-600/85 dark:text-emerald-300/85">
+              <span className="inline-flex items-center gap-1 text-stone-500 dark:text-stone-400">
                 <Tag className="h-3 w-3" />
                 {getCalendarTagName(primaryTagId)}
               </span>
@@ -18460,6 +18474,10 @@ function MainApp() {
     let frameAttempts = 0;
     const tryFocus = () => {
       if (!isCanvasModeRef.current || pendingCanvasFocusItemIdRef.current !== id) return;
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+        pendingCanvasFocusItemIdRef.current = null;
+        return;
+      }
       if (focusCanvasItemById(id)) {
         pendingCanvasFocusItemIdRef.current = null;
         return;
@@ -18478,6 +18496,7 @@ function MainApp() {
     let frameAttempts = 0;
     const tryFocus = () => {
       if (!isCanvasModeRef.current || activeCanvasIdRef.current !== canvasId) return;
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
       const surface = canvasSurfaceRef.current;
       if (!surface || surface.clientWidth <= 0 || surface.clientHeight <= 0) {
         frameAttempts += 1;
@@ -18503,8 +18522,15 @@ function MainApp() {
     if (!surface) return;
     e.preventDefault();
     e.stopPropagation();
+    canvasPanCleanupRef.current?.();
+    pendingCanvasFocusItemIdRef.current = null;
+    surface.focus({ preventScroll: true });
     const pointerCaptureTarget = e.currentTarget;
-    pointerCaptureTarget.setPointerCapture?.(e.pointerId);
+    try {
+      pointerCaptureTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      // The WebView can revoke an active pointer while the window is changing focus.
+    }
     setCanvasInteractionActive(true);
     canvasPanRef.current = {
       pointerId: e.pointerId,
@@ -18523,6 +18549,7 @@ function MainApp() {
       const pan = canvasPanRef.current;
       const targetSurface = canvasSurfaceRef.current;
       if (!pan || !targetSurface) return;
+      if (event.pointerId !== pan.pointerId) return;
       const pressedButtonMask = pan.button === 1 ? 4 : 1;
       if ((event.buttons & pressedButtonMask) === 0) {
         onUp();
@@ -18559,6 +18586,16 @@ function MainApp() {
       if (canvasPanRef.current?.pointerId === e.pointerId) {
         canvasPanRef.current = null;
       }
+      if (canvasPanCleanupRef.current === onUp) {
+        canvasPanCleanupRef.current = null;
+      }
+      const finalSurface = canvasSurfaceRef.current;
+      if (finalSurface) {
+        canvasScrollLockRef.current = {
+          left: finalSurface.scrollLeft,
+          top: finalSurface.scrollTop,
+        };
+      }
       scheduleCanvasViewportUpdate();
       scheduleCanvasStateSave();
       setCanvasInteractionActive(false, 0);
@@ -18566,22 +18603,32 @@ function MainApp() {
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
       document.removeEventListener('mouseup', onMouseUp, true);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('blur', onUp);
       pointerCaptureTarget.removeEventListener('lostpointercapture', onUp);
-      if (pointerCaptureTarget.hasPointerCapture?.(e.pointerId)) {
-        pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+      try {
+        if (pointerCaptureTarget.hasPointerCapture?.(e.pointerId)) {
+          pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+        }
+      } catch {
+        // Pointer capture may already be gone after a window blur/cancel.
       }
     };
     const onMouseUp = (event: MouseEvent) => {
       if (event.button === e.button) onUp();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') onUp();
     };
 
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);
     document.addEventListener('mouseup', onMouseUp, true);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('blur', onUp);
     pointerCaptureTarget.addEventListener('lostpointercapture', onUp);
+    canvasPanCleanupRef.current = onUp;
   };
 
   const zoomCanvasAt = (clientX: number, clientY: number, deltaY: number) => {
@@ -19033,7 +19080,7 @@ function MainApp() {
         }
         canvasSpaceKeyCapturedRef.current = false;
         setIsCanvasSpacePressed(false);
-        canvasPanRef.current = null;
+        if (canvasPanRef.current?.button === 0) canvasPanCleanupRef.current?.();
         const surface = canvasSurfaceRef.current;
         if (surface) {
           canvasScrollLockRef.current = {
@@ -19046,7 +19093,7 @@ function MainApp() {
     const handleCanvasKeyBlur = () => {
       setIsCanvasSpacePressed(false);
       canvasSpaceKeyCapturedRef.current = false;
-      canvasPanRef.current = null;
+      canvasPanCleanupRef.current?.();
       cancelCanvasItemDragVisuals();
       setCanvasInteractionActive(false, 0);
     };
@@ -21136,10 +21183,10 @@ useEffect(() => {
       transitionStyle = 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
   }
   const drawerShellTransform = transformX === '0px' ? 'none' : `translateX(${transformX})`;
-  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 w-full h-full min-w-[320px] bg-white/82 dark:bg-stone-900/94 backdrop-blur-2xl border border-white/60 dark:border-stone-800/60 shadow-[0_18px_50px_rgba(0,0,0,0.10)] flex flex-row rounded-[30px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
+  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 h-full w-full min-h-[560px] min-w-[880px] border flex flex-row rounded-[16px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
   const drawerSidebarClassName = isCanvasMode && isCanvasChromeHidden
     ? 'hidden'
-    : `${isFolderSidebarLayout ? '' : 'w-16'} relative h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
+    : `${isFolderSidebarLayout ? '' : 'w-16'} relative h-full border-r flex flex-col pt-3 pb-4 z-10 shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
 
   // 🌟 退出截图时，必须先把 Tauri 窗口恢复到抽屉尺寸，再卸载全屏截图层。
   // 否则 React 会先把抽屉内容显示在全屏窗口里，视觉上就像“先放大再缩小”。
@@ -27389,6 +27436,9 @@ useEffect(() => {
     const nestedOffset = Math.min(depth, 3) * 5;
     return (
       <div
+        data-folder-row="true"
+        data-folder-active={isFolderActive ? 'true' : 'false'}
+        data-folder-depth={depth}
         key={folder.id}
         className="relative shrink-0 flex flex-col items-center w-full group/folder"
         style={isNested ? { paddingLeft: nestedOffset } : undefined}
@@ -27509,12 +27559,15 @@ useEffect(() => {
         ? 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-400/14 dark:text-red-100 dark:ring-red-300/25'
         : 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25'
       : isFolderActive
-        ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white'
+        ? 'bg-stone-900 text-white shadow-sm dark:bg-stone-100 dark:text-stone-950'
         : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white';
 
     return (
       <div
         key={folder.id}
+        data-folder-row="true"
+        data-folder-active={isFolderActive ? 'true' : 'false'}
+        data-folder-depth={depth}
         className="group/folder-list relative w-full shrink-0"
         data-folder-drop-id={folder.id}
         data-folder-drop-name={folderPathName}
@@ -27563,7 +27616,7 @@ useEffect(() => {
                   prev.includes(folder.id) ? prev.filter(id => id !== folder.id) : [...prev, folder.id]
                 ));
               }}
-              className={`-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors ${isFolderActive ? 'text-white/70 hover:bg-white/12 hover:text-white' : 'text-stone-400 hover:bg-stone-200/70 hover:text-stone-700 dark:text-stone-500 dark:hover:bg-white/10 dark:hover:text-stone-200'}`}
+              className={`-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors ${isFolderActive ? 'text-white/70 hover:bg-white/12 hover:text-white dark:text-stone-700 dark:hover:bg-black/10 dark:hover:text-stone-950' : 'text-stone-400 hover:bg-stone-200/70 hover:text-stone-700 dark:text-stone-500 dark:hover:bg-white/10 dark:hover:text-stone-200'}`}
               title={isCollapsed ? '展开子目录' : '收起子目录'}
             >
               {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -27572,7 +27625,7 @@ useEffect(() => {
             <span className="h-5 w-5 shrink-0" />
           )}
           {depth > 0 && <span aria-hidden="true" className="h-px w-3 shrink-0 bg-stone-300 dark:bg-stone-700" />}
-          <FolderOpen className={`h-4 w-4 shrink-0 ${isFolderActive ? 'text-amber-300' : 'fill-amber-300/35 text-amber-500 dark:fill-amber-300/18 dark:text-amber-300'}`} />
+          <FolderOpen className={`h-4 w-4 shrink-0 ${isFolderActive ? 'text-white/90 dark:text-stone-800' : 'text-stone-500 dark:text-stone-400'}`} />
           {editingFolderId === folder.id ? (
             <input
               autoFocus
@@ -27596,7 +27649,7 @@ useEffect(() => {
               {folder.name}
             </span>
           )}
-          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black leading-none ${isFolderActive ? 'bg-white/16 text-white/78' : 'bg-stone-200/75 text-stone-500 dark:bg-white/[0.08] dark:text-stone-400'}`}>
+          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black leading-none ${isFolderActive ? 'bg-white/16 text-white/80 dark:bg-black/10 dark:text-stone-700' : 'bg-stone-200/75 text-stone-500 dark:bg-white/[0.08] dark:text-stone-400'}`}>
             {folderItemCount}
           </span>
         </button>
@@ -27726,7 +27779,7 @@ useEffect(() => {
   const textInputDialogCanConfirm = textInputDialog.value.trim().length > 0;
 
   return (
-    <div
+      <div
         data-drawer-theme="true"
         className={`${isDark ? 'dark' : ''} drawer-theme w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
         // 把全局拖拽接管挂在最外层
@@ -28103,14 +28156,15 @@ useEffect(() => {
 
       {/* 🌟 抽屉主体窗口：主窗口里不再包含小条，关闭时直接隐藏整个 main 窗口 */}
       <div
+        data-drawer-shell="true"
         className={drawerShellClassName}
         style={{
           opacity: isLicenseGateActive ? 0.42 : snipMode.active ? 0 : 1,
           transform: drawerShellTransform,
           transition: transitionStyle,
           filter: isLicenseGateActive ? 'grayscale(1) saturate(0)' : undefined,
-          borderRadius: 30,
-          clipPath: 'inset(0 round 30px)',
+          borderRadius: 16,
+          clipPath: 'inset(0 round 16px)',
           contain: 'paint',
           pointerEvents: !isLicenseGateActive && isDrawerActive && (isStartupOverlayActive || (drawerState !== 'closed' && drawerState !== 'closing')) ? 'auto' : 'none',
         }}
@@ -28183,6 +28237,7 @@ useEffect(() => {
             </AnimatePresence>
 
             <div
+              data-drawer-sidebar="true"
               className={drawerSidebarClassName}
               style={isFolderSidebarLayout ? { width: drawerFolderSidebarWidth } : undefined}
             >
@@ -28211,6 +28266,8 @@ useEffect(() => {
                     onDrop={(e) => handleDrawerItemDropToFolder(e, undefined)}
                   >
                     <button
+                      data-sidebar-home="true"
+                      data-sidebar-home-active={activeFolderId === 'all' || isCanvasMode ? 'true' : 'false'}
                       type="button"
                       onClick={(e) => {
                         if (mainDrawerLongPressTriggeredRef.current) {
@@ -28255,9 +28312,10 @@ useEffect(() => {
                       }}
                     >
                       <button
+                        data-new-folder="true"
                         type="button"
                         onClick={() => handleOpenFolderModal()}
-                        className={`mb-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed px-2 text-left text-[12px] font-bold transition-all ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950' : 'border-blue-200 bg-blue-50/30 text-blue-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
+                        className="mb-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-stone-200 bg-stone-100 px-2 text-left text-[12px] font-bold text-stone-700 shadow-none transition-all hover:bg-stone-200 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
                         title="新建收纳夹"
                       >
                         <Plus className="h-4 w-4 shrink-0" />
@@ -28352,9 +28410,12 @@ useEffect(() => {
                   <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
                     <div
                       data-no-drag="true"
+                      data-quick-switch="true"
                       className="mb-2 grid shrink-0 grid-cols-2 gap-1 rounded-[12px] border border-white/70 bg-white/55 p-1 shadow-sm backdrop-blur-md dark:border-stone-700/60 dark:bg-stone-800/50"
                     >
                       <button
+                        data-quick-mode="quick"
+                        data-active={quickRailMode === 'quick' ? 'true' : 'false'}
                         type="button"
                         onClick={(e) => {
                           e.preventDefault();
@@ -28362,13 +28423,15 @@ useEffect(() => {
                           setQuickRailMode('quick');
                           if (activeTab === 'notes') setActiveTab('all');
                         }}
-                        className={`flex h-7 items-center justify-center gap-1 rounded-[9px] text-[11px] font-black transition-all ${quickRailMode === 'quick' ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/18 dark:text-blue-200 dark:ring-blue-400/25' : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'}`}
+                        className={`flex h-7 items-center justify-center gap-1 rounded-[9px] border text-[11px] font-black transition-all ${quickRailMode === 'quick' ? 'border-stone-200 bg-white text-stone-800 shadow-sm dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100' : 'border-transparent text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'}`}
                         title="快速访问"
                       >
                         <Compass className="h-3.5 w-3.5" />
                         快捷
                       </button>
                       <button
+                        data-quick-mode="notes"
+                        data-active={quickRailMode === 'notes' ? 'true' : 'false'}
                         type="button"
                         onClick={(e) => {
                           e.preventDefault();
@@ -28377,13 +28440,13 @@ useEffect(() => {
                           refreshNoteManager();
                           if (activeTab === 'notes') setActiveTab('all');
                         }}
-                        className={`relative flex h-7 items-center justify-center gap-1 rounded-[9px] text-[11px] font-black transition-all ${quickRailMode === 'notes' ? 'bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 dark:bg-amber-900/35 dark:text-amber-300 dark:ring-amber-800/55' : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'}`}
+                        className={`relative flex h-7 items-center justify-center gap-1 rounded-[9px] border text-[11px] font-black transition-all ${quickRailMode === 'notes' ? 'border-stone-200 bg-white text-stone-800 shadow-sm dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100' : 'border-transparent text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'}`}
                         title={openFloatingNoteCount > 0 ? `便签（${openFloatingNoteCount} 个）` : '便签'}
                       >
                         <BookOpen className="h-3.5 w-3.5" />
                         便签
                         {openFloatingNoteCount > 0 && (
-                          <span className="absolute right-1 top-1 min-w-[14px] rounded-full bg-amber-500 px-1 text-[8px] leading-[14px] text-white">
+                          <span data-quick-badge="true" className="absolute right-1 top-1 min-w-[14px] rounded-full bg-stone-700 px-1 text-[8px] leading-[14px] text-white dark:bg-stone-200 dark:text-stone-900">
                             {openFloatingNoteCount}
                           </span>
                         )}
@@ -28469,18 +28532,19 @@ useEffect(() => {
                       ) : (
                         <>
                           <button
+                            data-new-note="true"
                             type="button"
                             onClick={createBlankFloatingNote}
                             disabled={isCreatingBlankNote}
-                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-amber-100/80 bg-amber-50/70 px-2 text-left text-[12px] font-bold text-amber-700 shadow-sm transition-all hover:bg-amber-100 disabled:opacity-55 dark:border-amber-800/45 dark:bg-amber-900/24 dark:text-amber-300 dark:hover:bg-amber-900/38"
+                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-stone-200 bg-white px-2 text-left text-[12px] font-bold text-stone-700 shadow-none transition-all hover:bg-stone-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
                             title={`新增便签（${noteShortcut}）`}
                           >
-                            <Plus className="h-4 w-4 shrink-0" />
+                            <Plus className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
                             <span className="min-w-0 flex-1 truncate">新增便签</span>
                           </button>
                           {openFloatingNoteEntries.length === 0 ? (
-                            <div className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed border-amber-200/90 px-2 text-[12px] font-semibold text-stone-400 opacity-75 dark:border-amber-800/60 dark:text-stone-500">
-                              <StickyNote className="h-4 w-4 shrink-0 text-amber-400" />
+                            <div className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed border-stone-300 px-2 text-[12px] font-semibold text-stone-400 opacity-75 dark:border-stone-700 dark:text-stone-500">
+                              <StickyNote className="h-4 w-4 shrink-0 text-stone-400" />
                               <span className="min-w-0 flex-1 truncate">无便签</span>
                             </div>
                           ) : (
@@ -28679,10 +28743,13 @@ useEffect(() => {
                 <div className="relative shrink-0 flex flex-col items-center w-full mb-4 mt-1">
                   <div
                     data-no-drag="true"
+                    data-quick-switch-compact="true"
                     className="relative flex flex-col items-center gap-1 rounded-full bg-white/60 dark:bg-stone-800/60 border border-white/75 dark:border-stone-700/60 p-1 shadow-sm backdrop-blur-md"
                     title={quickRailMode === 'quick' ? '当前：快速访问' : '当前：便签'}
                   >
                     <button
+                      data-quick-mode="quick"
+                      data-active={quickRailMode === 'quick' ? 'true' : 'false'}
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
@@ -28692,8 +28759,8 @@ useEffect(() => {
                       }}
                       className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-all overflow-visible ${
                         quickRailMode === 'quick'
-                          ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/18 dark:text-blue-200 dark:ring-blue-400/25'
-                          : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'
+                          ? 'bg-white text-stone-800 shadow-sm ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-100 dark:ring-stone-700'
+                          : 'text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'
                       }`}
                       title="快速访问"
                     >
@@ -28701,6 +28768,8 @@ useEffect(() => {
                     </button>
 
                     <button
+                      data-quick-mode="notes"
+                      data-active={quickRailMode === 'notes' ? 'true' : 'false'}
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
@@ -28711,14 +28780,14 @@ useEffect(() => {
                       }}
                       className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-all overflow-visible ${
                         quickRailMode === 'notes'
-                          ? 'bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 dark:bg-amber-900/35 dark:text-amber-300 dark:ring-amber-800/55'
-                          : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'
+                          ? 'bg-white text-stone-800 shadow-sm ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-100 dark:ring-stone-700'
+                          : 'text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'
                       }`}
                       title={openFloatingNoteCount > 0 ? `便签（${openFloatingNoteCount} 个）` : '便签'}
                     >
                       <BookOpen className="h-4 w-4" />
                       {openFloatingNoteCount > 0 && (
-                        <span className="absolute right-0 top-0 z-30 min-w-[15px] h-[15px] translate-x-1/3 -translate-y-1/3 rounded-full bg-amber-500 px-1 text-[9px] font-bold leading-[15px] text-white shadow-sm ring-2 ring-white/80 dark:ring-stone-800/80">
+                        <span data-quick-badge="true" className="absolute right-0 top-0 z-30 min-w-[15px] h-[15px] translate-x-1/3 -translate-y-1/3 rounded-full bg-stone-700 px-1 text-[9px] font-bold leading-[15px] text-white shadow-sm ring-2 ring-white/80 dark:bg-stone-200 dark:text-stone-900 dark:ring-stone-800/80">
                           {openFloatingNoteCount}
                         </span>
                       )}
@@ -28800,18 +28869,19 @@ useEffect(() => {
                   ) : (
                     <>
                       <button
+                        data-new-note="compact"
                         type="button"
                         onClick={createBlankFloatingNote}
                         disabled={isCreatingBlankNote}
                         title={`新增便签（${noteShortcut}）`}
-                        className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border border-amber-100/80 bg-amber-50/70 text-amber-600 shadow-sm transition-all hover:scale-105 hover:bg-amber-100 disabled:scale-100 disabled:opacity-55 dark:border-amber-800/45 dark:bg-amber-900/24 dark:text-amber-300 dark:hover:bg-amber-900/38"
+                        className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border border-stone-200 bg-white text-blue-600 shadow-none transition-all hover:scale-105 hover:bg-stone-100 disabled:scale-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-blue-400 dark:hover:bg-stone-800"
                       >
                         <Plus className="h-4 w-4" />
                       </button>
                       {openFloatingNoteEntries.length === 0 ? (
                         <div className="flex flex-col items-center w-full opacity-70">
-                          <div className="w-10 h-10 mb-1 rounded-[16px] border border-dashed border-amber-200 dark:border-amber-800/60 bg-amber-50/45 dark:bg-amber-900/10 flex items-center justify-center">
-                            <StickyNote className="w-5 h-5 text-amber-400" />
+                          <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-[16px] border border-dashed border-stone-300 bg-white/45 dark:border-stone-700 dark:bg-stone-900/45">
+                            <StickyNote className="h-5 w-5 text-stone-400" />
                           </div>
                           <span className="text-[10px] w-14 text-center text-stone-400 dark:text-stone-500 pb-1">无便签</span>
                         </div>
@@ -28908,22 +28978,24 @@ useEffect(() => {
             )}
 
             {/* ====== 右侧主内容区开始 ====== */}
-            <div className="flex-1 h-full flex flex-col relative min-w-0 bg-stone-50/30 dark:bg-stone-900/30">
+            <div data-drawer-main="true" className="flex-1 h-full flex flex-col relative min-w-0 bg-white dark:bg-stone-950">
 
                 {/* 🌟 标题栏区域：安全的动态拖拽魔法 */}
                 <div
-                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'px-4 pt-3.5 pb-4.5 border-b border-stone-200/50 dark:border-stone-800/50 flex flex-wrap justify-between items-center gap-2 bg-white/50 dark:bg-stone-900/50 relative cursor-move z-20'}
+                  data-drawer-header="true"
+                  data-canvas-header={isCanvasMode ? 'true' : undefined}
+                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'min-h-16 px-5 border-b border-stone-200/70 dark:border-stone-800 flex flex-nowrap justify-between items-center gap-4 bg-white dark:bg-stone-950 relative cursor-move z-20'}
                   onPointerDown={startDrawerTitleDrag}
                 >
-                  <h2 className="flex h-9 min-w-[140px] max-w-full items-center gap-1.5 font-semibold leading-none text-stone-800 pointer-events-none relative dark:text-stone-100">
+                  <h2 data-drawer-title="true" className="flex h-9 min-w-[140px] max-w-full items-center gap-2 text-[18px] font-semibold tracking-[-0.02em] leading-none text-stone-900 pointer-events-none relative dark:text-stone-100">
                         {isCanvasMode
-                      ? <LayoutGrid className="w-4 h-4 text-blue-500 dark:text-blue-300" />
+                      ? <LayoutGrid className="w-4 h-4 text-stone-500 dark:text-stone-400" />
                       : activeFolderId === 'all'
                         ? <Lightbulb className="w-4 h-4 text-blue-500 dark:text-blue-300" />
                         : <FolderOpen className="w-4 h-4 text-emerald-500" />}
                     {isCanvasMode ? '无限画布' : activeFolderId === 'all' ? '灵感抽屉' : getDrawerFolderPathName(folders, activeFolderId) || '未知分类'}
                     {!isCanvasMode && isDrawerAiClassificationMode && (
-                      <span className="ml-1 rounded-full bg-violet-100 px-2 py-0.5 text-[9px] font-black text-violet-600 dark:bg-violet-400/14 dark:text-violet-200">
+                      <span className="ml-1 rounded-[6px] border border-stone-200 bg-stone-100 px-1.5 py-0.5 text-[9px] font-semibold text-stone-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
                         AI 分类
                       </span>
                     )}
@@ -28963,11 +29035,12 @@ useEffect(() => {
                   </h2>
 
                   {/* 右侧按钮组：按钮本身不拖动，按钮之间的空白仍可拖动 */}
-                  <div className="z-[100] flex flex-wrap justify-end gap-1.5 flex-1 min-w-[180px] max-w-full">
+                  <div data-drawer-tools="true" data-canvas-header-tools={isCanvasMode ? 'true' : undefined} className="z-[100] flex flex-nowrap items-center justify-end gap-2 flex-1 min-w-[180px] max-w-full">
 
                     {isDrawerWorkbenchActive && (
                       <div
                         data-no-drag="true"
+                        data-drawer-window-controls="true"
                         className="mr-1 flex items-center gap-1 rounded-[14px] border border-stone-200/70 bg-white/72 p-0.5 shadow-sm backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-800/65"
                         title="抽屉工作台窗口控制"
                       >
@@ -29046,17 +29119,10 @@ useEffect(() => {
                       <>
                         {isCanvasMode && (
                           <>
-                          <button
-                            onClick={() => activeCanvas && void saveCurrentCanvasAsSnapshot(activeCanvas)}
-                            disabled={!activeCanvas || isSwitchingCanvas}
-                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-indigo-50 text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100 disabled:cursor-wait disabled:opacity-55 dark:bg-indigo-400/14 dark:text-indigo-200 dark:hover:bg-indigo-400/20"
-                            title="保存当前画布为快照"
-                          >
-                            <Layers className="w-3.5 h-3.5" /> 保存快照
-                          </button>
                           {isCanvasWorkbenchActive && (
                             <div
                               data-no-drag="true"
+                              data-canvas-window-controls="true"
                               className="mr-1 flex items-center gap-1 rounded-[14px] border border-stone-200/70 bg-white/72 p-0.5 shadow-sm backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-800/65"
                               title="画布工作台窗口控制"
                             >
@@ -29091,16 +29157,18 @@ useEffect(() => {
                           )}
                           {selectedCanvasAiGenerator && selectedCanvasConnectableCount > 0 && (
                             <button
+                              data-canvas-header-action="connect"
                               onClick={() => connectSelectedCanvasItemsToGenerator(selectedCanvasAiGenerator.id)}
-                              className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-emerald-50 text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+                              className="flex h-9 items-center gap-1.5 rounded-[9px] border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 transition-colors hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white"
                               title="把当前多选的图片/文字连接到 AI 或文字节点"
                             >
                               <Link className="w-3.5 h-3.5" /> 连接 {selectedCanvasConnectableCount}
                             </button>
                           )}
                           <button
+                            data-canvas-header-action="exit"
                             onClick={requestExitCanvasMode}
-                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-blue-50 text-blue-700 shadow-sm transition-colors hover:bg-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:hover:bg-blue-400/20"
+                            className="flex h-9 items-center gap-1.5 rounded-[9px] border border-stone-200 bg-stone-100 px-3 text-xs font-medium text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-200 hover:text-stone-950 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 dark:hover:text-white"
                             title="退出无限画布"
                           >
                             <X className="w-3.5 h-3.5" /> 退出画布
@@ -29115,7 +29183,6 @@ useEffect(() => {
                               title={`进入生图画布 (${canvasShortcut})`}
                             >
                               <LayoutGrid className="w-3.5 h-3.5" />
-                              生图画布
                             </button>
                             <button
                               onClick={() => { setIsSelectMode(true); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null; setShowSettings(false); setIsSearchActive(false); }}
@@ -29126,20 +29193,59 @@ useEffect(() => {
                             </button>
                           </>
                         )}
-                        <button
-                          type="button"
-                          onClick={toggleSearch}
-                          className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${isSearchActive ? 'bg-teal-50 text-teal-700 ring-1 ring-teal-100 dark:bg-teal-400/14 dark:text-teal-200 dark:ring-teal-400/20' : 'hover:bg-teal-50 hover:text-teal-600 dark:hover:bg-teal-400/12 dark:hover:text-teal-200'}`}
+                        <div
+                          data-drawer-search-trigger="true"
+                          data-canvas-header-search={isCanvasMode ? 'true' : undefined}
+                          className="group/search relative inline-flex h-9 w-[184px] items-center rounded-[9px] border border-stone-200 bg-white text-[12px] transition-[background-color,border-color] duration-200 hover:border-stone-300 dark:border-stone-700 dark:bg-stone-900 dark:hover:border-stone-600"
                           title={isCanvasMode ? '搜索图片 (Ctrl+F)' : '搜索 (Ctrl+F)'}
                         >
-                          <Search className="w-3.5 h-3.5" />
-                        </button>
-                        <button data-drawer-settings-toggle="true" onClick={toggleSettings} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${showSettings ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-100 dark:bg-violet-400/14 dark:text-violet-200 dark:ring-violet-400/20' : 'hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-400/12 dark:hover:text-violet-200'}`} title="设置与帮助">
-                          <Settings className="w-3.5 h-3.5" />
+                          <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-stone-400" />
+                          <input
+                            ref={searchInputRef}
+                            type="search"
+                            value={searchQuery}
+                            onFocus={activateSearch}
+                            onBlur={() => {
+                              if (!searchQuery.trim()) setIsSearchActive(false);
+                            }}
+                            onChange={(event) => {
+                              if (!isSearchActive) activateSearch();
+                              setSearchQuery(event.target.value);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Escape') return;
+                              event.preventDefault();
+                              setSearchQuery('');
+                              setIsSearchActive(false);
+                              event.currentTarget.blur();
+                            }}
+                            placeholder={isCanvasMode ? '搜索图片...' : '搜索文件...'}
+                            aria-label={isCanvasMode ? '搜索图片' : '搜索文件'}
+                            className="h-full min-w-0 flex-1 appearance-none bg-transparent pl-9 pr-8 text-[12px] font-normal text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-200 dark:placeholder:text-stone-500 [&::-webkit-search-cancel-button]:hidden"
+                          />
+                          {searchQuery && (
+                            <button
+                              type="button"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setSearchQuery('');
+                                setIsSearchActive(false);
+                                searchInputRef.current?.focus();
+                              }}
+                              className="absolute right-2 flex h-5 w-5 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                              aria-label="清空搜索"
+                              title="清空搜索"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                        <button data-drawer-settings-toggle="true" data-canvas-header-action={isCanvasMode ? 'settings' : undefined} data-active={showSettings ? 'true' : 'false'} onClick={toggleSettings} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${showSettings ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950' : 'hover:bg-stone-100 hover:text-stone-800 dark:hover:bg-stone-800 dark:hover:text-stone-200'}`} title="设置与帮助">
+                          <Settings className="block h-3.5 w-3.5 shrink-0 opacity-100" strokeWidth={2} />
                         </button>
                         {!isMainWorkbenchActive && (
-                          <button onClick={handleTogglePin} className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 dark:bg-stone-800/65 backdrop-blur-md ${isPinned ? 'text-blue-700 bg-blue-50 ring-1 ring-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:ring-blue-400/20' : 'text-stone-500 dark:text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200'}`}>
-                            {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />} {isPinned ? '收回' : '钉住'}
+                          <button onClick={handleTogglePin} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${isPinned ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-400/30 dark:bg-blue-400/14 dark:text-blue-200' : ''}`} title={isPinned ? '收回抽屉' : '钉住抽屉'}>
+                            {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
                           </button>
                         )}
                       </>
@@ -29181,7 +29287,7 @@ useEffect(() => {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className={`${isCanvasMode ? 'hidden' : 'px-2 py-2 flex'} flex-wrap items-center gap-1.5 border-b border-stone-200/50 dark:border-stone-800/50 bg-stone-50/50 dark:bg-stone-900/50 z-10 shrink-0`} onMouseDown={e => e.stopPropagation()}>
+                <div data-drawer-tabs="true" className={`${isCanvasMode ? 'hidden' : 'px-5 py-3 flex'} flex-wrap items-center gap-1.5 border-b border-stone-200/60 dark:border-stone-800 bg-white dark:bg-stone-950 z-10 shrink-0`} onMouseDown={e => e.stopPropagation()}>
                   {!isCanvasMode && (
                     <>
                     <div className="hidden items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-700 dark:bg-amber-900/24 dark:text-amber-300">
@@ -29190,7 +29296,7 @@ useEffect(() => {
                     </div>
                     {
                     TABS.map(tab => (
-                      <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all whitespace-nowrap cursor-pointer ${activeTab === tab.id ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 shadow-sm' : 'bg-transparent text-stone-500 dark:text-stone-400 hover:bg-stone-200/50 dark:hover:bg-stone-800/50'}`}>
+                      <button data-tab-active={activeTab === tab.id ? 'true' : 'false'} key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex h-8 items-center gap-1.5 px-3 rounded-[8px] text-[12px] font-medium transition-colors whitespace-nowrap cursor-pointer ${activeTab === tab.id ? 'bg-stone-100 text-stone-900 dark:bg-stone-800 dark:text-stone-100' : 'bg-transparent text-stone-500 dark:text-stone-400 hover:bg-stone-100/80 hover:text-stone-800 dark:hover:bg-stone-800/70 dark:hover:text-stone-200'}`}>
                         <tab.icon className={`w-3.5 h-3.5 ${activeTab === tab.id ? 'opacity-100' : 'opacity-70'}`} />{tab.label}
                       </button>
                     ))}
@@ -29207,30 +29313,6 @@ useEffect(() => {
                     onLabelChange={setActiveDrawerAiClassificationLabel}
                   />
                 )}
-                <AnimatePresence>
-                  {isSearchActive && (
-                    <motion.div
-                      initial={isShortcutReveal ? false : { height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={isShortcutReveal ? { duration: 0 } : { duration: 0.15, ease: "easeOut" }}
-                      className="overflow-hidden z-20 shrink-0 will-change-transform" onMouseDown={e => e.stopPropagation()}
-                    >
-                      <div className="px-4 py-2 bg-stone-50/50 dark:bg-stone-900/50 border-b border-stone-200/50 dark:border-stone-800/50">
-                        <div className="relative group">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 group-focus-within:text-blue-500 transition-colors" />
-                          <input
-                            ref={searchInputRef} type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={isCanvasMode ? '搜索所有图片、视频、AI 标签...' : '搜索灵感、文件、备注标签...'}
-                            className="w-full bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-[16px] pl-9 pr-8 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all shadow-sm"
-                          />
-                          {searchQuery && (
-                            <button onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition-colors">
-                              <X className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
                 <AnimatePresence initial={false}>
                   {isCanvasMode && isSearchActive && searchQuery.trim() && normalizedDeferredSearchQuery && (
                     <motion.div
@@ -29347,17 +29429,17 @@ useEffect(() => {
                       data-drawer-settings-panel="true"
                       className="bg-stone-50/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200/50 dark:border-stone-800/50 overflow-hidden relative z-[99] will-change-transform" onMouseDown={e => e.stopPropagation()}
                     >
-                      <div className="p-3 space-y-2 max-h-[60vh] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full">
+                      <div data-settings-scroll="true" className="p-3 space-y-2 max-h-[60vh] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full">
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'appearance' ? '' : 'appearance')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'appearance' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'appearance' ? '' : 'appearance')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Palette className="w-4 h-4 text-emerald-500"/> 外观模式</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'appearance' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'appearance' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-xs font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5"><Sun className="w-3.5 h-3.5 text-stone-400" /> 色彩主题</span>
                                     <button onClick={() => setIsDark(!isDark)} className="flex items-center gap-1.5 px-3 py-1 rounded border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[11px] font-medium transition-colors">
@@ -29390,15 +29472,15 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'shortcuts' ? '' : 'shortcuts')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'shortcuts' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'shortcuts' ? '' : 'shortcuts')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Keyboard className="w-4 h-4 text-blue-500"/> 快捷键配置</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'shortcuts' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'shortcuts' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">防误触模式</span>
                                     <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : shortcut}</button>
@@ -29433,17 +29515,19 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'ai-overview' ? '' : 'ai-overview')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'ai-overview' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'ai-overview' ? '' : 'ai-overview')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Sparkles className="w-4 h-4 text-blue-500"/> AI 与额度</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'ai-overview' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'ai-overview' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="flex flex-col gap-2.5 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="flex flex-col gap-2.5 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
                                   <div className="grid gap-2 sm:grid-cols-2">
                                     <button
+                                      data-settings-choice="true"
+                                      data-active={canvasAiCredentialSource === 'wallet' ? 'true' : 'false'}
                                       type="button"
                                       onClick={() => setCanvasAiCredentialSource('wallet')}
                                       aria-pressed={canvasAiCredentialSource === 'wallet'}
@@ -29458,6 +29542,8 @@ useEffect(() => {
                                       </div>
                                     </button>
                                     <button
+                                      data-settings-choice="true"
+                                      data-active={canvasAiCredentialSource === 'local' ? 'true' : 'false'}
                                       type="button"
                                       onClick={() => {
                                         setCanvasAiCredentialSource('local');
@@ -29853,15 +29939,15 @@ useEffect(() => {
                           )}
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 账户授权</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'license' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between gap-2 pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">授权状态</span>
                                     <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-black text-stone-700 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200">
@@ -29950,15 +30036,15 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'system' ? '' : 'system')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'system' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'system' ? '' : 'system')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Settings className="w-4 h-4 text-purple-500"/> 高级与系统</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'system' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'system' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <button
                                     type="button"
                                     disabled={isAutoStartChanging}
@@ -30204,19 +30290,22 @@ useEffect(() => {
                 </AnimatePresence>
 
                 <div
+                  data-drawer-content="true"
+                  data-canvas-ui-root={isCanvasMode ? 'true' : undefined}
                   ref={!isCanvasMode ? drawerScrollRef : undefined}
                   onScroll={!isCanvasMode ? handleDrawerContentScroll : undefined}
                   className={`min-h-0 min-w-0 flex-1 relative flex ${isCanvasMode ? 'flex-row' : 'flex-col'} ${
                   isCanvasMode
                     ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
-                    : 'overflow-y-auto p-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
+                    : 'overflow-y-auto p-5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
                 }`}
                 >
                   {isCanvasMode && (
                     <div
                       ref={canvasSurfaceRef}
+                      data-canvas-surface="true"
                       tabIndex={-1}
-                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(113,113,122,0.16)_1px,transparent_0)] bg-[length:26px_26px] bg-stone-50 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[18px] border border-stone-200 dark:border-stone-800'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto', overflowAnchor: 'none' }}
                       onPointerEnter={() => {
                         isCanvasPointerInsideRef.current = true;
@@ -30339,9 +30428,9 @@ useEffect(() => {
                           }}
                         >
                         {canvasItems.length === 0 && (
-                          <div className="absolute left-10 top-10 w-[320px] rounded-[26px] border border-dashed border-blue-200 bg-white/68 p-5 text-stone-500 shadow-sm backdrop-blur-xl dark:border-blue-400/24 dark:bg-stone-900/68 dark:text-stone-300">
+                          <div className="absolute left-10 top-10 w-[320px] rounded-[14px] border border-dashed border-stone-300 bg-white p-5 text-stone-500 shadow-sm dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
                             <div className="flex items-center gap-2 text-sm font-black text-stone-800 dark:text-stone-100">
-                              <LayoutGrid className="h-4 w-4 text-blue-500 dark:text-blue-300" />
+                              <LayoutGrid className="h-4 w-4 text-stone-500 dark:text-stone-400" />
                               无限画布
                             </div>
                             <p className="mt-2 text-xs leading-5">
@@ -30959,8 +31048,19 @@ useEffect(() => {
                             >
                               {isCanvasAiNodeItem ? (
                                 <>
-                                <div
-                                  className="relative h-full w-full overflow-hidden"
+                                 <div
+                                   data-canvas-tool-node-surface={
+                                     isCanvasImageFusionItem
+                                       ? 'fusion'
+                                       : isCanvasFrameInterpolationItem
+                                         ? 'frame-interpolation'
+                                         : isCanvasImageEnhancementItem
+                                           ? 'image-enhancement'
+                                           : isCanvasVideoEnhancementItem
+                                             ? 'video-enhancement'
+                                             : undefined
+                                   }
+                                   className="relative h-full w-full overflow-hidden"
                                   style={{ borderRadius: canvasScaledNodeRadius }}
                                 >
                                   <div
@@ -31836,18 +31936,18 @@ useEffect(() => {
                                           )}
                                         </div>
                                       ) : isCanvasFrameInterpolationItem ? (
-                                        <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
+                                        <div data-canvas-local-tool-panel="true" className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
                                           <div className="flex items-center justify-between gap-3">
                                             <div className="flex min-w-0 items-center gap-2 text-[13px] font-black text-stone-800 dark:text-white/82">
                                               <RefreshCw className="h-4 w-4 text-cyan-500" />
                                               <span>本地 RIFE 视频补帧</span>
                                             </div>
-                                            <span className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-black text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-100">
+                                            <span data-canvas-tool-badge="true" className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-black text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-100">
                                               v4.6 / HD / UHD
                                             </span>
                                           </div>
                                           <div className="mt-2 grid gap-1.5">
-                                            <div className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
+                                            <div data-canvas-tool-metric="true" className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
                                               <span className="inline-flex items-center gap-1.5">
                                                 <Clock className="h-3.5 w-3.5" />
                                                 预计耗时
@@ -31866,8 +31966,9 @@ useEffect(() => {
                                                   </span>
                                                   <span className="shrink-0 text-cyan-700 dark:text-cyan-100">{frameInterpolationProgressDetail}</span>
                                                 </div>
-                                                <div className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                <div data-canvas-tool-progress-track="true" className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
+                                                    data-canvas-tool-progress="true"
                                                     className={`h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-[width] duration-200 ${frameInterpolationProgress?.total ? '' : 'animate-pulse'}`}
                                                     style={{ width: `${frameInterpolationProgress?.total ? Math.max(4, frameInterpolationProgressPercent) : 38}%` }}
                                                   />
@@ -31877,7 +31978,7 @@ useEffect(() => {
                                           </div>
                                         </div>
                                       ) : isCanvasEnhancementItem ? (
-                                        <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
+                                        <div data-canvas-local-tool-panel="true" className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
                                           <div className="flex items-center justify-between gap-3">
                                             <div className="flex min-w-0 items-center gap-2 text-[13px] font-black text-stone-800 dark:text-white/82">
                                               {isCanvasVideoEnhancementItem
@@ -31887,12 +31988,12 @@ useEffect(() => {
                                                 ? '本地视频快速增强'
                                                 : isCanvasVideoEnhancementItem ? '本地视频清晰度增强' : '本地图片清晰度增强'}</span>
                                             </div>
-                                            <span className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-black text-violet-700 dark:bg-violet-300/12 dark:text-violet-100">
+                                            <span data-canvas-tool-badge="true" className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-black text-violet-700 dark:bg-violet-300/12 dark:text-violet-100">
                                               {isQuickVideoEnhancementItem ? 'FFmpeg + NVENC' : 'Real-ESRGAN'}
                                             </span>
                                           </div>
                                           <div className="mt-2 grid gap-1.5">
-                                            <div className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
+                                            <div data-canvas-tool-metric="true" className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
                                               <span className="inline-flex items-center gap-1.5">
                                                 <Clock className="h-3.5 w-3.5" />
                                                 预计耗时
@@ -31913,8 +32014,9 @@ useEffect(() => {
                                                   </span>
                                                   <span className="shrink-0 text-violet-700 dark:text-violet-100">{enhancementProgressDetail}</span>
                                                 </div>
-                                                <div className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                <div data-canvas-tool-progress-track="true" className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
+                                                    data-canvas-tool-progress="true"
                                                     className={`h-full rounded-full bg-gradient-to-r from-violet-400 to-blue-500 transition-[width] duration-200 ${enhancementProgress?.total ? '' : 'animate-pulse'}`}
                                                     style={{ width: `${enhancementProgress?.total ? Math.max(4, enhancementProgressPercent) : 38}%` }}
                                                   />
@@ -33020,7 +33122,7 @@ useEffect(() => {
                         })()}
                         {canvasSingleSelectedBoxForRender && canvasSingleSelectedItemForRender && (
                           <div
-                            className="pointer-events-none absolute z-[60] border-2 border-blue-300/90 bg-blue-300/[0.04] shadow-[0_0_0_3px_rgba(255,255,255,0.28)] dark:border-blue-400/50 dark:shadow-[0_0_0_3px_rgba(0,0,0,0.16)]"
+                            className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] shadow-[0_0_0_3px_rgba(255,255,255,0.42)] dark:border-stone-100/70 dark:bg-white/[0.035] dark:shadow-[0_0_0_3px_rgba(0,0,0,0.24)]"
                             style={{
                               left: canvasSingleSelectedBoxForRender.x - 12,
                               top: canvasSingleSelectedBoxForRender.y - 12,
@@ -33052,14 +33154,14 @@ useEffect(() => {
                                 )}
                                 title="拖动缩放"
                               >
-                                <span className="h-3 w-3 rounded-[4px] border-2 border-white bg-blue-500 shadow-[0_2px_8px_rgba(37,99,235,0.45)] dark:border-stone-950 dark:bg-blue-400" />
+                                <span className="h-3 w-3 rounded-[3px] border-2 border-white bg-stone-900 shadow-[0_2px_8px_rgba(24,24,27,0.28)] dark:border-stone-950 dark:bg-stone-100" />
                               </button>
                             ))}
                           </div>
                         )}
                         {canvasSelectedBounds && (
                           <div
-                            className="pointer-events-none absolute z-[60] border-2 border-blue-400/85 bg-blue-300/[0.06]"
+                            className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] dark:border-stone-100/70 dark:bg-white/[0.035]"
                             style={{
                               left: canvasSelectedBounds.x,
                               top: canvasSelectedBounds.y,
@@ -33087,14 +33189,14 @@ useEffect(() => {
                                 onPointerDown={(event) => startCanvasGroupResize(event, corner)}
                                 title="整体缩放"
                               >
-                                <span className="h-3 w-3 rounded-[4px] border-2 border-white bg-blue-500 shadow-[0_2px_8px_rgba(37,99,235,0.45)] dark:border-stone-950 dark:bg-blue-400" />
+                                <span className="h-3 w-3 rounded-[3px] border-2 border-white bg-stone-900 shadow-[0_2px_8px_rgba(24,24,27,0.28)] dark:border-stone-950 dark:bg-stone-100" />
                               </button>
                             ))}
                           </div>
                         )}
                         <div
                           ref={canvasSelectionOverlayRef}
-                          className="pointer-events-none absolute left-0 top-0 hidden border border-blue-400 bg-blue-300/16"
+                          className="pointer-events-none absolute left-0 top-0 hidden border border-stone-800 bg-stone-500/10 dark:border-stone-200 dark:bg-white/10"
                           style={{
                             width: 0,
                             height: 0,
@@ -33171,6 +33273,7 @@ useEffect(() => {
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-template-panel="true"
+                      data-canvas-manager="preset"
                       initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
                       animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
                       exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
@@ -33183,8 +33286,8 @@ useEffect(() => {
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
                     >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-black">
+                      <div data-canvas-manager-header="true" className="mb-2 flex items-center justify-between gap-2">
+                        <div data-canvas-manager-title="true" className="flex items-center gap-1.5 text-xs font-black">
                           <Sparkles className="h-4 w-4 text-cyan-500" />
                           <span>{canvasPresetEditorTitle}</span>
                         </div>
@@ -33197,7 +33300,7 @@ useEffect(() => {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <div className="mb-2 flex flex-wrap gap-1.5">
+                      <div data-canvas-manager-toolbar="true" className="mb-2 flex flex-wrap gap-1.5">
                         <button
                           type="button"
                           onClick={() => void importCanvasTemplateFile('preset')}
@@ -33224,7 +33327,7 @@ useEffect(() => {
                       </div>
                       <div className="grid gap-2">
                         {canvasPresetEditorMode === 'manage' && (
-                          <div className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
+                          <div data-canvas-manager-list="true" className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-[10px] font-black uppercase tracking-wide text-stone-500 dark:text-stone-400">节点预设列表</span>
                               <div className="flex items-center gap-1">
@@ -33259,6 +33362,8 @@ useEffect(() => {
                                 return (
                                   <div
                                     key={preset.id}
+                                    data-canvas-manager-row="true"
+                                    data-active={isEditing ? 'true' : 'false'}
                                     role="button"
                                     tabIndex={0}
                                     onClick={() => selectCanvasPresetForEdit(preset.id)}
@@ -33276,6 +33381,8 @@ useEffect(() => {
                                   >
                                     <button
                                       type="button"
+                                      data-canvas-manager-check="true"
+                                      data-selected={isSelectedForDelete ? 'true' : 'false'}
                                       aria-pressed={isSelectedForDelete}
                                       onClick={(event) => {
                                         event.stopPropagation();
@@ -33311,6 +33418,7 @@ useEffect(() => {
                         )}
                         <input
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasPresetNameDraft}
                           onChange={(event) => setCanvasPresetNameDraft(event.target.value)}
                           placeholder="预设名称"
@@ -33319,13 +33427,14 @@ useEffect(() => {
                         />
                         <textarea
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasPresetPromptDraft}
                           onChange={(event) => setCanvasPresetPromptDraft(event.target.value)}
                           onWheel={(event) => event.stopPropagation()}
                           placeholder="写入这个预设的隐藏 Prompt。创建预设卡片时，节点输入框会保持空白。"
                           className="h-36 resize-y rounded-[10px] border border-stone-200/80 bg-white px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                         />
-                        <div className="flex items-center justify-between gap-2">
+                        <div data-canvas-manager-footer="true" className="flex items-center justify-between gap-2">
                           <div>
                             {canvasPresetEditorMode === 'manage' && (
                               <button
@@ -33350,6 +33459,7 @@ useEffect(() => {
                           <button
                             type="button"
                             onClick={saveCanvasAiCustomPromptPreset}
+                            data-canvas-manager-primary="true"
                             className="rounded-[15px] bg-cyan-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-cyan-500/20 transition-colors hover:bg-cyan-400 dark:bg-cyan-400 dark:text-stone-950 dark:hover:bg-cyan-300"
                           >
                             {canvasPresetEditorMode === 'manage' ? '保存修改' : '保存'}
@@ -33364,6 +33474,7 @@ useEffect(() => {
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-template-panel="true"
+                      data-canvas-manager="workflow"
                       initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
                       animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
                       exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
@@ -33376,8 +33487,8 @@ useEffect(() => {
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
                     >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-black">
+                      <div data-canvas-manager-header="true" className="mb-2 flex items-center justify-between gap-2">
+                        <div data-canvas-manager-title="true" className="flex items-center gap-1.5 text-xs font-black">
                           <BookOpen className="h-4 w-4 text-emerald-500" />
                           <span>管理工作流</span>
                         </div>
@@ -33390,7 +33501,7 @@ useEffect(() => {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <div className="mb-2 flex flex-wrap gap-1.5">
+                      <div data-canvas-manager-toolbar="true" className="mb-2 flex flex-wrap gap-1.5">
                         <button
                           type="button"
                           onClick={() => void importCanvasTemplateFile('workflow')}
@@ -33414,7 +33525,7 @@ useEffect(() => {
                         </button>
                       </div>
                       <div className="grid gap-2">
-                        <div className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
+                        <div data-canvas-manager-list="true" className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] font-black uppercase tracking-wide text-stone-500 dark:text-stone-400">工作流列表</span>
                             <div className="flex items-center gap-1">
@@ -33450,6 +33561,8 @@ useEffect(() => {
                               return (
                                 <div
                                   key={workflow.id}
+                                  data-canvas-manager-row="true"
+                                  data-active={isEditing ? 'true' : 'false'}
                                   role="button"
                                   tabIndex={0}
                                   onClick={() => selectCanvasWorkflowForEdit(workflow.id)}
@@ -33467,6 +33580,8 @@ useEffect(() => {
                                 >
                                   <button
                                     type="button"
+                                    data-canvas-manager-check="true"
+                                    data-selected={isSelectedForDelete ? 'true' : 'false'}
                                     aria-pressed={isSelectedForDelete}
                                     onClick={(event) => {
                                       event.stopPropagation();
@@ -33501,6 +33616,7 @@ useEffect(() => {
                         </div>
                         <input
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasWorkflowNameDraft}
                           onChange={(event) => setCanvasWorkflowNameDraft(event.target.value)}
                           placeholder="工作流名称"
@@ -33509,6 +33625,7 @@ useEffect(() => {
                         />
                         <textarea
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasWorkflowHintDraft}
                           onChange={(event) => setCanvasWorkflowHintDraft(event.target.value)}
                           onWheel={(event) => event.stopPropagation()}
@@ -33516,20 +33633,21 @@ useEffect(() => {
                           maxLength={80}
                           className="h-20 resize-y rounded-[10px] border border-stone-200/80 bg-white px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
                         />
-                        <div className="flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
+                        <div data-canvas-manager-stats="true" className="flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
                           <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingNodeCount} 个节点</span>
                           <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingAiCount} 个生图节点</span>
                         </div>
                         <button
                           type="button"
                           onClick={replaceCanvasWorkflowManagerWithSelection}
+                          data-canvas-manager-replace="true"
                           className="flex h-8 items-center justify-center gap-1.5 rounded-[14px] border border-emerald-200/80 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/16"
                           title="用当前框选的节点替换这个工作流的内部结构；内置工作流会保存为本地修改"
                         >
                           <LayoutGrid className="h-3.5 w-3.5" />
                           用当前选中覆盖结构
                         </button>
-                        <div className="flex items-center justify-between gap-2 pt-1">
+                        <div data-canvas-manager-footer="true" className="flex items-center justify-between gap-2 pt-1">
                           <button
                             type="button"
                             onClick={deleteSelectedCanvasWorkflows}
@@ -33550,6 +33668,7 @@ useEffect(() => {
                             <button
                               type="button"
                               onClick={saveCanvasWorkflowManagerChanges}
+                              data-canvas-manager-primary="true"
                               className="rounded-[15px] bg-emerald-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-emerald-500/20 transition-colors hover:bg-emerald-400 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300"
                             >
                               保存修改
@@ -34200,16 +34319,17 @@ useEffect(() => {
                   {isCanvasMode && isCanvasGeneratedListVisible && (
                     <div
                       data-no-drag="true"
-                      className="absolute bottom-4 left-4 z-[100050] flex max-h-[42vh] w-[292px] flex-col rounded-[20px] border border-white/60 bg-white/80 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-900/78 dark:text-stone-200"
+                      data-canvas-generated-panel="true"
+                      className="absolute bottom-4 left-4 z-[100050] flex max-h-[42vh] w-[292px] flex-col rounded-[14px] border border-stone-200 bg-white p-2.5 text-stone-700 shadow-[0_10px_28px_rgba(24,24,27,0.10)] dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
                     >
                       <div className="flex items-center justify-between gap-2 px-0.5">
                         <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-black">
-                          <ImageIcon className="h-3.5 w-3.5 text-cyan-500" />
+                          <ImageIcon className="h-3.5 w-3.5 text-stone-500" />
                           <span>已生成</span>
-                          <span className="rounded-full bg-cyan-100 px-1.5 py-0.5 font-mono text-[9px] text-cyan-700 dark:bg-cyan-400/14 dark:text-cyan-200">
+                          <span className="rounded-[6px] bg-stone-100 px-1.5 py-0.5 font-mono text-[9px] text-stone-600 dark:bg-stone-800 dark:text-stone-300">
                             {canvasGeneratedItemsForList.length}
                           </span>
                         </div>
@@ -34225,8 +34345,8 @@ useEffect(() => {
                               }}
                               className={`flex h-[22px] items-center gap-1 rounded-[7px] px-1.5 text-[9px] font-black transition-colors ${
                                 isCanvasGeneratedMultiSelect
-                                  ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-400/16 dark:text-cyan-200'
-                                  : 'text-stone-400 hover:bg-stone-100 hover:text-cyan-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-cyan-200'
+                                  ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950'
+                                  : 'text-stone-400 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-100'
                               }`}
                               title={isCanvasGeneratedMultiSelect ? '退出多选' : '批量选择下载'}
                             >
@@ -34255,7 +34375,7 @@ useEffect(() => {
                         </div>
                       </div>
                       {isCanvasGeneratedMultiSelect && (
-                        <div className="mt-2 flex items-center justify-between gap-2 rounded-[11px] bg-cyan-50/80 px-2 py-1.5 dark:bg-cyan-400/10">
+                        <div className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-stone-100 px-2 py-1.5 dark:bg-stone-800">
                           <button
                             type="button"
                             onClick={() => {
@@ -34268,8 +34388,8 @@ useEffect(() => {
                             <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-[4px] border ${
                               canvasGeneratedDownloadableItems.length > 0
                               && canvasGeneratedDownloadableItems.every(entry => canvasGeneratedSelectedIdSet.has(entry.id))
-                                ? 'border-cyan-500 bg-cyan-500 text-white'
-                                : 'border-cyan-300 bg-white/80 dark:border-cyan-500/60 dark:bg-stone-900/60'
+                                ? 'border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-950'
+                                : 'border-stone-300 bg-white dark:border-stone-600 dark:bg-stone-900'
                             }`}>
                               {canvasGeneratedDownloadableItems.length > 0
                               && canvasGeneratedDownloadableItems.every(entry => canvasGeneratedSelectedIdSet.has(entry.id))
@@ -34287,7 +34407,7 @@ useEffect(() => {
                             onClick={() => {
                               void downloadBufferItems(canvasGeneratedSelectedDownloadItems, { feature: 'commercial_export' });
                             }}
-                            className="flex h-6 items-center gap-1 rounded-[8px] bg-cyan-500 px-2 text-[9px] font-black text-white transition-colors hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-stone-300 dark:disabled:bg-stone-700"
+                            className="flex h-6 items-center gap-1 rounded-[7px] bg-stone-900 px-2 text-[9px] font-semibold text-white transition-colors hover:bg-stone-700 disabled:cursor-not-allowed disabled:bg-stone-300 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-white dark:disabled:bg-stone-700"
                           >
                             <Download className="h-3 w-3" />
                             下载
@@ -34357,9 +34477,9 @@ useEffect(() => {
                                   }}
                                   className={`group/generated flex w-full cursor-pointer items-center gap-2 rounded-[14px] border p-1.5 text-left transition-colors ${
                                     isCanvasGeneratedMultiSelect && canvasGeneratedSelectedIdSet.has(generatedItem.id)
-                                      ? 'border-cyan-400 bg-cyan-50/90 ring-1 ring-cyan-300/60 dark:border-cyan-400/50 dark:bg-cyan-400/14'
+                                      ? 'border-stone-900 bg-stone-100 ring-1 ring-stone-300/60 dark:border-stone-100 dark:bg-stone-800'
                                       : canvasSelectedIdsSet.has(generatedItem.canvasItem.id)
-                                      ? 'border-cyan-200 bg-cyan-50/76 dark:border-cyan-400/24 dark:bg-cyan-400/12'
+                                      ? 'border-stone-400 bg-stone-100 dark:border-stone-500 dark:bg-stone-800'
                                       : 'border-white/70 bg-white/58 hover:bg-white/90 dark:border-stone-700/60 dark:bg-stone-950/28 dark:hover:bg-stone-800/70'
                                   }`}
                                   title={prompt || generatedItem.item.name || '定位已生成内容'}
@@ -34368,7 +34488,7 @@ useEffect(() => {
                                     {isCanvasGeneratedMultiSelect && (
                                       <span className={`absolute left-1 top-1 z-10 flex h-4 w-4 items-center justify-center rounded-[5px] border shadow-sm ${
                                         canvasGeneratedSelectedIdSet.has(generatedItem.id)
-                                          ? 'border-cyan-500 bg-cyan-500 text-white'
+                                          ? 'border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-950'
                                           : isPending || isError
                                             ? 'border-stone-300 bg-stone-200/90 text-stone-400 dark:border-stone-600 dark:bg-stone-700/90'
                                             : 'border-white bg-white/90 text-transparent dark:border-stone-500 dark:bg-stone-900/90'
@@ -34475,7 +34595,7 @@ useEffect(() => {
                       type="button"
                       data-no-drag="true"
                       onClick={() => setIsCanvasGeneratedListVisible(true)}
-                      className="absolute bottom-4 left-4 z-[100050] flex h-9 items-center gap-1.5 rounded-full border border-white/45 bg-white/76 px-3 text-[11px] font-black text-cyan-700 shadow-[0_8px_20px_rgba(0,0,0,0.13)] backdrop-blur-xl transition-colors hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/76 dark:text-cyan-200 dark:hover:bg-stone-800"
+                      className="absolute bottom-4 left-4 z-[100050] flex h-9 items-center gap-1.5 rounded-[10px] border border-stone-200 bg-white px-3 text-[11px] font-semibold text-stone-700 shadow-[0_4px_14px_rgba(24,24,27,0.08)] transition-colors hover:bg-stone-100 hover:text-stone-950 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
                       title="显示已生成列表"
                     >
                       <ImageIcon className="h-3.5 w-3.5" />
@@ -34494,7 +34614,7 @@ useEffect(() => {
                           canvasSurfaceRef.current?.focus({ preventScroll: true });
                         });
                       }}
-                      className="absolute bottom-4 z-[100050] flex h-11 w-11 items-center justify-center rounded-full border border-white/35 bg-stone-950/42 text-white shadow-[0_10px_30px_rgba(0,0,0,0.22)] backdrop-blur-xl transition-all hover:bg-stone-950/62 focus:outline-none focus:ring-2 focus:ring-emerald-300/80"
+                      className="absolute bottom-4 z-[100050] flex h-10 w-10 items-center justify-center rounded-[10px] border border-stone-700 bg-stone-900 text-white shadow-[0_6px_18px_rgba(24,24,27,0.16)] transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400/50 dark:border-stone-600 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-white"
                       style={{ right: isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16 }}
                       title={isCanvasChromeHidden ? '显示菜单栏 (Tab)' : '隐藏菜单栏，画布全屏 (Tab)'}
                     >
@@ -34628,8 +34748,8 @@ useEffect(() => {
                     </div>
                   )}
                   {activeTab === 'calendar' && (
-                    <div className="mx-auto flex-1 flex w-full flex-col gap-3 origin-top" style={calendarPageStyle}>
-                      <div className="rounded-[24px] bg-white/62 dark:bg-stone-900/46 border border-white/70 dark:border-stone-700/58 px-4 py-3 shadow-sm shadow-black/[0.02] backdrop-blur-xl">
+                    <div data-calendar-page="true" className="mx-auto flex w-full flex-1 origin-top flex-col gap-3" style={calendarPageStyle}>
+                      <div className="rounded-[16px] border border-stone-200 bg-white px-4 py-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 text-sm font-bold text-stone-800 dark:text-stone-100">
@@ -34646,13 +34766,13 @@ useEffect(() => {
                               options={calendarTagOptions}
                               onChange={setCalendarTagFilter}
                               icon={<Tag className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
-                              className="h-8 max-w-[118px] rounded-full border border-stone-200/70 bg-white/72 pl-2.5 pr-2 text-[11px] font-bold text-stone-600 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700/60 dark:bg-stone-800/60 dark:text-stone-200 dark:hover:bg-stone-800"
+                              className="h-8 max-w-[118px] rounded-[9px] border border-stone-200 bg-stone-50 pl-2.5 pr-2 text-[11px] font-bold text-stone-600 shadow-none hover:border-stone-300 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:border-stone-600 dark:hover:bg-stone-700"
                               menuMinWidth={150}
                               title={`筛选：${calendarTagFilterLabel}`}
                             />
                             <button
                               onClick={jumpCalendarToday}
-                              className="shrink-0 rounded-full bg-stone-900 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
+                              className="shrink-0 rounded-[9px] bg-stone-900 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-stone-800 active:translate-y-px dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
                             >
                               今天
                             </button>
@@ -34660,12 +34780,12 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      <div className="rounded-[28px] border border-white/70 bg-white/58 p-2.5 shadow-sm shadow-black/[0.02] backdrop-blur-xl dark:border-stone-700/58 dark:bg-stone-900/38">
+                      <div className="rounded-[16px] border border-stone-200 bg-white p-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                         <div className="mb-2.5 flex items-center justify-between px-1">
                           <button
                             type="button"
                             onClick={() => moveCalendarMonth(-1)}
-                            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-white/72 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                            className="rounded-[8px] border border-transparent p-1.5 text-stone-400 transition-colors hover:border-stone-200 hover:bg-stone-100 hover:text-stone-700 dark:hover:border-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
                             title="上个月"
                           >
                             <ChevronLeft className="h-4 w-4" />
@@ -34676,7 +34796,7 @@ useEffect(() => {
                           <button
                             type="button"
                             onClick={() => moveCalendarMonth(1)}
-                            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-white/72 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                            className="rounded-[8px] border border-transparent p-1.5 text-stone-400 transition-colors hover:border-stone-200 hover:bg-stone-100 hover:text-stone-700 dark:hover:border-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
                             title="下个月"
                           >
                             <ChevronRight className="h-4 w-4" />
@@ -34710,19 +34830,17 @@ useEffect(() => {
                                   setCalendarSelectedDate(startOfLocalDay(day));
                                   setCalendarMonth(new Date(date.getFullYear(), date.getMonth(), 1).getTime());
                                 }}
-                                className={`group/day flex min-h-[92px] flex-col rounded-[16px] border border-transparent px-0.5 py-1 text-left transition-colors ${
+                                data-calendar-day="true"
+                                data-selected={isSelected ? 'true' : 'false'}
+                                className={`group/day flex min-h-[92px] flex-col rounded-[10px] border px-1 py-1.5 text-left transition-[background-color,border-color,color] ${
                                   isSelected
-                                    ? 'text-stone-900 dark:text-stone-100'
-                                    : 'text-stone-700 hover:bg-white/34 dark:text-stone-300 dark:hover:bg-stone-900/34'
+                                    ? 'border-blue-300 bg-blue-50/70 text-stone-900 dark:border-blue-500/55 dark:bg-blue-500/10 dark:text-stone-100'
+                                    : 'border-transparent text-stone-700 hover:border-stone-200 hover:bg-stone-50 dark:text-stone-300 dark:hover:border-stone-700 dark:hover:bg-stone-800/65'
                                 } ${isCurrentMonth ? '' : 'opacity-38'}`}
                               >
-                                <div className={`w-full rounded-[12px] border px-1 py-0.5 transition-colors ${
-                                  isSelected
-                                    ? 'border-stone-200 bg-white/92 dark:border-stone-600 dark:bg-stone-800/76'
-                                    : 'border-transparent'
-                                }`}>
+                                <div className="w-full rounded-[8px] px-1 py-0.5">
                                   <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-                                    <span className={`shrink-0 text-[16px] font-black leading-[18px] ${isToday ? 'text-rose-500 dark:text-rose-300' : ''}`}>
+                                    <span className={`shrink-0 text-[16px] font-black leading-[18px] ${isToday ? 'text-blue-600 dark:text-blue-300' : ''}`}>
                                       {displayDay}
                                     </span>
                                     <span className="flex shrink-0 items-center gap-0.5">
@@ -34752,7 +34870,10 @@ useEffect(() => {
                                     return (
                                       <span
                                         key={event.id}
-                                        className={`block h-[13px] w-full overflow-hidden whitespace-nowrap rounded-[5px] border px-1 text-[8px] font-black leading-[13px] ${getCalendarMiniEventClass(event)}`}
+                                        data-calendar-mini-event="true"
+                                        data-calendar-priority={priority}
+                                        data-done={event.schedule.done ? 'true' : 'false'}
+                                        className="block h-[13px] w-full overflow-hidden whitespace-nowrap rounded-[4px] px-1 text-[8px] font-black leading-[13px]"
                                         title={`${priority} ${event.title}`}
                                       >
                                         {formatCalendarPreviewTitle(event.title)}
@@ -34772,17 +34893,17 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      <div className="rounded-[26px] border border-white/70 bg-white/50 p-3 shadow-sm shadow-black/[0.02] backdrop-blur-xl dark:border-stone-700/58 dark:bg-stone-900/34">
+                      <div className="rounded-[16px] border border-stone-200 bg-white p-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                         <div className="mb-2 flex items-center justify-between">
                           <div className="flex items-center gap-2 text-xs font-black text-stone-700 dark:text-stone-100">
                             <Clock className="h-4 w-4 text-stone-400" />
                             {formatScheduleDateLabel(calendarSelectedDate)}
                           </div>
-                          <span className="rounded-full bg-white/64 px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:bg-stone-800/58 dark:text-stone-500">
+                          <span className="rounded-[7px] bg-stone-100 px-2 py-0.5 text-[10px] font-bold tabular-nums text-stone-500 dark:bg-stone-800 dark:text-stone-400">
                             {selectedCalendarEvents.length === 0 ? '0 项' : `${selectedCalendarOpenCount}/${selectedCalendarEvents.length}`}
                           </span>
                         </div>
-                        <div className="mb-3 flex items-center gap-2 rounded-[18px] border border-stone-200/58 bg-white/48 p-2 dark:border-stone-700/58 dark:bg-stone-950/22">
+                        <div data-calendar-composer="true" className="mb-3 flex items-center gap-2 rounded-[12px] border border-stone-200 bg-stone-50 p-2 transition-colors focus-within:border-blue-300 focus-within:bg-white dark:border-stone-700 dark:bg-stone-800/70 dark:focus-within:border-blue-500/60 dark:focus-within:bg-stone-800">
                           <input
                             value={calendarDraftText}
                             onChange={(e) => setCalendarDraftText(e.target.value)}
@@ -34794,14 +34915,14 @@ useEffect(() => {
                             }}
                             onMouseDown={(e) => e.stopPropagation()}
                             placeholder="添加日程..."
-                            className="min-w-0 flex-1 bg-transparent px-1 text-xs font-bold text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
+                            className="h-7 min-w-0 flex-1 bg-transparent px-1 text-xs font-semibold text-stone-800 outline-none placeholder:font-medium placeholder:text-stone-500 dark:text-stone-100 dark:placeholder:text-stone-400"
                           />
                           <RoundedSelect
                             value={calendarTargetNoteLabel}
                             options={calendarScheduleNoteOptions}
                             onChange={setCalendarTargetNoteLabel}
                             icon={<StickyNote className="h-3 w-3 shrink-0 text-stone-400" />}
-                            className="max-w-[112px] shrink-0 rounded-full border border-stone-200 bg-white/70 px-2 py-1 text-[10px] font-black text-stone-500 hover:bg-white dark:border-stone-700 dark:bg-stone-900/70 dark:text-stone-300 dark:hover:bg-stone-800"
+                            className="max-w-[112px] shrink-0 rounded-[8px] border border-stone-200 bg-white px-2 py-1 text-[10px] font-bold text-stone-600 hover:border-stone-300 hover:bg-stone-100 dark:border-stone-600 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
                             menuMinWidth={150}
                             title="选择写入的日程便签"
                           />
@@ -34809,7 +34930,8 @@ useEffect(() => {
                             value={calendarDraftPriority}
                             options={SCHEDULE_PRIORITY_OPTIONS.map(priority => ({ value: priority, label: priority }))}
                             onChange={(next) => setCalendarDraftPriority(normalizeSchedulePriority(next))}
-                            className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-black ${getSchedulePriorityClass(calendarDraftPriority)}`}
+                            data-calendar-priority={calendarDraftPriority}
+                            className="shrink-0 rounded-[7px] px-2 py-1 text-[10px] font-black"
                             menuMinWidth={58}
                             title="优先级"
                           />
@@ -34817,14 +34939,14 @@ useEffect(() => {
                             type="button"
                             onClick={addCalendarScheduleItem}
                             disabled={!calendarDraftText.trim()}
-                            className="shrink-0 rounded-full bg-stone-900 p-1.5 text-white transition-colors hover:bg-stone-800 disabled:bg-stone-200 disabled:text-stone-400 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
+                            className="shrink-0 rounded-[8px] bg-stone-900 p-1.5 text-white transition-colors hover:bg-stone-800 active:translate-y-px disabled:translate-y-0 disabled:bg-stone-200 disabled:text-stone-400 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white dark:disabled:bg-stone-700 dark:disabled:text-stone-500"
                             title="添加日程"
                           >
                             <Plus className="h-3.5 w-3.5" />
                           </button>
                         </div>
                         {selectedCalendarEvents.length === 0 ? (
-                          <div className="rounded-[18px] border border-dashed border-stone-200/80 bg-white/34 px-4 py-6 text-center text-xs font-bold text-stone-400 dark:border-stone-700 dark:bg-stone-950/18 dark:text-stone-500">
+                          <div className="rounded-[12px] border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-xs font-semibold text-stone-400 dark:border-stone-700 dark:bg-stone-800/45 dark:text-stone-500">
                             这天还没有安排
                           </div>
                         ) : (
@@ -34835,7 +34957,7 @@ useEffect(() => {
                       </div>
 
                       {unscheduledCalendarEvents.length > 0 && (
-                        <div className="rounded-[26px] border border-white/70 bg-white/42 p-3 shadow-sm shadow-black/[0.02] backdrop-blur-xl dark:border-stone-700/58 dark:bg-stone-900/28">
+                        <div className="rounded-[16px] border border-stone-200 bg-white p-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                           <div className="mb-2 flex items-center gap-2 text-xs font-black text-stone-600 dark:text-stone-300">
                             <StickyNote className="h-4 w-4 text-stone-400" />
                             未安排日期
@@ -34897,7 +35019,8 @@ useEffect(() => {
                       <div style={{ height: drawerVirtualWindow.top, flexShrink: 0 }} />
                     )}
                     <div
-                      className="grid shrink-0 gap-2.5 items-start"
+                      data-drawer-gallery="true"
+                      className="grid shrink-0 gap-x-4 gap-y-4 items-start"
                       onWheel={handleDrawerCardWheel}
                       style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))` }}
                     >
@@ -35067,7 +35190,8 @@ useEffect(() => {
                         setShowSettings(false);
                         setShowFolderModal(false);
                       }}
-                      className="absolute bottom-[84px] right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full border border-blue-100/80 bg-white/92 text-blue-600 shadow-[0_8px_20px_rgba(43,85,145,0.18)] backdrop-blur-xl transition-transform hover:scale-105 hover:bg-blue-50 active:scale-95 dark:border-blue-400/20 dark:bg-stone-900/90 dark:text-blue-300 dark:hover:bg-stone-800"
+                      data-drawer-fab="secondary"
+                      className="absolute bottom-[84px] right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full border border-stone-200 bg-stone-900 text-white shadow-[0_6px_16px_rgba(24,24,27,0.14)] transition-[background-color,transform] hover:-translate-y-0.5 hover:bg-stone-800 active:translate-y-0 dark:border-stone-700 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
                       title="软件 Agent"
                     >
                       <Bot className="h-5 w-5" />
@@ -35080,7 +35204,8 @@ useEffect(() => {
                     <motion.button
                       initial={isShortcutReveal ? false : { opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} transition={isShortcutReveal ? { duration: 0 } : { duration: 0.2, ease: "easeOut" }}
                       onClick={handleOpenTextInput}
-                      className="absolute bottom-6 right-6 z-[120] bg-blue-500 hover:bg-blue-600 text-white p-3.5 rounded-full shadow-[0_8px_16px_rgba(59,130,246,0.28)] transition-transform hover:scale-105 active:scale-95 will-change-transform"
+                      data-drawer-fab="primary"
+                      className="absolute bottom-6 right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_6px_16px_rgba(37,99,235,0.22)] transition-[background-color,transform] hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 will-change-transform"
                       title="写下灵感"
                     ><Edit3 className="w-5 h-5" /></motion.button>
                   )}
@@ -35088,12 +35213,13 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showTextInput && (
-                    <motion.div initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-blue-500" /> 记录灵感</span>
-                        <button onClick={handleCloseTextInput} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                    <motion.div data-drawer-dialog="true" initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-blue-500" /> 记录灵感</span>
+                        <button data-drawer-dialog-close="true" onClick={handleCloseTextInput} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <textarea
+                        data-drawer-dialog-field="true"
                         autoFocus value={quickText} onChange={e => setQuickText(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter' && !e.shiftKey) {
@@ -35108,6 +35234,7 @@ useEffect(() => {
                       <div className="flex justify-between items-center px-1">
                         <span className="text-[10px] text-stone-400 font-mono font-medium">{quickText.length} 字</span>
                         <button
+                          data-drawer-dialog-primary="true"
                           onClick={() => {
                             commitQuickText();
                           }}
@@ -35122,6 +35249,7 @@ useEffect(() => {
                 <AnimatePresence>
                   {showWebImageCollector && (
                     <motion.div
+                      data-drawer-dialog="true"
                       ref={webImageCollectorPanelRef}
                       initial={{ opacity: 0, y: 40, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -35132,9 +35260,10 @@ useEffect(() => {
                       onMouseDown={handleDrawerPanelMouseDown}
                       onKeyDown={handleDrawerPanelKeyDown}
                     >
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><ImageIcon className="w-4 h-4 text-sky-500" /> 网络收图</span>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><ImageIcon className="w-4 h-4 text-sky-500" /> 网络收图</span>
                         <button
+                          data-drawer-dialog-close="true"
                           onClick={closeWebImageCollector}
                           disabled={isCollectingWebImages || isGeneratingWebImageQuery}
                           className="text-stone-400 hover:text-stone-600 disabled:cursor-wait disabled:opacity-45 dark:hover:text-stone-300 transition-colors"
@@ -35177,6 +35306,7 @@ useEffect(() => {
                         </div>
                       )}
                       <input
+                        data-drawer-dialog-field="true"
                         autoFocus
                         value={webImageCollectorQuery}
                         onChange={e => setWebImageCollectorQuery(e.target.value)}
@@ -35318,6 +35448,7 @@ useEffect(() => {
                             : '自动收集 10 张网络图片，并新建同名文件夹保存。'}
                         </span>
                         <button
+                          data-drawer-dialog-primary="true"
                           onClick={() => void collectWebImagesToDrawer()}
                           disabled={!webImageCollectorQuery.trim() || isCollectingWebImages || isGeneratingWebImageQuery}
                           className="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-sky-500 hover:bg-sky-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none disabled:cursor-wait"
@@ -35336,10 +35467,10 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showMoveFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Move className="w-4 h-4 text-emerald-500" /> 移动 {selectedIds.length} 个卡片</span>
-                        <button onClick={() => setShowMoveFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                    <motion.div data-drawer-dialog="true" initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Move className="w-4 h-4 text-emerald-500" /> 移动 {selectedIds.length} 个卡片</span>
+                        <button data-drawer-dialog-close="true" onClick={() => setShowMoveFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
                         <button
@@ -35360,6 +35491,7 @@ useEffect(() => {
                         <div className="mb-2 text-[11px] font-bold text-stone-500 dark:text-stone-400">{moveFolderParent ? `在「${moveFolderParent.name}」中新建子目录并移动` : '新建项目文件夹并移动'}</div>
                         <div className="flex gap-2">
                           <input
+                            data-drawer-dialog-field="true"
                             value={moveFolderName}
                             onChange={e => setMoveFolderName(e.target.value)}
                             onKeyDown={e => {
@@ -35370,6 +35502,7 @@ useEffect(() => {
                             className="min-w-0 flex-1 bg-white/75 dark:bg-stone-800/75 rounded-[14px] px-3 py-2 border border-white/80 dark:border-stone-700/70 outline-none text-xs text-stone-700 dark:text-stone-200 placeholder:text-stone-400 focus:ring-2 focus:ring-emerald-500/20 transition-all"
                           />
                           <button
+                            data-drawer-dialog-primary="true"
                             onClick={createFolderAndMoveSelected}
                             disabled={!moveFolderName.trim()}
                             className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[14px] transition-colors shadow-sm disabled:shadow-none"
@@ -35382,13 +35515,13 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showMoveExistingFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex items-center justify-between gap-3 px-1">
-                        <span className="min-w-0 truncate text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5">
+                    <motion.div data-drawer-dialog="true" initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex items-center justify-between gap-3 px-1">
+                        <span data-drawer-dialog-title="true" className="min-w-0 truncate text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5">
                           <Move className="w-4 h-4 text-emerald-500" />
                           移动 {folderMoveSelectionIds.length} 个文件夹到…
                         </span>
-                        <button onClick={() => setShowMoveExistingFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                        <button data-drawer-dialog-close="true" onClick={() => setShowMoveExistingFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <div className="grid max-h-56 grid-cols-1 gap-2 overflow-y-auto pr-1">
                         <button
@@ -35417,6 +35550,7 @@ useEffect(() => {
                       </div>
                       <div className="flex justify-end gap-2 px-1">
                         <button
+                          data-drawer-dialog-secondary="true"
                           type="button"
                           onClick={() => setShowMoveExistingFolderModal(false)}
                           className="rounded-[14px] bg-stone-100 px-3 py-2 text-xs font-bold text-stone-500 transition-colors hover:bg-stone-200 dark:bg-stone-900/60 dark:text-stone-300 dark:hover:bg-stone-700"
@@ -35424,6 +35558,7 @@ useEffect(() => {
                           取消
                         </button>
                         <button
+                          data-drawer-dialog-primary="true"
                           type="button"
                           onClick={() => void moveDrawerFoldersToParent(folderMoveSelectionIds, folderMoveTargetId)}
                           disabled={isMovingFolders || folderMoveSelectionIds.length === 0 || isInvalidFolderMoveTarget(folderMoveTargetId, folderMoveSelectionIds)}
@@ -35439,12 +35574,13 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> {newFolderParent ? `在「${newFolderParent.name}」中新建子目录` : '新建项目文件夹'}</span>
-                        <button onClick={closeFolderModal} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                    <motion.div data-drawer-dialog="true" initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> {newFolderParent ? `在「${newFolderParent.name}」中新建子目录` : '新建项目文件夹'}</span>
+                        <button data-drawer-dialog-close="true" onClick={closeFolderModal} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <input
+                        data-drawer-dialog-field="true"
                         autoFocus value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter') { e.preventDefault(); handleAddFolder(); }
@@ -35455,6 +35591,7 @@ useEffect(() => {
                       />
                       <div className="flex justify-end px-1 mt-1">
                         <button
+                          data-drawer-dialog-primary="true"
                           onClick={handleAddFolder}
                           disabled={!newFolderName.trim()}
                           className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none"
@@ -35938,6 +36075,7 @@ useEffect(() => {
         {canvasFolderImportPrompt && (
           <motion.div
             data-canvas-floating-layer="true"
+            data-canvas-folder-picker="true"
             initial={{ opacity: 0, scale: 0.96, x: -6 }}
             animate={{ opacity: 1, scale: 1, x: 0 }}
             exit={{ opacity: 0, scale: 0.96, x: -6 }}
@@ -35953,9 +36091,9 @@ useEffect(() => {
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-2">
+            <div data-canvas-folder-picker-header="true" className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200">
+                <span data-canvas-folder-picker-icon="true" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200">
                   <FolderOpen className="h-4 w-4" />
                 </span>
                 <div className="min-w-0">
@@ -35965,6 +36103,7 @@ useEffect(() => {
               </div>
               <button
                 type="button"
+                data-canvas-folder-picker-close="true"
                 onClick={() => {
                   setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
                   setCanvasFolderImportPrompt(null);
@@ -35978,6 +36117,7 @@ useEffect(() => {
 
             <button
               type="button"
+              data-canvas-folder-picker-primary="true"
               onClick={confirmAddFolderMediaToCanvas}
               className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400"
             >
@@ -35986,6 +36126,7 @@ useEffect(() => {
             </button>
 
             <div
+              data-canvas-folder-picker-scroll="true"
               className="mt-2 max-h-[320px] overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               onScroll={(event) => {
                 const target = event.currentTarget;
@@ -36004,6 +36145,7 @@ useEffect(() => {
                     <button
                       key={item.id}
                       type="button"
+                      data-canvas-folder-picker-item="true"
                       onClick={() => addFolderMediaPickerItemToCanvas(item.id)}
                       className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-blue-300 hover:ring-2 hover:ring-blue-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-blue-300/50 dark:hover:ring-blue-300/20"
                       title={item.name || item.content || '加入画布'}
@@ -36276,6 +36418,7 @@ useEffect(() => {
       <AnimatePresence>
         {textInputDialog.isOpen && (
           <motion.div
+            data-drawer-dialog-backdrop="true"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -36289,6 +36432,7 @@ useEffect(() => {
             }}
           >
             <motion.form
+              data-drawer-dialog="true"
               initial={{ scale: 0.96, y: 12 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.96, y: 12 }}
@@ -36308,12 +36452,12 @@ useEffect(() => {
                 }
               }}
             >
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] bg-stone-900 text-white shadow-sm shadow-stone-900/15 dark:bg-white dark:text-stone-950">
+              <div data-drawer-dialog-header="true" className="flex items-start gap-3">
+                <div data-drawer-dialog-icon="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] bg-stone-900 text-white shadow-sm shadow-stone-900/15 dark:bg-white dark:text-stone-950">
                   <TextInputDialogIcon className="h-4 w-4" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-sm font-black text-stone-900 dark:text-stone-50">{textInputDialog.title}</h3>
+                  <h3 data-drawer-dialog-title="true" className="truncate text-sm font-black text-stone-900 dark:text-stone-50">{textInputDialog.title}</h3>
                   {textInputDialog.description && (
                     <p className="mt-1 text-[11px] font-medium leading-5 text-stone-500 dark:text-stone-400">
                       {textInputDialog.description}
@@ -36321,6 +36465,7 @@ useEffect(() => {
                   )}
                 </div>
                 <button
+                  data-drawer-dialog-close="true"
                   type="button"
                   onClick={() => closeTextInputDialog(null)}
                   className="-mr-1 -mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white"
@@ -36331,6 +36476,7 @@ useEffect(() => {
               </div>
 
               <input
+                data-drawer-dialog-field="true"
                 ref={textInputDialogInputRef}
                 value={textInputDialog.value}
                 onChange={(event) => setTextInputDialog(prev => ({ ...prev, value: event.target.value }))}
@@ -36341,6 +36487,7 @@ useEffect(() => {
 
               <div className="mt-4 flex justify-end gap-2">
                 <button
+                  data-drawer-dialog-secondary="true"
                   type="button"
                   onClick={() => closeTextInputDialog(null)}
                   className="rounded-[16px] bg-stone-100 px-3.5 py-2 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/8 dark:text-stone-300 dark:hover:bg-white/12"
@@ -36348,6 +36495,7 @@ useEffect(() => {
                   取消
                 </button>
                 <button
+                  data-drawer-dialog-primary="true"
                   type="submit"
                   disabled={!textInputDialogCanConfirm}
                   className="inline-flex items-center gap-1.5 rounded-[16px] bg-blue-600 px-4 py-2 text-xs font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 disabled:shadow-none dark:bg-blue-500 dark:hover:bg-blue-400 dark:disabled:bg-white/10 dark:disabled:text-white/35"
@@ -36363,12 +36511,12 @@ useEffect(() => {
 
       <AnimatePresence>
         {confirmDialog.isOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} data-canvas-floating-layer="true" className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
-              <h3 className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} data-canvas-floating-layer="true" className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
+              <h3 data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
               <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">{confirmDialog.message || '确定继续吗？'}</p>
               <div className="mt-4 flex justify-end gap-2">
-                <button onClick={closeConfirmDialog} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
+                <button data-drawer-dialog-secondary="true" onClick={closeConfirmDialog} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
                 {(confirmDialog.actions && confirmDialog.actions.length > 0
                   ? confirmDialog.actions
                   : [{
@@ -36399,11 +36547,11 @@ useEffect(() => {
 
       <AnimatePresence>
         {showQR && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => { setShowQR(false); }}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[300px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5 text-center" onMouseDown={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Smartphone className="w-4 h-4 text-emerald-500" /> 手机配对</span>
-                <button onClick={() => { setShowQR(false); }} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => { setShowQR(false); }}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[300px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5 text-center" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+                <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Smartphone className="w-4 h-4 text-emerald-500" /> 手机配对</span>
+                <button data-drawer-dialog-close="true" onClick={() => { setShowQR(false); }} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="mx-auto w-fit p-3 rounded-[20px] bg-white">
                 <QRCode value={mobilePairUrl || (localIP ? `http://${localIP}:1420/pair` : 'inspiration-drawer')} size={160} />
@@ -36662,11 +36810,11 @@ useEffect(() => {
 
       <AnimatePresence>
         {showHelp && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 rounded-[30px] overflow-hidden z-[9997] bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => setShowHelp(false)}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><BookOpen className="w-4 h-4 text-blue-500" /> 使用说明</span>
-                <button onClick={() => setShowHelp(false)} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 rounded-[30px] overflow-hidden z-[9997] bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => setShowHelp(false)}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+                <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><BookOpen className="w-4 h-4 text-blue-500" /> 使用说明</span>
+                <button data-drawer-dialog-close="true" onClick={() => setShowHelp(false)} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="max-h-[62vh] overflow-y-auto pr-1 space-y-4 text-xs leading-5 text-stone-600 dark:text-stone-300 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-700 [&::-webkit-scrollbar-thumb]:rounded-full">
                 <section className="space-y-1.5">
@@ -36728,24 +36876,24 @@ useEffect(() => {
 
       <AnimatePresence>
         {showUpdateLog && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9996] rounded-[30px] overflow-hidden bg-black/20 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={closeUpdateLog}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 更新日志</span>
-                <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9996] rounded-[30px] overflow-hidden bg-black/20 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={closeUpdateLog}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+                <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 更新日志</span>
+                <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.15</p>
-                <p>修复检查更新时可能触发的后台运行时崩溃，提升多源更新检查稳定性。</p>
-                <p>从画布删除节点时只移除节点与相关连线，不再同步删除抽屉中的图片和素材。</p>
-                <p>“关于软件”新增微信联系方式，可直接扫码咨询产品使用、商务合作与售后支持。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.14</p>
+                <p>统一抽屉、设置、弹窗、日历与无限画布的 UI 风格。</p>
+                <p>优化素材卡片、侧栏、搜索和窗口控件的视觉与交互。</p>
+                <p>修复画布拖拽偶发失焦与视口跳移，并增加窗口最小尺寸。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
                   <p className="mt-1">{isCloudflaredDisclaimerAccepted ? '当前已同意本软件免责声明。' : '点击下方按钮后，将视为同意本软件免责声明。'}</p>
                 </div>
               </div>
-              <button onClick={acceptUpdateLogAndClose} className="mt-4 w-full py-2 rounded-[20px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold">
+              <button data-drawer-dialog-primary="true" onClick={acceptUpdateLogAndClose} className="mt-4 w-full py-2 rounded-[20px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold">
                 {isCloudflaredDisclaimerAccepted ? '知道了' : '同意并知道了'}
               </button>
             </motion.div>

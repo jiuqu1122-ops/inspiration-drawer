@@ -170,6 +170,24 @@ export const getAiImageAnalysisTerms = (
   ])).slice(0, limit);
 };
 
+const getAssetTypeLabel = (item: any) => {
+  const sources = [item?.name, item?.path, item?.url, item?.content]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  const extension = sources
+    .map(source => source.match(/\.([a-z0-9]{2,5})(?:[?#].*)?$/i)?.[1])
+    .find(Boolean);
+  if (extension) return extension.toUpperCase();
+  const dataImageType = sources
+    .map(source => source.match(/^data:image\/([a-z0-9.+-]+);/i)?.[1])
+    .find(Boolean);
+  if (dataImageType) return dataImageType.replace('jpeg', 'jpg').toUpperCase();
+  if (item?.type === 'image') return 'IMAGE';
+  if (item?.type === 'video') return 'VIDEO';
+  if (item?.type === 'text') return 'TEXT';
+  return 'FILE';
+};
+
 type LazyCardImageProps = {
   src?: string;
   alt?: string;
@@ -269,8 +287,10 @@ function BufferItemCard({
   const [isEditingText, setIsEditingText] = useState(false);
   const [editContentText, setEditContentText] = useState(item.content || '');
   const [isHovered, setIsHovered] = useState(false);
+  const [resolvedOriginalSize, setResolvedOriginalSize] = useState<{ width: number; height: number } | null>(null);
   const openUrlTimerRef = useRef<any | null>(null);
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const resolutionLoadKeyRef = useRef('');
   const editStartContentRef = useRef(item.content || '');
   const editContentDirtyRef = useRef(false);
   const skipTextEditSaveRef = useRef(false);
@@ -596,12 +616,12 @@ function BufferItemCard({
   const isSmallCard = cardWidth < 200;
   const visualScale = Math.max(0.56, Math.min(1.16, (Number(cardWidth) || 320) / 320));
   const scaleSize = (value: number, min = 1) => Math.max(min, Math.round(value * visualScale));
-  const cardRadius = scaleSize(22, 10);
+  const cardRadius = scaleSize(12, 8);
   const panelRadius = scaleSize(16, 8);
   const chipRadius = scaleSize(14, 7);
   const paletteDotSize = scaleSize(18, 10);
   const paletteGap = scaleSize(6, 4);
-  const btnClass = `${isSmallCard ? 'p-1 rounded-[10px]' : 'p-1.5 rounded-[12px]'} bg-white/80 dark:bg-stone-700/80 backdrop-blur-xl text-stone-500 dark:text-stone-300 hover:text-amber-500 hover:bg-white dark:hover:bg-stone-700 shadow-[0_2px_10px_rgba(0,0,0,0.08)] transition-all pointer-events-auto`;
+  const btnClass = `${isSmallCard ? 'p-1 rounded-[7px]' : 'p-1.5 rounded-[8px]'} border border-white/55 bg-white/88 dark:border-stone-600/70 dark:bg-stone-800/90 backdrop-blur-xl text-stone-500 dark:text-stone-300 hover:text-stone-950 hover:bg-white dark:hover:bg-stone-700 dark:hover:text-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] transition-all pointer-events-auto`;
   const iconClass = isSmallCard ? 'w-3 h-3' : 'w-3.5 h-3.5';
   const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
   const hasCompactAiTerms = item.type === 'image' && imageAnalysisTerms.length > 0;
@@ -614,6 +634,11 @@ function BufferItemCard({
   const videoPreviewSource = typeof rawVideoPreviewSource === 'string' && rawVideoPreviewSource.startsWith('data:image/') ? '' : rawVideoPreviewSource;
   const videoDisplayName = item.name || item.content || 'video';
   const isInlineMediaCard = item.type === 'image' || item.type === 'video';
+  const assetTypeLabel = getAssetTypeLabel(item);
+  const declaredOriginalSize = Number(item.width) > 0 && Number(item.height) > 0
+    ? { width: Math.round(Number(item.width)), height: Math.round(Number(item.height)) }
+    : null;
+  const assetOriginalSize = declaredOriginalSize || resolvedOriginalSize;
   const canPreviewVideoInline = item.type === 'video' && !!videoPreviewSource && isHovered && !isSelectMode;
   const cardStyle: React.CSSProperties = optimizeLargeList ? {
     contentVisibility: 'auto',
@@ -623,6 +648,40 @@ function BufferItemCard({
   const roundedTopStyle = { borderTopLeftRadius: cardRadius, borderTopRightRadius: cardRadius };
   const roundedBottomStyle = { borderBottomLeftRadius: cardRadius, borderBottomRightRadius: cardRadius };
   const showCollapsibleDetails = !isInlineMediaCard || isHovered || isEditingRemark;
+
+  useEffect(() => {
+    resolutionLoadKeyRef.current = '';
+    setResolvedOriginalSize(null);
+  }, [item.id]);
+
+  const resolveOriginalImageSize = () => {
+    if (item.type !== 'image' || declaredOriginalSize) return;
+    const originalSource = String(
+      (item.path ? convertFileSrc(item.path) : '')
+      || item.url
+      || item.content
+      || '',
+    ).trim();
+    if (!originalSource || originalSource === String(item.thumbnail || '').trim()) return;
+    const loadKey = `${item.id}|${originalSource}`;
+    if (resolutionLoadKeyRef.current === loadKey) return;
+    resolutionLoadKeyRef.current = loadKey;
+
+    const image = new window.Image();
+    image.decoding = 'async';
+    image.onload = () => {
+      const width = Math.round(image.naturalWidth || image.width || 0);
+      const height = Math.round(image.naturalHeight || image.height || 0);
+      if (width > 0 && height > 0) setResolvedOriginalSize({ width, height });
+      image.onload = null;
+      image.onerror = null;
+    };
+    image.onerror = () => {
+      image.onload = null;
+      image.onerror = null;
+    };
+    image.src = originalSource;
+  };
 
   useEffect(() => {
     const video = videoPreviewRef.current;
@@ -710,6 +769,7 @@ function BufferItemCard({
 
 return (
     <motion.div
+      data-asset-card="true"
       layout={!optimizeLargeList}
       transition={optimizeLargeList ? { duration: 0.12 } : { layout: { type: 'tween', duration: isResizing ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }, default: { type: 'tween', duration: 0.2, ease: [0.16, 1, 0.3, 1] } }}
       initial={optimizeLargeList ? false : { opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={optimizeLargeList ? undefined : { opacity: 0, scale: 0.98 }}
@@ -717,7 +777,7 @@ return (
       onPointerEnter={() => setIsHovered(true)} onPointerLeave={() => setIsHovered(false)}
       draggable={false}
       onDragStart={(e: any) => e.preventDefault()}
-      className={`group relative rounded-[22px] shadow-[0_8px_24px_rgba(0,0,0,0.06)] dark:shadow-black/20 transition-colors flex flex-col overflow-hidden ${optimizeLargeList ? 'bg-white dark:bg-stone-800' : 'bg-white/90 dark:bg-stone-800/90 backdrop-blur-xl will-change-transform'} ${isSelectMode && isSelected ? 'ring-2 ring-emerald-500 border-transparent' : 'border border-white/70 dark:border-stone-700/60 hover:shadow-[0_12px_34px_rgba(0,0,0,0.10)] hover:z-50'}`}
+      className={`group relative transition-[border-color,box-shadow] duration-200 flex flex-col overflow-hidden bg-white dark:bg-stone-900 ${optimizeLargeList ? '' : 'will-change-transform'} ${isSelectMode && isSelected ? 'ring-2 ring-blue-500 border-blue-500' : 'border border-stone-200/90 dark:border-stone-700 hover:border-stone-300 hover:shadow-[0_8px_20px_rgba(24,24,27,0.07)] dark:hover:border-stone-600 hover:z-50'}`}
       style={cardStyle}
     >
       {!isSelectMode && (
@@ -726,7 +786,7 @@ return (
         </div>
       )}
 
-      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/5 dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5 rounded-[22px]" style={{ borderRadius: cardRadius }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[6px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-emerald-500 border-emerald-500' : 'border-stone-300 dark:border-stone-500 bg-white/80 dark:bg-stone-800/80'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
+      {isSelectMode && <div className="absolute inset-0 z-50 bg-black/[0.03] dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5" style={{ borderRadius: cardRadius }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[5px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-stone-300 dark:border-stone-500 bg-white/90 dark:bg-stone-800/90'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
 
       {!isSelectMode && (
         <div data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-[80] flex flex-wrap justify-end gap-1.5 min-w-[160px] pointer-events-auto">
@@ -779,22 +839,24 @@ return (
       )}
 
       {item.type === 'image' && (
-        <div className="relative w-full">
+        <div data-asset-media="true" className="relative w-full overflow-hidden">
           <LazyCardImage
             src={imageCardSource}
             alt={imageDisplayName}
-            className="w-full object-cover cursor-pointer rounded-t-[22px] bg-stone-100 dark:bg-stone-900"
+            className="w-full object-cover cursor-pointer bg-stone-100 transition-transform duration-300 group-hover:scale-[1.015] dark:bg-stone-950"
             style={{ height: mediaHeight, ...roundedTopStyle }}
             title="点击预览"
             onVisible={() => {
               onEnsureThumbnail?.(item);
+              resolveOriginalImageSize();
             }}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource, item, imagePreviewPlaceholderSource); }}
           />
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] rounded-t-[22px] bg-gradient-to-b from-black/55 via-black/24 to-transparent px-3.5 pb-7 pt-3" style={roundedTopStyle}>
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] bg-gradient-to-b from-black/50 via-black/16 to-transparent px-3 pb-7 pt-2.5" style={roundedTopStyle}>
             <div className="min-w-0 pr-12">
               <div
-                className="truncate text-[12px] font-semibold leading-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.75)]"
+                data-asset-title="true"
+                className="truncate text-[11px] font-medium leading-4 text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]"
                 title={imageDisplayName}
               >
                 {imageDisplayName}
@@ -806,6 +868,7 @@ return (
 
       {item.type === 'video' && (
         <div
+          data-asset-media="true"
           className="relative w-full group/video cursor-pointer bg-stone-900 rounded-t-[22px] overflow-hidden"
           style={{ height: mediaHeight, ...roundedTopStyle }}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onVideoClick?.(item); }}
@@ -831,10 +894,11 @@ return (
               className="w-full h-full object-cover opacity-80 group-hover/video:opacity-100 transition-opacity"
             />
           ) : <div className="w-full h-full bg-gradient-to-br from-stone-800 to-stone-900 flex items-center justify-center"><Film className="w-12 h-12 text-stone-700/60" /></div>}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] rounded-t-[22px] bg-gradient-to-b from-black/55 via-black/24 to-transparent px-3.5 pb-7 pt-3" style={roundedTopStyle}>
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] bg-gradient-to-b from-black/50 via-black/16 to-transparent px-3 pb-7 pt-2.5" style={roundedTopStyle}>
             <div className="min-w-0 pr-12">
               <div
-                className="truncate text-[12px] font-semibold leading-4 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.75)]"
+                data-asset-title="true"
+                className="truncate text-[11px] font-medium leading-4 text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]"
                 title={videoDisplayName}
               >
                 {videoDisplayName}
@@ -848,6 +912,14 @@ return (
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {isInlineMediaCard && (
+        <div data-asset-metadata="true" className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-stone-200/80 bg-white px-3 text-[11px] text-stone-500 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400">
+          <span className="min-w-0 truncate font-medium tabular-nums">
+            {assetTypeLabel}{assetOriginalSize ? ` · ${assetOriginalSize.width} × ${assetOriginalSize.height}` : ''}
+          </span>
         </div>
       )}
 
@@ -892,7 +964,7 @@ return (
                     }
                   }}
                   placeholder="编辑文本内容..."
-                  className="min-h-[96px] w-full resize-y rounded-[16px] border border-emerald-200/80 dark:border-emerald-800/55 bg-white/85 dark:bg-stone-900/45 p-2.5 text-xs leading-5 text-stone-700 dark:text-stone-200 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/15"
+                  className="min-h-[96px] w-full resize-y rounded-[14px] border border-stone-200 bg-stone-50/80 p-2.5 text-xs leading-5 text-stone-700 outline-none transition-colors placeholder:text-stone-500 focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-500/10 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200 dark:placeholder:text-stone-400 dark:focus:border-blue-500/55 dark:focus:bg-stone-900"
                 />
                 <div className="text-[10px] text-stone-400 dark:text-stone-500">Ctrl + Enter 保存，Esc 取消；失焦自动保存</div>
               </div>
@@ -909,7 +981,7 @@ return (
             ) : (
               <p className={`text-xs text-stone-600 dark:text-stone-300 leading-relaxed ${isExpanded ? 'whitespace-pre-wrap' : 'line-clamp-5'}`}>{item.content}</p>
             )}
-            {!isEditingText && !isUrlText && isLongText && <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsExpanded(!isExpanded); }} className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1.5 font-medium hover:underline z-10 relative self-start shrink-0 bg-white/90 dark:bg-stone-800/90 w-full text-left pt-1 rounded-[10px]">{isExpanded ? '收起全文' : '展开阅读全文...'}</button>}
+            {!isEditingText && !isUrlText && isLongText && <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsExpanded(!isExpanded); }} className="relative z-10 mt-1.5 inline-flex w-fit shrink-0 self-start rounded-[8px] px-2 py-1 text-left text-[11px] font-semibold text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-400/10 dark:hover:text-blue-200">{isExpanded ? '收起全文' : '展开阅读全文...'}</button>}
             </div>
           )}
         </div>
@@ -984,7 +1056,7 @@ return (
                 }}
                 placeholder="新增标签备注..."
                 rows={3}
-                className="min-h-[72px] max-h-40 w-full resize-y whitespace-pre-wrap break-words text-xs leading-5 bg-amber-50/80 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/50 rounded-[14px] p-2 outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/50 text-amber-900 dark:text-amber-100 placeholder:text-amber-400/70 dark:placeholder:text-amber-500/50 transition-all shadow-inner"
+                className="min-h-[72px] max-h-40 w-full resize-y whitespace-pre-wrap break-words rounded-[14px] border border-stone-200 bg-stone-50/85 p-2 text-xs leading-5 text-stone-800 outline-none transition-colors placeholder:text-stone-500 focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-500/10 dark:border-stone-700 dark:bg-stone-900/60 dark:text-stone-100 dark:placeholder:text-stone-400 dark:focus:border-blue-500/55 dark:focus:bg-stone-900"
                 style={{ borderRadius: chipRadius }}
               />
             </div>
@@ -1003,7 +1075,7 @@ return (
                 {shouldShowRemarkToggle && (
                   <button
                     type="button"
-                    className="absolute right-0 top-0 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-amber-100 bg-amber-50/95 text-amber-600 shadow-sm transition-colors hover:bg-amber-100 dark:border-amber-800/60 dark:bg-amber-900/80 dark:text-amber-300 dark:hover:bg-amber-900"
+                    className="absolute right-0 top-0 z-10 flex h-6 w-6 items-center justify-center rounded-[8px] border border-stone-200 bg-white text-stone-500 shadow-none transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400 dark:hover:border-blue-500/35 dark:hover:bg-blue-400/10 dark:hover:text-blue-300"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1028,8 +1100,8 @@ return (
                       type="button"
                       className={`inline-flex max-w-full min-w-0 items-start gap-1.5 rounded-[14px] border px-2.5 py-1.5 text-left shadow-sm transition-colors ${
                         editingRemarkIndex === index && isEditingRemark
-                          ? 'border-amber-300 bg-amber-100 dark:border-amber-600/70 dark:bg-amber-900/45'
-                          : 'border-amber-100 bg-amber-50 hover:bg-amber-100 dark:border-amber-800/50 dark:bg-amber-900/30 dark:hover:bg-amber-900/50'
+                          ? 'border-blue-300 bg-blue-50 dark:border-blue-500/55 dark:bg-blue-400/12'
+                          : 'border-stone-200 bg-stone-50 hover:border-blue-200 hover:bg-blue-50/70 dark:border-stone-700 dark:bg-stone-800/70 dark:hover:border-blue-500/35 dark:hover:bg-blue-400/10'
                       }`}
                       style={{ borderRadius: chipRadius }}
                       onClick={(e) => {
@@ -1042,12 +1114,12 @@ return (
                       {isUrlRemark ? (
                         <Link className="mt-0.5 w-3 h-3 text-sky-500 dark:text-sky-300 shrink-0" />
                       ) : (
-                        <Tag className="mt-0.5 w-3 h-3 text-amber-500 dark:text-amber-400 shrink-0" />
+                        <Tag className="mt-0.5 h-3 w-3 shrink-0 text-blue-500 dark:text-blue-300" />
                       )}
                       <span className={`min-w-0 max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[11px] font-medium leading-4 ${
                         isUrlRemark
                           ? 'text-sky-700 underline-offset-2 hover:underline dark:text-sky-300'
-                          : 'text-amber-700 dark:text-amber-300'
+                          : 'text-stone-700 dark:text-stone-200'
                       }`}>{remark}</span>
                     </button>
                   );

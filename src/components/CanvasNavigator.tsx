@@ -72,11 +72,12 @@ export function CanvasNavigator({
       <button
         type="button"
         data-no-drag="true"
+        data-canvas-navigator-toggle="true"
         onClick={onToggle}
-        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border shadow-[0_8px_20px_rgba(15,23,42,0.10)] backdrop-blur-2xl transition-[transform,background-color,border-color] duration-200 hover:-translate-y-px hover:border-blue-300 hover:bg-blue-50/90 dark:border-white/10 dark:bg-stone-950/70 dark:text-blue-300 dark:hover:border-blue-400/30 dark:hover:bg-stone-900/90 ${
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border shadow-[0_2px_8px_rgba(24,24,27,0.06)] transition-colors duration-150 ${
           visible
-            ? 'border-blue-300 bg-blue-50/95 text-blue-600 ring-2 ring-blue-100/80 dark:border-blue-400/35 dark:bg-blue-400/12 dark:text-blue-200 dark:ring-blue-400/10'
-            : 'border-blue-200/80 bg-white/88 text-blue-500'
+            ? 'border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-950'
+            : 'border-stone-200 bg-white text-stone-500 hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400 dark:hover:border-stone-600 dark:hover:bg-stone-800 dark:hover:text-white'
         }`}
         title={visible ? '隐藏导航' : '显示导航'}
       >
@@ -85,14 +86,15 @@ export function CanvasNavigator({
       {visible && (
         <div
           data-no-drag="true"
+          data-canvas-navigator-panel="true"
           ref={panelRef}
-          className="absolute bottom-full right-0 z-[100070] mb-2 w-[220px] rounded-[20px] border border-white/60 bg-white/78 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-600/80 dark:bg-stone-900/88 dark:text-stone-200"
+          className="absolute bottom-full right-0 z-[100070] mb-2 w-[220px] rounded-[14px] border border-stone-200 bg-white p-2.5 text-stone-700 shadow-[0_10px_28px_rgba(24,24,27,0.10)] dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
           onPointerDown={event => event.stopPropagation()}
           onMouseDown={event => event.stopPropagation()}
         >
           <div className="flex items-center justify-between gap-2 px-0.5">
             <div className="flex items-center gap-1.5 text-[11px] font-black">
-              <Compass className="h-3.5 w-3.5 text-blue-500 dark:text-blue-300" />
+              <Compass className="h-3.5 w-3.5 text-stone-500 dark:text-stone-400" />
               导航
             </div>
             <div className="flex items-center gap-1">
@@ -110,7 +112,7 @@ export function CanvasNavigator({
             </div>
           </div>
           <div
-            className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[14px] border border-blue-100/80 bg-blue-50/45 dark:border-stone-700/70 dark:bg-stone-950/45"
+            className="relative mt-2 h-[116px] w-full overflow-hidden rounded-[10px] border border-stone-200 bg-stone-100 dark:border-stone-700 dark:bg-stone-950"
             title="点击缩略图定位"
           >
             {items.length === 0 ? (
@@ -138,7 +140,7 @@ export function CanvasNavigator({
                   type="button"
                   className={`absolute overflow-hidden rounded-[6px] border bg-white shadow-sm transition-transform hover:scale-110 dark:bg-stone-800 ${
                     selected
-                      ? 'border-blue-500 ring-2 ring-blue-300/70'
+                      ? 'border-stone-900 ring-2 ring-stone-400/35 dark:border-stone-100'
                       : 'border-white/85 dark:border-stone-600/80'
                   }`}
                   style={{ left, top, width, height }}
@@ -161,9 +163,9 @@ export function CanvasNavigator({
                   ) : (
                     <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
                       item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
-                        ? 'bg-violet-100 text-violet-600 dark:bg-violet-950/70 dark:text-violet-300'
+                        ? 'bg-stone-200 text-stone-600 dark:bg-stone-800 dark:text-stone-300'
                         : item.item.type === 'image'
-                          ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950/70 dark:text-cyan-300'
+                          ? 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'
                           : 'bg-white/70 text-stone-500 dark:bg-stone-800 dark:text-stone-300'
                     }`}>
                       <span className="truncate">{item.item.type === 'video' ? '视频' : label}</span>
@@ -177,7 +179,7 @@ export function CanvasNavigator({
             <button
               type="button"
               onClick={onZoomOut}
-              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
               title="缩小"
             >
               <Minimize2 className="h-3.5 w-3.5" />
@@ -185,7 +187,7 @@ export function CanvasNavigator({
             <button
               type="button"
               onClick={onResetZoom}
-              className="h-7 min-w-[58px] rounded-[11px] bg-stone-100 px-2 font-mono text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="h-7 min-w-[58px] rounded-[8px] border border-stone-200 bg-white px-2 font-mono text-[10px] font-semibold text-stone-600 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
               title="重置缩放"
             >
               {zoomPercent}%
@@ -193,7 +195,7 @@ export function CanvasNavigator({
             <button
               type="button"
               onClick={onFit}
-              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-cyan-100 text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/38 dark:text-cyan-300 dark:hover:bg-cyan-900/55"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white"
               title="适配全部 / 选中"
             >
               <LayoutGrid className="h-3.5 w-3.5" />
@@ -201,7 +203,7 @@ export function CanvasNavigator({
             <button
               type="button"
               onClick={onZoomIn}
-              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-stone-100 text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] border border-stone-200 bg-white text-stone-600 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
               title="放大"
             >
               <Maximize2 className="h-3.5 w-3.5" />
@@ -209,7 +211,7 @@ export function CanvasNavigator({
             <button
               type="button"
               onClick={onLocatePrimary}
-              className="flex h-7 w-7 items-center justify-center rounded-[11px] bg-blue-100 text-blue-700 transition-colors hover:bg-blue-200 dark:bg-blue-900/38 dark:text-blue-300 dark:hover:bg-blue-900/55"
+              className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-stone-900 text-white transition-colors hover:bg-stone-700 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-white"
               title="定位最近图片"
             >
               <Compass className="h-3.5 w-3.5" />
