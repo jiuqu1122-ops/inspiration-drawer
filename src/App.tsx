@@ -37237,9 +37237,9 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>画布中直接拖入的参考图片和视频，现在只保留在画布，不再自动加入素材抽屉或后台分析。</p>
-                  <p className="mt-1">新版会自动整理此前误入抽屉的参考素材，不影响画布节点与本地文件。</p>
-                  <p className="mt-1">图片分析进度、分析图标和“展开阅读全文”操作已统一为黑色视觉样式。</p>
+                  <p>优化图片保存逻辑：画布参考图只保留在画布，需要时仍可主动保存到素材抽屉。</p>
+                  <p className="mt-1">素材卡片按图片或视频的实际比例显示，并自动补齐瀑布流空位。</p>
+                  <p className="mt-1">滑动到底部会自动加载更多素材，无需再手动点击。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -37513,14 +37513,11 @@ useEffect(() => {
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.16</p>
-                <p>画布中直接拖入的参考图片和视频不再进入素材抽屉或后台分析。</p>
-                <p>启动新版后会自动隐藏此前误入抽屉的画布参考素材，同时保留画布内容与本地文件。</p>
-                <p>修复 6.0.15 升级后画布列表可能为空的问题，原有画布会在存储迁移完成后恢复。</p>
-                <p>修复失败任务重复写库导致的抽屉、画布和打字卡顿；用户操作期间会暂停启动新的后台分析任务。</p>
-                <p>软件重启后会自动重试未成功分析的图片，并修复旧缩略图影响识别准确度的问题。</p>
-                <p>旧素材中重复嵌入的原图会自动安全落盘，降低大图库分页加载开销。</p>
-                <p>修复最右侧素材卡片被裁切，以及窄窗口下画布顶部按钮文字纵向换行的问题。</p>
-                <p>图片分析进度和“展开阅读全文”操作统一为黑色视觉样式。</p>
+                <p>优化图片保存逻辑：画布中直接拖入的参考图片和视频只保留在画布，不再自动加入素材抽屉；需要时仍可主动保存。</p>
+                <p>新版会自动整理此前误入抽屉的画布参考素材，同时保留画布内容与本地文件。</p>
+                <p>素材卡片改为按图片或视频的实际比例显示，瀑布流会自动补齐不同高度卡片之间的空位。</p>
+                <p>滑动到底部会自动加载更多素材，无需手动点击“加载更多”。</p>
+                <p>同时修复卡片边缘裁切、旧画布恢复以及大图库操作卡顿等稳定性问题。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
