@@ -8720,7 +8720,7 @@ fn save_dropped_file(
     save_dropped_data_url_impl(&app_handle, &file_name, &data_url)
 }
 
-fn save_dropped_data_url_impl(
+pub(crate) fn save_dropped_data_url_impl(
     app_handle: &tauri::AppHandle,
     file_name: &str,
     data_url: &str,
@@ -9800,6 +9800,46 @@ fn normalize_thumbnail_size(size: Option<u32>) -> u32 {
     }
 }
 
+#[cfg(windows)]
+struct BackgroundImageThreadPriorityGuard {
+    previous: Option<i32>,
+}
+
+#[cfg(windows)]
+impl BackgroundImageThreadPriorityGuard {
+    fn lower_current_thread() -> Self {
+        use winapi::um::processthreadsapi::{
+            GetCurrentThread, GetThreadPriority, SetThreadPriority,
+        };
+        use winapi::um::winbase::{
+            THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_ERROR_RETURN,
+        };
+
+        unsafe {
+            let thread = GetCurrentThread();
+            let previous = GetThreadPriority(thread);
+            let lowered = SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL as i32) != 0;
+            Self {
+                previous: (lowered && previous != THREAD_PRIORITY_ERROR_RETURN as i32)
+                    .then_some(previous),
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BackgroundImageThreadPriorityGuard {
+    fn drop(&mut self) {
+        use winapi::um::processthreadsapi::{GetCurrentThread, SetThreadPriority};
+
+        if let Some(previous) = self.previous {
+            unsafe {
+                SetThreadPriority(GetCurrentThread(), previous);
+            }
+        }
+    }
+}
+
 fn save_thumbnail_jpeg(
     image: &screenshots::image::DynamicImage,
     path: &Path,
@@ -9926,6 +9966,8 @@ async fn ensure_image_thumbnail_file(
     size: Option<u32>,
 ) -> Result<ImageThumbnailFileResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        let _priority_guard = BackgroundImageThreadPriorityGuard::lower_current_thread();
         ensure_image_thumbnail_file_impl(app_handle, path, size)
     })
     .await

@@ -62,6 +62,8 @@ pub struct AssetUpdatePatch {
     pub rating: Option<i64>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub clear_inspiration_analysis_failure: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

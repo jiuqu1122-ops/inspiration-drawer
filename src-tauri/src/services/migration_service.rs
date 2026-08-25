@@ -16,6 +16,7 @@ use crate::repositories::json_asset_repository::JsonAssetRepository;
 const MIGRATION_ID_JSON_TO_SQLITE: &str = "json-to-sqlite-v1";
 const MIGRATION_ID_JSON_RECONCILE: &str = "json-to-sqlite-v2-reconcile";
 const MIGRATION_ID_CANVAS_ASSET_VISIBILITY: &str = "canvas-only-asset-visibility-v2";
+const MIGRATION_ID_EMBEDDED_ASSET_SOURCES: &str = "embedded-asset-sources-to-files-v1";
 const MIGRATION_BATCH_SIZE: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -132,6 +133,8 @@ pub fn ensure_sqlite_asset_library(
     let reconciliation_completed = migration_succeeded(&conn, MIGRATION_ID_JSON_RECONCILE)?;
     let visibility_repair_completed =
         migration_succeeded(&conn, MIGRATION_ID_CANVAS_ASSET_VISIBILITY)?;
+    let embedded_source_repair_completed =
+        migration_succeeded(&conn, MIGRATION_ID_EMBEDDED_ASSET_SOURCES)?;
 
     if !visibility_repair_completed {
         let json_repo = JsonAssetRepository::new(app_handle.clone());
@@ -163,6 +166,36 @@ pub fn ensure_sqlite_asset_library(
             Err(error) => {
                 eprintln!(
                     "[DrawerMigration] canvas-only visibility repair will retry: {}",
+                    error
+                );
+            }
+        }
+    }
+
+    if !embedded_source_repair_completed {
+        let started_at = crate::current_time_millis();
+        match repair_embedded_asset_sources(&app_handle, &conn) {
+            Ok(repaired) => {
+                let finished_at = crate::current_time_millis();
+                upsert_named_migration_row(
+                    &conn,
+                    MIGRATION_ID_EMBEDDED_ASSET_SOURCES,
+                    5,
+                    "Move legacy embedded asset sources to files",
+                    "success",
+                    repaired as i64,
+                    repaired as i64,
+                    repaired as i64,
+                    0,
+                    None,
+                    None,
+                    started_at,
+                    Some(finished_at),
+                )?;
+            }
+            Err(error) => {
+                eprintln!(
+                    "[DrawerMigration] embedded asset source repair will retry: {}",
                     error
                 );
             }
@@ -220,6 +253,86 @@ pub fn ensure_sqlite_asset_library(
     drop(conn);
     set_json_mode_forced(&app_handle, false)?;
     get_migration_status(app_handle)
+}
+
+fn is_embedded_image_source(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|source| source.starts_with("data:image/"))
+}
+
+fn materialize_embedded_asset_source<F>(item: &mut Value, mut save: F) -> Result<bool, String>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
+    let source = [item.get("path"), item.get("url")]
+        .into_iter()
+        .flatten()
+        .find(|value| is_embedded_image_source(Some(value)))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(source) = source else {
+        return Ok(false);
+    };
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("embedded_image.png")
+        .to_string();
+    let local_path = save(&name, &source)?;
+    let Some(object) = item.as_object_mut() else {
+        return Err("asset metadata is not an object".to_string());
+    };
+    object.insert("path".to_string(), Value::String(local_path));
+    for key in ["url", "sourceUrl", "originalUrl"] {
+        if is_embedded_image_source(object.get(key)) {
+            object.remove(key);
+        }
+    }
+    Ok(true)
+}
+
+fn repair_embedded_asset_sources(
+    app_handle: &tauri::AppHandle,
+    conn: &Connection,
+) -> Result<usize, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT metadata_json
+            FROM assets
+            WHERE deleted_at IS NULL
+              AND file_type = 'image'
+              AND (
+                json_extract(metadata_json, '$.path') LIKE 'data:image/%'
+                OR json_extract(metadata_json, '$.url') LIKE 'data:image/%'
+              )
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    let metadata_rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    drop(stmt);
+
+    let mut repaired = 0_usize;
+    for metadata in metadata_rows {
+        let mut item = serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())?;
+        let changed = materialize_embedded_asset_source(&mut item, |name, data_url| {
+            crate::save_dropped_data_url_impl(app_handle, name, data_url)
+        })?;
+        if changed {
+            insert_asset(conn, &item, crate::current_time_millis())?;
+            repaired += 1;
+        }
+    }
+    Ok(repaired)
 }
 
 fn repair_canvas_only_asset_visibility(
@@ -1359,6 +1472,44 @@ fn file_name_from_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_image_sources_are_replaced_by_a_local_file_without_touching_provenance_urls() {
+        let data_url = "data:image/png;base64,ZmFrZQ==";
+        let mut item = json!({
+            "id": "embedded",
+            "type": "image",
+            "name": "reference.png",
+            "path": data_url,
+            "url": data_url,
+            "sourceUrl": "https://example.com/reference",
+            "originalUrl": data_url,
+            "thumbnail": "data:image/jpeg;base64,dGh1bWI="
+        });
+
+        let changed = materialize_embedded_asset_source(&mut item, |name, source| {
+            assert_eq!(name, "reference.png");
+            assert_eq!(source, data_url);
+            Ok("C:\\Inspiration Drawer\\uploads\\reference.png".to_string())
+        })
+        .expect("materialize embedded source");
+
+        assert!(changed);
+        assert_eq!(
+            item.get("path").and_then(Value::as_str),
+            Some("C:\\Inspiration Drawer\\uploads\\reference.png")
+        );
+        assert!(item.get("url").is_none());
+        assert_eq!(
+            item.get("sourceUrl").and_then(Value::as_str),
+            Some("https://example.com/reference")
+        );
+        assert!(item.get("originalUrl").is_none());
+        assert_eq!(
+            item.get("thumbnail").and_then(Value::as_str),
+            Some("data:image/jpeg;base64,dGh1bWI=")
+        );
+    }
 
     #[test]
     fn reconciliation_restores_only_missing_legacy_assets_with_folder_links() {

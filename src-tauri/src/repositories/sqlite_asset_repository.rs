@@ -474,6 +474,11 @@ impl SqliteAssetRepository {
                 }
             }
         }
+        if patch.clear_inspiration_analysis_failure {
+            if let Some(target) = asset.as_object_mut() {
+                target.remove("inspirationAnalysisFailure");
+            }
+        }
         let now = crate::current_time_millis();
         asset["updatedAt"] = Value::Number(now.into());
         crate::services::migration_service::insert_asset(conn, &asset, now)?;
@@ -1286,6 +1291,38 @@ mod tests {
                 .expect("aggregate analysis counts"),
             json!({ "total": 5, "analyzed": 2, "waitingRetry": 1, "skipped": 1 })
         );
+
+        let requeued = repo
+            .update_assets_batch(vec![AssetBatchUpdate {
+                ids: vec!["retry".to_string(), "skipped".to_string()],
+                patch: AssetUpdatePatch {
+                    clear_inspiration_analysis_failure: true,
+                    ..Default::default()
+                },
+            }])
+            .expect("requeue failed analysis rows");
+        assert_eq!(requeued.len(), 2);
+        assert!(requeued.iter().all(|item| {
+            item.get("inspirationAnalysisFailure").is_none()
+        }));
+        for status in ["retryable", "skipped"] {
+            let rows = repo
+                .list_assets(AssetListOptions {
+                    file_type: Some("image".to_string()),
+                    inspiration_status: Some(status.to_string()),
+                    ..Default::default()
+                })
+                .expect("query cleared analysis state");
+            assert!(rows.is_empty(), "{status} rows should have been requeued");
+        }
+        let pending = repo
+            .list_assets(AssetListOptions {
+                file_type: Some("image".to_string()),
+                inspiration_status: Some("unprocessed".to_string()),
+                ..Default::default()
+            })
+            .expect("query requeued analysis rows");
+        assert_eq!(pending.len(), 3);
     }
 
     #[test]

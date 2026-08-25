@@ -637,6 +637,7 @@ body,
 
 .drawer-theme [data-canvas-header-tools="true"] > button {
   display: inline-flex;
+  flex: 0 0 auto;
   height: 36px !important;
   min-width: 36px !important;
   align-items: center;
@@ -650,6 +651,7 @@ body,
   box-shadow: none !important;
   font-size: 12px !important;
   font-weight: 550 !important;
+  white-space: nowrap;
   transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 120ms ease;
 }
 
@@ -1453,6 +1455,38 @@ body,
 
   .drawer-theme [data-drawer-content="true"] {
     padding: 16px !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .drawer-theme [data-drawer-header="true"][data-canvas-header="true"] {
+    padding-inline: 12px !important;
+    gap: 8px !important;
+  }
+
+  .drawer-theme [data-canvas-header="true"] [data-drawer-title="true"] {
+    display: none;
+  }
+
+  .drawer-theme [data-canvas-header-tools="true"] {
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .drawer-theme [data-canvas-header-search="true"] {
+    flex: 1 1 132px;
+    width: auto !important;
+    min-width: 96px;
+  }
+
+  .drawer-theme [data-canvas-header-label="true"] {
+    display: none;
+  }
+
+  .drawer-theme [data-canvas-header-action="connect"],
+  .drawer-theme [data-canvas-header-action="exit"] {
+    width: 36px !important;
+    padding-inline: 0 !important;
   }
 }
 

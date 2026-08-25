@@ -922,6 +922,7 @@ const TABS: { id: DrawerTabType; label: string; icon: any }[] = [
 const CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY = 'drawer_calendar_notifications_enabled';
 const SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY = 'drawer_screenshot_auto_pin_note';
 const AUTO_INSPIRATION_ANALYSIS_ENABLED = true;
+const AUTO_INSPIRATION_ANALYSIS_UI_IDLE_MS = 1200;
 const AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY = 'drawer_ai_analysis_note_payload_fix_v2';
 const AI_GENERATED_IMAGE_PROMPT_NOTE_CLEANUP_KEY = 'drawer_ai_generated_prompt_note_cleanup_v1';
 const AUTO_INSPIRATION_ANALYSIS_RETRY_MIGRATION_KEY = 'drawer_ai_analysis_retry_migration_v3';
@@ -1102,6 +1103,7 @@ function MainApp() {
   const autoInspirationAnalysisRunningRef = useRef(false);
   const autoInspirationAnalysisStartupRequeueRef = useRef(false);
   const autoInspirationAnalysisRetryTimersRef = useRef(new Set<number>());
+  const autoInspirationAnalysisLastUserActivityAtRef = useRef(Date.now());
   const agentModelRef = useRef('unmind-agent');
   const foldersRef = useRef<Folder[]>([]);
   const hasRestoredNonEmptyFoldersRef = useRef(false);
@@ -2054,6 +2056,7 @@ function MainApp() {
     void (async () => {
       const requeuedItems: BufferItem[] = [];
       for (const inspirationStatus of ['retryable', 'skipped'] as const) {
+        const processedIds = new Set<string>();
         while (true) {
           const failedItems = await listAssets({
             file_type: 'image',
@@ -2063,12 +2066,18 @@ function MainApp() {
             limit: ASSET_PAGE_SIZE,
           });
           if (failedItems.length === 0) break;
-          const batch = failedItems.map(item => requeueInspirationAnalysisItemAfterRestart(item));
-          await updateAssetsBatch(batch.map(item => ({
-            ids: [item.id],
-            patch: { metadata: item },
-          })));
-          requeuedItems.push(...batch);
+          const ids = failedItems
+            .map(item => item.id)
+            .filter(id => !processedIds.has(id));
+          if (ids.length === 0) {
+            throw new Error(`图片分析重试队列未能清除 ${inspirationStatus} 状态`);
+          }
+          ids.forEach(id => processedIds.add(id));
+          const updated = await updateAssetsBatch([{
+            ids,
+            patch: { clear_inspiration_analysis_failure: true },
+          }]);
+          requeuedItems.push(...updated);
         }
       }
       applyRequeuedItems(requeuedItems);
@@ -23730,7 +23739,10 @@ useEffect(() => {
       });
     }
     if (assetStorageMode === 'sqlite') {
-      await updateAsset(item.id, { metadata: updatedItem });
+      await updateAsset(item.id, {
+        metadata: updatedItem,
+        clear_inspiration_analysis_failure: true,
+      });
     }
     return profile;
   };
@@ -23815,6 +23827,22 @@ useEffect(() => {
       ));
     });
   };
+
+  useEffect(() => {
+    const recordUserActivity = () => {
+      autoInspirationAnalysisLastUserActivityAtRef.current = Date.now();
+    };
+    window.addEventListener('pointerdown', recordUserActivity, { passive: true });
+    window.addEventListener('pointermove', recordUserActivity, { passive: true });
+    window.addEventListener('keydown', recordUserActivity);
+    window.addEventListener('wheel', recordUserActivity, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', recordUserActivity);
+      window.removeEventListener('pointermove', recordUserActivity);
+      window.removeEventListener('keydown', recordUserActivity);
+      window.removeEventListener('wheel', recordUserActivity);
+    };
+  }, []);
 
   const startDrawerInspirationAnalysisBatch = (input: {
     itemIds: string[];
@@ -23939,6 +23967,16 @@ useEffect(() => {
       || isResizingState.current
       || autoInspirationAnalysisRunningRef.current
     ) return;
+
+    const idleFor = Date.now() - autoInspirationAnalysisLastUserActivityAtRef.current;
+    if (idleFor < AUTO_INSPIRATION_ANALYSIS_UI_IDLE_MS) {
+      const timer = window.setTimeout(() => {
+        autoInspirationAnalysisRetryTimersRef.current.delete(timer);
+        setAutoAiAnalysisRetryTick(current => current + 1);
+      }, AUTO_INSPIRATION_ANALYSIS_UI_IDLE_MS - idleFor + 50);
+      autoInspirationAnalysisRetryTimersRef.current.add(timer);
+      return;
+    }
 
     if (assetStorageMode === 'sqlite') {
       autoInspirationAnalysisRunningRef.current = true;
@@ -29764,7 +29802,9 @@ useEffect(() => {
                               className="flex h-9 items-center gap-1.5 rounded-[9px] border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 transition-colors hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white"
                               title="把当前多选的图片/文字连接到 AI 或文字节点"
                             >
-                              <Link className="w-3.5 h-3.5" /> 连接 {selectedCanvasConnectableCount}
+                              <Link className="w-3.5 h-3.5 shrink-0" />
+                              <span data-canvas-header-label="true">连接</span>
+                              <span>{selectedCanvasConnectableCount}</span>
                             </button>
                           )}
                           <button
@@ -29773,7 +29813,8 @@ useEffect(() => {
                             className="flex h-9 items-center gap-1.5 rounded-[9px] border border-stone-200 bg-stone-100 px-3 text-xs font-medium text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-200 hover:text-stone-950 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 dark:hover:text-white"
                             title="退出无限画布"
                           >
-                            <X className="w-3.5 h-3.5" /> 退出画布
+                            <X className="w-3.5 h-3.5 shrink-0" />
+                            <span data-canvas-header-label="true">退出画布</span>
                           </button>
                           </>
                         )}
@@ -37475,9 +37516,10 @@ useEffect(() => {
                 <p>画布中直接拖入的参考图片和视频不再进入素材抽屉或后台分析。</p>
                 <p>启动新版后会自动隐藏此前误入抽屉的画布参考素材，同时保留画布内容与本地文件。</p>
                 <p>修复 6.0.15 升级后画布列表可能为空的问题，原有画布会在存储迁移完成后恢复。</p>
-                <p>修复大图库分析期间抽屉、画布和打字卡顿，并降低后台分析的重复计算与数据库写入。</p>
+                <p>修复失败任务重复写库导致的抽屉、画布和打字卡顿；用户操作期间会暂停启动新的后台分析任务。</p>
                 <p>软件重启后会自动重试未成功分析的图片，并修复旧缩略图影响识别准确度的问题。</p>
-                <p>修复最右侧素材卡片和操作按钮被窗口边缘裁切的问题。</p>
+                <p>旧素材中重复嵌入的原图会自动安全落盘，降低大图库分页加载开销。</p>
+                <p>修复最右侧素材卡片被裁切，以及窄窗口下画布顶部按钮文字纵向换行的问题。</p>
                 <p>图片分析进度和“展开阅读全文”操作统一为黑色视觉样式。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>

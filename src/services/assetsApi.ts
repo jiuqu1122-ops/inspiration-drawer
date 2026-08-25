@@ -33,6 +33,7 @@ export type AssetUpdatePatch = {
   note?: string;
   rating?: number;
   metadata?: Record<string, unknown>;
+  clear_inspiration_analysis_failure?: boolean;
 };
 
 export type AssetBatchUpdate = {
