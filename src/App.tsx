@@ -29752,12 +29752,13 @@ useEffect(() => {
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.15, ease: 'easeOut' }}
-                      className="shrink-0 overflow-hidden border-b border-violet-100/80 bg-violet-50/45 px-3 py-1.5 dark:border-violet-400/15 dark:bg-violet-400/8"
+                      data-drawer-analysis-progress="true"
+                      className="shrink-0 overflow-hidden border-b border-stone-200/80 bg-stone-50/80 px-3 py-1.5 dark:border-white/8 dark:bg-stone-900/72"
                       onMouseDown={event => event.stopPropagation()}
                     >
-                      <div className="flex items-center justify-between gap-3 text-[10px] font-semibold text-violet-700 dark:text-violet-200">
-                        <span className="flex min-w-0 items-center gap-1.5"><Sparkles className="h-3 w-3 shrink-0" /> 正在分析抽屉图片</span>
-                        <span className="shrink-0 tabular-nums">
+                      <div className="flex items-center justify-between gap-3 text-[10px] font-semibold text-stone-600 dark:text-stone-300">
+                        <span className="flex min-w-0 items-center gap-1.5"><Sparkles className="h-3 w-3 shrink-0 text-black dark:text-white" /> 正在分析抽屉图片</span>
+                        <span className="shrink-0 tabular-nums text-stone-500 dark:text-stone-400">
                           已完成 {drawerAiAnalysisSummary.analyzed} / {drawerAiAnalysisSummary.total}
                           {drawerAiAnalysisSummary.waitingRetry > 0 ? ` · 待重试 ${drawerAiAnalysisSummary.waitingRetry}` : ''}
                           {drawerAiAnalysisSummary.skipped > 0 ? ` · 跳过 ${drawerAiAnalysisSummary.skipped}` : ''}
@@ -29769,12 +29770,12 @@ useEffect(() => {
                         aria-valuemin={0}
                         aria-valuemax={drawerAiAnalysisSummary.total}
                         aria-valuenow={drawerAiAnalysisSummary.analyzed + drawerAiAnalysisSummary.skipped}
-                        className="mt-1 h-1 overflow-hidden rounded-full bg-violet-200/75 dark:bg-violet-300/20"
+                        className="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-200/90 dark:bg-white/10"
                       >
                         <motion.div
-                          className="h-full rounded-full bg-violet-500"
+                          className="h-full rounded-full bg-black dark:bg-white"
                           animate={{ width: `${Math.max(2, Math.min(100, ((drawerAiAnalysisSummary.analyzed + drawerAiAnalysisSummary.skipped) / Math.max(1, drawerAiAnalysisSummary.total)) * 100))}%` }}
-                          transition={{ duration: 0.2, ease: 'easeOut' }}
+                          transition={{ duration: 0.3, ease: 'easeOut' }}
                         />
                       </div>
                     </motion.div>
@@ -37073,7 +37074,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.15'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.16'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -37086,9 +37087,9 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>工作流新增通用可替换内部图片槽位，支持单图、多图、必填和数量限制。</p>
-                  <p className="mt-1">可从抽屉、全库搜索、本地文件或拖放添加槽位图片，并支持替换、清空与排序。</p>
-                  <p className="mt-1">展开与折叠会保留槽位状态，同时支持不含图片的模板导出和含图片的实例导出。</p>
+                  <p>画布中直接拖入的参考图片和视频，现在只保留在画布，不再自动加入素材抽屉或后台分析。</p>
+                  <p className="mt-1">新版会自动整理此前误入抽屉的参考素材，不影响画布节点与本地文件。</p>
+                  <p className="mt-1">图片分析进度、分析图标和“展开阅读全文”操作已统一为黑色视觉样式。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -37361,10 +37362,11 @@ useEffect(() => {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.15</p>
-                <p>统一抽屉、设置、弹窗、日历与无限画布的 UI 风格。</p>
-                <p>优化素材卡片、侧栏、搜索和窗口控件的视觉与交互。</p>
-                <p>修复画布拖拽偶发失焦与视口跳移，并增加窗口最小尺寸。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.16</p>
+                <p>画布中直接拖入的参考图片和视频不再进入素材抽屉或后台分析。</p>
+                <p>启动新版后会自动隐藏此前误入抽屉的画布参考素材，同时保留画布内容与本地文件。</p>
+                <p>修复隐藏素材更新后重新显示的问题，主动保存到抽屉仍可正常恢复。</p>
+                <p>图片分析进度和“展开阅读全文”操作统一为黑色视觉样式。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

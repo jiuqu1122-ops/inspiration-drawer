@@ -1014,7 +1014,7 @@ return (
             ) : (
               <p className={`text-xs text-stone-600 dark:text-stone-300 leading-relaxed ${isExpanded ? 'whitespace-pre-wrap' : 'line-clamp-5'}`}>{item.content}</p>
             )}
-            {!isEditingText && !isUrlText && isLongText && <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsExpanded(!isExpanded); }} className="relative z-10 mt-1.5 inline-flex w-fit shrink-0 self-start rounded-[8px] px-2 py-1 text-left text-[11px] font-semibold text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-700 dark:text-blue-300 dark:hover:bg-blue-400/10 dark:hover:text-blue-200">{isExpanded ? '收起全文' : '展开阅读全文...'}</button>}
+            {!isEditingText && !isUrlText && isLongText && <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsExpanded(!isExpanded); }} className="relative z-10 mt-1.5 inline-flex w-fit shrink-0 self-start rounded-[8px] px-2 py-1 text-left text-[11px] font-semibold text-black transition-colors hover:bg-stone-100 hover:text-black dark:text-white dark:hover:bg-white/10 dark:hover:text-white">{isExpanded ? '收起全文' : '展开阅读全文...'}</button>}
             </div>
           )}
         </div>

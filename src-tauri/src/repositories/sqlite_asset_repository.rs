@@ -550,7 +550,16 @@ impl AssetRepository for SqliteAssetRepository {
         let mut failed = 0_usize;
         for asset in assets {
             match crate::services::migration_service::insert_asset(&tx, &asset, now) {
-                Ok(()) => written += 1,
+                Ok(()) => {
+                    if let Some(id) = asset.get("id").and_then(Value::as_str) {
+                        tx.execute(
+                            "UPDATE assets SET drawer_visible = 1 WHERE id = ?1",
+                            params![id],
+                        )
+                        .map_err(|err| err.to_string())?;
+                    }
+                    written += 1;
+                }
                 Err(err) => {
                     failed += 1;
                     tx.execute(
@@ -1340,6 +1349,21 @@ mod tests {
             )
             .expect("read source link");
         assert_eq!(source_asset_id, "drawer-source");
+
+        repo.upsert_assets(vec![json!({
+            "id": "canvas-private",
+            "type": "text",
+            "name": "Explicitly saved prompt",
+            "createdAt": 1
+        })])
+        .expect("save hidden canvas item to drawer");
+        let visible_after_save = repo
+            .list_assets(AssetListOptions::default())
+            .expect("list drawer assets after explicit save");
+        assert_eq!(visible_after_save.len(), 2);
+        assert!(visible_after_save
+            .iter()
+            .any(|item| item["id"] == "canvas-private"));
     }
 
     #[test]

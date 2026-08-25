@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前版本：**6.0.15**
+当前版本：**6.0.16**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.15/Inspiration.Drawer_6.0.15_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.15)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.16/Inspiration.Drawer_6.0.16_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.16)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.16 更新
+
+- 画布中直接拖入的参考图片和视频不再进入素材抽屉，也不会计入图库数量或后台分析。
+- 启动新版后会自动隐藏此前误入抽屉的画布参考素材，同时保留画布节点与本地文件。
+- 修复隐藏素材在元数据更新后重新显示的问题；主动保存画布元素时仍可正常加入抽屉。
+- 将图片分析图标、进度条以及“展开阅读全文”操作统一为黑色视觉样式。
 
 ## 6.0.15 更新
 

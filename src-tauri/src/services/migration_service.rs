@@ -15,7 +15,7 @@ use crate::repositories::json_asset_repository::JsonAssetRepository;
 
 const MIGRATION_ID_JSON_TO_SQLITE: &str = "json-to-sqlite-v1";
 const MIGRATION_ID_JSON_RECONCILE: &str = "json-to-sqlite-v2-reconcile";
-const MIGRATION_ID_CANVAS_ASSET_VISIBILITY: &str = "canvas-only-asset-visibility-v1";
+const MIGRATION_ID_CANVAS_ASSET_VISIBILITY: &str = "canvas-only-asset-visibility-v2";
 const MIGRATION_BATCH_SIZE: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -147,8 +147,8 @@ pub fn ensure_sqlite_asset_library(
                 upsert_named_migration_row(
                     &conn,
                     MIGRATION_ID_CANVAS_ASSET_VISIBILITY,
-                    3,
-                    "Separate canvas-only items from drawer assets",
+                    4,
+                    "Separate canvas-only references from drawer assets",
                     "success",
                     legacy_items.len() as i64,
                     legacy_items.len() as i64,
@@ -251,7 +251,13 @@ fn repair_canvas_only_asset_visibility(
             r#"
             UPDATE assets
             SET drawer_visible = 0
-            WHERE file_type IN ('text', 'file')
+            WHERE (
+                  file_type IN ('text', 'file')
+                  OR (
+                      file_type IN ('image', 'video')
+                      AND (folder_id IS NULL OR TRIM(folder_id) = '')
+                  )
+              )
               AND EXISTS (
                   SELECT 1
                   FROM canvas_nodes
@@ -990,9 +996,31 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
 
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO assets
+        INSERT INTO assets
         (id, library_id, folder_id, file_path, file_name, file_ext, file_type, file_size, width, height, duration, hash, quick_hash, source_url, note, rating, created_at, updated_at, imported_at, modified_at, deleted_at, metadata_json)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20)
+        ON CONFLICT(id) DO UPDATE SET
+            library_id = excluded.library_id,
+            folder_id = excluded.folder_id,
+            file_path = excluded.file_path,
+            file_name = excluded.file_name,
+            file_ext = excluded.file_ext,
+            file_type = excluded.file_type,
+            file_size = excluded.file_size,
+            width = excluded.width,
+            height = excluded.height,
+            duration = excluded.duration,
+            hash = excluded.hash,
+            quick_hash = excluded.quick_hash,
+            source_url = excluded.source_url,
+            note = excluded.note,
+            rating = excluded.rating,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            imported_at = excluded.imported_at,
+            modified_at = excluded.modified_at,
+            deleted_at = NULL,
+            metadata_json = excluded.metadata_json
         "#,
         params![
             id,
@@ -1425,26 +1453,52 @@ mod tests {
             json!({ "id": "prompt1", "type": "text", "name": "Canvas prompt", "createdAt": now }),
             json!({ "id": "bridge1", "type": "file", "name": "Canvas bridge", "createdAt": now }),
             json!({ "id": "note001", "type": "text", "name": "Real drawer note", "createdAt": now }),
+            json!({ "id": "refimg1", "type": "image", "name": "Canvas reference", "createdAt": now }),
+            json!({ "id": "refvid1", "type": "video", "name": "Canvas reference video", "createdAt": now }),
+            json!({ "id": "legacyimg", "type": "image", "name": "Legacy drawer image", "createdAt": now }),
+            json!({ "id": "savedimg", "type": "image", "name": "Saved canvas image", "folderId": "saved-canvas", "createdAt": now }),
+            json!({ "id": "sourcedimg", "type": "image", "name": "Drawer source image", "createdAt": now }),
         ] {
             insert_asset(&conn, &item, now).expect("seed asset");
         }
-        insert_canvas_node(
-            &conn,
-            DEFAULT_CANVAS_ID,
-            &json!({
+        for node in [
+            json!({
                 "id": "canvas_text_prompt1",
                 "item": { "id": "prompt1", "type": "text", "name": "Canvas prompt", "createdAt": now },
-                "x": 0,
-                "y": 0,
-                "width": 100,
-                "height": 100
+                "x": 0, "y": 0, "width": 100, "height": 100
             }),
-            now,
-        )
-        .expect("seed canvas node");
+            json!({
+                "id": "canvas_image_refimg1",
+                "item": { "id": "refimg1", "type": "image", "name": "Canvas reference", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_video_refvid1",
+                "item": { "id": "refvid1", "type": "video", "name": "Canvas reference video", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_legacyimg",
+                "item": { "id": "legacyimg", "type": "image", "name": "Legacy drawer image", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_savedimg",
+                "item": { "id": "savedimg", "type": "image", "name": "Saved canvas image", "folderId": "saved-canvas", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_source_copy",
+                "item": { "id": "source-copy", "sourceItemId": "sourcedimg", "type": "image", "name": "Drawer source image", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+        ] {
+            insert_canvas_node(&conn, DEFAULT_CANVAS_ID, &node, now).expect("seed canvas node");
+        }
 
         let legacy_items = vec![
             json!({ "id": "note001", "type": "text", "name": "Real drawer note", "createdAt": now }),
+            json!({ "id": "legacyimg", "type": "image", "name": "Legacy drawer image", "createdAt": now }),
         ];
         repair_canvas_only_asset_visibility(&conn, &legacy_items, Some(now + 1))
             .expect("repair visibility");
@@ -1463,9 +1517,49 @@ mod tests {
             rows,
             vec![
                 ("bridge1".to_string(), 0),
+                ("legacyimg".to_string(), 1),
                 ("note001".to_string(), 1),
                 ("prompt1".to_string(), 0),
+                ("refimg1".to_string(), 0),
+                ("refvid1".to_string(), 0),
+                ("savedimg".to_string(), 1),
+                ("sourcedimg".to_string(), 1),
             ]
         );
+    }
+
+    #[test]
+    fn asset_metadata_upsert_preserves_hidden_canvas_visibility() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        crate::db::schema::ensure_schema(&conn).expect("create schema");
+        let now = 1_700_000_000_000_i64;
+        insert_asset(
+            &conn,
+            &json!({ "id": "canvas-reference", "type": "image", "name": "Before", "createdAt": now }),
+            now,
+        )
+        .expect("seed asset");
+        conn.execute(
+            "UPDATE assets SET drawer_visible = 0 WHERE id = 'canvas-reference'",
+            [],
+        )
+        .expect("hide canvas reference");
+
+        insert_asset(
+            &conn,
+            &json!({ "id": "canvas-reference", "type": "image", "name": "After", "createdAt": now }),
+            now + 1,
+        )
+        .expect("update hidden asset metadata");
+
+        let (drawer_visible, file_name): (i64, String) = conn
+            .query_row(
+                "SELECT drawer_visible, file_name FROM assets WHERE id = 'canvas-reference'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read updated asset");
+        assert_eq!(drawer_visible, 0);
+        assert_eq!(file_name, "After");
     }
 }
