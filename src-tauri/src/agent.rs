@@ -835,6 +835,16 @@ pub struct AgentInspirationAnalysisRequest {
     existing_profile: Option<Value>,
 }
 
+fn build_inspiration_analysis_payload(request: &AgentInspirationAnalysisRequest) -> Value {
+    json!({
+        "itemId": request.item_id,
+        "imageSource": request.image_source,
+        "userTags": request.user_tags,
+        "userNotes": request.user_notes,
+        "existingProfile": request.existing_profile,
+    })
+}
+
 #[tauri::command]
 pub async fn agent_analyze_inspiration(
     app_handle: tauri::AppHandle,
@@ -848,13 +858,7 @@ pub async fn agent_analyze_inspiration(
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| format!("无法初始化灵感自动分析连接：{error}"))?;
-    let payload = json!({
-        "itemId": request.item_id,
-        "imageSource": request.image_source,
-        "userTags": request.user_tags,
-        "userNotes": request.user_notes,
-        "existingProfile": request.existing_profile,
-    });
+    let payload = build_inspiration_analysis_payload(&request);
     let submission = submit_wallet_task(
         &client,
         &access_token,
@@ -2388,6 +2392,36 @@ pub fn agent_codex_stop(state: State<'_, AgentRuntimeState>) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspiration_analysis_payload_keeps_the_server_contract_exact() {
+        let payload = build_inspiration_analysis_payload(&AgentInspirationAnalysisRequest {
+            item_id: "image-1".to_string(),
+            image_source: "data:image/jpeg;base64,AA==".to_string(),
+            user_tags: Vec::new(),
+            user_notes: Vec::new(),
+            existing_profile: None,
+        });
+        let keys = payload
+            .as_object()
+            .expect("payload object")
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            std::collections::BTreeSet::from([
+                "existingProfile",
+                "imageSource",
+                "itemId",
+                "userNotes",
+                "userTags",
+            ])
+        );
+        assert!(payload.get("analysisPrompt").is_none());
+        assert!(payload.get("analysisVersion").is_none());
+        assert!(payload.get("maxOutputTokens").is_none());
+    }
 
     #[test]
     fn normalizes_custom_codex_provider_base_urls() {

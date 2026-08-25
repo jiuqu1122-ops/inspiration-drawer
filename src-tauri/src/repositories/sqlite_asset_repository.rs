@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
+    AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
     MoveFoldersOptions, ViewportOptions,
 };
 
@@ -43,7 +43,10 @@ impl SqliteAssetRepository {
     }
 
     fn build_asset_where(options: &AssetListOptions, values: &mut Vec<SqlValue>) -> String {
-        let mut clauses = vec!["deleted_at IS NULL".to_string()];
+        let mut clauses = vec![
+            "deleted_at IS NULL".to_string(),
+            "COALESCE(drawer_visible, 1) = 1".to_string(),
+        ];
         let library_id = options
             .library_id
             .clone()
@@ -90,14 +93,50 @@ impl SqliteAssetRepository {
             clauses.push("file_type = ?".to_string());
             values.push(SqlValue::Text(file_type.to_string()));
         }
+        if let Some(rating) = options.rating {
+            clauses.push("rating = ?".to_string());
+            values.push(SqlValue::Integer(rating));
+        }
+        if let Some(quick_access) = options.quick_access {
+            clauses.push(
+                "COALESCE(json_extract(metadata_json, '$.isQuickAccess'), 0) = ?".to_string(),
+            );
+            values.push(SqlValue::Integer(if quick_access { 1 } else { 0 }));
+        }
+        if let Some(status) = options
+            .inspiration_status
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let has_tags = "(COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0) > 0 OR COALESCE(json_extract(metadata_json, '$.inspirationProfile.analysisVersion'), 0) >= 2)";
+            let has_no_tags = "NOT (COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0) > 0 OR COALESCE(json_extract(metadata_json, '$.inspirationProfile.analysisVersion'), 0) >= 2)";
+            match status {
+                "analyzed" => clauses.push(has_tags.to_string()),
+                "unprocessed" => clauses.push(format!(
+                    "{} AND json_type(metadata_json, '$.inspirationAnalysisFailure') IS NULL",
+                    has_no_tags
+                )),
+                "retryable" => clauses.push(format!(
+                    "{} AND json_type(metadata_json, '$.inspirationAnalysisFailure') IS NOT NULL AND COALESCE(json_extract(metadata_json, '$.inspirationAnalysisFailure.attempts'), 0) < 3",
+                    has_no_tags
+                )),
+                "skipped" => clauses.push(format!(
+                    "{} AND COALESCE(json_extract(metadata_json, '$.inspirationAnalysisFailure.attempts'), 0) >= 3",
+                    has_no_tags
+                )),
+                _ => {}
+            }
+        }
         if let Some(keyword) = options
             .keyword
             .as_ref()
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
-            clauses.push("(file_name LIKE ? OR note LIKE ? OR source_url LIKE ?)".to_string());
+            clauses.push("(file_name LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' OR metadata_json LIKE ? ESCAPE '\\')".to_string());
             let pattern = format!("%{}%", keyword.replace('%', "\\%").replace('_', "\\_"));
+            values.push(SqlValue::Text(pattern.clone()));
             values.push(SqlValue::Text(pattern.clone()));
             values.push(SqlValue::Text(pattern.clone()));
             values.push(SqlValue::Text(pattern));
@@ -391,6 +430,55 @@ impl SqliteAssetRepository {
             _ => "created_at DESC, imported_at DESC, id DESC",
         }
     }
+
+    fn update_asset_on_conn(
+        conn: &Connection,
+        id: &str,
+        patch: AssetUpdatePatch,
+    ) -> Result<Option<Value>, String> {
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT metadata_json FROM assets WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        let mut asset = serde_json::from_str::<Value>(&stored).map_err(|err| err.to_string())?;
+        if let Some(name) = patch.name {
+            asset["name"] = Value::String(name);
+        }
+        if let Some(content) = patch.content {
+            asset["content"] = Value::String(content);
+        }
+        if let Some(folder_id) = patch.folder_id {
+            asset["folderId"] = if folder_id.is_empty() {
+                Value::Null
+            } else {
+                Value::String(folder_id)
+            };
+        }
+        if let Some(note) = patch.note {
+            asset["remark"] = Value::String(note);
+        }
+        if let Some(rating) = patch.rating {
+            asset["rating"] = Value::Number(rating.into());
+        }
+        if let Some(metadata) = patch.metadata {
+            if let (Some(target), Some(source)) = (asset.as_object_mut(), metadata.as_object()) {
+                for (key, value) in source {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        let now = crate::current_time_millis();
+        asset["updatedAt"] = Value::Number(now.into());
+        crate::services::migration_service::insert_asset(conn, &asset, now)?;
+        Ok(Some(asset))
+    }
 }
 
 impl AssetRepository for SqliteAssetRepository {
@@ -493,48 +581,37 @@ impl AssetRepository for SqliteAssetRepository {
     }
 
     fn update_asset(&self, id: &str, patch: AssetUpdatePatch) -> Result<Option<Value>, String> {
-        let Some(mut asset) = self.get_asset_by_id(id)? else {
-            return Ok(None);
-        };
-        if let Some(folder_id) = patch.folder_id {
-            asset["folderId"] = if folder_id.is_empty() {
-                Value::Null
-            } else {
-                Value::String(folder_id.clone())
-            };
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        let updated = Self::update_asset_on_conn(&tx, id, patch)?;
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(updated)
+    }
+
+    fn update_assets_batch(&self, updates: Vec<AssetBatchUpdate>) -> Result<Vec<Value>, String> {
+        if updates.is_empty() {
+            return Ok(Vec::new());
         }
-        if let Some(note) = patch.note {
-            asset["remark"] = Value::String(note.clone());
-        }
-        if let Some(rating) = patch.rating {
-            asset["rating"] = Value::Number(rating.into());
-        }
-        if let Some(metadata) = patch.metadata {
-            if let (Some(target), Some(source)) = (asset.as_object_mut(), metadata.as_object()) {
-                for (key, value) in source {
-                    target.insert(key.clone(), value.clone());
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        let mut updated_assets = Vec::new();
+        let mut seen = HashSet::new();
+        for update in updates {
+            for id in update.ids {
+                if id.trim().is_empty() || !seen.insert(id.clone()) {
+                    continue;
+                }
+                if let Some(asset) = Self::update_asset_on_conn(&tx, &id, update.patch.clone())? {
+                    updated_assets.push(asset);
                 }
             }
         }
-        let now = crate::current_time_millis();
-        asset["updatedAt"] = Value::Number(now.into());
-        let folder_id = asset
-            .get("folderId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let note = asset
-            .get("remark")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let rating = asset.get("rating").and_then(Value::as_i64).unwrap_or(0);
-        let metadata_json = serde_json::to_string(&asset).map_err(|err| err.to_string())?;
-        self.conn.execute(
-            "UPDATE assets SET folder_id = ?2, note = ?3, rating = ?4, updated_at = ?5, metadata_json = ?6 WHERE id = ?1",
-            params![id, folder_id, note, rating, now, metadata_json],
-        ).map_err(|err| err.to_string())?;
-        Ok(Some(asset))
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(updated_assets)
     }
 
     fn delete_asset(&self, id: &str) -> Result<bool, String> {
@@ -543,6 +620,86 @@ impl AssetRepository for SqliteAssetRepository {
             params![id, crate::current_time_millis()],
         ).map_err(|err| err.to_string())?;
         Ok(changed > 0)
+    }
+
+    fn delete_assets_batch(&self, ids: Vec<String>) -> Result<usize, String> {
+        let ids = Self::normalize_folder_ids(ids);
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        let now = crate::current_time_millis();
+        let mut changed = 0_usize;
+        for chunk in ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "UPDATE assets SET deleted_at = ?, updated_at = ? WHERE deleted_at IS NULL AND id IN ({})",
+                placeholders
+            );
+            let mut values = vec![SqlValue::Integer(now), SqlValue::Integer(now)];
+            values.extend(chunk.iter().cloned().map(SqlValue::Text));
+            changed += tx
+                .execute(&sql, params_from_iter(values))
+                .map_err(|err| err.to_string())?;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(changed)
+    }
+
+    fn move_assets_from_folders(
+        &self,
+        source_folder_ids: Vec<String>,
+        destination_folder_id: Option<String>,
+    ) -> Result<usize, String> {
+        let source_folder_ids = Self::normalize_folder_ids(source_folder_ids);
+        if source_folder_ids.is_empty() {
+            return Ok(0);
+        }
+        let destination_folder_id = Self::normalize_parent_id(destination_folder_id);
+        let placeholders = source_folder_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let now = crate::current_time_millis();
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        let changed = if let Some(destination) = destination_folder_id {
+            let sql = format!(
+                "UPDATE assets SET folder_id = ?, updated_at = ?, metadata_json = json_set(metadata_json, '$.folderId', ?, '$.updatedAt', ?) WHERE library_id = ? AND deleted_at IS NULL AND folder_id IN ({})",
+                placeholders
+            );
+            let mut values = vec![
+                SqlValue::Text(destination.clone()),
+                SqlValue::Integer(now),
+                SqlValue::Text(destination),
+                SqlValue::Integer(now),
+                SqlValue::Text(DEFAULT_LIBRARY_ID.to_string()),
+            ];
+            values.extend(source_folder_ids.into_iter().map(SqlValue::Text));
+            tx.execute(&sql, params_from_iter(values))
+                .map_err(|err| err.to_string())?
+        } else {
+            let sql = format!(
+                "UPDATE assets SET folder_id = NULL, updated_at = ?, metadata_json = json_remove(json_set(metadata_json, '$.updatedAt', ?), '$.folderId') WHERE library_id = ? AND deleted_at IS NULL AND folder_id IN ({})",
+                placeholders
+            );
+            let mut values = vec![
+                SqlValue::Integer(now),
+                SqlValue::Integer(now),
+                SqlValue::Text(DEFAULT_LIBRARY_ID.to_string()),
+            ];
+            values.extend(source_folder_ids.into_iter().map(SqlValue::Text));
+            tx.execute(&sql, params_from_iter(values))
+                .map_err(|err| err.to_string())?
+        };
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(changed)
     }
 
     fn get_assets_by_ids(&self, ids: Vec<String>) -> Result<Vec<Value>, String> {
@@ -885,6 +1042,87 @@ impl AssetRepository for SqliteAssetRepository {
         rows.map(|row| row.map_err(|err| err.to_string())).collect()
     }
 
+    fn get_folder_asset_counts(&self, library_id: Option<String>) -> Result<Vec<Value>, String> {
+        let library_id = Self::normalize_library_id(library_id);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT NULLIF(folder_id, ''), COUNT(*) FROM assets WHERE library_id = ?1 AND deleted_at IS NULL AND COALESCE(drawer_visible, 1) = 1 GROUP BY NULLIF(folder_id, '')",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![library_id], |row| {
+                Ok(json!({
+                    "folderId": row.get::<_, Option<String>>(0)?,
+                    "count": row.get::<_, i64>(1)?,
+                }))
+            })
+            .map_err(|err| err.to_string())?;
+        rows.map(|row| row.map_err(|err| err.to_string())).collect()
+    }
+
+    fn get_tag_asset_counts(&self, library_id: Option<String>) -> Result<Vec<Value>, String> {
+        let library_id = Self::normalize_library_id(library_id);
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+                SELECT asset_tags.tag_id, COUNT(DISTINCT asset_tags.asset_id)
+                FROM asset_tags
+                INNER JOIN assets ON assets.id = asset_tags.asset_id
+                WHERE assets.library_id = ?1
+                  AND assets.deleted_at IS NULL
+                  AND COALESCE(assets.drawer_visible, 1) = 1
+                GROUP BY asset_tags.tag_id
+                "#,
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![library_id], |row| {
+                Ok(json!({
+                    "tagId": row.get::<_, String>(0)?,
+                    "count": row.get::<_, i64>(1)?,
+                }))
+            })
+            .map_err(|err| err.to_string())?;
+        rows.map(|row| row.map_err(|err| err.to_string())).collect()
+    }
+
+    fn get_inspiration_analysis_counts(&self, library_id: Option<String>) -> Result<Value, String> {
+        let library_id = Self::normalize_library_id(library_id);
+        self.conn
+            .query_row(
+                r#"
+                SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0) > 0
+                        OR COALESCE(json_extract(metadata_json, '$.inspirationProfile.analysisVersion'), 0) >= 2 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN NOT (COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0) > 0
+                        OR COALESCE(json_extract(metadata_json, '$.inspirationProfile.analysisVersion'), 0) >= 2)
+                        AND json_type(metadata_json, '$.inspirationAnalysisFailure') IS NOT NULL
+                        AND COALESCE(json_extract(metadata_json, '$.inspirationAnalysisFailure.attempts'), 0) < 3 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN NOT (COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0) > 0
+                        OR COALESCE(json_extract(metadata_json, '$.inspirationProfile.analysisVersion'), 0) >= 2)
+                        AND COALESCE(json_extract(metadata_json, '$.inspirationAnalysisFailure.attempts'), 0) >= 3 THEN 1 ELSE 0 END)
+                FROM assets
+                WHERE library_id = ?1
+                  AND deleted_at IS NULL
+                  AND COALESCE(drawer_visible, 1) = 1
+                  AND file_type = 'image'
+                "#,
+                params![library_id],
+                |row| {
+                    Ok(json!({
+                        "total": row.get::<_, i64>(0)?,
+                        "analyzed": row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        "waitingRetry": row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        "skipped": row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    }))
+                },
+            )
+            .map_err(|err| err.to_string())
+    }
+
     fn get_asset_thumbnails(&self, asset_id: &str) -> Result<Vec<Value>, String> {
         let mut stmt = self.conn.prepare(
             "SELECT id, asset_id, size, path, width, height, format, file_size, created_at, source_modified_at FROM thumbnails WHERE asset_id = ?1 ORDER BY size ASC",
@@ -906,5 +1144,293 @@ impl AssetRepository for SqliteAssetRepository {
             })
             .map_err(|err| err.to_string())?;
         rows.map(|row| row.map_err(|err| err.to_string())).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use rusqlite::{params, Connection};
+    use serde_json::json;
+
+    use super::SqliteAssetRepository;
+    use crate::db::schema::{ensure_schema, DEFAULT_LIBRARY_ID};
+    use crate::repositories::asset_repository::{
+        AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch,
+    };
+
+    fn repository() -> SqliteAssetRepository {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        ensure_schema(&conn).expect("asset schema");
+        SqliteAssetRepository::new(conn)
+    }
+
+    #[test]
+    fn batch_crud_and_database_counts_stay_consistent() {
+        let repo = repository();
+        repo.upsert_assets(vec![
+            json!({ "id": "a", "type": "image", "name": "Alpha", "content": "Alpha", "folderId": "f1", "createdAt": 3, "remarks": ["#warm"] }),
+            json!({ "id": "b", "type": "image", "name": "Beta", "content": "Beta", "folderId": "f1", "createdAt": 2, "isQuickAccess": true }),
+            json!({ "id": "c", "type": "text", "name": "Gamma", "content": "Gamma", "createdAt": 1 }),
+        ])
+        .expect("seed assets");
+
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            3
+        );
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions {
+                folder_id: Some("f1".to_string()),
+                ..Default::default()
+            })
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions {
+                quick_access: Some(true),
+                ..Default::default()
+            })
+            .unwrap(),
+            1
+        );
+
+        let updated = repo
+            .update_assets_batch(vec![AssetBatchUpdate {
+                ids: vec!["a".to_string(), "b".to_string()],
+                patch: AssetUpdatePatch {
+                    folder_id: Some("f2".to_string()),
+                    ..Default::default()
+                },
+            }])
+            .expect("batch move");
+        assert_eq!(updated.len(), 2);
+        assert_eq!(
+            repo.delete_assets_batch(vec!["b".to_string(), "c".to_string()])
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            1
+        );
+
+        let counts = repo.get_folder_asset_counts(None).expect("folder counts");
+        assert_eq!(counts, vec![json!({ "folderId": "f2", "count": 1 })]);
+        assert_eq!(
+            repo.move_assets_from_folders(vec!["f2".to_string()], None)
+                .expect("move deleted folder assets"),
+            1
+        );
+        assert_eq!(
+            repo.get_folder_asset_counts(None).expect("unfiled counts"),
+            vec![json!({ "folderId": null, "count": 1 })]
+        );
+        let tag_counts = repo.get_tag_asset_counts(None).expect("tag counts");
+        assert_eq!(tag_counts.len(), 1);
+        assert_eq!(tag_counts[0]["count"], 1);
+    }
+
+    #[test]
+    fn inspiration_analysis_queue_filters_cover_the_entire_database() {
+        let repo = repository();
+        repo.upsert_assets(vec![
+            json!({ "id": "pending", "type": "image", "path": "C:/pending.jpg", "createdAt": 4 }),
+            json!({ "id": "analyzed-empty-v2", "type": "image", "path": "C:/strict.jpg", "createdAt": 4, "inspirationProfile": { "aiTags": [], "analysisVersion": 2 } }),
+            json!({ "id": "analyzed", "type": "image", "path": "C:/analyzed.jpg", "createdAt": 3, "inspirationProfile": { "aiTags": [{ "name": "工业设计", "category": "设计领域", "confidence": 0.9 }] } }),
+            json!({ "id": "retry", "type": "image", "path": "C:/retry.jpg", "createdAt": 2, "inspirationAnalysisFailure": { "attemptedAt": 1, "attempts": 1, "message": "temporary" } }),
+            json!({ "id": "skipped", "type": "image", "path": "C:/skipped.jpg", "createdAt": 1, "inspirationAnalysisFailure": { "attemptedAt": 1, "attempts": 3, "message": "failed" } }),
+            json!({ "id": "text", "type": "text", "content": "not an image", "createdAt": 0 }),
+        ])
+        .expect("seed analysis states");
+
+        for (status, expected_id) in [
+            ("unprocessed", "pending"),
+            ("retryable", "retry"),
+            ("skipped", "skipped"),
+        ] {
+            let rows = repo
+                .list_assets(AssetListOptions {
+                    file_type: Some("image".to_string()),
+                    inspiration_status: Some(status.to_string()),
+                    ..Default::default()
+                })
+                .expect("query analysis state");
+            assert_eq!(rows.len(), 1, "unexpected row count for {status}");
+            assert_eq!(rows[0]["id"], expected_id);
+        }
+
+        let analyzed = repo
+            .list_assets(AssetListOptions {
+                file_type: Some("image".to_string()),
+                inspiration_status: Some("analyzed".to_string()),
+                ..Default::default()
+            })
+            .expect("query analyzed state");
+        assert_eq!(analyzed.len(), 2);
+        assert!(analyzed.iter().any(|row| row["id"] == "analyzed-empty-v2"));
+
+        assert_eq!(
+            repo.get_inspiration_analysis_counts(None)
+                .expect("aggregate analysis counts"),
+            json!({ "total": 5, "analyzed": 2, "waitingRetry": 1, "skipped": 1 })
+        );
+    }
+
+    #[test]
+    fn drawer_queries_exclude_canvas_private_items_and_keep_source_assets_addressable() {
+        let repo = repository();
+        repo.upsert_assets(vec![
+            json!({ "id": "drawer-source", "type": "text", "name": "Drawer note", "createdAt": 2 }),
+            json!({ "id": "canvas-private", "type": "text", "name": "Private prompt", "createdAt": 1 }),
+        ])
+        .expect("seed assets");
+        crate::services::migration_service::insert_canvas_node(
+            &repo.conn,
+            "default",
+            &json!({
+                "id": "source-node",
+                "item": { "id": "canvas-copy", "sourceItemId": "drawer-source", "type": "text", "name": "Drawer note" },
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 100
+            }),
+            3,
+        )
+        .expect("insert source node");
+        crate::services::migration_service::insert_canvas_node(
+            &repo.conn,
+            "default",
+            &json!({
+                "id": "private-node",
+                "item": { "id": "canvas-private", "type": "text", "name": "Private prompt" },
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 100
+            }),
+            3,
+        )
+        .expect("insert private node");
+        repo.conn
+            .execute(
+                "UPDATE assets SET drawer_visible = 0 WHERE id = 'canvas-private'",
+                [],
+            )
+            .expect("mark private canvas item hidden");
+
+        let visible = repo
+            .list_assets(AssetListOptions::default())
+            .expect("list drawer assets");
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0]["id"], "drawer-source");
+        assert!(repo
+            .get_asset_by_id("canvas-private")
+            .expect("read private item by id")
+            .is_some());
+        let source_asset_id: String = repo
+            .conn
+            .query_row(
+                "SELECT asset_id FROM canvas_nodes WHERE id = 'source-node'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read source link");
+        assert_eq!(source_asset_id, "drawer-source");
+    }
+
+    #[test]
+    #[ignore = "explicit 100k metadata performance acceptance test"]
+    fn repository_perf_100k() {
+        let repo = repository();
+        let seed_started = Instant::now();
+        let tx = repo.conn.unchecked_transaction().expect("seed transaction");
+        {
+            let mut stmt = tx
+                .prepare(
+                    r#"
+                    INSERT INTO assets
+                    (id, library_id, folder_id, file_path, file_name, file_ext, file_type, file_size, width, height, duration, hash, quick_hash, source_url, note, rating, created_at, updated_at, imported_at, modified_at, deleted_at, metadata_json)
+                    VALUES (?1, ?2, ?3, ?4, ?5, 'jpg', 'image', 1024, 512, 512, NULL, NULL, NULL, NULL, ?6, 0, ?7, ?7, ?7, ?7, NULL, ?8)
+                    "#,
+                )
+                .expect("prepare seed");
+            for index in 0_i64..100_000 {
+                let id = format!("perf-{index:06}");
+                let folder_id = format!("folder-{}", index % 100);
+                let file_name = if index == 99_999 {
+                    "needle-99999.jpg".to_string()
+                } else {
+                    format!("asset-{index:06}.jpg")
+                };
+                let metadata = json!({
+                    "id": id.clone(),
+                    "type": "image",
+                    "name": file_name.clone(),
+                    "content": file_name.clone(),
+                    "path": format!("C:/mock/{file_name}"),
+                    "folderId": folder_id.clone(),
+                    "createdAt": index,
+                })
+                .to_string();
+                stmt.execute(params![
+                    id,
+                    DEFAULT_LIBRARY_ID,
+                    folder_id,
+                    format!("C:/mock/{file_name}"),
+                    file_name,
+                    "",
+                    index,
+                    metadata,
+                ])
+                .expect("insert perf asset");
+            }
+        }
+        tx.commit().expect("commit seed");
+        let seed_ms = seed_started.elapsed().as_millis();
+
+        let count_started = Instant::now();
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            100_000
+        );
+        let count_ms = count_started.elapsed().as_millis();
+
+        let analysis_queue_started = Instant::now();
+        let analysis_counts = repo
+            .get_inspiration_analysis_counts(None)
+            .expect("analysis queue counts");
+        assert_eq!(analysis_counts["total"], 100_000);
+        assert_eq!(analysis_counts["analyzed"], 0);
+        let analysis_queue_count_ms = analysis_queue_started.elapsed().as_millis();
+
+        let page_started = Instant::now();
+        let page = repo
+            .list_assets(AssetListOptions {
+                offset: Some(50_000),
+                limit: Some(200),
+                ..Default::default()
+            })
+            .expect("middle page");
+        assert_eq!(page.len(), 200);
+        let page_ms = page_started.elapsed().as_millis();
+
+        let search_started = Instant::now();
+        let search = repo
+            .list_assets(AssetListOptions {
+                keyword: Some("needle-99999".to_string()),
+                limit: Some(200),
+                ..Default::default()
+            })
+            .expect("search page");
+        assert_eq!(search.len(), 1);
+        let search_ms = search_started.elapsed().as_millis();
+
+        println!(
+            "[DrawerPerf100k] seed_ms={seed_ms} count_ms={count_ms} analysis_queue_count_ms={analysis_queue_count_ms} page_offset_50000_ms={page_ms} search_ms={search_ms}"
+        );
     }
 }

@@ -16,6 +16,7 @@ export type ImageThumbnailFileResult = {
   fingerprint?: string;
   file_size?: number;
   modified_at?: number;
+  cacheHit?: boolean;
 };
 
 export type CanvasImageSourceCacheEntry = {

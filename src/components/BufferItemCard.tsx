@@ -13,7 +13,16 @@ import {
   writeLocalImageFileToClipboard,
 } from '../features/imageClipboard';
 import { getImageListSource, getPreviewOriginalSource, getPreviewPlaceholderSource } from '../features/mediaSources';
+import {
+  getInspirationColorFamilyKey,
+  getReliableInspirationAiTags,
+} from '../features/appAgent/inspirationMemory/inspirationAnalysis';
 import type { InspirationProfile } from '../features/appAgent/inspirationMemory/types';
+import {
+  getItemMediaDimensions,
+  getMediaAspectRatio,
+  normalizeMediaDimensions,
+} from './drawer/mediaAspect';
 
 const normalizeAiTextEntry = (value: unknown): string => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -24,10 +33,6 @@ const normalizeAiTextEntry = (value: unknown): string => {
 
   const text = String(value ?? '').trim();
   return /^\[object\s.+\]$/i.test(text) ? '' : text;
-};
-
-const toTextList = (value: unknown): string[] => {
-  return toValueList(value).map(normalizeAiTextEntry).filter(Boolean);
 };
 
 const toValueList = (value: unknown): unknown[] => (
@@ -65,7 +70,7 @@ const AI_COLOR_SWATCH_RULES: Array<[RegExp, string]> = [
   [/(?:米白|暖白|乳白|象牙|奶白|off[-\s]?white|ivory|cream)/i, '#eee8dc'],
   [/(?:玫瑰金|rose\s*gold)/i, '#c88f83'],
   [/(?:黄铜|青铜|铜色|brass|bronze|copper)/i, '#a97945'],
-  [/(?:炭黑|墨黑|曜石|煤黑|charcoal|graphite|black)/i, '#2b2b2a'],
+  [/(?:炭黑|碳黑|墨黑|曜石|煤黑|黑色|黑|charcoal|graphite|black)/i, '#2b2b2a'],
   [/(?:深灰|铁灰|枪灰|铅灰|dark\s*gr[ae]y)/i, '#555754'],
   [/(?:银色|银灰|浅灰|灰色|灰|silver|gr[ae]y)/i, '#a9aaa7'],
   [/(?:米色|沙色|卡其|燕麦|杏色|beige|sand|khaki|oat)/i, '#d2c0a2'],
@@ -122,16 +127,15 @@ export const getAiImageAnalysisPalette = (
     ...toValueList(profileRecord.palette),
     ...toValueList(profileRecord.dominantColors),
   ];
-  const aiColorTags = Array.isArray(profile.aiTags)
-    ? profile.aiTags
-      .filter(tag => /^(?:色彩|颜色|配色|colou?r?s?|palette)$/i.test(String(tag?.category || '').trim()))
-      .map(tag => tag?.name)
-    : [];
+  const aiColorTags = getReliableInspirationAiTags(profile)
+    .filter(tag => tag.category === '色彩')
+    .map(tag => tag.name);
   const uniqueSources = new Map<string, AiColorSource>();
   [...cmfColors, ...aiColorTags].forEach((value) => {
     const source = toAiColorSource(value);
     if (!source) return;
-    const key = source.label.toLocaleLowerCase();
+    const key = getInspirationColorFamilyKey(source.value);
+    if (!key || key === 'transparent' || key === 'translucent') return;
     if (!uniqueSources.has(key)) uniqueSources.set(key, source);
   });
 
@@ -146,28 +150,26 @@ export const getAiImageAnalysisPalette = (
 
 export const getAiImageAnalysisTerms = (
   profile?: InspirationProfile | null,
-  limit = 11,
+  limit = 7,
 ): string[] => {
   if (!profile || limit <= 0) return [];
 
-  const profileRecord = profile as unknown as Record<string, unknown>;
-  const cmfRecord = profileRecord.cmf && typeof profileRecord.cmf === 'object'
-    ? profileRecord.cmf as Record<string, unknown>
-    : {};
-  const aiTagNames = Array.isArray(profile.aiTags)
-    ? profile.aiTags.map(tag => String(tag?.name || '').trim()).filter(Boolean)
-    : [];
-
-  return Array.from(new Set([
-    ...toTextList(cmfRecord.colors),
-    ...toTextList(profileRecord.colors),
-    ...toTextList(profileRecord.colorPalette),
-    ...toTextList(profileRecord.palette),
-    ...toTextList(profileRecord.dominantColors),
-    ...toTextList(cmfRecord.materials),
-    ...toTextList(cmfRecord.finishes),
-    ...aiTagNames,
-  ])).slice(0, limit);
+  const seen = new Set<string>();
+  return getReliableInspirationAiTags(profile)
+    .filter(tag => tag.category === '产品类别' || tag.category === '形态' || tag.category === '材质' || tag.category === '风格')
+    .sort((left, right) => {
+      const priority = { 产品类别: 0, 形态: 1, 材质: 2, 风格: 3 } as const;
+      return priority[left.category as keyof typeof priority] - priority[right.category as keyof typeof priority]
+        || right.confidence - left.confidence;
+    })
+    .map(tag => tag.name.trim())
+    .filter((name) => {
+      const key = name.toLocaleLowerCase().replace(/[\s\-_/·、，,。.（）()[\]【】]+/g, '');
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
 };
 
 const getAssetTypeLabel = (item: any) => {
@@ -195,6 +197,7 @@ type LazyCardImageProps = {
   style?: React.CSSProperties;
   title?: string;
   onClick?: React.MouseEventHandler<HTMLImageElement>;
+  onLoad?: React.ReactEventHandler<HTMLImageElement>;
   onVisible?: () => void;
 };
 
@@ -214,7 +217,7 @@ const getSharedLazyCardObserver = () => {
   return sharedLazyCardObserver;
 };
 
-function LazyCardImage({ src, alt = '', className, style, title, onClick, onVisible }: LazyCardImageProps) {
+function LazyCardImage({ src, alt = '', className, style, title, onClick, onLoad, onVisible }: LazyCardImageProps) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const onVisibleRef = useRef(onVisible);
   const [visibleSrc, setVisibleSrc] = useState('');
@@ -263,6 +266,7 @@ function LazyCardImage({ src, alt = '', className, style, title, onClick, onVisi
       decoding="async"
       draggable={false}
       onClick={onClick}
+      onLoad={onLoad}
     />
   );
 }
@@ -274,6 +278,7 @@ function BufferItemCard({
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
   onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote,
+  onMediaDimensionsResolved,
   onTextEditStart, onTextEditEnd, preferFullImageSource = false,
   optimizeLargeList = false
 }: any) {
@@ -624,7 +629,8 @@ function BufferItemCard({
   const btnClass = `${isSmallCard ? 'p-1 rounded-[7px]' : 'p-1.5 rounded-[8px]'} border border-white/55 bg-white/88 dark:border-stone-600/70 dark:bg-stone-800/90 backdrop-blur-xl text-stone-500 dark:text-stone-300 hover:text-stone-950 hover:bg-white dark:hover:bg-stone-700 dark:hover:text-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] transition-all pointer-events-auto`;
   const iconClass = isSmallCard ? 'w-3 h-3' : 'w-3.5 h-3.5';
   const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
-  const hasCompactAiTerms = item.type === 'image' && imageAnalysisTerms.length > 0;
+  const hasCompactAiTerms = item.type === 'image'
+    && (imageAnalysisTerms.length > 0 || imageAnalysisPalette.length > 0);
   const imageCardSource = getImageListSource(item, { allowOriginalFallback: !!preferFullImageSource });
   const imagePreviewSource = getPreviewOriginalSource(item);
   const imagePreviewPlaceholderSource = getPreviewPlaceholderSource(item);
@@ -635,24 +641,39 @@ function BufferItemCard({
   const videoDisplayName = item.name || item.content || 'video';
   const isInlineMediaCard = item.type === 'image' || item.type === 'video';
   const assetTypeLabel = getAssetTypeLabel(item);
-  const declaredOriginalSize = Number(item.width) > 0 && Number(item.height) > 0
-    ? { width: Math.round(Number(item.width)), height: Math.round(Number(item.height)) }
-    : null;
-  const assetOriginalSize = declaredOriginalSize || resolvedOriginalSize;
+  const declaredOriginalSize = normalizeMediaDimensions(item);
+  const assetOriginalSize = getItemMediaDimensions(item, resolvedOriginalSize);
+  const mediaAspectRatio = getMediaAspectRatio(item, resolvedOriginalSize);
   const canPreviewVideoInline = item.type === 'video' && !!videoPreviewSource && isHovered && !isSelectMode;
+  const resolvedMediaHeight = mediaAspectRatio
+    ? Math.max(1, Number(cardWidth) || 1) / mediaAspectRatio
+    : Math.max(1, Number(mediaHeight) || 1);
   const cardStyle: React.CSSProperties = optimizeLargeList ? {
     contentVisibility: 'auto',
-    containIntrinsicSize: `${Math.max(120, Number(mediaHeight) || 0) + 96}px`,
+    containIntrinsicSize: `${Math.max(120, resolvedMediaHeight + 48)}px`,
     borderRadius: cardRadius,
   } : { borderRadius: cardRadius };
   const roundedTopStyle = { borderTopLeftRadius: cardRadius, borderTopRightRadius: cardRadius };
   const roundedBottomStyle = { borderBottomLeftRadius: cardRadius, borderBottomRightRadius: cardRadius };
+  const mediaFrameStyle: React.CSSProperties = mediaAspectRatio
+    ? { aspectRatio: `${assetOriginalSize!.width} / ${assetOriginalSize!.height}`, ...roundedTopStyle }
+    : { height: mediaHeight, ...roundedTopStyle };
   const showCollapsibleDetails = !isInlineMediaCard || isHovered || isEditingRemark;
 
   useEffect(() => {
     resolutionLoadKeyRef.current = '';
     setResolvedOriginalSize(null);
   }, [item.id]);
+
+  const recordResolvedMediaSize = (width: unknown, height: unknown) => {
+    if (declaredOriginalSize) return;
+    const next = normalizeMediaDimensions({ width: Number(width), height: Number(height) });
+    if (!next) return;
+    setResolvedOriginalSize(current => (
+      current?.width === next.width && current?.height === next.height ? current : next
+    ));
+    onMediaDimensionsResolved?.(item.id, next);
+  };
 
   const resolveOriginalImageSize = () => {
     if (item.type !== 'image' || declaredOriginalSize) return;
@@ -672,7 +693,7 @@ function BufferItemCard({
     image.onload = () => {
       const width = Math.round(image.naturalWidth || image.width || 0);
       const height = Math.round(image.naturalHeight || image.height || 0);
-      if (width > 0 && height > 0) setResolvedOriginalSize({ width, height });
+      recordResolvedMediaSize(width, height);
       image.onload = null;
       image.onerror = null;
     };
@@ -839,17 +860,21 @@ return (
       )}
 
       {item.type === 'image' && (
-        <div data-asset-media="true" className="relative w-full overflow-hidden">
+        <div data-asset-media="true" className="relative w-full overflow-hidden" style={mediaFrameStyle}>
           <LazyCardImage
             src={imageCardSource}
             alt={imageDisplayName}
-            className="w-full object-cover cursor-pointer bg-stone-100 transition-transform duration-300 group-hover:scale-[1.015] dark:bg-stone-950"
-            style={{ height: mediaHeight, ...roundedTopStyle }}
+            className="h-full w-full object-cover cursor-pointer bg-stone-100 transition-transform duration-300 group-hover:scale-[1.015] dark:bg-stone-950"
+            style={roundedTopStyle}
             title="点击预览"
             onVisible={() => {
               onEnsureThumbnail?.(item);
               resolveOriginalImageSize();
             }}
+            onLoad={(event) => recordResolvedMediaSize(
+              event.currentTarget.naturalWidth || event.currentTarget.width,
+              event.currentTarget.naturalHeight || event.currentTarget.height,
+            )}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource, item, imagePreviewPlaceholderSource); }}
           />
           <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] bg-gradient-to-b from-black/50 via-black/16 to-transparent px-3 pb-7 pt-2.5" style={roundedTopStyle}>
@@ -870,7 +895,7 @@ return (
         <div
           data-asset-media="true"
           className="relative w-full group/video cursor-pointer bg-stone-900 rounded-t-[22px] overflow-hidden"
-          style={{ height: mediaHeight, ...roundedTopStyle }}
+          style={mediaFrameStyle}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onVideoClick?.(item); }}
           title="悬停预览，点击在抽屉内播放"
         >
@@ -886,12 +911,20 @@ return (
               preload="metadata"
               controls={false}
               draggable={false}
+              onLoadedMetadata={(event) => recordResolvedMediaSize(
+                event.currentTarget.videoWidth,
+                event.currentTarget.videoHeight,
+              )}
             />
           ) : videoThumbnail ? (
             <LazyCardImage
               src={videoThumbnail}
               alt={videoDisplayName}
               className="w-full h-full object-cover opacity-80 group-hover/video:opacity-100 transition-opacity"
+              onLoad={(event) => recordResolvedMediaSize(
+                event.currentTarget.naturalWidth || event.currentTarget.width,
+                event.currentTarget.naturalHeight || event.currentTarget.height,
+              )}
             />
           ) : <div className="w-full h-full bg-gradient-to-br from-stone-800 to-stone-900 flex items-center justify-center"><Film className="w-12 h-12 text-stone-700/60" /></div>}
           <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] bg-gradient-to-b from-black/50 via-black/16 to-transparent px-3 pb-7 pt-2.5" style={roundedTopStyle}>

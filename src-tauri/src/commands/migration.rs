@@ -1,6 +1,17 @@
 use crate::services::migration_service::MigrationStatus;
 
 #[tauri::command]
+pub async fn ensure_sqlite_asset_library(
+    app_handle: tauri::AppHandle,
+) -> Result<MigrationStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::migration_service::ensure_sqlite_asset_library(app_handle)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub async fn migrate_json_to_sqlite(
     app_handle: tauri::AppHandle,
 ) -> Result<MigrationStatus, String> {

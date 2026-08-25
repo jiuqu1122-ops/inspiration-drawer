@@ -23,6 +23,9 @@ export type BufferItem = {
   width?: number;
   height?: number;
   createdAt: number; 
+  updatedAt?: number;
+  importedAt?: number;
+  rating?: number;
   isQuickAccess?: boolean; 
   remark?: string; 
   remarks?: string[];

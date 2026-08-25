@@ -4,12 +4,20 @@
 
 ## 下载
 
-当前版本：**6.0.14**
+当前版本：**6.0.15**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.14/Inspiration.Drawer_6.0.14_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.14)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.15/Inspiration.Drawer_6.0.15_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.15)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.15 更新
+
+- 重构大图库存储、分页查询、虚拟渲染和滚动自动加载，提升数千张素材下的流畅度。
+- 素材卡片按图片或视频真实比例显示，并使用瀑布流自动填补不同高度卡片之间的空位。
+- 后台分析覆盖全图库，聚焦颜色、产品品类、造型语言、材质和设计风格，同时减少上传图片与无关上下文开销。
+- 修复分析请求格式变更导致的批量重试，并只恢复受该问题影响的失败任务。
+- 修复画布粘贴被旧的内部节点缓存抢占，外部复制的图片现在可正确粘贴到画布。
 
 ## 6.0.14 更新
 

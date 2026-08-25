@@ -1,4 +1,5 @@
 import type { BufferItem } from '../types';
+import { getReliableInspirationAiTags } from './appAgent/inspirationMemory/inspirationAnalysis';
 
 export const AI_CLASSIFICATION_DIMENSIONS = [
   { id: 'product', label: '产品类别' },
@@ -136,7 +137,7 @@ const uniqueLabels = (values: unknown[], limit = 8, normalize: LabelNormalizer =
 };
 
 const getAiTagNames = (item: BufferItem, categories: string[]) => (
-  (item.inspirationProfile?.aiTags || [])
+  getReliableInspirationAiTags(item.inspirationProfile)
     .filter(tag => categories.includes(tag.category))
     .sort((a, b) => b.confidence - a.confidence)
     .map(tag => tag.name)

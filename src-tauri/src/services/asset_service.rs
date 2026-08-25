@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::db::connection::{open_connection, should_use_sqlite};
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
+    AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
     MoveFoldersOptions, ViewportOptions,
 };
 use crate::repositories::json_asset_repository::JsonAssetRepository;
@@ -48,8 +48,28 @@ pub fn update_asset(
     repository(&app_handle)?.update_asset(&id, patch)
 }
 
+pub fn update_assets_batch(
+    app_handle: tauri::AppHandle,
+    updates: Vec<AssetBatchUpdate>,
+) -> Result<Vec<Value>, String> {
+    repository(&app_handle)?.update_assets_batch(updates)
+}
+
 pub fn delete_asset(app_handle: tauri::AppHandle, id: String) -> Result<bool, String> {
     repository(&app_handle)?.delete_asset(&id)
+}
+
+pub fn delete_assets_batch(app_handle: tauri::AppHandle, ids: Vec<String>) -> Result<usize, String> {
+    repository(&app_handle)?.delete_assets_batch(ids)
+}
+
+pub fn move_assets_from_folders(
+    app_handle: tauri::AppHandle,
+    source_folder_ids: Vec<String>,
+    destination_folder_id: Option<String>,
+) -> Result<usize, String> {
+    repository(&app_handle)?
+        .move_assets_from_folders(source_folder_ids, destination_folder_id)
 }
 
 pub fn get_assets_by_ids(
@@ -108,6 +128,27 @@ pub fn list_tags(
     library_id: Option<String>,
 ) -> Result<Vec<Value>, String> {
     repository(&app_handle)?.list_tags(library_id)
+}
+
+pub fn get_folder_asset_counts(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+) -> Result<Vec<Value>, String> {
+    repository(&app_handle)?.get_folder_asset_counts(library_id)
+}
+
+pub fn get_tag_asset_counts(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+) -> Result<Vec<Value>, String> {
+    repository(&app_handle)?.get_tag_asset_counts(library_id)
+}
+
+pub fn get_inspiration_analysis_counts(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+) -> Result<Value, String> {
+    repository(&app_handle)?.get_inspiration_analysis_counts(library_id)
 }
 
 pub fn get_asset_thumbnails(

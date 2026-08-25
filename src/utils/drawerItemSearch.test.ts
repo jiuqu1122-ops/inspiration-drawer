@@ -19,14 +19,17 @@ describe('drawer item search', () => {
         objects: ['lamp'],
         category: 'lighting',
         form: { silhouette: ['arched'], geometry: ['cylinder'], proportion: ['slender'] },
-        cmf: { colors: ['warm white'], materials: ['aluminum'], finishes: ['matte'] },
+        cmf: { colors: ['warm white', '玫瑰金色 #C88F83'], materials: ['aluminum'], finishes: ['matte'] },
         style: ['minimal'],
         interaction: ['touch control'],
         scene: ['bedside'],
         mood: ['calm'],
         userTags: ['reference'],
         userNotes: ['keep proportions'],
-        aiTags: [{ name: 'soft-light', category: '风格', confidence: 0.92 }],
+        aiTags: [
+          { name: 'soft-light', category: '风格', confidence: 0.92 },
+          { name: '玫瑰金色', category: '色彩', confidence: 0.9 },
+        ],
       },
     }));
 
@@ -34,6 +37,7 @@ describe('drawer item search', () => {
     expect(searchText).toContain('aluminum');
     expect(searchText).toContain('matte');
     expect(searchText).toContain('soft-light');
+    expect(searchText).toContain('玫瑰金色');
   });
 
   it('does not index drawer remarks attached to images', () => {

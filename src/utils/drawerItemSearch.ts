@@ -1,4 +1,5 @@
 import type { BufferItem } from '../types';
+import { getReliableInspirationAiTags } from '../features/appAgent/inspirationMemory/inspirationAnalysis';
 
 const cleanTextList = (values?: string[]) => (
   Array.isArray(values) ? values.map(value => String(value || '').trim()).filter(Boolean) : []
@@ -51,7 +52,7 @@ export const getDrawerItemSearchText = (item: BufferItem) => {
     ...cleanTextList(profile.mood),
     ...cleanTextList(profile.userTags),
     ...cleanTextList(profile.userNotes),
-    ...(profile.aiTags || []).map(tag => String(tag?.name || '').trim()).filter(Boolean),
+    ...getReliableInspirationAiTags(profile).map(tag => tag.name),
   ] : [];
 
   return [

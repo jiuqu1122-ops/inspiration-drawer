@@ -151,6 +151,8 @@ struct ImageThumbnailFileResult {
     file_size: u64,
     #[serde(rename = "modifiedAt")]
     modified_at: u64,
+    #[serde(rename = "cacheHit")]
+    cache_hit: bool,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -9833,6 +9835,7 @@ fn ensure_image_thumbnail_file_impl(
                     fingerprint: metadata.fingerprint,
                     file_size: metadata.size,
                     modified_at: metadata.modified_at,
+                    cache_hit: true,
                 });
             }
         }
@@ -9860,6 +9863,7 @@ fn ensure_image_thumbnail_file_impl(
         fingerprint: metadata.fingerprint,
         file_size: metadata.size,
         modified_at: metadata.modified_at,
+        cache_hit: false,
     })
 }
 
@@ -17276,7 +17280,10 @@ fn main() {
             commands::assets::get_asset_count,
             commands::assets::upsert_assets,
             commands::assets::update_asset,
+            commands::assets::update_assets_batch,
             commands::assets::delete_asset,
+            commands::assets::delete_assets_batch,
+            commands::assets::move_assets_from_folders,
             commands::assets::get_assets_by_ids,
             commands::assets::get_assets_in_viewport,
             commands::assets::debug_get_all_canvas_nodes,
@@ -17285,6 +17292,9 @@ fn main() {
             commands::assets::replace_folders,
             commands::assets::move_folders,
             commands::assets::list_tags,
+            commands::assets::get_folder_asset_counts,
+            commands::assets::get_tag_asset_counts,
+            commands::assets::get_inspiration_analysis_counts,
             commands::assets::get_asset_thumbnails,
             commands::canvas::list_canvases,
             commands::canvas::list_deleted_canvases,
@@ -17304,6 +17314,7 @@ fn main() {
             commands::canvas::update_canvas_nodes,
             commands::canvas::patch_canvas_nodes,
             commands::migration::migrate_json_to_sqlite,
+            commands::migration::ensure_sqlite_asset_library,
             commands::migration::get_migration_status,
             commands::migration::rollback_to_json_mode,
             agent::agent_load_settings,

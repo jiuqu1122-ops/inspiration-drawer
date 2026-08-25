@@ -561,6 +561,7 @@ type CloudVideoGenerationResult = {
 const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const model = String(options.model || '').trim();
   try {
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
@@ -570,7 +571,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         // because the wallet API provider field is legacy protocol metadata.
         provider: normalizeCloudWalletImageProvider(options.provider),
         providerChannelId: options.providerChannelId?.trim() || undefined,
-        model: String(options.model || '').trim(),
+        model,
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
         inputImages: (options.inputImages || []).filter(Boolean).slice(0, options.provider === 'new-api' ? 9 : 8),

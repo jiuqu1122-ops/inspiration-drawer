@@ -5,9 +5,29 @@ use serde_json::{json, Value};
 
 use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
+    AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
     MoveFoldersOptions, ViewportOptions,
 };
+
+fn has_completed_inspiration_analysis(item: &Value) -> bool {
+    let has_tags = item
+        .pointer("/inspirationProfile/aiTags")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            tags.iter().any(|tag| {
+                tag.get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|name| !name.is_empty())
+            })
+        })
+        .unwrap_or(false);
+    let analysis_version = item
+        .pointer("/inspirationProfile/analysisVersion")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    has_tags || analysis_version >= 2
+}
 
 pub struct JsonAssetRepository {
     app_handle: tauri::AppHandle,
@@ -93,8 +113,24 @@ impl AssetRepository for JsonAssetRepository {
         Err("JSON repository is read-only for command updates; use legacy save_items for rollback mode".to_string())
     }
 
+    fn update_assets_batch(&self, _updates: Vec<AssetBatchUpdate>) -> Result<Vec<Value>, String> {
+        Err("JSON repository is read-only for command batch updates; use legacy save_items for rollback mode".to_string())
+    }
+
     fn delete_asset(&self, _id: &str) -> Result<bool, String> {
         Err("JSON repository is read-only for command deletes; use legacy save_items for rollback mode".to_string())
+    }
+
+    fn delete_assets_batch(&self, _ids: Vec<String>) -> Result<usize, String> {
+        Err("JSON repository is read-only for command batch deletes; use legacy save_items for rollback mode".to_string())
+    }
+
+    fn move_assets_from_folders(
+        &self,
+        _source_folder_ids: Vec<String>,
+        _destination_folder_id: Option<String>,
+    ) -> Result<usize, String> {
+        Err("JSON repository is read-only for folder asset moves; use legacy save_items for rollback mode".to_string())
     }
 
     fn get_assets_by_ids(&self, ids: Vec<String>) -> Result<Vec<Value>, String> {
@@ -303,6 +339,84 @@ impl AssetRepository for JsonAssetRepository {
         Ok(Vec::new())
     }
 
+    fn get_folder_asset_counts(&self, _library_id: Option<String>) -> Result<Vec<Value>, String> {
+        let mut counts = HashMap::<Option<String>, i64>::new();
+        for item in self.read_items()? {
+            let folder_id = item
+                .get("folderId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            *counts.entry(folder_id).or_default() += 1;
+        }
+        Ok(counts
+            .into_iter()
+            .map(|(folder_id, count)| json!({ "folderId": folder_id, "count": count }))
+            .collect())
+    }
+
+    fn get_tag_asset_counts(&self, _library_id: Option<String>) -> Result<Vec<Value>, String> {
+        let mut counts = HashMap::<String, i64>::new();
+        for item in self.read_items()? {
+            let Some(remarks) = item.get("remarks").and_then(Value::as_array) else {
+                continue;
+            };
+            let mut seen = HashSet::new();
+            for remark in remarks {
+                let Some(tag) = remark
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| value.starts_with('#') && value.len() > 1)
+                else {
+                    continue;
+                };
+                let tag_id = format!("tag-{}", crate::stable_hash_hex(tag.trim_start_matches('#').trim()));
+                if seen.insert(tag_id.clone()) {
+                    *counts.entry(tag_id).or_default() += 1;
+                }
+            }
+        }
+        Ok(counts
+            .into_iter()
+            .map(|(tag_id, count)| json!({ "tagId": tag_id, "count": count }))
+            .collect())
+    }
+
+    fn get_inspiration_analysis_counts(&self, _library_id: Option<String>) -> Result<Value, String> {
+        let images = self
+            .read_items()?
+            .into_iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("image"))
+            .collect::<Vec<_>>();
+        let mut analyzed = 0_i64;
+        let mut waiting_retry = 0_i64;
+        let mut skipped = 0_i64;
+        for item in &images {
+            let has_tags = has_completed_inspiration_analysis(item);
+            if has_tags {
+                analyzed += 1;
+                continue;
+            }
+            let failure = item.get("inspirationAnalysisFailure");
+            let attempts = failure
+                .and_then(|value| value.get("attempts"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if attempts >= 3 {
+                skipped += 1;
+            } else if failure.is_some() {
+                waiting_retry += 1;
+            }
+        }
+        Ok(json!({
+            "total": images.len() as i64,
+            "analyzed": analyzed,
+            "waitingRetry": waiting_retry,
+            "skipped": skipped,
+        }))
+    }
+
     fn get_asset_thumbnails(&self, asset_id: &str) -> Result<Vec<Value>, String> {
         Ok(self
             .get_asset_by_id(asset_id)?
@@ -433,6 +547,34 @@ fn apply_json_filters(items: &mut Vec<Value>, options: &AssetListOptions) {
         .filter(|value| !value.is_empty())
     {
         items.retain(|item| item.get("type").and_then(Value::as_str) == Some(file_type));
+    }
+    if let Some(rating) = options.rating {
+        items.retain(|item| item.get("rating").and_then(Value::as_i64).unwrap_or(0) == rating);
+    }
+    if let Some(quick_access) = options.quick_access {
+        items.retain(|item| item.get("isQuickAccess").and_then(Value::as_bool).unwrap_or(false) == quick_access);
+    }
+    if let Some(status) = options
+        .inspiration_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        items.retain(|item| {
+            let has_tags = has_completed_inspiration_analysis(item);
+            let failure = item.get("inspirationAnalysisFailure");
+            let attempts = failure
+                .and_then(|value| value.get("attempts"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            match status {
+                "analyzed" => has_tags,
+                "unprocessed" => !has_tags && failure.is_none(),
+                "retryable" => !has_tags && failure.is_some() && attempts < 3,
+                "skipped" => !has_tags && attempts >= 3,
+                _ => true,
+            }
+        });
     }
     if let Some(keyword) = options
         .keyword

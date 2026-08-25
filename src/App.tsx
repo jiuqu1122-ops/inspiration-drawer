@@ -21,6 +21,7 @@ import {
 } from './components/SnipOverlay';
 import { DrawerOrganizationPanel } from './components/DrawerOrganizationPanel';
 import { DrawerAiClassificationBar } from './components/DrawerAiClassificationBar';
+import { DrawerAssetGrid } from './components/drawer/DrawerAssetGrid';
 import {
   CanvasListItem,
   CanvasRailItem,
@@ -414,6 +415,7 @@ import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/app
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
+  AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS,
   INSPIRATION_REFERENCE_ROLES,
   applyInspirationCandidateRanking,
   buildInspirationCandidateRankingPrompt,
@@ -491,6 +493,23 @@ import {
   type AiClassificationDimension,
 } from './features/aiClassification';
 import { listFolders, moveFolders, replaceFolders } from './services/libraryApi';
+import {
+  ASSET_PAGE_SIZE,
+  deleteAssetsBatch,
+  getAssetById,
+  getAssetCount,
+  getAssetsByIds,
+  getFolderAssetCounts,
+  getInspirationAnalysisCounts,
+  listAssets,
+  MAX_DRAWER_ASSET_CACHE_SIZE,
+  moveAssetsFromFolders,
+  updateAsset,
+  updateAssetsBatch,
+  type AssetListOptions,
+} from './services/assetsApi';
+import { ensureSqliteAssetLibrary } from './services/migrationApi';
+import { mergeDrawerAssetPageWindow, useDrawerAssetCache } from './hooks/useDrawerAssetCache';
 import {
   CANVAS_BASE_HEIGHT,
   CANVAS_BASE_WIDTH,
@@ -630,6 +649,7 @@ import {
   shouldReuseStartupDrawerAfterOverlay,
 } from './features/startup';
 import { writeImageSourceToClipboard, writeLocalImageFileToClipboard } from './features/imageClipboard';
+import { resolveCanvasPasteSource } from './features/canvasPasteRouting';
 import {
   getDrawerExternalDragCacheCandidates,
   getDrawerExternalDragLocalCandidates,
@@ -897,7 +917,7 @@ const TABS: { id: DrawerTabType; label: string; icon: any }[] = [
 const CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY = 'drawer_calendar_notifications_enabled';
 const SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY = 'drawer_screenshot_auto_pin_note';
 const AUTO_INSPIRATION_ANALYSIS_ENABLED = true;
-const AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY = 'drawer_ai_analysis_note_payload_fix_v1';
+const AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY = 'drawer_ai_analysis_note_payload_fix_v2';
 const AI_GENERATED_IMAGE_PROMPT_NOTE_CLEANUP_KEY = 'drawer_ai_generated_prompt_note_cleanup_v1';
 const AUTO_INSPIRATION_ANALYSIS_RETRY_MIGRATION_KEY = 'drawer_ai_analysis_retry_migration_v3';
 const CALENDAR_NOTIFICATION_SENT_STORAGE_PREFIX = 'drawer_calendar_notification_sent_';
@@ -921,17 +941,14 @@ const CANVAS_INTERACTION_DEBUG = false;
 const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
 const BLANK_NOTE_CREATE_LOCK_STORAGE_KEY = 'drawer_blank_note_create_lock';
 const FLOATING_NOTE_CREATE_LOCK_STORAGE_PREFIX = 'drawer_floating_note_create_lock_';
-const DRAWER_INITIAL_RENDER_LIMIT = 48;
-const DRAWER_RENDER_BATCH_SIZE = 32;
-const DRAWER_RENDER_LOAD_AHEAD_PX = 640;
 const CANVAS_SEARCH_CANDIDATE_LIMIT = 36;
 const DRAWER_VIRTUALIZATION_THRESHOLD = 240;
-const DRAWER_VIRTUALIZATION_OVERSCAN_ROWS = 2;
+const createAssetId = () => globalThis.crypto.randomUUID();
 const PREVIEW_ORIGINAL_CACHE_LIMIT = 5;
 const CANVAS_NAV_PANEL_TOP_MARGIN = 12;
 const CANVAS_PASTE_OFFSET = 54;
-const INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE = 768;
-const INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES = 700 * 1024;
+const INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE = 512;
+const INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES = 360 * 1024;
 const STARTUP_CONSENT_DELAY_MS = 15000;
 const CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY = 'drawer_cloudflared_disclaimer_accepted';
 const CANVAS_CONNECTION_HANDLE_OUTSET = 0;
@@ -1029,13 +1046,42 @@ function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
 
-  const [items, setItems] = useState<BufferItem[]>([]);
+  const [assetStorageMode, setAssetStorageMode] = useState<'initializing' | 'sqlite' | 'json'>('initializing');
+  const [assetLibraryReady, setAssetLibraryReady] = useState(false);
+  const [totalAssetCount, setTotalAssetCount] = useState(0);
+  const [assetWindowOffset, setAssetWindowOffset] = useState(0);
+  const [hasMoreAssets, setHasMoreAssets] = useState(false);
+  const [isAssetPageLoading, setIsAssetPageLoading] = useState(false);
+  const [assetStatsRevision, setAssetStatsRevision] = useState(0);
+  const [folderAssetCountRows, setFolderAssetCountRows] = useState<Array<{ folderId: string | null; count: number }>>([]);
+  const [quickAccessItems, setQuickAccessItems] = useState<BufferItem[]>([]);
+  const assetQueryRequestIdRef = useRef(0);
+  const assetPageOffsetsInFlightRef = useRef(new Set<number>());
+  const assetQueryOptionsRef = useRef<AssetListOptions>({});
+  const assetQueryTotalCountRef = useRef(0);
+  const assetWindowOffsetRef = useRef(0);
+  const {
+    assets: items,
+    setAssets: setItems,
+    replaceAssetsFromQuery,
+    appendAssetsFromQuery,
+  } = useDrawerAssetCache({
+    storageMode: assetStorageMode,
+    onPersisted: () => setAssetStatsRevision(revision => revision + 1),
+    onError: error => console.warn('SQLite 素材写入失败:', error),
+  });
   const [folders, setFolders] = useState<Folder[]>([]);
   const [activeFolderId, setActiveFolderId] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<DrawerTabType>('all');
   const [autoAiAnalysisProgress, setAutoAiAnalysisProgress] = useState<{
     completed: number;
     failed: number;
+    total: number;
+  } | null>(null);
+  const [sqliteAiAnalysisSummary, setSqliteAiAnalysisSummary] = useState<{
+    analyzed: number;
+    skipped: number;
+    waitingRetry: number;
     total: number;
   } | null>(null);
   const [autoAiAnalysisRetryTick, setAutoAiAnalysisRetryTick] = useState(0);
@@ -1413,6 +1459,7 @@ function MainApp() {
   const canvasWorkflowFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasWorkflowFileTargetIdRef = useRef<string | null>(null);
   const canvasClipboardRef = useRef<CanvasImageItem[]>([]);
+  const preferCanvasClipboardRef = useRef(false);
   const canvasPanRef = useRef<{
     pointerId: number;
     button: number;
@@ -1933,7 +1980,6 @@ function MainApp() {
   }, [collapsedFolderIds]);
 
   const [isResizingCards, setIsResizingCards] = useState(false);
-  const [drawerRenderLimit, setDrawerRenderLimit] = useState(DRAWER_INITIAL_RENDER_LIMIT);
   const drawerScrollRef = useRef<HTMLDivElement | null>(null);
   const [isAntiTouchMode, setIsAntiTouchMode] = useState(() => localStorage.getItem('drawer_anti_touch_mode') === 'true');
   useEffect(() => {
@@ -1947,6 +1993,7 @@ function MainApp() {
   useEffect(() => {
     if (
       !isDataLoaded
+      || assetStorageMode !== 'json'
       || localStorage.getItem(AUTO_INSPIRATION_ANALYSIS_RETRY_MIGRATION_KEY) === '1'
     ) return;
     let changed = false;
@@ -1965,9 +2012,13 @@ function MainApp() {
     if (!changed) return;
     itemsRef.current = nextItems;
     startTransition(() => setItems(nextItems));
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
-    if (!isDataLoaded || autoInspirationAnalysisStartupRequeueRef.current) return;
+    if (
+      !isDataLoaded
+      || assetStorageMode !== 'json'
+      || autoInspirationAnalysisStartupRequeueRef.current
+    ) return;
     autoInspirationAnalysisStartupRequeueRef.current = true;
     let changed = false;
     const nextItems = itemsRef.current.map(item => {
@@ -1982,9 +2033,13 @@ function MainApp() {
     if (!changed) return;
     itemsRef.current = nextItems;
     startTransition(() => setItems(nextItems));
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
-    if (!isDataLoaded || localStorage.getItem(AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY) === '1') return;
+    if (
+      !isDataLoaded
+      || assetStorageMode !== 'json'
+      || localStorage.getItem(AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY) === '1'
+    ) return;
     localStorage.setItem(AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY, '1');
     let changed = false;
     const nextItems = itemsRef.current.map(item => {
@@ -1995,7 +2050,7 @@ function MainApp() {
     if (!changed) return;
     itemsRef.current = nextItems;
     startTransition(() => setItems(nextItems));
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
     if (
       !isDataLoaded
@@ -2193,7 +2248,14 @@ function MainApp() {
       void emitFloatingNoteUpdated(entry.label, entry.snapshot).catch(() => {});
     });
     writeOpenFloatingNoteLabels(snapshot.openFloatingNoteLabels);
-    setItems(cloneDrawerValue(snapshot.items));
+    setItems(previous => {
+      const restoredItems = cloneDrawerValue(snapshot.items);
+      const restoredIds = new Set(restoredItems.map(item => item.id));
+      const retainedPreviouslyStoredItems = previous.filter(item => (
+        !restoredIds.has(item.id) && item.createdAt <= snapshot.createdAt
+      ));
+      return [...restoredItems, ...retainedPreviouslyStoredItems];
+    });
     const nextFolders = cloneDrawerValue(snapshot.folders);
     setFolders(nextFolders);
     persistFoldersSnapshot(nextFolders);
@@ -2445,7 +2507,7 @@ function MainApp() {
 
     try {
       const item: BufferItem = {
-        id: `blank_note_${now}_${Math.random().toString(36).slice(2, 7)}`,
+        id: `blank_note_${createAssetId()}`,
         type: 'text',
         content: '',
         name: '新便签',
@@ -2563,7 +2625,11 @@ function MainApp() {
   const localVisionModelEnsurePromiseRef = useRef<Promise<void> | null>(null);
   const [localVisionModelLastError, setLocalVisionModelLastError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const deferredSearchQuery = React.useDeferredValue(searchQuery);
+  const [deferredSearchQuery, setDeferredSearchQuery] = useState('');
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDeferredSearchQuery(searchQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [canvasSearchCandidateLimit, setCanvasSearchCandidateLimit] = useState(CANVAS_SEARCH_CANDIDATE_LIMIT);
   const [canvasWorkflowSlotPickTarget, setCanvasWorkflowSlotPickTarget] = useState<{
@@ -4042,7 +4108,7 @@ function MainApp() {
     const folderName = query.slice(0, 32);
     const existingFolder = foldersRef.current.find(folder => folder.name === folderName);
     const folder: Folder = existingFolder || {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name: folderName,
       color: '#0ea5e9',
     };
@@ -4066,7 +4132,7 @@ function MainApp() {
       const newItems = collected.map((image, index) => {
         const fileName = image.path.split(/[\\/]/).pop() || `${folderName}_${index + 1}.jpg`;
         return {
-          id: `web_collect_${now}_${index}_${Math.random().toString(36).substring(2, 6)}`,
+          id: `web_collect_${createAssetId()}`,
           type: 'image',
           content: image.title || fileName,
           name: image.title || fileName,
@@ -4657,7 +4723,7 @@ function MainApp() {
     const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
     const folderIdMap = new Map<string, string>();
     const nextFolders: Folder[] = [];
-    const makeFolderId = () => Math.random().toString(36).substring(2, 9);
+    const makeFolderId = createAssetId;
     const pushEagleFolder = (folder: EagleFolderPayload, parentId?: string) => {
       const name = String(folder.name || 'Eagle 文件夹').trim() || 'Eagle 文件夹';
       const key = (parentId || '') + '|' + name.toLowerCase();
@@ -4699,7 +4765,7 @@ function MainApp() {
       const type = getEagleItemType(entry, normalizedPath);
       const sourceUrl = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url) ? entry.url : undefined;
       const item = {
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         type,
         content: name,
         name,
@@ -4805,7 +4871,7 @@ function MainApp() {
       const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
       const folderIdMap = new Map<string, string>();
       const nextFolders: Folder[] = [];
-      const makeFolderId = () => Math.random().toString(36).substring(2, 9);
+      const makeFolderId = createAssetId;
       const pushEagleFolder = (folder: EagleFolderPayload, parentId?: string) => {
         const name = String(folder.name || 'Eagle 文件夹').trim() || 'Eagle 文件夹';
         const key = (parentId || '') + '|' + name.toLowerCase();
@@ -4866,7 +4932,7 @@ function MainApp() {
           const type = getEagleItemType(entry, normalizedPath);
           const sourceUrl = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url) ? entry.url : undefined;
           const item = {
-            id: Math.random().toString(36).substring(2, 9),
+            id: createAssetId(),
             type,
             content: name,
             name,
@@ -5033,11 +5099,11 @@ function MainApp() {
     [folders],
   );
   const folderItemCounts = useMemo(() => {
-    const directCounts = new Map<string, number>();
-    items.forEach(item => {
-      if (!item.folderId) return;
-      directCounts.set(item.folderId, (directCounts.get(item.folderId) || 0) + 1);
-    });
+    const directCounts = new Map(
+      folderAssetCountRows
+        .filter((row): row is { folderId: string; count: number } => Boolean(row.folderId))
+        .map(row => [row.folderId, row.count]),
+    );
     const counts = new Map<string, number>();
     folders.forEach(folder => {
       const scopeIds = getDrawerFolderScopeIds(folders, folder.id);
@@ -5046,7 +5112,7 @@ function MainApp() {
       counts.set(folder.id, count);
     });
     return counts;
-  }, [folders, items]);
+  }, [folderAssetCountRows, folders]);
   const visibleFolderIds = useMemo(() => visibleFolderEntries.map(entry => entry.folder.id), [visibleFolderEntries]);
   const folderMoveSelectionIds = useMemo(() => (
     selectedFolderIds.filter(id => folders.some(folder => folder.id === id))
@@ -5057,8 +5123,13 @@ function MainApp() {
     if (movingIds.includes(targetId)) return true;
     return movingIds.some(id => isDrawerFolderDescendant(folders, targetId, id));
   }, [folderMoveSelectionIds, folders]);
-  const mainDrawerItemCount = useMemo(() => items.filter(item => !item.folderId).length, [items]);
+  const mainDrawerItemCount = useMemo(() => (
+    folderAssetCountRows.find(row => row.folderId === null)?.count || 0
+  ), [folderAssetCountRows]);
   const drawerAiAnalysisSummary = useMemo(() => {
+    if (assetStorageMode === 'sqlite' && sqliteAiAnalysisSummary) {
+      return sqliteAiAnalysisSummary;
+    }
     const images = items.filter(item => item.type === 'image');
     return {
       analyzed: images.filter(item => hasUsableInspirationAiTags(item.inspirationProfile)).length,
@@ -5073,14 +5144,14 @@ function MainApp() {
       )).length,
       total: images.length,
     };
-  }, [items]);
+  }, [assetStorageMode, items, sqliteAiAnalysisSummary]);
   const normalizedDeferredSearchQuery = useMemo(
     () => deferredSearchQuery.trim().toLowerCase(),
     [deferredSearchQuery],
   );
   const drawerItemSearchTextCacheRef = useRef(new WeakMap<BufferItem, string>());
   const drawerSearchIndex = useMemo(() => {
-    if (!isSearchActive) return [] as Array<{ item: BufferItem; text: string }>;
+    if (assetStorageMode !== 'json' || !isSearchActive) return [] as Array<{ item: BufferItem; text: string }>;
     const cache = drawerItemSearchTextCacheRef.current;
     return items.map(item => {
       let text = cache.get(item);
@@ -5090,9 +5161,248 @@ function MainApp() {
       }
       return { item, text };
     });
-  }, [isSearchActive, items]);
+  }, [assetStorageMode, isSearchActive, items]);
+  const drawerFolderScopeIds = useMemo(() => (
+    activeFolderId === 'all'
+      ? []
+      : [...getDrawerFolderScopeIds(folders, activeFolderId)].sort()
+  ), [activeFolderId, folders]);
+  const drawerAssetListOptions = useMemo<AssetListOptions>(() => {
+    const keyword = isSearchActive ? deferredSearchQuery.trim() : '';
+    return {
+      keyword: keyword || undefined,
+      folder_id: !keyword && activeFolderId === 'all' ? 'all' : undefined,
+      folder_ids: !keyword && activeFolderId !== 'all' ? drawerFolderScopeIds : undefined,
+      file_type: activeTab !== 'all' && activeTab !== 'notes' && activeTab !== 'calendar'
+        ? activeTab
+        : undefined,
+      sort: 'created_at_desc',
+    };
+  }, [activeFolderId, activeTab, deferredSearchQuery, drawerFolderScopeIds, isSearchActive]);
+  const drawerAssetQueryKey = useMemo(
+    () => JSON.stringify(drawerAssetListOptions),
+    [drawerAssetListOptions],
+  );
+  useEffect(() => {
+    drawerUndoStackRef.current = [];
+    drawerTextEditUndoIdsRef.current.clear();
+    assetWindowOffsetRef.current = 0;
+    setAssetWindowOffset(0);
+  }, [drawerAssetQueryKey]);
+  const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
+  const assetMatchesDrawerQuery = useCallback((item: BufferItem, options: AssetListOptions) => {
+    if (options.file_type && item.type !== options.file_type) return false;
+    const keyword = options.keyword?.trim().toLowerCase();
+    if (keyword && !getDrawerItemSearchText(item).includes(keyword)) return false;
+    if (!keyword && options.folder_ids && options.folder_ids.length > 0) {
+      return Boolean(item.folderId && options.folder_ids.includes(item.folderId));
+    }
+    if (!keyword && options.folder_id === 'all') return !item.folderId;
+    if (!keyword && options.folder_id) return item.folderId === options.folder_id;
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!assetLibraryReady || assetStorageMode !== 'sqlite' || isUtilityActiveTab) {
+      assetQueryRequestIdRef.current += 1;
+      assetPageOffsetsInFlightRef.current.clear();
+      setIsAssetPageLoading(false);
+      return;
+    }
+    const requestId = ++assetQueryRequestIdRef.current;
+    const startedAt = performance.now();
+    assetPageOffsetsInFlightRef.current.clear();
+    assetPageOffsetsInFlightRef.current.add(0);
+    assetQueryOptionsRef.current = drawerAssetListOptions;
+    setIsAssetPageLoading(true);
+
+    void Promise.all([
+      getAssetCount(drawerAssetListOptions),
+      listAssets({ ...drawerAssetListOptions, offset: 0, limit: ASSET_PAGE_SIZE }),
+    ]).then(([count, firstPage]) => {
+      if (requestId !== assetQueryRequestIdRef.current) return;
+      const compactPage = firstPage.map(stripHeavyDataThumbnail);
+      replaceAssetsFromQuery(compactPage);
+      assetWindowOffsetRef.current = 0;
+      setAssetWindowOffset(0);
+      assetQueryTotalCountRef.current = count;
+      setTotalAssetCount(count);
+      setHasMoreAssets(compactPage.length < count);
+      if (import.meta.env.DEV) {
+        console.debug('[DrawerPerf] initial query', {
+          milliseconds: Math.round((performance.now() - startedAt) * 10) / 10,
+          assetsLoaded: compactPage.length,
+          totalAssets: count,
+        });
+      }
+    }).catch(error => {
+      if (requestId === assetQueryRequestIdRef.current) {
+        console.warn('SQLite 素材首屏查询失败:', error);
+        replaceAssetsFromQuery([]);
+        setTotalAssetCount(0);
+        setHasMoreAssets(false);
+      }
+    }).finally(() => {
+      assetPageOffsetsInFlightRef.current.delete(0);
+      if (requestId === assetQueryRequestIdRef.current) {
+        setIsAssetPageLoading(false);
+        setIsDataLoaded(true);
+      }
+    });
+  }, [
+    assetLibraryReady,
+    assetStorageMode,
+    drawerAssetListOptions,
+    drawerAssetQueryKey,
+    isUtilityActiveTab,
+    replaceAssetsFromQuery,
+  ]);
+
+  const loadNextDrawerAssetPage = useCallback(() => {
+    if (assetStorageMode !== 'sqlite' || isAssetPageLoading || !hasMoreAssets) return;
+    const requestId = assetQueryRequestIdRef.current;
+    const cachedQueryAssets = itemsRef.current.filter(item => (
+      assetMatchesDrawerQuery(item, assetQueryOptionsRef.current)
+    ));
+    const offset = assetWindowOffsetRef.current + cachedQueryAssets.length;
+    if (assetPageOffsetsInFlightRef.current.has(offset)) return;
+    assetPageOffsetsInFlightRef.current.add(offset);
+    setIsAssetPageLoading(true);
+    const startedAt = performance.now();
+    void listAssets({ ...assetQueryOptionsRef.current, offset, limit: ASSET_PAGE_SIZE })
+      .then(page => {
+        if (requestId !== assetQueryRequestIdRef.current) return;
+        const compactPage = page.map(stripHeavyDataThumbnail);
+        const merged = mergeDrawerAssetPageWindow(
+          cachedQueryAssets,
+          compactPage,
+          MAX_DRAWER_ASSET_CACHE_SIZE,
+        );
+        if (merged.evictedFromStart > 0) {
+          const nextWindowOffset = assetWindowOffsetRef.current + merged.evictedFromStart;
+          assetWindowOffsetRef.current = nextWindowOffset;
+          setAssetWindowOffset(nextWindowOffset);
+          replaceAssetsFromQuery(merged.assets);
+        } else {
+          appendAssetsFromQuery(compactPage);
+        }
+        setHasMoreAssets(
+          compactPage.length > 0
+          && offset + compactPage.length < assetQueryTotalCountRef.current,
+        );
+        if (import.meta.env.DEV) {
+          console.debug('[DrawerPerf] next page', {
+            offset,
+            milliseconds: Math.round((performance.now() - startedAt) * 10) / 10,
+            assetsLoaded: compactPage.length,
+          });
+        }
+      })
+      .catch(error => console.warn('SQLite 素材分页查询失败:', error))
+      .finally(() => {
+        assetPageOffsetsInFlightRef.current.delete(offset);
+        if (requestId === assetQueryRequestIdRef.current) setIsAssetPageLoading(false);
+      });
+  }, [
+    appendAssetsFromQuery,
+    assetMatchesDrawerQuery,
+    assetStorageMode,
+    hasMoreAssets,
+    isAssetPageLoading,
+    replaceAssetsFromQuery,
+  ]);
+
+  const loadPreviousDrawerAssetPage = useCallback(() => {
+    if (assetStorageMode !== 'sqlite' || isAssetPageLoading || assetWindowOffsetRef.current <= 0) return;
+    const requestId = assetQueryRequestIdRef.current;
+    const currentWindowOffset = assetWindowOffsetRef.current;
+    const limit = Math.min(ASSET_PAGE_SIZE, currentWindowOffset);
+    const offset = currentWindowOffset - limit;
+    if (assetPageOffsetsInFlightRef.current.has(offset)) return;
+    assetPageOffsetsInFlightRef.current.add(offset);
+    setIsAssetPageLoading(true);
+    const startedAt = performance.now();
+    void listAssets({ ...assetQueryOptionsRef.current, offset, limit })
+      .then(page => {
+        if (requestId !== assetQueryRequestIdRef.current) return;
+        const compactPage = page.map(stripHeavyDataThumbnail);
+        const cachedQueryAssets = itemsRef.current.filter(item => (
+          assetMatchesDrawerQuery(item, assetQueryOptionsRef.current)
+        ));
+        const merged = [...new Map([...compactPage, ...cachedQueryAssets]
+          .map(item => [item.id, item])).values()]
+          .slice(0, MAX_DRAWER_ASSET_CACHE_SIZE);
+        assetWindowOffsetRef.current = offset;
+        setAssetWindowOffset(offset);
+        replaceAssetsFromQuery(merged);
+        setHasMoreAssets(offset + merged.length < assetQueryTotalCountRef.current);
+        if (import.meta.env.DEV) {
+          console.debug('[DrawerPerf] previous page', {
+            offset,
+            milliseconds: Math.round((performance.now() - startedAt) * 10) / 10,
+            assetsLoaded: compactPage.length,
+          });
+        }
+      })
+      .catch(error => console.warn('SQLite 素材上一页查询失败:', error))
+      .finally(() => {
+        assetPageOffsetsInFlightRef.current.delete(offset);
+        if (requestId === assetQueryRequestIdRef.current) setIsAssetPageLoading(false);
+      });
+  }, [
+    assetMatchesDrawerQuery,
+    assetStorageMode,
+    isAssetPageLoading,
+    replaceAssetsFromQuery,
+  ]);
+
+  useEffect(() => {
+    if (!assetLibraryReady || assetStorageMode !== 'sqlite') return;
+    let cancelled = false;
+    void Promise.all([
+      getFolderAssetCounts(DEFAULT_LIBRARY_ID),
+      listAssets({ quick_access: true, sort: 'updated_at_desc', offset: 0, limit: ASSET_PAGE_SIZE }),
+      getAssetCount(assetQueryOptionsRef.current),
+    ]).then(([counts, pinned, currentQueryCount]) => {
+      if (cancelled) return;
+      setFolderAssetCountRows(counts);
+      setQuickAccessItems(pinned.map(stripHeavyDataThumbnail));
+      assetQueryTotalCountRef.current = currentQueryCount;
+      setTotalAssetCount(currentQueryCount);
+      const loadedQueryCount = itemsRef.current.filter(item => (
+        assetMatchesDrawerQuery(item, assetQueryOptionsRef.current)
+      )).length;
+      setHasMoreAssets(assetWindowOffsetRef.current + loadedQueryCount < currentQueryCount);
+    }).catch(error => console.warn('SQLite 素材统计查询失败:', error));
+    return () => { cancelled = true; };
+  }, [assetLibraryReady, assetMatchesDrawerQuery, assetStatsRevision, assetStorageMode]);
+
+  useEffect(() => {
+    if (assetStorageMode !== 'json') return;
+    setQuickAccessItems(items.filter(item => item.isQuickAccess));
+    const counts = new Map<string | null, number>();
+    items.forEach(item => {
+      const folderId = item.folderId || null;
+      counts.set(folderId, (counts.get(folderId) || 0) + 1);
+    });
+    setFolderAssetCountRows([...counts].map(([folderId, count]) => ({ folderId, count })));
+  }, [assetStorageMode, items]);
+
   const drawerScopedItems = useMemo(() => {
     if (isCanvasMode) return [];
+    if (assetStorageMode === 'sqlite') {
+      if (activeTab === 'notes' || activeTab === 'calendar') return [];
+      let result = items;
+      if (normalizedDeferredSearchQuery) {
+        result = result.filter(item => getDrawerItemSearchText(item).includes(normalizedDeferredSearchQuery));
+      } else if (activeFolderId === 'all') {
+        result = result.filter(item => !item.folderId);
+      } else {
+        const scopeIds = new Set(drawerFolderScopeIds);
+        result = result.filter(item => Boolean(item.folderId && scopeIds.has(item.folderId)));
+      }
+      return activeTab === 'all' ? result : result.filter(item => item.type === activeTab);
+    }
     let result = items;
     const hasSearchQuery = Boolean(normalizedDeferredSearchQuery);
     if (hasSearchQuery) {
@@ -5115,7 +5425,9 @@ function MainApp() {
   }, [
     activeFolderId,
     activeTab,
+    assetStorageMode,
     drawerSearchIndex,
+    drawerFolderScopeIds,
     folders,
     isCanvasMode,
     items,
@@ -5155,22 +5467,36 @@ function MainApp() {
     drawerAiClassificationGroups,
     isDrawerAiClassificationMode,
   ]);
-  const canvasSearchMediaResults = useMemo(() => {
+  const [canvasSearchMediaResults, setCanvasSearchMediaResults] = useState({
+    candidates: [] as BufferItem[],
+    total: 0,
+  });
+  useEffect(() => {
     const query = normalizedDeferredSearchQuery;
-    if (!isCanvasMode || !isSearchActive || !query) {
-      return { candidates: [] as BufferItem[], total: 0 };
+    if (!isCanvasMode || !isSearchActive || !query || assetStorageMode !== 'sqlite') {
+      setCanvasSearchMediaResults({ candidates: [], total: 0 });
+      return;
     }
-    const candidates: BufferItem[] = [];
-    let total = 0;
-    drawerSearchIndex.forEach(entry => {
-      if (!isCanvasDrawerMediaItem(entry.item) || !entry.text.includes(query)) return;
-      total += 1;
-      if (candidates.length < canvasSearchCandidateLimit) candidates.push(entry.item);
-    });
-    return { candidates, total };
+    let cancelled = false;
+    const limit = Math.max(1, canvasSearchCandidateLimit);
+    void Promise.all([
+      listAssets({ keyword: query, file_type: 'image', sort: 'created_at_desc', limit }),
+      listAssets({ keyword: query, file_type: 'video', sort: 'created_at_desc', limit }),
+      getAssetCount({ keyword: query, file_type: 'image' }),
+      getAssetCount({ keyword: query, file_type: 'video' }),
+    ]).then(([images, videos, imageCount, videoCount]) => {
+      if (cancelled) return;
+      const candidates = [...images, ...videos]
+        .filter(isCanvasDrawerMediaItem)
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, limit)
+        .map(stripHeavyDataThumbnail);
+      setCanvasSearchMediaResults({ candidates, total: imageCount + videoCount });
+    }).catch(error => console.warn('SQLite 画布素材搜索失败:', error));
+    return () => { cancelled = true; };
   }, [
+    assetStorageMode,
     canvasSearchCandidateLimit,
-    drawerSearchIndex,
     isCanvasMode,
     isSearchActive,
     normalizedDeferredSearchQuery,
@@ -5182,115 +5508,22 @@ function MainApp() {
     )));
   }, [canvasItems, isCanvasMode, isSearchActive, normalizedDeferredSearchQuery]);
 
-  const quickAccessItems = useMemo(() => items.filter(item => item.isQuickAccess), [items]);
+  const setDrawerItemQuickAccess = useCallback((item: BufferItem, enabled: boolean) => {
+    const nextItem = { ...item, isQuickAccess: enabled };
+    const isLoaded = itemsRef.current.some(candidate => candidate.id === item.id);
+    if (isLoaded) {
+      setItems(previous => previous.map(candidate => candidate.id === item.id ? nextItem : candidate));
+    } else if (assetStorageMode === 'sqlite') {
+      void updateAsset(item.id, { metadata: nextItem })
+        .then(() => setAssetStatsRevision(revision => revision + 1))
+        .catch(error => console.warn('更新快速访问失败:', error));
+    }
+    setQuickAccessItems(previous => enabled
+      ? [...new Map([nextItem, ...previous].map(candidate => [candidate.id, candidate])).values()]
+      : previous.filter(candidate => candidate.id !== item.id));
+  }, [assetStorageMode, setItems]);
+
   const drawerCardActionContext = useMemo(() => ({}), []);
-  const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
-  const [drawerScrollTop, setDrawerScrollTop] = useState(0);
-  const [drawerViewportHeight, setDrawerViewportHeight] = useState(1);
-  const canVirtualizeDrawerGrid = !isUtilityActiveTab && displayItems.length >= DRAWER_VIRTUALIZATION_THRESHOLD;
-  const drawerGridColumnCount = useMemo(() => {
-    const width = drawerScrollRef.current?.clientWidth || 1;
-    const gap = 10;
-    const targetWidth = cardWidth;
-    return Math.max(1, Math.floor((width + gap) / Math.max(1, targetWidth + gap)));
-  }, [cardWidth, drawerViewportHeight]);
-  const drawerVirtualWindow = useMemo(() => {
-    if (!canVirtualizeDrawerGrid) {
-      return { start: 0, end: Math.min(displayItems.length, drawerRenderLimit), top: 0, bottom: 0 };
-    }
-    const totalRows = Math.ceil(displayItems.length / drawerGridColumnCount);
-    const compactMediaRowHeight = Math.max(1, cardMediaHeight + 48);
-    const detailedRowHeight = Math.max(compactMediaRowHeight, cardMediaHeight + 118);
-    const rowOffsets = new Array<number>(totalRows + 1).fill(0);
-    for (let row = 0; row < totalRows; row += 1) {
-      const rowStart = row * drawerGridColumnCount;
-      const rowEnd = Math.min(displayItems.length, rowStart + drawerGridColumnCount);
-      const hasDetailedCard = displayItems
-        .slice(rowStart, rowEnd)
-        .some(item => item.type !== 'image' && item.type !== 'video');
-      rowOffsets[row + 1] = rowOffsets[row] + (hasDetailedCard ? detailedRowHeight : compactMediaRowHeight);
-    }
-
-    const viewportTop = Math.max(0, drawerScrollTop);
-    const viewportBottom = viewportTop + Math.max(drawerViewportHeight, 1);
-    let firstVisibleRow = 0;
-    while (firstVisibleRow < totalRows - 1 && rowOffsets[firstVisibleRow + 1] <= viewportTop) {
-      firstVisibleRow += 1;
-    }
-    let endVisibleRow = Math.min(totalRows, firstVisibleRow + 1);
-    while (endVisibleRow < totalRows && rowOffsets[endVisibleRow] < viewportBottom) {
-      endVisibleRow += 1;
-    }
-
-    const firstRow = Math.max(0, firstVisibleRow - DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
-    const endRow = Math.min(totalRows, endVisibleRow + DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
-    const start = Math.min(displayItems.length, firstRow * drawerGridColumnCount);
-    const end = Math.min(displayItems.length, endRow * drawerGridColumnCount);
-    return {
-      start,
-      end,
-      top: rowOffsets[firstRow],
-      bottom: Math.max(0, rowOffsets[totalRows] - rowOffsets[endRow]),
-    };
-  }, [
-    canVirtualizeDrawerGrid,
-    cardMediaHeight,
-    cardWidth,
-    displayItems,
-    drawerGridColumnCount,
-    drawerRenderLimit,
-    drawerScrollTop,
-    drawerViewportHeight,
-  ]);
-  const renderedDisplayItems = useMemo(
-    () => displayItems.slice(drawerVirtualWindow.start, drawerVirtualWindow.end),
-    [displayItems, drawerVirtualWindow.end, drawerVirtualWindow.start],
-  );
-  const optimizeLargeDrawerList = canVirtualizeDrawerGrid || renderedDisplayItems.length > 80;
-  const hasMoreDisplayItems = !canVirtualizeDrawerGrid && drawerRenderLimit < displayItems.length;
-  const loadMoreDisplayItems = () => {
-    setDrawerRenderLimit(limit => Math.min(displayItems.length, limit + DRAWER_RENDER_BATCH_SIZE));
-  };
-  useLayoutEffect(() => {
-    if (isCanvasMode) return;
-    const node = drawerScrollRef.current;
-    if (!node) return;
-
-    const updateDrawerViewportMetrics = () => {
-      setDrawerScrollTop(node.scrollTop || 0);
-      setDrawerViewportHeight(node.clientHeight || 1);
-    };
-
-    updateDrawerViewportMetrics();
-    const frame = window.requestAnimationFrame(updateDrawerViewportMetrics);
-    const observer = typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(updateDrawerViewportMetrics)
-      : null;
-
-    observer?.observe(node);
-    window.addEventListener('resize', updateDrawerViewportMetrics);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer?.disconnect();
-      window.removeEventListener('resize', updateDrawerViewportMetrics);
-    };
-  }, [activeFolderId, activeTab, deferredSearchQuery, displayItems.length, isCanvasMode]);
-
-  const handleDrawerContentScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    const node = event.currentTarget;
-    setDrawerScrollTop(node.scrollTop);
-    setDrawerViewportHeight(node.clientHeight || 1);
-    if (isUtilityActiveTab || !hasMoreDisplayItems) return;
-    if (node.scrollTop + node.clientHeight >= node.scrollHeight - DRAWER_RENDER_LOAD_AHEAD_PX) {
-      loadMoreDisplayItems();
-    }
-  };
-
-  useEffect(() => {
-    setDrawerRenderLimit(DRAWER_INITIAL_RENDER_LIMIT);
-    setDrawerScrollTop(0);
-    drawerScrollRef.current?.scrollTo({ top: 0 });
-  }, [activeFolderId, activeTab, deferredSearchQuery, isCanvasMode]);
 
   const calendarEvents = useMemo<CalendarScheduleEvent[]>(() => {
     const sourceById = new Map(items.map(item => [item.id, item]));
@@ -6075,7 +6308,7 @@ function MainApp() {
       if (!shouldAcceptMobilePayload(data)) return;
       if (!isMobileConnected) showToast('📱 手机已连接');
       setIsMobileConnected(true); resetDisconnectTimer();
-      const newItem: BufferItem = { id: Math.random().toString(36).substring(2, 9), createdAt: Date.now(), ...data };
+      const newItem: BufferItem = { id: createAssetId(), createdAt: Date.now(), ...data };
       if (newItem.type === 'image' && newItem.path && !newItem.url) {
         newItem.url = convertFileSrc(newItem.path);
       }
@@ -6450,10 +6683,37 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    invoke('load_items').then((savedItems: any) => {
-      if (savedItems && savedItems.length > 0) setItems(savedItems.map(stripHeavyDataThumbnail));
-      setIsDataLoaded(true);
-    }).catch(() => setIsDataLoaded(true));
+    const initializeAssetLibrary = async () => {
+      try {
+        const status = await ensureSqliteAssetLibrary();
+        const mode = status.mode === 'json' ? 'json' : 'sqlite';
+        setAssetStorageMode(mode);
+        if (mode === 'json') {
+          const savedItems = await invoke<BufferItem[]>('load_items');
+          replaceAssetsFromQuery((savedItems || []).map(stripHeavyDataThumbnail));
+          setTotalAssetCount(savedItems?.length || 0);
+          setHasMoreAssets(false);
+          setIsDataLoaded(true);
+        }
+      } catch (error) {
+        console.warn('SQLite 素材库初始化失败，回退到旧 JSON 兼容模式:', error);
+        await invoke('rollback_to_json_mode').catch(() => undefined);
+        setAssetStorageMode('json');
+        try {
+          const savedItems = await invoke<BufferItem[]>('load_items');
+          replaceAssetsFromQuery((savedItems || []).map(stripHeavyDataThumbnail));
+          setTotalAssetCount(savedItems?.length || 0);
+        } catch (legacyError) {
+          console.warn('旧素材数据恢复失败:', legacyError);
+          replaceAssetsFromQuery([]);
+        }
+        setHasMoreAssets(false);
+        setIsDataLoaded(true);
+      } finally {
+        setAssetLibraryReady(true);
+      }
+    };
+    void initializeAssetLibrary();
     const restoreLegacyCanvasState = async () => {
       const savedState = await invoke('load_canvas_state');
       const restored = sanitizeCanvasPersistedState(savedState);
@@ -6539,10 +6799,10 @@ function MainApp() {
       }
     };
     void restoreFolders();
-  }, []);
+  }, [replaceAssetsFromQuery]);
 
   const saveDrawerItemsNow = () => {
-    if (!isDataLoaded) return;
+    if (!isDataLoaded || assetStorageMode !== 'json') return;
     if (drawerItemsSaveInFlightRef.current) {
       drawerItemsSaveQueuedRef.current = true;
       return;
@@ -6570,14 +6830,16 @@ function MainApp() {
     }, DRAWER_ITEMS_SAVE_DEBOUNCE_MS);
   };
 
-  useEffect(() => { scheduleDrawerItemsSave(); }, [items, isDataLoaded]);
+  useEffect(() => {
+    if (assetStorageMode === 'json') scheduleDrawerItemsSave();
+  }, [assetStorageMode, items, isDataLoaded]);
   useEffect(() => () => {
     if (drawerItemsSaveTimerRef.current !== null) {
       window.clearTimeout(drawerItemsSaveTimerRef.current);
       drawerItemsSaveTimerRef.current = null;
     }
     saveDrawerItemsNow();
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
     if (canvasItemsPatchCommitRef.current) {
       canvasItemsPatchCommitRef.current = false;
@@ -7040,7 +7302,12 @@ function MainApp() {
           if (!refresh) return '';
           if (item.path) {
             return invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', { path: item.path, size: 512 })
-              .then(result => result.url || (result.path ? convertFileSrc(result.path) : ''))
+              .then(result => {
+                if (import.meta.env.DEV) {
+                  console.debug('[DrawerPerf] thumbnail', { assetId: item.id, cacheHit: result.cacheHit === true });
+                }
+                return result.url || (result.path ? convertFileSrc(result.path) : '');
+              })
               .catch(() => createImageThumbnailInWebview(source));
           }
           return createImageThumbnailInWebview(source);
@@ -7139,12 +7406,7 @@ function MainApp() {
   };
 
   useEffect(() => {
-    const visibleIds = new Set([
-      ...renderedDisplayItems.map(item => item.id),
-      ...quickAccessItems.map(item => item.id),
-    ]);
-    const pending = items.find(item =>
-      visibleIds.has(item.id) &&
+    const pending = quickAccessItems.find(item =>
       item.type === 'video' &&
       item.path &&
       !item.thumbnail &&
@@ -7166,7 +7428,7 @@ function MainApp() {
     return () => {
       cancelled = true;
     };
-  }, [items, renderedDisplayItems, quickAccessItems]);
+  }, [items, quickAccessItems]);
 
   const thumbnailRecompressInFlightRef = useRef<Set<string>>(new Set());
 
@@ -7831,9 +8093,6 @@ function MainApp() {
     const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
     const persistedNode = stripCanvasItemDataImageProvenance(node);
     return enqueueCanvasBackgroundWrite(normalizedCanvasId, async () => {
-      if (persistedNode.item) {
-        await invoke('upsert_assets', { assets: [persistedNode.item] });
-      }
       await patchCanvasNodes(normalizedCanvasId, [persistedNode]);
     });
   };
@@ -7991,12 +8250,6 @@ function MainApp() {
         .map(stripCanvasItemDataImageProvenance);
       if (changedNodes.length === 0) return;
       const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
-      const assetItems = changedNodes.map(item => item.item).filter(Boolean);
-      if (assetItems.length > 0) {
-        invoke('upsert_assets', { assets: assetItems }).catch((err) => {
-          console.warn('同步变更画布素材到 SQLite 失败:', err);
-        });
-      }
       patchCanvasNodes(targetCanvasId, changedNodes)
         .then(() => {
           canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(
@@ -8057,14 +8310,6 @@ function MainApp() {
     const nodesSignature = getCanvasNodesPersistSignature(state.items);
     if (canvasLastSyncedNodesSignatureRef.current === nodesSignature) return;
     const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
-    if (state.items.length > 0) {
-      const assetItems = state.items.map(item => item.item).filter(Boolean);
-      if (assetItems.length > 0) {
-        invoke('upsert_assets', { assets: assetItems }).catch((err) => {
-          console.warn('同步画布素材到 SQLite 失败:', err);
-        });
-      }
-    }
     updateCanvasNodes(targetCanvasId, state.items)
       .then(() => {
         canvasLastSyncedNodesSignatureRef.current = nodesSignature;
@@ -8216,10 +8461,6 @@ function MainApp() {
     await enqueueCanvasBackgroundWrite(currentCanvasId, async () => {
       latestItems = (canvasSessionItemsRef.current.get(currentCanvasId) || state.items)
         .map(stripCanvasItemDataImageProvenance);
-      const assetItems = latestItems.map(item => item.item).filter(Boolean);
-      if (assetItems.length > 0) {
-        await invoke('upsert_assets', { assets: assetItems });
-      }
       await updateCanvasNodes(currentCanvasId, latestItems);
     });
     const latestSignature = getCanvasNodesPersistSignature(latestItems);
@@ -8814,7 +9055,7 @@ function MainApp() {
         : getCanvasAiOutputSize(sourceCanvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const pos = getCanvasAiOutputCopyPosition(sourceCanvasItem, size, outputIndex);
     const now = Date.now();
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const canvasItem: CanvasImageItem = {
       id: makeCanvasNodeId(itemId, 'media'),
       item: {
@@ -9061,6 +9302,7 @@ function MainApp() {
     const copied = canvasItemsRef.current.filter(item => idSet.has(item.id));
     if (copied.length === 0) return 0;
     canvasClipboardRef.current = cloneDrawerValue(copied);
+    preferCanvasClipboardRef.current = true;
     showToast(`已复制 ${copied.length} 个画布元素`);
     return copied.length;
   };
@@ -9077,7 +9319,7 @@ function MainApp() {
     const idMap = new Map<string, string>();
 
     const nextItems = sourceItems.map((sourceItem, index) => {
-      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextBufferId = createAssetId();
       const nextCanvasId = makeCanvasNodeId(
         nextBufferId,
         sourceItem.id.startsWith('canvas_ai_') ? 'ai'
@@ -9252,7 +9494,7 @@ function MainApp() {
     }
 
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'image',
       content: fileName,
       name: fileName,
@@ -9310,7 +9552,7 @@ function MainApp() {
     }
 
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'video',
       content: fileName,
       name: fileName,
@@ -9363,7 +9605,7 @@ function MainApp() {
     }
 
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'file',
       content: fileName,
       name: fileName,
@@ -9393,7 +9635,7 @@ function MainApp() {
   const addCanvasTextItem = (client?: { x: number; y: number }) => {
     const pos = getCanvasDropPosition(0, client);
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: '',
       name: '文字卡片',
@@ -9416,7 +9658,7 @@ function MainApp() {
 
   const addCanvasTextItemAtWorld = (world: { x: number; y: number }) => {
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: '',
       name: '文字卡片',
@@ -9444,7 +9686,7 @@ function MainApp() {
     const longestLine = Math.max(4, ...lines.map(line => Array.from(line).length));
     const pos = getCanvasDropPosition(index, client);
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: normalized,
       name: title,
@@ -9475,7 +9717,7 @@ function MainApp() {
 
   const pasteSystemClipboardToCanvas = async (clipboardData: DataTransfer, client?: { x: number; y: number }) => {
     const imageFiles = getCanvasClipboardImageFiles(clipboardData);
-    const text = clipboardData.getData('text/plain') || '';
+    const text = imageFiles.length > 0 ? '' : clipboardData.getData('text/plain') || '';
     if (imageFiles.length === 0 && !text.trim()) return false;
 
     const createdImages = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index, client)));
@@ -9660,7 +9902,7 @@ function MainApp() {
       }
       const displayUrl = savedPath ? convertFileSrc(savedPath) : url;
       const item: BufferItem = {
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         type: 'image',
         content: file.name || '画布图片',
         name: file.name || '画布图片',
@@ -10501,7 +10743,7 @@ function MainApp() {
     outputCtx.drawImage(canvas, 0, 0, editor.width, editor.height);
     const dataUrl = outputCanvas.toDataURL('image/png');
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'image',
       content: `${editor.name} 标记`,
       name: `${editor.name} 标记.png`,
@@ -10774,7 +11016,7 @@ function MainApp() {
     const now = Date.now();
     const mediaType = getCanvasAiMediaType(target.ai);
     return Array.from({ length: count }, (_, index) => ({
-      id: `canvas_ai_output_${now.toString(36)}_${index}_${Math.random().toString(36).substring(2, 7)}`,
+      id: `canvas_ai_output_${createAssetId()}`,
       mediaType,
       name: `AI generated ${mediaType} #${index + 1}`,
       prompt,
@@ -11758,7 +12000,7 @@ function MainApp() {
     inputIds: string[] = [],
     mediaType: 'image' | 'video' = 'image'
   ): CanvasImageItem => {
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const presetPrompt = getCanvasAiPresetPrompt(preset);
     const isVideo = mediaType === 'video';
     const defaultImageChoice = !isVideo && canvasAiUnifiedImageModelOptions.length > 0
@@ -11968,7 +12210,7 @@ function MainApp() {
   );
 
   const buildCanvasFrameInterpolationNode = (pos: { x: number; y: number }, inputIds: string[] = []): CanvasImageItem => {
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const nodeSize = getCanvasAiNodeAutoSize({
       type: 'video-generator',
       aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
@@ -12047,7 +12289,7 @@ function MainApp() {
     mediaType: 'image' | 'video',
     inputIds: string[] = [],
   ): CanvasImageItem => {
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const isVideo = mediaType === 'video';
     const nodeSize = getCanvasAiNodeAutoSize({
       type: isVideo ? 'video-generator' : 'image-generator',
@@ -12180,13 +12422,13 @@ function MainApp() {
     );
 
     cleanWorkflow.nodes.forEach(node => {
-      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextBufferId = createAssetId();
       idMap.set(node.id, makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow'));
     });
 
     const now = Date.now();
     const nextItems = cleanWorkflow.nodes.map((node, index) => {
-      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextBufferId = createAssetId();
       const nextCanvasId = idMap.get(node.id) || makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow');
       const isAiGenerator = node.ai?.type === 'image-generator';
       const isExternalInputPort = isWorkflowExternalInputPort(node);
@@ -12289,7 +12531,7 @@ function MainApp() {
     if (validation.warnings.length > 0) {
       console.warn('Canvas workflow validation warnings:', validation.warnings, cleanWorkflow);
     }
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const acceptedInputIds = Array.from(new Set(inputIds)).filter(inputId => (
       canUseCanvasItemAsWorkflowMaterial(
         canvasItemsRef.current.find(item => item.id === inputId),
@@ -13720,7 +13962,7 @@ function MainApp() {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: '',
       name: '文字说明',
@@ -14118,7 +14360,7 @@ function MainApp() {
         file.type ? `类型：${file.type}` : '',
         extractedText ? `内容：\n${extractedText}` : '正文未解析；仅提供文件名称和类型。',
       ].filter(Boolean).join('\n');
-      const itemId = Math.random().toString(36).substring(2, 9);
+      const itemId = createAssetId();
       return {
         id: makeCanvasNodeId(itemId, 'file_input'),
         item: {
@@ -14464,7 +14706,7 @@ function MainApp() {
 
   const cloneCanvasAiGeneratorForRerun = (source: CanvasImageItem) => {
     if (!isCanvasAiGeneratorType(source.ai?.type)) return null;
-    const nextBufferId = Math.random().toString(36).substring(2, 9);
+    const nextBufferId = createAssetId();
     const nextCanvasId = makeCanvasNodeId(nextBufferId, 'ai');
     const pos = getCanvasAiRerunNodePosition(source);
     const now = Date.now();
@@ -17555,7 +17797,8 @@ function MainApp() {
     client?: { x: number; y: number },
     options: { reuseExisting?: boolean; select?: boolean; toast?: boolean; label?: string; dropIndex?: number } = {},
   ) => {
-    const source = itemsRef.current.find(item => item.id === itemId);
+    const source = itemsRef.current.find(item => item.id === itemId)
+      || (assetStorageMode === 'sqlite' ? await getAssetById(itemId) : null);
     if (!source || !isCanvasDrawerMediaItem(source)) return '';
     const rawSource = getCanvasDrawerMediaSource(source);
     const sourceAsset = source.path && rawSource === source.path && !/^(?:asset:|file:|blob:|data:|https?:)/i.test(rawSource)
@@ -17575,7 +17818,7 @@ function MainApp() {
 
     const item: BufferItem = {
       ...source,
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       sourceItemId: source.id,
       createdAt: Date.now(),
       isQuickAccess: false,
@@ -17609,7 +17852,7 @@ function MainApp() {
       showToast('图片源丢失，无法作为 workflow 输入');
       return '';
     }
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const item: BufferItem = {
       id: itemId,
       type: 'image',
@@ -17697,7 +17940,7 @@ function MainApp() {
     const nextItems = mediaItems.map((source, index) => {
       const item: BufferItem = {
         ...source,
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         sourceItemId: source.id,
         createdAt: now + index,
         isQuickAccess: false,
@@ -17797,7 +18040,7 @@ function MainApp() {
     const normalizedUrl = normalizeDraggedUrl(url);
     if (!normalizedUrl) return;
 
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     if (!claimExternalWebImageDrop(normalizedUrl, itemId, 'canvas')) return;
     const displayName = name || getNameFromUrl(normalizedUrl);
     const item: BufferItem = {
@@ -18969,14 +19212,6 @@ function MainApp() {
           }
           return;
         }
-        if (isMod && !event.altKey && key === 'v') {
-          if (canvasClipboardRef.current.length === 0) return;
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          pasteCanvasItems();
-          return;
-        }
         if (isMod && !event.altKey && key === 'd') {
           const selectedIds = canvasSelectedIdsRef.current;
           if (selectedIds.length === 0) return;
@@ -19091,6 +19326,7 @@ function MainApp() {
       }
     };
     const handleCanvasKeyBlur = () => {
+      preferCanvasClipboardRef.current = false;
       setIsCanvasSpacePressed(false);
       canvasSpaceKeyCapturedRef.current = false;
       canvasPanCleanupRef.current?.();
@@ -19103,27 +19339,45 @@ function MainApp() {
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"], [data-canvas-edit-control="true"]')) return;
       const clipboardData = event.clipboardData;
-      if (!clipboardData) return;
-      const hasImage = getCanvasClipboardImageFiles(clipboardData).length > 0;
-      const hasText = !!clipboardData.getData('text/plain').trim();
-      if (!hasImage && !hasText) return;
+      const imageCount = clipboardData ? getCanvasClipboardImageFiles(clipboardData).length : 0;
+      const text = clipboardData?.getData('text/plain') || '';
+      const pasteSource = resolveCanvasPasteSource({
+        systemImageCount: imageCount,
+        systemText: text,
+        canvasItemCount: canvasClipboardRef.current.length,
+        preferCanvasItems: preferCanvasClipboardRef.current,
+      });
+      if (pasteSource === 'none') return;
       event.preventDefault();
       event.stopPropagation();
-      void pasteSystemClipboardToCanvas(clipboardData).catch((err) => {
-        console.warn('粘贴剪贴板内容到画布失败:', err);
-        showToast('粘贴失败');
-      });
+      event.stopImmediatePropagation();
+      if (pasteSource === 'canvas') {
+        pasteCanvasItems();
+        return;
+      }
+      if (clipboardData) {
+        preferCanvasClipboardRef.current = false;
+        void pasteSystemClipboardToCanvas(clipboardData).catch((err) => {
+          console.warn('粘贴剪贴板内容到画布失败:', err);
+          showToast('粘贴失败');
+        });
+      }
+    };
+    const handleNativeCopy = () => {
+      preferCanvasClipboardRef.current = false;
     };
 
     window.addEventListener('keydown', handleCanvasKeysDown, true);
     window.addEventListener('keyup', handleCanvasKeysUp, true);
     window.addEventListener('blur', handleCanvasKeyBlur);
     document.addEventListener('paste', handleCanvasPaste, true);
+    document.addEventListener('copy', handleNativeCopy, true);
     return () => {
       window.removeEventListener('keydown', handleCanvasKeysDown, true);
       window.removeEventListener('keyup', handleCanvasKeysUp, true);
       window.removeEventListener('blur', handleCanvasKeyBlur);
       document.removeEventListener('paste', handleCanvasPaste, true);
+      document.removeEventListener('copy', handleNativeCopy, true);
     };
   }, []);
 
@@ -19164,7 +19418,7 @@ function MainApp() {
     const now = Date.now();
     const folderName = buildCanvasDrawerFolderName(canvas, now);
     const newFolder: Folder = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name: folderName,
       color: '#f59e0b',
     };
@@ -19174,7 +19428,7 @@ function MainApp() {
       const sourceItem = cloneDrawerValue(snapshot.item);
       const desiredId = sourceItem.id || '';
       const needsFreshId = !desiredId || existingDrawerIds.has(desiredId) || usedSavedIds.has(desiredId);
-      const id = needsFreshId ? Math.random().toString(36).substring(2, 9) : desiredId;
+      const id = needsFreshId ? createAssetId() : desiredId;
       usedSavedIds.add(id);
       return {
         ...sourceItem,
@@ -19280,7 +19534,7 @@ function MainApp() {
       }
 
       return {
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         type, content: fileName, name: fileName, path, url: assetUrl, thumbnail: thumbnail || undefined,
         sourceUrl: originalSourcePath !== path ? originalSourcePath : undefined,
         originalUrl: originalSourcePath !== path ? originalSourcePath : undefined,
@@ -19301,7 +19555,7 @@ function MainApp() {
     const normalizedUrl = normalizeDraggedUrl(url);
     if (!normalizedUrl) return;
 
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     if (!claimExternalWebImageDrop(normalizedUrl, itemId, 'drawer')) return;
     const displayName = name || getNameFromUrl(normalizedUrl);
     const newItem: BufferItem = {
@@ -19769,7 +20023,7 @@ function MainApp() {
       return;
     }
     const newFolder: Folder = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name,
       color: parent?.color || '#10b981',
       parentId,
@@ -19798,6 +20052,11 @@ function MainApp() {
     setItems(prev => prev.map(item => (
       item.folderId && removedIds.has(item.folderId) ? { ...item, folderId: destinationId } : item
     )));
+    if (assetStorageMode === 'sqlite') {
+      void moveAssetsFromFolders([...removedIds], destinationId)
+        .then(() => setAssetStatsRevision(revision => revision + 1))
+        .catch(error => console.warn('移动已删除文件夹中的素材失败:', error));
+    }
     setCollapsedFolderIds(prev => prev.filter(folderId => !removedIds.has(folderId)));
     if (removedIds.has(activeFolderId)) setActiveFolderId(destinationId || 'all');
     showToast(target.parentId
@@ -19941,6 +20200,20 @@ function MainApp() {
         ? { ...item, folderId: getDestinationId(item.folderId) }
         : item
     )));
+    if (assetStorageMode === 'sqlite') {
+      const sourceIdsByDestination = new Map<string, string[]>();
+      removedIds.forEach(sourceId => {
+        const destinationId = getDestinationId(sourceId) || '';
+        sourceIdsByDestination.set(destinationId, [
+          ...(sourceIdsByDestination.get(destinationId) || []),
+          sourceId,
+        ]);
+      });
+      void Promise.all([...sourceIdsByDestination].map(([destinationId, sourceIds]) => (
+        moveAssetsFromFolders(sourceIds, destinationId || undefined)
+      ))).then(() => setAssetStatsRevision(revision => revision + 1))
+        .catch(error => console.warn('批量移动已删除文件夹中的素材失败:', error));
+    }
     setCollapsedFolderIds(prev => prev.filter(folderId => !removedIds.has(folderId)));
     setSelectedFolderIds([]);
     lastSelectedFolderIdRef.current = null;
@@ -20339,7 +20612,7 @@ function MainApp() {
       return;
     }
     const newFolder: Folder = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name,
       color: parentFolder?.color || '#10b981',
       parentId,
@@ -21308,7 +21581,7 @@ useEffect(() => {
     const shouldAutoPinNote = screenshotAutoPinNoteRef.current;
 
     const createdAt = Date.now();
-    const placeholderId = `snip_${createdAt}_${Math.random().toString(36).substring(2, 7)}`;
+    const placeholderId = `snip_${createAssetId()}`;
     const placeholderItem: BufferItem = {
       id: placeholderId,
       type: 'image',
@@ -21571,7 +21844,7 @@ useEffect(() => {
     const width = Number(payload?.width) || 320;
     const height = Number(payload?.height) || 220;
     const finalItem = {
-      id: `snip_${createdAt}_${Math.random().toString(36).substring(2, 7)}`,
+      id: `snip_${createAssetId()}`,
       type: 'image',
       content: '截图内容',
       name: `截图_${createdAt}.png`,
@@ -21924,7 +22197,7 @@ useEffect(() => {
   const createTextOrUrlItem = (rawText: string, defaultName = '文本片段'): BufferItem => {
     const text = rawText.trim();
     const base = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text' as const,
       content: text,
       createdAt: Date.now(),
@@ -21955,7 +22228,7 @@ useEffect(() => {
             const reader = new FileReader();
             reader.onload = (ev) => {
               const url = ev.target?.result as string;
-              const newItem = { id: Math.random().toString(36).substring(2, 9), type: 'image', content: '图片', name: `粘贴图 ${new Date().toLocaleTimeString()}.png`, url, createdAt: Date.now(), folderId: activeFolderId !== 'all' ? activeFolderId : undefined } as BufferItem;
+              const newItem = { id: createAssetId(), type: 'image', content: '图片', name: `粘贴图 ${new Date().toLocaleTimeString()}.png`, url, createdAt: Date.now(), folderId: activeFolderId !== 'all' ? activeFolderId : undefined } as BufferItem;
               pushDrawerUndoSnapshot('粘贴图片');
               setItems(prev => [newItem, ...prev]);
               enqueueAutoAiTaggingForItems([newItem]);
@@ -23282,7 +23555,9 @@ useEffect(() => {
     userNotes?: string[];
     forceRefresh?: boolean;
   }): Promise<InspirationProfile> => {
-    const item = itemsRef.current.find(candidate => candidate.id === input.itemId);
+    const cachedItem = itemsRef.current.find(candidate => candidate.id === input.itemId);
+    const item = cachedItem
+      || (assetStorageMode === 'sqlite' ? await getAssetById(input.itemId) : null);
     if (!item) throw new Error(`灵感素材不存在：${input.itemId}`);
     if (item.type !== 'image') throw new Error('只有图片素材可以建立 InspirationProfile');
     if (
@@ -23325,9 +23600,11 @@ useEffect(() => {
       request: {
         itemId: item.id,
         imageSource: modelSource,
-        userTags,
-        userNotes,
-        existingProfile,
+        // Keep the server's strict request schema while avoiding unrelated
+        // profile/note text in the model context.
+        userTags: [],
+        userNotes: [],
+        existingProfile: null,
       },
     });
     const serverProfileRecord = serverProfile && typeof serverProfile === 'object' && !Array.isArray(serverProfile)
@@ -23339,12 +23616,17 @@ useEffect(() => {
       userTags,
       userNotes,
     });
-    const nextItems = itemsRef.current.map(candidate => candidate.id === item.id
-      ? { ...candidate, inspirationProfile: profile, inspirationAnalysisFailure: undefined }
-      : candidate);
-    itemsRef.current = nextItems;
+    const updatedItem = { ...item, inspirationProfile: profile, inspirationAnalysisFailure: undefined };
     inspirationRetrievalCacheRef.current.clear();
-    startTransition(() => setItems(nextItems));
+    if (cachedItem) {
+      const nextItems = itemsRef.current.map(candidate => candidate.id === item.id ? updatedItem : candidate);
+      itemsRef.current = nextItems;
+      startTransition(() => setItems(nextItems));
+    }
+    if (assetStorageMode === 'sqlite') {
+      await updateAsset(item.id, { metadata: updatedItem });
+      setAssetStatsRevision(revision => revision + 1);
+    }
     return profile;
   };
 
@@ -23358,25 +23640,38 @@ useEffect(() => {
     return canRetryInspirationAnalysis(item.inspirationAnalysisFailure);
   };
 
-  const recordAutoAiAnalysisFailure = (itemId: string, error: unknown) => {
+  const recordAutoAiAnalysisFailure = async (itemId: string, error: unknown) => {
     const message = String(error instanceof Error ? error.message : error || '图片分析失败')
       .replace(/data:image\/[^\s]+/gi, '[image data]')
       .replace(/([?&](?:token|key|signature|authorization)=)[^&\s]+/gi, '$1[REDACTED]')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 240);
-    let recordedFailure: BufferItem['inspirationAnalysisFailure'];
+    const cachedItem = itemsRef.current.find(candidate => candidate.id === itemId);
+    const storedItem = cachedItem
+      || (assetStorageMode === 'sqlite' ? await getAssetById(itemId) : null);
+    if (!storedItem) return undefined;
+    const attempts = Math.max(0, Number(storedItem.inspirationAnalysisFailure?.attempts) || 0) + 1;
+    const recordedFailure: BufferItem['inspirationAnalysisFailure'] = {
+      attemptedAt: Date.now(),
+      attempts: isPermanentInspirationAnalysisFailure(message)
+        ? AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS
+        : attempts,
+      message,
+    };
+    const updatedItem = { ...storedItem, inspirationAnalysisFailure: recordedFailure };
     const nextItems = itemsRef.current.map(candidate => {
       if (candidate.id !== itemId) return candidate;
-      recordedFailure = {
-        attemptedAt: Date.now(),
-        attempts: Math.max(0, Number(candidate.inspirationAnalysisFailure?.attempts) || 0) + 1,
-        message,
-      };
-      return { ...candidate, inspirationAnalysisFailure: recordedFailure };
+      return updatedItem;
     });
-    itemsRef.current = nextItems;
-    startTransition(() => setItems(nextItems));
+    if (cachedItem) {
+      itemsRef.current = nextItems;
+      startTransition(() => setItems(nextItems));
+    }
+    if (assetStorageMode === 'sqlite') {
+      await updateAsset(itemId, { metadata: updatedItem });
+      setAssetStatsRevision(revision => revision + 1);
+    }
     return recordedFailure;
   };
 
@@ -23392,6 +23687,10 @@ useEffect(() => {
 
   const enqueueAutoAiTaggingForItems = (incomingItems: BufferItem[]) => {
     if (!AUTO_INSPIRATION_ANALYSIS_ENABLED) return;
+    if (assetStorageMode === 'sqlite') {
+      setAutoAiAnalysisRetryTick(current => current + 1);
+      return;
+    }
     const newItemIds = incomingItems
       .filter(isAutoAiTaggableItem)
       .map(item => item.id)
@@ -23470,12 +23769,21 @@ useEffect(() => {
       referenceRole: input.referenceRole || '',
       folderIds: [...(input.folderIds || [])].sort(),
       topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
-      itemCount: itemsRef.current.length,
+      itemCount: assetStorageMode === 'sqlite' ? assetQueryTotalCountRef.current : itemsRef.current.length,
       folderNames,
     });
     const cached = inspirationRetrievalCacheRef.current.get(cacheKey);
     if (cached && Date.now() - cached.createdAt < 5 * 60 * 1000) return cached.candidates;
-    const candidates = searchDrawerInspirations(itemsRef.current, {
+    const sourceAssets = assetStorageMode === 'sqlite'
+      ? await listAssets({
+          keyword: input.query.trim() || undefined,
+          folder_ids: input.folderIds && input.folderIds.length > 0 ? input.folderIds : undefined,
+          file_type: 'image',
+          sort: 'updated_at_desc',
+          limit: 1000,
+        })
+      : itemsRef.current;
+    const candidates = searchDrawerInspirations(sourceAssets, {
       ...input,
       folderNames,
       topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
@@ -23524,6 +23832,144 @@ useEffect(() => {
       || autoInspirationAnalysisRunningRef.current
     ) return;
 
+    if (assetStorageMode === 'sqlite') {
+      autoInspirationAnalysisRunningRef.current = true;
+      let activeItemId = '';
+      let recordedFailure: BufferItem['inspirationAnalysisFailure'];
+      let continueImmediately = false;
+
+      const refreshDatabaseProgress = async () => {
+        const { total, analyzed, waitingRetry, skipped } = await getInspirationAnalysisCounts(
+          DEFAULT_LIBRARY_ID,
+        );
+        const summary = { analyzed, skipped, waitingRetry, total };
+        setSqliteAiAnalysisSummary(current => (
+          current
+          && current.analyzed === summary.analyzed
+          && current.skipped === summary.skipped
+          && current.waitingRetry === summary.waitingRetry
+          && current.total === summary.total
+            ? current
+            : summary
+        ));
+        setAutoAiAnalysisProgress(current => {
+          const completed = Math.min(total, analyzed + skipped);
+          if (
+            current
+            && current.completed === completed
+            && current.failed === waitingRetry
+            && current.total === total
+          ) return current;
+          return { completed, failed: waitingRetry, total };
+        });
+        return summary;
+      };
+
+      const markUnusableCandidatesSkipped = async (candidates: BufferItem[]) => {
+        const now = Date.now();
+        const updated = candidates.flatMap(item => {
+          const hasSource = Boolean(
+            item.url || item.thumbnail || item.path || item.sourceUrl || item.originalUrl,
+          );
+          const shouldSkip = shouldSkipInspirationAnalysis(item.inspirationAnalysisFailure);
+          if (hasSource && !shouldSkip) return [];
+          return [{
+            ...item,
+            inspirationAnalysisFailure: {
+              attemptedAt: item.inspirationAnalysisFailure?.attemptedAt || now,
+              attempts: AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS,
+              message: item.inspirationAnalysisFailure?.message
+                || '图片素材没有可读取的图像来源',
+            },
+          }];
+        });
+        if (updated.length === 0) return 0;
+        await updateAssetsBatch(updated.map(item => ({
+          ids: [item.id],
+          patch: { metadata: item },
+        })));
+        const updatedById = new Map(updated.map(item => [item.id, item]));
+        setItems(previous => previous.map(item => updatedById.get(item.id) || item));
+        setAssetStatsRevision(revision => revision + 1);
+        return updated.length;
+      };
+
+      void (async () => {
+        await refreshDatabaseProgress();
+        const unprocessed = await listAssets({
+          file_type: 'image',
+          inspiration_status: 'unprocessed',
+          sort: 'created_at_asc',
+          offset: 0,
+          limit: ASSET_PAGE_SIZE,
+        });
+        let nextItem = unprocessed.find(isAutoAiTaggableItem);
+        if (!nextItem && unprocessed.length > 0) {
+          continueImmediately = await markUnusableCandidatesSkipped(unprocessed) > 0;
+          return;
+        }
+
+        if (!nextItem) {
+          const retryable = await listAssets({
+            file_type: 'image',
+            inspiration_status: 'retryable',
+            sort: 'updated_at_asc',
+            offset: 0,
+            limit: ASSET_PAGE_SIZE,
+          });
+          const normalizedSkipped = await markUnusableCandidatesSkipped(retryable);
+          if (normalizedSkipped > 0) {
+            continueImmediately = true;
+            return;
+          }
+          nextItem = retryable.find(isAutoAiTaggableItem);
+          if (!nextItem) {
+            const nextFailure = retryable
+              .map(item => item.inspirationAnalysisFailure)
+              .filter((failure): failure is NonNullable<typeof failure> => Boolean(failure))
+              .sort((left, right) => (
+                getInspirationAnalysisRetryAt(left) - getInspirationAnalysisRetryAt(right)
+              ))[0];
+            scheduleAutoAiAnalysisRetry(nextFailure);
+            return;
+          }
+        }
+
+        activeItemId = nextItem.id;
+        autoInspirationAnalysisPendingIdsRef.current.add(activeItemId);
+        autoInspirationAnalysisAttemptedRef.current.add(activeItemId);
+        try {
+          await analyzeDrawerInspirationWithLlm({ itemId: activeItemId });
+        } catch (error) {
+          recordedFailure = await recordAutoAiAnalysisFailure(activeItemId, error);
+          console.warn('灵感素材后台分析失败:', activeItemId, error);
+        }
+        // The wallet API limits task creation to 20 requests per minute.
+        await new Promise(resolve => window.setTimeout(resolve, 3200));
+        continueImmediately = true;
+      })()
+        .catch(error => {
+          console.warn('SQLite 全库图片分析调度失败:', error);
+          const timer = window.setTimeout(() => {
+            autoInspirationAnalysisRetryTimersRef.current.delete(timer);
+            setAutoAiAnalysisRetryTick(current => current + 1);
+          }, 12_000);
+          autoInspirationAnalysisRetryTimersRef.current.add(timer);
+        })
+        .finally(() => {
+          autoInspirationAnalysisRunningRef.current = false;
+          if (activeItemId) {
+            autoInspirationAnalysisPendingIdsRef.current.delete(activeItemId);
+            autoInspirationAnalysisAttemptedRef.current.delete(activeItemId);
+          }
+          scheduleAutoAiAnalysisRetry(recordedFailure);
+          if (continueImmediately) {
+            setAutoAiAnalysisRetryTick(current => current + 1);
+          }
+        });
+      return;
+    }
+
     // Existing drawer images are queued on startup; new images join the same
     // single-file queue so visual analysis never floods the provider channel.
     const newlyQueuedIds = items
@@ -23555,9 +24001,9 @@ useEffect(() => {
     let failed = false;
     let recordedFailure: BufferItem['inspirationAnalysisFailure'];
     void analyzeDrawerInspirationWithLlm({ itemId: nextItem.id })
-      .catch(error => {
+      .catch(async error => {
         failed = true;
-        recordedFailure = recordAutoAiAnalysisFailure(nextItem.id, error);
+        recordedFailure = await recordAutoAiAnalysisFailure(nextItem.id, error);
         console.warn('灵感素材自动分析失败:', nextItem.id, error);
       })
       .finally(async () => {
@@ -23575,7 +24021,15 @@ useEffect(() => {
           } : current);
         });
       });
-  }, [autoAiAnalysisProgress, autoAiAnalysisRetryTick, isDataLoaded, isDraggingTitle, items]);
+  }, [
+    assetStatsRevision,
+    assetStorageMode,
+    autoAiAnalysisProgress,
+    autoAiAnalysisRetryTick,
+    isDataLoaded,
+    isDraggingTitle,
+    items,
+  ]);
 
   const canvasAgent = useCanvasAgentRuntime({
     getContext: () => {
@@ -24239,7 +24693,7 @@ useEffect(() => {
           item.sourceUrl,
           item.originalUrl,
         ].map(normalizeAgentSourceKey).filter(Boolean);
-        const resolveDrawerTargets = (ids: string[]) => {
+        const resolveDrawerTargets = async (ids: string[]) => {
           const drawerById = new Map(itemsRef.current.map(item => [item.id, item]));
           const drawerBySource = new Map<string, BufferItem>();
           itemsRef.current.forEach(item => {
@@ -24294,9 +24748,16 @@ useEffect(() => {
               .find(Boolean);
             if (matchedBySource) resolved.set(matchedBySource.id, matchedBySource);
           });
+          if (assetStorageMode === 'sqlite') {
+            const unresolvedIds = ids.filter(id => !resolved.has(id) && !id.includes(':'));
+            if (unresolvedIds.length > 0) {
+              const storedAssets = await getAssetsByIds(unresolvedIds);
+              storedAssets.forEach(item => resolved.set(item.id, item));
+            }
+          }
           return [...resolved.values()];
         };
-        const targets = resolveDrawerTargets(targetIds);
+        const targets = await resolveDrawerTargets(targetIds);
         if (action === 'create_text') {
           const content = String(args.content || '').trim();
           if (!content) throw new Error('文字内容不能为空');
@@ -24327,7 +24788,7 @@ useEffect(() => {
             throw new Error('已有同名文件夹');
           }
           const folder: Folder = {
-            id: Math.random().toString(36).substring(2, 9),
+            id: createAssetId(),
             name: folderName,
             color: parent?.color || '#10b981',
             parentId,
@@ -24377,7 +24838,11 @@ useEffect(() => {
           if (targets.length === 0) throw new Error('没有找到要删除的抽屉素材');
           const deletable = targets.filter(item => !item.isQuickAccess);
           if (deletable.length === 0) throw new Error('目标均已星标保护，请先取消星标');
+          if (assetStorageMode === 'sqlite') {
+            await deleteAssetsBatch(deletable.map(item => item.id));
+          }
           const removed = removeDrawerItemsFromDrawer(deletable, 'Agent 删除素材');
+          setAssetStatsRevision(revision => revision + 1);
           setSelectedIds(prev => prev.filter(id => !deletable.some(item => item.id === id)));
           return { action, removed };
         }
@@ -24387,7 +24852,14 @@ useEffect(() => {
           if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
           pushDrawerUndoSnapshot('Agent 移动素材');
           const idSet = new Set(targets.map(item => item.id));
+          if (assetStorageMode === 'sqlite') {
+            await updateAssetsBatch([{
+              ids: [...idSet],
+              patch: { folder_id: folderId || '' },
+            }]);
+          }
           setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, folderId } : item));
+          setAssetStatsRevision(revision => revision + 1);
           return { action, moved: idSet.size, folderId: folderId || 'all' };
         }
         if (action === 'set_quick_access') {
@@ -24395,7 +24867,18 @@ useEffect(() => {
           const enabled = args.enabled !== false;
           pushDrawerUndoSnapshot(enabled ? 'Agent 添加星标' : 'Agent 取消星标');
           const idSet = new Set(targets.map(item => item.id));
+          if (assetStorageMode === 'sqlite') {
+            await updateAssetsBatch(targets.map(item => ({
+              ids: [item.id],
+              patch: { metadata: { ...item, isQuickAccess: enabled } },
+            })));
+          }
           setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, isQuickAccess: enabled } : item));
+          setQuickAccessItems(previous => enabled
+            ? [...new Map([...targets.map(item => ({ ...item, isQuickAccess: true })), ...previous]
+                .map(item => [item.id, item])).values()]
+            : previous.filter(item => !idSet.has(item.id)));
+          setAssetStatsRevision(revision => revision + 1);
           return { action, updated: idSet.size, enabled };
         }
         if (action === 'open_item') {
@@ -24437,12 +24920,23 @@ useEffect(() => {
           if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
           pushDrawerUndoSnapshot('Agent 修改素材');
           const idSet = new Set(targets.map(item => item.id));
+          if (assetStorageMode === 'sqlite') {
+            await updateAssetsBatch([{
+              ids: [...idSet],
+              patch: {
+                name: nextName || undefined,
+                content: nextContent || undefined,
+                folder_id: args.folderId !== undefined && args.folderId !== null ? folderId : undefined,
+              },
+            }]);
+          }
           setItems(prev => prev.map(item => idSet.has(item.id) ? {
             ...item,
             ...(nextName ? { name: nextName } : {}),
             ...(nextContent ? { content: nextContent } : {}),
             ...(args.folderId !== undefined && args.folderId !== null ? { folderId: folderId || undefined } : {}),
           } : item));
+          setAssetStatsRevision(revision => revision + 1);
           return { action, updated: idSet.size };
         }
         throw new Error(`不支持的抽屉操作：${action}`);
@@ -24675,14 +25169,13 @@ useEffect(() => {
           return { action };
         }
         if (action === 'add_drawer_items') {
-          const drawerIds = requestedIds.filter(id => itemsRef.current.some(item => (
-            item.id === id && isCanvasDrawerMediaItem(item)
-          )));
+          const drawerIds = [...new Set(requestedIds.map(String).filter(Boolean))];
           if (drawerIds.length === 0) throw new Error('没有找到可加入画布的抽屉图片或视频');
           let added = 0;
           for (const itemId of drawerIds) {
             if (await addDrawerMediaItemToCanvas(itemId)) added += 1;
           }
+          if (added === 0) throw new Error('没有找到可加入画布的抽屉图片或视频');
           return { action, added };
         }
         if (action === 'update_node') {
@@ -24837,7 +25330,7 @@ useEffect(() => {
           references: resolvedReferences.map(item => item.match),
           explicitStyleTerms,
         });
-        const analysisItemId = Math.random().toString(36).substring(2, 9);
+        const analysisItemId = createAssetId();
         const analysisX = Math.max(24, referenceBase.x + 640);
         const analysisY = Math.max(24, referenceBase.y);
         const analysisNode: CanvasImageItem = {
@@ -25431,7 +25924,7 @@ useEffect(() => {
         const pos = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
           : getCanvasDropPosition(0);
-        const itemId = Math.random().toString(36).substring(2, 9);
+        const itemId = createAssetId();
         const title = prompt.split(/\r?\n/)[0]?.slice(0, 32) || 'Agent 文字节点';
         const node: CanvasImageItem = {
           id: makeCanvasNodeId(itemId, 'text'),
@@ -28517,7 +29010,7 @@ useEffect(() => {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       pushDrawerUndoSnapshot('取消快速访问');
-                                      setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: false } : i));
+                                      setDrawerItemQuickAccess(item, false);
                                     }}
                                     className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded-full bg-red-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/quick-list:block"
                                     title="取消快速访问"
@@ -28854,7 +29347,7 @@ useEffect(() => {
                                   e.preventDefault();
                                   e.stopPropagation();
                                   pushDrawerUndoSnapshot('取消快速访问');
-                                  setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: false } : i));
+                                  setDrawerItemQuickAccess(item, false);
                                 }}
                                 className="absolute -top-1.5 right-1 opacity-0 group-hover/quick:opacity-100 bg-red-500 text-white rounded-full p-0.5 shadow-sm transition-opacity hover:scale-110"
                                 title="取消快速访问"
@@ -30293,7 +30786,6 @@ useEffect(() => {
                   data-drawer-content="true"
                   data-canvas-ui-root={isCanvasMode ? 'true' : undefined}
                   ref={!isCanvasMode ? drawerScrollRef : undefined}
-                  onScroll={!isCanvasMode ? handleDrawerContentScroll : undefined}
                   className={`min-h-0 min-w-0 flex-1 relative flex ${isCanvasMode ? 'flex-row' : 'flex-col'} ${
                   isCanvasMode
                     ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
@@ -34977,7 +35469,7 @@ useEffect(() => {
                       )}
                     </div>
                   )}
-                  {!isUtilityActiveTab && items.length === 0 && (
+                  {!isUtilityActiveTab && isDataLoaded && !isAssetPageLoading && totalAssetCount === 0 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-80 px-6">
                       <Download className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
@@ -34992,7 +35484,7 @@ useEffect(() => {
                       </div>
                     </div>
                   )}
-                  {!isUtilityActiveTab && items.length > 0 && displayItems.length === 0 && (
+                  {!isUtilityActiveTab && totalAssetCount > 0 && displayItems.length === 0 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-80 px-6">
                       <Search className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
@@ -35014,18 +35506,20 @@ useEffect(() => {
                     </div>
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
-                    <>
-                    {canVirtualizeDrawerGrid && drawerVirtualWindow.top > 0 && (
-                      <div style={{ height: drawerVirtualWindow.top, flexShrink: 0 }} />
-                    )}
-                    <div
-                      data-drawer-gallery="true"
-                      className="grid shrink-0 gap-x-4 gap-y-4 items-start"
+                    <DrawerAssetGrid
+                      items={displayItems}
+                      windowOffset={assetWindowOffset}
+                      hasMore={hasMoreAssets}
+                      isLoading={isAssetPageLoading}
+                      cardWidth={cardWidth}
+                      mediaHeight={cardMediaHeight}
+                      resetKey={drawerAssetQueryKey}
+                      scrollContainerRef={drawerScrollRef}
+                      onLoadMore={loadNextDrawerAssetPage}
+                      onLoadPrevious={loadPreviousDrawerAssetPage}
                       onWheel={handleDrawerCardWheel}
-                      style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))` }}
-                    >
-                      <AnimatePresence mode={optimizeLargeDrawerList ? 'sync' : 'popLayout'}>
-                        {renderedDisplayItems.map(item => (
+                      onVisibleItemsChange={visibleItems => visibleItems.forEach(ensureMediaThumbnail)}
+                      renderItem={(item, optimizeLargeDrawerList, onMediaDimensionsResolved) => (
                           <div
                             key={item.id}
                             className={`${draggingItemId === item.id ? 'opacity-50 scale-[0.99]' : ''} transition-opacity`}
@@ -35065,7 +35559,7 @@ useEffect(() => {
                                   }}
                                   onTogglePin={() => {
                                     pushDrawerUndoSnapshot(item.isQuickAccess ? '取消快速访问' : '固定快速访问');
-                                    setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: !i.isQuickAccess } : i));
+                                    setDrawerItemQuickAccess(item, !item.isQuickAccess);
                                   }}
                                   onImageClick={() => openSelectedImagePreview(item)}
                                   onVideoClick={() => {
@@ -35076,6 +35570,7 @@ useEffect(() => {
                                   onTextEditStart={beginDrawerTextEditUndo}
                                   onTextEditEnd={endDrawerTextEditUndo}
                                   optimizeLargeList={optimizeLargeDrawerList}
+                                  onMediaDimensionsResolved={onMediaDimensionsResolved}
                                   preferFullImageSource={
                                     !generatedImageCachePendingIdsRef.current.has(item.id) && (
                                       displayItems.length < DRAWER_VIRTUALIZATION_THRESHOLD
@@ -35100,12 +35595,11 @@ useEffect(() => {
                                       if (urlLike) {
                                         return { ...i, type: 'text', content: text, name: '网址链接', url: text, path: text, isUrl: true } as BufferItem;
                                       }
-                                      const current: any = i;
                                       return {
                                         ...i,
                                         type: 'text',
                                         content: text,
-                                        name: current.isUrl || i.name === '网址链接' ? '文本片段' : i.name,
+                                        name: i.isUrl || i.name === '网址链接' ? '文本片段' : i.name,
                                         url: undefined,
                                         path: undefined,
                                         sourceUrl: undefined,
@@ -35124,24 +35618,8 @@ useEffect(() => {
                                   actionContext={drawerCardActionContext}
                             />
                           </div>
-                        ))}
-                      </AnimatePresence>
-                    </div>
-                    {canVirtualizeDrawerGrid && drawerVirtualWindow.bottom > 0 && (
-                      <div style={{ height: drawerVirtualWindow.bottom, flexShrink: 0 }} />
-                    )}
-                    </>
-                  )}
-                  {!isUtilityActiveTab && hasMoreDisplayItems && (
-                    <div className="mt-4 flex justify-center">
-                      <button
-                        type="button"
-                        onClick={loadMoreDisplayItems}
-                        className="rounded-[18px] border border-stone-200/70 dark:border-stone-700/70 bg-white/76 dark:bg-stone-900/48 px-3 py-2 text-[11px] font-bold text-stone-500 dark:text-stone-400 shadow-sm backdrop-blur-xl transition-colors hover:bg-stone-100 dark:hover:bg-stone-800"
-                      >
-                        加载更多 {Math.min(displayItems.length, drawerRenderLimit + DRAWER_RENDER_BATCH_SIZE)} / {displayItems.length}
-                      </button>
-                    </div>
+                      )}
+                    />
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
                     <div className="mt-4 mb-1 rounded-[22px] bg-stone-50/70 dark:bg-stone-900/30 border border-stone-200/60 dark:border-stone-700/60 px-3 py-2 text-[11px] leading-5 text-stone-500 dark:text-stone-400">
@@ -36883,7 +37361,7 @@ useEffect(() => {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.14</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.15</p>
                 <p>统一抽屉、设置、弹窗、日历与无限画布的 UI 风格。</p>
                 <p>优化素材卡片、侧栏、搜索和窗口控件的视觉与交互。</p>
                 <p>修复画布拖拽偶发失焦与视口跳移，并增加窗口最小尺寸。</p>

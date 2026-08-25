@@ -1,4 +1,5 @@
 import type { BufferItem, Folder } from '../../../types';
+import { getReliableInspirationAiTags } from './inspirationAnalysis';
 
 export type ProfileOrganizationStrategy = 'topic' | 'topic_color';
 
@@ -121,7 +122,7 @@ export const buildProfileOrganizationPlan = (input: {
       ...profile.cmf.materials,
       ...profile.cmf.finishes,
       ...profile.scene,
-      ...(profile.aiTags || []).map(tag => tag.name),
+      ...getReliableInspirationAiTags(profile).map(tag => tag.name),
       ...profile.userTags,
       ...profile.userNotes,
     ].join(' '));

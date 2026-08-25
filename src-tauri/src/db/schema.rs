@@ -3,7 +3,9 @@ use rusqlite::Connection;
 pub const DEFAULT_LIBRARY_ID: &str = "default";
 pub const DEFAULT_PROJECT_ID: &str = "default";
 pub const DEFAULT_CANVAS_ID: &str = "default";
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 7;
+const INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID: &str =
+    "inspiration-analysis-request-schema-recovery-v1";
 
 pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -38,6 +40,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             imported_at INTEGER,
             modified_at INTEGER,
             deleted_at INTEGER,
+            drawer_visible INTEGER NOT NULL DEFAULT 1,
             metadata_json TEXT
         );
 
@@ -155,6 +158,19 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_assets_file_name ON assets(file_name);
         CREATE INDEX IF NOT EXISTS idx_assets_file_size ON assets(file_size);
         CREATE INDEX IF NOT EXISTS idx_assets_deleted_at ON assets(deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_assets_library_deleted_created ON assets(library_id, deleted_at, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_assets_library_folder_deleted_created ON assets(library_id, folder_id, deleted_at, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_assets_library_type_deleted_created ON assets(library_id, file_type, deleted_at, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_assets_library_rating_deleted_created ON assets(library_id, rating, deleted_at, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_assets_library_type_analysis ON assets(
+            library_id,
+            file_type,
+            deleted_at,
+            COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0),
+            COALESCE(json_extract(metadata_json, '$.inspirationAnalysisFailure.attempts'), -1),
+            updated_at,
+            id
+        );
 
         CREATE INDEX IF NOT EXISTS idx_asset_tags_asset_id ON asset_tags(asset_id);
         CREATE INDEX IF NOT EXISTS idx_asset_tags_tag_id ON asset_tags(tag_id);
@@ -181,8 +197,67 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
 
     ensure_canvas_schema_migrations(conn)?;
     ensure_folder_schema_migrations(conn)?;
+    ensure_asset_schema_migrations(conn)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn ensure_asset_schema_migrations(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(
+        conn,
+        "assets",
+        "drawer_visible",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_assets_library_drawer_deleted_created
+            ON assets(library_id, drawer_visible, deleted_at, created_at DESC, id DESC);
+        "#,
+    )
+    .map_err(|err| err.to_string())?;
+    recover_incompatible_inspiration_requests(conn)?;
+    Ok(())
+}
+
+fn recover_incompatible_inspiration_requests(conn: &Connection) -> Result<(), String> {
+    let completed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM migrations WHERE id = ?1 AND status = 'success'",
+            rusqlite::params![INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if completed > 0 {
+        return Ok(());
+    }
+
+    let repaired = conn
+        .execute(
+            r#"
+            UPDATE assets
+            SET metadata_json = json_remove(metadata_json, '$.inspirationAnalysisFailure')
+            WHERE json_type(metadata_json, '$.inspirationAnalysisFailure') IS NOT NULL
+              AND COALESCE(json_extract(metadata_json, '$.inspirationAnalysisFailure.message'), '') LIKE '%异步任务请求格式无效%'
+              AND COALESCE(json_array_length(json_extract(metadata_json, '$.inspirationProfile.aiTags')), 0) = 0
+              AND COALESCE(json_extract(metadata_json, '$.inspirationProfile.analysisVersion'), 0) < 2
+            "#,
+            [],
+        )
+        .map_err(|err| err.to_string())?;
+    let now = crate::current_time_millis();
+    conn.execute(
+        "INSERT OR REPLACE INTO migrations (id, version, name, status, started_at, finished_at, error) VALUES (?1, ?2, ?3, 'success', ?4, ?4, ?5)",
+        rusqlite::params![
+            INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID,
+            SCHEMA_VERSION,
+            "Recover inspiration requests rejected by the incompatible client payload",
+            now,
+            format!("Cleared incompatible request failures: {repaired}"),
+        ],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -421,4 +496,77 @@ fn ensure_canvas_row(
     )
     .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, Connection};
+    use serde_json::{json, Value};
+
+    use super::{ensure_schema, INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID};
+
+    #[test]
+    fn incompatible_inspiration_request_failures_are_requeued_once() {
+        let conn = Connection::open_in_memory().expect("open database");
+        ensure_schema(&conn).expect("create schema");
+        conn.execute(
+            "DELETE FROM migrations WHERE id = ?1",
+            params![INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID],
+        )
+        .expect("reset recovery marker");
+
+        for (id, metadata) in [
+            (
+                "invalid-unprocessed",
+                json!({ "inspirationAnalysisFailure": { "attempts": 3, "message": "提交后台任务 HTTP 400 Bad Request：异步任务请求格式无效" } }),
+            ),
+            (
+                "unrelated-failure",
+                json!({ "inspirationAnalysisFailure": { "attempts": 3, "message": "image decode failed" } }),
+            ),
+            (
+                "already-analyzed",
+                json!({
+                    "inspirationProfile": { "aiTags": [{ "name": "音箱", "category": "产品类别", "confidence": 0.9 }] },
+                    "inspirationAnalysisFailure": { "attempts": 3, "message": "异步任务请求格式无效" },
+                }),
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO assets (id, file_type, metadata_json) VALUES (?1, 'image', ?2)",
+                params![id, metadata.to_string()],
+            )
+            .expect("seed asset");
+        }
+
+        ensure_schema(&conn).expect("run recovery");
+        let metadata = |id: &str| -> Value {
+            let raw: String = conn
+                .query_row(
+                    "SELECT metadata_json FROM assets WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .expect("read metadata");
+            serde_json::from_str(&raw).expect("parse metadata")
+        };
+
+        assert!(metadata("invalid-unprocessed")
+            .get("inspirationAnalysisFailure")
+            .is_none());
+        assert!(metadata("unrelated-failure")
+            .get("inspirationAnalysisFailure")
+            .is_some());
+        assert!(metadata("already-analyzed")
+            .get("inspirationAnalysisFailure")
+            .is_some());
+        let marker_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migrations WHERE id = ?1 AND status = 'success'",
+                params![INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .expect("read migration marker");
+        assert_eq!(marker_count, 1);
+    }
 }
