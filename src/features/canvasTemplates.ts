@@ -5,6 +5,7 @@ import type {
   CanvasItemBox,
   DesignAgentConfig,
 } from './canvasModel';
+import type { CanvasAiPromptPreset } from '../types/canvasWorkflow';
 import { getCanvasAiNodeAutoSize } from './canvasAiNodeLayout';
 import {
   PRODUCT_DETAILS_FIVE_IMAGES_OUTPUT_SPECS,
@@ -18,6 +19,7 @@ import type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
 import { removeRetiredCanvasWorkflows } from './canvasWorkflowRetirement';
 
 export type { CanvasWorkflowUserInputConfig } from './canvasWorkflowUserInput';
+export type { CanvasAiPromptPreset, CanvasWorkflowExpandedGroup } from '../types/canvasWorkflow';
 export type {
   CanvasWorkflowRuntime,
   CanvasWorkflowRuntimeNodeSnapshot,
@@ -56,6 +58,7 @@ export type CanvasWorkflowNodeTemplate = {
   inputs?: string[];
   fixedInput?: boolean;
   textMode?: CanvasImageItem['textMode'];
+  contextRouting?: CanvasImageItem['contextRouting'];
   designAgentConfig?: DesignAgentConfig;
   acceptsExternalInputs?: boolean;
   externalInputTypes?: Array<'image' | 'text' | 'video'>;
@@ -102,27 +105,6 @@ export type CanvasWorkflowImageNodeModeDraft = {
   keepDefault?: boolean;
 };
 
-export type CanvasWorkflowExpandedGroup = {
-  groupId: string;
-  templateId: string;
-  workflowId: string;
-  workflowLabel: string;
-  workflowHint: string;
-  workflowBuiltin?: boolean;
-  module: CanvasImageItem;
-  expandedAt: number;
-};
-
-export type CanvasAiPromptPreset = {
-  id: string;
-  label: string;
-  hint: string;
-  prompt: string;
-  aspectRatio?: string;
-  resolution?: string;
-  outputFormat?: string;
-  count?: number;
-};
 const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性：
 - Treat connected image(s) as SUBJECT_REF: preserve silhouette, proportions, key parts, functional layout, CMF boundaries and material logic
 - 4k resolution, highly detailed, photorealistic, premium industrial design render

@@ -6,6 +6,12 @@ import {
   isCanvasAiGeneratorType,
 } from './canvasAiRuntime';
 
+export const CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT = 6;
+
+export const getCanvasAiVisibleOutputs = <T>(outputs: T[], expanded = false) => (
+  expanded ? outputs : outputs.slice(0, CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT)
+);
+
 export const getCanvasItemDisplaySource = (item: BufferItem) => (
   item.url
   || (item.path ? convertFileSrc(item.path) : '')
@@ -14,8 +20,8 @@ export const getCanvasItemDisplaySource = (item: BufferItem) => (
 );
 
 export const getCanvasAiOutputDisplaySource = (output?: CanvasAiGeneratedOutput | null) => (
-  output?.url
-  || (output?.path ? convertFileSrc(output.path) : '')
+  (output?.path ? convertFileSrc(output.path) : '')
+  || output?.url
   || ''
 );
 
@@ -51,7 +57,9 @@ export const recoverCanvasAiNodeWithUsableResults = (
   const allOutputsSucceeded = outputs.length >= expectedOutputCount && outputs.every(output => (
     output.status === 'success' && hasCanvasAiOutputUsableSource(output)
   ));
-  const shouldRecoverNode = canvasItem.ai.status === 'error' && allOutputsSucceeded;
+  const shouldRecoverNode = (
+    canvasItem.ai.status === 'error' || canvasItem.ai.status === 'working'
+  ) && allOutputsSucceeded;
   if (!outputsChanged && !shouldRecoverNode) return canvasItem;
   return {
     ...canvasItem,
@@ -77,6 +85,15 @@ export const buildCanvasAiOutputRemoteResultPatch = (source: string) => {
     cacheStatus: 'pending' as const,
   };
 };
+
+/**
+ * Workflow image dependencies must be durable before downstream nodes can use
+ * them. A remote preview URL is not enough because it may still require an
+ * authenticated download or expire before the next provider reads it.
+ */
+export const isCanvasAiImageOutputReadyForWorkflowDependency = (
+  output?: CanvasAiGeneratedOutput | null,
+) => output?.status === 'success' && !!String(output.path || '').trim();
 
 export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
   (isCanvasAiGeneratorType(canvasItem?.ai?.type) || canvasItem?.ai?.type === 'workflow')

@@ -62,4 +62,19 @@ describe('prepareAgentVisualReferences', () => {
 
     expect(result).toEqual([localReference]);
   });
+
+  it('supports up to nine prepared references for Seedance analysis', async () => {
+    const references = Array.from({ length: 9 }, (_, index) => reference({
+      id: `reference-${index + 1}`,
+      source: `https://images.example.com/reference-${index + 1}.png`,
+    }));
+
+    const result = await prepareAgentVisualReferences(references, {
+      provider: 'openai-compatible',
+      maxReferences: 9,
+      toModelDataUrl: async () => '',
+    });
+
+    expect(result).toHaveLength(9);
+  });
 });

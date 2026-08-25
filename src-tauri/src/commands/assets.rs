@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::repositories::asset_repository::{
-    AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions,
+    AssetBatchUpdate, AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions,
     ViewportOptions,
 };
 
@@ -41,8 +41,37 @@ pub fn update_asset(
 }
 
 #[tauri::command]
+pub fn update_assets_batch(
+    app_handle: tauri::AppHandle,
+    updates: Vec<AssetBatchUpdate>,
+) -> Result<Vec<Value>, String> {
+    crate::services::asset_service::update_assets_batch(app_handle, updates)
+}
+
+#[tauri::command]
 pub fn delete_asset(app_handle: tauri::AppHandle, id: String) -> Result<bool, String> {
     crate::services::asset_service::delete_asset(app_handle, id)
+}
+
+#[tauri::command]
+pub fn delete_assets_batch(
+    app_handle: tauri::AppHandle,
+    ids: Vec<String>,
+) -> Result<usize, String> {
+    crate::services::asset_service::delete_assets_batch(app_handle, ids)
+}
+
+#[tauri::command]
+pub fn move_assets_from_folders(
+    app_handle: tauri::AppHandle,
+    source_folder_ids: Vec<String>,
+    destination_folder_id: Option<String>,
+) -> Result<usize, String> {
+    crate::services::asset_service::move_assets_from_folders(
+        app_handle,
+        source_folder_ids,
+        destination_folder_id,
+    )
 }
 
 #[tauri::command]
@@ -109,6 +138,30 @@ pub fn list_tags(
     library_id: Option<String>,
 ) -> Result<Vec<Value>, String> {
     crate::services::asset_service::list_tags(app_handle, library_id)
+}
+
+#[tauri::command]
+pub fn get_folder_asset_counts(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+) -> Result<Vec<Value>, String> {
+    crate::services::asset_service::get_folder_asset_counts(app_handle, library_id)
+}
+
+#[tauri::command]
+pub fn get_tag_asset_counts(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+) -> Result<Vec<Value>, String> {
+    crate::services::asset_service::get_tag_asset_counts(app_handle, library_id)
+}
+
+#[tauri::command]
+pub fn get_inspiration_analysis_counts(
+    app_handle: tauri::AppHandle,
+    library_id: Option<String>,
+) -> Result<Value, String> {
+    crate::services::asset_service::get_inspiration_analysis_counts(app_handle, library_id)
 }
 
 #[tauri::command]

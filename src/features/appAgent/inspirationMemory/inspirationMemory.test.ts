@@ -3,7 +3,17 @@ import { test } from 'vitest';
 import { CANVAS_AGENT_TOOL_DEFINITIONS, isCanvasAgentToolReadOnly } from '../../canvasAgentTools';
 import { applyCreativeGeneratorDefaults, applyCreativeWorkflowDefaults, extractCreativeBrief } from '../skills/creativeProductDesignSkill';
 import { getInspirationCandidateState, searchDrawerInspirations } from './drawerSemanticRetrieval';
-import { buildInspirationAnalysisPrompt, extractJsonObject, normalizeInspirationProfile } from './inspirationAnalysis';
+import {
+  buildInspirationAnalysisPrompt,
+  buildInspirationAnalysisRequest,
+  extractJsonObject,
+  getInspirationAnalysisSourceCandidates,
+  getReliableInspirationAiTags,
+  INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
+  INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
+  normalizeInspirationProfile,
+  requeueInspirationAnalysisItemAfterRestart,
+} from './inspirationAnalysis';
 import {
   applyInspirationCandidateRanking,
   buildInspirationCandidateRankingPrompt,
@@ -122,7 +132,52 @@ const analysisPrompt = buildInspirationAnalysisPrompt({
   userTags: ['生活方式'],
   userNotes: ['保留用户备注'],
 });
-assert(analysisPrompt.includes('Required schema:'), 'LLM analysis prompt should require structured JSON');
+assert(analysisPrompt.includes('"p"'), 'LLM analysis prompt should require the compact response schema');
+assert(analysisPrompt.includes('p品类、c颜色、f造型语言、m材质、s设计风格'), 'analysis prompt should focus on the five requested dimensions');
+assert(analysisPrompt.includes('禁工艺/交互/场景/视角'), 'analysis prompt should exclude secondary dimensions');
+assert(analysisPrompt.length < 420, 'analysis prompt should stay compact to minimize input tokens');
+assert(INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE === 512, 'analysis should use a stable file-derived 512px input');
+assert(INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES === 360 * 1024, 'analysis image budget should stay compact');
+const analysisRequest = buildInspirationAnalysisRequest({
+  itemId: 'warm-appliance',
+  imageSource: 'data:image/jpeg;base64,AA==',
+  userTags: ['生活方式'],
+  userNotes: ['保留用户备注'],
+  existingProfile: items[0].inspirationProfile,
+});
+assert(analysisRequest.userTags[0] === '生活方式', 'analysis request must preserve user tags');
+assert(analysisRequest.userNotes[0] === '保留用户备注', 'analysis request must preserve user notes');
+assert(analysisRequest.existingProfile === items[0].inspirationProfile, 'analysis request must preserve the existing profile');
+const sourceCandidates = getInspirationAnalysisSourceCandidates({
+  generatedThumbnail: 'asset://fresh-analysis.jpg',
+  path: 'C:/library/original.png',
+  url: 'asset://original.png',
+  storedThumbnail: 'data:image/webp;base64,stale',
+});
+assert(sourceCandidates[0] === 'asset://fresh-analysis.jpg', 'fresh analysis thumbnail must be preferred');
+assert(sourceCandidates[sourceCandidates.length - 1] === 'data:image/webp;base64,stale', 'legacy inline thumbnail must be the final fallback');
+const failedImage = {
+  ...baseItem('retry-after-restart', 'retry-after-restart.png'),
+  inspirationAnalysisFailure: {
+    attemptedAt: 1,
+    attempts: 3,
+    message: 'temporary upstream failure',
+  },
+};
+const requeuedImage = requeueInspirationAnalysisItemAfterRestart(failedImage);
+assert(!requeuedImage.inspirationAnalysisFailure, 'restart should requeue failed unanalyzed images after the retry limit');
+const analyzedImageWithFailure = {
+  ...items[0],
+  inspirationProfile: {
+    ...items[0].inspirationProfile!,
+    analysisVersion: 2,
+  },
+  inspirationAnalysisFailure: failedImage.inspirationAnalysisFailure,
+};
+assert(
+  requeueInspirationAnalysisItemAfterRestart(analyzedImageWithFailure) === analyzedImageWithFailure,
+  'restart should not requeue images that already have a usable analysis',
+);
 const parsedAnalysis = extractJsonObject('```json\n{"summary":"暖白磨砂设备","category":"生活家电","cmf":{"colors":["暖白"]}}\n```');
 const normalizedProfile = normalizeInspirationProfile(parsedAnalysis, {
   itemId: 'warm-appliance',
@@ -132,6 +187,51 @@ const normalizedProfile = normalizeInspirationProfile(parsedAnalysis, {
 assert(normalizedProfile.itemId === 'warm-appliance', 'profile normalization must preserve requested itemId');
 assert(normalizedProfile.cmf.colors.includes('暖白'), 'profile normalization should preserve LLM CMF output');
 assert(normalizedProfile.userNotes.includes('保留用户备注'), 'profile normalization should preserve user notes');
+
+const objectColorProfile = normalizeInspirationProfile({
+  summary: 'object palette response',
+  colorPalette: [
+    { name: '主色', hex: '#123456' },
+    { label: '辅色', color: '#abcdef' },
+  ],
+}, { itemId: 'object-palette' });
+assert(objectColorProfile.cmf.colors.includes('主色 #123456'), 'profile normalization should preserve AI color objects');
+assert(objectColorProfile.cmf.colors.includes('辅色 #abcdef'), 'profile normalization should preserve AI color labels and hex values');
+
+const compactProfile = normalizeInspirationProfile({
+  p: [['桌面音箱', 0.93]],
+  c: [['银灰色', '#A9AAAD', 0.92], ['玫瑰金色', '#C88F83', 0.88]],
+  f: [['圆角方体', 0.9]],
+  m: [['拉丝铝合金', 0.91]],
+  s: [['极简主义', 0.87]],
+}, {
+  itemId: 'compact-profile',
+  userNotes: ['保留本地备注'],
+});
+assert(compactProfile.category === '桌面音箱', 'compact product output should restore the category');
+assert(compactProfile.cmf.colors.includes('银灰色 #A9AAAD'), 'compact color output should restore searchable colors');
+assert(compactProfile.form.geometry.includes('圆角方体'), 'compact form output should restore form terms');
+assert(compactProfile.cmf.materials.includes('拉丝铝合金'), 'compact material output should restore materials');
+assert(compactProfile.style.includes('极简主义'), 'compact style output should restore style terms');
+assert(compactProfile.userNotes.includes('保留本地备注'), 'compact output should preserve local notes without sending them to the model');
+
+const strictProfile = normalizeInspirationProfile({
+  summary: 'strict visual analysis',
+  aiTags: [
+    { name: '桌面音箱', category: '产品类别', confidence: 0.91 },
+    { name: '产品造型', category: '设计领域', confidence: 0.99 },
+    { name: '流线型', category: '形态', confidence: 0.9 },
+    { name: '弧面', category: '形态', confidence: 0.7 },
+    { name: '极简主义', category: '风格', confidence: 0.88 },
+    { name: '拉丝铝合金', category: '材质', confidence: 0.92 },
+    { name: '工作室场景', category: '场景', confidence: 0.98 },
+  ],
+}, { itemId: 'strict-profile' });
+assert(
+  getReliableInspirationAiTags(strictProfile).map(tag => tag.name).join(',') === '拉丝铝合金,桌面音箱,流线型,极简主义',
+  'normalization should retain only reliable tags from the five requested dimensions',
+);
+assert(strictProfile.analysisVersion === 2, 'normalized profiles should record the strict analysis version');
 
 assert(
   ['analyze_inspiration', 'analyze_inspirations_batch', 'get_inspiration_analysis_job']

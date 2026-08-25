@@ -16,6 +16,12 @@ pub struct AssetListOptions {
     #[serde(default)]
     pub file_type: Option<String>,
     #[serde(default)]
+    pub rating: Option<i64>,
+    #[serde(default)]
+    pub quick_access: Option<bool>,
+    #[serde(default)]
+    pub inspiration_status: Option<String>,
+    #[serde(default)]
     pub sort: Option<String>,
     #[serde(default)]
     pub offset: Option<i64>,
@@ -45,6 +51,10 @@ pub struct DebugCanvasNodesOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AssetUpdatePatch {
     #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
     pub folder_id: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
@@ -52,6 +62,14 @@ pub struct AssetUpdatePatch {
     pub rating: Option<i64>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub clear_inspiration_analysis_failure: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssetBatchUpdate {
+    pub ids: Vec<String>,
+    pub patch: AssetUpdatePatch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -75,7 +93,14 @@ pub trait AssetRepository {
     fn get_asset_count(&self, options: AssetListOptions) -> Result<i64, String>;
     fn upsert_assets(&self, assets: Vec<Value>) -> Result<usize, String>;
     fn update_asset(&self, id: &str, patch: AssetUpdatePatch) -> Result<Option<Value>, String>;
+    fn update_assets_batch(&self, updates: Vec<AssetBatchUpdate>) -> Result<Vec<Value>, String>;
     fn delete_asset(&self, id: &str) -> Result<bool, String>;
+    fn delete_assets_batch(&self, ids: Vec<String>) -> Result<usize, String>;
+    fn move_assets_from_folders(
+        &self,
+        source_folder_ids: Vec<String>,
+        destination_folder_id: Option<String>,
+    ) -> Result<usize, String>;
     fn get_assets_by_ids(&self, ids: Vec<String>) -> Result<Vec<Value>, String>;
     fn get_assets_in_viewport(&self, options: ViewportOptions) -> Result<Vec<Value>, String>;
     fn debug_get_all_canvas_nodes(&self, options: DebugCanvasNodesOptions)
@@ -89,5 +114,8 @@ pub trait AssetRepository {
     ) -> Result<Vec<Value>, String>;
     fn move_folders(&self, options: MoveFoldersOptions) -> Result<Vec<Value>, String>;
     fn list_tags(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
+    fn get_folder_asset_counts(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
+    fn get_tag_asset_counts(&self, library_id: Option<String>) -> Result<Vec<Value>, String>;
+    fn get_inspiration_analysis_counts(&self, library_id: Option<String>) -> Result<Value, String>;
     fn get_asset_thumbnails(&self, asset_id: &str) -> Result<Vec<Value>, String>;
 }

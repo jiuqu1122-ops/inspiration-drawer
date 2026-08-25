@@ -112,21 +112,21 @@ const latestJson = {
 
 fs.rmSync(outputDir, { recursive: true, force: true });
 fs.mkdirSync(outputDir, { recursive: true });
-fs.copyFileSync(artifactPath, path.join(outputDir, artifactName));
-fs.copyFileSync(signaturePath, path.join(outputDir, `${artifactName}.sig`));
+fs.copyFileSync(artifactPath, path.join(outputDir, githubAssetName));
+fs.copyFileSync(signaturePath, path.join(outputDir, `${githubAssetName}.sig`));
 fs.writeFileSync(path.join(outputDir, 'latest.json'), `${JSON.stringify(latestJson, null, 2)}\n`, 'utf8');
 
 console.log(`Prepared updater files in ${path.relative(repoRoot, outputDir)}:`);
 console.log(`- latest.json`);
-console.log(`- ${artifactName}`);
-console.log(`- ${artifactName}.sig`);
+console.log(`- ${githubAssetName}`);
+console.log(`- ${githubAssetName}.sig`);
 console.log(`- sha256: ${sha256}`);
 console.log(`- size: ${size}`);
 console.log('');
 console.log(`Create or edit GitHub Release ${releaseTag}, then upload these assets:`);
 console.log(`- dist-updater/latest.json`);
-console.log(`- dist-updater/${artifactName} (GitHub asset name will be ${githubAssetName})`);
-console.log(`- dist-updater/${artifactName}.sig (GitHub asset name will be ${githubAssetName}.sig)`);
+console.log(`- dist-updater/${githubAssetName}`);
+console.log(`- dist-updater/${githubAssetName}.sig`);
 console.log('');
 if (giteeBaseUrl) {
   console.log('Gitee Release mirror is included in latest.json:');

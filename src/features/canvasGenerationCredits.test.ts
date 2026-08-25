@@ -5,6 +5,7 @@ import {
   estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   getCanvasImageUnitCredits,
+  getCanvasVideoRequestCredits,
   shouldShowCanvasGenerationCredits,
 } from './canvasGenerationCredits';
 
@@ -17,11 +18,11 @@ describe('canvas generation credits', () => {
 
   it('uses the wallet image pricing table', () => {
     expect(getCanvasImageUnitCredits('gpt-image-2', '1k')).toBe(10);
-    expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(100);
+    expect(getCanvasImageUnitCredits('Xais img2_1k', '4k')).toBe(18);
     expect(getCanvasImageUnitCredits('gpt-image-2', '2k')).toBe(15);
     expect(getCanvasImageUnitCredits('Xais Img2_4K', '2k')).toBe(15);
-    expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(30);
-    expect(getCanvasImageUnitCredits('legacy-gpt-image-2-high-quality', '4k')).toBe(35);
+    expect(getCanvasImageUnitCredits('Xais Img2_4K(高画质)', '2k')).toBe(15);
+    expect(getCanvasImageUnitCredits('legacy-gpt-image-2-high-quality', '4k')).toBe(18);
     expect(getCanvasImageUnitCredits('Xais Nano Pro_2K', '4k')).toBe(20);
     expect(getCanvasImageUnitCredits('Xais Nano Pro_4K', '2k')).toBe(18);
     expect(getCanvasImageUnitCredits('Nano Banana Pro', '4k')).toBe(20);
@@ -59,11 +60,26 @@ describe('canvas generation credits', () => {
     expect(estimateCanvasVideoGenerationCredits({
       model: 'seedance2',
       count: 2,
+      duration: 8,
     }, {
       ...pricing,
       videoDefaultCredits: '320',
       videoModels: [{ model: 'seedance2', credits: '48' }],
-    })).toEqual({ outputCount: 2, unitCredits: 48, totalCredits: 96 });
+    })).toEqual({
+      outputCount: 2,
+      durationSeconds: 8,
+      creditsPerSecond: 48,
+      totalCredits: 768,
+    });
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'SourceMix2.0',
+      count: 1,
+      duration: 4,
+    }, {
+      ...pricing,
+      videoDefaultCredits: '320',
+      videoModels: [{ model: 'seedance2', credits: '48' }],
+    }).totalCredits).toBe(192);
     expect(getCanvasImageUnitCredits('custom-model', '2k', pricing)).toBe(55);
 
     const workflow = {
@@ -84,6 +100,118 @@ describe('canvas generation credits', () => {
       ],
     } as CanvasWorkflowTemplate;
     expect(estimateCanvasWorkflowCredits(workflow, { pricing }).totalCredits).toBe(13);
+  });
+
+  it('uses 2K pricing for the dual Banana Pro and Banana 2 capability', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [{
+        model: 'gemini-3-pro-image',
+        credits1k: '7',
+        credits2k: '18',
+        credits4k: '20',
+      }, {
+        model: 'gemini-3.1-flash-image',
+        credits1k: '6',
+        credits2k: '15',
+        credits4k: '18',
+      }],
+      videoModels: [],
+    };
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'gemini-3-pro-image-preview',
+      resolution: '1k',
+      count: 2,
+      capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
+    }, pricing)).toEqual({ outputCount: 2, unitCredits: 18, totalCredits: 36 });
+    expect(estimateCanvasImageGenerationCredits({
+      model: 'gemini-3.1-flash-image-preview',
+      resolution: '2k',
+      count: 1,
+      capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
+    }, pricing)).toEqual({ outputCount: 1, unitCredits: 15, totalCredits: 15 });
+  });
+
+  it('uses dimensional video pricing overrides from the wallet', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '2',
+      imageModels: [],
+      videoModels: [{
+        model: 'kling-video',
+        credits: '2',
+        creditsPerSecond: '3',
+        creditsPerVideo: '5',
+        creditsByDuration: { '10': '40' },
+        creditsByResolution: { '1080p': '8' },
+        creditsByCount: { '3': '200' },
+      }],
+    };
+    expect(getCanvasVideoRequestCredits('kling-video', 10, 2, '1080p', pricing)).toBe(250);
+    expect(getCanvasVideoRequestCredits('kling-video', 10, 3, '720p', pricing)).toBe(200);
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'kling-video', count: 2, duration: 10, resolution: '1080p',
+    }, pricing).totalCredits).toBe(250);
+  });
+
+  it('uses MiniMax H3 native resolution pricing in the client estimate', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '2',
+      imageModels: [],
+      videoModels: [{
+        model: 'MiniMax-H3',
+        credits: '15',
+        creditsByResolution: { '2k': '10' },
+      }],
+    };
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'MiniMax-H3',
+      duration: 5,
+      count: 1,
+      resolution: '2K',
+    }, pricing).totalCredits).toBe(125);
+  });
+
+  it('includes MiniMax H3 reference material pricing in the client estimate', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '2',
+      imageModels: [],
+      videoModels: [{
+        model: 'MiniMax-H3',
+        credits: '15',
+        creditsByResolution: { '2k': '10' },
+        includedReferenceImages: 5,
+        creditsPerExtraReferenceImage: '9',
+        creditsPerReferenceVideoSecond: '15',
+        referenceVideoCreditsByResolution: { '2k': '10' },
+      }],
+    };
+
+    expect(getCanvasVideoRequestCredits(
+      'MiniMax-H3',
+      4,
+      1,
+      '768P',
+      pricing,
+      { imageCount: 7, videoCount: 1 },
+    )).toBe(138);
+    expect(estimateCanvasVideoGenerationCredits({
+      model: 'MiniMax-H3',
+      duration: 4,
+      count: 2,
+      resolution: '2K',
+    }, pricing, { imageCount: 6, videoCount: 1 }).totalCredits).toBe(418);
   });
 
   it('sums image and LLM nodes while ignoring reference and plain-text nodes', () => {

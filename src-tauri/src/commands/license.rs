@@ -172,6 +172,8 @@ pub struct CloudImageModelsResponse {
     #[serde(default)]
     channels: Vec<CloudImageModelChannel>,
     #[serde(default)]
+    video_channels: Vec<CloudVideoModelChannel>,
+    #[serde(default)]
     pricing: Option<CloudAiPricing>,
 }
 
@@ -193,7 +195,8 @@ pub struct CloudAiPricing {
 #[serde(rename_all = "camelCase")]
 pub struct CloudImageModelPricing {
     model: String,
-    credits1k: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits1k: Option<String>,
     credits2k: String,
     credits4k: String,
 }
@@ -203,6 +206,24 @@ pub struct CloudImageModelPricing {
 pub struct CloudVideoModelPricing {
     model: String,
     credits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_second: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_video: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_duration: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_resolution: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_by_count: Option<std::collections::HashMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    included_reference_images: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_extra_reference_image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credits_per_reference_video_second: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_video_credits_by_resolution: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +234,22 @@ pub struct CloudImageModelChannel {
     provider: String,
     default_model: Option<String>,
     models: Vec<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudVideoModelChannel {
+    id: String,
+    name: String,
+    provider: String,
+    default_model: Option<String>,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
     error: Option<String>,
 }
 
@@ -227,6 +264,10 @@ pub struct CloudVideoGenerationRequest {
     model: String,
     prompt: String,
     input_images: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    input_videos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    input_audios: Vec<String>,
     aspect_ratio: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolution: Option<String>,
@@ -838,7 +879,7 @@ pub async fn get_cloud_image_models(
 #[tauri::command]
 pub async fn generate_cloud_videos(
     app_handle: tauri::AppHandle,
-    request: CloudVideoGenerationRequest,
+    mut request: CloudVideoGenerationRequest,
 ) -> Result<CloudVideoGenerationResult, String> {
     let client_request_id = request.client_request_id.trim();
     let model = request.model.trim();
@@ -849,15 +890,58 @@ pub async fn generate_cloud_videos(
     if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
         return Err("invalid_request: 视频模型或提示词无效".to_string());
     }
-    if !(1..=4).contains(&request.count) || request.input_images.len() > 13 {
+    let model_token = model
+        .to_ascii_lowercase()
+        .replace([' ', '_', '-', '.'], "");
+    let is_seedance20 = matches!(
+        model_token.as_str(),
+        "seedance2"
+            | "seedance20"
+            | "seedance2fast"
+            | "seedance20fast"
+            | "sourcemix20"
+            | "sourcemix20fast"
+    );
+    let is_minimax_h3 = model_token == "minimaxh3";
+    let is_first_last_frame = request
+        .input_mode
+        .as_deref()
+        .map(|value| value.eq_ignore_ascii_case("FLF"))
+        .unwrap_or(false);
+    let max_image_references = if is_first_last_frame {
+        2
+    } else if is_seedance20 || is_minimax_h3 {
+        9
+    } else {
+        13
+    };
+    if !(1..=4).contains(&request.count)
+        || request.input_images.len() > max_image_references
+        || request.input_videos.len() > 3
+        || request.input_audios.len() > 3
+    {
         return Err("invalid_request: 视频数量或参考素材数量无效".to_string());
+    }
+    if is_first_last_frame && request.input_images.len() != 2 {
+        return Err("invalid_request: FLF requires exactly two reference images".to_string());
+    }
+    if is_first_last_frame {
+        request.input_videos.clear();
+        request.input_audios.clear();
+    }
+    if is_seedance20 || is_minimax_h3 {
+        request.input_mode = Some(if is_first_last_frame {
+            "FLF".to_string()
+        } else {
+            "REF".to_string()
+        });
     }
     let access_token = cloud_access_token(&app_handle).await?;
     post_cloud_with_bearer_timeout::<CloudVideoGenerationResult>(
         "/v1/ai/videos",
         &access_token,
         &request,
-        Duration::from_secs(6 * 60),
+        Duration::from_secs(25 * 60),
     )
     .await
 }
@@ -882,7 +966,7 @@ pub async fn get_cloud_video_status(
     let access_token = cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(25 * 60))
         .build()
         .map_err(|error| format!("cloud_unavailable: 无法初始化云端连接：{error}"))?;
     let mut request = client
@@ -1068,6 +1152,10 @@ mod tests {
                     "credits1k": "4",
                     "credits2k": "6",
                     "credits4k": "9"
+                }, {
+                    "model": "gemini-3-pro-image",
+                    "credits2k": "18",
+                    "credits4k": "20"
                 }],
                 "videoModels": [],
                 "updatedAt": "2026-07-27T00:00:00.000Z"
@@ -1078,6 +1166,10 @@ mod tests {
         assert_eq!(
             value["pricing"]["imageModels"][0]["credits4k"],
             serde_json::json!("9")
+        );
+        assert_eq!(
+            value["pricing"]["imageModels"][1]["credits1k"],
+            serde_json::Value::Null
         );
         assert_eq!(
             value["pricing"]["inspirationAnalysisCredits"],

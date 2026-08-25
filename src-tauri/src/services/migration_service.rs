@@ -1,5 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -12,7 +14,10 @@ use crate::db::schema::{DEFAULT_CANVAS_ID, DEFAULT_LIBRARY_ID, DEFAULT_PROJECT_I
 use crate::repositories::json_asset_repository::JsonAssetRepository;
 
 const MIGRATION_ID_JSON_TO_SQLITE: &str = "json-to-sqlite-v1";
-const MIGRATION_BATCH_SIZE: usize = 500;
+const MIGRATION_ID_JSON_RECONCILE: &str = "json-to-sqlite-v2-reconcile";
+const MIGRATION_ID_CANVAS_ASSET_VISIBILITY: &str = "canvas-only-asset-visibility-v2";
+const MIGRATION_ID_EMBEDDED_ASSET_SOURCES: &str = "embedded-asset-sources-to-files-v1";
+const MIGRATION_BATCH_SIZE: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MigrationStatus {
@@ -59,8 +64,11 @@ pub fn get_migration_status(app_handle: tauri::AppHandle) -> Result<MigrationSta
     ensure_migration_progress_columns(&conn)?;
     let row = conn.query_row(
         "SELECT status, total_count, processed_count, success_count, failed_count, current_file, error, started_at, finished_at
-         FROM migrations WHERE id = ?1",
-        params![MIGRATION_ID_JSON_TO_SQLITE],
+         FROM migrations
+         WHERE id IN (?1, ?2)
+         ORDER BY CASE WHEN id = ?2 THEN 0 ELSE 1 END
+         LIMIT 1",
+        params![MIGRATION_ID_JSON_TO_SQLITE, MIGRATION_ID_JSON_RECONCILE],
         |row| {
             Ok(MigrationStatus {
                 mode: if json_forced { "json" } else { "sqlite" }.to_string(),
@@ -98,6 +106,323 @@ pub fn rollback_to_json_mode(app_handle: tauri::AppHandle) -> Result<MigrationSt
     get_migration_status(app_handle)
 }
 
+pub fn ensure_sqlite_asset_library(
+    app_handle: tauri::AppHandle,
+) -> Result<MigrationStatus, String> {
+    if crate::db::connection::is_json_mode_forced(&app_handle) {
+        return get_migration_status(app_handle);
+    }
+
+    let conn = open_connection(&app_handle)?;
+    ensure_migration_progress_columns(&conn)?;
+    let asset_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM assets WHERE library_id = ?1 AND deleted_at IS NULL",
+            params![DEFAULT_LIBRARY_ID],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    let migration_completed: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM migrations WHERE id = ?1 AND status = 'success')",
+            params![MIGRATION_ID_JSON_TO_SQLITE],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value != 0)
+        .map_err(|err| err.to_string())?;
+    let reconciliation_completed = migration_succeeded(&conn, MIGRATION_ID_JSON_RECONCILE)?;
+    let visibility_repair_completed =
+        migration_succeeded(&conn, MIGRATION_ID_CANVAS_ASSET_VISIBILITY)?;
+    let embedded_source_repair_completed =
+        migration_succeeded(&conn, MIGRATION_ID_EMBEDDED_ASSET_SOURCES)?;
+
+    if !visibility_repair_completed {
+        let json_repo = JsonAssetRepository::new(app_handle.clone());
+        let legacy_cutoff = fs::metadata(json_repo.items_path())
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
+        match json_repo.read_items() {
+            Ok(legacy_items) => {
+                repair_canvas_only_asset_visibility(&conn, &legacy_items, legacy_cutoff)?;
+                let finished_at = crate::current_time_millis();
+                upsert_named_migration_row(
+                    &conn,
+                    MIGRATION_ID_CANVAS_ASSET_VISIBILITY,
+                    4,
+                    "Separate canvas-only references from drawer assets",
+                    "success",
+                    legacy_items.len() as i64,
+                    legacy_items.len() as i64,
+                    legacy_items.len() as i64,
+                    0,
+                    None,
+                    None,
+                    finished_at,
+                    Some(finished_at),
+                )?;
+            }
+            Err(error) => {
+                eprintln!(
+                    "[DrawerMigration] canvas-only visibility repair will retry: {}",
+                    error
+                );
+            }
+        }
+    }
+
+    if !embedded_source_repair_completed {
+        let started_at = crate::current_time_millis();
+        match repair_embedded_asset_sources(&app_handle, &conn) {
+            Ok(repaired) => {
+                let finished_at = crate::current_time_millis();
+                upsert_named_migration_row(
+                    &conn,
+                    MIGRATION_ID_EMBEDDED_ASSET_SOURCES,
+                    5,
+                    "Move legacy embedded asset sources to files",
+                    "success",
+                    repaired as i64,
+                    repaired as i64,
+                    repaired as i64,
+                    0,
+                    None,
+                    None,
+                    started_at,
+                    Some(finished_at),
+                )?;
+            }
+            Err(error) => {
+                eprintln!(
+                    "[DrawerMigration] embedded asset source repair will retry: {}",
+                    error
+                );
+            }
+        }
+    }
+
+    if asset_count > 0 {
+        if !migration_completed {
+            let now = crate::current_time_millis();
+            upsert_migration_row(
+                &conn,
+                "success",
+                asset_count,
+                asset_count,
+                asset_count,
+                0,
+                None,
+                None,
+                now,
+                Some(now),
+            )?;
+        }
+        drop(conn);
+        if !reconciliation_completed {
+            if let Err(error) = reconcile_json_into_existing_sqlite(app_handle.clone()) {
+                eprintln!(
+                    "[DrawerMigration] late JSON reconciliation will retry on next startup: {}",
+                    error
+                );
+            }
+        }
+        set_json_mode_forced(&app_handle, false)?;
+        return get_migration_status(app_handle);
+    }
+
+    if migration_completed {
+        drop(conn);
+        if !reconciliation_completed {
+            reconcile_json_into_existing_sqlite(app_handle.clone())?;
+        }
+        return get_migration_status(app_handle);
+    }
+    drop(conn);
+
+    let json_repo = JsonAssetRepository::new(app_handle.clone());
+    if !json_repo.read_items()?.is_empty() {
+        return migrate_json_to_sqlite(app_handle);
+    }
+
+    let conn = open_connection(&app_handle)?;
+    ensure_migration_progress_columns(&conn)?;
+    let now = crate::current_time_millis();
+    upsert_migration_row(&conn, "success", 0, 0, 0, 0, None, None, now, Some(now))?;
+    upsert_reconciliation_row(&conn, "success", 0, 0, 0, 0, None, now, Some(now))?;
+    drop(conn);
+    set_json_mode_forced(&app_handle, false)?;
+    get_migration_status(app_handle)
+}
+
+fn is_embedded_image_source(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|source| source.starts_with("data:image/"))
+}
+
+fn materialize_embedded_asset_source<F>(item: &mut Value, mut save: F) -> Result<bool, String>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
+    let source = [item.get("path"), item.get("url")]
+        .into_iter()
+        .flatten()
+        .find(|value| is_embedded_image_source(Some(value)))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(source) = source else {
+        return Ok(false);
+    };
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("embedded_image.png")
+        .to_string();
+    let local_path = save(&name, &source)?;
+    let Some(object) = item.as_object_mut() else {
+        return Err("asset metadata is not an object".to_string());
+    };
+    object.insert("path".to_string(), Value::String(local_path));
+    for key in ["url", "sourceUrl", "originalUrl"] {
+        if is_embedded_image_source(object.get(key)) {
+            object.remove(key);
+        }
+    }
+    Ok(true)
+}
+
+fn repair_embedded_asset_sources(
+    app_handle: &tauri::AppHandle,
+    conn: &Connection,
+) -> Result<usize, String> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT metadata_json
+            FROM assets
+            WHERE deleted_at IS NULL
+              AND file_type = 'image'
+              AND (
+                json_extract(metadata_json, '$.path') LIKE 'data:image/%'
+                OR json_extract(metadata_json, '$.url') LIKE 'data:image/%'
+              )
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+    let metadata_rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    drop(stmt);
+
+    let mut repaired = 0_usize;
+    for metadata in metadata_rows {
+        let mut item = serde_json::from_str::<Value>(&metadata).map_err(|err| err.to_string())?;
+        let changed = materialize_embedded_asset_source(&mut item, |name, data_url| {
+            crate::save_dropped_data_url_impl(app_handle, name, data_url)
+        })?;
+        if changed {
+            insert_asset(conn, &item, crate::current_time_millis())?;
+            repaired += 1;
+        }
+    }
+    Ok(repaired)
+}
+
+fn repair_canvas_only_asset_visibility(
+    conn: &Connection,
+    legacy_drawer_items: &[Value],
+    legacy_cutoff: Option<i64>,
+) -> Result<usize, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| err.to_string())?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS legacy_drawer_asset_ids (id TEXT PRIMARY KEY); DELETE FROM legacy_drawer_asset_ids;",
+    )
+    .map_err(|err| err.to_string())?;
+    {
+        let mut insert = tx
+            .prepare("INSERT OR IGNORE INTO legacy_drawer_asset_ids (id) VALUES (?1)")
+            .map_err(|err| err.to_string())?;
+        for id in legacy_drawer_items
+            .iter()
+            .filter_map(|item| value_string(item, "id"))
+        {
+            insert.execute(params![id]).map_err(|err| err.to_string())?;
+        }
+    }
+
+    let mut hidden = tx
+        .execute(
+            r#"
+            UPDATE assets
+            SET drawer_visible = 0
+            WHERE (
+                  file_type IN ('text', 'file')
+                  OR (
+                      file_type IN ('image', 'video')
+                      AND (folder_id IS NULL OR TRIM(folder_id) = '')
+                  )
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM canvas_nodes
+                  WHERE canvas_nodes.asset_id = assets.id
+                    AND json_extract(canvas_nodes.metadata_json, '$.item.id') = assets.id
+                    AND COALESCE(json_extract(canvas_nodes.metadata_json, '$.item.sourceItemId'), '') = ''
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM legacy_drawer_asset_ids WHERE legacy_drawer_asset_ids.id = assets.id
+              )
+            "#,
+            [],
+        )
+        .map_err(|err| err.to_string())?;
+
+    // Before asset IDs became UUIDs, private canvas items used seven-character
+    // lowercase IDs. Full-canvas saves left some of those rows behind after the
+    // corresponding node was removed. A legacy drawer snapshot and its mtime let
+    // us distinguish those stale rows without hiding real drawer notes/files.
+    if !legacy_drawer_items.is_empty() {
+        if let Some(cutoff) = legacy_cutoff {
+            hidden += tx
+                .execute(
+                    r#"
+                    UPDATE assets
+                    SET drawer_visible = 0
+                    WHERE file_type IN ('text', 'file')
+                      AND (folder_id IS NULL OR TRIM(folder_id) = '')
+                      AND LENGTH(id) = 7
+                      AND id NOT GLOB '*[^0-9a-z]*'
+                      AND COALESCE(created_at, 0) <= ?1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM legacy_drawer_asset_ids WHERE legacy_drawer_asset_ids.id = assets.id
+                      )
+                    "#,
+                    params![cutoff],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
+    tx.execute(
+        "UPDATE assets SET drawer_visible = 1 WHERE id IN (SELECT id FROM legacy_drawer_asset_ids)",
+        [],
+    )
+    .map_err(|err| err.to_string())?;
+    tx.execute_batch("DROP TABLE legacy_drawer_asset_ids;")
+        .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(hidden)
+}
+
 pub fn migrate_json_to_sqlite(app_handle: tauri::AppHandle) -> Result<MigrationStatus, String> {
     let repo = JsonAssetRepository::new(app_handle.clone());
     backup_json_files(&app_handle, &repo)?;
@@ -116,6 +441,20 @@ pub fn migrate_json_to_sqlite(app_handle: tauri::AppHandle) -> Result<MigrationS
     let migration_result = migrate_payloads(&conn, &items, &folders, &canvas_state, started_at);
     match migration_result {
         Ok((processed, success, failed)) => {
+            if failed > 0 {
+                set_json_mode_forced(&app_handle, true)?;
+                return finish_migration_error(
+                    &conn,
+                    total,
+                    processed,
+                    success,
+                    failed,
+                    started_at,
+                    format!(
+                        "migration preserved JSON mode because {failed} assets failed to import"
+                    ),
+                );
+            }
             let sqlite_asset_count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM assets WHERE library_id = ?1 AND deleted_at IS NULL",
@@ -131,6 +470,7 @@ pub fn migrate_json_to_sqlite(app_handle: tauri::AppHandle) -> Result<MigrationS
                 )
                 .map_err(|err| err.to_string())?;
             if sqlite_asset_count < success || sqlite_folder_count < folders.len() as i64 {
+                set_json_mode_forced(&app_handle, true)?;
                 return finish_migration_error(
                     &conn,
                     total,
@@ -160,11 +500,298 @@ pub fn migrate_json_to_sqlite(app_handle: tauri::AppHandle) -> Result<MigrationS
                 started_at,
                 Some(finished_at),
             )?;
+            upsert_reconciliation_row(
+                &conn,
+                "success",
+                total,
+                processed,
+                success,
+                failed,
+                None,
+                started_at,
+                Some(finished_at),
+            )?;
             set_json_mode_forced(&app_handle, false)?;
             get_migration_status(app_handle)
         }
-        Err(err) => finish_migration_error(&conn, total, 0, 0, total, started_at, err),
+        Err(err) => {
+            set_json_mode_forced(&app_handle, true)?;
+            finish_migration_error(&conn, total, 0, 0, total, started_at, err)
+        }
     }
+}
+
+fn migration_succeeded(conn: &Connection, migration_id: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE id = ?1 AND status = 'success')",
+        params![migration_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .map_err(|err| err.to_string())
+}
+
+/// Older builds could keep writing drawer_items.json after the first SQLite migration.
+/// Reconcile only IDs that SQLite has never seen so current edits and soft-deletes remain
+/// authoritative while late legacy records (including folder assignments) are recovered.
+fn reconcile_json_into_existing_sqlite(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let repo = JsonAssetRepository::new(app_handle.clone());
+    let items = repo.read_items()?;
+    let folders = repo.read_folders()?;
+    let started_at = crate::current_time_millis();
+    let conn = open_connection(&app_handle)?;
+    ensure_migration_progress_columns(&conn)?;
+
+    if items.is_empty() && folders.is_empty() {
+        return upsert_reconciliation_row(
+            &conn,
+            "success",
+            0,
+            0,
+            0,
+            0,
+            None,
+            started_at,
+            Some(started_at),
+        );
+    }
+
+    backup_json_files(&app_handle, &repo)?;
+    upsert_reconciliation_row(
+        &conn,
+        "running",
+        items.len() as i64,
+        0,
+        0,
+        0,
+        None,
+        started_at,
+        None,
+    )?;
+
+    match reconcile_payloads(&conn, &items, &folders, started_at) {
+        Ok((processed, inserted)) => {
+            let finished_at = crate::current_time_millis();
+            upsert_reconciliation_row(
+                &conn,
+                "success",
+                items.len() as i64,
+                processed,
+                inserted,
+                0,
+                None,
+                started_at,
+                Some(finished_at),
+            )
+        }
+        Err(error) => {
+            let finished_at = crate::current_time_millis();
+            upsert_reconciliation_row(
+                &conn,
+                "failed",
+                items.len() as i64,
+                0,
+                0,
+                items.len() as i64,
+                Some(error.clone()),
+                started_at,
+                Some(finished_at),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn reconcile_payloads(
+    conn: &Connection,
+    items: &[Value],
+    folders: &[Value],
+    started_at: i64,
+) -> Result<(i64, i64), String> {
+    let (existing_asset_ids, existing_assets_by_identity) = {
+        let mut statement = conn
+            .prepare(
+                "SELECT id, file_path, hash, quick_hash, source_url, folder_id, deleted_at FROM assets",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut ids = HashSet::new();
+        let mut identities = HashMap::new();
+        for row in rows {
+            let (id, file_path, hash, quick_hash, source_url, folder_id, deleted_at) =
+                row.map_err(|err| err.to_string())?;
+            ids.insert(id.clone());
+            for key in database_asset_identity_keys(
+                file_path.as_deref(),
+                hash.as_deref(),
+                quick_hash.as_deref(),
+                source_url.as_deref(),
+            ) {
+                identities
+                    .entry(key)
+                    .or_insert_with(|| (id.clone(), folder_id.clone(), deleted_at.is_some()));
+            }
+        }
+        (ids, identities)
+    };
+    let existing_folder_ids = {
+        let mut statement = conn
+            .prepare("SELECT id FROM folders")
+            .map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(|err| err.to_string())?
+    };
+
+    let missing_folders = folders
+        .iter()
+        .filter(|folder| {
+            value_string(folder, "id")
+                .map(|id| !existing_folder_ids.contains(&id))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    for (chunk_index, chunk) in missing_folders.chunks(MIGRATION_BATCH_SIZE).enumerate() {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        for (offset, folder) in chunk.iter().enumerate() {
+            insert_folder(
+                &tx,
+                folder,
+                (chunk_index * MIGRATION_BATCH_SIZE + offset) as i64,
+                started_at,
+            )?;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+    }
+
+    let mut missing_items = Vec::new();
+    let mut folder_repairs = HashMap::<String, String>::new();
+    for item in items {
+        if value_string(item, "id")
+            .map(|id| existing_asset_ids.contains(&id))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let identity_match = json_asset_identity_keys(item)
+            .into_iter()
+            .find_map(|key| existing_assets_by_identity.get(&key));
+        if let Some((matched_id, current_folder_id, is_deleted)) = identity_match {
+            if !is_deleted && current_folder_id.as_deref().unwrap_or_default().is_empty() {
+                if let Some(folder_id) = value_string(item, "folderId") {
+                    folder_repairs
+                        .entry(matched_id.clone())
+                        .or_insert(folder_id);
+                }
+            }
+            continue;
+        }
+        missing_items.push(item);
+    }
+
+    for chunk in folder_repairs
+        .into_iter()
+        .collect::<Vec<_>>()
+        .chunks(MIGRATION_BATCH_SIZE)
+    {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        for (asset_id, folder_id) in chunk {
+            tx.execute(
+                "UPDATE assets SET folder_id = ?2, updated_at = ?3, metadata_json = json_set(metadata_json, '$.folderId', ?2, '$.updatedAt', ?3) WHERE id = ?1 AND deleted_at IS NULL AND (folder_id IS NULL OR folder_id = '')",
+                params![asset_id, folder_id, started_at],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+    }
+
+    let mut inserted = 0_i64;
+    for chunk in missing_items.chunks(MIGRATION_BATCH_SIZE) {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        for item in chunk {
+            insert_asset(&tx, item, started_at)?;
+            inserted += 1;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+    }
+
+    conn.execute(
+        r#"
+        UPDATE assets
+        SET folder_id = NULL,
+            updated_at = ?1,
+            metadata_json = json_remove(json_set(metadata_json, '$.updatedAt', ?1), '$.folderId')
+        WHERE deleted_at IS NULL
+          AND folder_id IS NOT NULL
+          AND folder_id <> ''
+          AND NOT EXISTS (
+              SELECT 1 FROM folders
+              WHERE folders.id = assets.folder_id
+                AND folders.deleted_at IS NULL
+          )
+        "#,
+        params![started_at],
+    )
+    .map_err(|err| err.to_string())?;
+
+    Ok((items.len() as i64, inserted))
+}
+
+fn normalized_identity_key(kind: &str, value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{}:{}", kind, value.to_lowercase()))
+}
+
+fn database_asset_identity_keys(
+    file_path: Option<&str>,
+    hash: Option<&str>,
+    quick_hash: Option<&str>,
+    source_url: Option<&str>,
+) -> Vec<String> {
+    [
+        normalized_identity_key("path", file_path),
+        normalized_identity_key("hash", hash),
+        normalized_identity_key("quick", quick_hash),
+        normalized_identity_key("source", source_url),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn json_asset_identity_keys(item: &Value) -> Vec<String> {
+    let file_path = value_string(item, "path").or_else(|| value_string(item, "url"));
+    let hash = value_string(item, "hash");
+    let quick_hash = value_string(item, "quickHash").or_else(|| value_string(item, "fingerprint"));
+    let source_url = value_string(item, "sourceUrl").or_else(|| value_string(item, "originalUrl"));
+    database_asset_identity_keys(
+        file_path.as_deref(),
+        hash.as_deref(),
+        quick_hash.as_deref(),
+        source_url.as_deref(),
+    )
 }
 
 fn finish_migration_error(
@@ -231,11 +858,74 @@ fn upsert_migration_row(
     started_at: i64,
     finished_at: Option<i64>,
 ) -> Result<(), String> {
+    upsert_named_migration_row(
+        conn,
+        MIGRATION_ID_JSON_TO_SQLITE,
+        1,
+        "JSON to SQLite migration",
+        status,
+        total,
+        processed,
+        success,
+        failed,
+        current_file,
+        error,
+        started_at,
+        finished_at,
+    )
+}
+
+fn upsert_reconciliation_row(
+    conn: &Connection,
+    status: &str,
+    total: i64,
+    processed: i64,
+    success: i64,
+    failed: i64,
+    error: Option<String>,
+    started_at: i64,
+    finished_at: Option<i64>,
+) -> Result<(), String> {
+    upsert_named_migration_row(
+        conn,
+        MIGRATION_ID_JSON_RECONCILE,
+        2,
+        "Late JSON asset reconciliation",
+        status,
+        total,
+        processed,
+        success,
+        failed,
+        None,
+        error,
+        started_at,
+        finished_at,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_named_migration_row(
+    conn: &Connection,
+    migration_id: &str,
+    version: i64,
+    name: &str,
+    status: &str,
+    total: i64,
+    processed: i64,
+    success: i64,
+    failed: i64,
+    current_file: Option<String>,
+    error: Option<String>,
+    started_at: i64,
+    finished_at: Option<i64>,
+) -> Result<(), String> {
     conn.execute(
         r#"
         INSERT INTO migrations (id, version, name, status, started_at, finished_at, error, total_count, processed_count, success_count, failed_count, current_file)
-        VALUES (?1, 1, 'JSON to SQLite migration', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(id) DO UPDATE SET
+            version = excluded.version,
+            name = excluded.name,
             status = excluded.status,
             started_at = excluded.started_at,
             finished_at = excluded.finished_at,
@@ -247,7 +937,9 @@ fn upsert_migration_row(
             current_file = excluded.current_file
         "#,
         params![
-            MIGRATION_ID_JSON_TO_SQLITE,
+            migration_id,
+            version,
+            name,
             status,
             started_at,
             finished_at,
@@ -417,9 +1109,31 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
 
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO assets
+        INSERT INTO assets
         (id, library_id, folder_id, file_path, file_name, file_ext, file_type, file_size, width, height, duration, hash, quick_hash, source_url, note, rating, created_at, updated_at, imported_at, modified_at, deleted_at, metadata_json)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20)
+        ON CONFLICT(id) DO UPDATE SET
+            library_id = excluded.library_id,
+            folder_id = excluded.folder_id,
+            file_path = excluded.file_path,
+            file_name = excluded.file_name,
+            file_ext = excluded.file_ext,
+            file_type = excluded.file_type,
+            file_size = excluded.file_size,
+            width = excluded.width,
+            height = excluded.height,
+            duration = excluded.duration,
+            hash = excluded.hash,
+            quick_hash = excluded.quick_hash,
+            source_url = excluded.source_url,
+            note = excluded.note,
+            rating = excluded.rating,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            imported_at = excluded.imported_at,
+            modified_at = excluded.modified_at,
+            deleted_at = NULL,
+            metadata_json = excluded.metadata_json
         "#,
         params![
             id,
@@ -444,6 +1158,9 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
             metadata_json,
         ],
     ).map_err(|err| err.to_string())?;
+
+    conn.execute("DELETE FROM asset_tags WHERE asset_id = ?1", params![id])
+        .map_err(|err| err.to_string())?;
 
     if let Some(thumbnail) = value_string(item, "thumbnail") {
         conn.execute(
@@ -542,7 +1259,13 @@ pub(crate) fn insert_canvas_node_with_z_index(
     }
     let item = node.get("item");
     let raw_asset_id = item.and_then(|item| value_string(item, "id"));
-    let asset_id = resolve_canvas_asset_id(conn, raw_asset_id.as_deref(), item)?;
+    let source_asset_id = item.and_then(|item| value_string(item, "sourceItemId"));
+    let asset_id = resolve_canvas_asset_id(
+        conn,
+        source_asset_id.as_deref(),
+        raw_asset_id.as_deref(),
+        item,
+    )?;
     let x = value_f64(node, "x").unwrap_or(0.0);
     let y = value_f64(node, "y").unwrap_or(0.0);
     let width = value_f64(node, "width").unwrap_or(0.0);
@@ -634,15 +1357,15 @@ fn canvas_node_id_belongs_to_other_canvas(
 
 fn resolve_canvas_asset_id(
     conn: &Connection,
+    source_asset_id: Option<&str>,
     raw_asset_id: Option<&str>,
     item: Option<&Value>,
 ) -> Result<Option<String>, String> {
-    if let Some(id) = raw_asset_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if asset_exists(conn, id)? {
-            return Ok(Some(id.to_string()));
+    for candidate in [source_asset_id, raw_asset_id] {
+        if let Some(id) = candidate.map(str::trim).filter(|value| !value.is_empty()) {
+            if asset_exists(conn, id)? {
+                return Ok(Some(id.to_string()));
+            }
         }
     }
     let Some(item) = item else {
@@ -744,4 +1467,250 @@ fn file_name_from_path(path: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or("asset")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_image_sources_are_replaced_by_a_local_file_without_touching_provenance_urls() {
+        let data_url = "data:image/png;base64,ZmFrZQ==";
+        let mut item = json!({
+            "id": "embedded",
+            "type": "image",
+            "name": "reference.png",
+            "path": data_url,
+            "url": data_url,
+            "sourceUrl": "https://example.com/reference",
+            "originalUrl": data_url,
+            "thumbnail": "data:image/jpeg;base64,dGh1bWI="
+        });
+
+        let changed = materialize_embedded_asset_source(&mut item, |name, source| {
+            assert_eq!(name, "reference.png");
+            assert_eq!(source, data_url);
+            Ok("C:\\Inspiration Drawer\\uploads\\reference.png".to_string())
+        })
+        .expect("materialize embedded source");
+
+        assert!(changed);
+        assert_eq!(
+            item.get("path").and_then(Value::as_str),
+            Some("C:\\Inspiration Drawer\\uploads\\reference.png")
+        );
+        assert!(item.get("url").is_none());
+        assert_eq!(
+            item.get("sourceUrl").and_then(Value::as_str),
+            Some("https://example.com/reference")
+        );
+        assert!(item.get("originalUrl").is_none());
+        assert_eq!(
+            item.get("thumbnail").and_then(Value::as_str),
+            Some("data:image/jpeg;base64,dGh1bWI=")
+        );
+    }
+
+    #[test]
+    fn reconciliation_restores_only_missing_legacy_assets_with_folder_links() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        crate::db::schema::ensure_schema(&conn).expect("create schema");
+        let now = 1_700_000_000_000_i64;
+        conn.execute(
+            "INSERT OR IGNORE INTO libraries (id, name, path, created_at, updated_at) VALUES (?1, 'Default', '', ?2, ?2)",
+            params![DEFAULT_LIBRARY_ID, now],
+        )
+        .expect("create library");
+
+        insert_asset(
+            &conn,
+            &json!({ "id": "existing", "type": "image", "name": "Current", "createdAt": now }),
+            now,
+        )
+        .expect("seed current asset");
+        insert_asset(
+            &conn,
+            &json!({ "id": "same-file-current", "type": "image", "name": "Same file", "path": "C:\\assets\\same.png", "createdAt": now }),
+            now,
+        )
+        .expect("seed identity-matched asset");
+
+        let folders = vec![json!({ "id": "legacy-folder", "name": "Legacy" })];
+        let items = vec![
+            json!({ "id": "existing", "type": "image", "name": "Old copy", "folderId": "legacy-folder", "createdAt": now - 1 }),
+            json!({ "id": "same-file-old", "type": "image", "name": "Same file legacy ID", "path": "C:\\assets\\same.png", "folderId": "legacy-folder", "createdAt": now - 1 }),
+            json!({ "id": "missing", "type": "image", "name": "Recovered", "folderId": "legacy-folder", "createdAt": now - 1 }),
+            json!({ "id": "orphan", "type": "image", "name": "Visible in main", "folderId": "deleted-folder", "createdAt": now - 1 }),
+        ];
+
+        let (processed, inserted) =
+            reconcile_payloads(&conn, &items, &folders, now).expect("reconcile payloads");
+        assert_eq!((processed, inserted), (4, 2));
+
+        let existing_folder: Option<String> = conn
+            .query_row(
+                "SELECT folder_id FROM assets WHERE id = 'existing'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read current asset");
+        assert_eq!(existing_folder, None, "current SQLite edits must win");
+
+        let recovered_folder: Option<String> = conn
+            .query_row(
+                "SELECT folder_id FROM assets WHERE id = 'missing'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read recovered asset");
+        assert_eq!(recovered_folder.as_deref(), Some("legacy-folder"));
+
+        let identity_matched_folder: Option<String> = conn
+            .query_row(
+                "SELECT folder_id FROM assets WHERE id = 'same-file-current'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read identity-matched asset");
+        assert_eq!(identity_matched_folder.as_deref(), Some("legacy-folder"));
+
+        let asset_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))
+            .expect("count assets");
+        assert_eq!(
+            asset_count, 4,
+            "identity matches must not create duplicates"
+        );
+
+        let orphan_folder: Option<String> = conn
+            .query_row(
+                "SELECT folder_id FROM assets WHERE id = 'orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read orphaned asset");
+        assert_eq!(
+            orphan_folder, None,
+            "deleted folders must not hide recovered assets"
+        );
+    }
+
+    #[test]
+    fn canvas_visibility_repair_hides_private_nodes_but_preserves_legacy_drawer_items() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        crate::db::schema::ensure_schema(&conn).expect("create schema");
+        let now = 1_700_000_000_000_i64;
+        for item in [
+            json!({ "id": "prompt1", "type": "text", "name": "Canvas prompt", "createdAt": now }),
+            json!({ "id": "bridge1", "type": "file", "name": "Canvas bridge", "createdAt": now }),
+            json!({ "id": "note001", "type": "text", "name": "Real drawer note", "createdAt": now }),
+            json!({ "id": "refimg1", "type": "image", "name": "Canvas reference", "createdAt": now }),
+            json!({ "id": "refvid1", "type": "video", "name": "Canvas reference video", "createdAt": now }),
+            json!({ "id": "legacyimg", "type": "image", "name": "Legacy drawer image", "createdAt": now }),
+            json!({ "id": "savedimg", "type": "image", "name": "Saved canvas image", "folderId": "saved-canvas", "createdAt": now }),
+            json!({ "id": "sourcedimg", "type": "image", "name": "Drawer source image", "createdAt": now }),
+        ] {
+            insert_asset(&conn, &item, now).expect("seed asset");
+        }
+        for node in [
+            json!({
+                "id": "canvas_text_prompt1",
+                "item": { "id": "prompt1", "type": "text", "name": "Canvas prompt", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_refimg1",
+                "item": { "id": "refimg1", "type": "image", "name": "Canvas reference", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_video_refvid1",
+                "item": { "id": "refvid1", "type": "video", "name": "Canvas reference video", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_legacyimg",
+                "item": { "id": "legacyimg", "type": "image", "name": "Legacy drawer image", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_savedimg",
+                "item": { "id": "savedimg", "type": "image", "name": "Saved canvas image", "folderId": "saved-canvas", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+            json!({
+                "id": "canvas_image_source_copy",
+                "item": { "id": "source-copy", "sourceItemId": "sourcedimg", "type": "image", "name": "Drawer source image", "createdAt": now },
+                "x": 0, "y": 0, "width": 100, "height": 100
+            }),
+        ] {
+            insert_canvas_node(&conn, DEFAULT_CANVAS_ID, &node, now).expect("seed canvas node");
+        }
+
+        let legacy_items = vec![
+            json!({ "id": "note001", "type": "text", "name": "Real drawer note", "createdAt": now }),
+            json!({ "id": "legacyimg", "type": "image", "name": "Legacy drawer image", "createdAt": now }),
+        ];
+        repair_canvas_only_asset_visibility(&conn, &legacy_items, Some(now + 1))
+            .expect("repair visibility");
+
+        let rows = conn
+            .prepare("SELECT id, drawer_visible FROM assets ORDER BY id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .expect("read visibility");
+        assert_eq!(
+            rows,
+            vec![
+                ("bridge1".to_string(), 0),
+                ("legacyimg".to_string(), 1),
+                ("note001".to_string(), 1),
+                ("prompt1".to_string(), 0),
+                ("refimg1".to_string(), 0),
+                ("refvid1".to_string(), 0),
+                ("savedimg".to_string(), 1),
+                ("sourcedimg".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn asset_metadata_upsert_preserves_hidden_canvas_visibility() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        crate::db::schema::ensure_schema(&conn).expect("create schema");
+        let now = 1_700_000_000_000_i64;
+        insert_asset(
+            &conn,
+            &json!({ "id": "canvas-reference", "type": "image", "name": "Before", "createdAt": now }),
+            now,
+        )
+        .expect("seed asset");
+        conn.execute(
+            "UPDATE assets SET drawer_visible = 0 WHERE id = 'canvas-reference'",
+            [],
+        )
+        .expect("hide canvas reference");
+
+        insert_asset(
+            &conn,
+            &json!({ "id": "canvas-reference", "type": "image", "name": "After", "createdAt": now }),
+            now + 1,
+        )
+        .expect("update hidden asset metadata");
+
+        let (drawer_visible, file_name): (i64, String) = conn
+            .query_row(
+                "SELECT drawer_visible, file_name FROM assets WHERE id = 'canvas-reference'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read updated asset");
+        assert_eq!(drawer_visible, 0);
+        assert_eq!(file_name, "After");
+    }
 }

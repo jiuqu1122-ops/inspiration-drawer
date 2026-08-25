@@ -111,7 +111,29 @@ export function runAppAgentSmokeTests() {
   assert(schemaText.includes('aspectRatio'), 'generator action schema should allow aspectRatio');
   assert(schemaText.includes('referenceRoles'), 'generator action schema should allow referenceRoles');
   assert(schemaText.includes('skillMeta'), 'generator action schema should allow skillMeta');
+  assert(schemaText.includes('canvas_create_design_pipeline'), 'agent schema should expose the product design pipeline');
   assert(schemaText.includes('reference_image_bridge'), 'workflow action schema should allow reference_image_bridge');
+  const directProductDesignTurn = prepareAppAgentTurn({
+    userText: '我要设计一款适合小户型的桌面音箱',
+    context: { ...baseContext, selectedIds: [], visualReferences: [], nodes: [] },
+  });
+  const designPipelineAction = directProductDesignTurn.deterministicLegacyActions.find(
+    action => action.tool === 'canvas_create_design_pipeline',
+  );
+  assert(!!designPipelineAction, 'direct product design request should create the drawer-to-analysis-to-generator pipeline');
+  assert(designPipelineAction.arguments.referenceCount === 5, 'product design pipeline should retrieve five role-balanced drawer references');
+  assert(designPipelineAction.arguments.autoRunAnalysis === true, 'product design pipeline should run visual design analysis');
+  assert(designPipelineAction.arguments.autoRunGenerator === true, 'direct product design request should run the downstream generator after analysis');
+  assert(!directProductDesignTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_text_agent'), 'pipeline must not also create a disconnected design agent');
+  assert(!directProductDesignTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_generator'), 'pipeline must not also create a disconnected generator');
+  const genericProductDesignTurn = prepareAppAgentTurn({
+    userText: '帮我设计一个适合露营使用的杯子',
+    context: { ...baseContext, selectedIds: [], visualReferences: [], nodes: [] },
+  });
+  assert(
+    genericProductDesignTurn.deterministicLegacyActions.some(action => action.tool === 'canvas_create_design_pipeline'),
+    'generic tangible product requests should also create the design pipeline',
+  );
   const cmfTurn = prepareAppAgentTurn({
     userText: '参考这几张图做一个手持控制器 CMF 方案，16:9',
     context: baseContext,

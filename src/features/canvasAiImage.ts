@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { AiGatewayKind } from './agentModel';
-import type { CanvasAiModelCandidate, NewApiImageProtocol } from './canvasModel';
+import type {
+  CanvasAiCredentialSource,
+  CanvasAiModelCandidate,
+  CanvasAiProvider,
+  NewApiImageProtocol,
+} from './canvasModel';
 
 export type { NewApiImageProtocol } from './canvasModel';
 
@@ -10,14 +15,289 @@ export const NEW_API_IMAGE_MODEL_DEFAULT = OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT
 export const NEW_API_ENDPOINT_DEFAULT = '';
 export const NEW_API_ENDPOINT_PLACEHOLDER = 'https://your-new-api.example.com/v1';
 export const XAIS_CHAT_ENDPOINT_DEFAULT = 'https://xais.dchai.cn';
+export const MIKOTO_ENDPOINT_DEFAULT = 'https://api.mikoto.vip';
+export const MINIMAX_H3_VIDEO_MODEL = 'MiniMax-H3';
 export const XAIS_CHAT_IMAGE_MODEL_DEFAULT = 'Xais Nano Pro_2K';
 export const XAIS_CHAT_VIDEO_MODEL_DEFAULT = 'seedance2';
+export const CANVAS_SEEDANCE_2_MODEL = 'seedance2';
+export const CANVAS_SEEDANCE_2_FAST_MODEL = 'seedance2fast';
+export const NEW_API_SEEDANCE_2_MODEL = 'SourceMix2.0';
+export const NEW_API_SEEDANCE_2_FAST_MODEL = 'SourceMix2.0-fast';
+export const KLING_VIDEO_MODEL = 'kling-video';
+export const KLING_OMNI_VIDEO_MODEL = 'kling-omni-video';
+export const SEEDANCE_2_REFERENCE_SLOTS = {
+  imageSlots: 9,
+  videoSlots: 3,
+  audioSlots: 3,
+} as const;
+
+export const normalizeCloudWalletImageProvider = (
+  provider?: CanvasAiImageProvider | string | null,
+): 'new-api' | 'xais-chat' | 'openai-compatible' | 'custom' | undefined => {
+  const normalized = String(provider || '').trim().toLowerCase();
+  return normalized === 'new-api'
+    || normalized === 'xais-chat'
+    || normalized === 'openai-compatible'
+    || normalized === 'custom'
+    ? normalized
+    : undefined;
+};
+
+export const normalizeCloudWalletVideoProvider = (
+  provider?: CanvasAiImageProvider | string | null,
+): 'new-api' | 'xais-chat' | 'mikoto' | 'minimax' | undefined => {
+  const normalized = String(provider || '').trim().toLowerCase();
+  return normalized === 'new-api' || normalized === 'xais-chat' || normalized === 'mikoto' || normalized === 'minimax'
+    ? normalized
+    : undefined;
+};
+
 export const NEW_API_GPT_IMAGE_2_MODEL = 'gpt-image-2';
 export const NEW_API_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image';
 export const NEW_API_NANO_BANANA_2_MODEL = 'gemini-3.1-flash-image';
+export const BIGMODEL_NANO_BANANA_PRO_MODEL = 'gemini-3-pro-image-preview';
+export const BIGMODEL_GPT_IMAGE_2_MODEL = 'gpt-image-2';
+export const NEW_API_VIDEO_MODEL_DEFAULT = 'veo-3.1';
+export const NEW_API_VIDEO_MODEL_OPTIONS = [
+  { value: CANVAS_SEEDANCE_2_MODEL, label: 'Seedance 2.0' },
+  { value: CANVAS_SEEDANCE_2_FAST_MODEL, label: 'Seedance fast' },
+  { value: 'sora-2', label: 'Sora 2' },
+  { value: 'veo-3.1', label: 'Veo 3.1' },
+  { value: 'veo-3.1-fast', label: 'Veo 3.1 Fast' },
+  { value: KLING_VIDEO_MODEL, label: 'Kling Video' },
+  { value: KLING_OMNI_VIDEO_MODEL, label: 'Kling Omni Video' },
+];
+// The canvas exposes one public video model list regardless of the selected
+// channel. Channel capabilities and model aliases decide the actual route.
+export const MIKOTO_VIDEO_MODEL_OPTIONS = [...NEW_API_VIDEO_MODEL_OPTIONS];
+export const CANVAS_AI_VIDEO_MODEL_OPTIONS = [
+  ...NEW_API_VIDEO_MODEL_OPTIONS,
+  { value: MINIMAX_H3_VIDEO_MODEL, label: 'MiniMax H3' },
+];
+
+export const getCanvasAiVideoProviderForModel = (model?: string | null): CanvasAiImageProvider => {
+  const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
+  if (token === 'minimaxh3') return 'minimax';
+  return ['seedance2', 'seedance20'].includes(token) ? 'xais-chat' : 'new-api';
+};
+
+export const isSeedance20VideoModel = (model?: string | null) => {
+  const value = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
+  return value === 'seedance2'
+    || value === 'seedance20'
+    || value === 'seedance20fast'
+    || value === 'sourcemix20'
+    || value === 'sourcemix20fast';
+};
+
+export const isMiniMaxH3VideoModel = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '') === 'minimaxh3'
+);
+
+export const getMiniMaxH3VideoResolutionValues = (): string[] => ['768P', '2K'];
+
+export const normalizeMiniMaxH3VideoResolution = (resolution?: string | null) => (
+  String(resolution || '').trim().toUpperCase() === '2K' || String(resolution || '').trim().toLowerCase() === '1080p'
+    ? '2K'
+    : '768P'
+);
+
+export const isSeedanceLikeVideoModel = (model?: string | null) => (
+  isSeedance20VideoModel(model) || isMiniMaxH3VideoModel(model)
+);
+
+export const getMikotoVideoResolutionValues = (model?: string | null): string[] => {
+  const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
+  return token.includes('seedance2fast')
+    || token.includes('seedance20fast')
+    || token.includes('sourcemix20fast')
+    || token.includes('seedancefast')
+    ? ['480p', '720p'] as const
+    : ['720p', '1080p'] as const;
+};
+
+export const normalizeMikotoVideoResolution = (model?: string | null, resolution?: string | null) => {
+  const values = getMikotoVideoResolutionValues(model);
+  const requested = String(resolution || '').trim().toLowerCase();
+  return (values as readonly string[]).includes(requested) ? requested : values[0];
+};
+
+export const getMikotoVideoDurationValues = (model?: string | null): number[] => (
+  /kling/i.test(String(model || '')) ? [5, 10, 15] : Array.from({ length: 12 }, (_, index) => index + 4)
+);
+
+export const normalizeMikotoVideoDuration = (model?: string | null, duration?: number | null) => {
+  const values = getMikotoVideoDurationValues(model);
+  const requested = Math.round(Number(duration) || values[values.length - 1] || 15);
+  return values.find(value => value >= requested) || values[values.length - 1] || 15;
+};
+
+export const getCanvasAiVideoModelOptionValue = (model?: string | null) => {
+  const token = String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '');
+  if (token === 'minimaxh3') {
+    return MINIMAX_H3_VIDEO_MODEL;
+  }
+  if (token === 'seedance2fast' || token === 'seedance20fast' || token === 'sourcemix20fast') {
+    return CANVAS_SEEDANCE_2_FAST_MODEL;
+  }
+  if (token === 'seedance2' || token === 'seedance20' || token === 'sourcemix20') {
+    return CANVAS_SEEDANCE_2_MODEL;
+  }
+  return String(model || '').trim();
+};
+
+export type CanvasAiVideoChannelSnapshot = {
+  id?: string | null;
+  provider?: string | null;
+  models?: readonly string[] | null;
+  capabilities?: readonly string[] | null;
+  error?: string | null;
+};
+
+const normalizeVideoChannelProvider = (provider?: string | null): CanvasAiProvider | undefined => {
+  const normalized = String(provider || '').trim().toUpperCase();
+  if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'MINIMAX') return 'minimax';
+  if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
+  if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
+  if (normalized === 'BIGMODEL' || normalized === 'BIG-MODEL') return 'bigmodel';
+  return undefined;
+};
+
+const videoModelForProvider = (provider: CanvasAiProvider, selectedModel: string) => {
+  if (selectedModel === CANVAS_SEEDANCE_2_MODEL) {
+    if (provider === 'new-api') return NEW_API_SEEDANCE_2_MODEL;
+    if (provider === 'xais-chat' || provider === 'mikoto') return CANVAS_SEEDANCE_2_MODEL;
+  }
+  if (selectedModel === CANVAS_SEEDANCE_2_FAST_MODEL) {
+    if (provider === 'new-api') return NEW_API_SEEDANCE_2_FAST_MODEL;
+    if (provider === 'xais-chat' || provider === 'mikoto') return CANVAS_SEEDANCE_2_FAST_MODEL;
+  }
+  if (selectedModel === MINIMAX_H3_VIDEO_MODEL && provider === 'minimax') return MINIMAX_H3_VIDEO_MODEL;
+  return selectedModel;
+};
+
+const providerSupportsPublicVideoModel = (provider: CanvasAiProvider, model: string) => {
+  if (provider === 'new-api') return model !== MINIMAX_H3_VIDEO_MODEL;
+  if (provider === 'mikoto') {
+    return model === CANVAS_SEEDANCE_2_MODEL
+      || model === CANVAS_SEEDANCE_2_FAST_MODEL
+      || model === KLING_VIDEO_MODEL
+      || model === KLING_OMNI_VIDEO_MODEL;
+  }
+  if (provider === 'xais-chat') return model === CANVAS_SEEDANCE_2_MODEL;
+  if (provider === 'minimax') return model === MINIMAX_H3_VIDEO_MODEL;
+  return false;
+};
+
+export const getCanvasAiVideoModelCandidates = (
+  model?: string | null,
+  source: CanvasAiCredentialSource = 'wallet',
+  preferredProvider?: CanvasAiImageProvider | null,
+  videoChannels?: readonly CanvasAiVideoChannelSnapshot[] | null,
+): CanvasAiModelCandidate[] => {
+  const selectedModel = getCanvasAiVideoModelOptionValue(model);
+  if (source === 'wallet' && videoChannels && videoChannels.length > 0) {
+    const availableChannels = videoChannels
+      .filter(channel => !channel.error)
+      .map(channel => ({
+        channel,
+        provider: normalizeVideoChannelProvider(channel.provider),
+      }))
+      .filter((entry): entry is { channel: CanvasAiVideoChannelSnapshot; provider: CanvasAiProvider } => (
+        !!entry.provider
+          && (!entry.channel.capabilities || entry.channel.capabilities.some(capability => {
+            const normalizedCapability = String(capability).toUpperCase();
+            return normalizedCapability === 'VIDEO' || normalizedCapability === 'VIDEO_MINIMAX';
+          }))
+          && !!String(entry.channel.id || '').trim()
+      ));
+    if (availableChannels.length > 0) {
+      const hasModelMetadata = availableChannels.some(({ channel }) => (
+        Array.isArray(channel.models) && channel.models.some(modelId => String(modelId || '').trim())
+      ));
+      const compatibleChannels = availableChannels.filter(({ channel, provider }) => {
+        if (selectedModel === MINIMAX_H3_VIDEO_MODEL && provider !== 'minimax') return false;
+        const channelModels = (channel.models || [])
+          .map(value => String(value || '').trim())
+          .filter(Boolean);
+        if (channelModels.length > 0) {
+          return channelModels.some(channelModel => (
+            getCanvasAiVideoModelOptionValue(channelModel) === selectedModel
+          ));
+        }
+        return providerSupportsPublicVideoModel(provider, selectedModel);
+      });
+      // Older wallet servers did not return channel model lists. Preserve
+      // their priority order while still avoiding obviously incompatible XAIS
+      // and Mikoto routes for models they do not expose.
+      const isKnownPublicModel = NEW_API_VIDEO_MODEL_OPTIONS.some(option => option.value === selectedModel);
+      const routedChannels = compatibleChannels.length > 0
+        ? compatibleChannels
+        : (hasModelMetadata || isKnownPublicModel ? [] : availableChannels);
+      // The wallet service already returns channels in quota-manager priority
+      // order. Keep that order authoritative; `preferredProvider` is only a
+      // compatibility hint for the fallback path without channel snapshots.
+      return routedChannels.map(({ channel, provider }) => ({
+        source,
+        provider,
+        model: videoModelForProvider(provider, selectedModel),
+        providerChannelId: String(channel.id).trim(),
+        capabilities: channel.capabilities ? [...channel.capabilities].map(value => String(value).toUpperCase()) : undefined,
+      }));
+    }
+  }
+  if (preferredProvider === 'mikoto' && selectedModel && providerSupportsPublicVideoModel(preferredProvider, selectedModel)) {
+    return [{ source, provider: 'mikoto', model: selectedModel }];
+  }
+  if (selectedModel === MINIMAX_H3_VIDEO_MODEL) {
+    return [{ source, provider: 'minimax', model: MINIMAX_H3_VIDEO_MODEL }];
+  }
+  if (selectedModel === CANVAS_SEEDANCE_2_MODEL) {
+    return [
+      { source, provider: 'new-api', model: NEW_API_SEEDANCE_2_MODEL },
+      { source, provider: 'xais-chat', model: XAIS_CHAT_VIDEO_MODEL_DEFAULT },
+    ];
+  }
+  if (selectedModel === CANVAS_SEEDANCE_2_FAST_MODEL) {
+    return [{ source, provider: 'new-api', model: NEW_API_SEEDANCE_2_FAST_MODEL }];
+  }
+  return selectedModel
+    ? [{ source, provider: getCanvasAiVideoProviderForModel(selectedModel), model: selectedModel }]
+    : [];
+};
+
+const normalizeVideoModelToken = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[\s_.-]+/g, '')
+);
+
+/**
+ * Drop persisted video routes that belong to a different public model.
+ * Nodes can retain candidates after their model is changed, so trusting the
+ * saved array would allow a MiniMax H3 request to fall through to Seedance or
+ * another channel.
+ */
+export const filterCanvasAiVideoModelCandidates = (
+  model: string | null | undefined,
+  candidates: readonly CanvasAiModelCandidate[] | null | undefined,
+) => {
+  const selectedModel = getCanvasAiVideoModelOptionValue(model);
+  const selectedToken = normalizeVideoModelToken(selectedModel);
+  if (!selectedToken) return [];
+  return (candidates || []).filter(candidate => {
+    const provider = String(candidate.provider || '').trim().toLowerCase();
+    const candidateModel = getCanvasAiVideoModelOptionValue(candidate.model);
+    if (normalizeVideoModelToken(candidateModel) !== selectedToken) return false;
+    if (selectedToken === 'minimaxh3') return provider === 'minimax';
+    return providerSupportsPublicVideoModel(provider as CanvasAiProvider, selectedModel);
+  });
+};
+
 export const NEW_API_IMAGE_RESPONSE_FORMAT = 'url';
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES = 15;
 export const CANVAS_AI_IMAGE_TASK_TIMEOUT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES * 60 * 1000;
+export const CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES = 30;
+export const CANVAS_AI_VIDEO_TASK_TIMEOUT_MS = CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES * 60 * 1000;
 export const NEW_API_IMAGE_REQUEST_TIMEOUT_SECS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MS / 1000;
 export const NEW_API_IMAGE_TASK_MAX_WAIT_MS = CANVAS_AI_IMAGE_TASK_TIMEOUT_MS;
 export const NEW_API_IMAGE_TASK_POLL_INTERVAL_MS = 3000;
@@ -53,6 +333,8 @@ export const XAIS_CHAT_VIDEO_MODEL_OPTIONS = [
 ];
 
 export const CANVAS_AI_PROVIDER_OPTIONS = [
+  { value: 'mikoto', label: 'Mikoto' },
+  { value: 'bigmodel', label: 'Bigmodel' },
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
   { value: 'new-api', label: 'New API 中转' },
   { value: 'openai-compatible', label: 'OpenAI Compatible' },
@@ -60,11 +342,13 @@ export const CANVAS_AI_PROVIDER_OPTIONS = [
 ] as const;
 
 export const CANVAS_AI_VIDEO_PROVIDER_OPTIONS = [
+  { value: 'mikoto', label: 'Mikoto' },
+  { value: 'minimax', label: 'MiniMax' },
   { value: 'xais-chat', label: 'Xais / DCHAI 中转' },
   { value: 'new-api', label: 'New API 中转' },
 ] as const;
 
-export type CanvasAiImageProvider = typeof CANVAS_AI_PROVIDER_OPTIONS[number]['value'];
+export type CanvasAiImageProvider = CanvasAiProvider;
 
 export const resolveCanvasAiReferenceProvider = (
   runtimeProvider: CanvasAiImageProvider | null | undefined,
@@ -83,6 +367,27 @@ export const mergeCanvasAiReferenceSourceItems = <T extends { id: string }>(
 
 export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
 export type CanvasAiImageResolution = '1k' | '2k' | '4k';
+export const CANVAS_AI_NANO_BANANA_DUAL_2K_CAPABILITY = 'IMAGE_NANO_BANANA_DUAL_2K';
+const LEGACY_NANO_BANANA_PRO_1K_CAPABILITY = 'IMAGE_NANO_BANANA_PRO_1K';
+
+const normalizeCanvasAiCapabilities = (capabilities?: readonly string[] | null) => (
+  new Set((capabilities || []).map(value => String(value).trim().toUpperCase()).filter(Boolean))
+);
+
+const hasFullNanoBananaProCapability = (capabilities: ReadonlySet<string>) => (
+  capabilities.has('IMAGE')
+  || capabilities.has('IMAGE_NANO_BANANA_PRO')
+  || capabilities.has('IMAGE_NANO_BANANA')
+);
+
+const hasFullNanoBanana2Capability = (capabilities: ReadonlySet<string>) => (
+  capabilities.has('IMAGE') || capabilities.has('IMAGE_NANO_BANANA_2')
+);
+
+const hasNanoBananaDual2KCapability = (capabilities: ReadonlySet<string>) => (
+  capabilities.has(CANVAS_AI_NANO_BANANA_DUAL_2K_CAPABILITY)
+  || capabilities.has(LEGACY_NANO_BANANA_PRO_1K_CAPABILITY)
+);
 
 const toImageModelToken = (model?: string | null) => (
   String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
@@ -127,7 +432,7 @@ const supportsNewApiImageFamilyResolution = (model?: string | null) => {
 
 export const isLikelyNewApiVideoModel = (model?: string | null) => {
   const normalized = String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  return /(?:^|-)(video|sora|veo|seedance|kling|hailuo|minimax|runway|luma|pixverse|vidu|jimeng)(?:$|-|\d)/.test(normalized)
+  return /(?:^|-)(video|sora|veo|seedance|sourcemix|kling|hailuo|minimax|runway|luma|pixverse|vidu|jimeng)(?:$|-|\d)/.test(normalized)
     || /(?:image2video|text2video|i2v|t2v|wan\d.*video|video.*wan\d)/.test(normalized);
 };
 
@@ -140,8 +445,14 @@ export const normalizeCanvasAiImageResolution = (resolution?: string | null): Ca
 export const supportsCanvasAiImageResolution = (
   provider?: string | null,
   model?: string | null,
+  capabilities?: readonly string[] | null,
 ) => {
   const family = getCanvasAiImageModelFamily(provider, model);
+  const normalizedCapabilities = normalizeCanvasAiCapabilities(capabilities);
+  if (family === 'gpt-image-2'
+    && normalizedCapabilities.has('IMAGE_GPT_1K')
+    && !normalizedCapabilities.has('IMAGE_GPT')
+    && !normalizedCapabilities.has('IMAGE')) return true;
   return family === 'nano-banana-pro'
     || family === 'nano-banana-2'
     || family === 'gpt-image-2'
@@ -149,7 +460,11 @@ export const supportsCanvasAiImageResolution = (
 };
 
 export const isOpenAiLikeCanvasAiProvider = (provider?: string | null) => (
-  provider === 'openai-compatible' || provider === 'new-api' || provider === 'custom'
+  provider === 'openai-compatible'
+  || provider === 'new-api'
+  || provider === 'mikoto'
+  || provider === 'bigmodel'
+  || provider === 'custom'
 );
 
 export type CanvasAiBaseImageOptions = {
@@ -198,6 +513,38 @@ export type CloudImageGenerationLookup = {
   chargedCredits?: string;
 };
 
+const CLOUD_WALLET_IMAGE_RECOVERY_POLL_INTERVAL_MS = 2_500;
+const CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS = 90_000;
+const CLOUD_WALLET_IMAGE_LOOKUP_RESULT_STATUSES = new Set([
+  'succeeded',
+  'success',
+  'completed',
+  'complete',
+  'finished',
+  'done',
+  'failed',
+  'failure',
+  'error',
+]);
+
+const shouldReconcileCloudWalletImageError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (/(?:duplicate_request|request already submitted|already been submitted|璇ョ敓鍥捐姹傚凡缁忔彁浜よ繃)/i.test(message)) {
+    return true;
+  }
+  return !/(?:invalid_request|license_missing|cloud_account_required|unauthorized|invalid api key|invalid token|insufficient_credits|HTTP\s*4\d\d)/i.test(message);
+};
+
+export const getCloudWalletImageLookupImages = (
+  lookup?: Pick<CloudImageGenerationLookup, 'status' | 'images'> | null,
+) => {
+  const status = String(lookup?.status || '').trim().toLowerCase();
+  if (!CLOUD_WALLET_IMAGE_LOOKUP_RESULT_STATUSES.has(status)) return [];
+  return Array.from(new Set((lookup?.images || [])
+    .map(value => String(value || '').trim())
+    .filter(Boolean)));
+};
+
 export const getCloudWalletImageGenerationByRequest = async (
   clientRequestId: string,
 ) => invoke<CloudImageGenerationLookup>('get_cloud_image_generation_by_request', {
@@ -214,54 +561,78 @@ type CloudVideoGenerationResult = {
 const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const model = String(options.model || '').trim();
   try {
     const requestPromise = invoke<CloudImageGenerationResult>('generate_cloud_images', {
       request: {
         clientRequestId,
-        provider: options.provider,
+        // The channel id is authoritative for wallet routing. New channel
+        // types such as Mikoto and Bigmodel are intentionally omitted here
+        // because the wallet API provider field is legacy protocol metadata.
+        provider: normalizeCloudWalletImageProvider(options.provider),
         providerChannelId: options.providerChannelId?.trim() || undefined,
-        model: String(options.model || '').trim(),
+        model,
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
         inputImages: (options.inputImages || []).filter(Boolean).slice(0, options.provider === 'new-api' ? 9 : 8),
-        aspectRatio: normalizeImageAspectRatio(options.aspectRatio),
+        aspectRatio: normalizeCloudWalletImageAspectRatio(options.aspectRatio),
         resolution: options.resolution?.trim() || undefined,
         outputFormat: normalizeOutputFormat(options.outputFormat),
         background: normalizeOutputFormat(options.outputFormat) === 'png' ? 'transparent' : undefined,
         count: Math.max(1, Math.min(4, Math.round(options.count || 1))),
       },
     });
-    // XAIS can finish upstream while the original long-running request is still
-    // waiting on a stale connection. Reconcile by request ID in parallel so a
-    // committed result is rendered as soon as the wallet has settled it.
-    let requestSettled = false;
-    requestPromise.then(() => {
-      requestSettled = true;
-    }, () => {
-      requestSettled = true;
-    });
-    requestPromise.catch(() => {});
-    const recoveredImagesPromise = options.provider === 'xais-chat'
-      ? (async () => {
-        while (!requestSettled) {
-          await new Promise(resolve => window.setTimeout(resolve, 2500));
-          if (requestSettled) break;
-          try {
-            const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
-            if (lookup.status === 'succeeded' && lookup.images.length > 0) {
-              return Array.from(new Set(lookup.images.map(value => value.trim()).filter(Boolean)));
-            }
-          } catch (_) {
-            // The generation row may not exist yet, or the lookup may briefly fail.
-          }
-        }
+    let requestError: unknown = null;
+    let requestReturnedUsableImages = false;
+    const requestImagesPromise = requestPromise
+      .then(result => {
+        const images = Array.from(new Set((result.images || [])
+          .map(value => String(value || '').trim())
+          .filter(Boolean)));
+        requestReturnedUsableImages = images.length > 0;
+        return images;
+      })
+      .catch(error => {
+        requestError = error;
         return null;
-      })()
-      : Promise.resolve(null);
-    const result = await Promise.race([
-      requestPromise,
-      recoveredImagesPromise.then((images) => images ? { images } : new Promise<never>(() => {})),
-    ]);
+      });
+    const recoveredImagesPromise = (async () => {
+      const deadline = Date.now() + CLOUD_WALLET_IMAGE_RECOVERY_WINDOW_MS;
+      while (!requestReturnedUsableImages && Date.now() <= deadline) {
+        if (requestError && !shouldReconcileCloudWalletImageError(requestError)) return null;
+        try {
+          const lookup = await getCloudWalletImageGenerationByRequest(clientRequestId);
+          const images = getCloudWalletImageLookupImages(lookup);
+          if (images.length > 0) return images;
+          const status = String(lookup.status || '').trim().toLowerCase();
+          if (status === 'failed' || status === 'refunded' || status === 'cancelled' || status === 'canceled') {
+            return null;
+          }
+        } catch (_) {
+          // The generation row may not exist yet, or the lookup may briefly fail.
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await delay(Math.min(CLOUD_WALLET_IMAGE_RECOVERY_POLL_INTERVAL_MS, remaining));
+      }
+      return null;
+    })();
+    const requestOutcome = requestImagesPromise.then(async images => {
+      if (images && images.length > 0) return { images };
+      if (requestError && !shouldReconcileCloudWalletImageError(requestError)) throw requestError;
+      const recovered = await recoveredImagesPromise;
+      if (recovered && recovered.length > 0) return { images: recovered };
+      if (requestError) throw requestError;
+      return { images: [] };
+    });
+    const recoveredOutcome = recoveredImagesPromise.then(async images => {
+      if (images && images.length > 0) return { images };
+      const requested = await requestImagesPromise;
+      if (requested && requested.length > 0) return { images: requested };
+      if (requestError) throw requestError;
+      return { images: [] };
+    });
+    const result = await Promise.race([requestOutcome, recoveredOutcome]);
     const images = Array.from(new Set(result.images.map(value => value.trim()).filter(Boolean)));
     if (images.length === 0) throw new Error('授权钱包渠道没有返回图片数据');
     return images;
@@ -273,8 +644,17 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
 const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
   const clientRequestId = options.clientRequestId?.trim()
     || `canvas-video-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  const provider = options.provider === 'xais-chat' ? 'xais-chat' : 'new-api';
+  // The channel id is authoritative, while the provider keeps the server's
+  // capability constraint intact when a node has no persisted channel id.
+  const provider = normalizeCloudWalletVideoProvider(options.provider);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const isSeedanceLike = isSeedanceLikeVideoModel(options.model);
+  const isFirstLastFrame = options.inputMode === 'FLF';
+  const inputImages = (options.inputImages || []).filter(Boolean);
+  const inputVideos = (options.inputVideos || []).filter(Boolean);
+  const inputAudios = (options.inputAudios || []).filter(Boolean);
+  const referenceError = validateCanvasAiVideoReferences(options.model, options.inputMode, inputImages.length);
+  if (referenceError) throw new Error(referenceError);
   try {
     const result = await invoke<CloudVideoGenerationResult>('generate_cloud_videos', {
       request: {
@@ -283,19 +663,22 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
         providerChannelId: options.providerChannelId?.trim() || undefined,
         model: String(options.model || '').trim(),
         prompt: options.prompt.trim(),
-        inputImages: (options.inputImages || []).filter(Boolean).slice(0, provider === 'xais-chat' ? 13 : 8),
+        inputImages: inputImages.slice(0, isFirstLastFrame ? 2 : isSeedanceLike ? 9 : provider === 'xais-chat' ? 13 : 8),
+        inputVideos: isSeedanceLike && !isFirstLastFrame ? inputVideos.slice(0, 3) : [],
+        inputAudios: isSeedanceLike && !isFirstLastFrame ? inputAudios.slice(0, 3) : [],
         aspectRatio: String(options.aspectRatio || '16:9'),
         resolution: options.resolution?.trim() || undefined,
         duration: options.duration,
-        inputMode: options.inputMode,
+        inputMode: options.inputMode || 'REF',
         count: requestCount,
       },
     });
     const output: string[] = [];
     const taskIds: string[] = [];
     for (const item of result.results || []) {
-      output.push(...collectVideoStrings(item));
       const taskId = getTaskIdFromResponse(item);
+      const currentTask = taskId ? selectCloudWalletVideoTaskPayload(item, taskId) : item;
+      if (isNewApiVideoResultReady(currentTask)) output.push(...collectVideoStrings(currentTask));
       if (taskId) taskIds.push(taskId);
     }
     if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
@@ -305,18 +688,23 @@ const generateCloudWalletVideos = async (options: CanvasAiVideoOptions) => {
       let lastStatus: unknown = null;
       while (Date.now() < deadline) {
         await delay(2500);
-        lastStatus = await invoke<unknown>('get_cloud_video_status', {
+        const statusResponse = await invoke<unknown>('get_cloud_video_status', {
           taskId,
           provider,
           clientRequestId,
           providerChannelId: options.providerChannelId?.trim() || undefined,
         });
-        output.push(...collectVideoStrings(lastStatus));
-        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
-        const state = getNewApiVideoTaskState(lastStatus);
-        if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+        // Some upstream video APIs return a task list instead of one task.
+        // Never let a historical task's terminal state or media URLs decide
+        // the outcome of the task that this request actually started.
+        lastStatus = selectCloudWalletVideoTaskPayload(statusResponse, taskId);
+        const statusState = getNewApiVideoTaskState(lastStatus);
+        if (isNewApiVideoFailureState(statusState)) {
           throw new Error(getNewApiVideoFailureMessage(lastStatus) || `云端视频任务失败：${taskId}`);
         }
+        if (!isNewApiVideoResultReady(lastStatus)) continue;
+        output.push(...collectVideoStrings(lastStatus));
+        if (output.length >= requestCount) return Array.from(new Set(output)).slice(0, requestCount);
       }
       const failure = getNewApiVideoFailureMessage(lastStatus);
       if (failure) throw new Error(failure);
@@ -346,6 +734,8 @@ export type CanvasAiImageOptions = CanvasAiBaseImageOptions & {
 export type CanvasAiVideoOptions = CanvasAiImageOptions & {
   duration?: number;
   inputMode?: CanvasAiVideoInputMode;
+  inputVideos?: string[];
+  inputAudios?: string[];
 };
 
 const getErrorMessage = (error: unknown) => {
@@ -518,15 +908,15 @@ export const normalizeNewApiBaseEndpoint = (endpoint: string) => {
   let trimmed = String(endpoint || '').trim().replace(/\/+$/, '');
   if (!trimmed) return '';
   trimmed = trimmed
-    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations)(?:\/[^/]+)?$/i, '/v1')
-    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations)(?:\/[^/]+)?$/i, '')
+    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations|videos)(?:\/[^/]+)?$/i, '/v1')
+    .replace(/\/(?:models|images\/generations|images\/edits|chat\/completions|video\/generations|videos)(?:\/[^/]+)?$/i, '')
     .replace(/\/+$/, '');
   return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
 };
 
 const normalizeNewApiEndpoint = (
   endpoint: string,
-  path: 'images/generations' | 'images/edits' | 'chat/completions' | 'video/generations'
+  path: 'images/generations' | 'images/edits' | 'chat/completions' | 'videos'
 ) => {
   const base = normalizeNewApiBaseEndpoint(endpoint);
   if (!base) throw new Error('Please enter New API Base URL first, for example https://your-new-api.example.com/v1');
@@ -730,8 +1120,35 @@ const normalizeImageAspectRatio = (aspectRatio?: string | null) => {
   return ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(value) ? value : '1:1';
 };
 
+const CLOUD_WALLET_IMAGE_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'] as const;
+
+export const normalizeCloudWalletImageAspectRatio = (aspectRatio?: string | null) => {
+  const value = String(aspectRatio || '').trim();
+  if ((CLOUD_WALLET_IMAGE_ASPECT_RATIOS as readonly string[]).includes(value)) return value;
+
+  const match = value.match(/^(\d+(?:\.\d+)?)\s*(?::|x|×)\s*(\d+(?:\.\d+)?)$/i);
+  if (!match) return '1:1';
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return '1:1';
+
+  const requestedRatio = width / height;
+  return CLOUD_WALLET_IMAGE_ASPECT_RATIOS.reduce((best, candidate) => {
+    const [bestWidth, bestHeight] = best.split(':').map(Number);
+    const [candidateWidth, candidateHeight] = candidate.split(':').map(Number);
+    const bestDifference = Math.abs(Math.log(requestedRatio / (bestWidth / bestHeight)));
+    const candidateDifference = Math.abs(Math.log(requestedRatio / (candidateWidth / candidateHeight)));
+    return candidateDifference < bestDifference ? candidate : best;
+  }, CLOUD_WALLET_IMAGE_ASPECT_RATIOS[0]);
+};
+
 export const gptImage2SizeFromAspectRatio = (aspectRatio?: string, resolution?: string) => {
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const requestedSize = String(aspectRatio || '').trim().replace(/×/g, 'x');
+  const xaisSizeModel = normalizedResolution === '4k' ? 'Xais Img2_4K' : 'Xais Img2_2K';
+  if (normalizedResolution !== '1k' && getXaisImage2RatioOptions(xaisSizeModel).includes(requestedSize)) {
+    return requestedSize;
+  }
   const sizes: Record<CanvasAiImageResolution, Record<string, string>> = {
     '1k': {
       '9:16': '720x1280',
@@ -771,7 +1188,9 @@ const getImageContentViaTauri = async (url: string, apiKey: string, context?: Ca
 };
 
 const newApiSizeFromAspectRatio = (model?: string | null, aspectRatio?: string, resolution?: string) => (
-  isGptImage2LikeModel(model) || supportsNewApiImageFamilyResolution(model)
+  isGptImage2LikeModel(model)
+    ? gptImage2SizeFromAspectRatio(aspectRatio, resolution)
+    : supportsNewApiImageFamilyResolution(model)
     ? gptImage2SizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio), resolution)
     : imageSizeFromAspectRatio(normalizeImageAspectRatio(aspectRatio))
 );
@@ -785,6 +1204,10 @@ export const newApiImageRequestParams = (
 ) => {
   const ratio = normalizeImageAspectRatio(aspectRatio);
   const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const requestedDimension = String(aspectRatio || '').trim().replace(/×/g, 'x');
+  const usesExactGptImage2Size = isGptImage2LikeModel(model)
+    && /^\d+x\d+$/i.test(requestedDimension)
+    && normalizedResolution !== '1k';
   const family = getNewApiImageModelFamily(model);
   if (family === 'nano-banana-pro' || family === 'nano-banana-2') {
     const resolutionLabel = normalizedResolution.toUpperCase();
@@ -795,13 +1218,13 @@ export const newApiImageRequestParams = (
       image_size: resolutionLabel,
     };
   }
-  const size = newApiSizeFromAspectRatio(model, ratio, normalizedResolution);
+  const size = newApiSizeFromAspectRatio(model, aspectRatio, normalizedResolution);
   const isGptImage2 = isGptImage2LikeModel(model);
   const normalizedOutputFormat = normalizeOutputFormat(outputFormat);
   return {
     n: count,
     size,
-    aspect_ratio: ratio,
+    ...(!usesExactGptImage2Size ? { aspect_ratio: ratio } : {}),
     ...(isGptImage2 ? {
       quality: 'medium',
       ...(normalizedOutputFormat === 'png'
@@ -814,6 +1237,131 @@ export const newApiImageRequestParams = (
 const normalizeNewApiVideoResolution = (resolution?: string | null) => {
   const value = String(resolution || '').trim().toLowerCase();
   return value === '480p' || value === '1080p' ? value : '720p';
+};
+
+export const isSora2VideoModel = (model?: string | null) => (
+  String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') === 'sora-2'
+);
+
+export const isVeo31VideoModel = (model?: string | null) => {
+  const normalized = String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return normalized === 'veo-3-1' || normalized === 'veo-3-1-fast';
+};
+
+export const getNewApiVideoResolutionValues = (model?: string | null): string[] => (
+  isSeedance20VideoModel(model)
+    ? getMikotoVideoResolutionValues(model)
+    : isSora2VideoModel(model) ? ['720p'] : ['720p', '1080p']
+);
+
+export const normalizeNewApiVideoResolutionForModel = (
+  model?: string | null,
+  resolution?: string | null,
+) => {
+  const normalized = normalizeNewApiVideoResolution(resolution);
+  const values = getNewApiVideoResolutionValues(model);
+  return values.includes(normalized) ? normalized : values[0] || '720p';
+};
+
+export const getNewApiVideoDurationValues = (model?: string | null): number[] => (
+  isSeedance20VideoModel(model)
+    ? Array.from({ length: 12 }, (_, index) => index + 4)
+    : isSora2VideoModel(model) ? [8, 12] : [4, 5, 6, 7, 8]
+);
+
+export const normalizeNewApiVideoDurationForModel = (
+  model?: string | null,
+  duration?: number | string | null,
+) => {
+  const values = getNewApiVideoDurationValues(model);
+  const requested = Number(duration);
+  if (values.includes(requested)) return requested;
+  const fallback = values[0] ?? 8;
+  if (!Number.isFinite(requested)) return fallback;
+  return values.reduce((best, value) => (
+    Math.abs(value - requested) < Math.abs(best - requested) ? value : best
+  ), fallback);
+};
+
+export const normalizeNewApiVideoAspectRatio = (aspectRatio?: string | null) => (
+  String(aspectRatio || '').trim() === '9:16' ? '9:16' : '16:9'
+);
+
+export const normalizeSeedanceVideoAspectRatio = (aspectRatio?: string | null) => {
+  const value = String(aspectRatio || '').trim();
+  return ['16:9', '9:16', '1:1', '4:3', '3:4'].includes(value) ? value : '16:9';
+};
+
+export const getNewApiVideoReferenceLimit = (model?: string | null) => (
+  isSora2VideoModel(model) ? 1 : 3
+);
+
+export const getCanvasAiVideoReferenceSlots = (
+  model?: string | null,
+  inputMode?: CanvasAiVideoInputMode | string | null,
+  provider?: CanvasAiImageProvider | string | null,
+) => {
+  const supportsFirstLastFrame = !isSora2VideoModel(model);
+  const mode: CanvasAiVideoInputMode = inputMode === 'FLF' && supportsFirstLastFrame ? 'FLF' : 'REF';
+  if (mode === 'FLF') return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
+  if (isSeedanceLikeVideoModel(model)) return { mode, ...SEEDANCE_2_REFERENCE_SLOTS };
+  if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) {
+    return { mode, imageSlots: 2, videoSlots: 0, audioSlots: 0 };
+  }
+  if (provider === 'mikoto' && /^kling-omni-video$/i.test(String(model || '').trim())) {
+    return { mode, imageSlots: 3, videoSlots: 0, audioSlots: 0 };
+  }
+  if (getCanvasAiVideoProviderForModel(model) === 'new-api') {
+    return { mode, imageSlots: getNewApiVideoReferenceLimit(model), videoSlots: 0, audioSlots: 0 };
+  }
+  return { mode, imageSlots: 9, videoSlots: 1, audioSlots: 0 };
+};
+
+export const getCanvasAiVideoReferenceSlotLabels = (
+  model?: string | null,
+  inputMode?: CanvasAiVideoInputMode | string | null,
+  provider?: CanvasAiImageProvider | string | null,
+) => {
+  const slots = getCanvasAiVideoReferenceSlots(model, inputMode, provider);
+  if (slots.mode === 'FLF') return ['首帧', '尾帧'];
+  if (provider === 'mikoto' && /^kling-video$/i.test(String(model || '').trim())) return ['首帧', '尾帧'];
+  if (provider === 'mikoto' && /^kling-omni-video$/i.test(String(model || '').trim())) {
+    return Array.from({ length: slots.imageSlots }, (_, index) => `主体${index + 1}`);
+  }
+  if (isSeedanceLikeVideoModel(model)) {
+    return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+  }
+  if (getCanvasAiVideoProviderForModel(model) === 'new-api' && !isSora2VideoModel(model)) {
+    return ['主体', '场景/背景', '风格/纹理'].slice(0, slots.imageSlots);
+  }
+  return Array.from({ length: slots.imageSlots }, (_, index) => `参考图${index + 1}`);
+};
+
+export const validateCanvasAiVideoReferences = (
+  model: string | null | undefined,
+  inputMode: CanvasAiVideoInputMode | string | null | undefined,
+  imageCount: number,
+) => {
+  if (inputMode === 'FLF' && !isSora2VideoModel(model) && imageCount !== 2) {
+    return '首尾帧模式需要同时连接首帧和尾帧两张图片；如果只使用一张图片，请切换到“参考图”模式';
+  }
+  return '';
+};
+
+export const buildNewApiVideoPrompt = (
+  model: string,
+  prompt: string,
+  inputMode: CanvasAiVideoInputMode | string | null | undefined,
+  imageCount: number,
+) => {
+  const basePrompt = prompt.trim();
+  if (!isVeo31VideoModel(model) || inputMode === 'FLF' || imageCount <= 0) return basePrompt;
+  const guidance = [
+    '参考图1为主体参考：保持主体（人物、角色或产品等）的外观、结构、颜色和关键识别特征一致。',
+    '参考图2为场景/背景参考：保持环境、空间关系、构图和光线氛围。',
+    '参考图3为风格/纹理参考：保持材质、色彩、质感和整体视觉风格。',
+  ].slice(0, Math.min(3, imageCount));
+  return `${basePrompt}\n\n参考图用途（请按编号分别使用，不要混淆）：\n${guidance.join('\n')}`;
 };
 
 export const getNewApiVideoDimensions = (aspectRatio?: string, resolution?: string) => {
@@ -834,34 +1382,43 @@ export const newApiVideoRequestParams = (options: {
   model: string;
   prompt: string;
   inputImages?: string[];
+  inputVideos?: string[];
+  inputAudios?: string[];
   aspectRatio?: string;
   resolution?: string;
   duration?: number;
   inputMode?: CanvasAiVideoInputMode;
   count?: number;
 }) => {
-  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
-  const aspectRatio = normalizeImageAspectRatio(options.aspectRatio);
-  const resolution = normalizeNewApiVideoResolution(options.resolution);
-  const inputMode = options.inputMode === 'FLF' ? 'FLF' : 'REF';
+  const model = options.model.trim();
+  const isSeedance = isSeedance20VideoModel(model);
+  const isFirstLastFrame = options.inputMode === 'FLF';
+  const inputImages = (options.inputImages || [])
+    .filter(Boolean)
+    .slice(0, isFirstLastFrame ? 2 : isSeedance ? SEEDANCE_2_REFERENCE_SLOTS.imageSlots : getNewApiVideoReferenceLimit(model));
+  const inputVideos = isSeedance && !isFirstLastFrame
+    ? (options.inputVideos || []).filter(Boolean).slice(0, SEEDANCE_2_REFERENCE_SLOTS.videoSlots)
+    : [];
+  const inputAudios = isSeedance && !isFirstLastFrame
+    ? (options.inputAudios || []).filter(Boolean).slice(0, SEEDANCE_2_REFERENCE_SLOTS.audioSlots)
+    : [];
+  const aspectRatio = isSeedance
+    ? normalizeSeedanceVideoAspectRatio(options.aspectRatio)
+    : normalizeNewApiVideoAspectRatio(options.aspectRatio);
+  const resolution = normalizeNewApiVideoResolutionForModel(model, options.resolution);
+  const duration = normalizeNewApiVideoDurationForModel(model, options.duration);
   const dimensions = getNewApiVideoDimensions(aspectRatio, resolution);
-  const durationValue = Number(options.duration);
-  const duration = Number.isFinite(durationValue) ? Math.max(1, Math.min(60, durationValue)) : 5;
   return {
-    model: options.model.trim(),
-    prompt: options.prompt.trim(),
-    ...(inputImages[0] ? { image: inputImages[0] } : {}),
+    model,
+    prompt: buildNewApiVideoPrompt(model, options.prompt, options.inputMode, inputImages.length),
     duration,
-    ...dimensions,
-    n: Math.max(1, Math.min(4, Math.round(options.count || 1))),
-    response_format: 'url',
-    metadata: {
-      aspect_ratio: aspectRatio,
-      resolution,
-      input_mode: inputMode,
-      ...(inputMode === 'FLF' && inputImages[1] ? { end_image: inputImages[1] } : {}),
-      ...(inputImages.length > 1 ? { reference_images: inputImages } : {}),
-    },
+    size: `${dimensions.width}x${dimensions.height}`,
+    ...(inputImages.length > 0 ? { images: inputImages } : {}),
+    ...(inputVideos.length > 0 ? { videos: inputVideos } : {}),
+    ...(inputAudios.length > 0 ? { audios: inputAudios } : {}),
+    ...(isSeedance && (inputImages.length + inputVideos.length + inputAudios.length) > 0
+      ? { ref: [...inputImages, ...inputVideos, ...inputAudios] }
+      : {}),
   };
 };
 
@@ -1039,7 +1596,7 @@ export const getCanvasAiImageModelFamily = (
   provider?: string | null,
   model?: string | null,
 ): CanvasAiImageModelFamily | null => {
-  if (provider === 'new-api') {
+  if (provider === 'new-api' || provider === 'bigmodel' || provider === 'mikoto') {
     const newApiFamily = getNewApiImageModelFamily(model);
     if (newApiFamily) return newApiFamily;
     const token = toImageModelToken(model);
@@ -1121,6 +1678,34 @@ export const isCanvasAiPublicImageModel = (
   && !isHiddenCanvasAiImageModel(provider, model),
 );
 
+export const CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES = [
+  'Nano Banana Pro',
+  'Nano Banana 2',
+  'GPT Image 2',
+] as const;
+
+export type CanvasAiPublicImageModelName = typeof CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES[number];
+
+export const getCanvasAiPublicImageModelId = (
+  provider: CanvasAiImageProvider,
+  publicName: CanvasAiPublicImageModelName,
+) => {
+  if (provider === 'xais-chat') {
+    if (publicName === 'Nano Banana Pro') return 'Xais Nano Pro_2K';
+    if (publicName === 'Nano Banana 2') return 'Xais Nano2_2K';
+    return 'Xais Img2_2K';
+  }
+  if (provider === 'bigmodel' && publicName === 'Nano Banana Pro') {
+    return BIGMODEL_NANO_BANANA_PRO_MODEL;
+  }
+  if (provider === 'bigmodel' && publicName === 'GPT Image 2') {
+    return BIGMODEL_GPT_IMAGE_2_MODEL;
+  }
+  if (publicName === 'Nano Banana Pro') return NEW_API_NANO_BANANA_PRO_MODEL;
+  if (publicName === 'Nano Banana 2') return NEW_API_NANO_BANANA_2_MODEL;
+  return NEW_API_GPT_IMAGE_2_MODEL;
+};
+
 const xaisImageModelResolution = (model?: string | null): CanvasAiImageResolution | null => {
   const { raw, request } = xaisModelTokens(model);
   const combined = `${raw}|${request}`;
@@ -1133,10 +1718,29 @@ const xaisImageModelResolution = (model?: string | null): CanvasAiImageResolutio
 export const getCanvasAiImageResolutionValues = (
   provider?: string | null,
   model?: string | null,
+  capabilities?: readonly string[] | null,
 ): CanvasAiImageResolution[] => {
   const family = getCanvasAiImageModelFamily(provider, model);
-  if (family === 'gpt-image-2') return ['1k', '2k', '4k'];
-  if (family === 'nano-banana-pro' || family === 'nano-banana-2' || family === 'gpt-image-2-h') {
+  const normalizedCapabilities = normalizeCanvasAiCapabilities(capabilities);
+  if (family === 'gpt-image-2') {
+    if (normalizedCapabilities.has('IMAGE_GPT_1K')
+      && !normalizedCapabilities.has('IMAGE_GPT')
+      && !normalizedCapabilities.has('IMAGE')) return ['1k'];
+    return ['1k', '2k', '4k'];
+  }
+  if (family === 'nano-banana-pro') {
+    const supportsDual2K = hasNanoBananaDual2KCapability(normalizedCapabilities);
+    const supportsFull = hasFullNanoBananaProCapability(normalizedCapabilities);
+    if (supportsDual2K && !supportsFull) return ['2k'];
+    return ['2k', '4k'];
+  }
+  if (family === 'nano-banana-2') {
+    const supportsDual2K = hasNanoBananaDual2KCapability(normalizedCapabilities);
+    const supportsFull = hasFullNanoBanana2Capability(normalizedCapabilities);
+    if (supportsDual2K && !supportsFull) return ['2k'];
+    return ['2k', '4k'];
+  }
+  if (family === 'gpt-image-2-h') {
     return ['2k', '4k'];
   }
   return [];
@@ -1146,8 +1750,44 @@ export const normalizeCanvasAiImageResolutionForModel = (
   provider?: string | null,
   model?: string | null,
   resolution?: string | null,
+  capabilities?: readonly string[] | null,
 ) => {
-  const allowed = getCanvasAiImageResolutionValues(provider, model);
+  const allowed = getCanvasAiImageResolutionValues(provider, model, capabilities);
+  const normalized = normalizeCanvasAiImageResolution(resolution);
+  if (allowed.includes(normalized)) return normalized;
+  return allowed.includes('2k') ? '2k' : allowed[0] ?? normalized;
+};
+
+export const getCanvasAiImageResolutionValuesForCandidates = (
+  candidates?: readonly CanvasAiModelCandidate[] | null,
+): CanvasAiImageResolution[] => {
+  const supported = new Set((candidates || []).flatMap(candidate => (
+    getCanvasAiImageResolutionValues(candidate.provider, candidate.model, candidate.capabilities)
+  )));
+  return (['1k', '2k', '4k'] as const).filter(resolution => supported.has(resolution));
+};
+
+/**
+ * Older canvas nodes may persist provider candidates without channel
+ * capabilities. Rehydrate those capabilities from the current wallet channel
+ * snapshot before resolving a resolution, otherwise a dedicated 1K channel is
+ * incorrectly treated as a full 2K/4K channel.
+ */
+export const hydrateCanvasAiModelCandidateCapabilities = (
+  candidates: readonly CanvasAiModelCandidate[],
+  channels?: ReadonlyArray<{ id?: string | null; capabilities?: readonly string[] | null }> | null,
+) => candidates.map(candidate => {
+  if (candidate.capabilities && candidate.capabilities.length > 0) return candidate;
+  const channel = channels?.find(item => item.id && item.id === candidate.providerChannelId);
+  if (!channel?.capabilities || channel.capabilities.length === 0) return candidate;
+  return { ...candidate, capabilities: [...channel.capabilities] };
+});
+
+export const normalizeCanvasAiImageResolutionForCandidates = (
+  candidates: readonly CanvasAiModelCandidate[],
+  resolution?: string | null,
+) => {
+  const allowed = getCanvasAiImageResolutionValuesForCandidates(candidates);
   const normalized = normalizeCanvasAiImageResolution(resolution);
   if (allowed.includes(normalized)) return normalized;
   return allowed.includes('2k') ? '2k' : allowed[0] ?? normalized;
@@ -1157,7 +1797,17 @@ export const selectCanvasAiImageCandidatesForResolution = (
   candidates: CanvasAiModelCandidate[],
   resolution?: string | null,
 ) => {
-  const visible = candidates.filter(candidate => !isHiddenCanvasAiImageModel(candidate.provider, candidate.model));
+  const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
+  const visible = candidates.filter(candidate => {
+    if (isHiddenCanvasAiImageModel(candidate.provider, candidate.model)) return false;
+    const family = getCanvasAiImageModelFamily(candidate.provider, candidate.model);
+    if (!family) return true;
+    return getCanvasAiImageResolutionValues(
+      candidate.provider,
+      candidate.model,
+      candidate.capabilities,
+    ).includes(normalizedResolution);
+  });
   const routes = new Map<string, CanvasAiModelCandidate[]>();
   for (const candidate of visible) {
     const key = [candidate.source, candidate.provider, candidate.providerChannelId || ''].join('|');
@@ -1166,7 +1816,6 @@ export const selectCanvasAiImageCandidatesForResolution = (
     routes.set(key, route);
   }
 
-  const normalizedResolution = normalizeCanvasAiImageResolution(resolution);
   return Array.from(routes.values()).flatMap(route => {
     const first = route[0];
     if (!first) return [];
@@ -1218,6 +1867,7 @@ type WalletImageChannelSnapshot = {
   id?: string;
   provider?: string;
   models?: string[];
+  capabilities?: string[];
   error?: string | null;
 };
 
@@ -1225,6 +1875,8 @@ const normalizeWalletChannelProvider = (provider?: string | null): CanvasAiModel
   const normalized = String(provider || '').trim().toUpperCase();
   if (normalized === 'XAIS' || normalized === 'XAIS-CHAT') return 'xais-chat';
   if (normalized === 'NEW_API' || normalized === 'NEW-API') return 'new-api';
+  if (normalized === 'MIKOTO') return 'mikoto';
+  if (normalized === 'BIGMODEL' || normalized === 'BIG_MODEL') return 'bigmodel';
   if (normalized === 'OPENAI-COMPATIBLE') return 'openai-compatible';
   return 'custom';
 };
@@ -1255,6 +1907,7 @@ export const reconcileWalletImageCandidates = (
         provider,
         model,
         providerChannelId: channelId,
+        capabilities: channel.capabilities,
       });
     });
   });
@@ -1289,7 +1942,7 @@ export const shouldTryNextCanvasAiImageCandidate = (error: unknown) => {
   const message = getErrorMessage(error).trim();
   const statusMatch = message.match(/(?:status[_ ]?code\s*[=:]\s*|HTTP\s+)(\d{3})/i);
   const status = statusMatch ? Number(statusMatch[1]) : 0;
-  if ([400, 401, 402, 403, 404, 422, 429].includes(status)) return true;
+  if ([400, 401, 402, 403, 404, 408, 422, 429, 500, 502, 503, 504, 529].includes(status)) return true;
   return /(?:provider_model_family_mismatch|insufficient[_\s-]*(?:credits?|balance)|quota[_\s-]*(?:exceeded|insufficient)|provider_(?:unavailable|auth_failed)|invalid[_\s-]*api[_\s-]*key|authentication failed|unauthorized|forbidden|model[^\n]{0,80}(?:not found|unsupported|unavailable)|(?:not found|unsupported)[^\n]{0,80}model|(?:provided|reference|input) image is not valid|invalid (?:provided|reference|input) image|(?:compute|server|system|service|resource)[_\s-]*(?:busy|overloaded|exhausted|unavailable)|(?:capacity|resources?)[^\n]{0,80}(?:full|busy|exhausted|unavailable|insufficient)|temporarily unavailable|no available (?:worker|resource|capacity)|operation copy failed|copy operation failed|source path does not exist|no such file|file (?:does not exist|not found)|余额不足|额度不足|渠道不可用|渠道鉴权失败|算力(?:紧张|不足|已满)|(?:系统|服务|服务器|资源|渠道)(?:繁忙|拥堵|过载)|暂无可用算力|资源不足|排队已满|源文件不存在|文件(?:复制失败|不存在|未找到))/i.test(message);
 };
 
@@ -1445,7 +2098,7 @@ const hasImageFileExtension = (value: string) => {
   return /\.(?:jpe?g|png|webp|gif|bmp|svg)$/i.test(clean);
 };
 
-const collectVideoStrings = (value: unknown, output: string[] = []): string[] => {
+export const collectVideoStrings = (value: unknown, output: string[] = []): string[] => {
   if (!value) return output;
 
   if (typeof value === 'string') {
@@ -1469,6 +2122,10 @@ const collectVideoStrings = (value: unknown, output: string[] = []): string[] =>
 
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
+    if (Array.isArray(record.walletVideoResults) && record.walletVideoResults.length > 0) {
+      collectVideoStrings(record.walletVideoResults, output);
+      return output;
+    }
     for (const [key, nested] of Object.entries(record)) {
       const normalizedKey = key.toLowerCase();
       if (/^(?:error|err|message|msg|detail|upret|trace|stack|raw|debug)$/i.test(normalizedKey)) {
@@ -1879,10 +2536,12 @@ const normalizeXaisVideoInputMode = (mode?: string | null): CanvasAiVideoInputMo
   String(mode || '').trim().toUpperCase() === 'FLF' ? 'FLF' : 'REF'
 );
 
-const normalizeXaisVideoDuration = (duration?: number | string | null) => {
+const normalizeXaisVideoDuration = (duration?: number | string | null, model?: string | null) => {
   const numeric = Number(duration);
   const safeValue = Number.isFinite(numeric) ? numeric : 15;
-  const clamped = Math.max(1.8, Math.min(15.2, safeValue));
+  const minimum = isSeedance20VideoModel(model) ? 4 : 1.8;
+  const maximum = isSeedance20VideoModel(model) ? 15 : 15.2;
+  const clamped = Math.max(minimum, Math.min(maximum, safeValue));
   return Number(clamped.toFixed(1));
 };
 
@@ -2021,19 +2680,27 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
   const model = (options.model || XAIS_CHAT_VIDEO_MODEL_DEFAULT).trim() || XAIS_CHAT_VIDEO_MODEL_DEFAULT;
   const endpoint = normalizeXaisWorkerEndpoint(options.endpoint || '');
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
+  const isSeedance = isSeedance20VideoModel(model);
   const inputMode = normalizeXaisVideoInputMode(options.inputMode);
-  const maxReferenceCount = inputMode === 'FLF' ? 2 : XAIS_VIDEO_REF_MODE_MAX_REFERENCES;
+  const maxReferenceCount = inputMode === 'FLF' ? 2 : isSeedance ? 9 : XAIS_VIDEO_REF_MODE_MAX_REFERENCES;
   const inputRefs = (options.inputImages || [])
     .filter(source => isRemoteHttpImageSource(source))
     .slice(0, maxReferenceCount);
-  if (inputRefs.length === 0) {
+  const inputVideoRefs = isSeedance && inputMode !== 'FLF'
+    ? (options.inputVideos || []).filter(source => isRemoteHttpImageSource(source)).slice(0, 3)
+    : [];
+  const inputAudioRefs = isSeedance && inputMode !== 'FLF'
+    ? (options.inputAudios || []).filter(source => isRemoteHttpImageSource(source)).slice(0, 3)
+    : [];
+  if (inputRefs.length + inputVideoRefs.length + inputAudioRefs.length === 0) {
     throw new Error('seedance2 参考模式没有拿到公网参考素材 URL：请确认视频节点已连接参考图/参考视频，且 cloudflared 公网分享可用');
   }
   if (inputMode === 'FLF' && inputRefs.length < 2) {
     throw new Error('seedance2 首尾帧模式需要 2 张公网参考图：请分别连接首帧和尾帧');
   }
   const output: string[] = [];
-  const inputRefSet = new Set(inputRefs.map(cleanExtractedMediaUrl));
+  const allInputRefs = [...inputRefs, ...inputVideoRefs, ...inputAudioRefs];
+  const inputRefSet = new Set(allInputRefs.map(cleanExtractedMediaUrl));
   const isVideoOutputCandidate = (url: string) => {
     const trimmed = cleanExtractedMediaUrl(url);
     if (!/^https?:\/\//i.test(trimmed) && !/^data:video\//i.test(trimmed)) return false;
@@ -2053,14 +2720,14 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
     const customField: Record<string, unknown> = {
       res: normalizeXaisVideoResolution(options.resolution),
       input: inputMode,
-      duration: String(normalizeXaisVideoDuration(options.duration)),
+      duration: String(normalizeXaisVideoDuration(options.duration, model)),
       outputFormat: 'video/mp4',
     };
 
     const taskBody: Record<string, unknown> = {
       prompt,
       model,
-      ref: inputRefs,
+      ref: allInputRefs,
       custom_field: customField,
     };
     if (options.aspectRatio) taskBody.ratio = options.aspectRatio;
@@ -2068,7 +2735,10 @@ const generateXaisWorkerTaskVideos = async (options: CanvasAiVideoOptions) => {
       endpoint,
       model,
       refCount: inputRefs.length,
-      refs: inputRefs.map((value, index) => `${index + 1}:${value.slice(0, 120)}`),
+      refs: allInputRefs.map((value, index) => `${index + 1}:${value.slice(0, 120)}`),
+      imageRefCount: inputRefs.length,
+      videoRefCount: inputVideoRefs.length,
+      audioRefCount: inputAudioRefs.length,
       custom_field: customField,
       ratio: taskBody.ratio,
     });
@@ -2317,7 +2987,7 @@ const generateNewApiImages = async (options: CanvasAiImageOptions) => {
       const images = collectResults(lastStatus);
       if (images.length > 0) return images.slice(0, count);
       const state = getNewApiVideoTaskState(lastStatus);
-      if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+      if (isNewApiVideoFailureState(state)) {
         throw new Error(getNewApiVideoFailureMessage(lastStatus) || `NewAPI image task failed: ${taskId}`);
       }
       if (/^(?:completed|complete|succeeded|success|finished|done)$/.test(state)) {
@@ -2512,28 +3182,236 @@ const generateXaisChatImages = async (options: CanvasAiImageOptions) => {
   throw new Error(`Xais 调用失败：${errors.filter(Boolean).join('；') || '接口没有返回图片链接'}`);
 };
 
-const getNewApiVideoTaskState = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  const direct = record.status ?? record.state;
-  if (typeof direct === 'string') return direct.trim().toLowerCase();
-  for (const nested of [record.data, record.result, record.task, record.response]) {
-    const state = getNewApiVideoTaskState(nested);
-    if (state) return state;
+const NEW_API_VIDEO_FAILURE_STATES = new Set([
+  'failed',
+  'failure',
+  'error',
+  'cancelled',
+  'canceled',
+  'rejected',
+  'aborted',
+  'expired',
+  'timeout',
+  'timed_out',
+]);
+
+const NEW_API_VIDEO_STATE_KEYS = new Set([
+  'status',
+  'state',
+  'task_status',
+  'taskstatus',
+  'phase',
+]);
+
+const NEW_API_VIDEO_NESTED_KEYS = new Set([
+  'data',
+  'result',
+  'results',
+  'task',
+  'tasks',
+  'response',
+  'payload',
+  'job',
+  'operation',
+  'meta',
+]);
+
+const CLOUD_WALLET_VIDEO_TASK_ID_KEYS = new Set([
+  'id',
+  'task_id',
+  'taskid',
+  'video_id',
+  'videoid',
+]);
+
+const normalizeVideoTaskFieldKey = (value: string) => (
+  value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+);
+
+const findCloudWalletVideoTaskPayload = (
+  value: unknown,
+  expectedTaskId: string,
+  seen = new Set<object>(),
+  depth = 0,
+): unknown | undefined => {
+  if (!value || typeof value !== 'object' || depth > 10 || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const matched = findCloudWalletVideoTaskPayload(item, expectedTaskId, seen, depth + 1);
+      if (matched !== undefined) return matched;
+    }
+    return undefined;
   }
-  return '';
+
+  const record = value as Record<string, unknown>;
+  const hasExpectedTaskId = Object.entries(record).some(([key, nested]) => (
+    CLOUD_WALLET_VIDEO_TASK_ID_KEYS.has(normalizeVideoTaskFieldKey(key))
+      && (typeof nested === 'string' || typeof nested === 'number')
+      && String(nested).trim() === expectedTaskId
+  ));
+  if (hasExpectedTaskId) return record;
+
+  for (const nested of Object.values(record)) {
+    if (!nested || typeof nested !== 'object') continue;
+    const matched = findCloudWalletVideoTaskPayload(nested, expectedTaskId, seen, depth + 1);
+    if (matched !== undefined) return matched;
+  }
+  return undefined;
 };
 
-const getNewApiVideoFailureMessage = (value: unknown): string => {
-  if (!value || typeof value !== 'object') return '';
-  const record = value as Record<string, unknown>;
-  const direct = record.error ?? record.fail_reason ?? record.failure_reason;
-  if (direct) return getErrorMessage(direct);
-  for (const nested of [record.data, record.result, record.task, record.response]) {
-    const message = getNewApiVideoFailureMessage(nested);
-    if (message) return message;
+/**
+ * Isolate the task requested by the client from provider responses that also
+ * contain history. Without this guard, one old failed H3 task can make a new
+ * processing task look failed and old result URLs can be cached as new media.
+ */
+export const selectCloudWalletVideoTaskPayload = (value: unknown, taskId: string): unknown => {
+  const expectedTaskId = String(taskId || '').trim();
+  if (!expectedTaskId) return value;
+  return findCloudWalletVideoTaskPayload(value, expectedTaskId) ?? value;
+};
+
+const normalizeNewApiVideoTaskState = (value: unknown) => (
+  typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+    : ''
+);
+
+const collectNewApiVideoTaskStates = (
+  value: unknown,
+  states: string[] = [],
+  seen = new Set<object>(),
+  depth = 0,
+): string[] => {
+  if (!value || typeof value !== 'object' || depth > 8) return states;
+  if (seen.has(value)) return states;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach(item => collectNewApiVideoTaskStates(item, states, seen, depth + 1));
+    return states;
   }
-  return typeof record.message === 'string' ? record.message : '';
+  const record = value as Record<string, unknown>;
+  for (const [key, nested] of Object.entries(record)) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (NEW_API_VIDEO_STATE_KEYS.has(normalizedKey)) {
+      const state = normalizeNewApiVideoTaskState(nested);
+      if (state) states.push(state);
+    }
+    if (NEW_API_VIDEO_NESTED_KEYS.has(normalizedKey) || (nested && typeof nested === 'object')) {
+      collectNewApiVideoTaskStates(nested, states, seen, depth + 1);
+    }
+  }
+  return states;
+};
+
+export const isNewApiVideoFailureState = (state: unknown) => (
+  NEW_API_VIDEO_FAILURE_STATES.has(normalizeNewApiVideoTaskState(state))
+  || /(?:^|_)(?:failed|failure|error|cancelled|canceled|rejected|aborted|expired|timeout|timed_out)(?:_|$)/.test(
+    normalizeNewApiVideoTaskState(state),
+  )
+);
+
+const NEW_API_VIDEO_SUCCESS_STATES = new Set([
+  'complete',
+  'completed',
+  'done',
+  'finished',
+  'published',
+  'ready',
+  'success',
+  'succeeded',
+]);
+
+export const isNewApiVideoSuccessState = (state: unknown) => (
+  NEW_API_VIDEO_SUCCESS_STATES.has(normalizeNewApiVideoTaskState(state))
+);
+
+export const getNewApiVideoTaskState = (value: unknown): string => {
+  const states = collectNewApiVideoTaskStates(value);
+  return states.find(state => isNewApiVideoFailureState(state))
+    || states[0]
+    || '';
+};
+
+export const isNewApiVideoResultReady = (value: unknown) => {
+  const state = getNewApiVideoTaskState(value);
+  return !state || isNewApiVideoSuccessState(state);
+};
+
+const getNewApiVideoFailureMessage = (
+  value: unknown,
+  seen = new Set<object>(),
+  depth = 0,
+): string => {
+  if (!value || typeof value !== 'object' || depth > 8) return '';
+  if (seen.has(value)) return '';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = getNewApiVideoFailureMessage(item, seen, depth + 1);
+      if (message) return message;
+    }
+    return '';
+  }
+  const record = value as Record<string, unknown>;
+  const state = getNewApiVideoTaskState(record);
+  const directFailure = [
+    'error',
+    'err',
+    'fail_reason',
+    'failure_reason',
+    'failureReason',
+    'error_message',
+    'errorMessage',
+  ];
+  for (const key of directFailure) {
+    const candidate = record[key];
+    if (candidate === undefined || candidate === null || candidate === '') continue;
+    const message = getErrorMessage(candidate).trim();
+    if (message && !/^unknown error$/i.test(message)) return message;
+  }
+  if (isNewApiVideoFailureState(state)) {
+    for (const key of ['message', 'msg', 'detail']) {
+      const candidate = record[key];
+      if (typeof candidate !== 'string') continue;
+      const message = candidate.trim();
+      if (message && !/^(?:pending|processing|queued|running|in_progress)$/i.test(message)) return message;
+    }
+    return state;
+  }
+  if (record.success === false || record.ok === false) {
+    for (const key of ['message', 'msg', 'detail']) {
+      const candidate = record[key];
+      if (typeof candidate !== 'string') continue;
+      const message = candidate.trim();
+      if (message && !/^(?:pending|processing|queued|running|in_progress)$/i.test(message)) return message;
+    }
+    return 'upstream request failed';
+  }
+  const numericCode = Number(record.code ?? record.statusCode ?? record.errorCode ?? record.status);
+  if (Number.isFinite(numericCode) && numericCode >= 400) {
+    for (const key of ['message', 'msg', 'detail']) {
+      const candidate = record[key];
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    }
+    return `HTTP ${numericCode}`;
+  }
+  for (const key of ['message', 'msg', 'detail']) {
+    const candidate = record[key];
+    if (typeof candidate !== 'string') continue;
+    const message = candidate.trim();
+    if (/(?:fail(?:ed|ure)?|error|exception|cancelled?|rejected|aborted|expired|timed?[_ -]?out)/i.test(message)) {
+      return message;
+    }
+  }
+  for (const [key, nested] of Object.entries(record)) {
+    const normalizedKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (NEW_API_VIDEO_NESTED_KEYS.has(normalizedKey) || (nested && typeof nested === 'object')) {
+      const message = getNewApiVideoFailureMessage(nested, seen, depth + 1);
+      if (message) return message;
+    }
+  }
+  return '';
 };
 
 export const formatNewApiVideoFailureMessage = (message?: string | null) => {
@@ -2566,8 +3444,12 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
   if (!prompt) throw new Error('请输入视频提示词');
   if (!model) throw new Error('请先在视频节点选择 NewAPI 视频模型');
 
-  const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'video/generations');
-  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, 8);
+  const endpoint = normalizeNewApiEndpoint(options.endpoint || '', 'videos');
+  const inputImages = (options.inputImages || []).filter(Boolean).slice(0, isSeedance20VideoModel(model) ? 9 : 8);
+  const inputVideos = isSeedance20VideoModel(model) ? (options.inputVideos || []).filter(Boolean).slice(0, 3) : [];
+  const inputAudios = isSeedance20VideoModel(model) ? (options.inputAudios || []).filter(Boolean).slice(0, 3) : [];
+  const referenceError = validateCanvasAiVideoReferences(model, options.inputMode, inputImages.length);
+  if (referenceError) throw new Error(referenceError);
   const requestCount = Math.max(1, Math.min(4, Math.round(options.count || 1)));
   const output: string[] = [];
 
@@ -2576,6 +3458,8 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
       model,
       prompt,
       inputImages,
+      inputVideos,
+      inputAudios,
       aspectRatio: options.aspectRatio,
       resolution: options.resolution,
       duration: options.duration,
@@ -2583,8 +3467,8 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
       count: 1,
     });
     const started = await postJsonViaTauri(endpoint, apiKey, body, options);
-    const immediate = collectNewApiVideoResults(started, inputImages);
-    if (immediate.length > 0) {
+    const immediate = collectNewApiVideoResults(started, [...inputImages, ...inputVideos, ...inputAudios]);
+    if (isNewApiVideoResultReady(started) && immediate.length > 0) {
       output.push(...immediate);
       continue;
     }
@@ -2597,13 +3481,15 @@ const generateNewApiVideos = async (options: CanvasAiVideoOptions) => {
       await delay(NEW_API_VIDEO_TASK_POLL_INTERVAL_MS);
       const status = await getJsonViaTauri(`${endpoint}/${encodeURIComponent(taskId)}`, apiKey, options);
       lastStatus = status;
-      const videos = collectNewApiVideoResults(status, inputImages);
+      const videos = isNewApiVideoResultReady(status)
+        ? collectNewApiVideoResults(status, [...inputImages, ...inputVideos, ...inputAudios])
+        : [];
       if (videos.length > 0) {
         output.push(...videos);
         break;
       }
       const state = getNewApiVideoTaskState(status);
-      if (/^(?:failed|failure|error|cancelled|canceled)$/.test(state)) {
+      if (isNewApiVideoFailureState(state)) {
         const failure = formatNewApiVideoFailureMessage(getNewApiVideoFailureMessage(status));
         throw new Error(failure || `NewAPI 视频任务失败：${taskId}`);
       }
@@ -2686,9 +3572,13 @@ export const generateCanvasAiProviderImages = async (options: CanvasAiImageOptio
 };
 
 export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptions): Promise<string[]> => {
-  if (!options.singleAttempt && options.providerCandidates && options.providerCandidates.length > 1) {
+  const compatibleCandidates = filterCanvasAiVideoModelCandidates(
+    options.model,
+    options.providerCandidates,
+  );
+  if (!options.singleAttempt && compatibleCandidates.length > 0) {
     let lastError: unknown = null;
-    for (const candidate of options.providerCandidates) {
+    for (const candidate of compatibleCandidates) {
       try {
         const runtime = options.providerRuntime?.[candidate.provider];
         return await generateCanvasAiProviderVideos({
@@ -2711,6 +3601,15 @@ export const generateCanvasAiProviderVideos = async (options: CanvasAiVideoOptio
       }
     }
     throw lastError instanceof Error ? lastError : new Error(getErrorMessage(lastError));
+  }
+  if (isMiniMaxH3VideoModel(options.model) && options.provider !== 'minimax') {
+    return generateCanvasAiProviderVideos({
+      ...options,
+      provider: 'minimax',
+      model: MINIMAX_H3_VIDEO_MODEL,
+      providerChannelId: undefined,
+      providerCandidates: undefined,
+    });
   }
   if (options.cloudWallet) return generateCloudWalletVideos(options);
   if (options.provider === 'xais-chat') return generateXaisWorkerTaskVideos(options);

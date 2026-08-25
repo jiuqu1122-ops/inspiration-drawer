@@ -1,6 +1,6 @@
 import type { CanvasAiGeneratedOutput, CanvasImageItem } from './canvasModel';
 
-export const CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export const CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS = 30 * 60 * 1000;
 export const CANVAS_AI_STALE_WORKING_RECOVERY_AGE_MS = 15 * 60 * 1000;
 
 export type CanvasAiTimedOutRecoveryCandidate = {

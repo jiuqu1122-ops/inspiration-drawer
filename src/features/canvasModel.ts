@@ -37,6 +37,10 @@ export type CanvasImageItem = {
   height: number;
   inputs?: string[];
   textMode?: 'agent' | 'plain';
+  /** Opt-in structured context fan-out for text Agent nodes. */
+  contextRouting?: 'auto';
+  /** Stable template identity retained by instantiated workflow nodes. */
+  workflowTemplateNodeId?: string;
   designAgentConfig?: DesignAgentConfig;
   ai?: CanvasAiItemData;
   workflowGroup?: unknown;
@@ -65,6 +69,7 @@ export interface DesignAgentConfig {
     | 'design_strategist'
     | 'design_reviewer'
     | 'presentation_writer'
+    | 'seedance_video_analyzer'
     | 'general';
   outputArtifactType?:
     | 'DesignBrief'
@@ -73,11 +78,12 @@ export interface DesignAgentConfig {
     | 'DesignStrategy'
     | 'DesignReview'
     | 'PromptPackage'
+    | 'SeedancePrompt'
     | 'Document';
   thinkingMode?: 'analysis' | 'generation' | 'review';
 }
 
-export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'custom';
+export type CanvasAiProvider = 'openai-compatible' | 'new-api' | 'xais-chat' | 'mikoto' | 'minimax' | 'bigmodel' | 'custom';
 export type CanvasAiCredentialSource = 'wallet' | 'local';
 
 export type CanvasAiModelCandidate = {
@@ -85,6 +91,7 @@ export type CanvasAiModelCandidate = {
   provider: CanvasAiProvider;
   model: string;
   providerChannelId?: string;
+  capabilities?: string[];
 };
 
 export type CanvasAiMediaType = 'image' | 'video';
@@ -124,6 +131,14 @@ export type CanvasAiGeneratedOutput = {
   height?: number;
   nodeId?: string;
   nodeLabel?: string;
+};
+
+export type CanvasImageFusionConfig = {
+  enabled: true;
+  baseNodeId?: string | null;
+  styleNodeId?: string | null;
+  baseWeight?: number;
+  styleWeight?: number;
 };
 
 export type CanvasRifeInterpolationEstimate = {
@@ -172,6 +187,16 @@ export type CanvasAiItemData = {
     nodeId: string;
     role: string;
   }>;
+  /**
+   * Enables the two-image BASE + STYLE_REF fusion editor while keeping the
+   * ordinary image-generator provider/model/output pipeline.
+   */
+  imageFusion?: CanvasImageFusionConfig;
+  /**
+   * Optional field paths selected from structured upstream text-Agent JSON.
+   * When omitted, or when parsing fails, the complete upstream text is used.
+   */
+  strategyBindings?: string[];
   toolHint?: string | null;
   skillMeta?: {
     skillId?: string;

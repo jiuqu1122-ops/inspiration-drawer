@@ -482,32 +482,30 @@ export function CanvasAgentSidebar({
     <aside
       data-no-drag="true"
       data-canvas-agent-sidebar="true"
-      className="relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-l border-blue-100/80 bg-blue-50/30 text-stone-800 shadow-[-18px_0_42px_rgba(52,86,124,0.08)] dark:border-blue-400/18 dark:bg-stone-950/40 dark:text-stone-100"
+      className="relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-l border-stone-200 bg-white text-stone-800 shadow-[-10px_0_28px_rgba(24,24,27,0.06)] dark:border-stone-800 dark:bg-stone-950 dark:text-stone-100"
       style={{
         width,
-        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(96,122,158,0.10) 1px, transparent 0)',
-        backgroundSize: '26px 26px',
       }}
       onPointerDown={event => event.stopPropagation()}
       onMouseDown={event => event.stopPropagation()}
       onWheel={event => event.stopPropagation()}
     >
-      <div className="pointer-events-none absolute inset-0 bg-white/58 backdrop-blur-2xl dark:bg-stone-950/74" />
+      <div className="pointer-events-none absolute inset-0 bg-white dark:bg-stone-950" />
       <div
-        className="absolute inset-y-0 left-0 z-30 w-1.5 cursor-col-resize transition-colors hover:bg-blue-400/35"
+        className="absolute inset-y-0 left-0 z-30 w-1.5 cursor-col-resize transition-colors hover:bg-stone-300/70 dark:hover:bg-stone-700"
         onPointerDown={startResize}
         title="拖动调整侧边栏宽度"
       />
 
-      <header className="relative z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-blue-100/70 px-3.5 dark:border-white/8">
+      <header className="relative z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-stone-200 px-3.5 dark:border-stone-800">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[11px] border border-blue-200/70 bg-blue-500 text-white shadow-[0_5px_14px_rgba(59,130,246,0.22)] dark:border-blue-300/15 dark:bg-blue-500/90">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950">
             <Bot className="h-4 w-4" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-[13px] font-semibold tracking-[-0.01em]">{activeConversation?.title || '画布 Agent'}</span>
-              {busy && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
+              {busy && <LoaderCircle className="h-3 w-3 animate-spin text-stone-500" />}
             </div>
             <div className="mt-0.5 flex items-center gap-1.5 text-[9px] font-medium text-stone-400 dark:text-stone-500">
               <span className={`h-1.5 w-1.5 rounded-full ${providerReady ? 'bg-emerald-400' : 'bg-amber-400'}`} />
@@ -517,10 +515,10 @@ export function CanvasAgentSidebar({
         </div>
 
         <div className="flex items-center gap-0.5">
-          <button type="button" data-agent-history-toggle="true" onClick={() => { setShowHistory(value => !value); setShowUsage(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-8 w-8 items-center justify-center rounded-[10px] transition-colors ${showHistory ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300' : 'text-stone-400 hover:bg-white/75 hover:text-stone-700 dark:hover:bg-white/8 dark:hover:text-stone-200'}`} title="会话历史">
+          <button type="button" data-agent-history-toggle="true" onClick={() => { setShowHistory(value => !value); setShowUsage(false); setShowAccessMenu(false); setShowModelMenu(false); }} className={`flex h-8 w-8 items-center justify-center rounded-[8px] transition-colors ${showHistory ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950' : 'text-stone-400 hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200'}`} title="会话历史">
             <History className="h-3.5 w-3.5" />
           </button>
-          <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-blue-600 dark:hover:bg-white/8 dark:hover:text-blue-300" title="新对话">
+          <button type="button" onClick={onNewConversation} className="flex h-8 w-8 items-center justify-center rounded-[8px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-800 dark:hover:bg-stone-800 dark:hover:text-stone-100" title="新对话">
             <MessageSquarePlus className="h-3.5 w-3.5" />
           </button>
           <button type="button" onClick={onClearConversation} className="flex h-8 w-8 items-center justify-center rounded-[10px] text-stone-400 transition-colors hover:bg-white/75 hover:text-red-500 dark:hover:bg-white/8" title="清空当前对话">
@@ -532,9 +530,9 @@ export function CanvasAgentSidebar({
         </div>
 
         {showHistory && (
-          <div data-agent-history-menu="true" className="absolute left-3 right-3 top-[50px] z-50 max-h-[320px] overflow-y-auto rounded-[16px] border border-blue-100/90 bg-white/96 p-1.5 shadow-[0_18px_48px_rgba(30,64,104,0.18)] backdrop-blur-2xl dark:border-white/10 dark:bg-stone-900/96">
+          <div data-agent-history-menu="true" className="absolute left-3 right-3 top-[50px] z-50 max-h-[320px] overflow-y-auto rounded-[12px] border border-stone-200 bg-white p-1.5 shadow-[0_12px_32px_rgba(24,24,27,0.10)] dark:border-stone-700 dark:bg-stone-900">
             {conversations.map(conversation => (
-              <div key={conversation.id} className={`group/history flex items-center gap-1 rounded-[11px] ${conversation.id === activeConversationId ? 'bg-blue-50 dark:bg-blue-400/10' : 'hover:bg-stone-50 dark:hover:bg-white/6'}`}>
+              <div key={conversation.id} className={`group/history flex items-center gap-1 rounded-[8px] ${conversation.id === activeConversationId ? 'bg-stone-100 dark:bg-stone-800' : 'hover:bg-stone-50 dark:hover:bg-stone-800/70'}`}>
                 <button
                   type="button"
                   onClick={() => { onSelectConversation(conversation.id); setShowHistory(false); }}
@@ -569,7 +567,7 @@ export function CanvasAgentSidebar({
       <main className="relative z-10 min-h-0 flex-1 overflow-y-auto px-4 py-5 [scrollbar-width:thin]">
         {messages.length === 0 && codexApprovals.length === 0 ? (
           <div className="flex min-h-full flex-col items-center justify-center px-3 py-10 text-center">
-            <div className="flex h-12 w-12 items-center justify-center rounded-[18px] border border-blue-100 bg-white/75 text-blue-500 shadow-sm dark:border-white/8 dark:bg-white/5 dark:text-blue-300">
+            <div className="flex h-12 w-12 items-center justify-center rounded-[12px] border border-stone-200 bg-white text-stone-600 shadow-sm dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
               <Bot className="h-5 w-5" />
             </div>
             <p className="mt-4 text-[14px] font-semibold tracking-[-0.02em] text-stone-700 dark:text-stone-200">在画布里开始创作</p>
@@ -580,7 +578,7 @@ export function CanvasAgentSidebar({
                 '给选中的图片创建一张炫酷渲染图',
                 '整理画布并连接现有工作流',
               ].map(example => (
-                <button type="button" key={example} onClick={() => { onInputChange(example); inputRef.current?.focus(); }} className="rounded-[14px] border border-blue-100/85 bg-white/58 px-3 py-2.5 font-medium text-stone-500 transition-all hover:border-blue-200 hover:bg-white hover:text-blue-700 hover:shadow-sm dark:border-white/8 dark:bg-white/4 dark:text-stone-400 dark:hover:border-blue-300/15 dark:hover:bg-white/7 dark:hover:text-blue-200">
+                <button type="button" key={example} onClick={() => { onInputChange(example); inputRef.current?.focus(); }} className="rounded-[10px] border border-stone-200 bg-white px-3 py-2.5 font-medium text-stone-500 transition-colors hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-stone-100">
                   {example}
                 </button>
               ))}
@@ -598,11 +596,11 @@ export function CanvasAgentSidebar({
                 || expandedThinkingMessageIds.includes(message.id);
               return (
                 <section key={message.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                  <div className={isUser ? 'max-w-[90%] rounded-[22px] bg-blue-500 px-3.5 py-2.5 text-white shadow-sm' : 'w-full'}>
+                  <div className={isUser ? 'max-w-[90%] rounded-[14px] bg-stone-900 px-3.5 py-2.5 text-white shadow-sm dark:bg-stone-800' : 'w-full'}>
                     {!isUser && (
                       <div className="mb-2 flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-stone-400 dark:text-stone-500">
-                        <Bot className="h-3 w-3 text-blue-500 dark:text-blue-300" /> Codex
-                        {message.status === 'streaming' && <LoaderCircle className="h-3 w-3 animate-spin text-blue-500" />}
+                        <Bot className="h-3 w-3 text-stone-500 dark:text-stone-400" /> Codex
+                        {message.status === 'streaming' && <LoaderCircle className="h-3 w-3 animate-spin text-stone-500" />}
                       </div>
                     )}
                     {isWorkflowResult ? (
@@ -620,7 +618,7 @@ export function CanvasAgentSidebar({
                             key={item.id}
                             className={isUser
                               ? 'max-w-[142px] truncate rounded-full bg-white/16 px-2 py-0.5 text-[8px] font-medium text-white/78'
-                              : 'max-w-[160px] truncate rounded-full bg-blue-50 px-2 py-0.5 text-[8px] font-medium text-blue-600 dark:bg-blue-400/10 dark:text-blue-200'}
+                              : 'max-w-[160px] truncate rounded-[6px] bg-stone-100 px-2 py-0.5 text-[8px] font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300'}
                           >
                             发送时选中：{item.name}
                           </span>
@@ -636,11 +634,11 @@ export function CanvasAgentSidebar({
                     )}
 
                     {thinkingSteps.length > 0 && (
-                      <div className="mt-3 overflow-hidden rounded-[15px] border border-blue-100/85 bg-white/62 shadow-sm dark:border-white/8 dark:bg-white/4">
+                      <div className="mt-3 overflow-hidden rounded-[11px] border border-stone-200 bg-white shadow-sm dark:border-stone-700 dark:bg-stone-900">
                         <button
                           type="button"
                           onClick={() => toggleThinkingExpanded(message.id)}
-                          className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-blue-50/70 dark:hover:bg-white/6"
+                          className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors hover:bg-stone-100 dark:hover:bg-stone-800"
                         >
                           <span className="min-w-0">
                             <span className="flex items-center gap-1.5 text-[10px] font-semibold text-stone-700 dark:text-stone-200">
@@ -673,7 +671,7 @@ export function CanvasAgentSidebar({
                           />
                         </button>
                         {thinkingExpanded && (
-                          <div className="border-t border-blue-50/90 px-2.5 py-2 dark:border-white/7">
+                          <div className="border-t border-stone-200 px-2.5 py-2 dark:border-stone-700">
                             <div className="space-y-2">
                               {thinkingSteps.map((step, index) => {
                                 const running = step.status === 'running' || step.status === 'waiting';
@@ -716,7 +714,7 @@ export function CanvasAgentSidebar({
                     {message.toolCalls && message.toolCalls.length > 0 && (
                       <div className="mt-3 space-y-2">
                         {message.toolCalls.map(call => (
-                          <div key={call.id} className="rounded-[14px] border border-blue-100/80 bg-white/62 p-2.5 shadow-sm dark:border-white/8 dark:bg-white/4">
+                          <div key={call.id} className="rounded-[10px] border border-stone-200 bg-white p-2.5 shadow-sm dark:border-stone-700 dark:bg-stone-900">
                             <div className="flex items-center justify-between gap-2">
                               <span className="truncate text-[10px] font-semibold text-stone-700 dark:text-stone-200">{getCanvasAgentToolLabel(call.name)}</span>
                               <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[8px] font-medium ${call.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200' : call.status === 'error' || call.status === 'declined' ? 'bg-red-100 text-red-600 dark:bg-red-400/15 dark:text-red-200' : 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'}`}>
@@ -827,7 +825,7 @@ export function CanvasAgentSidebar({
           </div>
         )}
 
-        <div className="relative rounded-[22px] border border-blue-100/90 bg-white/82 p-1.5 shadow-[0_12px_34px_rgba(49,82,120,0.13)] backdrop-blur-2xl transition-all focus-within:border-blue-300 focus-within:shadow-[0_14px_38px_rgba(59,130,246,0.16)] dark:border-white/11 dark:bg-stone-900/84 dark:focus-within:border-blue-400/38">
+        <div data-agent-composer-shell="true" className="relative rounded-[14px] border border-stone-200 bg-white p-1.5 shadow-[0_6px_18px_rgba(24,24,27,0.08)] transition-colors focus-within:border-stone-400 dark:border-stone-700 dark:bg-stone-900 dark:focus-within:border-stone-500">
           {visibleSelectedItems.length > 0 && (
             <div className="mb-1.5 flex max-h-[58px] flex-wrap gap-1.5 overflow-y-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {visibleSelectedItems.map((item, index) => (
@@ -835,7 +833,7 @@ export function CanvasAgentSidebar({
                   type="button"
                   key={item.id}
                   onClick={() => onFocusCanvasItem(item.id)}
-                  className="group/selected flex h-7 max-w-[156px] items-center gap-1.5 rounded-[10px] border border-stone-200/80 bg-stone-50/86 px-1.5 text-[10px] font-medium text-stone-700 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:border-blue-300/20 dark:hover:bg-blue-400/10 dark:hover:text-blue-200"
+                  className="group/selected flex h-7 max-w-[156px] items-center gap-1.5 rounded-[8px] border border-stone-200 bg-stone-50 px-1.5 text-[10px] font-medium text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:border-stone-600 dark:hover:bg-stone-700 dark:hover:text-white"
                   title={`当前选中：${item.name}`}
                 >
                   <span className="relative flex h-5 w-5 shrink-0 overflow-hidden rounded-[7px] bg-stone-200 text-stone-500 dark:bg-stone-800 dark:text-stone-300">
@@ -846,7 +844,7 @@ export function CanvasAgentSidebar({
                         {item.type.includes('video') ? <Film className="h-3 w-3" /> : <ImageIcon className="h-3 w-3" />}
                       </span>
                     )}
-                    {selectedItems.length > 1 && <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-blue-500 px-0.5 text-[8px] leading-none text-white">{index + 1}</span>}
+                    {selectedItems.length > 1 && <span className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-stone-900 px-0.5 text-[8px] leading-none text-white dark:bg-stone-100 dark:text-stone-950">{index + 1}</span>}
                   </span>
                   <span className="truncate">{item.name}</span>
                 </button>

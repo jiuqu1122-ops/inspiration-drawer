@@ -17,7 +17,8 @@ export const APP_AGENT_TOOL_MANIFEST_PROMPT = [
   '- analyze_inspiration/analyze_inspirations_batch/get_inspiration_analysis_job: explicit library-maintenance tools only; never call them during an ordinary creative request.',
   '- calendar_manage: calendar schedule actions.',
   '- canvas_manage: existing canvas node operations.',
-  '- canvas_create_text_agent: create a Design Agent Node; set designAgentConfig for requirement, inspiration, strategy, review, presentation, or general text assets.',
+  '- canvas_create_design_pipeline: for a direct product-design request, retrieve 5 drawer images from existing analyzed tags/metadata only: 2 category, 2 form, 1 color/CMF or explicit style. Explicit mechanical/minimal/etc. style wording must drive the style slot. Connect all 5 images to both the visual Design Agent analysis and downstream image generator.',
+  '- canvas_create_text_agent: create a Design Agent Node; set designAgentConfig for requirement, inspiration, strategy, review, presentation, Seedance video analysis, or general text assets.',
   '- canvas_create_generator/canvas_create_media_tool/canvas_create_workflow: create visual execution nodes and workflows.',
   '- app_ui_interact: last-resort visible UI fallback; always confirmed.',
 ].join('\n');

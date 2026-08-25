@@ -3,6 +3,31 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallba
 import { flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CanvasSelectionVideo } from './components/CanvasSelectionVideo';
+import { CanvasAiSettingsPanel } from './components/CanvasAiSettingsPanel';
+import { CanvasLocalMediaControls } from './components/CanvasLocalMediaControls';
+import { CanvasGeneratorControls } from './components/CanvasGeneratorControls';
+import { CanvasAiRunButton } from './components/CanvasAiRunButton';
+import { CanvasImageFusionControls } from './components/CanvasImageFusionControls';
+import {
+  CANVAS_AI_NODE_CHEVRON_CLASS,
+  CANVAS_AI_NODE_SELECT_MENU_CLASS,
+  CANVAS_AI_NODE_SELECT_OPTION_CLASS,
+  CANVAS_AI_NODE_TEXT_SELECT_CLASS,
+} from './components/canvasAiNodeControlStyles';
+import {
+  SNIP_CAPTURE_LOCK_STORAGE_KEY,
+  SNIP_RESTORE_DRAWER_STORAGE_KEY,
+  SnipOverlay,
+} from './components/SnipOverlay';
+import { DrawerOrganizationPanel } from './components/DrawerOrganizationPanel';
+import { DrawerAiClassificationBar } from './components/DrawerAiClassificationBar';
+import { DrawerAssetGrid } from './components/drawer/DrawerAssetGrid';
+import {
+  CanvasListItem,
+  CanvasRailItem,
+  CanvasTrashListItem,
+} from './components/CanvasListItems';
+import type { CanvasActionMenuPlacement } from './components/CanvasListItems';
 import {
   File as FileIcon, X, Download, Check, Pin, FolderOpen, Lightbulb,
   Sun, RotateCcw, Settings, Image as ImageIcon, Type, Film, LayoutGrid,
@@ -10,13 +35,12 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, MoreVertical, ArchiveRestore, ArrowUp, MessageCircle,
-  LogOut
+  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, ArchiveRestore, ArrowUp, MessageCircle,
+  LogOut, Music
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
-import { getVersion } from '@tauri-apps/api/app';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { invoke } from '@tauri-apps/api/core';
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut';
@@ -24,9 +48,281 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, emitTo } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { relaunch } from '@tauri-apps/plugin-process';
 
-import { Folder, BufferItem, TabType, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
+import { Folder, BufferItem, FloatingNoteSnapshot, FloatingNoteScheduleItem } from './types';
+import type { VirtualDropPayload, VirtualDropUiJob } from './types/virtualDrop';
+import type {
+  CollectedWebImage,
+  LocalVisionModelDownloadState,
+  LocalVisionModelProgressPayload,
+  LocalVisionModelStatusPayload,
+  WebImageCollectorReference,
+  WebImageSearchDescription,
+} from './types/webImageCollector';
+import type {
+  CanvasAiOutputThumbnailJob,
+  CanvasGeneratedListEntry,
+  CanvasImageSourceCacheEntry,
+  CanvasNavPreview,
+  CanvasNavThumbnailCacheEntry,
+  ImageThumbnailFileResult,
+} from './types/canvasMedia';
+import type {
+  DrawerClassificationView,
+  DrawerSidebarLayout,
+  DrawerTabType,
+  DrawerUndoSnapshot,
+  FolderContextMenuState,
+} from './types/drawer';
+import type {
+  EagleApiVersion,
+  EagleDetectionResult,
+  EagleFolderPayload,
+  EagleImportStatus,
+  EagleItemPayload,
+  EagleOfflineLibraryPayload,
+} from './types/eagle';
+import type {
+  ConfirmDialogState,
+  TextInputDialogOptions,
+  TextInputDialogState,
+} from './types/dialogs';
+import type {
+  CloudAccountSummary,
+  CloudImageModelsResult,
+  CreditRedemptionResult,
+  EmailCodeChallenge,
+  LicenseEdition,
+  LicenseState,
+  LicenseStatus,
+} from './types/license';
+import type {
+  ActiveShortcutScope,
+  CanvasBrushCropRect,
+  CanvasBrushEditorMode,
+  CanvasBrushEditorOpenOptions,
+  CanvasBrushEditorState,
+  CanvasBrushPoint,
+  CanvasBrushShapeMode,
+  CanvasContextMenuState,
+  CanvasFolderMediaPickerState,
+  CanvasPersistedState,
+  CanvasUndoSnapshot,
+  CanvasViewportRect,
+} from './types/canvasRuntime';
+import type {
+  CanvasAiPromptPreset,
+  CanvasWorkflowExpandedGroup,
+  CanvasWorkflowRunStatus,
+} from './types/canvasWorkflow';
+import { useAppUpdate } from './hooks/useAppUpdate';
+import {
+  getVisibleAgentUiSnapshot,
+  isAgentUiElementVisible,
+  setAgentUiElementValue,
+} from './utils/agentUiDom';
+import {
+  getCanvasInitialImageSize,
+  getFastCanvasImageDisplaySize,
+  readImageDisplaySize,
+} from './utils/canvasImageSize';
+import {
+  blobToDataUrl,
+  dataUrlToBlob,
+  imageDataUrlToJpegDataUrl,
+  imageDataUrlToPngDataUrl,
+  isLikelyJpegOrPngImageSource,
+  isRemoteHttpImageSource,
+  isXaisAttachmentImageRef,
+  optimizeCanvasAiInputDataUrl,
+} from './utils/canvasImageData';
+import {
+  getCanvasLocalPathsFromDataTransfer,
+  getDrawerImageLocalDeletePaths,
+  isCanvasImageFileName,
+  isCanvasAudioFileName,
+  isCanvasTemplateJsonFileName,
+  isCanvasVideoFileName,
+  isCanvasWorkflowReadableTextFileName,
+  normalizeLocalDragPath,
+} from './utils/localMediaPaths';
+import {
+  AI_GENERATED_FOLDER_NAME,
+  ensureCanvasGeneratedImageFolders,
+  getAiGeneratedImageFolderIds,
+  getCanvasGeneratedImageFolderName,
+} from './utils/canvasGeneratedFolders';
+import {
+  CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE,
+  canUseCanvasItemAsAiInput,
+  canUseCanvasItemAsAiTarget,
+  canUseCanvasItemAsFrameInterpolationVideoInput,
+  canUseCanvasItemAsImageEnhancementInput,
+  canUseCanvasItemAsInputForTarget,
+  canUseCanvasItemAsReferenceBridgeInput,
+  canUseCanvasItemAsVideoEnhancementInput,
+  canUseCanvasItemAsWorkflowMaterial,
+  createCanvasAiOutputBufferItem,
+  getCanvasAiInputSourceCandidates,
+  getCanvasAiOutputDisplaySource,
+  getCanvasAiOutputSize,
+  getCanvasAiOutputThumbnailSource,
+  getCanvasAiSuccessfulOutputs,
+  getCanvasBufferItemNavPreview,
+  getCanvasImageUpgradeFailureKey,
+  getCanvasImageUpgradeLocalPath,
+  getCanvasInitialImageSource,
+  getCanvasInputTargetLabel,
+  getCanvasItemDisplaySource,
+  getCanvasItemNavSource,
+  getCanvasOriginalImageSource,
+  getCanvasOutputNavPreview,
+  getCanvasWorkflowGroupIdForSelection,
+  getCanvasWorkflowTemplateFromNode,
+  hasCanvasAiGeneratedResults,
+  isCanvasAgentTextTarget,
+  isCanvasWorkflowReferenceBridge,
+  isDirectCanvasAiInputSource,
+} from './utils/canvasItemSelectors';
+import {
+  cloneDrawerValue,
+  compactFloatingNoteSnapshot,
+  isDataImageSourceValue,
+  isDataMediaSourceValue,
+  prepareCanvasWorkflowTemplateItem,
+  sanitizeCanvasPersistedState,
+  stripCanvasItemDataImageProvenance,
+  stripHeavyDataThumbnail,
+} from './utils/canvasSerialization';
+import {
+  CANVAS_AI_DEFAULT_ASPECT_RATIO,
+  CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS,
+  getCanvasAiAspectRatioOptionsForModel,
+  normalizeCanvasAiAspectRatioForModel,
+  parseCanvasAspectRatioValue,
+  usesCanvasAiImage2DimensionOptions,
+} from './utils/canvasAiAspectRatio';
+import {
+  CANVAS_AI_CREDENTIAL_SOURCE_STORAGE_KEY,
+  CANVAS_AI_DEFAULT_COUNT,
+  CANVAS_AI_DEFAULT_IMAGE_RESOLUTION,
+  CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
+  CANVAS_AI_DEFAULT_VIDEO_DURATION,
+  CANVAS_AI_DEFAULT_VIDEO_RESOLUTION,
+  CANVAS_AI_ENDPOINT_STORAGE_KEY,
+  CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS,
+  CANVAS_AI_IMAGE_RESOLUTION_OPTIONS,
+  CANVAS_AI_NEW_API_VIDEO_KEY_STORAGE_KEY,
+  CANVAS_AI_OUTPUT_FORMAT_OPTIONS,
+  CANVAS_AI_OUTPUT_FORMATS,
+  CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY,
+  CANVAS_AI_PROVIDER_DEFAULT_VERSION,
+  CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY,
+  CANVAS_AI_PROVIDER_SELECT_OPTIONS,
+  CANVAS_AI_PROVIDER_STORAGE_KEY,
+  CANVAS_AI_VIDEO_DURATIONS,
+  CANVAS_AI_VIDEO_DURATION_OPTIONS,
+  CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS,
+  CANVAS_AI_VIDEO_RESOLUTIONS,
+  CANVAS_AI_VIDEO_RESOLUTION_OPTIONS,
+  canvasAiGatewayKindForProvider,
+  canvasAiGroupedModelChoiceValue,
+  canvasAiModelChoiceValue,
+  canvasAiProviderForCloudKind,
+  canvasAiProviderForGateway,
+  defaultCanvasAiApiProvider,
+  getCanvasAiApiKeyPlaceholder,
+  getCanvasAiApiKeyStorageKey,
+  getCanvasAiApiProviderStorageKey,
+  getCanvasAiEndpointForModels,
+  getCanvasAiEndpointForRequest,
+  getCanvasAiEndpointPlaceholder,
+  getCanvasAiEndpointStorageKey,
+  getCanvasAiHeadersStorageKey,
+  getCanvasAiDefaultModel,
+  getCanvasAiRemoteStorageKey,
+  getReferenceImageWorkflowAiConfig,
+  getStoredCanvasAiApiKey,
+  getStoredCanvasAiApiProvider,
+  getStoredCanvasAiCredentialSource,
+  getStoredCanvasAiEndpoint,
+  getStoredCanvasAiHeadersText,
+  getStoredCanvasAiProvider,
+  isCanvasAiEndpointVisible,
+  isCanvasAiLikelyOpenAiImageModel,
+  isCanvasAiRemoteModelProvider,
+  isCanvasAiXaisWorkerModel,
+  normalizeCanvasAiProvider,
+  parseCanvasAiHeaders,
+  parseCanvasAiModelChoiceValue,
+  readStoredCanvasAiNewApiModels,
+  readStoredCanvasAiOpenAiModels,
+  readStoredCanvasAiMikotoModels,
+  readStoredCanvasAiXaisModels,
+  sortCanvasAiModelsForProvider,
+} from './utils/canvasAiConfig';
+import {
+  CANVAS_AI_PROMPT_PRESETS,
+  CANVAS_BUILT_IN_WORKFLOWS,
+  getCanvasImageRuleState,
+  canvasAiProviderSupportsNegativePrompt,
+  createCanvasImagePolicy,
+  getImagePolicyFromRecord,
+  CANVAS_PRODUCT_DETAILS_NODE_IDS,
+  isCanvasProductDetailsWorkflowIntent,
+  doesWorkflowExplicitlyRequestProductAnalysis,
+  buildCanvasProductDetailsWorkflowTemplate,
+  buildIndustrialDesignReviewWorkflowTemplateFromDefinition,
+  validateCanvasWorkflowTemplate,
+} from './utils/canvasWorkflowDefinitions';
+import {
+  applyCanvasWorkflowRuntimeSnapshots,
+  createCanvasWorkflowModuleOutputsFromExpandedGroup,
+  createCanvasWorkflowOutputDrafts,
+  createCanvasWorkflowRuntimeValue,
+  getCanvasAiOutputPreviewSlots,
+  getCanvasExpandedWorkflowDownstreamGeneratorIds,
+  getCanvasWorkflowGroup,
+  getCanvasWorkflowOutputLabel,
+  getCanvasWorkflowOutputSlotTemplates,
+  getCanvasWorkflowTerminalNodeTemplates,
+  hasCanvasWorkflowTemplateChanged,
+  normalizeCanvasWorkflowRuntimeSnapshots,
+  sortCanvasWorkflowRuntimeNodeIds,
+} from './utils/canvasWorkflowRuntime';
+import {
+  CANVAS_AI_PROMPT_PRESET_PLACEHOLDER,
+  CANVAS_AI_PROMPT_PRESET_ADD_VALUE,
+  CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE,
+  CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY,
+  CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY,
+  CANVAS_TEXT_AGENT_SYSTEM_PROMPT_UTF8_BYTE_LIMIT,
+  CANVAS_TEXT_AGENT_USER_PROMPT_UTF8_BYTE_LIMIT,
+  CANVAS_WORKFLOW_SELECT_PLACEHOLDER,
+  CANVAS_WORKFLOW_SAVE_SELECTION_VALUE,
+  CANVAS_WORKFLOW_MANAGE_VALUE,
+  CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY,
+  CANVAS_HIDDEN_BUILT_IN_WORKFLOWS_STORAGE_KEY,
+  CANVAS_TEMPLATE_EXPORT_TYPE,
+  CANVAS_TEMPLATE_EXPORT_VERSION,
+  getCanvasAiPresetPrompt,
+  PRODUCT_RENDER_PRESET_ID,
+  isLegacyProductRenderPrompt,
+  getBuiltInProductRenderPrompt,
+  readCanvasTemplateHiddenIds,
+  normalizeCanvasAiPromptPreset,
+  readCustomCanvasAiPromptPresets,
+  normalizeCanvasWorkflowTemplate,
+  readCustomCanvasWorkflows,
+} from './services/canvasTemplateStorage';
+import {
+  createCanvasNavImageThumbnailInWebview,
+  createCanvasNavVideoThumbnailInWebview,
+  createImageThumbnailInWebview,
+  getVideoThumbnail,
+  isLegacyImageThumbnail,
+  readDataImageSize,
+} from './services/mediaThumbnail';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
 import { CanvasAgentSidebar } from './components/CanvasAgentSidebar';
@@ -58,6 +354,49 @@ import {
   type CanvasRecord,
 } from './services/canvasApi';
 import { clamp } from './features/common';
+import { useEventCallback } from './features/useEventCallback';
+import {
+  acquireTimedLocalLock,
+  localLockKeyPart,
+  releaseTimedLocalLock,
+} from './features/localLock';
+import {
+  CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH,
+  CANVAS_AI_MAX_OUTPUT_COUNT,
+  getCanvasAiNodeAutoSize,
+  getCanvasAiOutputTileLayout,
+  getCanvasAiPromptAutoHeight,
+} from './features/canvasAiNodeLayout';
+import {
+  enhancementEstimateCache,
+  formatCanvasWorkingElapsed,
+  formatEnhancementEstimateVideoMeta,
+  formatRifeEstimateRange,
+  formatRifeEstimateVideoMeta,
+  getCanvasRifeRateRequest,
+  getRifeEngineProgressPercent,
+  isCanvasAiEnhancementType,
+  isCanvasAiLocalMediaToolType,
+  isFrameProcessingProgress,
+  isRifeFixed2xMode,
+  rifeEstimateCache,
+  shouldShowCanvasAiLocalMediaProgress,
+  shouldShowRifeEngineProgress,
+  type QuickVideoEnhancementResult,
+  type RealEsrganEnhancementEstimate,
+  type RealEsrganEnhancementResult,
+  type RifeEngineProgress,
+  type RifeFrameInterpolationEstimate,
+  type RifeFrameInterpolationResult,
+  type VideoCfrNormalizationResult,
+} from './features/canvasLocalMediaTools';
+import {
+  getCanvasAiMediaType,
+  getCanvasAiNodeAutoSizeType,
+  getCanvasAiNodeTitle,
+  isCanvasAiGeneratedType,
+  isCanvasAiGeneratorType,
+} from './features/canvasAiRuntime';
 import { readAgentSidebarWidth, writeAgentSidebarWidth } from './features/agentStorage';
 import { useCanvasAgentRuntime } from './features/useCanvasAgentRuntime';
 import {
@@ -65,7 +404,6 @@ import {
   type AgentCanvasSelectionItem,
   type AgentCanvasVisualReference,
   type AgentSendOptions,
-  type AiGatewayKind,
   type WorkflowResultCardData,
   type WorkflowResultMedia,
   type WorkflowResultReference,
@@ -77,16 +415,22 @@ import { convertWorkflowDraftToDefinition } from './features/appAgent/kernel/app
 import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from './features/appAgent/workflows/workflowRecipeTypes';
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
+  AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS,
+  INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
+  INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
   INSPIRATION_REFERENCE_ROLES,
   applyInspirationCandidateRanking,
+  buildInspirationAnalysisRequest,
   buildInspirationCandidateRankingPrompt,
   canRetryInspirationAnalysis,
   extractJsonObject,
+  getInspirationAnalysisSourceCandidates,
   getInspirationAnalysisRetryAt,
   hasUsableInspirationAiTags,
   isPermanentInspirationAnalysisFailure,
   isRetryableInspirationAnalysisFailure,
   normalizeInspirationProfile,
+  requeueInspirationAnalysisItemAfterRestart,
   searchDrawerInspirations,
   shouldSkipInspirationAnalysis,
   shouldRankInspirationCandidates,
@@ -101,21 +445,37 @@ import {
   type ProfileOrganizationStrategy,
 } from './features/appAgent/inspirationMemory/profileOrganizer';
 import {
-  type ImagePolicy,
   type ImageRuleKey,
-  type ImageRuleState,
-  mergeImageRuleStates,
   normalizeImageRuleState,
 } from './features/appAgent/imageQuality/imageRuleCapsules';
-import {
-  getDefaultImageRuleState,
-  resolveImageRuleState,
-  type ImageRuleDefaultContext,
-} from './features/appAgent/imageQuality/imageRuleDefaults';
 import {
   buildFinalImagePrompt,
   truncatePromptToUtf8ByteLimit,
 } from './features/appAgent/imageQuality/imageRulePromptBuilder';
+import {
+  applyCanvasTextContextRouting,
+  buildCanvasContextRoutingInstruction,
+  type CanvasContextRoutingTarget,
+} from './utils/canvasTextContextRouting';
+import {
+  assignCanvasImageFusionInputs,
+  buildCanvasImageFusionPrompt,
+  getCanvasImageFusionInputIds,
+  isCanvasImageFusionAi,
+  normalizeCanvasImageFusionConfig,
+  removeCanvasImageFusionInput,
+  type CanvasImageFusionRole,
+} from './utils/canvasImageFusion';
+import {
+  buildProductDesignPipelineAnalysisPrompt,
+  buildProductDesignPipelineGeneratorPrompt,
+  expandProductStyleSearchTerms,
+  extractExplicitProductStyleTerms,
+  filterExplicitStyleReferences,
+  mapInspirationRoleToGeneratorRole,
+  selectProductDesignReferencesByAxis,
+  type ProductDesignSelectedReference,
+} from './features/productDesignPipeline';
 
 const sortCanvasesNewestFirst = (items: CanvasRecord[]) => (
   [...items].sort((a, b) => (
@@ -123,40 +483,6 @@ const sortCanvasesNewestFirst = (items: CanvasRecord[]) => (
   ))
 );
 
-type VirtualDropStatus =
-  | 'queued'
-  | 'inspecting'
-  | 'reading'
-  | 'writing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'timed_out';
-
-type VirtualDropPayload = {
-  job_id?: string;
-  jobId?: string;
-  status?: VirtualDropStatus;
-  file_name?: string | null;
-  fileName?: string | null;
-  loaded?: number;
-  total?: number | null;
-  progress?: number | null;
-  message?: string | null;
-  path?: string | null;
-  paths?: string[];
-};
-
-type VirtualDropUiJob = {
-  id: string;
-  status: VirtualDropStatus;
-  fileName: string;
-  loaded: number;
-  total?: number;
-  progress?: number;
-  message?: string;
-  createdAt: number;
-};
 import {
   flattenDrawerFolderTree,
   getDrawerFolderDeletionPlan,
@@ -165,7 +491,34 @@ import {
   isDrawerFolderDescendant,
   normalizeDrawerFolders,
 } from './features/folderModel';
+import {
+  buildCanvasFolderMediaQuery,
+  mergeCanvasFolderMediaItems,
+} from './features/canvasFolderMedia';
+import {
+  AI_CLASSIFICATION_DIMENSIONS,
+  buildAiClassificationGroups,
+  itemMatchesAiClassification,
+  type AiClassificationDimension,
+} from './features/aiClassification';
 import { listFolders, moveFolders, replaceFolders } from './services/libraryApi';
+import {
+  ASSET_PAGE_SIZE,
+  deleteAssetsBatch,
+  getAssetById,
+  getAssetCount,
+  getAssetsByIds,
+  getFolderAssetCounts,
+  getInspirationAnalysisCounts,
+  listAssets,
+  MAX_DRAWER_ASSET_CACHE_SIZE,
+  moveAssetsFromFolders,
+  updateAsset,
+  updateAssetsBatch,
+  type AssetListOptions,
+} from './services/assetsApi';
+import { ensureSqliteAssetLibrary } from './services/migrationApi';
+import { mergeDrawerAssetPageWindow, useDrawerAssetCache } from './hooks/useDrawerAssetCache';
 import {
   CANVAS_BASE_HEIGHT,
   CANVAS_BASE_WIDTH,
@@ -176,7 +529,6 @@ import {
   CANVAS_MAX_SCALE,
   CANVAS_MIN_IMAGE_WIDTH,
   CANVAS_MIN_SCALE,
-  type CanvasFolderImportPrompt,
   type CanvasAiGeneratedOutput,
   type CanvasAiCredentialSource,
   type CanvasAiModelCandidate,
@@ -186,7 +538,6 @@ import {
   type CanvasItemBox,
   type CanvasResizeCorner,
   type CanvasWorkflowRuntime,
-  type CanvasWorkflowRuntimeNodeSnapshot,
   type CanvasWorkflowSlotAsset,
 } from './features/canvasModel';
 import {
@@ -199,6 +550,7 @@ import {
   getCanvasDrawerMediaPreviewSource,
   getCanvasDrawerMediaSource,
   isCanvasDrawerMediaItem,
+  type CanvasDrawerMediaItem,
 } from './features/canvasDrawerMedia';
 import {
   getGeneratedImageCacheSource,
@@ -215,7 +567,6 @@ import {
   normalizeDesignAgentConfig,
 } from './features/designAgentNode';
 import {
-  PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
   type CanvasWorkflowImageNodeModeDraft,
   type CanvasWorkflowInternalSlot,
   type CanvasWorkflowNodeTemplate,
@@ -228,11 +579,6 @@ import {
   selectCanvasWorkflowUserInputTargetIds,
 } from './features/canvasWorkflowUserInput';
 import {
-  isRetiredCanvasWorkflowId,
-  removeRetiredCanvasWorkflows,
-} from './features/canvasWorkflowRetirement';
-import {
-  INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
   INDUSTRIAL_DESIGN_FULL_PROCESS_NODE_IDS,
   INDUSTRIAL_DESIGN_FULL_PROCESS_WORKFLOW_ID,
   buildIndustrialDesignLocalInspirationContext,
@@ -252,7 +598,7 @@ import {
   shouldShowCanvasGenerationCredits,
   type CanvasAiCreditPricing,
 } from './features/canvasGenerationCredits';
-import { getAutoRecoverableAiImageResultSource } from './features/aiImageResultRecovery';
+import { getAutoRecoverableAiMediaResultSource } from './features/aiImageResultRecovery';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -261,10 +607,8 @@ import {
   formatCalendarPreviewTitle,
   formatScheduleDateLabel,
   getCalendarDayMeta,
-  getCalendarMiniEventClass,
   getCalendarNotificationBody,
   getLocalDateKey,
-  getSchedulePriorityClass,
   getScheduleTextContent,
   normalizeSchedulePriority,
   parseDateInputValue,
@@ -275,20 +619,13 @@ import {
 import {
   SILICONFLOW_DEFAULT_ENDPOINT,
   SILICONFLOW_DEFAULT_MODEL,
-  SILICONFLOW_VISION_MODEL_FALLBACKS,
-  SILICONFLOW_VISION_MODEL_LABELS,
-  buildLocalAlchemyResult,
-  buildLocalPaletteOnlyResult,
-  getAlchemySearchText,
-  isAlchemyCandidate,
-  removeLocalAlchemyKeywords,
   isSiliconFlowProvider,
-  isSiliconFlowVisionModel,
-  replaceFirstItemRemark,
   type AiAnalysisConfig,
-  type AlchemyBufferItem,
-  type AlchemyResult,
-} from './features/alchemy';
+} from './features/visionAnalysisConfig';
+import {
+  getDrawerItemSearchText,
+  replaceFirstItemRemark,
+} from './utils/drawerItemSearch';
 import {
   FLOATING_NOTE_DESTROY_BRIDGE_KEY,
   FLOATING_NOTE_LABELS,
@@ -322,16 +659,21 @@ import {
   shouldReuseStartupDrawerAfterOverlay,
 } from './features/startup';
 import { writeImageSourceToClipboard, writeLocalImageFileToClipboard } from './features/imageClipboard';
+import { resolveCanvasPasteSource } from './features/canvasPasteRouting';
 import {
   getDrawerExternalDragCacheCandidates,
   getDrawerExternalDragLocalCandidates,
 } from './features/drawerExternalDrag';
 import {
+  CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT,
   buildCanvasAiOutputLocalCachePatch,
   buildCanvasAiOutputRemoteResultPatch,
+  getCanvasAiVisibleOutputs,
+  isCanvasAiImageOutputReadyForWorkflowDependency,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './features/canvasAiOutputs';
+import { layoutCanvasItems } from './features/canvasAutoLayout';
 import { LruCache } from './features/lruCache';
 import {
   getPreviewOriginalSource,
@@ -366,7 +708,6 @@ import { getCanvasTemplateImportCandidates } from './features/canvasTemplateImpo
 import {
   embedCanvasWorkflowFixedImages,
   exportCanvasWorkflowInstance as buildPortableCanvasWorkflowInstance,
-  hasCanvasWorkflowConcreteFixedImage,
   materializeCanvasWorkflowInstance,
   materializeCanvasWorkflowFixedImages,
 } from './features/canvasWorkflowPortableImages';
@@ -378,7 +719,6 @@ import {
   applyCanvasWorkflowSlotAssetToItem,
   getCanvasWorkflowInternalSlotBinding,
   getCanvasWorkflowInternalSlotNodes,
-  getCanvasWorkflowRuntimeSnapshots,
   getMissingCanvasWorkflowInternalSlots,
   isExternalReferenceImageBridge,
   isExpandedCanvasWorkflowInternalSlotNode,
@@ -391,55 +731,68 @@ import {
 } from './features/canvasWorkflowInternalSlots';
 import { publishCanvasReferencesInOrder } from './features/canvasReferencePublication';
 import {
-  CANVAS_AI_VIDEO_PROVIDER_OPTIONS,
-  CANVAS_AI_PROVIDER_OPTIONS,
+  CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
+  CANVAS_AI_VIDEO_MODEL_OPTIONS,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
-  NEW_API_ENDPOINT_DEFAULT,
-  NEW_API_ENDPOINT_PLACEHOLDER,
-  NEW_API_IMAGE_MODEL_DEFAULT,
-  NEW_API_IMAGE_MODEL_OPTIONS,
-  OPENAI_COMPATIBLE_ENDPOINT_DEFAULT,
-  OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT,
-  OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS,
-  XAIS_CHAT_ENDPOINT_DEFAULT,
-  XAIS_CHAT_IMAGE_MODEL_DEFAULT,
-  XAIS_CHAT_IMAGE_MODEL_OPTIONS,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,
+  NEW_API_SEEDANCE_2_MODEL,
+  NEW_API_SEEDANCE_2_FAST_MODEL,
+  NEW_API_VIDEO_MODEL_DEFAULT,
+  NEW_API_VIDEO_MODEL_OPTIONS,
   XAIS_CHAT_VIDEO_MODEL_DEFAULT,
-  XAIS_CHAT_VIDEO_MODEL_OPTIONS,
   debugXaisImage2,
   generateCanvasAiProviderImages,
   generateCanvasAiProviderVideos,
   getCloudWalletImageGenerationByRequest,
+  getCloudWalletImageLookupImages,
   getCanvasAiImageResolutionValues,
+  getCanvasAiImageResolutionValuesForCandidates,
+  hydrateCanvasAiModelCandidateCapabilities,
   normalizeCanvasAiOutputFormat,
   getCanvasAiSlotClientRequestId,
+  getCanvasAiVideoReferenceSlotLabels,
+  getCanvasAiVideoReferenceSlots,
+  getCanvasAiVideoModelCandidates,
+  getCanvasAiVideoModelOptionValue,
+  getCanvasAiVideoProviderForModel,
+  getMiniMaxH3VideoResolutionValues,
+  normalizeMiniMaxH3VideoResolution,
+  filterCanvasAiVideoModelCandidates,
+  getMikotoVideoResolutionValues,
+  getMikotoVideoDurationValues,
+  normalizeMikotoVideoResolution,
+  normalizeMikotoVideoDuration,
+  normalizeSeedanceVideoAspectRatio,
+  isSeedance20VideoModel,
+  isSeedanceLikeVideoModel,
+  isMiniMaxH3VideoModel,
   getCanvasAiPublicImageModelName,
-  getCanvasAiPublicImageModelPriority,
+  getCanvasAiPublicImageModelId,
   getDefaultNewApiImageProtocol,
-  getNewApiImageModelDisplayName,
-  getNewApiImageModelFamily,
-  getXaisImage2RatioOptions,
-  getXaisImageModelDisplayName,
+  getNewApiVideoDurationValues,
+  getNewApiVideoResolutionValues,
   isCanvasAiPublicImageModel,
   supportsCanvasAiTransparentPng,
   isOpenAiLikeCanvasAiProvider,
-  isLikelyNewApiVideoModel,
-  isXaisImage2Model,
   mergeCanvasAiReferenceSourceItems,
-  normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
-  normalizeNewApiBaseEndpoint,
+  normalizeCanvasAiImageResolutionForCandidates,
+  normalizeNewApiVideoAspectRatio,
+  normalizeNewApiVideoDurationForModel,
+  normalizeNewApiVideoResolutionForModel,
   normalizeXaisImage2Model,
   orderCanvasAiReferenceSources,
   resolveCanvasAiReferenceProvider,
-  resolveXaisImage2Ratio,
+  selectCanvasAiImageCandidatesForResolution,
   getCanvasAiReferencePublicationMaxUrlLength,
   shouldUsePortableWalletImageReferences,
   shouldUseCanvasAiNativeImageBatchRequest,
   supportsCanvasAiImageResolution,
 } from './features/canvasAiImage';
 import {
+  CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS,
   getCanvasAiTimedOutRecoveryCandidates,
   isCanvasAiImageLookupPending,
 } from './features/canvasAiTimedOutRecovery';
@@ -448,68 +801,6 @@ import {
   mergeCanvasAiRetryOutputSlot,
 } from './features/canvasWorkflowOutputRetry';
 
-type CanvasGeneratedListEntry = {
-  id: string;
-  canvasItem: CanvasImageItem;
-  item: BufferItem;
-  ai?: NonNullable<CanvasImageItem['ai']>;
-};
-type CollectedWebImage = {
-  title: string;
-  imageUrl: string;
-  pageUrl?: string;
-  path: string;
-};
-type WebImageCollectorReference = {
-  source: string;
-  name: string;
-  preview?: string;
-  itemId?: string;
-};
-type WebImageSearchDescription = {
-  query: string;
-  source: 'ollama' | 'siliconflow';
-  tags?: string[];
-  subject?: string;
-  style?: string;
-};
-type LocalVisionModelProgressPayload = {
-  stage?: string;
-  message?: string;
-  file?: string | null;
-  loaded?: number;
-  total?: number;
-  progress?: number;
-};
-type LocalVisionModelDownloadState = {
-  visible: boolean;
-  message: string;
-  progress: number;
-  phase: 'idle' | 'downloading' | 'loading' | 'ready' | 'error';
-  startedAt?: number;
-  updatedAt?: number;
-};
-type LocalVisionModelStatusPayload = {
-  ready?: boolean;
-  model?: string;
-  progress?: number;
-};
-type ImageThumbnailFileResult = {
-  path: string;
-  url?: string;
-  width: number;
-  height: number;
-  fingerprint?: string;
-  file_size?: number;
-  modified_at?: number;
-};
-type CanvasImageSourceCacheEntry = {
-  src: string;
-  quality: 'thumb' | 'preview' | 'original';
-  path?: string;
-  thumbnail?: string;
-  size?: number;
-};
 const LOCAL_VISION_MODEL_STORAGE_KEY = 'drawer_local_vision_model';
 const DEFAULT_LOCAL_VISION_MODEL = 'qwen2.5vl:3b';
 const LEGACY_LOCAL_VISION_MODEL = 'qwen2.5vl:7b';
@@ -521,22 +812,6 @@ const getStoredLocalVisionModel = () => {
   }
   return stored;
 };
-type CanvasWorkflowValidationResult = {
-  errors: string[];
-  warnings: string[];
-};
-type CanvasWorkflowRunStatus = 'idle' | 'waiting' | 'ready' | 'running' | 'success' | 'failed' | 'skipped';
-type CanvasWorkflowExpandedGroup = {
-  groupId: string;
-  templateId: string;
-  workflowId: string;
-  workflowLabel: string;
-  workflowHint: string;
-  workflowBuiltin?: boolean;
-  module: CanvasImageItem;
-  expandedAt: number;
-};
-
 const appWindow = getCurrentWindow();
 clearLegacyStartupFlags();
 const LazyFloatingNoteHost = React.lazy(() => (
@@ -545,99 +820,18 @@ const LazyFloatingNoteHost = React.lazy(() => (
 const CANVAS_WORKBENCH_MODE_STORAGE_KEY = 'drawer_canvas_workbench_mode';
 const DRAWER_WORKBENCH_MODE_STORAGE_KEY = 'drawer_workbench_mode';
 const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
+const DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY = 'drawer_classification_view';
+const DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY = 'drawer_ai_classification_dimension';
 const DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_folder_sidebar_width';
-const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 178;
-const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 116;
-const DRAWER_FOLDER_SIDEBAR_MAX_WIDTH = 260;
+const DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH = 260;
+const DRAWER_FOLDER_SIDEBAR_MIN_WIDTH = 250;
+const DRAWER_FOLDER_SIDEBAR_MAX_WIDTH = 320;
 const EAGLE_API_V2_BASE_URL = 'http://127.0.0.1:41595/api/v2';
 const EAGLE_API_V1_BASE_URL = 'http://127.0.0.1:41595/api';
 const EAGLE_IMPORT_PAGE_LIMIT = 200;
 const EAGLE_IMPORT_CACHE_CONCURRENCY = 2;
 const FOLDER_DRAG_MIME = 'application/x-inspiration-drawer-folder-ids';
 const WORKFLOW_SLOT_ASSET_DRAG_MIME = 'application/x-inspiration-workflow-slot-asset-index';
-type DrawerTabType = TabType | 'alchemy' | 'notes' | 'calendar';
-type DrawerSidebarLayout = 'icons' | 'folders';
-type EagleImportStatus = {
-  phase: 'idle' | 'checking' | 'reading' | 'importing' | 'caching' | 'done' | 'error';
-  message: string;
-  total: number;
-  imported: number;
-  cached: number;
-  failed: number;
-  startedAt?: number;
-  updatedAt?: number;
-  diagnostics?: EagleConnectionDiagnostics;
-};
-type EagleApiVersion = 'v2' | 'v1';
-type EagleConnectionDiagnostics = {
-  eagleOpen: boolean;
-  portAccessible: boolean;
-  libraryOpen: boolean | null;
-  apiVersion?: EagleApiVersion;
-  v2Error?: string;
-  v1Error?: string;
-  libraryError?: string;
-};
-type EagleDetectionResult = EagleConnectionDiagnostics & {
-  baseUrl?: string;
-  libraryInfo?: any;
-};
-type EagleOfflineLibraryPayload = {
-  library?: { name?: string; path?: string };
-  folders?: EagleFolderPayload[];
-  items?: EagleItemPayload[];
-};
-type EagleFolderPayload = {
-  id?: string;
-  name?: string;
-  parent?: string;
-  parentId?: string;
-  children?: EagleFolderPayload[];
-};
-type EagleItemPayload = Record<string, any>;
-type DrawerUndoSnapshot = {
-  items: BufferItem[];
-  folders: Folder[];
-  activeFolderId: string;
-  activeTab: DrawerTabType;
-  openFloatingNoteLabels: string[];
-  floatingNotes: Array<{ label: string; snapshot: FloatingNoteSnapshot }>;
-  label: string;
-  createdAt: number;
-};
-type ConfirmDialogAction = {
-  label: string;
-  onClick: () => void | Promise<void>;
-  className?: string;
-  title?: string;
-};
-type ConfirmDialogState = {
-  isOpen: boolean;
-  title: string;
-  message: string;
-  onConfirm: () => void | Promise<void>;
-  actions?: ConfirmDialogAction[];
-};
-type TextInputDialogIcon = 'canvas' | 'rename' | 'copy' | 'snapshot';
-type TextInputDialogState = {
-  isOpen: boolean;
-  title: string;
-  description?: string;
-  value: string;
-  placeholder?: string;
-  confirmLabel: string;
-  icon: TextInputDialogIcon;
-  autoSelect: boolean;
-};
-type TextInputDialogOptions = {
-  title: string;
-  description?: string;
-  defaultValue?: string;
-  placeholder?: string;
-  confirmLabel?: string;
-  icon?: TextInputDialogIcon;
-  autoSelect?: boolean;
-};
 type AgentOpenAiChatResult = {
   requestId?: string;
   content?: string;
@@ -646,27 +840,9 @@ type AgentOpenAiChatResult = {
 };
 
 const DRAWER_UNDO_LIMIT = 8;
-type CanvasUndoSnapshot = {
-  items: CanvasImageItem[];
-  selectedIds: string[];
-  size: { width: number; height: number };
-  scroll: { left: number; top: number };
-  label: string;
-  createdAt: number;
-};
-
 const CANVAS_UNDO_LIMIT = 6;
 const CANVAS_STATE_SAVE_DEBOUNCE_MS = 320;
 const DRAWER_ITEMS_SAVE_DEBOUNCE_MS = 360;
-const DATA_THUMBNAIL_KEEP_MAX_CHARS = 96 * 1024;
-
-type CanvasPersistedState = {
-  items: CanvasImageItem[];
-  size: { width: number; height: number };
-  scale: number;
-  scroll: { left: number; top: number };
-  updatedAt: number;
-};
 
 type CanvasAiXaisBalanceState = {
   status: 'idle' | 'loading' | 'success' | 'error';
@@ -676,79 +852,6 @@ type CanvasAiXaisBalanceState = {
   isMgr?: boolean;
   message?: string;
   checkedAt?: number;
-};
-
-type LicenseState = 'unlicensed' | 'trial' | 'pro' | 'enterprise' | 'expired';
-type LicenseEdition = 'trial' | 'pro' | 'enterprise';
-type LicenseErrorCode =
-  | 'not_licensed'
-  | 'malformed_license'
-  | 'invalid_signature'
-  | 'machine_mismatch'
-  | 'product_mismatch'
-  | 'expired'
-  | 'feature_not_licensed'
-  | 'io_error'
-  | 'invalid_public_key';
-
-type LicenseStatus = {
-  state: LicenseState;
-  valid: boolean;
-  machine_id: string;
-  customer?: string | null;
-  edition?: LicenseEdition | null;
-  expire_at?: string | null;
-  features: string[];
-  needs_email_registration: boolean;
-  ai_access?: {
-    mode: 'byok' | 'license_managed';
-    allow_user_api: boolean;
-    managed_gateway_kind?: AiGatewayKind | null;
-    managed_provider?: string | null;
-    managed_base_url?: string | null;
-    managed_model?: string | null;
-    api_key_last4?: string | null;
-    canvas_gateway_kind?: AiGatewayKind | null;
-    canvas_provider?: string | null;
-    canvas_base_url?: string | null;
-    canvas_model?: string | null;
-    canvas_api_key_last4?: string | null;
-  } | null;
-  message?: string | null;
-  error_code?: LicenseErrorCode | null;
-};
-
-type CloudWalletSummary = {
-  availableCredits: string;
-  reservedCredits: string;
-  lifetimeGranted: string;
-  lifetimeConsumed: string;
-};
-
-type CloudAccountSummary = {
-  email?: string | null;
-  displayName?: string | null;
-  wallet: CloudWalletSummary;
-};
-
-type CloudImageModelsResult = {
-  provider: string;
-  defaultModel?: string | null;
-  models: string[];
-  channels?: Array<{
-    id: string;
-    name: string;
-    provider: string;
-    defaultModel?: string | null;
-    models: string[];
-    error?: string | null;
-  }>;
-  pricing?: CanvasAiCreditPricing | null;
-};
-
-type CreditRedemptionResult = {
-  redeemedCredits: string;
-  account: CloudAccountSummary;
 };
 
 const LICENSE_STATE_LABELS: Record<LicenseState, string> = {
@@ -765,57 +868,9 @@ const LICENSE_EDITION_LABELS: Record<LicenseEdition, string> = {
   enterprise: '高级版',
 };
 
-type EmailCodeChallenge = {
-  challengeId: string;
-  expiresIn: number;
-  resendAfter: number;
-};
-
 const formatLicenseCommandError = (err: unknown) => (
   String(err || '授权操作失败').replace(/^[a-z_]+:\s*/i, '').trim() || '授权操作失败'
 );
-
-type CanvasBrushEditorMode = 'brush' | 'crop' | 'eraser' | 'rectangle' | 'circle' | 'ellipse';
-type CanvasBrushShapeMode = Extract<CanvasBrushEditorMode, 'rectangle' | 'circle' | 'ellipse'>;
-type CanvasBrushPoint = { x: number; y: number };
-type ActiveShortcutScope = 'canvas' | 'doodle' | 'input' | 'agent' | 'none';
-
-type CanvasBrushCropRect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-type CanvasViewportRect = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-type CanvasBrushEditorState = {
-  targetId: string;
-  source: string;
-  baseDataUrl: string;
-  name: string;
-  x: number;
-  y: number;
-  nodeWidth: number;
-  nodeHeight: number;
-  width: number;
-  height: number;
-};
-
-type CanvasBrushEditorOpenOptions = {
-  targetId: string;
-  source: string;
-  name: string;
-  x: number;
-  y: number;
-  nodeWidth: number;
-  nodeHeight: number;
-};
 
 const isCanvasBrushShapeMode = (mode: CanvasBrushEditorMode): mode is CanvasBrushShapeMode => (
   mode === 'rectangle' || mode === 'circle' || mode === 'ellipse'
@@ -834,201 +889,6 @@ const CANVAS_BRUSH_COLORS = [
 ];
 const CANVAS_BRUSH_EDITOR_MAX_EDGE = 2048;
 
-const isDataImageSourceValue = (value?: string | null) => (
-  /^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(String(value || '').trim())
-);
-
-const isDataVideoSourceValue = (value?: string | null) => (
-  /^data:video\/[a-zA-Z0-9.+-]+;base64,/i.test(String(value || '').trim())
-);
-
-const isDataMediaSourceValue = (value?: string | null) => (
-  isDataImageSourceValue(value) || isDataVideoSourceValue(value)
-);
-
-const cleanCanvasMediaUrl = (value?: string | null) => (
-  String(value || '')
-    .trim()
-    .replace(/^["'`]+/g, '')
-    .replace(/["'`\\]+$/g, '')
-    .replace(/[.,;，。；]+$/g, '')
-);
-
-const hasCanvasVideoFileExtension = (value?: string | null) => (
-  /\.(?:mp4|webm|mov|m4v|avi|mkv)(?:[?#].*)?$/i.test(cleanCanvasMediaUrl(value))
-);
-
-const hasCanvasImageFileExtension = (value?: string | null) => (
-  /\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#].*)?$/i.test(cleanCanvasMediaUrl(value))
-);
-
-const isInvalidCanvasVideoSuccessOutput = (output: CanvasAiGeneratedOutput) => {
-  if (output.status !== 'success') return false;
-  const url = cleanCanvasMediaUrl(output.url);
-  if (!url) return true;
-  if (/^data:video\//i.test(url)) return false;
-  if (hasCanvasVideoFileExtension(output.path || url)) return false;
-  return hasCanvasImageFileExtension(url);
-};
-
-const stripDataImageProvenance = (item: BufferItem): BufferItem => {
-  const hasDataSource = isDataImageSourceValue(item.sourceUrl);
-  const hasDataOriginal = isDataImageSourceValue(item.originalUrl);
-  if (!hasDataSource && !hasDataOriginal) return item;
-  const next = { ...item };
-  if (hasDataSource) next.sourceUrl = undefined;
-  if (hasDataOriginal) next.originalUrl = undefined;
-  return next;
-};
-
-const stripHeavyDataThumbnail = (item: BufferItem): BufferItem => {
-  const nextItem = stripDataImageProvenance(item);
-  const thumbnail = nextItem.thumbnail || '';
-  if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) {
-    return nextItem;
-  }
-  const next = nextItem === item ? { ...item } : { ...nextItem };
-  next.thumbnail = undefined;
-  return next;
-};
-
-const getWorkflowEmbeddedImageDataSource = (item: BufferItem) => (
-  [item.url, item.path, item.thumbnail, item.sourceUrl, item.originalUrl]
-    .map(value => String(value || '').trim())
-    .find(isDataImageSourceValue) || ''
-);
-
-const prepareCanvasWorkflowTemplateItem = (item: BufferItem): BufferItem => {
-  let next = stripHeavyDataThumbnail(item);
-  if (item.type !== 'image') return next;
-
-  const embeddedSource = getWorkflowEmbeddedImageDataSource(item);
-  if (!embeddedSource) return next;
-
-  next = {
-    ...next,
-    url: embeddedSource,
-    path: undefined,
-    sourceUrl: undefined,
-    originalUrl: undefined,
-  };
-  if (next.thumbnail && isDataImageSourceValue(next.thumbnail) && next.thumbnail.length > DATA_THUMBNAIL_KEEP_MAX_CHARS) {
-    next.thumbnail = undefined;
-  }
-  return next;
-};
-
-const compactFloatingNoteSnapshot = (snapshot: FloatingNoteSnapshot): FloatingNoteSnapshot => {
-  const thumbnail = snapshot.thumbnail || '';
-  if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) {
-    return snapshot;
-  }
-  return { ...snapshot, thumbnail: undefined };
-};
-
-const stripCanvasItemDataImageProvenance = (item: CanvasImageItem): CanvasImageItem => {
-  const nextItem = stripHeavyDataThumbnail(item.item);
-  let nextAi = item.ai;
-  if (item.ai?.outputs?.length) {
-    let outputsChanged = false;
-    const outputs = item.ai.outputs.map(output => {
-      const thumbnail = output.thumbnail || '';
-      if (!isDataImageSourceValue(thumbnail) || thumbnail.length <= DATA_THUMBNAIL_KEEP_MAX_CHARS) return output;
-      outputsChanged = true;
-      return { ...output, thumbnail: undefined };
-    });
-    if (outputsChanged) nextAi = { ...item.ai, outputs };
-  }
-  if (nextItem === item.item && nextAi === item.ai) return item;
-  return { ...item, item: nextItem, ai: nextAi };
-};
-
-const normalizeInterruptedCanvasAiRun = (
-  item: CanvasImageItem,
-  activeRunNodeIds?: ReadonlySet<string>,
-): CanvasImageItem => {
-  const cleanItem = stripCanvasItemDataImageProvenance(item);
-  if (cleanItem.ai?.type === 'video-generator') {
-    const invalidVideoError = '接口返回了无效的视频结果，请重新生成';
-    let hasInvalidVideoOutput = false;
-    const outputs = (cleanItem.ai.outputs || []).map(output => {
-      if (!isInvalidCanvasVideoSuccessOutput(output)) return output;
-      hasInvalidVideoOutput = true;
-      return {
-        ...output,
-        status: 'error' as const,
-        error: output.error || invalidVideoError,
-        generatedAt: output.generatedAt || cleanItem.ai?.generatedAt || Date.now(),
-      };
-    });
-    if (hasInvalidVideoOutput) {
-      return {
-        ...cleanItem,
-        ai: {
-          ...cleanItem.ai,
-          status: 'error',
-          error: cleanItem.ai.error || invalidVideoError,
-          outputs,
-          generatedAt: cleanItem.ai.generatedAt || Date.now(),
-        },
-      };
-    }
-  }
-  if (cleanItem.ai?.status !== 'working' || activeRunNodeIds?.has(cleanItem.id)) return cleanItem;
-  const failedAt = cleanItem.ai.generatedAt || Date.now();
-  const interruptedError = '上次生成已中断，请重新生成';
-  return {
-    ...cleanItem,
-    ai: {
-      ...cleanItem.ai,
-      status: 'error',
-      error: cleanItem.ai.error || interruptedError,
-      generatedAt: failedAt,
-      outputs: (cleanItem.ai.outputs || []).map(output => output.status === 'success'
-        ? output
-        : {
-          ...output,
-          status: 'error' as const,
-          error: output.error || interruptedError,
-          generatedAt: output.generatedAt || failedAt,
-        }),
-    },
-  };
-};
-
-const sanitizeCanvasPersistedState = (
-  value: unknown,
-  options: { activeRunNodeIds?: ReadonlySet<string> } = {},
-): CanvasPersistedState => {
-  const record = value && typeof value === 'object' ? value as Partial<CanvasPersistedState> : {};
-  const rawSize = record.size && typeof record.size === 'object' ? record.size : {};
-  const rawScroll = record.scroll && typeof record.scroll === 'object' ? record.scroll : {};
-  const size = {
-    width: clamp(Number((rawSize as { width?: unknown }).width) || CANVAS_BASE_WIDTH, CANVAS_BASE_WIDTH, 20000),
-    height: clamp(Number((rawSize as { height?: unknown }).height) || CANVAS_BASE_HEIGHT, CANVAS_BASE_HEIGHT, 20000),
-  };
-  const scroll = {
-    left: Math.max(0, Number((rawScroll as { left?: unknown }).left) || 0),
-    top: Math.max(0, Number((rawScroll as { top?: unknown }).top) || 0),
-  };
-  return {
-    items: Array.isArray(record.items)
-      ? record.items.map(item => normalizeInterruptedCanvasAiRun(item, options.activeRunNodeIds))
-      : [],
-    size,
-    scale: clamp(Number(record.scale) || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE),
-    scroll,
-    updatedAt: Number(record.updatedAt) || 0,
-  };
-};
-
-const cloneDrawerValue = <T,>(value: T): T => {
-  try {
-    if (typeof structuredClone === 'function') return structuredClone(value);
-  } catch (_) {}
-  return JSON.parse(JSON.stringify(value));
-};
-
 type CloudflaredPublicImageUrlsResult = {
   shareId: string;
   urls: string[];
@@ -1039,32 +899,16 @@ type TemporaryReferenceShare = {
   id: string;
 };
 
-type CanvasFolderMediaPickerState = CanvasFolderImportPrompt & {
-  x: number;
-  y: number;
-};
-
 const CANVAS_FOLDER_PICKER_INITIAL_VISIBLE = 24;
 const CANVAS_FOLDER_PICKER_VISIBLE_STEP = 24;
 const CANVAS_FOLDER_PICKER_SCROLL_EDGE = 96;
 
-type CanvasNavPreview = { source: string; mediaType: 'image' | 'video' };
-type CanvasNavThumbnailCacheEntry = {
-  signature: string;
-  thumbnail: string;
-  status: 'loading' | 'ready' | 'error' | 'empty';
-};
-type CanvasAiOutputThumbnailJob = {
-  key: string;
-  canvasItemId?: string;
-  outputIndex?: number;
-  outputId?: string;
-  matchSources?: string[];
-  drawerItemId?: string;
-  source: string;
-  path?: string;
-  attempt?: number;
-  onSettled?: (patch: Partial<CanvasAiGeneratedOutput>) => void;
+type CanvasFolderMediaPagingState = {
+  folderKey: string;
+  imageOffset: number;
+  videoOffset: number;
+  imageTotal: number;
+  videoTotal: number;
 };
 
 const getCanvasAiErrorSummary = (error?: string | null) => {
@@ -1091,29 +935,18 @@ const TABS: { id: DrawerTabType; label: string; icon: any }[] = [
 const CALENDAR_NOTIFICATIONS_ENABLED_STORAGE_KEY = 'drawer_calendar_notifications_enabled';
 const SCREENSHOT_AUTO_PIN_NOTE_STORAGE_KEY = 'drawer_screenshot_auto_pin_note';
 const AUTO_INSPIRATION_ANALYSIS_ENABLED = true;
-const AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY = 'drawer_ai_analysis_note_payload_fix_v1';
+const AUTO_INSPIRATION_ANALYSIS_UI_IDLE_MS = 1200;
+const AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY = 'drawer_ai_analysis_note_payload_fix_v2';
 const AI_GENERATED_IMAGE_PROMPT_NOTE_CLEANUP_KEY = 'drawer_ai_generated_prompt_note_cleanup_v1';
-const LOCAL_ALCHEMY_TAG_CLEANUP_KEY = 'drawer_local_alchemy_tag_cleanup_v1';
 const AUTO_INSPIRATION_ANALYSIS_RETRY_MIGRATION_KEY = 'drawer_ai_analysis_retry_migration_v3';
 const CALENDAR_NOTIFICATION_SENT_STORAGE_PREFIX = 'drawer_calendar_notification_sent_';
 const CALENDAR_NOTIFICATION_HOURS = [10, 15];
-const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown_date';
-const APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY = 'drawer_app_update_last_automatic_check';
-const APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const CALENDAR_NEW_NOTE_TARGET = '__new_calendar_schedule_note__';
-const SNIP_RESTORE_DRAWER_STORAGE_KEY = 'drawer_snip_restore_drawer';
-const CANVAS_FALLBACK_IMAGE_WIDTH = 360;
-const CANVAS_FALLBACK_IMAGE_HEIGHT = 260;
-const CANVAS_INITIAL_IMAGE_MAX_WIDTH = 720;
-const CANVAS_INITIAL_IMAGE_MAX_HEIGHT = 560;
-const IMAGE_THUMBNAIL_MAX_WIDTH = 360;
-const IMAGE_THUMBNAIL_MAX_HEIGHT = 240;
-const IMAGE_THUMBNAIL_LEGACY_MAX_WIDTH = 360;
-const IMAGE_THUMBNAIL_LEGACY_MAX_HEIGHT = 240;
 const IMAGE_THUMBNAIL_MAX_CONCURRENCY = 2;
 const IMAGE_THUMBNAIL_QUEUE_LIMIT = 32;
 const IMAGE_THUMBNAIL_UPDATE_BATCH_MS = 90;
 const CANVAS_AI_OUTPUT_CACHE_STALE_MS = 75_000;
+const CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS = 8_000;
 const GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS = [1_500];
 const CANVAS_IMAGE_SOURCE_UPGRADE_CONCURRENCY = 1;
 const CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE = 3;
@@ -1121,185 +954,29 @@ const CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS = 90;
 const CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE = 1.15;
 const CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE = 0.65;
 const CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD = 480;
-const CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE = 1024;
 const CANVAS_IMAGE_SOURCE_UPGRADE_MAX_ACTIVE_PREVIEWS = 3;
 const CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED = true;
 const CANVAS_INTERACTION_DEBUG = false;
-const VIDEO_THUMBNAIL_MAX_WIDTH = 360;
-const VIDEO_THUMBNAIL_MAX_HEIGHT = 220;
 const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
-const VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES = 24 * 1024 * 1024;
 const BLANK_NOTE_CREATE_LOCK_STORAGE_KEY = 'drawer_blank_note_create_lock';
-const SNIP_CAPTURE_LOCK_STORAGE_KEY = 'drawer_snip_capture_lock';
 const FLOATING_NOTE_CREATE_LOCK_STORAGE_PREFIX = 'drawer_floating_note_create_lock_';
-const DRAWER_INITIAL_RENDER_LIMIT = 48;
-const DRAWER_RENDER_BATCH_SIZE = 32;
-const DRAWER_RENDER_LOAD_AHEAD_PX = 640;
 const CANVAS_SEARCH_CANDIDATE_LIMIT = 36;
 const DRAWER_VIRTUALIZATION_THRESHOLD = 240;
-const DRAWER_VIRTUALIZATION_OVERSCAN_ROWS = 2;
+const createAssetId = () => globalThis.crypto.randomUUID();
 const PREVIEW_ORIGINAL_CACHE_LIMIT = 5;
-const CANVAS_NAV_THUMB_MAX_WIDTH = 96;
-const CANVAS_NAV_THUMB_MAX_HEIGHT = 72;
-const CANVAS_NAV_THUMB_QUALITY = 0.42;
 const CANVAS_NAV_PANEL_TOP_MARGIN = 12;
-const CANVAS_AI_PROVIDER_STORAGE_KEY = 'drawer_canvas_ai_provider';
-const CANVAS_AI_CREDENTIAL_SOURCE_STORAGE_KEY = 'drawer_canvas_ai_credential_source';
-const CANVAS_AI_PROVIDER_DEFAULT_VERSION_STORAGE_KEY = 'drawer_canvas_ai_provider_default_version';
-const CANVAS_AI_PROVIDER_DEFAULT_VERSION = 'xais-chat-default';
-const CANVAS_AI_API_KEY_STORAGE_PREFIX = 'drawer_canvas_ai_api_key_';
-const CANVAS_AI_NEW_API_VIDEO_KEY_STORAGE_KEY = 'drawer_canvas_ai_new_api_video_key';
-const CANVAS_AI_ENDPOINT_STORAGE_KEY = 'drawer_canvas_ai_endpoint';
-const CANVAS_AI_ENDPOINT_STORAGE_PREFIX = 'drawer_canvas_ai_endpoint_';
-const CANVAS_AI_HEADERS_STORAGE_PREFIX = 'drawer_canvas_ai_headers_';
-const CANVAS_AI_API_PROVIDER_STORAGE_PREFIX = 'drawer_canvas_ai_api_provider_';
-const CANVAS_AI_OPENAI_MODELS_STORAGE_KEY = 'drawer_canvas_ai_openai_models';
-const CANVAS_AI_NEW_API_MODELS_STORAGE_KEY = 'drawer_canvas_ai_new_api_models';
-const CANVAS_AI_XAIS_MODELS_STORAGE_KEY = 'drawer_canvas_ai_xais_models';
-const CANVAS_AI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9'];
-const CANVAS_AI_OUTPUT_FORMATS = ['jpg', 'png'];
-const CANVAS_AI_COUNTS = [1, 2, 3, 4];
-const CANVAS_AI_IMAGE_RESOLUTIONS = ['1k', '2k', '4k'];
-const CANVAS_AI_VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'];
-const CANVAS_AI_VIDEO_DURATIONS = Array.from({ length: 12 }, (_, index) => index + 4);
 const CANVAS_PASTE_OFFSET = 54;
-const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
-const CANVAS_AI_DEFAULT_OUTPUT_FORMAT = 'jpg';
-const CANVAS_AI_DEFAULT_COUNT = 1;
-const CANVAS_AI_DEFAULT_IMAGE_RESOLUTION = '2k';
-const CANVAS_AI_DEFAULT_VIDEO_DURATION = 15;
-const CANVAS_AI_DEFAULT_VIDEO_RESOLUTION = '720p';
-const CANVAS_AI_VIDEO_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
-const CANVAS_AI_IMAGE_REFERENCE_SHARE_KEEPALIVE_MS = 30 * 60 * 1000;
-const CANVAS_AI_OUTPUT_SOURCE_RECOVERY_CONCURRENCY = 2;
-const CANVAS_AI_INPUT_IMAGE_MAX_EDGE = 1920;
-const CANVAS_AI_INPUT_IMAGE_MIN_EDGE = 1536;
-const CANVAS_AI_INPUT_IMAGE_QUALITY = 0.9;
-const CANVAS_AI_INPUT_IMAGE_MIN_QUALITY = 0.82;
-const CANVAS_AI_INPUT_IMAGE_TARGET_BYTES = 2.5 * 1024 * 1024;
-const INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE = 768;
-const INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES = 700 * 1024;
 const STARTUP_CONSENT_DELAY_MS = 15000;
 const CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY = 'drawer_cloudflared_disclaimer_accepted';
-const CANVAS_CONNECTION_HANDLE_OUTSET = 10;
+const CANVAS_CONNECTION_HANDLE_OUTSET = 0;
 const CANVAS_SELECTION_RADIUS = 18;
 const CANVAS_NODE_RADIUS = 20;
 const CANVAS_VIEWPORT_OVERSCAN_PX = 480;
 const CANVAS_INTERACTION_OVERSCAN_PX = 680;
 const CANVAS_GENERATED_LIST_RENDER_LIMIT = 60;
-const AI_GENERATED_FOLDER_ID = 'ai_generated_images';
-const AI_GENERATED_FOLDER_NAME = 'AI生图';
-const AI_GENERATED_FOLDER_COLOR = '#06b6d4';
 const AI_GENERATED_VIDEO_FOLDER_ID = 'ai_generated_videos';
 const AI_GENERATED_VIDEO_FOLDER_NAME = 'AI视频';
 const AI_GENERATED_VIDEO_FOLDER_COLOR = '#10b981';
-const CANVAS_AI_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_PROVIDER_OPTIONS.map(provider => ({
-  value: provider.value,
-  label: provider.label,
-}));
-const CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_PROVIDER_OPTIONS.map(provider => ({
-  value: provider.value,
-  label: provider.label,
-}));
-const CANVAS_AI_DEFAULT_PROVIDER: CanvasAiProvider = 'xais-chat';
-const CANVAS_AI_PROVIDER_VALUES: CanvasAiProvider[] = ['xais-chat', 'new-api', 'openai-compatible', 'custom'];
-const CANVAS_AI_ASPECT_RATIO_OPTIONS: RoundedSelectOption[] = CANVAS_AI_ASPECT_RATIOS.map(ratio => ({
-  value: ratio,
-  label: ratio,
-}));
-const CANVAS_AI_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_OUTPUT_FORMATS.map(format => ({
-  value: format,
-  label: format.toUpperCase(),
-}));
-const CANVAS_AI_COUNT_OPTIONS: RoundedSelectOption[] = CANVAS_AI_COUNTS.map(count => ({
-  value: String(count),
-  label: String(count),
-}));
-const CANVAS_AI_IMAGE_RESOLUTION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_IMAGE_RESOLUTIONS.map(resolution => ({
-  value: resolution,
-  label: resolution.toUpperCase(),
-}));
-const CANVAS_AI_VIDEO_RESOLUTION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_RESOLUTIONS.map(resolution => ({
-  value: resolution,
-  label: resolution,
-}));
-const CANVAS_AI_VIDEO_DURATION_OPTIONS: RoundedSelectOption[] = CANVAS_AI_VIDEO_DURATIONS.map(duration => ({
-  value: String(duration),
-  label: `${duration}秒`,
-}));
-const CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'REF', label: '参考图' },
-  { value: 'FLF', label: '首尾帧' },
-];
-const CANVAS_RIFE_RATE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'factor-2', label: '2× 补帧' },
-  { value: 'factor-4', label: '4× 补帧' },
-  { value: 'target-30', label: '目标 30fps' },
-  { value: 'target-48', label: '目标 48fps' },
-  { value: 'target-60', label: '目标 60fps' },
-  { value: 'target-120', label: '目标 120fps' },
-];
-const CANVAS_VIDEO_CFR_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'auto', label: '自动标准化' },
-  { value: '24', label: '24fps CFR' },
-  { value: '30', label: '30fps CFR' },
-  { value: 'off', label: '不处理' },
-];
-const CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS: RoundedSelectOption[] = [
-  { value: 'auto-2x', label: '自动 2x' },
-];
-const CANVAS_RIFE_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'normal', label: '普通' },
-  { value: 'hd', label: 'HD' },
-  { value: 'uhd', label: 'UHD' },
-];
-const CANVAS_RIFE_QUALITY_OPTIONS: RoundedSelectOption[] = [
-  { value: 'fast', label: '快速' },
-  { value: 'standard', label: '标准' },
-  { value: 'high', label: '高质量' },
-];
-const CANVAS_RIFE_KEEP_AUDIO_OPTIONS: RoundedSelectOption[] = [
-  { value: 'yes', label: '保留音频' },
-  { value: 'no', label: '静音输出' },
-];
-const CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS: RoundedSelectOption[] = [
-  { value: 'mp4', label: 'MP4' },
-  { value: 'mov', label: 'MOV' },
-  { value: 'webm', label: 'WebM' },
-];
-const CANVAS_ESRGAN_SCALE_OPTIONS: RoundedSelectOption[] = [
-  { value: '2', label: '2× 增强' },
-  { value: '4', label: '4× · 较慢' },
-];
-const CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'ai', label: 'AI 清晰增强' },
-  { value: 'quick', label: '快速增强' },
-];
-const CANVAS_QUICK_ENHANCEMENT_SCALE_OPTIONS: RoundedSelectOption[] = [
-  { value: '1', label: '保持分辨率' },
-  { value: '2', label: '2× 放大' },
-];
-const CANVAS_ESRGAN_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'general', label: '通用增强' },
-  { value: 'anime', label: '动漫插画' },
-];
-const CANVAS_ESRGAN_RESIZE_MODE_OPTIONS: RoundedSelectOption[] = [
-  { value: 'upscale', label: '放大并增强' },
-  { value: 'keep', label: '保持原尺寸' },
-];
-const CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS: RoundedSelectOption[] = [
-  { value: 'png', label: 'PNG' },
-  { value: 'jpg', label: 'JPG' },
-  { value: 'webp', label: 'WebP' },
-];
-const CANVAS_AI_NODE_ICON_SELECT_CLASS = 'h-8 w-9 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-0 text-stone-500 hover:bg-stone-950/[0.04] hover:text-stone-800 dark:text-white/62 dark:hover:bg-white/[0.07] dark:hover:text-white';
-const CANVAS_AI_NODE_TEXT_SELECT_CLASS = 'h-8 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-2 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
-const CANVAS_AI_NODE_COUNT_SELECT_CLASS = 'h-8 w-11 justify-center gap-0.5 rounded-[10px] border border-transparent bg-transparent px-1.5 text-[11px] font-black text-stone-600 hover:bg-stone-950/[0.04] hover:text-stone-900 dark:text-white/70 dark:hover:bg-white/[0.07] dark:hover:text-white';
-const CANVAS_AI_NODE_CHEVRON_CLASS = 'h-2.5 w-2.5';
-const CANVAS_AI_NODE_SELECT_MENU_CLASS = '!border-stone-200/80 !bg-white/98 !text-stone-700 shadow-2xl shadow-black/15 dark:!border-white/10 dark:!bg-[#171717]/98 dark:!text-white dark:shadow-black/35';
-const CANVAS_AI_NODE_SELECT_OPTION_CLASS = '!text-stone-600 hover:!bg-stone-100 hover:!text-stone-950 dark:!text-white/78 dark:hover:!bg-white/10 dark:hover:!text-white';
-const CANVAS_AI_NODE_SELECT_ACTIVE_CLASS = '!bg-stone-900 !text-white dark:!bg-white/14 dark:!text-white';
-const CANVAS_AI_PANEL_SELECT_CLASS = 'h-[34px] w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 text-xs font-medium text-stone-700 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:hover:bg-stone-900/70';
 const DESIGN_AGENT_ROLE_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_ROLES.map(value => ({
   value,
   label: DESIGN_AGENT_ROLE_LABELS[value],
@@ -1312,7 +989,11 @@ const DESIGN_AGENT_THINKING_MODE_OPTIONS: RoundedSelectOption[] = DESIGN_AGENT_T
   value,
   label: DESIGN_AGENT_THINKING_MODE_LABELS[value],
 }));
-const DRAWER_TOOL_BUTTON_BASE_CLASS = 'p-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 text-stone-500 dark:bg-stone-800/65 backdrop-blur-md dark:text-stone-400';
+const CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS: RoundedSelectOption[] = [
+  { value: 'full', label: '完整传递' },
+  { value: 'auto', label: '自动分流' },
+];
+const DRAWER_TOOL_BUTTON_BASE_CLASS = 'inline-flex h-9 min-w-9 items-center justify-center rounded-[9px] border border-stone-200/80 bg-white px-2 text-stone-500 transition-[background-color,border-color,color,transform] duration-200 cursor-pointer hover:bg-stone-50 hover:text-stone-900 active:translate-y-px dark:border-stone-700 dark:bg-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-stone-100';
 const DRAWER_FOLDER_TONES = [
   {
     active: 'bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:bg-blue-400 dark:text-stone-950 dark:shadow-blue-950/30',
@@ -1326,6 +1007,12 @@ const DRAWER_COLLAPSED_FOLDER_IDS_STORAGE_KEY = 'drawer_collapsed_folder_ids';
 const FOLDERS_CACHE_UPDATED_AT_STORAGE_KEY = `${FOLDERS_CACHE_STORAGE_KEY}_updated_at`;
 const normalizeDrawerSidebarLayout = (value: string | null): DrawerSidebarLayout => (
   value === 'icons' ? 'icons' : 'folders'
+);
+const normalizeDrawerClassificationView = (value: string | null): DrawerClassificationView => (
+  value === 'ai' ? 'ai' : 'folders'
+);
+const normalizeAiClassificationDimension = (value: string | null): AiClassificationDimension => (
+  AI_CLASSIFICATION_DIMENSIONS.some(option => option.id === value) ? value as AiClassificationDimension : 'product'
 );
 const readFoldersFromCache = (): { folders: Folder[]; isValid: boolean; updatedAt: number } => {
   const raw = localStorage.getItem(FOLDERS_CACHE_STORAGE_KEY);
@@ -1342,2741 +1029,12 @@ const readFoldersFromCache = (): { folders: Folder[]; isValid: boolean; updatedA
     return { folders: [], isValid: false, updatedAt };
   }
 };
-const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
-const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
-const CANVAS_IMAGE_RULE_COLLAPSED_WIDTH = 34;
-const CANVAS_IMAGE_RULE_PANEL_GAP = 12;
-const CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
-  + CANVAS_IMAGE_RULE_PANEL_WIDTH
-  + CANVAS_IMAGE_RULE_PANEL_GAP
-  + 32;
-const CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
-  + CANVAS_IMAGE_RULE_COLLAPSED_WIDTH
-  + CANVAS_IMAGE_RULE_PANEL_GAP
-  + 32;
-const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
-const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
-const CANVAS_AI_NODE_GRID_GAP = 8;
-const CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT = 108;
-const CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT = 142;
-const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
-const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
-const parseCanvasAspectRatioValue = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-  const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Number(value));
-  return rawW > 0 && rawH > 0 ? rawW / rawH : 16 / 9;
-};
-const getCanvasAspectRatioLabel = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-  const [rawW, rawH] = String(aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO).split(/[:x×]/i).map(value => Math.round(Number(value)));
-  if (!Number.isFinite(rawW) || !Number.isFinite(rawH) || rawW <= 0 || rawH <= 0) return CANVAS_AI_DEFAULT_ASPECT_RATIO;
-  let width = Math.abs(rawW);
-  let height = Math.abs(rawH);
-  while (height) {
-    const next = width % height;
-    width = height;
-    height = next;
-  }
-  const divisor = width || 1;
-  return `${Math.round(rawW / divisor)}:${Math.round(rawH / divisor)}`;
-};
-const formatCanvasAiResolutionOptionLabel = (value: string) => {
-  const trimmed = String(value || '').trim();
-  if (!/^\d+\s*[x×]\s*\d+$/i.test(trimmed)) return trimmed;
-  return `${trimmed} (${getCanvasAspectRatioLabel(trimmed)})`;
-};
-const isCanvasAiResolutionOptionValue = (value: string) => /^\d+\s*x\s*\d+$/i.test(String(value || '').trim());
-const isCanvasAiResolutionOptionModel = (model?: string | null) => (
-  isXaisImage2Model(model) && getXaisImage2RatioOptions(model).some(isCanvasAiResolutionOptionValue)
-);
-const getClosestCanvasAiStandardAspectRatio = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-  const target = parseCanvasAspectRatioValue(aspectRatio);
-  return CANVAS_AI_ASPECT_RATIOS.reduce((best, option) => (
-    Math.abs(parseCanvasAspectRatioValue(option) - target) < Math.abs(parseCanvasAspectRatioValue(best) - target)
-      ? option
-      : best
-  ), CANVAS_AI_DEFAULT_ASPECT_RATIO);
-};
-const getCanvasAiAspectRatioOptionsForModel = (model?: string | null): RoundedSelectOption[] => {
-  if (isXaisImage2Model(model)) {
-    return getXaisImage2RatioOptions(model).map(value => ({ value, label: formatCanvasAiResolutionOptionLabel(value) }));
-  }
-  return CANVAS_AI_ASPECT_RATIO_OPTIONS;
-};
-const normalizeCanvasAiAspectRatioForModel = (model?: string | null, aspectRatio?: string | null) => {
-  const value = String(aspectRatio || '').trim();
-  if (isXaisImage2Model(model)) return resolveXaisImage2Ratio(model, value || CANVAS_AI_DEFAULT_ASPECT_RATIO);
-  if (/^\d+\s*[x×]\s*\d+$/i.test(value)) return getClosestCanvasAiStandardAspectRatio(value);
-  return CANVAS_AI_ASPECT_RATIOS.includes(value) ? value : CANVAS_AI_DEFAULT_ASPECT_RATIO;
-};
-const getCanvasAiOutputTileLayout = (options?: {
-  width?: number;
-  aspectRatio?: string;
-  count?: number;
-  outputCount?: number;
-  isWorkflow?: boolean;
-}) => {
-  const width = options?.width || CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH;
-  const outputCount = clamp(
-    Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
-    1,
-    options?.isWorkflow ? CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS : CANVAS_AI_MAX_OUTPUT_COUNT
-  );
-  const columns = outputCount <= 1 ? 1 : outputCount > 12 ? 4 : outputCount > 4 ? 3 : 2;
-  const ratio = parseCanvasAspectRatioValue(options?.aspectRatio);
-  const gridWidth = width - 36 - 18;
-  const columnWidth = (gridWidth - CANVAS_AI_NODE_GRID_GAP * (columns - 1)) / columns;
-  const maxTileHeight = outputCount <= 1 ? 360 : outputCount > 8 ? 190 : 330;
-  const minTileHeight = outputCount <= 1 ? 230 : outputCount > 8 ? 108 : outputCount > 4 ? 124 : 150;
-  const rawHeight = columnWidth / ratio;
-  const tileHeight = clamp(rawHeight, minTileHeight, maxTileHeight);
-  const tileWidth = Math.min(columnWidth, tileHeight * ratio);
-  const rows = Math.max(1, Math.ceil(outputCount / columns));
-  return {
-    columns,
-    rows,
-    tileWidth: Math.round(tileWidth),
-    tileHeight: Math.round(tileHeight),
-    gridHeight: Math.round(rows * tileHeight + (rows - 1) * CANVAS_AI_NODE_GRID_GAP),
-  };
-};
-const getCanvasAiPromptAutoHeight = (promptText = '', width = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH, expanded = false) => {
-  if (!expanded) return 108;
-  const text = promptText.trim();
-  const charsPerLine = Math.max(26, Math.floor((width - 44) / 14));
-  const visualLines = text
-    ? Math.max(3, text.split(/\r?\n/).reduce((total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)), 0))
-    : 3;
-  return clamp(visualLines * 28 + 24, 180, 320);
-};
-const getCanvasAiNodeAutoSize = (options?: {
-  type?: 'image-generator' | 'video-generator' | 'workflow';
-  aspectRatio?: string;
-  count?: number;
-  outputCount?: number;
-  hasPreset?: boolean;
-  hasError?: boolean;
-  promptText?: string;
-  promptExpanded?: boolean;
-  showOutputPreview?: boolean;
-  localMediaTool?: boolean;
-  showLocalMediaProgress?: boolean;
-  imageRulePanelExpanded?: boolean;
-  internalSlotCount?: number;
-}) => {
-  const isWorkflow = options?.type === 'workflow';
-  const isVideo = options?.type === 'video-generator';
-  const width = isWorkflow
-    ? CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH
-    : isVideo
-      ? CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH
-      : options?.imageRulePanelExpanded
-        ? CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH
-        : CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH;
-  const outputCount = clamp(
-    Math.round(Number(options?.outputCount || options?.count) || CANVAS_AI_DEFAULT_COUNT),
-    1,
-    isWorkflow ? CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS : CANVAS_AI_MAX_OUTPUT_COUNT
-  );
-  const outputLayout = options?.showOutputPreview
-    ? getCanvasAiOutputTileLayout({
-      width: !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
-      aspectRatio: options?.aspectRatio,
-      outputCount,
-      isWorkflow,
-    })
-    : null;
-  const headerSectionHeight = 58;
-  const outputSectionHeight = outputLayout ? 36 + outputLayout.gridHeight : 220;
-  const metaSectionHeight = isWorkflow || options?.hasPreset ? 44 : 0;
-  const promptHeight = isWorkflow
-    ? 118
-    : options?.localMediaTool
-      ? options?.showLocalMediaProgress
-        ? CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT
-        : CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT
-      : getCanvasAiPromptAutoHeight(
-        options?.promptText,
-        !isWorkflow && !isVideo ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH : width,
-        !!options?.promptExpanded
-      );
-  const inputHeight = 52;
-  const errorHeight = options?.hasError ? 48 : 0;
-  const internalSlotHeight = isWorkflow && Number(options?.internalSlotCount) > 0
-    ? Math.max(0, Math.round(Number(options?.internalSlotCount))) * 86 + 16
-    : 0;
-  const bodyGapCount = [
-    headerSectionHeight,
-    outputSectionHeight,
-    metaSectionHeight,
-    promptHeight,
-    inputHeight,
-    internalSlotHeight,
-    errorHeight,
-  ].filter(Boolean).length - 1;
-  const bodyHeight = headerSectionHeight
-    + outputSectionHeight
-    + metaSectionHeight
-    + promptHeight
-    + inputHeight
-    + internalSlotHeight
-    + errorHeight
-    + Math.max(0, bodyGapCount) * 12
-    + 32;
-  return {
-    width,
-    height: Math.ceil(bodyHeight),
-  };
-};
-type CanvasAiPromptPreset = {
-  id: string;
-  label: string;
-  hint: string;
-  prompt: string;
-  aspectRatio?: string;
-  resolution?: string;
-  outputFormat?: string;
-  count?: number;
-};
-const INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT = `统一渲染质量与一致性：
-- Treat connected image(s) as SUBJECT_REF: preserve silhouette, proportions, key parts, functional layout, CMF boundaries and material logic
-- Product-adaptive visual direction: before rendering, infer product category, CMF, main colors, material hardness/softness, use scene, target user and price tier; choose background, lighting, composition density, graphic language and color palette from that product logic
-- Do not reuse one default style across products: no fixed pale gray/blue rounded-card template, no forced dark tech mood, no generic glow lines, no unrelated premium props, no same layout for every category
-- 4k resolution, highly detailed, photorealistic, premium industrial design render
-- Physically credible geometry: clean parting lines, realistic wall thickness, subtle micro-bevels, no melted or warped edges
-- Controlled studio lighting: coherent key/fill/rim light, natural contact shadows, readable dark areas, no blown highlights
-- Accurate materials: correct roughness, reflection, texture scale, translucency or soft-touch finish when applicable
-- Camera discipline: natural product photography perspective, 70-100mm lens feel, clear subject hierarchy, important design details not hidden by depth of field
-- 输出前自检：同一产品身份一致、结构不漂移、材质可信、边缘干净、背景不抢主体、无乱文字/水印/伪 logo`;
-
-const BUILT_IN_WORKFLOW_QUALITY_FOOTER = `通用工作流质量约束：
-- 上游连接图是最高优先级参考。只在当前节点职责内变化，不重设计主体，不随意增删结构、角色、场景或零件。
-- 多节点 workflow 必须保持同一主体身份、比例、材质、色彩体系、光线方向和版式节奏；后续节点继承前序节点已经确认的信息。
-- 如果节点处理产品/商品/CMF/工业设计/电商图，必须先根据产品品类、CMF、主色、材质、使用场景和目标用户建立自适应视觉系统；不要复用固定浅灰蓝、固定暗科技、固定圆角卡片或同一套版式。
-- 画面要有清晰主次、干净边缘、稳定曝光和可信接触阴影；避免低清、脏噪、过度锐化、塑料蜡感、随机装饰和无意义特效。
-- 除非节点明确要求文字或说明栏，不生成可读文字、品牌 logo、水印、虚假参数、认证章、乱码或空白文本框。
-- 输出前自检：数量/版式正确，主体一致，关键结构没有漂移，细节真实，构图服务当前节点目标。`;
-
-const appendBuiltInWorkflowQualityPrompt = (prompt: string) => [
-  prompt.trim(),
-  BUILT_IN_WORKFLOW_QUALITY_FOOTER,
-].filter(Boolean).join('\n\n');
-const CANVAS_AI_PROMPT_PRESETS: CanvasAiPromptPreset[] = [
-  {
-    id: 'product-render',
-    label: '产品渲染',
-    hint: '自动选择深浅场景',
-    aspectRatio: '16:9',
-    outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中产品生成一张可直接用于评审、提案或展示的高级工业设计渲染图。
-
-执行顺序：
-1. 先读取 SUBJECT_REF：锁定产品外轮廓、比例、关键零件、按键/接口/开孔、分件线、主色、材质和功能关系。
-2. 判断产品类型、价格感、使用环境和情绪气质，再为该产品选择专属场景、背景色、光影强度、道具密度和视觉语言。
-3. 只提升光影、材质、背景层次和摄影质感，不重新设计产品，不添加参考图不存在的功能。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-自适应场景规则：
-- 从产品主色、材质、品类和使用场景推导背景：可以是浅色、深色、暖色、冷色、材质台面、真实空间或克制抽象背景，但必须服务产品气质
-- 游戏/性能/专业设备可使用更强对比、暗调、锐利轮廓光或功能氛围；家居/生活/母婴/清洁类更适合温和自然光、亲和材质和生活空间；美妆/精品可更精致、杂志化、低噪高质感；工具/户外可更坚实、场景化和结构清晰
-- 场景只做产品价值的语境，不扩展成复杂生活空间，不加入无关道具，不让背景抢主体
-- 禁止固定二选一模板：不要所有产品都浅灰白底，也不要所有产品都黑色科技风
-
-视觉要求：
-- 产品是绝对主角，场景服务于产品，不喧宾夺主
-- 产品占画面约 55%-75%，主体完整清晰，不被裁切，不被景深遮挡关键结构
-- 背景、光影、构图密度、阴影和道具由产品品类自适应决定，并与产品主色、材质和价格带匹配
-- 保留产品原有主色和材质气质，不要强行改成黑色科技风
-- 轻微虚焦背景，真实材质表现，干净、克制、有质感；暗部仍能看清产品结构
-- 禁止默认深色背景、默认浅灰背景、默认蓝色强调色；必须根据产品适配
-
-产品要求：
-- 保持原产品结构、比例、按键、接口、分件线、屏幕/灯带/孔位位置不变
-- 不改变产品功能布局，不新增配件，不凭空添加品牌 logo
-- 表面干净，不要脏污、油腻、划痕、错误反射或塑料蜡感
-- 不要文字、不要说明标签、不要水印、不要虚假参数`,
-  },
-  {
-    id: 'cmf-exploration',
-    label: 'CMF 探索',
-    hint: '材质与配色方向',
-    aspectRatio: '16:9',
-    outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中产品生成一张高质量 CMF 设计探索板。
-
-目标：在不改变产品结构的前提下，探索 3 个可信的颜色、材料、表面工艺方向，并保持同一产品身份。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 三个方案使用同一外轮廓、同一比例、同一按键/接口/分件线和同一功能布局
-- 每个方案只改变颜色、材质、粗糙度、纹理或表面工艺，不改变造型和零件数量
-- 先判断产品品类、目标用户、价格带和使用场景，再设计 3 个 CMF 方向；不要把所有产品都套成同一组黑白灰/金属/蓝色科技感
-- 方案之间差异清楚但克制，可来自品类逻辑：哑光塑料、阳极金属、玻璃高光、织物纹理、软触涂层、木纹、皮革、陶瓷、橡胶、防滑纹理等，但必须适合该产品
-- 排版像高级设计评审板，但版式、背景色、样本形态和图形语言要随产品风格自适应；材质样本可辅助但不抢主体
-- 不生成品牌 logo、虚假参数、复杂说明箭头；除非用户要求，不生成可读文字标签`,
-  },
-  {
-    id: 'lifestyle-scene',
-    label: '场景氛围',
-    hint: '真实使用场景',
-    aspectRatio: '16:9',
-    outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中产品生成一张真实、可信、有高级感的生活方式场景图。
-
-先判断产品最自然的使用环境，再把产品放入场景中；场景只服务于使用价值和尺度感，不改造产品。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-场景方向：
-- 根据产品类型选择现代居家、办公桌面、厨房浴室、户外、运动、宠物、母婴或专业工作环境
-- 根据产品 CMF 和目标用户决定场景气质、配色、道具、光线和空间密度；不要所有产品都使用同一套干净桌面或浅灰背景
-- 环境干净、有真实生活痕迹但不杂乱；道具数量克制，不能抢产品主体
-- 产品占据清晰视觉中心，人物或手只作为辅助尺度参考，不遮挡核心结构
-- 光线柔和自然，产品与桌面/地面/手部接触可信，有真实阴影和正确透视
-- 构图自然但有商业品质，不要硬广促销感，不要夸张特效
-
-产品约束：
-- 保持原产品结构、比例、颜色、材质、功能布局不变
-- 不增加不存在的屏幕内容、按钮、接口、配件或品牌标识
-- 不要文字、不要说明标签、不要促销元素、不要水印`,
-  },
-  {
-    id: 'detail-hero',
-    label: '细节特写',
-    hint: '边缘高光与材质',
-    aspectRatio: '16:9',
-    outputFormat: 'jpg',
-    prompt: `基于连接的参考图，为图中产品生成一张高级产品细节特写图。
-
-先从参考图里选择一个真实存在、最能体现品质或功能的细节，再做微距渲染；不要凭空创造看不见的结构。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-画面要求：
-- 聚焦真实可见的关键边缘、倒角、按键、接口、分件线、纹理、转轴、握持区或材质交界
-- 画面只讲一个细节，主体区域清晰锐利，背景和非关键区域轻微虚化
-- 微距产品摄影质感，边缘高光、背景色、光比和景深根据产品材质自适应；材质粗糙度、反射和纹理尺度可信
-- 特写与原产品整体结构保持可追溯关系，不把局部渲染成另一种产品
-- 画面克制，不要过度锐化；除非产品确实属于电竞/科技/性能品类，不要套赛博风
-
-产品约束：
-- 不改变原结构、比例、功能布局
-- 表面干净，不要划痕、污渍、指纹
-- 不要文字、不要 logo 乱生成、不要说明标签、不要虚构参数`,
-  },
-];
-const getCanvasImageRuleDefaultContext = (
-  item: Pick<CanvasImageItem, 'inputs' | 'item'> & { ai?: CanvasImageItem['ai'] | null },
-  hasReferenceImage = (item.inputs || []).length > 0
-): ImageRuleDefaultContext => ({
-  hasReferenceImage,
-  presetId: item.ai?.presetId,
-  presetLabel: item.ai?.presetLabel,
-  outputRole: typeof item.ai?.skillMeta?.workflowOutputType === 'string'
-    ? item.ai.skillMeta.workflowOutputType
-    : item.item.remark,
-  workflowTemplateId: typeof item.ai?.skillMeta?.workflowTemplateId === 'string'
-    ? item.ai.skillMeta.workflowTemplateId
-    : undefined,
-  qualityProfileId: typeof item.ai?.skillMeta?.qualityProfileId === 'string'
-    ? item.ai.skillMeta.qualityProfileId
-    : undefined,
-  prompt: [
-    item.ai?.presetPrompt,
-    item.ai?.prompt,
-    item.item.content,
-    item.item.name,
-  ].filter(Boolean).join('\n'),
-});
-
-const getCanvasImageRuleState = (
-  item: Pick<CanvasImageItem, 'inputs' | 'item'> & { ai?: CanvasImageItem['ai'] | null },
-  hasReferenceImage?: boolean
-): ImageRuleState => resolveImageRuleState(
-  item.ai?.imagePolicy?.rules,
-  getCanvasImageRuleDefaultContext(item, hasReferenceImage),
-);
-
-const canvasAiProviderSupportsNegativePrompt = (_provider: CanvasAiProvider) => (
-  // Xais / DCHAI and many New API deployments reject `negative_prompt`
-  // with backend schema errors. Keep negative constraints inline in prompt.
-  false
-);
-
-const createCanvasImagePolicy = (
-  context: ImageRuleDefaultContext,
-  explicitRulesOrPolicy?: ImageRuleState | ImagePolicy | null
-) => ({
-  ...(
-    explicitRulesOrPolicy
-    && typeof explicitRulesOrPolicy === 'object'
-    && !Array.isArray(explicitRulesOrPolicy)
-    && 'rules' in explicitRulesOrPolicy
-      ? explicitRulesOrPolicy as ImagePolicy
-      : {}
-  ),
-  rules: mergeImageRuleStates(
-    getDefaultImageRuleState(context),
-    normalizeImageRuleState(
-      explicitRulesOrPolicy
-      && typeof explicitRulesOrPolicy === 'object'
-      && !Array.isArray(explicitRulesOrPolicy)
-      && 'rules' in explicitRulesOrPolicy
-        ? (explicitRulesOrPolicy as ImagePolicy).rules
-        : explicitRulesOrPolicy
-    )
-  ),
-  defaultPreset: (
-    explicitRulesOrPolicy
-    && typeof explicitRulesOrPolicy === 'object'
-    && !Array.isArray(explicitRulesOrPolicy)
-    && 'rules' in explicitRulesOrPolicy
-    && typeof (explicitRulesOrPolicy as ImagePolicy).defaultPreset === 'string'
-      ? (explicitRulesOrPolicy as ImagePolicy).defaultPreset
-      : context.workflowTemplateId || context.qualityProfileId || context.outputRole || 'product_image_generator'
-  ),
-  panelExpanded: (
-    explicitRulesOrPolicy
-    && typeof explicitRulesOrPolicy === 'object'
-    && !Array.isArray(explicitRulesOrPolicy)
-    && 'rules' in explicitRulesOrPolicy
-    && typeof (explicitRulesOrPolicy as ImagePolicy).panelExpanded === 'boolean'
-      ? (explicitRulesOrPolicy as ImagePolicy).panelExpanded
-      : true
-  ),
-});
-const getImagePolicyFromRecord = (value: unknown): ImagePolicy | null => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as ImagePolicy;
-  return {
-    ...record,
-    rules: normalizeImageRuleState(record.rules),
-  };
-};
-const makeCanvasWorkflowAiNode = (
-  id: string,
-  label: string,
-  hint: string,
-  prompt: string,
-  x: number,
-  y: number,
-  inputs: string[] = [],
-  aspectRatio = '16:9',
-  options: { provider?: CanvasAiProvider; model?: string; count?: number; presetId?: string } = {}
-): CanvasWorkflowNodeTemplate => {
-  const size = getCanvasAiNodeAutoSize({
-    type: 'image-generator',
-    aspectRatio,
-    count: options.count || 1,
-    hasPreset: true,
-  });
-  return {
-    id,
-    x,
-    y,
-    width: size.width,
-    height: size.height,
-    inputs,
-    acceptsExternalInputs: inputs.length === 0,
-    externalInputTypes: inputs.length === 0 ? ['image', 'text'] : undefined,
-    outputType: (options.count || 1) > 1 ? 'image[]' : 'image',
-    item: {
-      id,
-      type: 'text',
-      content: '',
-      name: `AI ${label}`,
-      remark: hint,
-      createdAt: 0,
-      isQuickAccess: false,
-    },
-    ai: {
-      type: 'image-generator',
-      presetId: options.presetId || `workflow-${id}`,
-      presetLabel: label,
-      presetPrompt: appendBuiltInWorkflowQualityPrompt(prompt),
-      aspectRatio,
-      outputFormat: 'jpg',
-      count: options.count || 1,
-      provider: options.provider,
-      model: options.model,
-      imagePolicy: createCanvasImagePolicy({
-        hasReferenceImage: inputs.length > 0,
-        presetId: options.presetId || `workflow-${id}`,
-        presetLabel: label,
-        outputRole: id,
-        prompt,
-      }),
-      status: 'idle',
-    },
-  };
-};
-const CANVAS_PRODUCT_DETAILS_NODE_IDS = [
-  'hero_main',
-  'lifestyle_scene',
-  'detail_macro',
-  'exploded_view',
-  'usage_instruction',
-] as const;
-const getCanvasWorkflowTextBlob = (workflow: CanvasWorkflowTemplate) => (
-  [
-    workflow.label,
-    workflow.hint,
-    ...workflow.nodes.flatMap(node => [
-      node.id,
-      node.item.name,
-      node.item.content,
-      node.item.remark,
-      node.ai?.presetLabel,
-      node.ai?.prompt,
-      node.ai?.presetPrompt,
-    ]),
-  ].filter(Boolean).join('\n').toLowerCase()
-);
-const doesWorkflowTextRequireImageReference = (text: string) => (
-  /产品一致性|参考图|外部连接|产品图|product\s*(reference|refs?)|image\s*(reference|refs?)|subject_ref|based on connected/i.test(text)
-);
-const isCanvasProductDetailsWorkflowIntent = (label: string, hint: string, steps: unknown[]) => {
-  const text = [
-    label,
-    hint,
-    ...steps.map(step => {
-      const record = step && typeof step === 'object' ? step as Record<string, unknown> : {};
-      return [record.id, record.label, record.kind, record.prompt].filter(Boolean).join(' ');
-    }),
-  ].join('\n').toLowerCase();
-  return /详情页|五图|5图|五张|product detail|detail page|e[-\s]?commerce|商品详情|主图|卖点图/i.test(text)
-    && /产品一致性|产品参考|参考图|product|cmf|结构约束|外部连接|product_strategy|product_refs/i.test(text);
-};
-const collectWorkflowText = (value: unknown, depth = 0): string[] => {
-  if (depth > 3 || value === null || value === undefined) return [];
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return [String(value)];
-  if (Array.isArray(value)) return value.flatMap(item => collectWorkflowText(item, depth + 1));
-  if (typeof value !== 'object') return [];
-  return Object.entries(value as Record<string, unknown>)
-    .filter(([key]) => !/^(?:id|stepId|inputStepIds|visualInputStepIds|textInputStepIds|product_strategy|product_refs)$/i.test(key))
-    .flatMap(([, item]) => collectWorkflowText(item, depth + 1));
-};
-const doesWorkflowExplicitlyRequestProductAnalysis = (...values: unknown[]) => {
-  const text = values.flatMap(value => collectWorkflowText(value)).join('\n').toLowerCase();
-  return /(?:先|前置|首先|先行)?\s*(?:分析|解析|评估|提炼|总结|识别|理解)\s*(?:产品|参考图|设计|cmf|结构|卖点|特征|风格|材质)/i.test(text)
-    || /(?:产品|参考图|设计|cmf|结构|卖点|特征|风格|材质)\s*(?:分析|解析|评估|策略|提炼|总结)/i.test(text)
-    || /(?:analy[sz]e|analysis)\s+(?:the\s+)?(?:product|reference|design|cmf|structure)/i.test(text)
-    || /(?:product|reference|design|cmf|structure)\s+(?:analysis|strategy)/i.test(text)
-    || /(?:analy[sz]e first|strategy first|strategy before|先做策略|先出策略|先做分析)/i.test(text);
-};
-const buildCanvasProductDetailsWorkflowTemplate = (options: {
-  label: string;
-  hint: string;
-  steps?: unknown[];
-  provider: CanvasAiProvider;
-  model?: string;
-  includeStrategy?: boolean;
-}): CanvasWorkflowTemplate => {
-  const label = (options.label || '详情页五图 workflow').slice(0, 32);
-  const includeStrategy = options.includeStrategy === true;
-  const hint = (options.hint || (includeStrategy ? 'product_refs -> product_strategy -> five parallel detail-page images' : 'product_refs -> five parallel detail-page images')).slice(0, 80);
-  const stepRecords = (options.steps || [])
-    .map(step => step && typeof step === 'object' ? step as Record<string, unknown> : null)
-    .filter((step): step is Record<string, unknown> => !!step);
-  const stepById = new Map(stepRecords.map(step => [String(step.id || '').trim(), step]));
-  const findStep = (id: string, fallbackLabel: string) => (
-    stepById.get(id)
-    || stepRecords.find(step => {
-      const text = [step.id, step.label, step.prompt].filter(Boolean).join(' ').toLowerCase();
-      return text.includes(id.toLowerCase()) || text.includes(fallbackLabel.toLowerCase());
-    })
-    || null
-  );
-  const specs = [
-    ['hero_main', 'Hero main', '主视觉首图', 'Create a premium ecommerce hero image for the same product: complete silhouette, clear subject hierarchy, product occupies the visual center, background supports the product without clutter, no fake logo or random text.'],
-    ['lifestyle_scene', 'Lifestyle scene', '真实使用氛围图', 'Create a realistic lifestyle scene for the same product: choose a credible environment based on product type, keep product scale/contact/shadow believable, product remains the main subject, materials and proportions unchanged.'],
-    ['detail_macro', 'Detail macro', '材质/结构细节特写', 'Create a macro detail image from a real visible part of PRODUCT_REF: focus on one key edge, material transition, button, port, texture, hinge, grip or construction detail; do not invent hidden mechanisms.'],
-    ['exploded_view', 'Exploded view', '结构拆解/卖点说明图', 'Create a clean layered structure or selling-point explanation image: show only plausible visible components and functional relationships, preserve real product geometry, avoid fake internal structures and unsupported technical claims.'],
-    ['usage_instruction', 'Usage instruction', '使用方式/步骤图', 'Create a usage or installation instruction image: 2-3 simple visual steps, product structure remains consistent, hand/contact positions believable, no unreadable text blocks, no invented folding/removal method.'],
-  ] as const;
-  const commonReferenceInstruction = [
-    'Use the connected product reference images as SUBJECT_REF / PRODUCT_REF.',
-    ...(includeStrategy ? ['Use the upstream product_strategy text as the CMF, structure, proportion, and visual strategy constraint.'] : []),
-    'Do not invent a different product. Preserve silhouette, proportions, materials, buttons, ports, holes, screens, parting lines, color logic, accessories, and functional layout from PRODUCT_REF.',
-    'If multiple product reference images are connected, reconcile them as the same product and prioritize the clearest structure.',
-    'Before generating, infer product category, CMF, main colors, material, usage scene, target user and price tier; establish a product-adaptive ecommerce visual system.',
-    'Across all five outputs, keep the same product identity, CMF, lighting direction, product-adaptive background language and premium ecommerce quality.',
-    'Do not reuse a fixed pale gray/blue rounded-card template, fixed dark tech style, fixed white hero layout, or the same composition for unrelated product categories.',
-    'No random logo, malformed text, fake certification, unsupported numerical claims, unrelated props that hide product details, or extra components not visible in PRODUCT_REF.',
-  ].join('\n');
-  return {
-    id: 'product-details-workflow-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
-    label,
-    hint,
-    createdAt: Date.now(),
-    nodes: [
-      {
-        id: 'product_refs',
-        x: 0,
-        y: 0,
-        width: 320,
-        height: 220,
-        item: { id: 'product_refs', type: 'image', content: '', name: 'Product references', remark: 'External image[] input for product consistency', createdAt: 0, isQuickAccess: false },
-        inputs: [],
-        fixedInput: true,
-        acceptsExternalInputs: true,
-        externalInputTypes: ['image'],
-        outputType: 'image[]',
-      },
-      ...(includeStrategy ? [
-      {
-        id: 'product_strategy',
-        x: 420,
-        y: 0,
-        width: 460,
-        height: 260,
-        item: {
-          id: 'product_strategy',
-          type: 'text',
-          content: [
-            'Analyze the connected PRODUCT_REF images and write a compact product detail-page strategy.',
-            'Must include: product identity, silhouette/proportion locks, CMF/material constraints, key structural details, functional selling points, product category, target user, usage scene, and product-adaptive visual direction for the five downstream images.',
-            'The visual direction must specify product-derived palette, background mood, lighting, card/label style and layout rhythm. Do not default to pale gray/blue, dark tech, or generic premium minimalism.',
-            'Return only the strategy text. Do not generate JSON.',
-          ].join('\n'),
-          name: 'Product strategy',
-          remark: '',
-          createdAt: 0,
-          isQuickAccess: false,
-        },
-        inputs: ['product_refs'],
-        fixedInput: false,
-        textMode: 'agent',
-        designAgentConfig: {
-          agentRole: 'design_strategist',
-          outputArtifactType: 'DesignStrategy',
-          thinkingMode: 'analysis',
-        },
-        outputType: 'text',
-      } as CanvasWorkflowNodeTemplate,
-      ] : []),
-      ...specs.map(([id, specLabel, specHint, fallbackPrompt], index) => {
-        const step = findStep(id, specLabel);
-        const prompt = typeof step?.prompt === 'string' && step.prompt.trim() ? step.prompt.trim() : fallbackPrompt;
-        const stepModel = typeof step?.model === 'string' && step.model.trim()
-          ? normalizeXaisImage2Model(step.model.trim())
-          : normalizeXaisImage2Model(options.model || 'gpt-image-2');
-        const requestedAspectRatio = typeof step?.aspectRatio === 'string' ? step.aspectRatio.trim() : '';
-        const aspectRatio = requestedAspectRatio
-          ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
-          : CANVAS_AI_DEFAULT_ASPECT_RATIO;
-        const requestedOutputFormat = typeof step?.outputFormat === 'string' ? step.outputFormat.trim().toLowerCase() : '';
-        const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
-          ? requestedOutputFormat
-          : CANVAS_AI_DEFAULT_OUTPUT_FORMAT;
-        const rawCount = typeof step?.count === 'number' || typeof step?.count === 'string' ? Number(step.count) : 1;
-        const count = Number.isFinite(rawCount) ? clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT) : 1;
-        return {
-          id,
-          x: includeStrategy ? 980 : 420,
-          y: index * (430 + 100),
-          width: 560,
-          height: 430,
-          item: { id, type: 'text', content: '', name: `AI ${specLabel}`, remark: specHint, createdAt: 0, isQuickAccess: false },
-          inputs: includeStrategy ? ['product_refs', 'product_strategy'] : ['product_refs'],
-          acceptsExternalInputs: false,
-          outputType: count > 1 ? 'image[]' as const : 'image' as const,
-          ai: {
-            type: 'image-generator' as const,
-            provider: options.provider,
-            model: stepModel,
-            presetId: `workflow-product-details-${id}`,
-            presetLabel: specLabel,
-            presetPrompt: [commonReferenceInstruction, '', `Task: ${prompt}`].join('\n'),
-            aspectRatio,
-            targetSize: typeof step?.targetSize === 'string' ? step.targetSize : undefined,
-            resolution: typeof step?.resolution === 'string' ? step.resolution : undefined,
-            outputFormat,
-            count,
-            imagePolicy: createCanvasImagePolicy({
-              hasReferenceImage: true,
-              presetId: `workflow-product-details-${id}`,
-              presetLabel: specLabel,
-              outputRole: id,
-              workflowTemplateId: 'product-detail-page',
-              prompt,
-            }, getImagePolicyFromRecord(step?.imagePolicy)),
-            status: 'idle' as const,
-            outputs: [],
-          },
-        } as CanvasWorkflowNodeTemplate;
-      }),
-    ],
-  };
-};
-
-const buildIndustrialDesignReviewWorkflowTemplateFromDefinition = (options: {
-  definition: Record<string, unknown>;
-  provider: CanvasAiProvider;
-  model?: string;
-}): CanvasWorkflowTemplate | null => {
-  const definition = options.definition;
-  const templateId = String(definition.templateId || 'industrial-design-review');
-  const isDetailPageWorkflow = templateId === 'ecommerce-detail-page' || templateId === 'product-detail-page';
-  const label = String(definition.name || definition.label || (isDetailPageWorkflow ? '产品详情页图片工作流' : '工业设计评审工作流')).trim().slice(0, 32);
-  const hint = String(definition.description || definition.hint || (isDetailPageWorkflow ? '根据产品参考图生成电商产品详情页图片' : '根据参考产品图自动生成工业设计评审图组')).trim().slice(0, 80);
-  const metadata = definition.metadata && typeof definition.metadata === 'object' && !Array.isArray(definition.metadata)
-    ? definition.metadata as Record<string, unknown>
-    : {};
-  const strategyStepMode = String(definition.strategyStepMode || metadata.strategyStepMode || 'disabled');
-  const rawSteps = Array.isArray(definition.steps) ? definition.steps : [];
-  const stepRecords = rawSteps
-    .map(step => step && typeof step === 'object' && !Array.isArray(step) ? step as Record<string, unknown> : null)
-    .filter((step): step is Record<string, unknown> => !!step);
-  const bridgeStep = stepRecords.find(step => {
-    const type = String(step.type || step.kind || '').toLowerCase();
-    return type === 'reference_image_bridge'
-      || type === 'reference-image-bridge'
-      || step.bridgeType === 'reference_image';
-  });
-  const explicitTextSteps = stepRecords.filter(step => String(step.type || step.kind || '').toLowerCase() === 'text_agent');
-  const strategyStepRequested = strategyStepMode === 'enabled'
-    || (strategyStepMode !== 'disabled' && doesWorkflowExplicitlyRequestProductAnalysis(
-      definition.name,
-      definition.label,
-      definition.description,
-      definition.hint,
-      definition.originalRequest,
-      metadata.originalRequest,
-      metadata.userRequest,
-      metadata.prompt
-    ));
-  const textAgentSteps = explicitTextSteps.length > 0
-    ? explicitTextSteps
-    : strategyStepRequested
-      ? [{
-      id: 'industrial_design_review_strategy',
-      title: '工业设计评审策略',
-      prompt: 'Analyze the connected PRODUCT_REF images and write a compact industrial design review strategy before image generation.',
-      designAgentConfig: {
-        agentRole: 'design_strategist',
-        outputArtifactType: 'DesignStrategy',
-        thinkingMode: 'analysis',
-      },
-    }]
-      : [];
-  const generatorSteps = stepRecords.filter(step => /image[-_]?generator/.test(String(step.type || step.kind || '').toLowerCase()));
-  if (!label || generatorSteps.length === 0) return null;
-
-  const productInputId = 'product_reference_image';
-  const textAgentStepIds = new Set(textAgentSteps.map((step, index) => String(step.id || `design_agent_${index + 1}`)));
-  const generatorStepIds = new Set(generatorSteps.map((step, index) => String(step.id || `industrial_review_output_${index + 1}`)));
-  const declaredStepIds = new Set([productInputId, ...textAgentStepIds, ...generatorStepIds]);
-  const workflowNodes: CanvasWorkflowNodeTemplate[] = [
-    {
-      id: productInputId,
-      x: 0,
-      y: 0,
-      width: 320,
-      height: 220,
-      item: {
-        id: productInputId,
-        type: 'file',
-        content: String(bridgeStep?.title || bridgeStep?.label || '参考图桥接'),
-        name: String(bridgeStep?.title || bridgeStep?.label || '参考图桥接').slice(0, 80),
-        remark: 'Reference image bridge; forwards external product images to workflow steps.',
-        createdAt: 0,
-        isQuickAccess: false,
-      },
-      inputs: [],
-      fixedInput: true,
-      acceptsExternalInputs: true,
-      externalInputTypes: ['image'],
-      outputType: 'image[]',
-      bridgeType: 'reference_image',
-    },
-  ];
-
-  textAgentSteps.forEach((step, index) => {
-    const stepId = String(step.id || `design_agent_${index + 1}`);
-    const title = String(step.title || step.label || DESIGN_AGENT_ROLE_LABELS[normalizeDesignAgentConfig(step.designAgentConfig).agentRole] || `Design Agent ${index + 1}`).trim();
-    const prompt = String(step.prompt || title).trim();
-    const requestedInputs = Array.isArray(step.inputStepIds)
-      ? step.inputStepIds.map(String).filter(id => id !== stepId && declaredStepIds.has(id))
-      : [];
-    workflowNodes.push({
-      id: stepId,
-      x: 420 + index * 480,
-      y: index % 2 === 0 ? 0 : 300,
-      width: 440,
-      height: 260,
-      item: {
-        id: stepId,
-        type: 'text',
-        content: prompt,
-        name: title.slice(0, 80),
-        createdAt: 0,
-        isQuickAccess: false,
-      },
-      inputs: requestedInputs.length > 0 ? requestedInputs : [productInputId],
-      fixedInput: false,
-      textMode: 'agent',
-      designAgentConfig: normalizeDesignAgentConfig(step.designAgentConfig),
-      outputType: 'text',
-    });
-  });
-
-  const generatorX = textAgentSteps.length > 0 ? 480 + textAgentSteps.length * 480 : 420;
-  generatorSteps.forEach((step, index) => {
-    const title = String(step.title || step.label || step.id || `Review output ${index + 1}`).trim();
-    const prompt = String(step.prompt || title).trim();
-    const rawInputStepIds = Array.isArray(step.inputStepIds)
-      ? step.inputStepIds.map(String).filter(id => declaredStepIds.has(id))
-      : [];
-    const rawVisualInputIds = Array.isArray(step.visualInputStepIds)
-      ? step.visualInputStepIds.map(String).filter(Boolean)
-      : rawInputStepIds.filter(id => id === productInputId || generatorStepIds.has(id));
-    const requiresReferenceImages = step.requiresReferenceImages !== false;
-    const visualInputIds = Array.from(new Set([
-      ...(requiresReferenceImages ? [productInputId] : []),
-      ...rawVisualInputIds.filter(id => id === productInputId || generatorStepIds.has(id)),
-    ]));
-    const rawTextInputIds = Array.isArray(step.textInputStepIds)
-      ? step.textInputStepIds.map(String).filter(Boolean)
-      : rawInputStepIds.filter(id => textAgentStepIds.has(id));
-    const matchedTextInputIds = rawTextInputIds.filter(inputId => textAgentStepIds.has(inputId));
-    const textInputIds = matchedTextInputIds.length > 0
-      ? matchedTextInputIds
-      : textAgentSteps.length === 1
-        ? Array.from(textAgentStepIds)
-        : [];
-    const inputs = Array.from(new Set([
-      ...visualInputIds,
-      ...textInputIds,
-    ]));
-    const requestedAspectRatio = String(step.aspectRatio || metadata.aspectRatio || '').trim();
-    const stepProvider = normalizeCanvasAiProvider(
-      typeof step.provider === 'string' && step.provider.trim()
-        ? step.provider
-        : typeof metadata.provider === 'string' && metadata.provider.trim()
-        ? metadata.provider
-        : options.provider
-    );
-    const rawStepModel = typeof step.model === 'string' && step.model.trim()
-      ? step.model.trim()
-      : typeof metadata.model === 'string' && metadata.model.trim()
-      ? metadata.model.trim()
-      : options.model || '';
-    const stepModel = stepProvider === 'xais-chat'
-      ? normalizeXaisImage2Model(rawStepModel || getCanvasAiDefaultModel(stepProvider))
-      : rawStepModel || getCanvasAiDefaultModel(stepProvider);
-    const aspectRatio = requestedAspectRatio
-      ? normalizeCanvasAiAspectRatioForModel(stepModel, requestedAspectRatio)
-      : CANVAS_AI_DEFAULT_ASPECT_RATIO;
-    const requestedOutputFormat = String(step.outputFormat || '').trim().toLowerCase();
-    const outputFormat = CANVAS_AI_OUTPUT_FORMATS.includes(requestedOutputFormat)
-      ? requestedOutputFormat
-      : CANVAS_AI_DEFAULT_OUTPUT_FORMAT;
-    const rawCount = typeof step.count === 'number' || typeof step.count === 'string' ? Number(step.count) : 1;
-    const count = Number.isFinite(rawCount) ? clamp(Math.round(rawCount), 1, CANVAS_AI_MAX_OUTPUT_COUNT) : 1;
-    const nodeSize = getCanvasAiNodeAutoSize({
-      type: 'image-generator',
-      aspectRatio,
-      count,
-      promptText: prompt,
-      promptExpanded: true,
-    });
-    workflowNodes.push({
-      id: String(step.id || `industrial_review_output_${index + 1}`),
-      x: generatorX,
-      y: index * (nodeSize.height + 80),
-      width: nodeSize.width,
-      height: nodeSize.height,
-      item: {
-        id: String(step.id || `industrial_review_output_${index + 1}`),
-        type: 'text',
-        content: prompt.length > 120 ? '' : prompt,
-        name: title.slice(0, 80),
-        remark: String(step.outputRole || ''),
-        createdAt: 0,
-        isQuickAccess: false,
-      },
-      inputs,
-      acceptsExternalInputs: false,
-      outputType: count > 1 ? 'image[]' : 'image',
-      ai: {
-        type: 'image-generator',
-        provider: stepProvider,
-        model: stepModel,
-        presetId: `workflow-${templateId}-${String(step.id || index + 1)}`,
-        presetLabel: title,
-        presetPrompt: prompt,
-        aspectRatio,
-        targetSize: typeof step.targetSize === 'string' ? step.targetSize : undefined,
-        resolution: typeof step.resolution === 'string' ? step.resolution : undefined,
-        toolHint: typeof step.toolHint === 'string' ? step.toolHint : undefined,
-        skillMeta: step.skillMeta && typeof step.skillMeta === 'object' && !Array.isArray(step.skillMeta)
-          ? step.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
-          : undefined,
-        imagePolicy: createCanvasImagePolicy({
-          hasReferenceImage: inputs.length > 0,
-          presetId: `workflow-${templateId}-${String(step.id || index + 1)}`,
-          presetLabel: title,
-          outputRole: String(step.outputRole || step.id || ''),
-          workflowTemplateId: templateId,
-          qualityProfileId: typeof metadata.qualityProfileId === 'string' ? metadata.qualityProfileId : undefined,
-          prompt,
-        }, getImagePolicyFromRecord(step.imagePolicy)),
-        outputFormat,
-        count,
-        status: 'idle',
-        outputs: [],
-      },
-    });
-  });
-
-  return {
-    id: `${templateId}-workflow-` + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
-    label,
-    hint,
-    createdAt: Date.now(),
-    nodes: workflowNodes,
-  };
-};
-const validateCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate): CanvasWorkflowValidationResult => {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  const nodesById = new Map<string, CanvasWorkflowNodeTemplate>();
-  const duplicateIds = new Set<string>();
-  const internalSlotIds = new Set<string>();
-  const allowedItemTypes = new Set(['text', 'image', 'file', 'video']);
-  const allowedAiTypes = new Set(['image-generator', 'video-generator', 'frame-interpolation', 'image-enhancement', 'video-enhancement', 'generated-image', 'generated-video', 'workflow']);
-
-  workflow.nodes.forEach(node => {
-    if (!node.id) errors.push('Workflow node is missing id.');
-    if (nodesById.has(node.id)) duplicateIds.add(node.id);
-    nodesById.set(node.id, node);
-    if (!allowedItemTypes.has(node.item?.type || '')) errors.push(`Node "${node.id}" has unknown item type "${node.item?.type || ''}".`);
-    if (node.ai?.type && !allowedAiTypes.has(node.ai.type)) errors.push(`Node "${node.id}" has unknown ai type "${node.ai.type}".`);
-    if (node.internalSlot) {
-      if (!isReplaceableInternalImageSlot(node)) {
-        errors.push(`Node "${node.id}" has an invalid internal image slot.`);
-      } else if (internalSlotIds.has(node.internalSlot.id)) {
-        errors.push(`Duplicate workflow internal slot id "${node.internalSlot.id}".`);
-      } else {
-        internalSlotIds.add(node.internalSlot.id);
-      }
-      if (node.fixedInput !== true) warnings.push(`Internal slot node "${node.id}" should keep fixedInput=true.`);
-      if (node.acceptsExternalInputs === true) errors.push(`Internal slot node "${node.id}" cannot accept external inputs.`);
-    }
-  });
-  duplicateIds.forEach(id => errors.push(`Duplicate workflow node id "${id}".`));
-  workflow.nodes.forEach(node => {
-    (node.inputs || []).forEach(inputId => {
-      if (!nodesById.has(inputId)) errors.push(`Node "${node.id}" references missing input "${inputId}".`);
-    });
-  });
-
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (nodeId: string, path: string[]) => {
-    if (visiting.has(nodeId)) {
-      errors.push(`Workflow has a cycle: ${[...path, nodeId].join(' -> ')}.`);
-      return;
-    }
-    if (visited.has(nodeId)) return;
-    const node = nodesById.get(nodeId);
-    if (!node) return;
-    visiting.add(nodeId);
-    (node.inputs || []).forEach(inputId => visit(inputId, [...path, nodeId]));
-    visiting.delete(nodeId);
-    visited.add(nodeId);
-  };
-  workflow.nodes.forEach(node => visit(node.id, []));
-
-  const nodeOutputsImage = (node?: CanvasWorkflowNodeTemplate) => (
-    !!node && (
-      node.item.type === 'image'
-      || node.bridgeType === 'reference_image'
-      || node.outputType === 'image'
-      || node.outputType === 'image[]'
-      || node.ai?.type === 'image-generator'
-      || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('image'))
-    )
-  );
-  const nodeOutputsText = (node?: CanvasWorkflowNodeTemplate) => (
-    !!node && (
-      node.item.type === 'text'
-      || node.outputType === 'text'
-      || (node.acceptsExternalInputs === true && (node.externalInputTypes || []).includes('text'))
-    )
-  );
-  const hasUpstreamImageInput = (node: CanvasWorkflowNodeTemplate) => {
-    const seen = new Set<string>();
-    const walk = (sourceId: string): boolean => {
-      if (seen.has(sourceId)) return false;
-      seen.add(sourceId);
-      const source = nodesById.get(sourceId);
-      if (!source) return false;
-      if (nodeOutputsImage(source)) return true;
-      return (source.inputs || []).some(walk);
-    };
-    return (node.inputs || []).some(walk);
-  };
-  const workflowText = getCanvasWorkflowTextBlob(workflow);
-  const workflowRequiresImageReference = doesWorkflowTextRequireImageReference(workflowText);
-  const nodeAcceptsExternalImageInput = (node: CanvasWorkflowNodeTemplate) => {
-    if (node.acceptsExternalInputs !== true) return false;
-    if ((node.externalInputTypes || []).includes('image')) return true;
-    if (!node.externalInputTypes?.length) return true;
-    return workflowRequiresImageReference && !(
-      node.externalInputTypes.length === 1
-      && node.externalInputTypes[0] === 'video'
-    );
-  };
-  const hasExternalImageInputNode = workflow.nodes.some(node => (
-    nodeAcceptsExternalImageInput(node)
-    || (
-      node.acceptsExternalInputs === true
-      && (node.item.type === 'image' || node.bridgeType === 'reference_image' || node.outputType === 'image[]' || node.outputType === 'image')
-    )
-  ));
-  if (
-    workflowRequiresImageReference
-    && !hasExternalImageInputNode
-    && !hasCanvasWorkflowConcreteFixedImage(workflow)
-  ) {
-    errors.push('Workflow prompt mentions external/reference product images but no acceptsExternalInputs=true image input node exists.');
-  }
-
-  workflow.nodes.forEach(node => {
-    if (node.ai?.type !== 'image-generator') return;
-    const prompt = [node.ai.presetPrompt, node.ai.prompt, node.item.content, node.item.remark].filter(Boolean).join('\n');
-    if (!String(node.ai.presetPrompt || node.ai.prompt || node.item.content || '').trim()) errors.push(`Image-generator node "${node.id}" is missing executable prompt.`);
-    if (!node.ai.aspectRatio) errors.push(`Image-generator node "${node.id}" is missing aspectRatio.`);
-    if (!node.ai.outputFormat) errors.push(`Image-generator node "${node.id}" is missing outputFormat.`);
-    if (!Number.isFinite(Number(node.ai.count)) || Number(node.ai.count) <= 0) errors.push(`Image-generator node "${node.id}" is missing valid count.`);
-    const acceptsExternalImageInput = nodeAcceptsExternalImageInput(node)
-      || (node.acceptsExternalInputs === true && (node.outputType === 'image' || node.outputType === 'image[]'));
-    if (doesWorkflowTextRequireImageReference(prompt) && !hasUpstreamImageInput(node) && !acceptsExternalImageInput) {
-      errors.push(`Image-generator node "${node.id}" requires product/reference images but has no connected image input.`);
-    }
-  });
-
-  const productStrategy = nodesById.get('product_strategy');
-  if (productStrategy && workflow.nodes.some(node => (node.inputs || []).includes('product_strategy')) && productStrategy.textMode !== 'agent') {
-    warnings.push('product_strategy is used downstream but is not an executable text-agent node; downstream prompts will only see static text.');
-  }
-
-  for (let index = 0; index < workflow.nodes.length; index += 1) {
-    const a = workflow.nodes[index];
-    for (let j = index + 1; j < workflow.nodes.length; j += 1) {
-      const b = workflow.nodes[j];
-      if (a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y) {
-        warnings.push(`Workflow layout overlap: "${a.id}" overlaps "${b.id}".`);
-      }
-    }
-  }
-
-  workflow.nodes.forEach(node => {
-    if (node.ai?.type !== 'image-generator') return;
-    (node.inputs || []).forEach(inputId => {
-      const source = nodesById.get(inputId);
-      if (source && !nodeOutputsImage(source) && !nodeOutputsText(source)) {
-        warnings.push(`Input "${inputId}" connected to image-generator "${node.id}" has no declared compatible output type.`);
-      }
-    });
-  });
-
-  return { errors: Array.from(new Set(errors)), warnings: Array.from(new Set(warnings)) };
-};
-const CANVAS_BUILT_IN_WORKFLOWS: CanvasWorkflowTemplate[] = removeRetiredCanvasWorkflows([
-  INDUSTRIAL_DESIGN_FULL_PROCESS_BUILT_IN_WORKFLOW,
-  PRODUCT_DETAILS_FIVE_IMAGES_BUILT_IN_WORKFLOW,
-  {
-    id: 'imported-workflow-mqxvzmig-0-epcv',
-    label: '单元剧｜固定场景与角色一致性增强版',
-    hint: '角色设定+场景设定+脚本 -> 联合母版 / 故事 / 表演 / 镜头 / 初稿 / 一致性修正',
-    builtin: true,
-    nodes: [
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_cast_scene_master_01',
-        '角色与固定场景联合母版',
-        '上排锁角色，下排锁场景空间与本集状态',
-        `基于封装节点外部连接的多个角色设定图、一个或多个场景设定图和本集文字分镜脚本，生成唯一的角色与固定场景联合母版。先按内容自动区分参考角色：角色设定图作为 CHARACTER_REF；纯环境、场景三视图、空间设定、室内外参考、平面图和道具陈设图作为 SCENE_REF；文字脚本负责本集角色出场、事件、动作、台词、音效和节奏。不得把角色图与场景图互相融合。
-
-角色身份锁定：
-- 逐张读取角色设定中的姓名或稳定称呼、角色职能、物种或性别、脸型、体型、相对身高、肤色或毛色花纹、眼色、耳形、尾巴、发型、服装、领结、围脖、饰品、道具和标志性表情
-- 人物保持五官、肤色、发型、体型、服装和配件；动物或拟人角色保持物种、脸部花纹、毛色分区、毛长、耳形、眼色、鼻口、尾巴、体型、服装与饰品
-- 不串脸、不换毛色、不交换服装或配件、不融合角色、不新增设定和脚本中不存在的角色
-
-固定场景锁定：
-- 从 SCENE_REF 严格提取建筑或房间轮廓、长宽高比例、墙面、地面、门窗、天花、桌椅、台面、灯具、主要道具、入口、背景层次、颜色、材质、照明方向和时间氛围
-- 同一场景的不同参考视角视为同一空间，不拼成新房间；冲突时以信息最完整、最清晰的主场景图为准
-- 不改变房间结构、家具数量与位置、门窗方向、主要道具、墙地材质和色彩；不添加无关装饰或把场景替换成其他类型空间
-
-严格2×4联合母版：
-- 输出一张 16:9 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 上排用于角色：按本集重要度展示最多四名主要角色的标准三分之四视角、完整服装与中性表情；少于四名角色时，用主角侧视、背视、关键表情或全员比例合照补足；多于四名时优先本集有台词和关键动作的角色，其余角色只在下排本集状态格出现
-- 下排第1格：固定场景主视角或脚本指定主机位；第2格：同一空间的反向或侧向互补视角；第3格：俯视空间关系、门窗、家具、主要道具与角色初始站位；第4格：脚本核心冲突或群像状态在该固定场景中的标准画面
-- 每格上方是严格 16:9 画面，下方是窄浅色说明栏；四列等宽、两行等高；禁止跨格、合并、英雄大格、自由拼贴、缺格或第九格
-
-说明栏：
-- 上排：角色：姓名或称呼；识别：不超过 10 个汉字的外观锚点
-- 下排：场景：主视、反向、空间或剧情状态；锁定：不超过 12 个汉字的空间或道具锚点
-- 统一深灰小号中文印刷体、左对齐；不要英文、乱码、长段落或无关信息
-
-风格与比例：
-- 角色与场景统一到同一美术风格，但不得因此改变角色设计和场景结构
-- 群像中保持角色相对体型、座位高度、人与家具或动物与家具的尺度可信
-- 输出是图片，不是报告；该图是后续所有节点唯一的 CHARACTER_REF 和 SCENE_REF。
-
-Original request: "我还要固定场景的，一开始我会把场景设定和角色设定一起输入。现在到后面我发现角色的一致性没法保持了，特别是最终输出的那一张"。`,
-        0,
-        0,
-        [],
-        '16:9',
-        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-cast-scene-master-v2' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_episode_storyboard_02',
-        '固定场景分集故事板',
-        'Image2 1K；保持角色与场景的八镜头叙事',
-        `基于连接的角色与固定场景联合母版，生成本集八镜头故事板。若仍可读取外部文字脚本，以原脚本的时间、事件、动作、表情、对白、旁白和音效为最高优先级；否则围绕母版下排最后一格的核心剧情状态展开。
-
-本阶段只解决镜头内容、角色出场、事件顺序、情绪变化与对白落点，采用低饱和导演草图风格，不制作相机路径、站位俯视图、技术箭头、起止残影或最终商业渲染。
-
-4:3画布与2×4卡片：
-- 输出一张 4:3 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 每卡上方是严格 16:9 故事画面，下方是同宽说明栏
-- 上排镜头1-4、下排镜头5-8；四列等宽、两行等高；禁止跨格、合并、英雄大格、画中画、缺格、重复格或第九格
-
-脚本转译：
-- 按原脚本时间顺序分配八格；段落不足时拆分关键动作、对话与反应，多于八段时只合并相邻且功能相同的动作
-- 开场快速交代固定场景和角色关系；中段保持对话、反应、冲突或任务递进；结尾明确落点、反转、笑点或余韵
-- 对话场景必须包含说话者、听者反应和必要群体反应，避免八格全是单人正面特写
-
-角色与场景连续性：
-- 上排角色卡是唯一身份标准；每个角色保持自己的脸、毛色或肤色、花纹、眼睛、耳尾、体型、发型、服装、饰品和道具
-- 下排场景卡是唯一空间标准；八格保持同一墙面、地面、门窗、桌椅、灯具、主要道具、背景方向、颜色材质和光线
-- 多人同框保持相对体型、座位或站位、左右关系和视线方向；不得换座位、换门窗方向、增加家具或改变场景类型
-- 不串脸、不换装、不交换配件、不新增角色，不产生多余头部、肢体、耳朵或尾巴
-
-说明栏：第一行写剧情，不超过14个汉字；第二行写关键对白、动作、旁白或音效，不超过12个汉字。文字统一深灰小号、左对齐，不写英文、乱码、长段落或摄影参数。
-
-输出必须是一张角色身份清楚、固定场景稳定、故事连续的分集草图板。`,
-        520,
-        220,
-        ['canvas_ai_cast_scene_master_01'],
-        '4:3',
-        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-storyboard-v2' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_performance_blocking_03',
-        '表演与固定场景调度',
-        'Image2 1K；锁定表情、视线、动作和空间位置',
-        `将第一张连接图作为 CONTENT_REF，继承八镜头剧情、角色出场和事件顺序；将第二张连接图同时作为 CHARACTER_REF 和 SCENE_REF，校准每名角色身份与固定空间。把故事板转换成表演与场景调度板，明确角色位置、朝向、视线、表情、姿态、动作节拍和相互反应，不要只复制故事板并换文字。
-
-使用中性浅灰或淡米色预演风格，角色轮廓、脸部表情、视线线条、动作方向、地面定位和家具关系清楚；可使用视线虚线和主体动作箭头，但不绘制相机路径、焦距或摄影蓝图。
-
-4:3画布与2×4卡片：输出一张4:3横版，严格2行×4列，共8张等大卡片；每卡上方严格16:9表演调度画面，下方说明栏；上排镜头1-4、下排镜头5-8；禁止跨格、合并、遗漏、重复或第九格。
-
-调度规则：
-- 固定场景的入口、墙面、门窗、桌椅、灯具与主要道具位置不变；角色移动必须有起点、终点和动机
-- 对话时明确说话者姿态、听者视线和反应；群戏避免所有角色同时做相同动作
-- 喜剧、悬疑或日常单元剧强调停顿、迟疑、对视、抢话、反应镜头和包袱落点，情绪变化逐镜可见
-- 动物或拟人角色的四肢、耳朵、尾巴、重心和道具接触自然；人物手部、关节、坐姿、站姿和接触可信
-
-说明栏第一行写表演，不超过12个汉字；第二行写调度，不超过10个汉字。统一中文小号印刷体、左对齐。
-
-角色外观以 CHARACTER_REF 为最高标准，家具与空间以 SCENE_REF 为最高标准。不得串脸、交换毛色或服装、改变体型、增加角色或多余肢体；不得移动固定家具、改变门窗方向或生成另一套场景。`,
-        1040,
-        440,
-        ['canvas_ai_episode_storyboard_02', 'canvas_ai_cast_scene_master_01'],
-        '4:3',
-        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-performance-v2' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_camera_edit_plan_04',
-        '固定场景镜头与剪辑',
-        'Image2 1K；景别、轴线、运镜与切点',
-        `将第一张连接图作为 CONTENT_REF，继承剧情和顺序；第二张作为 PERFORMANCE_REF，继承表演、视线、动作和站位；第三张作为 CHARACTER_REF 与 SCENE_REF，校准角色身份和固定空间。生成镜头与剪辑技术规划板，重点说明景别、机位、轴线、运镜、焦点和切点。
-
-使用蓝灰或深灰技术预演风格、简化角色和场景、相机图标、视锥、180度轴线、运动路径、焦点变化和剪辑方向。每格至少包含一种清楚摄影信息，不追求最终材质与漂亮静帧。
-
-4:3画布与2×4卡片：输出一张4:3横版，严格2行×4列，共8张等大卡片；每卡上方严格16:9技术图，下方说明栏；上排镜头1-4、下排镜头5-8；不得交换、遗漏、重复、跨格、合并或增加镜头。
-
-镜头与剪辑规则：
-- 依据脚本选择全景、中景、双人、过肩、近景、特写或反应镜头，避免八格同一正面景别
-- 对话遵守180度轴线和视线匹配，正反打保持左右方向稳定；固定机位脚本不得擅自改成复杂环绕
-- 每镜只设置一个主要摄影动作：固定、轻推、轻拉、横移、俯仰、跟随、焦点转移或自然切镜
-- 剪辑点落在停顿、动作完成、视线变化、信息揭示、反应或包袱落点；避免无动机跳切、越轴和方向反转
-- 相邻镜头保持动作接续、道具位置、角色座位、光线和视线连续
-- 相机变化只能在 SCENE_REF 已定义的同一空间内发生，不得生成不存在的走廊、门、窗、舞台、家具或另一间房
-
-说明栏第一行写镜头，不超过10个汉字；第二行写剪辑，不超过12个汉字。统一中文小号印刷体、左对齐。角色以 CHARACTER_REF 为准，空间以 SCENE_REF 为准。`,
-        1560,
-        660,
-        ['canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_cast_scene_master_01'],
-        '4:3',
-        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-fixed-scene-camera-edit-v2' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_episode_draft_05',
-        '单元剧分镜初稿',
-        '2K全彩初稿；融合角色、场景、表演和镜头',
-        `综合四张连接图生成全彩单元剧分镜初稿。第一张联合母版是 CHARACTER_REF 与 SCENE_REF；第二张故事板是 CONTENT_REF；第三张表演调度板是 PERFORMANCE_REF；第四张镜头剪辑板是 CAMERA_REF。按四种职责重新渲染，不原样复制技术图。
-
-输出一张16:9横版、严格2行×4列、共8张等大卡片；每卡上方严格16:9全彩关键帧，下方说明栏；上排镜头1-4、下排镜头5-8。禁止跨格、合并、英雄大格、缺格、重复格或第九格。
-
-画面继承角色设定和场景设定的美术风格；清晰、细节充足、表情可读、毛发或材质可信、曝光稳定。去掉草图线、视线虚线、相机图标、箭头、视锥、轴线和蓝图元素。
-
-角色规则：每名角色回到联合母版上排校准，不串脸、不换毛色、不交换服装配件、不改变体型、不新增角色、不产生多余肢体耳尾；群像与正反打保持左右位置、视线和相对体型。
-
-场景规则：每镜回到联合母版下排校准，保持同一墙地、门窗、桌椅、灯具、主要道具、背景方向、颜色材质和光线；不得扩大房间、移动家具、换背景或创造新空间。
-
-表演和镜头：剧情对白以CONTENT_REF为准；表情动作和站位以PERFORMANCE_REF为准；景别机位与切点以CAMERA_REF为准。
-
-说明栏第一行写剧情，不超过14个汉字；第二行写镜头，不超过12个汉字。说明只在栏内，不覆盖画面。
-
-这是初稿，优先保证故事、构图和画面完成度；后续节点将进行角色与场景一致性校正。`,
-        2080,
-        880,
-        ['canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02', 'canvas_ai_performance_blocking_03', 'canvas_ai_camera_edit_plan_04'],
-        '16:9',
-        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-draft-2k-v2' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_continuity_fix_06',
-        '最终角色场景一致性修正',
-        '只校正身份和固定场景，不改镜头与剧情',
-        `执行一次严格的图像一致性校正。第一张连接图是唯一 BASE 和 LAYOUT_REF：已经确定好的八格全彩分镜初稿。第二张连接图是 CHARACTER_REF 与 SCENE_REF：角色身份和固定场景的最高标准。第三张连接图是 CONTENT_REF：用于核对每格应出现的角色、剧情和顺序。只修正角色身份、场景结构、比例、材质、肢体和连续性错误；不得重新创作、换镜头、换场景、改剧情、改站位、改机位或重新排版。
-
-必须完整保留 BASE：
-- 保留16:9横版、2行×4列、八张等大卡片、镜头1-8顺序、每格构图、景别、人物位置、动作、表情、视线、道具、光线和说明栏
-- 不删除、不新增、不交换、不重复、不合并镜头；不生成英雄大格、自由拼贴或第九格
-- 不把初稿重新渲染成另一套故事，只做局部、定向的一致性修复
-
-逐格角色审计与修正：
-- 先依据 CONTENT_REF 判断该格应该出现哪些角色，再逐一对照联合母版上排的对应角色
-- 校正脸型、五官、肤色或毛色花纹、眼色、耳形、尾巴、体型、发型、服装、领结、围脖、饰品和道具，使同名角色八格一致
-- 若初稿角色串脸、换毛色、换装、配件错位或长相漂移，只替换该角色的错误外观，保留原姿势、表情、动作方向、光线和遮挡关系
-- 不融合角色、不交换身份、不新增或删除角色；同一角色在同一格只出现一次
-- 修正多余或缺失的头、手臂、手指、腿、爪、耳朵、尾巴，修正肢体穿插、错误握持、漂浮和不自然接触
-- 群像中保持联合母版定义的相对体型，以及BASE已经确定的左右位置、座位和视线
-
-逐格固定场景审计与修正：
-- 每格背景对照联合母版下排的主视角、反向视角和空间关系，校正墙面、地面、门窗、桌椅、灯具、主要道具、入口、背景方向、颜色、材质和光线
-- 若初稿背景漂移，只修正错误区域；保留该镜头原机位、透视、人物构图和景别
-- 不改变房间大小和结构，不移动固定家具，不新增门窗、走廊、舞台、柜子、装饰或另一套空间
-- 保持跨镜头的道具数量、位置、开合状态、光照方向和时间连续
-
-最终质量：
-- 保持角色设定与场景设定的原始美术风格，画面清晰、细节准确、毛发或材质可信、边缘干净、曝光稳定
-- 不保留草图、箭头、相机图标、视锥、轴线、蓝图、残影或技术标记
-- 说明栏尽量原样保留；如必须重写，仅保留两行简短中文，不覆盖16:9画面
-
-输出前逐格核对：角色数量和身份正确；毛色脸型服装配件一致；无多余肢体耳尾；相对体型正确；固定场景结构一致；门窗家具道具不漂移；镜头、剧情、站位和构图未改变。全部满足后再输出最终2K分镜。
-
-Original request: "一开始我会把场景设定和角色设定一起输入，角色的一致性没法保持，特别是最终输出"。`,
-        2600,
-        1100,
-        ['canvas_ai_episode_draft_05', 'canvas_ai_cast_scene_master_01', 'canvas_ai_episode_storyboard_02'],
-        '16:9',
-        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-episodic-continuity-fix-2k-v2' }
-      ),
-    ],
-  },
-  {
-    id: 'imported-workflow-mqxu783h-0-kjaz',
-    label: '产品动画分镜｜2×2母版·2K高质量最终版',
-    hint: '2×2产品母版 -> Image2 1K 4:3故事板 -> Image2 1K 4:3运镜板 -> 2K最终2×4分镜',
-    builtin: true,
-    nodes: [
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_product_master_01',
-        '2×2产品母版',
-        '四格锁定产品结构、CMF、细节和情境',
-        `基于封装节点外部连接的产品参考图和文字脚本，生成唯一的 2×2 产品母版。此阶段只锁定产品身份、关键细节、功能状态与脚本情境，不制作故事分镜。
-
-输入角色：
-- 产品参考图均为 SUBJECT_REF，严格锁定外轮廓、比例、体块、曲面、按键、接口、屏幕、灯带、开孔、分件线、Logo 位置、真实颜色与 CMF
-- 文字脚本只用于确认核心卖点、必要功能状态、使用情境、广告气质与光线方向，不得借脚本重新设计产品
-- 多图是同一产品的多角度依据；冲突时以最清晰、结构最完整的参考为准，不融合矛盾特征
-
-产品自适应视觉系统：
-- 先判断产品品类、CMF、主色、材质、使用场景、目标用户和价格带，再确定母版的背景、色温、台面/空间、光比、道具密度和图形语言
-- 游戏/性能产品可更高对比和更锐利；家居/生活产品可更温暖自然；美妆/精品可更精致杂志化；工具/户外产品可更坚实场景化
-- 不要把所有产品都放进中性浅灰背景，也不要强行套黑色科技风、蓝色标签、HUD 或同款圆角卡片
-
-严格2×2版式：
-- 输出一张 16:9 横版画布，严格 2 行 × 2 列，共 4 个完全等大的 16:9 画面
-- 左上：最准确的三分之四主视角，完整展示外轮廓与主要体块
-- 右上：与主视角互补的正面、侧面、背面或俯视角，补足结构信息
-- 左下：脚本核心卖点对应的真实按键、接口、屏幕、灯效、机构或 CMF 细节
-- 右下：产品在脚本要求的功能状态或最简使用情境中的标准姿态，用于锁定尺度、接触关系、背景与光线
-- 四格尺寸一致、边缘对齐、等距细窄留白；禁止跨格、合并、重叠、自由拼贴或第五格
-- 不生成编号、文字、参数、说明、箭头或 HUD
-
-产品锁定：
-- 四格必须是同一产品、同一结构、同一比例、同一 CMF、同一功能布局
-- 不重新设计、不镜像、不增减按键、接口、屏幕、灯带、开孔、分件线或部件，不添加新 Logo 和不存在的功能
-- 看不清的局部保持简洁，不凭空补造；脚本未要求时不添加人物、手和复杂道具
-- 统一产品自适应色温和光线方向；背景、台面和空间语言来自产品气质，不固定中性高级背景；自然产品摄影透视、真实材质、清楚边缘和可信接地
-
-输出是无字的 2×2 产品身份母版，作为后续所有节点的 SUBJECT_REF。
-
-Original request: "产品母版改成2*2，然后注意最终分镜细节和质量一定要高"。`,
-        0,
-        0,
-        [],
-        '16:9',
-        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-product-master-2x2-v9' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_storyboard_02',
-        '4:3叙事草图故事板',
-        'Image2 1K；2行×4列叙事草图',
-        `基于连接的 2×2 产品母版生成八镜头故事板。若仍能读取外部文字脚本，以原脚本为最高优先级；否则围绕母版右下格的使用情境和功能状态展开。本阶段只解决故事顺序、画面内容、景别和叙事目的，不设计运镜，不追求最终商业渲染。
-
-阶段视觉语言：
-- 采用导演故事板草图风格：灰度或低饱和色块、简洁线稿、粗略光影、少量单一强调色
-- 不使用最终广告级材质高光，不制作技术箭头、相机图标、运动轨迹、起止残影或蓝图界面
-- 产品轮廓与关键结构仍以母版为准，草图风格不能成为改变结构的理由
-
-4:3画布与2×4版式：
-- 输出一张 4:3 横版画布，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 每卡上方是严格 16:9 故事画面，下方是同宽说明栏
-- 上排从左到右为镜头1-4，下排从左到右为镜头5-8；四列等宽、两行等高
-- 禁止跨格英雄图、合并、重叠、自由拼贴、缺格、重复格或第九格
-
-固定叙事位置：
-- 上排：情境钩子、轮廓揭示、完整亮相、第二角度或功能转折
-- 下排：卖点铺垫、核心功能或交互、结果或价值、片尾完整定格
-- 每格只表达一个主要信息，镜头有因果、节奏和景别变化，不能只是同一产品反复换角度
-
-说明栏写两行：
-- 第一行：画面：不超过 12 个汉字
-- 第二行：目的：不超过 8 个汉字
-- 深灰小号中文印刷体、左对齐；不要编号、英文、乱码、长段落、运镜术语或参数
-
-产品母版是唯一产品标准。八格保持同一外轮廓、比例、CMF、按键、接口、屏幕、灯带、开孔、分件线、Logo 位置与材质边界；不重设计、不镜像、不增减零件。
-
-输出是一张 4:3 横版、2行×4列的低精度叙事草图板。`,
-        520,
-        220,
-        ['canvas_ai_product_master_01'],
-        '4:3',
-        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-narrative-storyboard-4x3-v9' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_camera_plan_03',
-        '4:3技术运镜预演',
-        'Image2 1K；2行×4列技术图解',
-        `将第一张连接图作为 CONTENT_REF：继承八镜头故事内容、顺序和主体关系。将第二张连接图作为 SUBJECT_REF：校准产品结构。把故事板转换成明显不同的技术运镜预演板，不要只替换说明文字。
-
-阶段视觉语言：
-- 使用与产品母版气质兼容的技术预演风格；可用蓝灰、深灰、暖灰、纸面草图或品牌强调色作为技术标注系统，但必须来自产品视觉系统，不固定蓝灰模板
-- 简化场景、清楚轮廓、半透明起止位置、相机图标、运动路径和方向箭头
-- 每个 16:9 图解至少出现一种可见技术信息：相机位置与朝向、起点与终点残影、运动路径、焦点平面或转场方向
-- 不是最终商业渲染；不要原样复制故事板图片，应保留同一镜头含义但转换成技术图解
-
-4:3画布与2×4版式：
-- 输出一张 4:3 横版画布，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 每卡上方是严格 16:9 运镜图解，下方是同宽说明栏
-- 上排从左到右对应镜头1-4，下排对应镜头5-8；四列等宽、两行等高
-- 与故事板逐格对应；禁止跨格、合并、放大英雄画面、遗漏、重复或第九格
-
-运镜规则：
-- 每镜只选一个主要运动：固定机位、缓慢推近、轻微拉远、平稳横移、克制环绕、俯仰揭示、焦点转移或整体切入细节
-- 运镜服务于揭示产品、说明尺度、强调卖点、跟随操作或衔接下一镜
-- 相邻镜头保持轴线、视线、主体位置、光线方向和运动方向连续；禁止甩镜、夸张变焦、无意义旋转、粒子爆炸、液化、解体或变形转场
-
-说明栏写两行：
-- 第一行：机位：不超过 8 个汉字
-- 第二行：运动：不超过 10 个汉字
-- 深灰小号中文印刷体、左对齐；不要编号、英文、乱码、长段落或复杂参数
-
-故事内容以 CONTENT_REF 为准，产品外观以 SUBJECT_REF 为准。不得重设计、镜像、增减按键、接口、屏幕、灯带、开孔、分件线、部件或 Logo。
-
-输出是一张 4:3 横版、2行×4列的技术运镜预演板，与故事板明显不同。`,
-        1040,
-        440,
-        ['canvas_ai_storyboard_02', 'canvas_ai_product_master_01'],
-        '4:3',
-        { provider: 'new-api', model: 'gpt-image-2', presetId: 'workflow-camera-tech-previz-4x3-v9' }
-      ),
-      makeCanvasWorkflowAiNode(
-        'canvas_ai_final_storyboard_04',
-        '最终2K高质量2×4分镜',
-        '2K商业渲染；强化产品细节与八格一致性',
-        `综合三张连接图生成最终 2K 高质量产品动画分镜。第一张 2×2 产品母版是 SUBJECT_REF，产品外观与结构的最高标准；第二张 4:3 故事板是 CONTENT_REF，只负责镜头内容、顺序、场景与叙事目的；第三张 4:3 运镜板是 MOTION_REF，只负责机位、运动方向、起止关系与转场。不要原样复制任何一张上游图，而要依据三种角色重新渲染最终商业关键帧。
-
-镜头与版式：
-- 上游两张 2×4 板均按上排镜头1-4、下排镜头5-8读取，最终必须逐格一一对应，不交换、遗漏、重复、合并或新增镜头
-- 输出一张 16:9 横版，严格 2 行 × 4 列，共 8 张完全等大的卡片
-- 每卡上方是严格 16:9 全彩关键帧，下方是同宽说明栏；说明栏底色、分隔线和文字颜色跟随产品母版视觉系统保持清晰可读，不强制浅色
-- 四列等宽、两行等高；禁止英雄大格、跨格、合并、重叠、自由拼贴、缺格、重复格或第九格
-
-2K高质量商业渲染：
-- 八个关键帧必须清晰、锐利、细节充足，具备高端产品广告成片质感，不使用草图、低清贴图、过度降噪、塑料蜡感或模糊材质
-- 材质必须可辨：金属、哑光塑料、橡胶、玻璃、织物、皮革或涂层要有正确的粗糙度、反射、纹理尺度与边缘高光
-- 保持自然产品摄影透视、真实接地阴影、合理景深、干净轮廓、克制高光和稳定曝光；暗部仍要看清结构
-- 使用从产品母版继承的产品自适应世界观、色温、背景和光线逻辑，但每格应有明确景别与机位变化，不能反复使用同一正视产品图
-- 最终商业分镜必须延续该产品自己的视觉气质；不要回落到固定浅灰蓝、固定黑科技或普通白底产品图
-- 使用 MOTION_REF 确定相机角度、主体位置、空间方向与运动趋势，但最终画面不保留相机图标、箭头、残影、蓝图线或技术界面
-- 不继承故事板的草图质感，也不继承运镜板的蓝灰技术图风格
-
-产品细节一致性最高规则：
-- 每个镜头都必须回到 2×2 SUBJECT_REF 母版校准，严格保持同一外轮廓、尺寸比例、体块、曲面转折、CMF、按键数量与位置、接口、屏幕、灯带、开孔、分件线、Logo 位置和材质边界
-- 不重新设计、不镜像、不增减零件，不改变功能布局，不把不同角度的矛盾细节拼接到同一产品
-- 特写只拍母版中真实存在且清楚可见的细节；看不清的结构保持克制，不凭空添加按钮、接口、传感器、灯效或机械机构
-- 人物和手只在 CONTENT_REF 确有必要时出现；手指数目、关节、握持、接触点、受力方向和产品尺度必须正确，不能遮挡核心卖点
-- 避免产品变形、融化、重复、穿插、比例漂移、悬浮、错误反射、锯齿边缘、脏污噪点和不合理裁切
-
-八镜头完成度：
-- 镜头1建立情境，镜头2揭示轮廓，镜头3完整亮相，镜头4完成角度或功能转折
-- 镜头5铺垫卖点，镜头6清楚展示核心功能或交互，镜头7呈现结果或价值，镜头8形成完整稳定的英雄定格
-- 八格必须有叙事递进、构图差异和视觉连续性，不能用产品母版的四格简单重复填充
-
-说明栏写两行：
-- 第一行：分镜：不超过 12 个汉字，准确概括画面与叙事目的
-- 第二行：运镜：不超过 10 个汉字，准确概括相机、主体动作或转场
-- 深灰小号中文印刷体、左对齐；不写编号、英文、乱码、长段落、镜头参数或多余标题
-- 说明文字只放在说明栏，不得覆盖 16:9 画面
-
-输出前自检并修正：八格数量与顺序正确；产品结构一致；按键接口与母版一致；不存在重复镜头；特写真实；手部正确；材质清楚；无箭头技术图；无跨格；画面锐利；说明简洁可读。只有全部满足后再输出最终图片。
-
-Original request: "最终分镜还是2k就好"。`,
-        1560,
-        660,
-        ['canvas_ai_product_master_01', 'canvas_ai_storyboard_02', 'canvas_ai_camera_plan_03'],
-        '16:9',
-        { provider: 'xais-chat', model: 'Xais Nano Pro_2K', presetId: 'workflow-final-commercial-storyboard-2k-v10' }
-      ),
-    ],
-  },
-  {
-    id: 'industrial-design-basic',
-    label: '基础工业设计',
-    hint: '线稿 -> 效果图 -> 细节 / 多角度 / 场景',
-    builtin: true,
-    nodes: [
-      makeCanvasWorkflowAiNode(
-        'industrial-render',
-        '线稿转效果图',
-        '从线稿生成效果图',
-        `基于连接的线稿、草图或产品参考图，生成一张可信、可评审的工业设计主效果图。
-
-输入理解：
-- 如果连接的是线稿/草图：保留原始轮廓、比例、透视、结构分区和功能暗示，将其转译为真实产品渲染。
-- 如果连接的是产品参考图：以参考图为 SUBJECT_REF，锁定结构、CMF、按键/接口/开孔和材质边界。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 只提升完成度，不重新发明产品；模糊区域保持克制，不凭空增加复杂机构
-- 主体完整展示，三分之二或正侧结合视角，关键比例和轮廓清楚
-- 材质、倒角、分件线、按键、接口、支撑/握持/开合关系表现清晰
-- 背景、台面、空间和光影根据产品品类、CMF、主色、使用场景和目标用户自适应；产品与地面/台面接触可信，光影服务结构可读性
-- 不要文字、不要 logo 乱生成、不要说明标签、不要装饰性 HUD`,
-        0,
-        0,
-        [],
-        '16:9'
-      ),
-      makeCanvasWorkflowAiNode(
-        'industrial-detail',
-        '细节图',
-        '从效果图生成细节特写',
-        `基于连接的产品效果图，生成一张高级产品细节特写图。
-
-目标：从上游主效果图中选择一个真实存在的关键细节，放大展示其结构、材质或工艺价值。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 聚焦关键边缘、倒角、按键、接口、分件线、纹理、转轴或材质交界
-- 细节必须能从上游产品追溯回来，不生成上游没有的按钮、传感器、接口或内部结构
-- 微距产品摄影质感，关键区域清晰，非关键区域轻微虚化，边缘高光干净
-- 保持产品结构、颜色、材质和功能布局一致
-- 不要文字、不要 logo 乱生成、不要说明箭头、不要虚构参数`,
-        480,
-        -120,
-        ['industrial-render'],
-        '16:9'
-      ),
-      makeCanvasWorkflowAiNode(
-        'industrial-multiview',
-        '多角度设计图',
-        '从效果图生成多角度设计图',
-        `基于连接的产品效果图，生成同一产品的多角度设计评审图。
-
-目标：用多个视角说明同一产品的体块、轮廓、比例和关键结构，方便设计评审。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 展示正面、侧面、背面、俯视或 3/4 角度中的 3-4 个互补视角
-- 所有视角必须是同一产品：结构、比例、CMF、分件线、按键/接口数量和位置一致
-- 视角之间尺度统一，版式密度、背景色、分隔方式和材质样本样式根据产品气质自适应，像为该产品定制的工业设计评审板
-- 不做爆炸图，不新增内部结构，不使用夸张透视
-- 不要文字标签、不要说明箭头、不要品牌 logo 乱生成、不要虚假参数`,
-        480,
-        420,
-        ['industrial-render'],
-        '16:9'
-      ),
-      makeCanvasWorkflowAiNode(
-        'industrial-scene',
-        '场景图',
-        '从效果图生成使用场景',
-        `基于连接的产品效果图，生成真实生活方式或办公使用场景图。
-
-目标：把同一产品放入可信使用环境，展示尺度、使用关系和情绪价值，而不是重新设计产品。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 根据产品类型选择居家、办公、桌面、厨房、浴室、户外或专业工作环境
-- 根据产品 CMF、主色、材质和目标用户决定空间色彩、道具密度和光线气质，不固定同一套桌面/浅灰背景
-- 产品是画面主角，环境现代、干净、有审美，人物/手/道具只作为辅助尺度参考
-- 产品与环境接触可信，有真实阴影、正确透视和合理景深
-- 保持产品结构、比例、颜色、材质、按键、接口和分件线一致
-- 不要文字、不要 logo 乱生成、不要促销元素、不要夸张特效`,
-        960,
-        150,
-        ['industrial-render'],
-        '16:9'
-      ),
-    ],
-  },
-  {
-    id: 'cmf-review',
-    label: 'CMF 评审',
-    hint: '参考图 -> CMF 方向 -> 细节特写',
-    builtin: true,
-    nodes: [
-      makeCanvasWorkflowAiNode(
-        'cmf-board',
-        'CMF 方向板',
-        '生成材质与配色方向',
-        CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === 'cmf-exploration')?.prompt || '',
-        0,
-        0,
-        [],
-        '16:9'
-      ),
-      makeCanvasWorkflowAiNode(
-        'cmf-detail',
-        'CMF 细节特写',
-        '生成材质细节图',
-        `基于连接的 CMF 方向图，生成一张高质量产品材质细节特写。
-
-目标：从已选 CMF 方向里提取一个最有代表性的材质/工艺细节，做可信微距展示。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 强调材质纹理、表面工艺、倒角高光、颜色过渡、粗糙度和真实反射
-- 保持产品结构、比例、CMF 方向和材质边界一致
-- 画面像设计评审中的材质细节页：背景、光比、样本/局部框和构图根据该 CMF 方向自适应，干净、聚焦、可判断工艺
-- 不要文字、不要品牌标识、不要说明箭头、不要虚构材料标签`,
-        480,
-        0,
-        ['cmf-board'],
-        '16:9'
-      ),
-    ],
-  },
-  {
-    id: 'ecommerce-showcase',
-    label: '电商展示',
-    hint: '主图 -> 细节图 / 场景图',
-    builtin: true,
-    nodes: [
-      makeCanvasWorkflowAiNode(
-        'commerce-hero',
-        '电商主图',
-        '生成产品主视觉',
-        `基于连接的产品参考图，生成一张干净高级的电商产品主图。
-
-目标：输出适合商品展示的主视觉底图，主体明确、品质感强、结构准确；这不是详情页长图，不生成促销文案。
-
-${INDUSTRIAL_DESIGN_RENDER_QUALITY_PROMPT}
-
-要求：
-- 产品居中或轻微偏中，完整展示，轮廓清晰，材质真实，关键卖点区域可读
-- 背景、配色、台面/空间、阴影和轻量图形层次根据产品品类、CMF、主色、使用场景和价格带自适应；不要所有商品都使用同一套浅灰蓝主图
-- 保持产品结构、比例、颜色、材质和功能布局一致，不新增配件或虚假功能
-- 不要促销文字、不要价格、不要 logo 乱生成、不要水印、不要虚假认证`,
-        0,
-        0,
-        [],
-        '16:9'
-      ),
-      makeCanvasWorkflowAiNode(
-        'commerce-detail',
-        '卖点细节图',
-        '生成产品细节展示',
-        CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === 'detail-hero')?.prompt || '',
-        480,
-        -120,
-        ['commerce-hero'],
-        '16:9'
-      ),
-      makeCanvasWorkflowAiNode(
-        'commerce-scene',
-        '使用场景图',
-        '生成真实场景图',
-        CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === 'lifestyle-scene')?.prompt || '',
-        480,
-        420,
-        ['commerce-hero'],
-        '16:9'
-      ),
-    ],
-  },
-]);
-const CANVAS_AI_PROMPT_PRESET_PLACEHOLDER = '__canvas_ai_prompt_preset__';
-const CANVAS_AI_PROMPT_PRESET_ADD_VALUE = '__canvas_ai_prompt_preset_add__';
-const CANVAS_AI_PROMPT_PRESET_MANAGE_VALUE = '__canvas_ai_prompt_preset_manage__';
-const CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_custom_prompt_presets';
-const CANVAS_AI_HIDDEN_BUILT_IN_PROMPTS_STORAGE_KEY = 'drawer_canvas_ai_hidden_builtin_prompt_presets';
-const CANVAS_TEXT_AGENT_SYSTEM_PROMPT_UTF8_BYTE_LIMIT = 12_000;
-const CANVAS_TEXT_AGENT_USER_PROMPT_UTF8_BYTE_LIMIT = 24_000;
-const CANVAS_WORKFLOW_SELECT_PLACEHOLDER = '__canvas_workflow_select__';
-const CANVAS_WORKFLOW_SAVE_SELECTION_VALUE = '__canvas_workflow_save_selection__';
-const CANVAS_WORKFLOW_MANAGE_VALUE = '__canvas_workflow_manage__';
-const CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY = 'drawer_canvas_custom_workflows';
-const CANVAS_HIDDEN_BUILT_IN_WORKFLOWS_STORAGE_KEY = 'drawer_canvas_hidden_builtin_workflows';
-const CANVAS_TEMPLATE_EXPORT_TYPE = 'inspiration-drawer-canvas-templates';
-const CANVAS_TEMPLATE_EXPORT_VERSION = 1;
-const canvasWorkflowNormalizeCache = new WeakMap<object, CanvasWorkflowTemplate | null>();
-const getCanvasAiPresetPrompt = (preset?: CanvasAiPromptPreset) => preset?.prompt || '';
-const PRODUCT_RENDER_PRESET_ID = 'product-render';
-const isLegacyProductRenderPrompt = (prompt: string) =>
-  prompt.includes('简约深色背景') && prompt.includes('暗光环境');
-const getBuiltInProductRenderPrompt = () =>
-  CANVAS_AI_PROMPT_PRESETS.find(preset => preset.id === PRODUCT_RENDER_PRESET_ID)?.prompt || '';
-const isCanvasWorkflowLongDuplicateText = (a?: string, b?: string) => {
-  const left = String(a || '').trim();
-  const right = String(b || '').trim();
-  return left.length > 120 && left === right;
-};
-const readCanvasTemplateHiddenIds = (storageKey: string) => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
-    return Array.isArray(parsed)
-      ? Array.from(new Set(parsed.map(value => String(value || '').trim()).filter(Boolean)))
-      : [];
-  } catch (_) {
-    return [];
-  }
-};
-const normalizeCanvasAiPromptPreset = (value: unknown): CanvasAiPromptPreset | null => {
-  const record = value && typeof value === 'object' ? value as Partial<CanvasAiPromptPreset> : {};
-  const label = typeof record.label === 'string' ? record.label.trim().slice(0, 24) : '';
-  const prompt = typeof record.prompt === 'string' ? record.prompt.trim() : '';
-  if (!label || !prompt) return null;
-  return {
-    id: typeof record.id === 'string' && record.id.trim() ? record.id.trim() : `custom-${Math.random().toString(36).substring(2, 9)}`,
-    label,
-    hint: typeof record.hint === 'string' && record.hint.trim() ? record.hint.trim().slice(0, 48) : '自定义 Prompt 预设',
-    prompt,
-    aspectRatio: typeof record.aspectRatio === 'string' ? record.aspectRatio : undefined,
-    resolution: typeof record.resolution === 'string' ? record.resolution : undefined,
-    outputFormat: typeof record.outputFormat === 'string' ? record.outputFormat : undefined,
-    count: typeof record.count === 'number' ? record.count : undefined,
-  };
-};
-const readCustomCanvasAiPromptPresets = () => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_CUSTOM_PROMPTS_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed)
-      ? parsed.map(normalizeCanvasAiPromptPreset).filter((item): item is CanvasAiPromptPreset => !!item)
-      : [];
-  } catch (_) {
-    return [];
-  }
-};
-const normalizeCanvasWorkflowTemplate = (value: unknown): CanvasWorkflowTemplate | null => {
-  if (!value || typeof value !== 'object') return null;
-  const cacheKey = value as object;
-  if (canvasWorkflowNormalizeCache.has(cacheKey)) {
-    return canvasWorkflowNormalizeCache.get(cacheKey) || null;
-  }
-  const record = value as Partial<CanvasWorkflowTemplate>;
-  const label = typeof record.label === 'string' ? record.label.trim().slice(0, 32) : '';
-  const rawNodes = Array.isArray(record.nodes) ? record.nodes : [];
-  if (!label || rawNodes.length === 0) {
-    canvasWorkflowNormalizeCache.set(cacheKey, null);
-    return null;
-  }
-
-  const rawWorkflowText = [
-    label,
-    record.hint,
-    ...rawNodes.flatMap(nodeValue => {
-      const node = nodeValue && typeof nodeValue === 'object'
-        ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
-        : {};
-      const rawItem = node.item && typeof node.item === 'object'
-        ? node.item as Partial<BufferItem>
-        : {};
-      const rawAi = node.ai && typeof node.ai === 'object'
-        ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
-        : {};
-      return [
-        node.id,
-        rawItem.name,
-        rawItem.content,
-        rawItem.remark,
-        rawAi.presetId,
-        rawAi.presetLabel,
-        rawAi.presetPrompt,
-        rawAi.prompt,
-      ];
-    }),
-  ].filter(Boolean).join('\n').toLowerCase();
-  const shouldInferExternalImageInputs = doesWorkflowTextRequireImageReference(rawWorkflowText)
-    && !rawNodes.some(nodeValue => {
-      const node = nodeValue && typeof nodeValue === 'object'
-        ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
-        : {};
-      return node.acceptsExternalInputs === true;
-    });
-
-  const nodes = rawNodes.map((nodeValue, index) => {
-    const node = nodeValue && typeof nodeValue === 'object'
-      ? nodeValue as Partial<CanvasWorkflowNodeTemplate>
-      : {};
-    const rawItem = node.item && typeof node.item === 'object'
-      ? node.item as Partial<BufferItem>
-      : {};
-    let itemType = rawItem.type === 'text' || rawItem.type === 'image' || rawItem.type === 'file' || rawItem.type === 'video'
-      ? rawItem.type
-      : 'text';
-    const id = typeof node.id === 'string' && node.id.trim() ? node.id.trim() : `node-${index}`;
-    const internalSlot = normalizeCanvasWorkflowInternalSlot(node.internalSlot, {
-      id,
-      label: typeof rawItem.name === 'string' ? rawItem.name : id,
-      order: index,
-    });
-    if (internalSlot) itemType = 'image';
-    let externalInputTypes = Array.isArray(node.externalInputTypes)
-      ? node.externalInputTypes
-        .map(type => String(type || '').trim())
-        .filter((type): type is 'image' | 'text' | 'video' => type === 'image' || type === 'text' || type === 'video')
-      : undefined;
-    const rawAi = node.ai && typeof node.ai === 'object'
-      ? node.ai as Partial<NonNullable<CanvasImageItem['ai']>>
-      : undefined;
-    const aiPrompt = String(rawAi?.prompt || '').trim();
-    const aiPresetPrompt = String(rawAi?.presetPrompt || '').trim();
-    const itemContent = String(rawItem.content || '');
-    const executablePrompt = rawAi?.type === 'image-generator'
-      ? (aiPresetPrompt || aiPrompt || itemContent.trim())
-      : '';
-    const inputIds = Array.isArray(node.inputs)
-      ? node.inputs.map(inputId => String(inputId || '').trim()).filter(Boolean)
-      : [];
-    const hasConcreteImageSource = itemType === 'image'
-      && [rawItem.url, rawItem.path, rawItem.thumbnail, rawItem.sourceUrl, rawItem.originalUrl]
-        .some(value => typeof value === 'string' && value.trim().length > 0);
-    const shouldRestoreConcreteFixedImage = hasConcreteImageSource
-      && !rawAi
-      && !internalSlot
-      && node.bridgeType !== 'reference_image'
-      && id !== 'product_reference_image';
-    const inferredExternalImageInput = shouldInferExternalImageInputs
-      && inputIds.length === 0
-      && !internalSlot
-      && !(node.fixedInput === true && itemType === 'image')
-      && !hasConcreteImageSource
-      && (
-        rawAi?.type === 'image-generator'
-        || itemType === 'text'
-        || itemType === 'image'
-        || itemType === 'file'
-      );
-    const acceptsExternalInputs = !internalSlot
-      && !shouldRestoreConcreteFixedImage
-      && (node.acceptsExternalInputs === true || inferredExternalImageInput);
-    if (shouldRestoreConcreteFixedImage) {
-      externalInputTypes = undefined;
-    } else if (acceptsExternalInputs && (!externalInputTypes || externalInputTypes.length === 0)) {
-      externalInputTypes = ['image', 'text'];
-    }
-    const isReferenceImageBridge = !internalSlot && (
-      node.bridgeType === 'reference_image'
-      || id === 'product_reference_image'
-    )
-      && acceptsExternalInputs
-      && (
-        externalInputTypes?.includes('image')
-        || node.outputType === 'image'
-        || node.outputType === 'image[]'
-      );
-    if (isReferenceImageBridge) itemType = 'file';
-    const shouldCompactItemContent = rawAi?.type === 'image-generator'
-      && isCanvasWorkflowLongDuplicateText(itemContent, executablePrompt);
-    const slotDefaultValue = internalSlot?.defaultValue;
-    return {
-      id,
-      x: Number(node.x) || 0,
-      y: Number(node.y) || index * 220,
-      width: clamp(Number(node.width) || 390, 160, 1200),
-      height: clamp(Number(node.height) || 430, 120, 1200),
-      item: {
-        id,
-        type: itemType,
-        content: isReferenceImageBridge ? (itemContent || '参考产品图桥接') : (shouldCompactItemContent ? '' : itemContent),
-        name: typeof rawItem.name === 'string' ? rawItem.name.slice(0, 80) : (isReferenceImageBridge ? '参考产品图' : undefined),
-        path: internalSlot ? slotDefaultValue?.path : (typeof rawItem.path === 'string' ? rawItem.path : undefined),
-        url: internalSlot ? slotDefaultValue?.url : (typeof rawItem.url === 'string' ? rawItem.url : undefined),
-        thumbnail: internalSlot ? undefined : (typeof rawItem.thumbnail === 'string' ? rawItem.thumbnail : undefined),
-        sourceUrl: internalSlot ? undefined : (typeof rawItem.sourceUrl === 'string' ? rawItem.sourceUrl : undefined),
-        originalUrl: internalSlot ? undefined : (typeof rawItem.originalUrl === 'string' ? rawItem.originalUrl : undefined),
-        sourceItemId: internalSlot ? slotDefaultValue?.sourceItemId : (typeof rawItem.sourceItemId === 'string' ? rawItem.sourceItemId : undefined),
-        remark: typeof rawItem.remark === 'string' ? rawItem.remark : undefined,
-        remarks: Array.isArray(rawItem.remarks)
-          ? rawItem.remarks.map(remark => String(remark || '').trim()).filter(Boolean).slice(0, 12)
-          : undefined,
-        createdAt: 0,
-        isQuickAccess: false,
-      },
-      inputs: inputIds,
-      fixedInput: internalSlot
-        ? true
-        : shouldRestoreConcreteFixedImage
-        ? true
-        : typeof node.fixedInput === 'boolean'
-        ? (inferredExternalImageInput ? false : node.fixedInput)
-        : (!node.ai && (itemType === 'image' || itemType === 'text')),
-      textMode: node.textMode === 'plain'
-        ? 'plain'
-        : node.textMode === 'agent' || (inferredExternalImageInput && itemType === 'text' && !rawAi)
-          ? 'agent'
-          : undefined,
-      designAgentConfig: node.designAgentConfig
-        ? normalizeDesignAgentConfig(node.designAgentConfig)
-        : undefined,
-      acceptsExternalInputs,
-      externalInputTypes,
-      outputType: internalSlot
-        ? (internalSlot.multiple ? 'image[]' : 'image')
-        : node.outputType === 'image'
-        || node.outputType === 'image[]'
-        || node.outputType === 'text'
-        || node.outputType === 'video'
-        || node.outputType === 'video[]'
-        ? node.outputType
-        : undefined,
-      bridgeType: isReferenceImageBridge ? 'reference_image' as const : undefined,
-      internalSlot,
-      ai: rawAi
-        ? {
-          ...rawAi,
-          prompt: rawAi.type === 'image-generator' ? undefined : rawAi.prompt,
-          presetPrompt: rawAi.type === 'image-generator' && executablePrompt ? executablePrompt : rawAi.presetPrompt,
-          outputs: [],
-          status: 'idle' as const,
-          error: undefined,
-          generatedAt: undefined,
-        }
-        : undefined,
-    } as CanvasWorkflowNodeTemplate;
-  }).filter(node => node.ai?.type === 'image-generator' || !!node.item.type);
-
-  const internalSlotIds = nodes
-    .filter(isReplaceableInternalImageSlot)
-    .map(node => node.internalSlot!.id);
-  if (
-    nodes.length === 0
-    || !nodes.some(node => node.ai?.type === 'image-generator')
-    || new Set(internalSlotIds).size !== internalSlotIds.length
-  ) {
-    canvasWorkflowNormalizeCache.set(cacheKey, null);
-    return null;
-  }
-  const normalized = {
-    id: typeof record.id === 'string' && record.id.trim()
-      ? record.id.trim()
-      : `workflow-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
-    label,
-    hint: typeof record.hint === 'string' && record.hint.trim()
-      ? record.hint.trim().slice(0, 80)
-      : '自定义工作流',
-    nodes,
-    userInput: normalizeCanvasWorkflowUserInput(record.userInput),
-    createdAt: Number(record.createdAt) || Date.now(),
-    builtin: !!record.builtin,
-  };
-  canvasWorkflowNormalizeCache.set(cacheKey, normalized);
-  return normalized;
-};
-const readCustomCanvasWorkflows = () => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CANVAS_CUSTOM_WORKFLOWS_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed)
-      ? parsed
-          .map(normalizeCanvasWorkflowTemplate)
-          .filter((item): item is CanvasWorkflowTemplate => !!item && !item.builtin)
-          .filter(item => !isRetiredCanvasWorkflowId(item.id))
-      : [];
-  } catch (_) {
-    return [];
-  }
-};
-const getCanvasAiDefaultModel = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
-  mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_DEFAULT : ''
-    : provider === 'xais-chat'
-    ? XAIS_CHAT_IMAGE_MODEL_DEFAULT
-    : provider === 'new-api'
-      ? NEW_API_IMAGE_MODEL_DEFAULT
-    : OPENAI_COMPATIBLE_IMAGE_MODEL_DEFAULT
-);
-const CANVAS_REFERENCE_IMAGE_WORKFLOW_PROVIDER: CanvasAiProvider = 'xais-chat';
-const CANVAS_REFERENCE_IMAGE_WORKFLOW_MODEL = XAIS_CHAT_IMAGE_MODEL_DEFAULT;
-const getReferenceImageWorkflowAiConfig = () => ({
-  provider: CANVAS_REFERENCE_IMAGE_WORKFLOW_PROVIDER,
-  model: CANVAS_REFERENCE_IMAGE_WORKFLOW_MODEL,
-});
-const getCanvasAiDefaultEndpoint = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat'
-    ? XAIS_CHAT_ENDPOINT_DEFAULT
-    : provider === 'new-api'
-      ? NEW_API_ENDPOINT_DEFAULT
-    : provider === 'openai-compatible'
-      ? OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
-      : ''
-);
-const getCanvasAiModelOptions = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
-  mediaType === 'video'
-    ? provider === 'xais-chat' ? XAIS_CHAT_VIDEO_MODEL_OPTIONS : []
-    : provider === 'xais-chat'
-    ? XAIS_CHAT_IMAGE_MODEL_OPTIONS
-    : provider === 'new-api'
-      ? NEW_API_IMAGE_MODEL_OPTIONS
-    : OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS
-);
-const readStoredCanvasAiOpenAiModels = () => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_OPENAI_MODELS_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : [];
-  } catch (_) {
-    return [];
-  }
-};
-const readStoredCanvasAiNewApiModels = () => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_NEW_API_MODELS_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : [];
-  } catch (_) {
-    return [];
-  }
-};
-const readStoredCanvasAiXaisModels = () => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CANVAS_AI_XAIS_MODELS_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : [];
-  } catch (_) {
-    return [];
-  }
-};
-const isCanvasAiEndpointEditable = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat';
-const isCanvasAiEndpointVisible = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider);
-const isCanvasAiRemoteModelProvider = (provider: CanvasAiProvider) => isOpenAiLikeCanvasAiProvider(provider) || provider === 'xais-chat';
-const getCanvasAiEndpointPlaceholder = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat'
-    ? XAIS_CHAT_ENDPOINT_DEFAULT
-    : provider === 'new-api'
-      ? NEW_API_ENDPOINT_PLACEHOLDER
-      : OPENAI_COMPATIBLE_ENDPOINT_DEFAULT
-);
-const normalizeCanvasAiXaisEndpoint = (endpoint: string) => {
-  const trimmed = (endpoint || XAIS_CHAT_ENDPOINT_DEFAULT).trim().replace(/\/+$/, '');
-  return trimmed
-    .replace(/\/v1\/(?:models|images\/generations|images\/edits|chat\/completions)$/i, '/v1')
-    .replace(/\/models$/i, '');
-};
-const getCanvasAiEndpointForRequest = (provider: CanvasAiProvider, endpoint: string) => {
-  if (provider === 'xais-chat') {
-    const trimmed = endpoint.trim();
-    if (!trimmed || /api\.openai\.com/i.test(trimmed)) {
-      return XAIS_CHAT_ENDPOINT_DEFAULT;
-    }
-    return normalizeCanvasAiXaisEndpoint(trimmed);
-  }
-  if (provider === 'new-api') return normalizeNewApiBaseEndpoint(endpoint);
-  return isCanvasAiEndpointEditable(provider)
-    ? endpoint
-    : getCanvasAiDefaultEndpoint(provider);
-};
-const getCanvasAiEndpointForModels = (provider: CanvasAiProvider, endpoint: string) => {
-  if (provider === 'new-api') return normalizeNewApiBaseEndpoint(endpoint);
-  if (provider !== 'xais-chat') return endpoint.trim();
-  const base = normalizeCanvasAiXaisEndpoint(endpoint);
-  return /\/v1$/i.test(base) ? base : `${base}/v1`;
-};
-const isCanvasAiLikelyOpenAiImageModel = (model: string) => {
-  const normalized = model.trim().toLowerCase();
-  return /^gpt-image-\d/.test(normalized)
-    || /^dall-e-\d/.test(normalized)
-    || /(?:^|[-_/])(image|img|picture|photo|vision|visual|flux|sdxl|sd3|stable-diffusion|imagen|ideogram|recraft|seedream|jimeng|kolors|hidream|nano-banana|nanobanana)(?:$|[-_/])/i.test(model)
-    || /(?:image|img|picture|photo|vision|visual|flux|sdxl|stable.?diffusion|imagen|ideogram|recraft|seedream|jimeng|kolors|hidream|nano.?banana)/i.test(model);
-};
-const isCanvasAiXaisWorkerModel = (model?: string | null) => {
-  const normalized = normalizeXaisImage2Model(model);
-  return XAIS_CHAT_IMAGE_MODEL_OPTIONS.some(option => option.value === normalized);
-};
-const getCanvasAiRemoteStorageKey = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat'
-    ? CANVAS_AI_XAIS_MODELS_STORAGE_KEY
-    : provider === 'new-api'
-      ? CANVAS_AI_NEW_API_MODELS_STORAGE_KEY
-      : CANVAS_AI_OPENAI_MODELS_STORAGE_KEY
-);
-const sortCanvasAiModelsForProvider = (provider: CanvasAiProvider, models: string[]) => {
-  if (provider !== 'xais-chat') return [...models].sort((a, b) => a.localeCompare(b));
-  const preferred = XAIS_CHAT_IMAGE_MODEL_OPTIONS.map(option => option.value);
-  return [...models].sort((a, b) => {
-    const aIndex = preferred.indexOf(a);
-    const bIndex = preferred.indexOf(b);
-    if (aIndex >= 0 || bIndex >= 0) {
-      if (aIndex < 0) return 1;
-      if (bIndex < 0) return -1;
-      return aIndex - bIndex;
-    }
-    return a.localeCompare(b);
-  });
-};
-const normalizeCanvasAiProvider = (provider?: string | null): CanvasAiProvider => (
-  CANVAS_AI_PROVIDER_VALUES.includes(provider as CanvasAiProvider)
-    ? provider as CanvasAiProvider
-    : CANVAS_AI_DEFAULT_PROVIDER
-);
-const canvasAiGatewayKindForProvider = (provider: CanvasAiProvider): AiGatewayKind => (
-  provider === 'new-api'
-    ? 'new_api'
-    : provider === 'xais-chat'
-      ? 'xais'
-      : provider === 'custom'
-        ? 'custom'
-        : 'openai_compatible'
-);
-const defaultCanvasAiApiProvider = (provider: CanvasAiProvider) => (
-  provider === 'new-api'
-    ? 'new-api'
-    : provider === 'xais-chat'
-      ? 'xais-chat'
-      : provider === 'custom'
-          ? 'custom'
-          : 'openai-compatible'
-);
-const canvasAiProviderForGateway = (
-  gatewayKind?: AiGatewayKind | null,
-  provider?: string | null,
-): CanvasAiProvider => {
-  if (gatewayKind === 'new_api') return 'new-api';
-  if (gatewayKind === 'xais') return 'xais-chat';
-  if (gatewayKind === 'openai_compatible') return 'openai-compatible';
-  if (gatewayKind === 'custom') {
-    return CANVAS_AI_PROVIDER_VALUES.includes(provider as CanvasAiProvider)
-      ? provider as CanvasAiProvider
-      : 'custom';
-  }
-  return normalizeCanvasAiProvider(provider);
-};
-const canvasAiProviderForCloudKind = (provider?: string | null): CanvasAiProvider => {
-  const normalized = String(provider || '').trim().toUpperCase();
-  if (normalized === 'NEW_API') return 'new-api';
-  if (normalized === 'XAIS') return 'xais-chat';
-  return normalizeCanvasAiProvider(provider);
-};
-const canvasAiModelChoiceValue = (
-  source: CanvasAiCredentialSource,
-  provider: CanvasAiProvider,
-  model: string,
-  providerChannelId?: string,
-) => JSON.stringify([source, provider, model, providerChannelId || '']);
-const canvasAiGroupedModelChoiceValue = (
-  source: CanvasAiCredentialSource,
-  candidate: CanvasAiModelCandidate,
-  candidates: CanvasAiModelCandidate[],
-) => JSON.stringify([
-  source,
-  candidate.provider,
-  candidate.model,
-  candidate.providerChannelId || '',
-  candidates.length > 1 ? candidates : undefined,
-]);
-const parseCanvasAiModelChoiceValue = (value: string) => {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed) || (parsed.length !== 3 && parsed.length !== 4 && parsed.length !== 5)) return null;
-    const [source, provider, model, providerChannelId, rawCandidates] = parsed;
-    if (source !== 'wallet' && source !== 'local') return null;
-    if (!CANVAS_AI_PROVIDER_VALUES.includes(provider as CanvasAiProvider)) return null;
-    if (typeof model !== 'string' || !model.trim()) return null;
-    const providerCandidates = Array.isArray(rawCandidates)
-      ? rawCandidates.flatMap(value => {
-        if (!value || typeof value !== 'object') return [];
-        const candidate = value as Partial<CanvasAiModelCandidate>;
-        if ((candidate.source !== 'wallet' && candidate.source !== 'local')
-          || !CANVAS_AI_PROVIDER_VALUES.includes(candidate.provider as CanvasAiProvider)
-          || typeof candidate.model !== 'string' || !candidate.model.trim()) return [];
-        return [{
-          source: candidate.source,
-          provider: candidate.provider as CanvasAiProvider,
-          model: candidate.model.trim(),
-          providerChannelId: typeof candidate.providerChannelId === 'string' && candidate.providerChannelId.trim()
-            ? candidate.providerChannelId.trim()
-            : undefined,
-        } as CanvasAiModelCandidate];
-      })
-      : undefined;
-    return {
-      source: source as CanvasAiCredentialSource,
-      provider: provider as CanvasAiProvider,
-      model: model.trim(),
-      providerChannelId: typeof providerChannelId === 'string' && providerChannelId.trim()
-        ? providerChannelId.trim()
-        : undefined,
-      providerCandidates: providerCandidates && providerCandidates.length > 1 ? providerCandidates : undefined,
-    };
-  } catch {
-    return null;
-  }
-};
-const getStoredCanvasAiProvider = () => {
-  const storedProvider = localStorage.getItem(CANVAS_AI_PROVIDER_STORAGE_KEY);
-  return normalizeCanvasAiProvider(storedProvider);
-};
-const getStoredCanvasAiCredentialSource = (): CanvasAiCredentialSource => {
-  return localStorage.getItem(CANVAS_AI_CREDENTIAL_SOURCE_STORAGE_KEY) === 'local' ? 'local' : 'wallet';
-};
-const getCanvasAiApiKeyStorageKey = (provider: CanvasAiProvider) => `${CANVAS_AI_API_KEY_STORAGE_PREFIX}${provider}`;
-const getCanvasAiEndpointStorageKey = (provider: CanvasAiProvider) => `${CANVAS_AI_ENDPOINT_STORAGE_PREFIX}${provider}`;
-const getCanvasAiHeadersStorageKey = (provider: CanvasAiProvider) => `${CANVAS_AI_HEADERS_STORAGE_PREFIX}${provider}`;
-const getCanvasAiApiProviderStorageKey = (provider: CanvasAiProvider) => `${CANVAS_AI_API_PROVIDER_STORAGE_PREFIX}${provider}`;
-const getStoredCanvasAiApiKey = (provider: CanvasAiProvider) => {
-  const scopedKey = localStorage.getItem(getCanvasAiApiKeyStorageKey(provider));
-  if (scopedKey !== null) return scopedKey;
-  return '';
-};
-const getStoredCanvasAiEndpoint = (provider: CanvasAiProvider) => {
-  const scopedEndpoint = (localStorage.getItem(getCanvasAiEndpointStorageKey(provider)) || '').trim();
-  if (scopedEndpoint) return scopedEndpoint;
-  const storedProvider = normalizeCanvasAiProvider(localStorage.getItem(CANVAS_AI_PROVIDER_STORAGE_KEY));
-  const legacyEndpoint = (localStorage.getItem(CANVAS_AI_ENDPOINT_STORAGE_KEY) || '').trim();
-  if (storedProvider === provider && legacyEndpoint) return legacyEndpoint;
-  return getCanvasAiDefaultEndpoint(provider);
-};
-const getStoredCanvasAiHeadersText = (provider: CanvasAiProvider) => (
-  localStorage.getItem(getCanvasAiHeadersStorageKey(provider)) || '{}'
-);
-const getStoredCanvasAiApiProvider = (provider: CanvasAiProvider) => (
-  localStorage.getItem(getCanvasAiApiProviderStorageKey(provider)) || defaultCanvasAiApiProvider(provider)
-);
-const parseCanvasAiHeaders = (value: string) => {
-  const parsed = JSON.parse(value.trim() || '{}');
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Canvas 自定义 Headers 必须是 JSON 对象');
-  }
-  return Object.fromEntries(
-    Object.entries(parsed)
-      .map(([key, headerValue]) => [key.trim(), String(headerValue).trim()])
-      .filter(([key, headerValue]) => key && headerValue),
-  );
-};
-const getCanvasAiApiKeyPlaceholder = (provider: CanvasAiProvider) => (
-  provider === 'xais-chat'
-    ? 'Xais / DCHAI API Key'
-    : provider === 'new-api'
-      ? 'New API Key'
-      : 'API Key'
-);
-type RifeFrameInterpolationResult = {
-  outputPath: string;
-  engineDir?: string;
-  fps?: number;
-  outputFps?: number;
-  factor?: number;
-  inputFrames?: number;
-};
-type VideoCfrNormalizationResult = {
-  outputPath: string;
-  converted?: boolean;
-  isVfr?: boolean;
-  sourceFps?: number | null;
-  normalizedFps?: number | null;
-  reason?: string;
-};
-type QuickVideoEnhancementResult = RealEsrganEnhancementResult & {
-  encoder?: string;
-};
-type RifeFrameInterpolationEstimate = {
-  durationSec?: number | null;
-  width?: number | null;
-  height?: number | null;
-  fps?: number | null;
-  frameCount?: number | null;
-  outputFps?: number | null;
-  outputFrameCount?: number | null;
-  sampleFrames?: number | null;
-  estimatedSecondsMin?: number | null;
-  estimatedSecondsMax?: number | null;
-  sourceFps?: number | null;
-  cfrConverted?: boolean;
-  cfrReason?: string;
-};
-type RealEsrganEnhancementResult = {
-  outputPath: string;
-  engineDir?: string;
-  scale?: number;
-  mode?: string;
-  resizeMode?: string;
-  outputFormat?: string;
-  fps?: number | null;
-  width?: number | null;
-  height?: number | null;
-  preview?: boolean;
-  processedDurationSec?: number | null;
-};
-type RealEsrganEnhancementEstimate = RifeFrameInterpolationEstimate & {
-  outputWidth?: number | null;
-  outputHeight?: number | null;
-};
-type RifeEngineProgress = {
-  progressId?: string;
-  stage?: string;
-  label?: string;
-  loaded?: number;
-  total?: number;
-  progress?: number;
-};
-type AppUpdateProgress = {
-  progressId?: string;
-  stage?: string;
-  message?: string;
-  updaterKind?: string | null;
-  manifestEndpoint?: string | null;
-  statusCode?: number | null;
-  version?: string | null;
-  currentVersion?: string | null;
-  available?: boolean | null;
-  sourceName?: string | null;
-  sourceUrl?: string | null;
-  selectedUrl?: string | null;
-  errorMessage?: string | null;
-  loaded?: number;
-  total?: number;
-  progress?: number;
-};
-type AppUpdateInstallResult = {
-  available: boolean;
-  version?: string | null;
-  installed: boolean;
-};
-const rifeEstimateCache = new Map<string, Promise<RifeFrameInterpolationEstimate>>();
-const enhancementEstimateCache = new Map<string, Promise<RealEsrganEnhancementEstimate>>();
-const getRifeEngineProgressPercent = (progress?: RifeEngineProgress | null) => (
-  Math.max(0, Math.min(100, Math.round(Number(progress?.progress || 0) * 100)))
-);
-const shouldShowRifeEngineProgress = (progress?: RifeEngineProgress | null) => {
-  if (!progress?.stage) return false;
-  if (progress.stage.endsWith('-ready')) return false;
-  if (progress.stage.startsWith('downloading-')) return getRifeEngineProgressPercent(progress) < 100;
-  return true;
-};
-const isFrameProcessingProgress = (progress?: RifeEngineProgress | null) => (
-  !!progress?.stage && /(?:extracting|interpolating|enhancing)-.*frames/.test(progress.stage)
-);
-const isRifeFixed2xMode = (mode?: string | null) => (
-  mode === 'hd' || mode === 'uhd' || mode === 'hd-slow'
-);
-const getCanvasRifeRateValue = (ai?: CanvasImageItem['ai'] | null) => (
-  ai?.interpolationRateMode === 'target-fps'
-    ? `target-${Math.round(Number(ai?.interpolationTargetFps) || 60)}`
-    : `factor-${clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4)}`
-);
-const getCanvasRifeRateRequest = (ai?: CanvasImageItem['ai'] | null) => {
-  if (isRifeFixed2xMode(ai?.interpolationMode)) {
-    return { factor: 2, targetFps: undefined as number | undefined };
-  }
-  if (ai?.interpolationRateMode === 'target-fps') {
-    return {
-      factor: 4,
-      targetFps: clamp(Math.round(Number(ai?.interpolationTargetFps) || 60), 1, 240),
-    };
-  }
-  return {
-    factor: clamp(Math.round(Number(ai?.interpolationFactor) || 2), 2, 4),
-    targetFps: undefined as number | undefined,
-  };
-};
-const formatRifeEstimateSeconds = (seconds?: number | null) => {
-  if (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return '';
-  const safeSeconds = Math.max(1, Math.round(Number(seconds)));
-  if (safeSeconds < 60) return `${safeSeconds}秒`;
-  const minutes = Math.max(1, Math.round(safeSeconds / 60));
-  if (minutes < 60) return `${minutes}分钟`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest > 0 ? `${hours}小时${rest}分钟` : `${hours}小时`;
-};
-const formatCanvasWorkingElapsed = (startedAt?: number | null, now = Date.now()) => {
-  const start = Number(startedAt) || 0;
-  if (!start) return '0秒';
-  const elapsed = Math.max(0, Math.floor((now - start) / 1000));
-  return `${elapsed}秒`;
-};
-const formatRifeEstimateRange = (estimate?: RifeFrameInterpolationEstimate | null) => {
-  const min = Number(estimate?.estimatedSecondsMin);
-  const max = Number(estimate?.estimatedSecondsMax);
-  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) return '接入视频后自动估算';
-  const minText = formatRifeEstimateSeconds(min);
-  const maxText = formatRifeEstimateSeconds(max);
-  return minText && maxText && minText !== maxText ? `约 ${minText}～${maxText}` : `约 ${maxText || minText}`;
-};
-const formatRifeEstimateVideoMeta = (estimate?: RifeFrameInterpolationEstimate | null) => {
-  const parts: string[] = [];
-  if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
-    parts.push(formatRifeEstimateSeconds(estimate?.durationSec));
-  }
-  if (Number.isFinite(Number(estimate?.width)) && Number.isFinite(Number(estimate?.height)) && Number(estimate?.width) > 0 && Number(estimate?.height) > 0) {
-    parts.push(`${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`);
-  }
-  if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
-    const fps = Number(estimate?.fps);
-    const sourceFps = Number(estimate?.sourceFps);
-    if (estimate?.cfrConverted && Number.isFinite(sourceFps) && sourceFps > 0) {
-      parts.push(`${sourceFps.toFixed(sourceFps >= 10 ? 0 : 1)}fps → CFR ${fps.toFixed(fps >= 10 ? 0 : 1)}fps`);
-    } else {
-      parts.push(`${fps.toFixed(fps >= 10 ? 0 : 1)}fps`);
-    }
-  }
-  if (Number.isFinite(Number(estimate?.outputFps)) && Number(estimate?.outputFps) > 0) {
-    parts.push(`→ ${Number(estimate?.outputFps).toFixed(0)}fps`);
-  }
-  if (Number.isFinite(Number(estimate?.frameCount)) && Number(estimate?.frameCount) > 0) {
-    parts.push(`${Math.round(Number(estimate?.frameCount))}帧`);
-  }
-  return parts.join(' · ');
-};
-const formatEnhancementEstimateVideoMeta = (estimate?: RealEsrganEnhancementEstimate | null) => {
-  const parts: string[] = [];
-  if (Number.isFinite(Number(estimate?.durationSec)) && Number(estimate?.durationSec) > 0) {
-    parts.push(formatRifeEstimateSeconds(estimate?.durationSec));
-  }
-  const hasInputResolution = Number(estimate?.width) > 0 && Number(estimate?.height) > 0;
-  const hasOutputResolution = Number(estimate?.outputWidth) > 0 && Number(estimate?.outputHeight) > 0;
-  if (hasInputResolution) {
-    const inputResolution = `${Math.round(Number(estimate?.width))}×${Math.round(Number(estimate?.height))}`;
-    const outputResolution = hasOutputResolution
-      ? `${Math.round(Number(estimate?.outputWidth))}×${Math.round(Number(estimate?.outputHeight))}`
-      : '';
-    parts.push(outputResolution ? `${inputResolution} → ${outputResolution}` : inputResolution);
-  }
-  if (Number.isFinite(Number(estimate?.fps)) && Number(estimate?.fps) > 0) {
-    parts.push(`${Number(estimate?.fps).toFixed(Number(estimate?.fps) >= 10 ? 0 : 1)}fps`);
-  }
-  if (Number.isFinite(Number(estimate?.frameCount)) && Number(estimate?.frameCount) > 0) {
-    parts.push(`${Math.round(Number(estimate?.frameCount))}帧`);
-  }
-  return parts.join(' · ');
-};
-const isCanvasAiFrameInterpolationType = (type?: string | null) => type === 'frame-interpolation';
-const isCanvasAiEnhancementType = (type?: string | null) => type === 'image-enhancement' || type === 'video-enhancement';
-const isCanvasAiLocalMediaToolType = (type?: string | null) => (
-  isCanvasAiFrameInterpolationType(type) || isCanvasAiEnhancementType(type)
-);
-const getCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null): RifeEngineProgress | undefined => {
-  if (ai?.type === 'frame-interpolation') return ai.interpolationProgress as RifeEngineProgress | undefined;
-  if (isCanvasAiEnhancementType(ai?.type)) return ai.enhancementProgress as RifeEngineProgress | undefined;
-  return undefined;
-};
-const shouldShowCanvasAiLocalMediaProgress = (ai?: CanvasImageItem['ai'] | null) => (
-  shouldShowRifeEngineProgress(getCanvasAiLocalMediaProgress(ai))
-);
-const isCanvasAiGeneratorType = (type?: string | null) => (
-  type === 'image-generator'
-  || type === 'video-generator'
-  || isCanvasAiFrameInterpolationType(type)
-  || isCanvasAiEnhancementType(type)
-);
-const isCanvasAiGeneratedType = (type?: string | null) => type === 'generated-image' || type === 'generated-video';
-const getCanvasAiMediaType = (ai?: CanvasImageItem['ai'] | null): 'image' | 'video' => (
-  ai?.type === 'video-generator'
-  || ai?.type === 'frame-interpolation'
-  || ai?.type === 'video-enhancement'
-  || ai?.type === 'generated-video'
-    ? 'video'
-    : 'image'
-);
-const getCanvasAiNodeAutoSizeType = (ai?: CanvasImageItem['ai'] | null): 'image-generator' | 'video-generator' | 'workflow' => (
-  ai?.type === 'workflow'
-    ? 'workflow'
-    : getCanvasAiMediaType(ai) === 'video'
-      ? 'video-generator'
-      : 'image-generator'
-);
-const getCanvasAiNodeTitleBase = (ai?: CanvasImageItem['ai'] | null) => (
-  getCanvasAiMediaType(ai) === 'video' ? 'AI 视频节点' : 'AI 生图节点'
-);
-const getCanvasAiNodeTitle = (ai?: CanvasImageItem['ai'] | null) => (
-  ai?.type === 'frame-interpolation'
-    ? '视频补帧节点'
-    : ai?.type === 'video-enhancement'
-      ? '视频清晰度增强'
-      : ai?.type === 'image-enhancement'
-        ? '图片清晰度增强'
-        : getCanvasAiNodeTitleBase(ai)
-);
-type CanvasContextMenuState = {
-  x: number;
-  y: number;
-  worldX: number;
-  worldY: number;
-  type: 'canvas' | 'item' | 'connection' | 'source-connection' | 'target-input';
-  itemId?: string;
-  sourceId?: string;
-  sourceIds?: string[];
-  targetId?: string;
-};
-type FolderContextMenuState = {
-  x: number;
-  y: number;
-  folderId: string;
-};
-
-const acquireTimedLocalLock = (key: string, ttlMs: number) => {
-  const now = Date.now();
-  const owner = `${now}_${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    const raw = localStorage.getItem(key);
-    const existing = raw ? JSON.parse(raw) : null;
-    const existingTime = Number(existing?.time || 0);
-    if (existingTime && now - existingTime < ttlMs) return null;
-    localStorage.setItem(key, JSON.stringify({ owner, time: now }));
-    const current = JSON.parse(localStorage.getItem(key) || '{}');
-    return current?.owner === owner ? owner : null;
-  } catch (_) {
-    return owner;
-  }
-};
-
-const releaseTimedLocalLock = (key: string, owner: string | null) => {
-  if (!owner) return;
-  try {
-    const current = JSON.parse(localStorage.getItem(key) || '{}');
-    if (current?.owner === owner) localStorage.removeItem(key);
-  } catch (_) {}
-};
-
-const localLockKeyPart = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
 const emitFloatingNoteUpdated = (label: string, snapshot: FloatingNoteSnapshot) => (
   emitTo({ kind: 'WebviewWindow', label }, 'floating-note-updated', { ...snapshot, targetLabel: label })
 );
 const emitFloatingNoteSourceUpdated = (label: string, payload: Record<string, unknown>) => (
   emitTo({ kind: 'WebviewWindow', label }, 'floating-note-source-updated', { ...payload, targetLabel: label })
 );
-
-const getCanvasInitialImageSize = (naturalWidth = 0, naturalHeight = 0) => {
-  if (naturalWidth > 0 && naturalHeight > 0) {
-    const aspect = naturalWidth / Math.max(1, naturalHeight);
-    let width = Math.min(naturalWidth, CANVAS_INITIAL_IMAGE_MAX_WIDTH, CANVAS_MAX_IMAGE_WIDTH);
-    let height = width / aspect;
-    if (height > CANVAS_INITIAL_IMAGE_MAX_HEIGHT) {
-      height = CANVAS_INITIAL_IMAGE_MAX_HEIGHT;
-      width = height * aspect;
-    }
-    return {
-      width: Math.max(1, Math.round(width)),
-      height: Math.max(1, Math.round(height)),
-    };
-  }
-  return { width: CANVAS_FALLBACK_IMAGE_WIDTH, height: CANVAS_FALLBACK_IMAGE_HEIGHT };
-};
-
-const readImageDisplaySize = (src: string) => new Promise<{ width: number; height: number }>((resolve) => {
-  if (!src) {
-    resolve(getCanvasInitialImageSize());
-    return;
-  }
-  const image = new window.Image();
-  let settled = false;
-  const finish = (size: { width: number; height: number }) => {
-    if (settled) return;
-    settled = true;
-    window.clearTimeout(timer);
-    image.onload = null;
-    image.onerror = null;
-    resolve(size);
-  };
-  const timer = window.setTimeout(() => finish(getCanvasInitialImageSize()), 1800);
-  image.onload = () => finish(getCanvasInitialImageSize(image.naturalWidth, image.naturalHeight));
-  image.onerror = () => finish(getCanvasInitialImageSize());
-  image.decoding = 'async';
-  image.src = src;
-});
-
-const getFastCanvasImageDisplaySize = (item: BufferItem) => {
-  const thumbnail = item.thumbnail || '';
-  if (thumbnail.startsWith('data:image/')) {
-    const match = thumbnail.match(/(?:width|w)=["']?(\d+)["']?[^>]*(?:height|h)=["']?(\d+)["']?/i);
-    if (match) {
-      const width = Number(match[1]);
-      const height = Number(match[2]);
-      if (width > 0 && height > 0) return getCanvasInitialImageSize(width, height);
-    }
-  }
-  return getCanvasInitialImageSize();
-};
-
-
-
-
-
-
-
-function SnipOverlay() {
-  const [selection, setSelection] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [isCaptureOverlayHidden, setIsCaptureOverlayHidden] = useState(false);
-  const isMouseDownRef = useRef(false);
-  const startRef = useRef({ x: 0, y: 0 });
-  const captureInFlightRef = useRef(false);
-
-  const waitForTransparentSnipFrame = () => new Promise<void>((resolve) => {
-    requestAnimationFrame(() => {
-      window.setTimeout(resolve, 0);
-    });
-  });
-
-  const recoverAfterSnip = async () => {
-    const size = getStoredDrawerSize();
-    const mode = getStoredTriggerMode();
-    const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
-    await invoke('recover_after_snip', {
-      restoreDrawer,
-      width: size.width,
-      height: size.height,
-      mode,
-    }).catch(() => invoke('hide_snip_window').catch(() => appWindow.hide().catch(() => {})));
-  };
-
-  const cancelSnip = async () => {
-    if (captureInFlightRef.current) return;
-    isMouseDownRef.current = false;
-    setIsCaptureOverlayHidden(false);
-    setSelection(null);
-    await emitTo('main', 'snip-cancelled', {}).catch(() => {});
-    await recoverAfterSnip();
-  };
-
-  useEffect(() => {
-    const unlisteners: Array<() => void> = [];
-    listen('snip-reset', () => {
-      captureInFlightRef.current = false;
-      isMouseDownRef.current = false;
-      setIsCaptureOverlayHidden(false);
-      setSelection(null);
-    }).then(unlisten => unlisteners.push(unlisten));
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      void cancelSnip();
-    };
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown, true);
-      unlisteners.forEach(unlisten => unlisten());
-    };
-  }, []);
-
-  const finishSelection = async (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!isMouseDownRef.current || captureInFlightRef.current) return;
-    isMouseDownRef.current = false;
-    const rect = selection;
-    if (!rect || rect.w < 10 || rect.h < 10) {
-      await cancelSnip();
-      return;
-    }
-    const selectionLockKey = `${SNIP_CAPTURE_LOCK_STORAGE_KEY}_selection_${localLockKeyPart([
-      Math.round(rect.x),
-      Math.round(rect.y),
-      Math.round(rect.w),
-      Math.round(rect.h),
-      Math.round(window.innerWidth),
-      Math.round(window.innerHeight),
-    ].join('_'))}`;
-    const selectionLockOwner = acquireTimedLocalLock(selectionLockKey, 5000);
-    if (!selectionLockOwner) return;
-
-    const noteX = event.screenX - (event.clientX - rect.x);
-    const noteY = event.screenY - (event.clientY - rect.y);
-    captureInFlightRef.current = true;
-    flushSync(() => {
-      setIsCaptureOverlayHidden(true);
-      setSelection(null);
-    });
-    await waitForTransparentSnipFrame();
-
-    const payload = {
-      x: rect.x,
-      y: rect.y,
-      width: rect.w,
-      height: rect.h,
-      noteX,
-      noteY,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    };
-    try {
-      const size = getStoredDrawerSize();
-      const mode = getStoredTriggerMode();
-      const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
-      await invoke('complete_snip_selection', {
-        ...payload,
-        restoreDrawer,
-        drawerWidth: size.width,
-        drawerHeight: size.height,
-        mode,
-      });
-    } catch (err) {
-      await emitTo('main', 'snip-failed', { message: err instanceof Error ? err.message : String(err) }).catch(() => {});
-      await recoverAfterSnip();
-    } finally {
-      captureInFlightRef.current = false;
-      setIsCaptureOverlayHidden(false);
-      setSelection(null);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-[9999] cursor-crosshair select-none bg-transparent"
-      onContextMenu={(event) => {
-        event.preventDefault();
-        void cancelSnip();
-      }}
-      onMouseDown={(event) => {
-        if (event.button !== 0 || captureInFlightRef.current) return;
-        isMouseDownRef.current = true;
-        setIsCaptureOverlayHidden(false);
-        startRef.current = { x: event.clientX, y: event.clientY };
-        setSelection({ x: event.clientX, y: event.clientY, w: 0, h: 0 });
-      }}
-      onMouseMove={(event) => {
-        if (!isMouseDownRef.current || captureInFlightRef.current) return;
-        const x = Math.min(event.clientX, startRef.current.x);
-        const y = Math.min(event.clientY, startRef.current.y);
-        const w = Math.abs(event.clientX - startRef.current.x);
-        const h = Math.abs(event.clientY - startRef.current.y);
-        setSelection({ x, y, w, h });
-      }}
-      onMouseUp={finishSelection}
-    >
-      {isCaptureOverlayHidden ? null : selection ? (
-        <>
-          <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute left-0 right-0 top-0 bg-black/38" style={{ height: selection.y }} />
-            <div className="absolute left-0 bg-black/38" style={{ top: selection.y, width: selection.x, height: selection.h }} />
-            <div className="absolute right-0 bg-black/38" style={{ top: selection.y, left: selection.x + selection.w, height: selection.h }} />
-            <div className="absolute left-0 right-0 bottom-0 bg-black/38" style={{ top: selection.y + selection.h }} />
-          </div>
-          <div
-            className="absolute pointer-events-none rounded-[4px] border-2 border-emerald-400 shadow-[0_0_0_1px_rgba(255,255,255,0.7)]"
-            style={{ left: selection.x, top: selection.y, width: selection.w, height: selection.h }}
-          >
-            <div className="absolute inset-0 bg-white/10" />
-            <div className="absolute -top-7 right-0 rounded-md bg-emerald-500/95 px-2 py-1 text-[10px] font-semibold text-white shadow-lg whitespace-nowrap">
-              {Math.max(0, Math.round(selection.w))} x {Math.max(0, Math.round(selection.h))}
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="absolute inset-0 bg-black/38 pointer-events-none" />
-          <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-full bg-black/55 px-4 py-2 text-[12px] font-medium text-white shadow-lg pointer-events-none backdrop-blur-sm">
-            Drag to capture, Esc to cancel
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-let agentUiElementSequence = 0;
-
-const isAgentUiElementVisible = (element: HTMLElement) => {
-  const style = window.getComputedStyle(element);
-  const rect = element.getBoundingClientRect();
-  return style.display !== 'none'
-    && style.visibility !== 'hidden'
-    && Number(style.opacity || 1) > 0
-    && rect.width > 1
-    && rect.height > 1
-    && !element.closest('[aria-hidden="true"]');
-};
-
-const getVisibleAgentUiSnapshot = () => Array.from(document.querySelectorAll<HTMLElement>(
-  'button, input, textarea, select, a[href], [role="button"], [contenteditable="true"]',
-)).filter(element => {
-  return isAgentUiElementVisible(element);
-}).slice(0, 240).map(element => {
-  if (!element.dataset.agentUiId) {
-    agentUiElementSequence += 1;
-    element.dataset.agentUiId = `ui-${agentUiElementSequence}`;
-  }
-  const input = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
-    ? element
-    : null;
-  const select = element instanceof HTMLSelectElement ? element : null;
-  const text = String(
-    element.getAttribute('aria-label')
-      || element.getAttribute('title')
-      || element.textContent
-      || input?.placeholder
-      || element.getAttribute('name')
-      || '',
-  ).replace(/\s+/g, ' ').trim().slice(0, 120);
-  return {
-    elementId: element.dataset.agentUiId,
-    tag: element.tagName.toLowerCase(),
-    type: input?.type || element.getAttribute('role') || undefined,
-    text,
-    value: input?.type === 'password'
-      ? '[redacted]'
-      : String(input?.value ?? select?.value ?? '').slice(0, 160),
-    disabled: 'disabled' in element ? Boolean((element as HTMLButtonElement).disabled) : false,
-  };
-});
-
-const setAgentUiElementValue = (element: HTMLElement, value: string) => {
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-    const prototype = element instanceof HTMLInputElement
-      ? HTMLInputElement.prototype
-      : HTMLTextAreaElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (setter) setter.call(element, value);
-    else element.value = value;
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    return;
-  }
-  if (element instanceof HTMLSelectElement) {
-    element.value = value;
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    return;
-  }
-  if (element.isContentEditable) {
-    element.textContent = value;
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
-    return;
-  }
-  throw new Error('目标控件不支持输入');
-};
 
 const insertDrawerFolderAtTop = (currentFolders: Folder[], folder: Folder) => {
   if (folder.parentId) {
@@ -4100,246 +1058,37 @@ const insertDrawerFolderAtTop = (currentFolders: Folder[], folder: Folder) => {
   ];
 };
 
-type CanvasActionMenuPlacement = 'floating' | 'inline' | 'plain';
-
-function useEventCallback<T extends (...args: any[]) => any>(handler: T): T {
-  const handlerRef = useRef(handler);
-  useLayoutEffect(() => {
-    handlerRef.current = handler;
-  });
-  return useCallback(((...args: Parameters<T>) => handlerRef.current(...args)) as T, []);
-}
-
-const formatCanvasDeletedAt = (value?: number | null) => {
-  if (!value) return '删除时间未知';
-  return new Date(value).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-};
-
-const sameCanvasForList = (previous: CanvasRecord, next: CanvasRecord) => (
-  previous.id === next.id
-  && previous.name === next.name
-  && previous.isSnapshot === next.isSnapshot
-  && previous.deletedAt === next.deletedAt
-);
-
-type CanvasListItemProps = {
-  canvas: CanvasRecord;
-  isActive: boolean;
-  canDelete: boolean;
-  isSwitching: boolean;
-  isMenuOpen: boolean;
-  onOpen: (canvasId: string) => void;
-  onOpenMenu: (canvasId: string) => void;
-  onToggleMenu: (canvasId: string) => void;
-  onDelete: (canvas: CanvasRecord) => void;
-  renderMenu: (canvas: CanvasRecord, placement: CanvasActionMenuPlacement) => React.ReactNode;
-};
-
-const CanvasListItem = React.memo(function CanvasListItem({
-  canvas,
-  isActive,
-  canDelete,
-  isSwitching,
-  isMenuOpen,
-  onOpen,
-  onOpenMenu,
-  onToggleMenu,
-  onDelete,
-  renderMenu,
-}: CanvasListItemProps) {
-  return (
-    <div className="group/canvas w-full shrink-0" data-canvas-list-item="true">
-      <div className="relative">
-        <button
-          type="button"
-          disabled={isSwitching}
-          onClick={() => onOpen(canvas.id)}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenMenu(canvas.id);
-          }}
-          className={`flex h-9 w-full min-w-0 items-center gap-2 rounded-[10px] px-2 pr-16 text-left text-[12px] font-bold transition-colors ${isActive ? 'bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white'} disabled:cursor-wait disabled:opacity-60`}
-          title={canvas.name}
-        >
-          <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-[8px] ${isActive ? 'bg-white/18 text-white dark:bg-stone-950/82 dark:text-indigo-200 dark:ring-1 dark:ring-white/15' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-400/12 dark:text-indigo-200'}`}>
-            <Layers className="h-3.5 w-3.5" />
-          </span>
-          <span className="min-w-0 flex-1 truncate">{canvas.name || '画布'}</span>
-          {canvas.isSnapshot && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-black ${isActive ? 'bg-white/18 text-white/80 dark:text-stone-950/70' : 'bg-indigo-100 text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-200'}`}>快照</span>}
-        </button>
-        <button
-          type="button"
-          disabled={!canDelete}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onDelete(canvas);
-          }}
-          className="absolute right-8 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-red-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-stone-300 disabled:opacity-0 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-red-300 dark:ring-stone-700 dark:hover:bg-red-950/35 dark:hover:text-red-200 dark:disabled:text-stone-600"
-          title={canDelete ? '删除画布' : '正在切换画布'}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onToggleMenu(canvas.id);
-          }}
-          className="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-white/85 text-stone-500 opacity-0 ring-1 ring-stone-200 transition-opacity hover:text-stone-900 group-hover/canvas:opacity-100 dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700 dark:hover:text-white"
-          title="画布菜单"
-        >
-          <MoreVertical className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {isMenuOpen && renderMenu(canvas, 'inline')}
-    </div>
-  );
-}, (previous, next) => (
-  sameCanvasForList(previous.canvas, next.canvas)
-  && previous.isActive === next.isActive
-  && previous.canDelete === next.canDelete
-  && previous.isSwitching === next.isSwitching
-  && previous.isMenuOpen === next.isMenuOpen
-  && previous.onOpen === next.onOpen
-  && previous.onOpenMenu === next.onOpenMenu
-  && previous.onToggleMenu === next.onToggleMenu
-  && previous.onDelete === next.onDelete
-  && previous.renderMenu === next.renderMenu
-));
-
-type CanvasRailItemProps = Omit<CanvasListItemProps, 'canDelete' | 'onDelete'>;
-
-const CanvasRailItem = React.memo(function CanvasRailItem({
-  canvas,
-  isActive,
-  isSwitching,
-  isMenuOpen,
-  onOpen,
-  onOpenMenu,
-  onToggleMenu,
-  renderMenu,
-}: CanvasRailItemProps) {
-  return (
-    <div className="group/canvas-rail relative flex w-full shrink-0 flex-col items-center" data-canvas-list-item="true">
-      <button
-        type="button"
-        disabled={isSwitching}
-        onClick={() => onOpen(canvas.id)}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onOpenMenu(canvas.id);
-        }}
-        className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border transition-colors ${isActive ? 'border-indigo-300 bg-indigo-500 text-white dark:bg-indigo-400 dark:text-stone-950' : 'border-white/70 bg-white/65 text-indigo-500 hover:bg-indigo-50 dark:border-stone-700/60 dark:bg-stone-800/65 dark:text-indigo-200 dark:hover:bg-indigo-400/12'} disabled:cursor-wait disabled:opacity-60`}
-        title={canvas.name}
-      >
-        <Layers className="h-5 w-5" />
-      </button>
-      <span className={`w-14 truncate px-0.5 pb-1 text-center text-[10px] ${isActive ? 'font-bold text-indigo-700 dark:text-indigo-200' : 'text-stone-500 dark:text-stone-400'}`}>
-        {canvas.name || '画布'}
-      </span>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onToggleMenu(canvas.id);
-        }}
-        className="absolute right-0 top-0 hidden h-5 w-5 items-center justify-center rounded-full bg-white/88 text-stone-500 ring-1 ring-stone-200 group-hover/canvas-rail:flex dark:bg-stone-800/88 dark:text-stone-300 dark:ring-stone-700"
-        title="画布菜单"
-      >
-        <MoreVertical className="h-3 w-3" />
-      </button>
-      {isMenuOpen && (
-        <div className="absolute left-10 top-0 z-[100060]">
-          {renderMenu(canvas, 'plain')}
-        </div>
-      )}
-    </div>
-  );
-}, (previous, next) => (
-  sameCanvasForList(previous.canvas, next.canvas)
-  && previous.isActive === next.isActive
-  && previous.isSwitching === next.isSwitching
-  && previous.isMenuOpen === next.isMenuOpen
-  && previous.onOpen === next.onOpen
-  && previous.onOpenMenu === next.onOpenMenu
-  && previous.onToggleMenu === next.onToggleMenu
-  && previous.renderMenu === next.renderMenu
-));
-
-type CanvasTrashListItemProps = {
-  canvas: CanvasRecord;
-  onRestore: (canvas: CanvasRecord) => void;
-  onPermanentlyDelete: (canvas: CanvasRecord) => void;
-};
-
-const CanvasTrashListItem = React.memo(function CanvasTrashListItem({
-  canvas,
-  onRestore,
-  onPermanentlyDelete,
-}: CanvasTrashListItemProps) {
-  return (
-    <div className="rounded-[10px] border border-stone-200/80 bg-white/70 p-2 text-stone-700 dark:border-stone-700/70 dark:bg-stone-900/50 dark:text-stone-200">
-      <div className="flex items-start gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-stone-100 text-stone-500 dark:bg-stone-800 dark:text-stone-300">
-          <Layers className="h-3.5 w-3.5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-bold">{canvas.name || '画布'}</div>
-          <div className="mt-0.5 truncate text-[10px] font-medium text-stone-400 dark:text-stone-500">
-            {formatCanvasDeletedAt(canvas.deletedAt)}
-          </div>
-        </div>
-      </div>
-      <div className="mt-2 grid grid-cols-2 gap-1.5">
-        <button
-          type="button"
-          onClick={() => onRestore(canvas)}
-          className="inline-flex h-7 items-center justify-center gap-1 rounded-[8px] bg-emerald-50 text-[10px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:bg-emerald-400/12 dark:text-emerald-200 dark:hover:bg-emerald-400/20"
-        >
-          <ArchiveRestore className="h-3 w-3" />
-          恢复
-        </button>
-        <button
-          type="button"
-          onClick={() => onPermanentlyDelete(canvas)}
-          className="inline-flex h-7 items-center justify-center gap-1 rounded-[8px] bg-red-50 text-[10px] font-black text-red-600 transition-colors hover:bg-red-100 dark:bg-red-400/12 dark:text-red-200 dark:hover:bg-red-400/20"
-        >
-          <Trash2 className="h-3 w-3" />
-          永久删除
-        </button>
-      </div>
-    </div>
-  );
-}, (previous, next) => (
-  sameCanvasForList(previous.canvas, next.canvas)
-  && previous.onRestore === next.onRestore
-  && previous.onPermanentlyDelete === next.onPermanentlyDelete
-));
 
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
-  const shouldShowDailyAppUpdatePrompt = () => {
-    if (!isMainDrawerWindow) return false;
-    const todayKey = getLocalDateKey(Date.now());
-    if (localStorage.getItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY) === todayKey) return false;
-    localStorage.setItem(APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY, todayKey);
-    return true;
-  };
 
-  const [items, setItems] = useState<BufferItem[]>([]);
+  const [assetStorageMode, setAssetStorageMode] = useState<'initializing' | 'sqlite' | 'json'>('initializing');
+  const [assetLibraryReady, setAssetLibraryReady] = useState(false);
+  const [totalAssetCount, setTotalAssetCount] = useState(0);
+  const [assetWindowOffset, setAssetWindowOffset] = useState(0);
+  const [hasMoreAssets, setHasMoreAssets] = useState(false);
+  const [isAssetPageLoading, setIsAssetPageLoading] = useState(false);
+  const [assetStatsRevision, setAssetStatsRevision] = useState(0);
+  const [folderAssetCountRows, setFolderAssetCountRows] = useState<Array<{ folderId: string | null; count: number }>>([]);
+  const [quickAccessItems, setQuickAccessItems] = useState<BufferItem[]>([]);
+  const assetQueryRequestIdRef = useRef(0);
+  const assetPageOffsetsInFlightRef = useRef(new Set<number>());
+  const assetQueryOptionsRef = useRef<AssetListOptions>({});
+  const assetQueryTotalCountRef = useRef(0);
+  const assetWindowOffsetRef = useRef(0);
+  const {
+    assets: items,
+    setAssets: setItems,
+    replaceAssetsFromQuery,
+    appendAssetsFromQuery,
+    updateAssetsFromQuery,
+    prependAssetsAndPersist,
+  } = useDrawerAssetCache({
+    storageMode: assetStorageMode,
+    onPersisted: () => setAssetStatsRevision(revision => revision + 1),
+    onError: error => console.warn('SQLite 素材写入失败:', error),
+  });
   const [folders, setFolders] = useState<Folder[]>([]);
   const [activeFolderId, setActiveFolderId] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<DrawerTabType>('all');
@@ -4348,7 +1097,14 @@ function MainApp() {
     failed: number;
     total: number;
   } | null>(null);
+  const [sqliteAiAnalysisSummary, setSqliteAiAnalysisSummary] = useState<{
+    analyzed: number;
+    skipped: number;
+    waitingRetry: number;
+    total: number;
+  } | null>(null);
   const [autoAiAnalysisRetryTick, setAutoAiAnalysisRetryTick] = useState(0);
+  const [isAutoAiAnalysisStartupReady, setIsAutoAiAnalysisStartupReady] = useState(false);
   const itemsRef = useRef<BufferItem[]>([]);
   const inspirationAnalysisJobsRef = useRef(new Map<string, InspirationAnalysisJob>());
   const drawerOrganizationPlansRef = useRef(new Map<string, {
@@ -4359,7 +1115,9 @@ function MainApp() {
   const autoInspirationAnalysisAttemptedRef = useRef(new Set<string>());
   const autoInspirationAnalysisPendingIdsRef = useRef(new Set<string>());
   const autoInspirationAnalysisRunningRef = useRef(false);
+  const autoInspirationAnalysisStartupRequeueRef = useRef(false);
   const autoInspirationAnalysisRetryTimersRef = useRef(new Set<number>());
+  const autoInspirationAnalysisLastUserActivityAtRef = useRef(Date.now());
   const agentModelRef = useRef('unmind-agent');
   const foldersRef = useRef<Folder[]>([]);
   const hasRestoredNonEmptyFoldersRef = useRef(false);
@@ -4375,8 +1133,6 @@ function MainApp() {
   const floatingBridgeSeenRef = useRef<Record<string, number>>({});
   const drawerTextEditUndoIdsRef = useRef<Set<string>>(new Set());
   const floatingTextUndoTimersRef = useRef<Record<string, number>>({});
-  const localCmfRecoveryIdsRef = useRef<Set<string>>(new Set());
-  const paletteAnalysisRequestedIdsRef = useRef<Set<string>>(new Set());
   const blankFloatingNoteCreateLockRef = useRef(false);
   const lastBlankFloatingNoteCreatedAtRef = useRef(0);
   useEffect(() => { itemsRef.current = items; }, [items]);
@@ -4453,9 +1209,26 @@ function MainApp() {
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
+  const [canvasPromptOptimizingId, setCanvasPromptOptimizingId] = useState<string | null>(null);
+  const [canvasAiExpandedOutputNodeIds, setCanvasAiExpandedOutputNodeIds] = useState<Set<string>>(() => new Set());
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
   const [canvasBrushEditor, setCanvasBrushEditor] = useState<CanvasBrushEditorState | null>(null);
   const [canvasFolderPickerVisibleCount, setCanvasFolderPickerVisibleCount] = useState(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
+  const [canvasFolderPickerItems, setCanvasFolderPickerItems] = useState<CanvasDrawerMediaItem[]>([]);
+  const [canvasFolderPickerTotal, setCanvasFolderPickerTotal] = useState(0);
+  const [canvasFolderPickerHasMore, setCanvasFolderPickerHasMore] = useState(false);
+  const [isCanvasFolderPickerLoading, setIsCanvasFolderPickerLoading] = useState(false);
+  const [canvasFolderPickerError, setCanvasFolderPickerError] = useState('');
+  const canvasFolderPickerItemsRef = useRef<CanvasDrawerMediaItem[]>([]);
+  const canvasFolderPickerRequestRef = useRef(0);
+  const canvasFolderPickerLoadingRef = useRef(false);
+  const canvasFolderPickerPagingRef = useRef<CanvasFolderMediaPagingState>({
+    folderKey: '',
+    imageOffset: 0,
+    videoOffset: 0,
+    imageTotal: 0,
+    videoTotal: 0,
+  });
   const [canvasBrushMode, setCanvasBrushMode] = useState<CanvasBrushEditorMode>('brush');
   const [canvasBrushColor, setCanvasBrushColor] = useState(CANVAS_BRUSH_COLORS[0]);
   const [canvasBrushSize, setCanvasBrushSize] = useState(26);
@@ -4530,6 +1303,7 @@ function MainApp() {
   const [canvasAiApiProvider, setCanvasAiApiProvider] = useState(() => getStoredCanvasAiApiProvider(getStoredCanvasAiProvider()));
   const [canvasAiOpenAiModels, setCanvasAiOpenAiModels] = useState<string[]>(() => readStoredCanvasAiOpenAiModels());
   const [canvasAiNewApiModels, setCanvasAiNewApiModels] = useState<string[]>(() => readStoredCanvasAiNewApiModels());
+  const [canvasAiMikotoModels, setCanvasAiMikotoModels] = useState<string[]>(() => readStoredCanvasAiMikotoModels());
   const [canvasAiXaisModels, setCanvasAiXaisModels] = useState<string[]>(() => readStoredCanvasAiXaisModels());
   const [canvasAiCloudImageModels, setCanvasAiCloudImageModels] = useState<CloudImageModelsResult | null>(null);
   const [isRefreshingCanvasAiOpenAiModels, setIsRefreshingCanvasAiOpenAiModels] = useState(false);
@@ -4571,6 +1345,7 @@ function MainApp() {
   const [canvasPresetPromptDraft, setCanvasPresetPromptDraft] = useState('');
   const [canvasWorkflowSingleEditGroupIds, setCanvasWorkflowSingleEditGroupIds] = useState<string[]>([]);
   const isCanvasModeRef = useRef(false);
+  const canvasesRef = useRef<CanvasRecord[]>([]);
   const activeCanvasIdRef = useRef(DEFAULT_CANVAS_ID);
   const isSwitchingCanvasRef = useRef(false);
   const canvasItemsRef = useRef<CanvasImageItem[]>([]);
@@ -4704,6 +1479,14 @@ function MainApp() {
   } | null>(null);
   const canvasUploadInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasUploadTargetIdRef = useRef<string | null>(null);
+  const pendingCanvasFusionRoleRef = useRef<{
+    targetId: string;
+    role: CanvasImageFusionRole;
+  } | null>(null);
+  const pendingCanvasFusionUploadRoleRef = useRef<{
+    targetId: string;
+    role: CanvasImageFusionRole;
+  } | null>(null);
   const pendingCanvasWorkflowSlotUploadRef = useRef<{
     moduleId: string;
     slotId: string;
@@ -4712,6 +1495,7 @@ function MainApp() {
   const canvasWorkflowFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasWorkflowFileTargetIdRef = useRef<string | null>(null);
   const canvasClipboardRef = useRef<CanvasImageItem[]>([]);
+  const preferCanvasClipboardRef = useRef(false);
   const canvasPanRef = useRef<{
     pointerId: number;
     button: number;
@@ -4720,11 +1504,13 @@ function MainApp() {
     startScrollLeft: number;
     startScrollTop: number;
   } | null>(null);
+  const canvasPanCleanupRef = useRef<(() => void) | null>(null);
   const canvasScrollLockRef = useRef<{ left: number; top: number } | null>(null);
   const canvasScrollWriteGuardRef = useRef(false);
   const canvasScrollWriteFrameRef = useRef<number | null>(null);
   const canvasAiPromptDraftTimersRef = useRef<Record<string, number>>({});
   const canvasAiPromptDraftValuesRef = useRef<Record<string, string>>({});
+  const canvasAiPromptTextAreaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const canvasTextDraftTimersRef = useRef<Record<string, number>>({});
   const canvasTextDraftValuesRef = useRef<Record<string, string>>({});
   const canvasTextAreaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
@@ -4804,6 +1590,7 @@ function MainApp() {
       setCanvasActionMenuId(null);
       setCanvasInputMenuForId(null);
       setCanvasInputPickTargetId(null);
+      pendingCanvasFusionRoleRef.current = null;
       setIsCanvasAiPanelOpen(false);
       setIsCanvasChromeHidden(false);
       Object.values(canvasAiPromptDraftTimersRef.current).forEach(timer => window.clearTimeout(timer));
@@ -4818,6 +1605,8 @@ function MainApp() {
       cancelCanvasImageSourceUpgradeQueue();
       canvasImageSourceCacheRef.current.clear();
       canvasPreviewSourceIdsRef.current.clear();
+      canvasPanCleanupRef.current?.();
+      canvasPanCleanupRef.current = null;
       canvasPanRef.current = null;
       cancelCanvasItemDragVisuals();
       canvasSelectionDragRef.current = null;
@@ -4857,6 +1646,7 @@ function MainApp() {
     const timer = window.setInterval(() => setCanvasWorkingTimerTick(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [canvasItems]);
+  useEffect(() => { canvasesRef.current = canvases; }, [canvases]);
   useEffect(() => { activeCanvasIdRef.current = activeCanvasId; }, [activeCanvasId]);
   useEffect(() => { isSwitchingCanvasRef.current = isSwitchingCanvas; }, [isSwitchingCanvas]);
   useEffect(() => { canvasSelectedIdsRef.current = canvasSelectedIds; }, [canvasSelectedIds]);
@@ -4873,6 +1663,7 @@ function MainApp() {
     const closeCanvasClickWindows = () => {
       setCanvasContextMenu(null);
       setCanvasInputMenuForId(null);
+      pendingCanvasFusionRoleRef.current = null;
       setCanvasFolderImportPrompt(null);
       setIsCanvasAiPanelOpen(false);
       setIsCanvasPresetEditorOpen(false);
@@ -5007,7 +1798,6 @@ function MainApp() {
   const [calendarDraftText, setCalendarDraftText] = useState('');
   const [calendarDraftPriority, setCalendarDraftPriority] = useState<SchedulePriority>('B');
   const [calendarTargetNoteLabel, setCalendarTargetNoteLabel] = useState(CALENDAR_NEW_NOTE_TARGET);
-  const [, setSelectedAlchemyItemId] = useState<string | null>(null);
 
   const [isOpen, setIsOpen] = useState(shouldShowInitialLaunchIntro);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -5165,6 +1955,20 @@ function MainApp() {
     localStorage.setItem(DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY, drawerSidebarLayout);
   }, [drawerSidebarLayout]);
   const isFolderSidebarLayout = drawerSidebarLayout === 'folders';
+  const [drawerClassificationView, setDrawerClassificationView] = useState<DrawerClassificationView>(() => (
+    normalizeDrawerClassificationView(localStorage.getItem(DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY))
+  ));
+  useEffect(() => {
+    localStorage.setItem(DRAWER_CLASSIFICATION_VIEW_STORAGE_KEY, drawerClassificationView);
+  }, [drawerClassificationView]);
+  const isDrawerAiClassificationMode = drawerClassificationView === 'ai';
+  const [drawerAiClassificationDimension, setDrawerAiClassificationDimension] = useState<AiClassificationDimension>(() => (
+    normalizeAiClassificationDimension(localStorage.getItem(DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY))
+  ));
+  useEffect(() => {
+    localStorage.setItem(DRAWER_AI_CLASSIFICATION_DIMENSION_STORAGE_KEY, drawerAiClassificationDimension);
+  }, [drawerAiClassificationDimension]);
+  const [activeDrawerAiClassificationLabel, setActiveDrawerAiClassificationLabel] = useState('all');
   const [drawerFolderSidebarWidth, setDrawerFolderSidebarWidth] = useState(() => (
     clamp(
       Number(localStorage.getItem(DRAWER_FOLDER_SIDEBAR_WIDTH_STORAGE_KEY)) || DRAWER_FOLDER_SIDEBAR_DEFAULT_WIDTH,
@@ -5212,8 +2016,12 @@ function MainApp() {
   }, [collapsedFolderIds]);
 
   const [isResizingCards, setIsResizingCards] = useState(false);
-  const [drawerRenderLimit, setDrawerRenderLimit] = useState(DRAWER_INITIAL_RENDER_LIMIT);
   const drawerScrollRef = useRef<HTMLDivElement | null>(null);
+  const [drawerScrollNode, setDrawerScrollNode] = useState<HTMLDivElement | null>(null);
+  const setDrawerScrollElement = useCallback((node: HTMLDivElement | null) => {
+    drawerScrollRef.current = node;
+    setDrawerScrollNode(current => current === node ? current : node);
+  }, []);
   const [isAntiTouchMode, setIsAntiTouchMode] = useState(() => localStorage.getItem('drawer_anti_touch_mode') === 'true');
   useEffect(() => {
     invoke('set_anti_touch_lock', { locked: isAntiTouchMode }).catch(() => {});
@@ -5226,6 +2034,7 @@ function MainApp() {
   useEffect(() => {
     if (
       !isDataLoaded
+      || assetStorageMode !== 'json'
       || localStorage.getItem(AUTO_INSPIRATION_ANALYSIS_RETRY_MIGRATION_KEY) === '1'
     ) return;
     let changed = false;
@@ -5244,22 +2053,82 @@ function MainApp() {
     if (!changed) return;
     itemsRef.current = nextItems;
     startTransition(() => setItems(nextItems));
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
-    if (!isDataLoaded || localStorage.getItem(LOCAL_ALCHEMY_TAG_CLEANUP_KEY) === '1') return;
-    let changed = false;
-    const nextItems = itemsRef.current.map(item => {
-      const cleanedItem = removeLocalAlchemyKeywords(item as AlchemyBufferItem) as BufferItem;
-      if (cleanedItem !== item) changed = true;
-      return cleanedItem;
-    });
-    localStorage.setItem(LOCAL_ALCHEMY_TAG_CLEANUP_KEY, '1');
-    if (!changed) return;
-    itemsRef.current = nextItems;
-    startTransition(() => setItems(nextItems));
-  }, [isDataLoaded]);
+    if (
+      !isDataLoaded
+      || assetStorageMode === 'initializing'
+      || autoInspirationAnalysisStartupRequeueRef.current
+    ) return;
+    autoInspirationAnalysisStartupRequeueRef.current = true;
+
+    const applyRequeuedItems = (requeuedItems: BufferItem[]) => {
+      if (requeuedItems.length === 0) return;
+      const requeuedById = new Map(requeuedItems.map(item => [item.id, item]));
+      requeuedItems.forEach(item => {
+        autoInspirationAnalysisAttemptedRef.current.delete(item.id);
+        autoInspirationAnalysisPendingIdsRef.current.delete(item.id);
+      });
+      const nextItems = itemsRef.current.map(item => requeuedById.get(item.id) || item);
+      itemsRef.current = nextItems;
+      startTransition(() => {
+        if (assetStorageMode === 'sqlite') updateAssetsFromQuery(requeuedItems);
+        else setItems(nextItems);
+      });
+    };
+
+    if (assetStorageMode === 'json') {
+      const requeuedItems = itemsRef.current.flatMap((item) => {
+        const requeued = requeueInspirationAnalysisItemAfterRestart(item);
+        return requeued === item ? [] : [requeued];
+      });
+      applyRequeuedItems(requeuedItems);
+      setIsAutoAiAnalysisStartupReady(true);
+      return;
+    }
+
+    void (async () => {
+      const requeuedItems: BufferItem[] = [];
+      for (const inspirationStatus of ['retryable', 'skipped'] as const) {
+        const processedIds = new Set<string>();
+        while (true) {
+          const failedItems = await listAssets({
+            file_type: 'image',
+            inspiration_status: inspirationStatus,
+            sort: 'updated_at_asc',
+            offset: 0,
+            limit: ASSET_PAGE_SIZE,
+          });
+          if (failedItems.length === 0) break;
+          const ids = failedItems
+            .map(item => item.id)
+            .filter(id => !processedIds.has(id));
+          if (ids.length === 0) {
+            throw new Error(`图片分析重试队列未能清除 ${inspirationStatus} 状态`);
+          }
+          ids.forEach(id => processedIds.add(id));
+          const updated = await updateAssetsBatch([{
+            ids,
+            patch: { clear_inspiration_analysis_failure: true },
+          }]);
+          requeuedItems.push(...updated);
+        }
+      }
+      applyRequeuedItems(requeuedItems);
+      if (requeuedItems.length > 0) {
+        setAssetStatsRevision(revision => revision + 1);
+        setAutoAiAnalysisRetryTick(current => current + 1);
+      }
+    })()
+      .catch(error => console.warn('重启后恢复图片分析队列失败:', error))
+      .finally(() => setIsAutoAiAnalysisStartupReady(true));
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
-    if (!isDataLoaded || localStorage.getItem(AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY) === '1') return;
+    if (
+      !isDataLoaded
+      || assetStorageMode !== 'json'
+      || localStorage.getItem(AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY) === '1'
+    ) return;
     localStorage.setItem(AUTO_INSPIRATION_ANALYSIS_NOTE_PAYLOAD_FIX_KEY, '1');
     let changed = false;
     const nextItems = itemsRef.current.map(item => {
@@ -5270,19 +2139,14 @@ function MainApp() {
     if (!changed) return;
     itemsRef.current = nextItems;
     startTransition(() => setItems(nextItems));
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
     if (
       !isDataLoaded
       || !isFoldersLoaded
       || localStorage.getItem(AI_GENERATED_IMAGE_PROMPT_NOTE_CLEANUP_KEY) === '1'
     ) return;
-    const generatedImageFolderIds = new Set([
-      AI_GENERATED_FOLDER_ID,
-      ...foldersRef.current
-        .filter(folder => folder.name === AI_GENERATED_FOLDER_NAME)
-        .map(folder => folder.id),
-    ]);
+    const generatedImageFolderIds = getAiGeneratedImageFolderIds(foldersRef.current);
     let changed = false;
     const nextItems = itemsRef.current.map(item => {
       const isLegacyGeneratedImage = item.type === 'image' && (
@@ -5339,11 +2203,19 @@ function MainApp() {
 
   const [toast, setToast] = useState({ show: false, msg: '' });
   const toastTimerRef = useRef<any | null>(null);
+  const showToast = (msg: string) => {
+    setToast({ show: true, msg });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast({ show: false, msg: '' }), 2500);
+  };
   const [virtualDropJobs, setVirtualDropJobs] = useState<VirtualDropUiJob[]>([]);
-  const [appVersion, setAppVersion] = useState('');
-  const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
-  const isCheckingAppUpdateRef = useRef(false);
-  const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
+  const {
+    appVersion,
+    checkAndInstallAppUpdate,
+    handleAppUpdatePromptClick,
+    isCheckingAppUpdate,
+    showAppUpdatePromptArrow,
+  } = useAppUpdate({ isMainDrawerWindow, showToast });
   const [isMobileConnected, setIsMobileConnected] = useState(false);
   const disconnectTimerRef = useRef<any | null>(null);
   const recentMobilePayloadsRef = useRef<Record<string, number>>({});
@@ -5351,12 +2223,6 @@ function MainApp() {
   const resetDisconnectTimer = () => {
     if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
     disconnectTimerRef.current = setTimeout(() => setIsMobileConnected(false), 30000);
-  };
-
-  const showToast = (msg: string) => {
-    setToast({ show: true, msg });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast({ show: false, msg: '' }), 2500);
   };
 
   const formatVirtualDropBytes = (value?: number | null) => {
@@ -5383,249 +2249,6 @@ function MainApp() {
       return next;
     });
   };
-
-  useEffect(() => {
-    if (!isMainDrawerWindow) return;
-    getVersion()
-      .then(setAppVersion)
-      .catch(err => {
-        console.warn('获取应用版本失败:', err);
-        setAppVersion('5.0.15');
-      });
-  }, []);
-
-  const formatAppUpdateErrorMessage = (err: unknown) => {
-    const raw = err instanceof Error ? err.message : String(err || '未知错误');
-    const lower = raw.toLowerCase();
-
-    if (raw.includes('manifest 请求失败')) {
-      return `检查更新失败：manifest 请求失败。原始错误：${raw}`;
-    }
-
-    if (raw.includes('manifest 不是合法 JSON')) {
-      return `检查更新失败：manifest 不是合法 JSON。原始错误：${raw}`;
-    }
-
-    if (raw.includes('manifest 格式不符合预期') || lower.includes('url field was not set')) {
-      return `检查更新失败：manifest 格式不符合预期。原始错误：${raw}`;
-    }
-
-    if (raw.includes('版本号比较失败')) {
-      return `检查更新失败：版本号比较失败。原始错误：${raw}`;
-    }
-
-    if (lower.includes('signature field was not set')) {
-      return `检查更新失败：signature 缺失。当前安装阶段仍借用 Tauri updater，signature 必须是 .sig 文件内容。原始错误：${raw}`;
-    }
-
-    if (lower.includes('signature')) {
-      return `检查更新失败：signature 缺失或不匹配。原始错误：${raw}`;
-    }
-
-    if (lower.includes('sha256')) {
-      return `检查更新失败：sha256 缺失或不匹配。原始错误：${raw}`;
-    }
-
-    if (raw.includes('文件大小不匹配') || lower.includes('size')) {
-      return `检查更新失败：安装包大小不匹配。原始错误：${raw}`;
-    }
-
-    if (raw.includes('下载更新源') || raw.includes('下载失败') || lower.includes('download')) {
-      return `检查更新失败：安装包下载失败。原始错误：${raw}`;
-    }
-
-    if (raw.includes('安装包路径不存在') || raw.includes('路径不存在')) {
-      return `检查更新失败：安装包路径不存在。原始错误：${raw}`;
-    }
-
-    if (raw.includes('安装更新失败')) {
-      return `检查更新失败：安装阶段失败。原始错误：${raw}`;
-    }
-
-    if (lower.includes('sending request') || lower.includes('timed out') || lower.includes('timeout') || lower.includes('dns') || lower.includes('network') || lower.includes('connection')) {
-      return `检查更新失败：请求失败。原始错误：${raw}`;
-    }
-
-    return `检查更新失败：${raw}`;
-  };
-
-  const checkAndInstallAppUpdate = async (options: { silent?: boolean; hidePromptWhenUpToDate?: boolean } = {}) => {
-    if (!isMainDrawerWindow) return;
-    if (isCheckingAppUpdateRef.current) {
-      if (!options.silent) showToast('正在检查更新...');
-      return;
-    }
-
-    isCheckingAppUpdateRef.current = true;
-    setIsCheckingAppUpdate(true);
-    const progressId = `app-update-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    let unlistenAppUpdateProgress: (() => void) | undefined;
-    try {
-      if (!options.silent) showToast('正在检查更新...');
-      let lastToastAt = 0;
-      let lastDownloadingSource = '';
-      unlistenAppUpdateProgress = await listen<AppUpdateProgress>('app-update-progress', (event) => {
-        const progress = event.payload;
-        if (progress?.progressId !== progressId) return;
-        console.info('[app-update]', {
-          updaterKind: progress.updaterKind,
-          stage: progress.stage,
-          message: progress.message,
-          manifestEndpoint: progress.manifestEndpoint,
-          statusCode: progress.statusCode,
-          version: progress.version,
-          currentVersion: progress.currentVersion,
-          available: progress.available,
-          sourceName: progress.sourceName,
-          sourceUrl: progress.sourceUrl,
-          selectedUrl: progress.selectedUrl,
-          errorMessage: progress.errorMessage,
-          loaded: progress.loaded,
-          total: progress.total,
-          progress: progress.progress,
-        });
-        const sourceName = progress.sourceName || '更新源';
-        const version = progress.version || '';
-
-        if (progress.stage === 'found') {
-          showToast(version ? `发现新版本 ${version}，准备下载更新` : '发现新版本，准备下载更新');
-          return;
-        }
-
-        if (progress.stage === 'source-started') {
-          lastDownloadingSource = sourceName;
-          showToast(`正在尝试 ${sourceName}`);
-          return;
-        }
-
-        if (progress.stage === 'downloading') {
-          const total = Number(progress.total || 0);
-          const loaded = Number(progress.loaded || 0);
-          const now = Date.now();
-          if (sourceName !== lastDownloadingSource || now - lastToastAt > 1200 || (total > 0 && loaded >= total)) {
-            lastToastAt = now;
-            lastDownloadingSource = sourceName;
-            showToast(total > 0
-              ? `正在从 ${sourceName} 下载 ${Math.min(99, Math.round((loaded / total) * 100))}%`
-              : `正在从 ${sourceName} 下载更新包`);
-          }
-          return;
-        }
-
-        if (progress.stage === 'download-finished') {
-          showToast(`${sourceName} 下载完成，正在校验`);
-          return;
-        }
-
-        if (progress.stage === 'sha256-verified') {
-          showToast(`${sourceName} SHA256 校验通过`);
-          return;
-        }
-
-        if (progress.stage === 'installing') {
-          showToast('更新包校验通过，正在安装');
-          return;
-        }
-
-        if (progress.stage === 'source-failed') {
-          console.warn('[app-update] source failed:', {
-            sourceName: progress.sourceName,
-            sourceUrl: progress.sourceUrl,
-            message: progress.message,
-            errorMessage: progress.errorMessage,
-          });
-          if (!options.silent) {
-            const detail = `${progress.message || ''}\n${progress.errorMessage || ''}`.toLowerCase();
-            const reason = detail.includes('signature')
-              ? 'signature 校验/格式失败'
-              : detail.includes('sha256')
-                ? 'SHA256 校验失败'
-                : detail.includes('文件大小') || detail.includes('size')
-                  ? '文件大小不匹配'
-                  : detail.includes('url field')
-                    ? 'manifest 下载 URL 缺失'
-                    : detail.includes('download') || detail.includes('下载')
-                      ? '下载失败'
-                      : '处理失败';
-            showToast(`${sourceName} ${reason}，正在切换备用源`);
-          }
-        }
-      });
-
-      const result = await invoke<AppUpdateInstallResult>('check_and_install_app_update_mirrors', {
-        progressId,
-        checkTimeoutMs: 8000,
-        downloadTimeoutMs: 180000,
-      });
-
-      if (!result.available) {
-        if (options.hidePromptWhenUpToDate) setShowAppUpdatePromptArrow(false);
-        if (!options.silent) showToast('当前已是最新版本');
-        return;
-      }
-
-      if (!result.installed) return;
-      setShowAppUpdatePromptArrow(false);
-      showToast('更新已安装，准备重启');
-
-      window.setTimeout(() => {
-        void relaunch().catch(err => {
-          console.warn('relaunch after update failed:', err);
-          showToast('更新已安装，请手动重启应用');
-        });
-      }, 900);
-    } catch (err) {
-      console.warn('检查更新失败:', err);
-      if (!options.silent) showToast(formatAppUpdateErrorMessage(err));
-    } finally {
-      unlistenAppUpdateProgress?.();
-      isCheckingAppUpdateRef.current = false;
-      setIsCheckingAppUpdate(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!isMainDrawerWindow) return;
-    let disposed = false;
-    let timer: number | null = null;
-
-    const scheduleNextAutomaticCheck = () => {
-      if (disposed) return;
-      const stored = Number(localStorage.getItem(APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY));
-      const lastCheckedAt = Number.isFinite(stored) && stored > 0 ? stored : 0;
-      const elapsed = lastCheckedAt > 0 ? Math.max(0, Date.now() - lastCheckedAt) : 0;
-      const delayMs = lastCheckedAt > 0
-        ? Math.max(1000, APP_UPDATE_AUTOMATIC_CHECK_INTERVAL_MS - elapsed)
-        : 15_000;
-
-      timer = window.setTimeout(async () => {
-        if (disposed) return;
-        localStorage.setItem(APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY, String(Date.now()));
-        await checkAndInstallAppUpdate({ silent: true, hidePromptWhenUpToDate: true });
-        scheduleNextAutomaticCheck();
-      }, delayMs);
-    };
-
-    scheduleNextAutomaticCheck();
-    return () => {
-      disposed = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, []);
-
-  const handleAppUpdatePromptClick = (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (isCheckingAppUpdate) {
-      showToast('正在检查更新...');
-      return;
-    }
-    void checkAndInstallAppUpdate({ hidePromptWhenUpToDate: true });
-  };
-
-  useEffect(() => {
-    if (!isMainDrawerWindow) setShowAppUpdatePromptArrow(false);
-  }, []);
 
   useEffect(() => {
     if (!isMainDrawerWindow) return;
@@ -5714,7 +2337,14 @@ function MainApp() {
       void emitFloatingNoteUpdated(entry.label, entry.snapshot).catch(() => {});
     });
     writeOpenFloatingNoteLabels(snapshot.openFloatingNoteLabels);
-    setItems(cloneDrawerValue(snapshot.items));
+    setItems(previous => {
+      const restoredItems = cloneDrawerValue(snapshot.items);
+      const restoredIds = new Set(restoredItems.map(item => item.id));
+      const retainedPreviouslyStoredItems = previous.filter(item => (
+        !restoredIds.has(item.id) && item.createdAt <= snapshot.createdAt
+      ));
+      return [...restoredItems, ...retainedPreviouslyStoredItems];
+    });
     const nextFolders = cloneDrawerValue(snapshot.folders);
     setFolders(nextFolders);
     persistFoldersSnapshot(nextFolders);
@@ -5966,7 +2596,7 @@ function MainApp() {
 
     try {
       const item: BufferItem = {
-        id: `blank_note_${now}_${Math.random().toString(36).slice(2, 7)}`,
+        id: `blank_note_${createAssetId()}`,
         type: 'text',
         content: '',
         name: '新便签',
@@ -6084,6 +2714,11 @@ function MainApp() {
   const localVisionModelEnsurePromiseRef = useRef<Promise<void> | null>(null);
   const [localVisionModelLastError, setLocalVisionModelLastError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [deferredSearchQuery, setDeferredSearchQuery] = useState('');
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDeferredSearchQuery(searchQuery), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [canvasSearchCandidateLimit, setCanvasSearchCandidateLimit] = useState(CANVAS_SEARCH_CANDIDATE_LIMIT);
   const [canvasWorkflowSlotPickTarget, setCanvasWorkflowSlotPickTarget] = useState<{
@@ -6095,7 +2730,7 @@ function MainApp() {
 
   useEffect(() => {
     setCanvasSearchCandidateLimit(CANVAS_SEARCH_CANDIDATE_LIMIT);
-  }, [isCanvasMode, isSearchActive, searchQuery]);
+  }, [deferredSearchQuery, isCanvasMode, isSearchActive]);
 
   useEffect(() => { isCollectingWebImagesRef.current = isCollectingWebImages; }, [isCollectingWebImages]);
 
@@ -6103,16 +2738,6 @@ function MainApp() {
   const [aiApiEndpoint, setAiApiEndpoint] = useState(() => localStorage.getItem('drawer_ai_endpoint') || SILICONFLOW_DEFAULT_ENDPOINT);
   const [aiApiKey, setAiApiKey] = useState(() => localStorage.getItem('drawer_ai_key') || '');
   const [aiApiModel, setAiApiModel] = useState(() => localStorage.getItem('drawer_ai_model') || SILICONFLOW_DEFAULT_MODEL);
-  const [siliconFlowVisionModels, setSiliconFlowVisionModels] = useState<string[]>(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem('drawer_siliconflow_vision_models') || '[]');
-      return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
-    } catch (_) {
-      return [];
-    }
-  });
-  const [isRefreshingSiliconFlowModels, setIsRefreshingSiliconFlowModels] = useState(false);
-  const [siliconFlowModelListError, setSiliconFlowModelListError] = useState('');
   const [webImageCacheDir, setWebImageCacheDir] = useState(() => localStorage.getItem('drawer_web_image_cache_dir') || '');
   const webImageCacheDirRef = useRef(webImageCacheDir);
   useEffect(() => { webImageCacheDirRef.current = webImageCacheDir; }, [webImageCacheDir]);
@@ -6472,299 +3097,68 @@ function MainApp() {
     invoke('save_ai_analysis_config', { config }).catch(() => {});
   }, [aiApiProvider, aiApiEndpoint, aiApiKey, aiApiModel]);
 
-  const siliconFlowModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    siliconFlowVisionModels.forEach(model => { if (model && isSiliconFlowVisionModel(model)) merged.add(model); });
-    SILICONFLOW_VISION_MODEL_FALLBACKS.forEach(model => merged.add(model.value));
-    if (aiApiModel.trim()) merged.add(aiApiModel.trim());
-    return Array.from(merged).map(value => ({
-      value,
-      label: SILICONFLOW_VISION_MODEL_LABELS[value] || value,
-    }));
-  }, [siliconFlowVisionModels, aiApiModel]);
-
-  const refreshSiliconFlowVisionModels = async () => {
-    if (!isSiliconFlowProvider(aiApiProvider)) return;
-    if (!aiApiKey.trim()) {
-      setSiliconFlowModelListError('请先填写硅基流动 API Key，再刷新模型列表。');
-      showToast('请先填写硅基流动 API Key');
-      return;
-    }
-    setIsRefreshingSiliconFlowModels(true);
-    setSiliconFlowModelListError('');
-    try {
-      const models = await invoke<string[]>('get_siliconflow_vision_models', {
-        endpoint: aiApiEndpoint.trim() || SILICONFLOW_DEFAULT_ENDPOINT,
-        apiKey: aiApiKey.trim(),
-      });
-      const normalized = Array.from(new Set((models || []).filter(isSiliconFlowVisionModel))).sort((a, b) => a.localeCompare(b));
-      setSiliconFlowVisionModels(normalized);
-      localStorage.setItem('drawer_siliconflow_vision_models', JSON.stringify(normalized));
-      if (normalized.length > 0 && (!aiApiModel.trim() || !isSiliconFlowVisionModel(aiApiModel))) {
-        setAiApiModel(normalized[0]);
-      }
-      showToast(normalized.length > 0 ? `已刷新 ${normalized.length} 个视觉模型` : '没有从模型列表中识别到视觉模型');
-    } catch (err: any) {
-      const msg = String(err || '刷新模型列表失败');
-      setSiliconFlowModelListError(msg);
-      showToast('刷新视觉模型列表失败');
-    } finally {
-      setIsRefreshingSiliconFlowModels(false);
-    }
-  };
-
-  const canvasAiOpenAiModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    canvasAiOpenAiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
-    OPENAI_COMPATIBLE_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'image-generator' && item.ai?.provider === 'openai-compatible' && item.ai.model?.trim()) {
-        merged.add(item.ai.model.trim());
-      }
-    });
-    return Array.from(merged)
-      .sort((a, b) => {
-        const aImage = isCanvasAiLikelyOpenAiImageModel(a);
-        const bImage = isCanvasAiLikelyOpenAiImageModel(b);
-        if (aImage !== bImage) return aImage ? -1 : 1;
-        return a.localeCompare(b);
-      })
-      .map(value => {
-        const likelyImage = isCanvasAiLikelyOpenAiImageModel(value);
-        return {
-          value,
-          label: value,
-          meta: likelyImage ? '图像' : '未知',
-          hint: likelyImage ? '模型名看起来支持图像生成' : '未能从模型名判断图像能力，可手动测试',
-          section: likelyImage ? '可能支持图像' : '其它模型',
-        };
-      });
-  }, [canvasAiOpenAiModels, canvasItems]);
-
-  const canvasAiNewApiModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    canvasAiNewApiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
-    const remoteModelSet = new Set(canvasAiNewApiModels.map(model => model.trim()).filter(Boolean));
-    if (canvasAiNewApiModels.length === 0) {
-      NEW_API_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
-    }
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'image-generator' && item.ai?.provider === 'new-api' && item.ai.model?.trim()) {
-        const model = item.ai.model.trim();
-        if (remoteModelSet.size === 0 || remoteModelSet.has(model)) merged.add(model);
-      }
-    });
-    return Array.from(merged)
-      .sort((a, b) => {
-        const aImage = getNewApiImageModelFamily(a) !== null || isCanvasAiLikelyOpenAiImageModel(a);
-        const bImage = getNewApiImageModelFamily(b) !== null || isCanvasAiLikelyOpenAiImageModel(b);
-        if (aImage !== bImage) return aImage ? -1 : 1;
-        return a.localeCompare(b);
-      })
-      .map(value => {
-        const likelyImage = getNewApiImageModelFamily(value) !== null || isCanvasAiLikelyOpenAiImageModel(value);
-        const displayName = getNewApiImageModelDisplayName(value);
-        return {
-          value,
-          label: displayName,
-          meta: likelyImage ? '图像' : '未知',
-          hint: displayName !== value
-            ? `模型 ID：${value}`
-            : likelyImage ? '模型名看起来支持图像生成' : '未能从模型名判断图像能力，可手动测试',
-          section: likelyImage ? '可能支持图像' : '其它模型',
-        };
-      });
-  }, [canvasAiNewApiModels, canvasItems]);
-
-  const canvasAiNewApiVideoModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    canvasAiNewApiModels.forEach(model => { if (model.trim()) merged.add(model.trim()); });
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'video-generator' && item.ai?.provider === 'new-api' && item.ai.model?.trim()) {
-        merged.add(item.ai.model.trim());
-      }
-    });
-    return Array.from(merged)
-      .sort((a, b) => {
-        const aVideo = isLikelyNewApiVideoModel(a);
-        const bVideo = isLikelyNewApiVideoModel(b);
-        if (aVideo !== bVideo) return aVideo ? -1 : 1;
-        return a.localeCompare(b);
-      })
-      .map(value => {
-        const likelyVideo = isLikelyNewApiVideoModel(value);
-        return {
-          value,
-          label: value,
-          meta: likelyVideo ? '视频' : '未知',
-          hint: likelyVideo ? '模型名看起来支持视频生成' : '未能从模型名判断视频能力，可手动测试',
-          section: likelyVideo ? '可能支持视频' : '其它模型',
-        };
-      });
-  }, [canvasAiNewApiModels, canvasItems]);
-
-  const canvasAiXaisModelOptions = useMemo(() => {
-    const merged = new Set<string>();
-    const allowedModels = new Set(XAIS_CHAT_IMAGE_MODEL_OPTIONS.map(option => option.value));
-    canvasAiXaisModels.forEach(model => {
-      const trimmed = normalizeXaisImage2Model(model.trim());
-      if (trimmed && allowedModels.has(trimmed)) merged.add(trimmed);
-    });
-    XAIS_CHAT_IMAGE_MODEL_OPTIONS.forEach(option => merged.add(option.value));
-    canvasItemsRef.current.forEach(item => {
-      if (item.ai?.type === 'image-generator' && normalizeCanvasAiProvider(item.ai?.provider || '') === 'xais-chat' && item.ai?.model?.trim()) {
-        const normalizedModel = normalizeXaisImage2Model(item.ai.model.trim());
-        if (allowedModels.has(normalizedModel)) merged.add(normalizedModel);
-      }
-    });
-    return sortCanvasAiModelsForProvider('xais-chat', Array.from(merged)).map(value => ({
-      value,
-      label: XAIS_CHAT_IMAGE_MODEL_OPTIONS.find(option => option.value === value)?.label || value,
-    }));
-  }, [canvasAiXaisModels, canvasItems]);
-
-  const canvasAiLegacyImageModelOptions = useMemo<RoundedSelectOption[]>(() => {
-    const options: RoundedSelectOption[] = [];
-    const seen = new Set<string>();
-    const addModel = (
-      source: CanvasAiCredentialSource,
-      provider: CanvasAiProvider,
-      rawModel: string,
-      channel?: { id: string; name: string },
-    ) => {
-      const model = rawModel.trim();
-      if (!model) return;
-      const value = canvasAiModelChoiceValue(source, provider, model, channel?.id);
-      if (seen.has(value)) return;
-      seen.add(value);
-      const label = provider === 'new-api'
-        ? getNewApiImageModelDisplayName(model)
-        : provider === 'xais-chat'
-          ? getXaisImageModelDisplayName(model)
-          : model;
-      const modelIdHint = label !== model ? ` · 模型 ID：${model}` : '';
-      options.push({
-        value,
-        label,
-        hint: source === 'local'
-          ? `使用本地额度${modelIdHint}`
-          : `使用授权钱包额度${modelIdHint}`,
-        meta: source === 'local' ? '本地额度' : '钱包',
-        section: source === 'local' ? '本地 API' : `授权钱包 · ${channel?.name || '默认渠道'}`,
-        sectionHint: source === 'local' ? '消耗本地 API 余额' : `渠道：${channel?.name || '默认渠道'}`,
-      });
-    };
-
-    if (canvasAiCloudImageModels) {
-      const channels = canvasAiCloudImageModels.channels || [];
-      if (channels.length > 0) {
-        channels.forEach(channel => {
-          const provider = canvasAiProviderForCloudKind(channel.provider);
-          channel.models.forEach(model => addModel('wallet', provider, model, channel));
-        });
-      } else {
-        const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-        canvasAiCloudImageModels.models.forEach(model => addModel('wallet', provider, model));
-      }
-    }
-
-    const localModelSources: Array<{ provider: CanvasAiProvider; models: string[] }> = [
-      { provider: 'new-api', models: canvasAiNewApiModels },
-      { provider: 'xais-chat', models: canvasAiXaisModels },
-      { provider: 'openai-compatible', models: canvasAiOpenAiModels },
-      { provider: 'custom', models: canvasAiOpenAiModels },
-    ];
-    localModelSources.forEach(({ provider, models }) => {
-      const apiKey = provider === canvasAiProvider
-        ? canvasAiApiKey.trim()
-        : getStoredCanvasAiApiKey(provider).trim();
-      if (!apiKey) return;
-      models.forEach(model => addModel('local', provider, model));
-    });
-    return options;
-  }, [
-    canvasAiApiKey,
-    canvasAiCloudImageModels,
-    canvasAiNewApiModels,
-    canvasAiOpenAiModels,
-    canvasAiProvider,
-    canvasAiXaisModels,
-  ]);
-
-  void canvasAiLegacyImageModelOptions;
   const canvasAiUnifiedImageModelOptions = useMemo<RoundedSelectOption[]>(() => {
-    const groups = new Map<string, { label: string; candidates: CanvasAiModelCandidate[] }>();
-    const addCandidate = (candidate: CanvasAiModelCandidate) => {
-      if (candidate.source !== canvasAiCredentialSource || !candidate.model.trim()) return;
-      if (!isCanvasAiPublicImageModel(candidate.provider, candidate.model)) return;
-      const label = getCanvasAiPublicImageModelName(candidate.provider, candidate.model.trim());
-      if (!label) return;
-      const key = label.trim().toLocaleLowerCase();
-      const group = groups.get(key) || { label, candidates: [] };
-      if (!group.candidates.some(item => item.provider === candidate.provider
-        && item.model === candidate.model
-        && item.providerChannelId === candidate.providerChannelId)) {
-        group.candidates.push({ ...candidate, model: candidate.model.trim() });
-      }
-      groups.set(key, group);
-    };
+    const candidates: CanvasAiModelCandidate[] = [];
     if (canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels) {
       const channels = canvasAiCloudImageModels.channels || [];
       if (channels.length > 0) {
-        channels.forEach(channel => channel.models.forEach(model => addCandidate({
-          source: 'wallet', provider: canvasAiProviderForCloudKind(channel.provider), model, providerChannelId: channel.id,
+        channels.forEach(channel => channel.models.forEach(model => candidates.push({
+          source: 'wallet',
+          provider: canvasAiProviderForCloudKind(channel.provider),
+          model,
+          providerChannelId: channel.id,
+          capabilities: channel.capabilities,
         })));
       } else {
         const provider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-        canvasAiCloudImageModels.models.forEach(model => addCandidate({ source: 'wallet', provider, model }));
+        canvasAiCloudImageModels.models.forEach(model => candidates.push({ source: 'wallet', provider, model }));
       }
     }
     if (canvasAiCredentialSource === 'local') {
-      const localModelSources: Array<{ provider: CanvasAiProvider; models: string[] }> = [
-        { provider: 'new-api', models: canvasAiNewApiModels },
-        { provider: 'xais-chat', models: canvasAiXaisModels },
-        { provider: 'openai-compatible', models: canvasAiOpenAiModels },
-        { provider: 'custom', models: canvasAiOpenAiModels },
-      ];
-      localModelSources.forEach(({ provider, models }) => {
+      const modelSources = new Map<CanvasAiProvider, string[]>([
+        ['new-api', canvasAiNewApiModels],
+        ['mikoto', canvasAiMikotoModels],
+        ['xais-chat', canvasAiXaisModels],
+        ['openai-compatible', canvasAiOpenAiModels],
+        ['custom', canvasAiOpenAiModels],
+      ]);
+      const providers = [canvasAiProvider, ...Array.from(modelSources.keys()).filter(provider => provider !== canvasAiProvider)];
+      providers.forEach(provider => {
         const apiKey = provider === canvasAiProvider ? canvasAiApiKey.trim() : getStoredCanvasAiApiKey(provider).trim();
         if (!apiKey) return;
-        models.forEach(model => addCandidate({ source: 'local', provider, model }));
+        (modelSources.get(provider) || []).forEach(model => candidates.push({ source: 'local', provider, model }));
       });
     }
-    return Array.from(groups.values())
-      .sort((left, right) => (
-        getCanvasAiPublicImageModelPriority(left.candidates[0]?.provider, left.candidates[0]?.model)
-          - getCanvasAiPublicImageModelPriority(right.candidates[0]?.provider, right.candidates[0]?.model)
-        || left.label.localeCompare(right.label)
-      ))
-      .map(group => {
-      const first = group.candidates[0];
-      const routeCount = new Set(group.candidates.map(candidate => (
-        [candidate.source, candidate.provider, candidate.providerChannelId || ''].join('|')
-      ))).size;
-      const hint = routeCount > 1
-        ? ` · ${routeCount} 个可用渠道`
-        : '';
-      return {
-        value: canvasAiGroupedModelChoiceValue(canvasAiCredentialSource, first, group.candidates),
-        label: group.label,
-        hint: `${canvasAiCredentialSource === 'local' ? '使用本地额度' : '使用授权钱包额度'}${hint}`,
-        meta: canvasAiCredentialSource === 'local' ? '本地额度' : '钱包额度',
-        section: canvasAiCredentialSource === 'local' ? '本地 API' : '授权钱包',
+    return CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES.map(label => {
+      const modelCandidates = candidates.filter(candidate => (
+        isCanvasAiPublicImageModel(candidate.provider, candidate.model)
+        && getCanvasAiPublicImageModelName(candidate.provider, candidate.model) === label
+      ));
+      const fallbackProvider = canvasAiCredentialSource === 'wallet'
+        ? canvasAiCloudImageModels?.channels?.[0]
+          ? canvasAiProviderForCloudKind(canvasAiCloudImageModels.channels[0].provider)
+          : canvasAiCloudImageModels
+            ? canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider)
+            : canvasAiProvider
+        : canvasAiProvider;
+      const first = modelCandidates[0] || {
+        source: canvasAiCredentialSource,
+        provider: fallbackProvider,
+        model: getCanvasAiPublicImageModelId(fallbackProvider, label),
       };
-      });
-  }, [canvasAiApiKey, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiNewApiModels, canvasAiOpenAiModels, canvasAiProvider, canvasAiXaisModels]);
+      const routes = modelCandidates.length > 0 ? modelCandidates : [first];
+      return {
+        value: canvasAiGroupedModelChoiceValue(first.source, first, routes),
+        label,
+      };
+    });
+  }, [canvasAiApiKey, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiMikotoModels, canvasAiNewApiModels, canvasAiOpenAiModels, canvasAiProvider, canvasAiXaisModels]);
 
   useEffect(() => {
     if (!isCanvasMode || canvasAiUnifiedImageModelOptions.length === 0) return;
     const availableChoices = canvasAiUnifiedImageModelOptions
       .map(option => parseCanvasAiModelChoiceValue(option.value))
       .filter((choice): choice is NonNullable<ReturnType<typeof parseCanvasAiModelChoiceValue>> => !!choice);
-    const firstChoice = availableChoices.find(choice => (
-      getCanvasAiPublicImageModelName(choice.provider, choice.model) === 'Nano Banana Pro'
-    )) || availableChoices[0];
-    if (!firstChoice) return;
     updateCanvasItemsImmediate(previous => {
       let changed = false;
       const next = previous.map(item => {
@@ -6774,18 +3168,26 @@ function MainApp() {
         ));
         if (hasSuccessfulOutput) return item;
         const candidates = item.ai.providerCandidates || [];
-        const currentPublicModel = getCanvasAiPublicImageModelName(item.ai.provider, item.ai.model);
-        const matchingChoice = availableChoices.find(choice => (
-          (choice.source === canvasAiCredentialSource
-            && choice.provider === item.ai?.provider
+        const preferredSource = canvasAiCredentialSource;
+        const sourceChoices = availableChoices.filter(choice => choice.source === preferredSource);
+        const firstChoice = sourceChoices.find(choice => (
+          getCanvasAiPublicImageModelName(choice.provider, choice.model) === 'Nano Banana Pro'
+        )) || sourceChoices[0] || availableChoices[0];
+        if (!firstChoice) return item;
+        const rawCurrentPublicModel = getCanvasAiPublicImageModelName(item.ai.provider, item.ai.model);
+        const currentPublicModel = rawCurrentPublicModel === 'GPT Image 2 H'
+          ? 'GPT Image 2'
+          : rawCurrentPublicModel;
+        const matchingChoice = sourceChoices.find(choice => (
+          (choice.provider === item.ai?.provider
             && choice.model === item.ai?.model)
           || choice.providerCandidates?.some(candidate => (
-            candidate.source === canvasAiCredentialSource
+            candidate.source === preferredSource
             && candidate.provider === item.ai?.provider
             && candidate.model === item.ai?.model
           ))
         )) || (currentPublicModel
-          ? availableChoices.find(choice => (
+          ? sourceChoices.find(choice => (
             getCanvasAiPublicImageModelName(choice.provider, choice.model) === currentPublicModel
           ))
           : undefined) || firstChoice;
@@ -6822,78 +3224,25 @@ function MainApp() {
     });
   }, [canvasAiCredentialSource, canvasAiUnifiedImageModelOptions, isCanvasMode]);
 
-  const getCanvasAiImageCredentialSource = (
+  const getCanvasAiUnifiedImageModelValue = (
     provider: CanvasAiProvider,
     model: string,
-    source?: CanvasAiCredentialSource,
-    providerChannelId?: string,
-  ): CanvasAiCredentialSource => {
-    if (source) return source;
-    if (!canvasAiCloudImageModels) return 'local';
-    if (providerChannelId) {
-      const channel = canvasAiCloudImageModels.channels?.find(item => item.id === providerChannelId);
-      return channel && canvasAiProviderForCloudKind(channel.provider) === provider && channel.models.includes(model)
-        ? 'wallet'
-        : 'local';
-    }
-    const cloudProvider = canvasAiProviderForCloudKind(canvasAiCloudImageModels.provider);
-    return cloudProvider === provider && canvasAiCloudImageModels.models.includes(model)
-      ? 'wallet'
-      : 'local';
-  };
-
-  const getCanvasAiUnifiedImageModelOptions = (
-    provider: CanvasAiProvider,
-    model: string,
-    source?: CanvasAiCredentialSource,
-    providerChannelId?: string,
-    providerCandidates?: CanvasAiModelCandidate[],
   ) => {
-    const resolvedSource = getCanvasAiImageCredentialSource(provider, model, source, providerChannelId);
-    if (!isCanvasAiPublicImageModel(provider, model)) return canvasAiUnifiedImageModelOptions;
-    const selectedValue = providerCandidates && providerCandidates.length > 1
-      ? canvasAiGroupedModelChoiceValue(
-        providerCandidates[0].source,
-        { source: providerCandidates[0].source, provider, model, providerChannelId },
-        providerCandidates,
-      )
-      : canvasAiModelChoiceValue(resolvedSource, provider, model, providerChannelId);
-    if (canvasAiUnifiedImageModelOptions.some(option => option.value === selectedValue)) {
-      return canvasAiUnifiedImageModelOptions;
-    }
-    const label = getCanvasAiPublicImageModelName(provider, model);
-    if (!label) return canvasAiUnifiedImageModelOptions;
-    return [
-      ...canvasAiUnifiedImageModelOptions,
-      {
-        value: selectedValue,
-        label,
-        hint: resolvedSource === 'local' ? '使用本地额度' : '使用授权钱包额度',
-        meta: resolvedSource === 'local' ? '本地额度' : '钱包',
-        section: resolvedSource === 'local' ? '本地 API' : '授权钱包',
-      },
-    ];
+    const rawPublicName = getCanvasAiPublicImageModelName(provider, model);
+    const publicName = rawPublicName === 'GPT Image 2 H' ? 'GPT Image 2' : rawPublicName;
+    const matchingOption = canvasAiUnifiedImageModelOptions.find(option => option.label === publicName);
+    return matchingOption?.value || canvasAiUnifiedImageModelOptions[0]?.value
+      || canvasAiModelChoiceValue(canvasAiCredentialSource, provider, model);
   };
 
-  const getCanvasAiModelOptionsForProvider = (provider: CanvasAiProvider, mediaType: 'image' | 'video' = 'image') => (
-    mediaType === 'video' && canvasAiCredentialSource === 'wallet' && canvasAiCloudImageModels
-      ? Array.from(new Set((canvasAiCloudImageModels.channels || [])
-        .filter(channel => canvasAiProviderForCloudKind(channel.provider) === provider)
-        .flatMap(channel => channel.models.map(model => model.trim()).filter(Boolean))))
-        .map(value => ({ value, label: value }))
-      : mediaType === 'video'
-      ? provider === 'new-api' ? canvasAiNewApiVideoModelOptions : XAIS_CHAT_VIDEO_MODEL_OPTIONS
-      : provider === 'xais-chat'
-      ? canvasAiXaisModelOptions
-      : provider === 'new-api'
-      ? canvasAiNewApiModelOptions
-      : provider === 'openai-compatible'
-      ? canvasAiOpenAiModelOptions
-      : getCanvasAiModelOptions(provider, mediaType)
-  );
   const getCanvasAiResolvedModel = (provider: CanvasAiProvider, model?: string | null, mediaType: 'image' | 'video' = 'image') => {
     const trimmed = String(model || '').trim();
-    if (provider === 'xais-chat' && mediaType === 'video') return XAIS_CHAT_VIDEO_MODEL_DEFAULT;
+    if (provider === 'xais-chat' && mediaType === 'video') {
+      // Keep the public model selected in the node. XAIS only advertises
+      // Seedance, but forcing every video node to the XAIS default here made
+      // a Kling/Veo selection silently turn back into Seedance.
+      return getCanvasAiVideoModelOptionValue(trimmed || XAIS_CHAT_VIDEO_MODEL_DEFAULT);
+    }
     if (provider === 'xais-chat' && mediaType === 'image') {
       return normalizeXaisImage2Model(trimmed || getCanvasAiDefaultModel(provider, mediaType));
     }
@@ -6901,13 +3250,52 @@ function MainApp() {
       return trimmed || getCanvasAiDefaultModel(provider, mediaType);
     }
     if (provider === 'new-api' && mediaType === 'video') {
-      const remoteModels = canvasAiNewApiModels.map(value => value.trim()).filter(Boolean);
-      const likelyVideoModels = remoteModels.filter(isLikelyNewApiVideoModel);
-      const availableModels = likelyVideoModels.length > 0 ? likelyVideoModels : remoteModels;
-      if (availableModels.length > 0 && (!trimmed || !remoteModels.includes(trimmed))) return availableModels[0];
+      const publicModel = getCanvasAiVideoModelOptionValue(trimmed);
+      const resolvedModel = publicModel === 'seedance2'
+        ? NEW_API_SEEDANCE_2_MODEL
+        : publicModel === 'seedance2fast'
+          ? NEW_API_SEEDANCE_2_FAST_MODEL
+          : publicModel;
+      return NEW_API_VIDEO_MODEL_OPTIONS.some(option => (
+        option.value === publicModel
+        || option.value === resolvedModel
+      ))
+        ? resolvedModel
+        : NEW_API_VIDEO_MODEL_DEFAULT;
     }
     return trimmed || getCanvasAiDefaultModel(provider, mediaType);
   };
+
+  useEffect(() => {
+    if (!isCanvasMode) return;
+    updateCanvasItemsImmediate(previous => {
+      let changed = false;
+      const next = previous.map(item => {
+        if (item.ai?.type !== 'video-generator'
+          || item.ai.provider !== 'xais-chat'
+          || item.ai.model !== XAIS_CHAT_VIDEO_MODEL_DEFAULT) return item;
+        const candidates = getCanvasAiVideoModelCandidates(
+          NEW_API_SEEDANCE_2_MODEL,
+          canvasAiCredentialSource,
+          'new-api',
+          canvasAiCloudImageModels?.videoChannels,
+        );
+        changed = true;
+        return {
+          ...item,
+          ai: {
+            ...item.ai,
+            provider: 'new-api' as const,
+            model: NEW_API_SEEDANCE_2_MODEL,
+            credentialSource: canvasAiCredentialSource,
+            providerChannelId: undefined,
+            providerCandidates: candidates,
+          },
+        };
+      });
+      return changed ? next : previous;
+    });
+  }, [canvasAiCloudImageModels?.videoChannels, canvasAiCredentialSource, isCanvasMode]);
   const canvasAiPromptPresets = useMemo(() => {
     const defaultIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
     const customById = new Map(customCanvasAiPromptPresets.map(preset => [preset.id, preset]));
@@ -7015,6 +3403,8 @@ function MainApp() {
     ? canvasAiXaisModels.length
     : effectiveCanvasAiProvider === 'new-api'
       ? canvasAiNewApiModels.length
+    : effectiveCanvasAiProvider === 'mikoto'
+      ? canvasAiMikotoModels.length
     : canvasAiOpenAiModels.length;
   const canvasAiRemoteModelEmptyHint = effectiveCanvasAiProvider === 'xais-chat'
     ? canvasAiUsesCloudImageModels ? '从授权钱包生图渠道读取模型' : '填入 Key 后自动读取 /v1/models'
@@ -7081,7 +3471,7 @@ function MainApp() {
   };
 
   const refreshCanvasAiOpenAiModels = async (silent = false) => {
-    if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) return;
+    if (!canvasAiUsesCloudImageModels && !isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) return;
     const provider = effectiveCanvasAiProvider;
     const endpoint = getCanvasAiEndpointForModels(provider, effectiveCanvasAiEndpoint || canvasAiEndpoint);
     const apiKeys = isCanvasAiLicenseManaged
@@ -7101,23 +3491,35 @@ function MainApp() {
       let detectedProvider = provider;
       let detectedDefaultModel = '';
       let detectedChannels: NonNullable<CloudImageModelsResult['channels']> = [];
+      let detectedVideoChannels: NonNullable<CloudImageModelsResult['videoChannels']> = [];
+      let detectedPricing: CanvasAiCreditPricing | null | undefined;
       const successfulModels = canvasAiUsesCloudImageModels
         ? await (async () => {
           const result = await invoke<CloudImageModelsResult>('get_cloud_image_models', { provider });
           detectedProvider = canvasAiProviderForCloudKind(result.provider);
           detectedDefaultModel = String(result.defaultModel || '').trim();
+          detectedVideoChannels = result.videoChannels || [];
+          detectedPricing = result.pricing;
           detectedChannels = (result.channels || []).map(channel => {
             const channelProvider = canvasAiProviderForCloudKind(channel.provider);
+            const configuredDefaultModel = String(channel.defaultModel || '').trim();
+            const channelModels = [
+              ...(channel.models || []),
+              ...(configuredDefaultModel ? [configuredDefaultModel] : []),
+            ];
             const models = channelProvider === 'xais-chat'
-              ? sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set((channel.models || [])
+              ? sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set(channelModels
                 .map(model => normalizeXaisImage2Model(model.trim()))
                 .filter(Boolean))))
-              : sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set((channel.models || [])
+              : sortCanvasAiModelsForProvider(channelProvider, Array.from(new Set(channelModels
                 .map(model => model.trim())
                 .filter(Boolean))));
             return { ...channel, provider: channelProvider, models };
           });
-          return result.models || [];
+          return [
+            ...(result.models || []),
+            ...detectedChannels.flatMap(channel => channel.models),
+          ];
         })()
         : await (async () => {
           const modelResults = await Promise.allSettled(apiKeys.map(apiKey => invoke<string[]>('get_openai_compatible_models', {
@@ -7141,16 +3543,20 @@ function MainApp() {
             .map(model => normalizeXaisImage2Model(model)))))
         : sortCanvasAiModelsForProvider(detectedProvider, Array.from(new Set(rawModels)));
       if (canvasAiUsesCloudImageModels) {
-        setCanvasAiCloudImageModels({
+        setCanvasAiCloudImageModels(current => ({
           provider: detectedProvider,
           defaultModel: detectedDefaultModel || null,
           models: normalized,
           channels: detectedChannels,
-        });
+          videoChannels: detectedVideoChannels,
+          pricing: detectedPricing ?? current?.pricing,
+        }));
       } else if (detectedProvider === 'xais-chat') {
         setCanvasAiXaisModels(normalized);
       } else if (detectedProvider === 'new-api') {
         setCanvasAiNewApiModels(normalized);
+      } else if (detectedProvider === 'mikoto') {
+        setCanvasAiMikotoModels(normalized);
       } else {
         setCanvasAiOpenAiModels(normalized);
       }
@@ -7164,7 +3570,7 @@ function MainApp() {
       const nextDefaultModel = normalized.includes(preferredDefaultModel)
         ? preferredDefaultModel
         : (preferredImageModel || normalized[0] || preferredDefaultModel);
-      const nextVideoModel = normalized.find(isLikelyNewApiVideoModel) || normalized[0] || '';
+      const nextVideoModel = NEW_API_VIDEO_MODEL_DEFAULT;
       const defaultChannel = detectedChannels.find(channel => (
         !channel.error && channel.models.includes(nextDefaultModel)
       )) || detectedChannels.find(channel => !channel.error && channel.models.length > 0);
@@ -7193,7 +3599,9 @@ function MainApp() {
             && detectedProvider === 'new-api'
             && item.ai?.type === 'video-generator'
             && itemProvider === 'new-api'
-            && (!item.ai.model || !normalized.includes(item.ai.model));
+            && !NEW_API_VIDEO_MODEL_OPTIONS.some(option => (
+              option.value === getCanvasAiVideoModelOptionValue(item.ai?.model)
+            ));
           if (!needsImageModel && !needsVideoModel) return item;
           return {
               ...item,
@@ -7228,7 +3636,7 @@ function MainApp() {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
-    if (!isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) {
+    if (!canvasAiUsesCloudImageModels && !isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
@@ -7262,13 +3670,29 @@ function MainApp() {
         provider: effectiveCanvasAiProvider,
       }).then((result) => {
         if (disposed) return;
-        setCanvasAiCloudImageModels(current => current
-          ? { ...current, pricing: result.pricing ?? current.pricing }
-          : result);
+        setCanvasAiCloudImageModels(current => {
+          if (current) return { ...current, pricing: result.pricing ?? current.pricing };
+          const channels = (result.channels || []).map(channel => ({
+            ...channel,
+            models: Array.from(new Set([
+              ...(channel.models || []).map(model => model.trim()).filter(Boolean),
+              ...(String(channel.defaultModel || '').trim() ? [String(channel.defaultModel).trim()] : []),
+            ])),
+          }));
+          return {
+            ...result,
+            channels,
+            models: Array.from(new Set([
+              ...(result.models || []).map(model => model.trim()).filter(Boolean),
+              ...channels.flatMap(channel => channel.models),
+            ])),
+          };
+        });
       }).catch(() => {
         // Keep the last known pricing while temporarily offline.
       });
     };
+    refreshCloudPricing();
     const onFocus = () => refreshCloudPricing();
     window.addEventListener('focus', onFocus);
     const interval = window.setInterval(refreshCloudPricing, 5 * 60_000);
@@ -7286,18 +3710,6 @@ function MainApp() {
     model: aiApiModel.trim(),
     proxy: '',
   });
-
-  const handleAiProviderChange = (provider: string) => {
-    setAiApiProvider(provider);
-    if (isSiliconFlowProvider(provider)) {
-      if (!aiApiEndpoint.trim() || aiApiEndpoint.includes('api.example.com') || aiApiEndpoint.includes('127.0.0.1')) {
-        setAiApiEndpoint(SILICONFLOW_DEFAULT_ENDPOINT);
-      }
-      if (!aiApiModel.trim() || !isSiliconFlowVisionModel(aiApiModel)) {
-        setAiApiModel(SILICONFLOW_DEFAULT_MODEL);
-      }
-    }
-  };
 
   const hasAiAnalysis = isSiliconFlowProvider(aiApiProvider)
     ? aiApiEndpoint.trim().length > 0 && aiApiKey.trim().length > 0 && aiApiModel.trim().length > 0
@@ -7554,9 +3966,9 @@ function MainApp() {
     }).catch((err) => console.warn('本地大模型完成后打开抽屉失败:', err));
   };
 
-  const handleLocalVisionModelProgress = (progress: { stage?: string; message: string; progress?: number }, itemId?: string) => {
+  const handleLocalVisionModelProgress = (progress: { stage?: string; message: string; progress?: number }) => {
     const message = progress.message || '正在准备本地大模型';
-    const shouldHideDuringWebCollect = !itemId && isCollectingWebImagesRef.current;
+    const shouldHideDuringWebCollect = isCollectingWebImagesRef.current;
     if (progress.stage === 'downloading' || /下载|拉取/.test(message)) {
       localVisionModelPreparingRef.current = true;
       localVisionModelDownloadStartedRef.current = true;
@@ -7568,17 +3980,6 @@ function MainApp() {
     }
     if (/正在识别/.test(message)) {
       if (showWebImageCollector && !shouldHideDuringWebCollect) setWebImageCollectorStatus(message);
-      if (itemId) {
-        setItems(prev => prev.map(i => i.id === itemId ? {
-          ...i,
-          alchemy: {
-            ...(i as AlchemyBufferItem).alchemy,
-            state: 'analyzing',
-            note: message,
-            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-          },
-        } as BufferItem : i));
-      }
       return;
     }
     const hasProgress = Number.isFinite(progress.progress);
@@ -7607,20 +4008,9 @@ function MainApp() {
       }, 900);
     }
     if (showWebImageCollector && !shouldHideDuringWebCollect) setWebImageCollectorStatus(message);
-    if (itemId) {
-      setItems(prev => prev.map(i => i.id === itemId ? {
-        ...i,
-        alchemy: {
-          ...(i as AlchemyBufferItem).alchemy,
-          state: 'analyzing',
-          note: message,
-          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-        },
-      } as BufferItem : i));
-    }
   };
 
-  const showLocalVisionModelError = (err: unknown, itemId?: string, options: { silent?: boolean } = {}) => {
+  const showLocalVisionModelError = (err: unknown, options: { silent?: boolean } = {}) => {
     const message = `本地大模型不可用：${err instanceof Error ? err.message : String(err || '请检查 Ollama 后重试')}`;
     localVisionModelReadyRef.current = false;
     localVisionModelPreparingRef.current = false;
@@ -7642,17 +4032,6 @@ function MainApp() {
       setLocalVisionModelDownload(prev => prev.phase === 'error' ? { ...prev, visible: false, startedAt: undefined, updatedAt: Date.now() } : prev);
     }, 5200);
     if (showWebImageCollector) setWebImageCollectorStatus(message);
-    if (itemId) {
-      setItems(prev => prev.map(i => i.id === itemId ? {
-        ...i,
-        alchemy: {
-          ...(i as AlchemyBufferItem).alchemy,
-          state: 'analyzing',
-          note: message,
-          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-        },
-      } as BufferItem : i));
-    }
   };
 
   const checkLocalVisionModelStatus = async (options: { silent?: boolean } = {}) => {
@@ -7687,7 +4066,7 @@ function MainApp() {
     } catch (err) {
       localVisionModelReadyRef.current = false;
       localVisionModelPreparingRef.current = false;
-      if (!options.silent) showLocalVisionModelError(err, undefined, { silent: true });
+      if (!options.silent) showLocalVisionModelError(err, { silent: true });
       return false;
     } finally {
       setIsLocalVisionModelChecking(false);
@@ -7720,7 +4099,7 @@ function MainApp() {
         if (options.notifyReady) announceLocalVisionModelReady({ force: true });
       })
       .catch((err) => {
-        showLocalVisionModelError(err, undefined, { silent: options.silent ?? true });
+        showLocalVisionModelError(err, { silent: options.silent ?? true });
         throw err;
       })
       .finally(() => {
@@ -7761,7 +4140,7 @@ function MainApp() {
       await ensureLocalVisionModel({ silent: false, toast: true, notifyReady: true });
     } catch (err) {
       console.warn('静默安装 Ollama 失败:', err);
-      showLocalVisionModelError(err, undefined, { silent: false });
+      showLocalVisionModelError(err, { silent: false });
       showToast('静默安装失败，可打开下载页手动安装');
     } finally {
       setIsInstallingOllama(false);
@@ -7818,7 +4197,7 @@ function MainApp() {
     const folderName = query.slice(0, 32);
     const existingFolder = foldersRef.current.find(folder => folder.name === folderName);
     const folder: Folder = existingFolder || {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name: folderName,
       color: '#0ea5e9',
     };
@@ -7842,7 +4221,7 @@ function MainApp() {
       const newItems = collected.map((image, index) => {
         const fileName = image.path.split(/[\\/]/).pop() || `${folderName}_${index + 1}.jpg`;
         return {
-          id: `web_collect_${now}_${index}_${Math.random().toString(36).substring(2, 6)}`,
+          id: `web_collect_${createAssetId()}`,
           type: 'image',
           content: image.title || fileName,
           name: image.title || fileName,
@@ -7867,7 +4246,6 @@ function MainApp() {
         });
       }
       setItems(prev => [...newItems, ...prev]);
-      triggerAutoPaletteForItems(newItems);
       enqueueAutoAiTaggingForItems(newItems);
       setActiveFolderId(folder.id);
       setActiveTab('image');
@@ -8055,12 +4433,21 @@ function MainApp() {
     setQuickText('');
     handleCloseTextInput();
   };
+  const activateSearch = () => {
+    setIsSearchActive(true);
+    setShowSettings(false);
+    setShowTextInput(false);
+    setShowWebImageCollector(false);
+    setShowFolderModal(false);
+  };
   const toggleSearch = () => {
     if (!isSearchActive) {
-      setIsSearchActive(true); setShowSettings(false); setShowTextInput(false); setShowWebImageCollector(false); setShowFolderModal(false);
+      activateSearch();
       setTimeout(() => searchInputRef.current?.focus(), 100);
     } else {
-      setIsSearchActive(false); setSearchQuery('');
+      setIsSearchActive(false);
+      setSearchQuery('');
+      searchInputRef.current?.blur();
     }
   };
   const toggleSettings = () => {
@@ -8425,7 +4812,7 @@ function MainApp() {
     const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
     const folderIdMap = new Map<string, string>();
     const nextFolders: Folder[] = [];
-    const makeFolderId = () => Math.random().toString(36).substring(2, 9);
+    const makeFolderId = createAssetId;
     const pushEagleFolder = (folder: EagleFolderPayload, parentId?: string) => {
       const name = String(folder.name || 'Eagle 文件夹').trim() || 'Eagle 文件夹';
       const key = (parentId || '') + '|' + name.toLowerCase();
@@ -8467,7 +4854,7 @@ function MainApp() {
       const type = getEagleItemType(entry, normalizedPath);
       const sourceUrl = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url) ? entry.url : undefined;
       const item = {
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         type,
         content: name,
         name,
@@ -8506,7 +4893,6 @@ function MainApp() {
     });
     if (nextItems.length > 0) {
       setItems(prev => [...nextItems, ...prev]);
-      triggerAutoPaletteForItems(nextItems.filter(item => item.type === 'image'));
       nextItems.slice(0, 24).forEach(ensureMediaThumbnail);
     }
     setActiveTab('all');
@@ -8574,7 +4960,7 @@ function MainApp() {
       const existingFolderKeys = new Set(foldersRef.current.map(folder => (folder.parentId || '') + '|' + folder.name.trim().toLowerCase()));
       const folderIdMap = new Map<string, string>();
       const nextFolders: Folder[] = [];
-      const makeFolderId = () => Math.random().toString(36).substring(2, 9);
+      const makeFolderId = createAssetId;
       const pushEagleFolder = (folder: EagleFolderPayload, parentId?: string) => {
         const name = String(folder.name || 'Eagle 文件夹').trim() || 'Eagle 文件夹';
         const key = (parentId || '') + '|' + name.toLowerCase();
@@ -8635,7 +5021,7 @@ function MainApp() {
           const type = getEagleItemType(entry, normalizedPath);
           const sourceUrl = typeof entry.url === 'string' && /^https?:\/\//i.test(entry.url) ? entry.url : undefined;
           const item = {
-            id: Math.random().toString(36).substring(2, 9),
+            id: createAssetId(),
             type,
             content: name,
             name,
@@ -8678,7 +5064,6 @@ function MainApp() {
       });
       if (nextItems.length > 0) {
         setItems(prev => [...nextItems, ...prev]);
-        triggerAutoPaletteForItems(nextItems.filter(item => item.type === 'image'));
         nextItems.slice(0, 24).forEach(ensureMediaThumbnail);
       }
       setActiveTab('all');
@@ -8798,15 +5183,16 @@ function MainApp() {
   const visibleFolderRailEntryCount = useMemo(() => (
     visibleFolderEntries.length
   ), [visibleFolderEntries]);
-  const activeCanvas = useMemo(() => (
-    canvases.find(canvas => canvas.id === activeCanvasId) || canvases.find(canvas => canvas.isActive) || null
-  ), [canvases, activeCanvasId]);
+  const aiGeneratedImageFolderIds = useMemo(
+    () => getAiGeneratedImageFolderIds(folders),
+    [folders],
+  );
   const folderItemCounts = useMemo(() => {
-    const directCounts = new Map<string, number>();
-    items.forEach(item => {
-      if (!item.folderId) return;
-      directCounts.set(item.folderId, (directCounts.get(item.folderId) || 0) + 1);
-    });
+    const directCounts = new Map(
+      folderAssetCountRows
+        .filter((row): row is { folderId: string; count: number } => Boolean(row.folderId))
+        .map(row => [row.folderId, row.count]),
+    );
     const counts = new Map<string, number>();
     folders.forEach(folder => {
       const scopeIds = getDrawerFolderScopeIds(folders, folder.id);
@@ -8815,7 +5201,7 @@ function MainApp() {
       counts.set(folder.id, count);
     });
     return counts;
-  }, [folders, items]);
+  }, [folderAssetCountRows, folders]);
   const visibleFolderIds = useMemo(() => visibleFolderEntries.map(entry => entry.folder.id), [visibleFolderEntries]);
   const folderMoveSelectionIds = useMemo(() => (
     selectedFolderIds.filter(id => folders.some(folder => folder.id === id))
@@ -8826,8 +5212,13 @@ function MainApp() {
     if (movingIds.includes(targetId)) return true;
     return movingIds.some(id => isDrawerFolderDescendant(folders, targetId, id));
   }, [folderMoveSelectionIds, folders]);
-  const mainDrawerItemCount = useMemo(() => items.filter(item => !item.folderId).length, [items]);
+  const mainDrawerItemCount = useMemo(() => (
+    folderAssetCountRows.find(row => row.folderId === null)?.count || 0
+  ), [folderAssetCountRows]);
   const drawerAiAnalysisSummary = useMemo(() => {
+    if (assetStorageMode === 'sqlite' && sqliteAiAnalysisSummary) {
+      return sqliteAiAnalysisSummary;
+    }
     const images = items.filter(item => item.type === 'image');
     return {
       analyzed: images.filter(item => hasUsableInspirationAiTags(item.inspirationProfile)).length,
@@ -8842,13 +5233,271 @@ function MainApp() {
       )).length,
       total: images.length,
     };
-  }, [items]);
-  const displayItems = useMemo(() => {
-    let result = items as AlchemyBufferItem[];
-    const hasSearchQuery = Boolean(searchQuery.trim());
+  }, [assetStorageMode, items, sqliteAiAnalysisSummary]);
+  const normalizedDeferredSearchQuery = useMemo(
+    () => deferredSearchQuery.trim().toLowerCase(),
+    [deferredSearchQuery],
+  );
+  const drawerItemSearchTextCacheRef = useRef(new WeakMap<BufferItem, string>());
+  const drawerSearchIndex = useMemo(() => {
+    if (assetStorageMode !== 'json' || !isSearchActive) return [] as Array<{ item: BufferItem; text: string }>;
+    const cache = drawerItemSearchTextCacheRef.current;
+    return items.map(item => {
+      let text = cache.get(item);
+      if (text === undefined) {
+        text = getDrawerItemSearchText(item);
+        cache.set(item, text);
+      }
+      return { item, text };
+    });
+  }, [assetStorageMode, isSearchActive, items]);
+  const drawerFolderScopeIds = useMemo(() => (
+    activeFolderId === 'all'
+      ? []
+      : [...getDrawerFolderScopeIds(folders, activeFolderId)].sort()
+  ), [activeFolderId, folders]);
+  const drawerAssetListOptions = useMemo<AssetListOptions>(() => {
+    const keyword = isSearchActive ? deferredSearchQuery.trim() : '';
+    return {
+      keyword: keyword || undefined,
+      folder_id: !keyword && activeFolderId === 'all' ? 'all' : undefined,
+      folder_ids: !keyword && activeFolderId !== 'all' ? drawerFolderScopeIds : undefined,
+      file_type: activeTab !== 'all' && activeTab !== 'notes' && activeTab !== 'calendar'
+        ? activeTab
+        : undefined,
+      sort: 'created_at_desc',
+    };
+  }, [activeFolderId, activeTab, deferredSearchQuery, drawerFolderScopeIds, isSearchActive]);
+  const drawerAssetQueryKey = useMemo(
+    () => JSON.stringify(drawerAssetListOptions),
+    [drawerAssetListOptions],
+  );
+  useEffect(() => {
+    drawerUndoStackRef.current = [];
+    drawerTextEditUndoIdsRef.current.clear();
+    assetWindowOffsetRef.current = 0;
+    setAssetWindowOffset(0);
+  }, [drawerAssetQueryKey]);
+  const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
+  const assetMatchesDrawerQuery = useCallback((item: BufferItem, options: AssetListOptions) => {
+    if (options.file_type && item.type !== options.file_type) return false;
+    const keyword = options.keyword?.trim().toLowerCase();
+    if (keyword && !getDrawerItemSearchText(item).includes(keyword)) return false;
+    if (!keyword && options.folder_ids && options.folder_ids.length > 0) {
+      return Boolean(item.folderId && options.folder_ids.includes(item.folderId));
+    }
+    if (!keyword && options.folder_id === 'all') return !item.folderId;
+    if (!keyword && options.folder_id) return item.folderId === options.folder_id;
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!assetLibraryReady || assetStorageMode !== 'sqlite' || isUtilityActiveTab) {
+      assetQueryRequestIdRef.current += 1;
+      assetPageOffsetsInFlightRef.current.clear();
+      setIsAssetPageLoading(false);
+      return;
+    }
+    const requestId = ++assetQueryRequestIdRef.current;
+    const startedAt = performance.now();
+    assetPageOffsetsInFlightRef.current.clear();
+    assetPageOffsetsInFlightRef.current.add(0);
+    assetQueryOptionsRef.current = drawerAssetListOptions;
+    setIsAssetPageLoading(true);
+
+    void Promise.all([
+      getAssetCount(drawerAssetListOptions),
+      listAssets({ ...drawerAssetListOptions, offset: 0, limit: ASSET_PAGE_SIZE }),
+    ]).then(([count, firstPage]) => {
+      if (requestId !== assetQueryRequestIdRef.current) return;
+      const compactPage = firstPage.map(stripHeavyDataThumbnail);
+      replaceAssetsFromQuery(compactPage);
+      assetWindowOffsetRef.current = 0;
+      setAssetWindowOffset(0);
+      assetQueryTotalCountRef.current = count;
+      setTotalAssetCount(count);
+      setHasMoreAssets(compactPage.length < count);
+      if (import.meta.env.DEV) {
+        console.debug('[DrawerPerf] initial query', {
+          milliseconds: Math.round((performance.now() - startedAt) * 10) / 10,
+          assetsLoaded: compactPage.length,
+          totalAssets: count,
+        });
+      }
+    }).catch(error => {
+      if (requestId === assetQueryRequestIdRef.current) {
+        console.warn('SQLite 素材首屏查询失败:', error);
+        replaceAssetsFromQuery([]);
+        setTotalAssetCount(0);
+        setHasMoreAssets(false);
+      }
+    }).finally(() => {
+      assetPageOffsetsInFlightRef.current.delete(0);
+      if (requestId === assetQueryRequestIdRef.current) {
+        setIsAssetPageLoading(false);
+        setIsDataLoaded(true);
+      }
+    });
+  }, [
+    assetLibraryReady,
+    assetStorageMode,
+    drawerAssetListOptions,
+    drawerAssetQueryKey,
+    isUtilityActiveTab,
+    replaceAssetsFromQuery,
+  ]);
+
+  const loadNextDrawerAssetPage = useCallback(() => {
+    if (assetStorageMode !== 'sqlite' || isAssetPageLoading || !hasMoreAssets) return;
+    const requestId = assetQueryRequestIdRef.current;
+    const cachedQueryAssets = itemsRef.current.filter(item => (
+      assetMatchesDrawerQuery(item, assetQueryOptionsRef.current)
+    ));
+    const offset = assetWindowOffsetRef.current + cachedQueryAssets.length;
+    if (assetPageOffsetsInFlightRef.current.has(offset)) return;
+    assetPageOffsetsInFlightRef.current.add(offset);
+    setIsAssetPageLoading(true);
+    const startedAt = performance.now();
+    void listAssets({ ...assetQueryOptionsRef.current, offset, limit: ASSET_PAGE_SIZE })
+      .then(page => {
+        if (requestId !== assetQueryRequestIdRef.current) return;
+        const compactPage = page.map(stripHeavyDataThumbnail);
+        const merged = mergeDrawerAssetPageWindow(
+          cachedQueryAssets,
+          compactPage,
+          MAX_DRAWER_ASSET_CACHE_SIZE,
+        );
+        if (merged.evictedFromStart > 0) {
+          const nextWindowOffset = assetWindowOffsetRef.current + merged.evictedFromStart;
+          assetWindowOffsetRef.current = nextWindowOffset;
+          setAssetWindowOffset(nextWindowOffset);
+          replaceAssetsFromQuery(merged.assets);
+        } else {
+          appendAssetsFromQuery(compactPage);
+        }
+        setHasMoreAssets(
+          compactPage.length > 0
+          && offset + compactPage.length < assetQueryTotalCountRef.current,
+        );
+        if (import.meta.env.DEV) {
+          console.debug('[DrawerPerf] next page', {
+            offset,
+            milliseconds: Math.round((performance.now() - startedAt) * 10) / 10,
+            assetsLoaded: compactPage.length,
+          });
+        }
+      })
+      .catch(error => console.warn('SQLite 素材分页查询失败:', error))
+      .finally(() => {
+        assetPageOffsetsInFlightRef.current.delete(offset);
+        if (requestId === assetQueryRequestIdRef.current) setIsAssetPageLoading(false);
+      });
+  }, [
+    appendAssetsFromQuery,
+    assetMatchesDrawerQuery,
+    assetStorageMode,
+    hasMoreAssets,
+    isAssetPageLoading,
+    replaceAssetsFromQuery,
+  ]);
+
+  const loadPreviousDrawerAssetPage = useCallback(() => {
+    if (assetStorageMode !== 'sqlite' || isAssetPageLoading || assetWindowOffsetRef.current <= 0) return;
+    const requestId = assetQueryRequestIdRef.current;
+    const currentWindowOffset = assetWindowOffsetRef.current;
+    const limit = Math.min(ASSET_PAGE_SIZE, currentWindowOffset);
+    const offset = currentWindowOffset - limit;
+    if (assetPageOffsetsInFlightRef.current.has(offset)) return;
+    assetPageOffsetsInFlightRef.current.add(offset);
+    setIsAssetPageLoading(true);
+    const startedAt = performance.now();
+    void listAssets({ ...assetQueryOptionsRef.current, offset, limit })
+      .then(page => {
+        if (requestId !== assetQueryRequestIdRef.current) return;
+        const compactPage = page.map(stripHeavyDataThumbnail);
+        const cachedQueryAssets = itemsRef.current.filter(item => (
+          assetMatchesDrawerQuery(item, assetQueryOptionsRef.current)
+        ));
+        const merged = [...new Map([...compactPage, ...cachedQueryAssets]
+          .map(item => [item.id, item])).values()]
+          .slice(0, MAX_DRAWER_ASSET_CACHE_SIZE);
+        assetWindowOffsetRef.current = offset;
+        setAssetWindowOffset(offset);
+        replaceAssetsFromQuery(merged);
+        setHasMoreAssets(offset + merged.length < assetQueryTotalCountRef.current);
+        if (import.meta.env.DEV) {
+          console.debug('[DrawerPerf] previous page', {
+            offset,
+            milliseconds: Math.round((performance.now() - startedAt) * 10) / 10,
+            assetsLoaded: compactPage.length,
+          });
+        }
+      })
+      .catch(error => console.warn('SQLite 素材上一页查询失败:', error))
+      .finally(() => {
+        assetPageOffsetsInFlightRef.current.delete(offset);
+        if (requestId === assetQueryRequestIdRef.current) setIsAssetPageLoading(false);
+      });
+  }, [
+    assetMatchesDrawerQuery,
+    assetStorageMode,
+    isAssetPageLoading,
+    replaceAssetsFromQuery,
+  ]);
+
+  useEffect(() => {
+    if (!assetLibraryReady || assetStorageMode !== 'sqlite') return;
+    let cancelled = false;
+    void Promise.all([
+      getFolderAssetCounts(DEFAULT_LIBRARY_ID),
+      listAssets({ quick_access: true, sort: 'updated_at_desc', offset: 0, limit: ASSET_PAGE_SIZE }),
+      getAssetCount(assetQueryOptionsRef.current),
+    ]).then(([counts, pinned, currentQueryCount]) => {
+      if (cancelled) return;
+      setFolderAssetCountRows(counts);
+      setQuickAccessItems(pinned.map(stripHeavyDataThumbnail));
+      assetQueryTotalCountRef.current = currentQueryCount;
+      setTotalAssetCount(currentQueryCount);
+      const loadedQueryCount = itemsRef.current.filter(item => (
+        assetMatchesDrawerQuery(item, assetQueryOptionsRef.current)
+      )).length;
+      setHasMoreAssets(assetWindowOffsetRef.current + loadedQueryCount < currentQueryCount);
+    }).catch(error => console.warn('SQLite 素材统计查询失败:', error));
+    return () => { cancelled = true; };
+  }, [assetLibraryReady, assetMatchesDrawerQuery, assetStatsRevision, assetStorageMode]);
+
+  useEffect(() => {
+    if (assetStorageMode !== 'json') return;
+    setQuickAccessItems(items.filter(item => item.isQuickAccess));
+    const counts = new Map<string | null, number>();
+    items.forEach(item => {
+      const folderId = item.folderId || null;
+      counts.set(folderId, (counts.get(folderId) || 0) + 1);
+    });
+    setFolderAssetCountRows([...counts].map(([folderId, count]) => ({ folderId, count })));
+  }, [assetStorageMode, items]);
+
+  const drawerScopedItems = useMemo(() => {
+    if (isCanvasMode) return [];
+    if (assetStorageMode === 'sqlite') {
+      if (activeTab === 'notes' || activeTab === 'calendar') return [];
+      let result = items;
+      if (normalizedDeferredSearchQuery) {
+        result = result.filter(item => getDrawerItemSearchText(item).includes(normalizedDeferredSearchQuery));
+      } else if (activeFolderId === 'all') {
+        result = result.filter(item => !item.folderId);
+      } else {
+        const scopeIds = new Set(drawerFolderScopeIds);
+        result = result.filter(item => Boolean(item.folderId && scopeIds.has(item.folderId)));
+      }
+      return activeTab === 'all' ? result : result.filter(item => item.type === activeTab);
+    }
+    let result = items;
+    const hasSearchQuery = Boolean(normalizedDeferredSearchQuery);
     if (hasSearchQuery) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(item => getAlchemySearchText(item).includes(q));
+      result = drawerSearchIndex
+        .filter(entry => entry.text.includes(normalizedDeferredSearchQuery))
+        .map(entry => entry.item);
     }
     if (!hasSearchQuery) {
       if (activeFolderId === 'all') {
@@ -8862,131 +5511,108 @@ function MainApp() {
       return [];
     }
     return result.filter(item => activeTab === 'all' || item.type === activeTab);
-  }, [items, folders, activeTab, searchQuery, activeFolderId]);
-  const canvasSearchMediaResults = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!isCanvasMode || !isSearchActive || !query) {
-      return { candidates: [] as AlchemyBufferItem[], total: 0 };
-    }
-    const matches = (items as AlchemyBufferItem[]).filter(item => (
-      isCanvasDrawerMediaItem(item)
-      && getAlchemySearchText(item).includes(query)
-    ));
-    return {
-      candidates: matches.slice(0, canvasSearchCandidateLimit),
-      total: matches.length,
-    };
-  }, [canvasSearchCandidateLimit, isCanvasMode, isSearchActive, items, searchQuery]);
-
-  const quickAccessItems = useMemo(() => items.filter(item => item.isQuickAccess), [items]);
-  const drawerCardActionContext = useMemo(() => ({}), []);
-  const isUtilityActiveTab = activeTab === 'notes' || activeTab === 'calendar' || isCanvasMode;
-  const [drawerScrollTop, setDrawerScrollTop] = useState(0);
-  const [drawerViewportHeight, setDrawerViewportHeight] = useState(1);
-  const canVirtualizeDrawerGrid = !isUtilityActiveTab && displayItems.length >= DRAWER_VIRTUALIZATION_THRESHOLD;
-  const drawerGridColumnCount = useMemo(() => {
-    const width = drawerScrollRef.current?.clientWidth || 1;
-    const gap = 10;
-    const targetWidth = cardWidth;
-    return Math.max(1, Math.floor((width + gap) / Math.max(1, targetWidth + gap)));
-  }, [cardWidth, drawerViewportHeight]);
-  const drawerVirtualWindow = useMemo(() => {
-    if (!canVirtualizeDrawerGrid) {
-      return { start: 0, end: Math.min(displayItems.length, drawerRenderLimit), top: 0, bottom: 0 };
-    }
-    const totalRows = Math.ceil(displayItems.length / drawerGridColumnCount);
-    const compactMediaRowHeight = Math.max(1, cardMediaHeight + 10);
-    const detailedRowHeight = Math.max(compactMediaRowHeight, cardMediaHeight + 118);
-    const rowOffsets = new Array<number>(totalRows + 1).fill(0);
-    for (let row = 0; row < totalRows; row += 1) {
-      const rowStart = row * drawerGridColumnCount;
-      const rowEnd = Math.min(displayItems.length, rowStart + drawerGridColumnCount);
-      const hasDetailedCard = displayItems
-        .slice(rowStart, rowEnd)
-        .some(item => item.type !== 'image' && item.type !== 'video');
-      rowOffsets[row + 1] = rowOffsets[row] + (hasDetailedCard ? detailedRowHeight : compactMediaRowHeight);
-    }
-
-    const viewportTop = Math.max(0, drawerScrollTop);
-    const viewportBottom = viewportTop + Math.max(drawerViewportHeight, 1);
-    let firstVisibleRow = 0;
-    while (firstVisibleRow < totalRows - 1 && rowOffsets[firstVisibleRow + 1] <= viewportTop) {
-      firstVisibleRow += 1;
-    }
-    let endVisibleRow = Math.min(totalRows, firstVisibleRow + 1);
-    while (endVisibleRow < totalRows && rowOffsets[endVisibleRow] < viewportBottom) {
-      endVisibleRow += 1;
-    }
-
-    const firstRow = Math.max(0, firstVisibleRow - DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
-    const endRow = Math.min(totalRows, endVisibleRow + DRAWER_VIRTUALIZATION_OVERSCAN_ROWS);
-    const start = Math.min(displayItems.length, firstRow * drawerGridColumnCount);
-    const end = Math.min(displayItems.length, endRow * drawerGridColumnCount);
-    return {
-      start,
-      end,
-      top: rowOffsets[firstRow],
-      bottom: Math.max(0, rowOffsets[totalRows] - rowOffsets[endRow]),
-    };
   }, [
-    canVirtualizeDrawerGrid,
-    cardMediaHeight,
-    cardWidth,
-    displayItems,
-    drawerGridColumnCount,
-    drawerRenderLimit,
-    drawerScrollTop,
-    drawerViewportHeight,
+    activeFolderId,
+    activeTab,
+    assetStorageMode,
+    drawerSearchIndex,
+    drawerFolderScopeIds,
+    folders,
+    isCanvasMode,
+    items,
+    normalizedDeferredSearchQuery,
   ]);
-  const renderedDisplayItems = useMemo(
-    () => displayItems.slice(drawerVirtualWindow.start, drawerVirtualWindow.end),
-    [displayItems, drawerVirtualWindow.end, drawerVirtualWindow.start],
-  );
-  const optimizeLargeDrawerList = canVirtualizeDrawerGrid || renderedDisplayItems.length > 80;
-  const hasMoreDisplayItems = !canVirtualizeDrawerGrid && drawerRenderLimit < displayItems.length;
-  const loadMoreDisplayItems = () => {
-    setDrawerRenderLimit(limit => Math.min(displayItems.length, limit + DRAWER_RENDER_BATCH_SIZE));
-  };
-  useLayoutEffect(() => {
-    if (isCanvasMode) return;
-    const node = drawerScrollRef.current;
-    if (!node) return;
-
-    const updateDrawerViewportMetrics = () => {
-      setDrawerScrollTop(node.scrollTop || 0);
-      setDrawerViewportHeight(node.clientHeight || 1);
-    };
-
-    updateDrawerViewportMetrics();
-    const frame = window.requestAnimationFrame(updateDrawerViewportMetrics);
-    const observer = typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(updateDrawerViewportMetrics)
-      : null;
-
-    observer?.observe(node);
-    window.addEventListener('resize', updateDrawerViewportMetrics);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer?.disconnect();
-      window.removeEventListener('resize', updateDrawerViewportMetrics);
-    };
-  }, [activeFolderId, activeTab, displayItems.length, isCanvasMode, searchQuery]);
-
-  const handleDrawerContentScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    const node = event.currentTarget;
-    setDrawerScrollTop(node.scrollTop);
-    setDrawerViewportHeight(node.clientHeight || 1);
-    if (isUtilityActiveTab || !hasMoreDisplayItems) return;
-    if (node.scrollTop + node.clientHeight >= node.scrollHeight - DRAWER_RENDER_LOAD_AHEAD_PX) {
-      loadMoreDisplayItems();
+  const drawerAiClassificationGroups = useMemo(() => (
+    buildAiClassificationGroups(drawerScopedItems, drawerAiClassificationDimension)
+  ), [drawerAiClassificationDimension, drawerScopedItems]);
+  const displayItems = useMemo(() => {
+    if (!isDrawerAiClassificationMode || activeDrawerAiClassificationLabel === 'all') {
+      return drawerScopedItems;
     }
-  };
-
+    return drawerScopedItems.filter(item => itemMatchesAiClassification(
+      item,
+      drawerAiClassificationDimension,
+      activeDrawerAiClassificationLabel,
+    ));
+  }, [
+    activeDrawerAiClassificationLabel,
+    drawerAiClassificationDimension,
+    drawerScopedItems,
+    isDrawerAiClassificationMode,
+  ]);
   useEffect(() => {
-    setDrawerRenderLimit(DRAWER_INITIAL_RENDER_LIMIT);
-    setDrawerScrollTop(0);
-    drawerScrollRef.current?.scrollTo({ top: 0 });
-  }, [activeTab, activeFolderId, searchQuery, isCanvasMode]);
+    if (!isDrawerAiClassificationMode) {
+      setActiveDrawerAiClassificationLabel('all');
+      return;
+    }
+    if (
+      activeDrawerAiClassificationLabel !== 'all'
+      && !drawerAiClassificationGroups.some(group => group.label === activeDrawerAiClassificationLabel)
+    ) {
+      setActiveDrawerAiClassificationLabel('all');
+    }
+  }, [
+    activeDrawerAiClassificationLabel,
+    drawerAiClassificationGroups,
+    isDrawerAiClassificationMode,
+  ]);
+  const [canvasSearchMediaResults, setCanvasSearchMediaResults] = useState({
+    candidates: [] as BufferItem[],
+    total: 0,
+  });
+  useEffect(() => {
+    const query = normalizedDeferredSearchQuery;
+    if (!isCanvasMode || !isSearchActive || !query || assetStorageMode !== 'sqlite') {
+      setCanvasSearchMediaResults({ candidates: [], total: 0 });
+      return;
+    }
+    let cancelled = false;
+    const limit = Math.max(1, canvasSearchCandidateLimit);
+    void Promise.all([
+      listAssets({ keyword: query, file_type: 'image', sort: 'created_at_desc', limit }),
+      listAssets({ keyword: query, file_type: 'video', sort: 'created_at_desc', limit }),
+      getAssetCount({ keyword: query, file_type: 'image' }),
+      getAssetCount({ keyword: query, file_type: 'video' }),
+    ]).then(([images, videos, imageCount, videoCount]) => {
+      if (cancelled) return;
+      const candidates = [...images, ...videos]
+        .filter(isCanvasDrawerMediaItem)
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, limit)
+        .map(stripHeavyDataThumbnail);
+      setCanvasSearchMediaResults({ candidates, total: imageCount + videoCount });
+    }).catch(error => console.warn('SQLite 画布素材搜索失败:', error));
+    return () => { cancelled = true; };
+  }, [
+    assetStorageMode,
+    canvasSearchCandidateLimit,
+    isCanvasMode,
+    isSearchActive,
+    normalizedDeferredSearchQuery,
+  ]);
+  const canvasDrawerSourceItemIds = useMemo(() => {
+    if (!isCanvasMode || !isSearchActive || !normalizedDeferredSearchQuery) return new Set<string>();
+    return new Set(canvasItems.flatMap(canvasItem => (
+      canvasItem.item.sourceItemId ? [canvasItem.item.sourceItemId] : []
+    )));
+  }, [canvasItems, isCanvasMode, isSearchActive, normalizedDeferredSearchQuery]);
+
+  const setDrawerItemQuickAccess = useCallback((item: BufferItem, enabled: boolean) => {
+    const nextItem = { ...item, isQuickAccess: enabled };
+    const isLoaded = itemsRef.current.some(candidate => candidate.id === item.id);
+    if (isLoaded) {
+      setItems(previous => previous.map(candidate => candidate.id === item.id ? nextItem : candidate));
+    } else if (assetStorageMode === 'sqlite') {
+      void updateAsset(item.id, { metadata: nextItem })
+        .then(() => setAssetStatsRevision(revision => revision + 1))
+        .catch(error => console.warn('更新快速访问失败:', error));
+    }
+    setQuickAccessItems(previous => enabled
+      ? [...new Map([nextItem, ...previous].map(candidate => [candidate.id, candidate])).values()]
+      : previous.filter(candidate => candidate.id !== item.id));
+  }, [assetStorageMode, setItems]);
+
+  const drawerCardActionContext = useMemo(() => ({}), []);
 
   const calendarEvents = useMemo<CalendarScheduleEvent[]>(() => {
     const sourceById = new Map(items.map(item => [item.id, item]));
@@ -9418,7 +6044,11 @@ function MainApp() {
     const primaryTagId = event.tagIds[0];
     const priority = normalizeSchedulePriority(event.schedule.priority);
     return (
-      <div key={event.id} className="group/calendar-event rounded-[18px] border border-stone-200/60 bg-white/58 px-3 py-2.5 shadow-sm shadow-black/[0.02] transition-colors hover:bg-white/78 dark:border-stone-700/60 dark:bg-stone-950/24 dark:hover:bg-stone-900/46">
+      <div
+        key={event.id}
+        data-calendar-event="true"
+        className="group/calendar-event rounded-[14px] border border-stone-200 bg-white px-3 py-2.5 shadow-none transition-[background-color,border-color] hover:border-stone-300 hover:bg-stone-50/80 dark:border-stone-700 dark:bg-stone-900/72 dark:hover:border-stone-600 dark:hover:bg-stone-800/72"
+      >
         <div className="flex items-start gap-2">
           <button
             type="button"
@@ -9439,7 +6069,10 @@ function MainApp() {
             title="打开来源便签"
           >
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-black leading-none ${getSchedulePriorityClass(priority)}`}>
+              <span
+                data-calendar-priority={priority}
+                className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-[5px] px-1 text-[9px] font-black leading-none"
+              >
                 {priority}
               </span>
               <div className={`min-w-0 flex-1 truncate text-xs font-bold ${event.schedule.done ? 'text-stone-400 line-through dark:text-stone-500' : 'text-stone-800 dark:text-stone-100'}`}>
@@ -9447,11 +6080,11 @@ function MainApp() {
               </div>
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-semibold">
-              <span className="inline-flex items-center gap-1 text-amber-600/85 dark:text-amber-300/85">
+              <span className="inline-flex items-center gap-1 text-stone-500 dark:text-stone-400">
                 <Clock className="h-3 w-3" />
                 {formatScheduleDateLabel(event.schedule.startAt)}
               </span>
-              <span className="inline-flex items-center gap-1 text-emerald-600/85 dark:text-emerald-300/85">
+              <span className="inline-flex items-center gap-1 text-stone-500 dark:text-stone-400">
                 <Tag className="h-3 w-3" />
                 {getCalendarTagName(primaryTagId)}
               </span>
@@ -9475,255 +6108,29 @@ function MainApp() {
     );
   };
 
-  const materialHintsForLocalCmf = (material: string, style: string, scene: string) => {
-    const base = new Set<string>();
-    if (/木|胡桃/.test(material) || /中式|侘寂|自然|北欧|中古|奶油/.test(style)) {
-      base.add(/胡桃/.test(material) ? '胡桃木饰面' : '低饱和木质饰面');
-      base.add('哑光清漆或木蜡油');
-    }
-    if (/石|大理石|洞石/.test(material) || /轻奢|法式/.test(style)) {
-      base.add(/洞石/.test(material) ? '洞石纹理板' : '低光泽石材纹理');
-    }
-    if (/金属|科技|工业|产品/.test(material + style + scene)) {
-      base.add('细砂纹金属');
-      base.add('低光泽喷涂件');
-    }
-    if (/织物|皮革|藤编|家装|客厅|卧室|空间/.test(material + scene)) {
-      base.add(/皮革/.test(material) ? '细纹皮革' : '织物软包');
-      if (/藤编/.test(material)) base.add('藤编或编织纹理');
-    }
-    if (/玻璃/.test(material)) base.add('低反射玻璃');
-    if (/陶瓷/.test(material)) base.add('哑光陶瓷');
-    if (/混凝土/.test(material)) base.add('微水泥或混凝土肌理');
-    return Array.from(base).slice(0, 5).concat(['耐磨易清洁表面']).slice(0, 6);
-  };
-
-  const inferLocalCmfTerms = (item: AlchemyBufferItem, paletteKeywords: string[]) => {
-    const title = item.name || item.content || '参考图';
-    const text = `${title} ${item.content || ''} ${item.remark || ''} ${(item.remarks || []).join(' ')} ${paletteKeywords.join(' ')}`.toLowerCase();
-    const pick = (rules: Array<[RegExp, string]>, fallback: string) => (
-      rules.find(([pattern]) => pattern.test(text))?.[1] || fallback
+  const ensureCanvasAiGeneratedFolder = (canvasId?: string | null) => {
+    const normalizedCanvasId = canvasId?.trim() || DEFAULT_CANVAS_ID;
+    const canvasName = canvasesRef.current.find(canvas => canvas.id === normalizedCanvasId)?.name;
+    const current = ensureCanvasGeneratedImageFolders(
+      foldersRef.current,
+      normalizedCanvasId,
+      canvasName,
     );
-    const scene = pick([
-      [/家装|家居|客厅|卧室|厨房|餐厅|玄关|书房|interior|room|home/, '家装空间'],
-      [/产品|设备|硬件|工具|耳机|音箱|灯|包|鞋|椅|桌|product|device/, '产品设计'],
-      [/建筑|展厅|门店|空间|酒店|民宿|咖啡|店|architecture|store/, '商业空间'],
-      [/服装|饰品|面料|包袋|穿搭|fashion|wear/, '软装与配饰'],
-    ], '参考图');
-    const style = pick([
-      [/新中式|中式|东方|宋式|茶室|禅|胡桃|木/, '新中式克制'],
-      [/侘寂|wabi|原木|自然|肌理|微水泥/, '自然侘寂'],
-      [/奶油|法式|复古|中古|暖|米|cream|vintage/, '温暖复古'],
-      [/科技|金属|半透明|未来|冷静|灰|银|蓝|tech|metal/, '轻科技'],
-      [/极简|简约|minimal|干净|留白/, '极简现代'],
-    ], paletteKeywords[0] || '现代克制');
-    const material = pick([
-      [/木|胡桃|原木|橡木|wood/, '木质饰面'],
-      [/石|大理石|洞石|岩板|微水泥|stone|marble/, '石材肌理'],
-      [/金属|铝|钢|银|metal|aluminum/, '低光泽金属'],
-      [/玻璃|透明|亚克力|glass|acrylic/, '半透明材料'],
-      [/织物|布|软包|皮革|藤编|fabric|leather/, '织物与软包'],
-      [/陶瓷|瓷|ceramic/, '哑光陶瓷'],
-    ], '低光泽材料');
-    const color = paletteKeywords[0] || '中性配色';
-    const composition = pick([
-      [/对称|中式|东方|秩序|轴线/, '对称秩序'],
-      [/层次|叠加|景深|空间/, '层次递进'],
-      [/留白|极简|简约|minimal/, '大面积留白'],
-      [/细节|局部|特写|close/, '局部细节突出'],
-    ], '简洁构图');
+    if (current.folders === foldersRef.current) return current.folderId;
 
-    return { scene, style, material, color, composition };
-  };
-
-  const buildLocalPaletteWithQuickFallback = async (item: AlchemyBufferItem, apiStatus: string) => {
-    const fallback = buildLocalAlchemyResult(item, `${apiStatus}_quick_fallback`);
-    let timer: number | undefined;
-    try {
-      return await Promise.race([
-        buildLocalPaletteOnlyResult(item, apiStatus),
-        new Promise<AlchemyResult>((resolve) => {
-          timer = window.setTimeout(() => resolve({
-            ...fallback,
-            analysisMode: 'local',
-            colorSource: 'quick-fallback',
-          }), 4500);
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) window.clearTimeout(timer);
-    }
-  };
-
-  const buildLocalCmfFallbackResult = async (
-    item: AlchemyBufferItem,
-    apiStatus = 'local_cmf_fallback',
-  ): Promise<AlchemyResult> => {
-    const title = item.name || item.content || '参考图';
-    const palette = await buildLocalPaletteWithQuickFallback(item, apiStatus);
-    const colors = palette.colors.length > 0 ? palette.colors : buildLocalAlchemyResult(item).colors;
-    const { scene, style, material, color, composition } = inferLocalCmfTerms(item, palette.keywords);
-    const keywords = Array.from(new Set([
-      scene,
-      style,
-      material,
-      color,
-      composition,
-      ...palette.keywords.slice(0, 3),
-    ])).slice(0, 8);
-    const materials = materialHintsForLocalCmf(material, style, scene);
-    const primary = colors[0] || '#e7dfd2';
-    const secondary = colors[1] || colors[0] || '#b8aea1';
-    const accent = colors[2] || secondary;
-
-    return {
-      title,
-      colors,
-      keywords,
-      form: `基于「${title}」的名称、备注和本地色板判断，这张图可按「${scene} / ${style}」方向拆解；构图上优先借鉴「${composition}」带来的比例、层次和视觉重心，不直接复制原图轮廓。`,
-      cmf: `以「${style}」为主线，提取 ${primary} / ${secondary} / ${accent} 的色彩层次，结合「${material}」与低光泽表面建立 CMF 方向；整体适合作为${scene}的材料气质和配色参考。`,
-      summary: `本地大模型初始化较慢，已先用本地配色和启发式规则生成 ${scene}、${style}、${material}、${color} 方向。`,
-      borrow: [
-        `借鉴「${style}」的整体气质和色彩克制度`,
-        `借鉴「${composition}」带来的层次关系和视觉重心`,
-        `借鉴「${material}」的触感联想，但重新设计材料比例`,
-        `保留主色 ${primary} 与辅助色 ${secondary} 的明度关系`,
-      ],
-      avoid: [
-        '不要直接复制原图构图、家具/产品轮廓或装饰符号',
-        '避免把识别出的风格标签堆满，优先保留一条主风格线索',
-        '高反差或强调色需要控制面积，防止破坏整体克制度',
-        '落地到产品或空间前，需要重新验证耐脏、耐磨和维护成本',
-      ],
-      materials,
-      analysisMode: 'local',
-      colorSource: palette.colorSource,
-      apiStatus,
-      generatedAt: Date.now(),
-    };
-  };
-
-  useEffect(() => {
-    const stuckItems = items.filter((item): item is AlchemyBufferItem => {
-      if (!isAlchemyCandidate(item as AlchemyBufferItem)) return false;
-      const alchemy = (item as AlchemyBufferItem).alchemy;
-      if (alchemy?.state !== 'analyzing' || alchemy.result) return false;
-      const note = alchemy.note || '';
-      return /本地大模型|本地视觉模型|轻量本地视觉模型|模型文件已读取|正在读取/.test(note);
-    });
-    if (stuckItems.length === 0) return;
-
-    stuckItems.forEach((item) => {
-      if (localCmfRecoveryIdsRef.current.has(item.id)) return;
-      localCmfRecoveryIdsRef.current.add(item.id);
-      void buildLocalCmfFallbackResult(item, 'recovered_local_cmf')
-        .then((result) => {
-          setItems(prev => prev.map(current => current.id === item.id ? {
-            ...current,
-            alchemy: {
-              state: 'alchemy',
-              note: '本地大模型初始化较慢，已自动改用本地配色生成 CMF。',
-              result,
-              createdAt: (current as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-              analyzedAt: Date.now(),
-            },
-          } as BufferItem : current));
-        })
-        .catch((err) => {
-          console.warn('恢复卡住的本地 CMF 炼金失败:', err);
-          localCmfRecoveryIdsRef.current.delete(item.id);
-        });
-    });
-  }, [items]);
-
-  const runLocalPaletteAnalysis = async (item: AlchemyBufferItem, options?: { silent?: boolean; note?: string }) => {
-    if (!isAlchemyCandidate(item)) return null;
-
-    setItems(prev => prev.map(i => i.id === item.id ? {
-      ...i,
-      alchemy: {
-        ...(i as AlchemyBufferItem).alchemy,
-        state: 'analyzing',
-        note: options?.note || '正在自动提取配色...',
-        createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-      },
-    } as BufferItem : i));
-
-    try {
-      const result = await buildLocalPaletteOnlyResult(item);
-      setItems(prev => prev.map(i => {
-        if (i.id !== item.id) return i;
-        const current = i as AlchemyBufferItem;
-        const currentResult = current.alchemy?.result;
-        if (current.alchemy?.state === 'alchemy' && currentResult?.analysisMode === 'ai') {
-          return i;
-        }
-        return {
-          ...i,
-          alchemy: {
-            state: 'alchemy',
-            note: options?.note || '已自动提取配色。',
-            result: { ...result, analysisMode: 'palette' },
-            createdAt: current.alchemy?.createdAt || Date.now(),
-            analyzedAt: Date.now(),
-          },
-        } as BufferItem;
-      }));
-      if (!options?.silent) {
-        showToast(result.colorSource === 'fallback-preset' ? '已生成回退色板，建议保存为本地图片后重试' : '已完成本地配色分析');
-      }
-      return result;
-    } catch (err) {
-      console.warn('自动配色分析失败:', err);
-      setItems(prev => prev.map(i => i.id === item.id ? {
-        ...i,
-        alchemy: {
-          ...(i as AlchemyBufferItem).alchemy,
-          state: 'error',
-          error: '自动配色分析失败',
-          note: '自动配色分析失败',
-          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-        },
-      } as BufferItem : i));
-      return null;
-    }
-  };
-
-  const triggerAutoPaletteForItems = (incomingItems: BufferItem[]) => {
-    incomingItems
-      .filter(item => isAlchemyCandidate(item as AlchemyBufferItem))
-      .forEach((item, index) => {
-        const result = (item as AlchemyBufferItem).alchemy?.result;
-        if (Array.isArray(result?.colors) && result.colors.length > 0) return;
-        if (paletteAnalysisRequestedIdsRef.current.has(item.id)) return;
-        paletteAnalysisRequestedIdsRef.current.add(item.id);
-        const runWhenCanvasIdle = () => {
-          if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
-            window.setTimeout(runWhenCanvasIdle, 180);
-            return;
-          }
-          void runLocalPaletteAnalysis(item as AlchemyBufferItem, { silent: true, note: '已自动提取配色。' });
-        };
-        window.setTimeout(runWhenCanvasIdle, index * 20);
-      });
-  };
-
-  const ensureAiGeneratedFolder = () => {
-    const existing = foldersRef.current.find(folder => folder.name === AI_GENERATED_FOLDER_NAME);
-    if (existing) return existing.id;
-
-    const newFolder: Folder = {
-      id: AI_GENERATED_FOLDER_ID,
-      name: AI_GENERATED_FOLDER_NAME,
-      color: AI_GENERATED_FOLDER_COLOR,
-    };
+    foldersRef.current = current.folders;
     setFolders(prev => {
-      if (prev.some(folder => folder.id === newFolder.id || folder.name === newFolder.name)) return prev;
-      const nextFolders = insertDrawerFolderAtTop(prev, newFolder);
-      persistFoldersSnapshot(nextFolders);
-      return nextFolders;
+      const ensured = ensureCanvasGeneratedImageFolders(
+        prev,
+        normalizedCanvasId,
+        canvasName,
+      );
+      if (ensured.folders === prev) return prev;
+      foldersRef.current = ensured.folders;
+      persistFoldersSnapshot(ensured.folders);
+      return ensured.folders;
     });
-    return newFolder.id;
+    return current.folderId;
   };
 
   const ensureAiGeneratedVideoFolder = () => {
@@ -9747,6 +6154,7 @@ function MainApp() {
   const addGeneratedImagesToDrawer = (
     generatedItems: BufferItem[],
     options?: {
+      canvasId?: string;
       onOutputCachePatch?: (
         outputId: string,
         matchSources: string[],
@@ -9762,7 +6170,9 @@ function MainApp() {
     const cleanItems = generatedItems.filter(item => item.type === 'image');
     if (cleanItems.length === 0) return;
 
-    const folderId = ensureAiGeneratedFolder();
+    const folderId = ensureCanvasAiGeneratedFolder(
+      options?.canvasId || activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
+    );
     const now = Date.now();
     const savedItems = cleanItems.map((item, index) => {
       const savedItem = stripHeavyDataThumbnail(item);
@@ -9794,14 +6204,7 @@ function MainApp() {
       const source = getGeneratedImageCacheSource(item);
       if (!source) return;
       if (!shouldCacheGeneratedImageAgain(item)) {
-        if (item.thumbnail) {
-          triggerAutoPaletteForItems([{
-            ...item,
-            url: item.thumbnail,
-            path: undefined,
-          } as BufferItem]);
-          return;
-        }
+        if (item.thumbnail) return;
         const localPreviewSource = item.url || (item.path ? convertFileSrc(item.path) : source);
         enqueueCanvasAiOutputThumbnailJob({
           key: `drawer-local:${item.id}:${item.path || localPreviewSource}`,
@@ -9809,15 +6212,6 @@ function MainApp() {
           drawerItemId: item.id,
           source: localPreviewSource,
           path: item.path,
-          onSettled: (patch) => {
-            if (!patch.thumbnail) return;
-            triggerAutoPaletteForItems([{
-              ...item,
-              url: patch.thumbnail,
-              path: undefined,
-              thumbnail: patch.thumbnail,
-            } as BufferItem]);
-          },
         });
         return;
       }
@@ -9849,17 +6243,15 @@ function MainApp() {
 
       const cacheGeneratedImage = async () => {
         let lastError: unknown = new Error('网页图片缓存没有返回文件路径');
-        let resolvedSource = source;
-        if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
-          resolvedSource = await invoke<string>('resolve_ai_image_result_url', { url: source });
-        }
         const retryDelays = /^https?:\/\//i.test(source)
           ? GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS
           : [];
         for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
           try {
             const cachedPath = await invoke<string>('cache_web_image', {
-              url: resolvedSource,
+              // Keep the stable result URL intact. The backend refreshes signed
+              // wallet/OSS URLs on every attempt before downloading.
+              url: source,
               name: item.name || item.content || AI_GENERATED_FOLDER_NAME,
               dir: latestCacheDir || undefined,
             });
@@ -9916,13 +6308,6 @@ function MainApp() {
             path: cachedPath,
             onSettled: (patch) => {
               options?.onOutputCachePatch?.(item.id, matchSources, patch);
-              if (!patch.thumbnail) return;
-              triggerAutoPaletteForItems([{
-                ...cachedItem,
-                url: patch.thumbnail,
-                path: undefined,
-                thumbnail: patch.thumbnail,
-              } as BufferItem]);
             },
           });
         })
@@ -9987,137 +6372,6 @@ function MainApp() {
     }
   };
 
-  const focusAlchemyCard = (itemId: string, options?: { toast?: boolean }) => {
-    if (stateRef.current.isAntiTouchMode) {
-      enforceAntiTouchClosed(true);
-      return;
-    }
-    setActiveTab('alchemy');
-    setSelectedAlchemyItemId(itemId);
-    setIsOpen(true);
-    window.setTimeout(() => {
-      const target = document.querySelector(`[data-alchemy-card-id="${itemId}"]`);
-      target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }, 80);
-    if (options?.toast) showToast('已定位到炼金卡');
-  };
-
-  const runAiAlchemyFromCard = async (item: AlchemyBufferItem) => {
-    if (!isAlchemyCandidate(item)) {
-      showToast('只有图片灵感可以进行 AI 炼金');
-      return;
-    }
-
-    const existingResult = item.alchemy?.result;
-    const hasFinishedAiAlchemy = item.alchemy?.state === 'alchemy' && !!existingResult && existingResult.analysisMode !== 'palette';
-    if (hasFinishedAiAlchemy) {
-      focusAlchemyCard(item.id, { toast: true });
-      return;
-    }
-
-    focusAlchemyCard(item.id);
-    if (!hasAiAnalysis) {
-      await runAlchemyAnalysis(item);
-      return;
-    }
-    await runAlchemyAnalysis(item);
-  };
-
-  const runAlchemyAnalysis = async (item: AlchemyBufferItem) => {
-    if (!isAlchemyCandidate(item)) {
-      showToast('只有图片灵感可以进行 CMF 分析');
-      return;
-    }
-
-    const useAi = hasAiAnalysis;
-    setActiveTab('alchemy');
-    setSelectedAlchemyItemId(item.id);
-    setItems(prev => prev.map(i => i.id === item.id ? {
-      ...i,
-      alchemy: {
-        ...(i as AlchemyBufferItem).alchemy,
-        state: 'analyzing',
-        note: useAi ? (isSiliconFlowProvider(aiApiProvider) ? `正在用硅基流动 ${aiApiModel || '视觉模型'} 分析 CMF、造型语言和可借鉴点...` : '正在用 AI 分析 CMF、造型语言和可借鉴点...') : '正在用本地配色生成 CMF、造型语言和材料建议...',
-        createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-      },
-    } as BufferItem : i));
-
-    await new Promise(resolve => requestAnimationFrame(() => window.setTimeout(resolve, 20)));
-
-    if (!useAi) {
-      try {
-        const result = await buildLocalCmfFallbackResult(item, 'local_cmf_no_ai');
-        setItems(prev => prev.map(i => i.id === item.id ? {
-          ...i,
-          alchemy: {
-            state: 'alchemy',
-            note: '本地视觉模型初始化较慢，已先用本地配色生成 CMF、造型语言和材料建议。',
-            result,
-            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-            analyzedAt: Date.now(),
-          },
-        } as BufferItem : i));
-        showToast('已完成本地 CMF 炼金');
-      } catch (err) {
-        console.warn('本地 CMF 炼金失败:', err);
-        await runLocalPaletteAnalysis(item, { note: '本地 CMF 暂不可用，已先提取配色。' });
-      }
-      return;
-    }
-
-    try {
-      const result = await buildLocalCmfFallbackResult(item, 'local_only');
-      setItems(prev => prev.map(i => i.id === item.id ? {
-        ...i,
-        alchemy: {
-          state: 'alchemy',
-          note: isSiliconFlowProvider(aiApiProvider) ? '硅基流动视觉模型已生成 CMF、造型语言和借鉴点。' : 'AI 已生成 CMF、造型语言和借鉴点。',
-          result: { ...result, analysisMode: result.analysisMode || 'ai' },
-          createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-          analyzedAt: Date.now(),
-        },
-      } as BufferItem : i));
-      showToast(isSiliconFlowProvider(aiApiProvider) ? '硅基流动视觉模型分析完成' : 'CMF 炼金完成');
-    } catch (err: any) {
-      console.warn('AI CMF 炼金失败，改用本地 CMF 兜底:', err);
-      try {
-        const result = await buildLocalCmfFallbackResult(item, 'ai_error_local_cmf');
-        setItems(prev => prev.map(i => i.id === item.id ? {
-          ...i,
-          alchemy: {
-            state: 'alchemy',
-            note: 'AI 接口暂不可用，已先用本地配色生成 CMF、造型语言和材料建议。',
-            result,
-            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-            analyzedAt: Date.now(),
-          },
-        } as BufferItem : i));
-        showToast('AI 接口暂不可用，已完成本地 CMF 炼金');
-      } catch (localErr) {
-        console.warn('本地 CMF 回退失败，保留本地配色分析:', localErr);
-        const result = await buildLocalPaletteOnlyResult(item, 'ai_error_local_palette');
-        setItems(prev => prev.map(i => i.id === item.id ? {
-          ...i,
-          alchemy: {
-            state: 'alchemy',
-            note: 'AI 和本地视觉模型暂不可用，已先保留本地配色分析。',
-            result,
-            createdAt: (i as AlchemyBufferItem).alchemy?.createdAt || Date.now(),
-            analyzedAt: Date.now(),
-          },
-        } as BufferItem : i));
-        showToast('AI 和本地视觉模型暂不可用，已先完成本地配色分析');
-      }
-    }
-  };
-
-  const deleteAlchemyOnly = (itemId: string) => {
-    pushDrawerUndoSnapshot('删除炼金');
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, alchemy: undefined } as BufferItem : i));
-    setSelectedAlchemyItemId(prev => prev === itemId ? null : prev);
-    showToast('已删除炼金卡，原图片已保留');
-  };
-
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen('mobile-server-ready', (event: any) => {
@@ -10143,7 +6397,7 @@ function MainApp() {
       if (!shouldAcceptMobilePayload(data)) return;
       if (!isMobileConnected) showToast('📱 手机已连接');
       setIsMobileConnected(true); resetDisconnectTimer();
-      const newItem: BufferItem = { id: Math.random().toString(36).substring(2, 9), createdAt: Date.now(), ...data };
+      const newItem: BufferItem = { id: createAssetId(), createdAt: Date.now(), ...data };
       if (newItem.type === 'image' && newItem.path && !newItem.url) {
         newItem.url = convertFileSrc(newItem.path);
       }
@@ -10160,7 +6414,6 @@ function MainApp() {
       setItems(prev => [newItem, ...prev]);
       setActiveTab('all'); setActiveFolderId('all'); if (!stateRef.current.isAntiTouchMode) setIsOpen(true);
       if (newItem.type === 'image') {
-        triggerAutoPaletteForItems([newItem]);
         enqueueAutoAiTaggingForItems([newItem]);
       }
     }).then(f => unlisten = f);
@@ -10519,13 +6772,55 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
-    invoke('load_items').then((savedItems: any) => {
-      if (savedItems && savedItems.length > 0) setItems(savedItems.map(stripHeavyDataThumbnail));
-      setIsDataLoaded(true);
-    }).catch(() => setIsDataLoaded(true));
+    const initializeAssetLibrary = async () => {
+      try {
+        const status = await ensureSqliteAssetLibrary();
+        const mode = status.mode === 'json' ? 'json' : 'sqlite';
+        setAssetStorageMode(mode);
+        if (mode === 'json') {
+          const savedItems = await invoke<BufferItem[]>('load_items');
+          replaceAssetsFromQuery((savedItems || []).map(stripHeavyDataThumbnail));
+          setTotalAssetCount(savedItems?.length || 0);
+          setHasMoreAssets(false);
+          setIsDataLoaded(true);
+        }
+      } catch (error) {
+        console.warn('SQLite 素材库初始化失败，回退到旧 JSON 兼容模式:', error);
+        await invoke('rollback_to_json_mode').catch(() => undefined);
+        setAssetStorageMode('json');
+        try {
+          const savedItems = await invoke<BufferItem[]>('load_items');
+          replaceAssetsFromQuery((savedItems || []).map(stripHeavyDataThumbnail));
+          setTotalAssetCount(savedItems?.length || 0);
+        } catch (legacyError) {
+          console.warn('旧素材数据恢复失败:', legacyError);
+          replaceAssetsFromQuery([]);
+        }
+        setHasMoreAssets(false);
+        setIsDataLoaded(true);
+      } finally {
+        setAssetLibraryReady(true);
+      }
+    };
     const restoreLegacyCanvasState = async () => {
       const savedState = await invoke('load_canvas_state');
       const restored = sanitizeCanvasPersistedState(savedState);
+      const now = Date.now();
+      const fallbackCanvas: CanvasRecord = {
+        id: DEFAULT_CANVAS_ID,
+        projectId: DEFAULT_PROJECT_ID,
+        libraryId: DEFAULT_LIBRARY_ID,
+        name: '默认画布',
+        sortOrder: 0,
+        isActive: true,
+        isSnapshot: false,
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: now,
+      };
+      activeCanvasIdRef.current = DEFAULT_CANVAS_ID;
+      setActiveCanvasId(DEFAULT_CANVAS_ID);
+      setCanvases(previous => previous.length > 0 ? previous : [fallbackCanvas]);
       canvasItemsRef.current = restored.items;
       canvasSessionItemsRef.current.set(DEFAULT_CANVAS_ID, restored.items);
       canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
@@ -10568,7 +6863,6 @@ function MainApp() {
         canvasStateLoadedRef.current = true;
       }
     };
-    void restoreActiveCanvas();
     const restoreFolders = async () => {
       const cachedSnapshot = readFoldersFromCache();
       const cachedFolders = cachedSnapshot.isValid
@@ -10607,11 +6901,18 @@ function MainApp() {
         setIsFoldersLoaded(true);
       }
     };
-    void restoreFolders();
-  }, []);
+    // 6.0.15 started the SQLite migration and canvas restore concurrently.
+    // On a large upgrade the canvas query could lose the database lock race,
+    // leaving the in-memory canvas list empty even though its rows were intact.
+    // Finish storage initialization first, then restore canvas/folder state.
+    void (async () => {
+      await initializeAssetLibrary();
+      await Promise.all([restoreActiveCanvas(), restoreFolders()]);
+    })();
+  }, [replaceAssetsFromQuery]);
 
   const saveDrawerItemsNow = () => {
-    if (!isDataLoaded) return;
+    if (!isDataLoaded || assetStorageMode !== 'json') return;
     if (drawerItemsSaveInFlightRef.current) {
       drawerItemsSaveQueuedRef.current = true;
       return;
@@ -10639,14 +6940,16 @@ function MainApp() {
     }, DRAWER_ITEMS_SAVE_DEBOUNCE_MS);
   };
 
-  useEffect(() => { scheduleDrawerItemsSave(); }, [items, isDataLoaded]);
+  useEffect(() => {
+    if (assetStorageMode === 'json') scheduleDrawerItemsSave();
+  }, [assetStorageMode, items, isDataLoaded]);
   useEffect(() => () => {
     if (drawerItemsSaveTimerRef.current !== null) {
       window.clearTimeout(drawerItemsSaveTimerRef.current);
       drawerItemsSaveTimerRef.current = null;
     }
     saveDrawerItemsNow();
-  }, [isDataLoaded]);
+  }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
     if (canvasItemsPatchCommitRef.current) {
       canvasItemsPatchCommitRef.current = false;
@@ -10907,89 +7210,9 @@ function MainApp() {
     };
   }, []);
 
-  useEffect(() => {
-    triggerAutoPaletteForItems(items);
-  }, [items]);
-
 // 🌟 1. 用 Ref 缓存 activeFolderId，防止在监听器内部拿到旧的数据
   const activeFolderIdRef = useRef(activeFolderId);
   useEffect(() => { activeFolderIdRef.current = activeFolderId; }, [activeFolderId]);
-
-  const isCanvasImageFileName = (value?: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(value || '');
-  const isCanvasVideoFileName = (value?: string) => /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value || '');
-  const isCanvasTemplateJsonFileName = (value?: string) => /\.json$/i.test((value || '').replace(/\0+$/g, '').trim());
-  const isCanvasWorkflowReadableTextFileName = (value?: string) => (
-    /\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|xml|html?|css|mjs|cjs|js|jsx|ts|tsx)$/i.test(value || '')
-  );
-
-  const fileUrlToLocalPath = (value: string) => {
-    try {
-      const url = new URL(value.trim());
-      if (url.protocol !== 'file:') return '';
-      const rawPath = decodeURIComponent(url.pathname || '');
-      const normalized = rawPath.replace(/\//g, '\\');
-      if (url.hostname) return `\\\\${url.hostname}${normalized}`;
-      const withoutLeadingSlash = /^\\[a-zA-Z]:\\/.test(normalized) ? normalized.slice(1) : normalized;
-      return withoutLeadingSlash
-        .replace(/^\\\?\\(?=[a-zA-Z]:\\)/, '')
-        .replace(/^\?\\(?=[a-zA-Z]:\\)/, '');
-    } catch (_) {
-      return '';
-    }
-  };
-
-  const normalizeLocalDragPath = (value?: string | null) => {
-    const raw = (value || '').replace(/\0+$/g, '').trim().replace(/^"|"$/g, '');
-    if (!raw) return '';
-    if (/^file:/i.test(raw)) {
-      return fileUrlToLocalPath(raw) || raw;
-    }
-    return raw
-      .replace(/^\\\?\\(?=[a-zA-Z]:\\)/, '')
-      .replace(/^\?\\(?=[a-zA-Z]:\\)/, '');
-  };
-
-  const isDrawerLocalDeleteCandidate = (value?: unknown) => {
-    const raw = String(value || '').trim();
-    if (!raw || /^data:/i.test(raw)) return false;
-    if (/^https?:\/\//i.test(raw) && !raw.includes('asset.localhost')) return false;
-    if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^file:/i.test(raw) && !/^asset:/i.test(raw) && !raw.includes('asset.localhost')) return false;
-    return true;
-  };
-
-  const getBufferItemLocalPaths = (item: BufferItem) => {
-    if (item.type === 'text') return [];
-    const rawItem = item as BufferItem & {
-      sourcePath?: string;
-      originalPath?: string;
-    };
-    const candidates = [
-      item.path,
-      item.path ? undefined : item.url,
-      item.sourceUrl,
-      item.originalUrl,
-      rawItem.sourcePath,
-      rawItem.originalPath,
-    ];
-    const seen = new Set<string>();
-
-    return candidates.reduce<string[]>((paths, value) => {
-      if (!isDrawerLocalDeleteCandidate(value)) return paths;
-      const normalized = /^file:/i.test(String(value || '').trim())
-        ? normalizeLocalDragPath(String(value))
-        : String(value || '').trim();
-      const eagleSourcePath = normalizeLocalDragPath((rawItem as any).eagleSourcePath || '');
-      if (eagleSourcePath && normalized === eagleSourcePath) return paths;
-      if (!normalized || seen.has(normalized)) return paths;
-      seen.add(normalized);
-      paths.push(normalized);
-      return paths;
-    }, []);
-  };
-
-  const getDrawerImageLocalDeletePaths = (item: BufferItem) => (
-    item.type === 'image' ? getBufferItemLocalPaths(item) : []
-  );
 
   const deleteDrawerLocalFiles = async (paths: string[]) => {
     let deleted = 0;
@@ -11091,422 +7314,6 @@ function MainApp() {
     });
   };
 
-  const createVideoThumbnailInWebview = (path: string) => new Promise<string>((resolve) => {
-    const source = normalizeLocalDragPath(path);
-    if (!source) {
-      resolve('');
-      return;
-    }
-
-    const video = document.createElement('video');
-    const canvas = document.createElement('canvas');
-    const abortController = new AbortController();
-    let objectUrl = '';
-    let settled = false;
-    const cleanup = () => {
-      abortController.abort();
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-        objectUrl = '';
-      }
-    };
-    const finish = (value = '') => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-    const timer = window.setTimeout(() => finish(''), 9000);
-    let candidateTimes: number[] = [];
-    let candidateIndex = 0;
-    let lastThumbnail = '';
-
-    const isMostlyDarkFrame = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-      try {
-        const data = ctx.getImageData(0, 0, width, height).data;
-        const step = Math.max(4, Math.floor(data.length / 4800) * 4);
-        let sampled = 0;
-        let bright = 0;
-        for (let i = 0; i < data.length; i += step) {
-          const alpha = data[i + 3] / 255;
-          const luma = (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) * alpha;
-          if (luma > 28) bright += 1;
-          sampled += 1;
-        }
-        return sampled > 0 && bright / sampled < 0.035;
-      } catch (_) {
-        return false;
-      }
-    };
-
-    const capture = () => {
-      try {
-        const naturalWidth = video.videoWidth || 640;
-        const naturalHeight = video.videoHeight || 360;
-        const ratio = Math.min(
-          VIDEO_THUMBNAIL_MAX_WIDTH / naturalWidth,
-          VIDEO_THUMBNAIL_MAX_HEIGHT / naturalHeight,
-          1,
-        );
-        const width = Math.max(1, Math.round(naturalWidth * ratio));
-        const height = Math.max(1, Math.round(naturalHeight * ratio));
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          window.clearTimeout(timer);
-          finish('');
-          return;
-        }
-        ctx.drawImage(video, 0, 0, width, height);
-        const thumbnail = canvas.toDataURL('image/jpeg', 0.68);
-        lastThumbnail = thumbnail;
-        if (isMostlyDarkFrame(ctx, width, height) && candidateIndex < candidateTimes.length) {
-          seekNextCandidate();
-          return;
-        }
-        window.clearTimeout(timer);
-        finish(thumbnail);
-      } catch (err) {
-        console.warn('浏览器视频缩略图生成失败:', err);
-        window.clearTimeout(timer);
-        finish(lastThumbnail);
-      }
-    };
-
-    const seekNextCandidate = () => {
-      const nextTime = candidateTimes[candidateIndex++];
-      if (!Number.isFinite(nextTime)) {
-        window.clearTimeout(timer);
-        finish(lastThumbnail);
-        return;
-      }
-      if (Math.abs(video.currentTime - nextTime) < 0.03) {
-        capture();
-        return;
-      }
-      video.currentTime = nextTime;
-    };
-
-    video.muted = true;
-    video.preload = 'metadata';
-    video.playsInline = true;
-    video.crossOrigin = 'anonymous';
-    video.addEventListener('error', () => {
-      window.clearTimeout(timer);
-      finish('');
-    }, { once: true });
-    video.addEventListener('loadedmetadata', () => {
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      const rawTimes = duration > 0
-        ? [1, duration * 0.12, duration * 0.25, duration * 0.5, duration * 0.75, 0.25, 0]
-        : [1, 0.25, 0];
-      candidateTimes = Array.from(new Set(rawTimes
-        .map(value => Math.max(0, Math.min(duration || value, value)))
-        .map(value => Number(value.toFixed(2)))
-      ));
-      seekNextCandidate();
-    }, { once: true });
-    video.addEventListener('seeked', capture);
-
-    const assetUrl = convertFileSrc(source);
-    const loadAssetUrlDirectly = () => {
-      if (settled) return;
-      video.src = assetUrl;
-      video.load();
-    };
-
-    fetch(assetUrl, { method: 'HEAD', signal: abortController.signal })
-      .then(response => {
-        const size = Number(response.headers.get('content-length') || 0);
-        if (!Number.isFinite(size) || size <= 0) {
-          throw new Error('video size unknown; skip blob thumbnail fallback');
-        }
-        if (size > VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES) {
-          throw new Error(`video too large for blob thumbnail fallback: ${size}`);
-        }
-      })
-      .catch(err => {
-        if (err?.name === 'AbortError') return;
-        console.warn('视频大小探测失败或超限，尝试直接读取视频帧:', err);
-        throw err;
-      })
-      .then(() => fetch(assetUrl, { signal: abortController.signal }))
-      .then(response => response.ok ? response.blob() : Promise.reject(new Error(`HTTP ${response.status}`)))
-      .then(blob => {
-        if (blob.size > VIDEO_THUMBNAIL_BLOB_LIMIT_BYTES) {
-          throw new Error(`video too large for blob thumbnail fallback: ${blob.size}`);
-        }
-        if (settled) return;
-        objectUrl = URL.createObjectURL(blob);
-        video.src = objectUrl;
-        video.load();
-      })
-      .catch(err => {
-        if (err?.name === 'AbortError' || settled) return;
-        console.warn('视频文件读取失败，回退 asset URL:', err);
-        loadAssetUrlDirectly();
-      });
-  });
-
-  const getVideoThumbnail = async (path: string) => {
-    const source = normalizeLocalDragPath(path);
-    try {
-      const thumb = String(await invoke('get_video_thumb', { path: source }) || '');
-      if (thumb) return thumb;
-    } catch (err) {
-      console.warn('FFmpeg 视频缩略图生成失败，尝试浏览器兜底:', err);
-    }
-    return createVideoThumbnailInWebview(source);
-  };
-
-  const createImageThumbnailInWebview = (source: string) => new Promise<string>((resolve) => {
-    const rawSource = (source || '').trim();
-    if (!rawSource || /^data:image\/svg/i.test(rawSource)) {
-      resolve('');
-      return;
-    }
-
-    const image = new window.Image();
-    const canvas = document.createElement('canvas');
-    let objectUrl = '';
-    let settled = false;
-    let timer: number | null = null;
-
-    const cleanup = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-      image.onload = null;
-      image.onerror = null;
-      image.removeAttribute('src');
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-        objectUrl = '';
-      }
-      canvas.width = 0;
-      canvas.height = 0;
-    };
-
-    const finish = (value = '') => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-
-    image.onload = () => {
-      try {
-        const naturalWidth = image.naturalWidth || image.width;
-        const naturalHeight = image.naturalHeight || image.height;
-        if (!naturalWidth || !naturalHeight) {
-          finish('');
-          return;
-        }
-
-        const ratio = Math.min(
-          IMAGE_THUMBNAIL_MAX_WIDTH / naturalWidth,
-          IMAGE_THUMBNAIL_MAX_HEIGHT / naturalHeight,
-          1,
-        );
-        const width = Math.max(1, Math.round(naturalWidth * ratio));
-        const height = Math.max(1, Math.round(naturalHeight * ratio));
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          finish('');
-          return;
-        }
-        ctx.drawImage(image, 0, 0, width, height);
-        finish(canvas.toDataURL('image/webp', 0.66));
-      } catch (err) {
-        console.warn('图片缩略图生成失败:', err);
-        finish('');
-      }
-    };
-    image.onerror = () => finish('');
-    image.decoding = 'async';
-    image.crossOrigin = 'anonymous';
-    timer = window.setTimeout(() => finish(''), 8000);
-
-    image.src = rawSource;
-  });
-
-  const getCanvasNavMediaElementSource = (source: string) => {
-    const rawSource = (source || '').trim();
-    if (!rawSource) return '';
-    if (/^[a-zA-Z]:[\\/]/.test(rawSource) || rawSource.startsWith('\\\\')) {
-      return convertFileSrc(rawSource);
-    }
-    if (/^[a-z][a-z\d+\-.]*:/i.test(rawSource)) {
-      return rawSource;
-    }
-    return convertFileSrc(rawSource);
-  };
-
-  const createCanvasNavImageThumbnailInWebview = (source: string) => new Promise<string>((resolve) => {
-    const rawSource = (source || '').trim();
-    if (!rawSource) {
-      resolve('');
-      return;
-    }
-    if (/^data:image\/svg/i.test(rawSource)) {
-      resolve(rawSource);
-      return;
-    }
-
-    const image = new window.Image();
-    const canvas = document.createElement('canvas');
-    let settled = false;
-    let timer: number | null = null;
-
-    const cleanup = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-      image.onload = null;
-      image.onerror = null;
-      image.removeAttribute('src');
-      canvas.width = 0;
-      canvas.height = 0;
-    };
-    const finish = (value = '') => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-
-    image.onload = () => {
-      try {
-        const naturalWidth = image.naturalWidth || image.width;
-        const naturalHeight = image.naturalHeight || image.height;
-        if (!naturalWidth || !naturalHeight) {
-          finish('');
-          return;
-        }
-        const ratio = Math.min(
-          CANVAS_NAV_THUMB_MAX_WIDTH / naturalWidth,
-          CANVAS_NAV_THUMB_MAX_HEIGHT / naturalHeight,
-          1,
-        );
-        const width = Math.max(1, Math.round(naturalWidth * ratio));
-        const height = Math.max(1, Math.round(naturalHeight * ratio));
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          finish('');
-          return;
-        }
-        ctx.drawImage(image, 0, 0, width, height);
-        finish(canvas.toDataURL('image/webp', CANVAS_NAV_THUMB_QUALITY));
-      } catch (err) {
-        console.warn('画布导航缩略图生成失败:', err);
-        finish('');
-      }
-    };
-    image.onerror = () => finish('');
-    image.decoding = 'async';
-    const elementSource = getCanvasNavMediaElementSource(rawSource);
-    if (!/^data:/i.test(elementSource)) {
-      image.crossOrigin = 'anonymous';
-    }
-    timer = window.setTimeout(() => finish(''), 5000);
-    image.src = elementSource;
-  });
-
-  const createCanvasNavVideoThumbnailInWebview = (source: string) => new Promise<string>((resolve) => {
-    const elementSource = getCanvasNavMediaElementSource(source);
-    if (!elementSource) {
-      resolve('');
-      return;
-    }
-
-    const video = document.createElement('video');
-    const canvas = document.createElement('canvas');
-    let settled = false;
-    let timer: number | null = null;
-
-    const cleanup = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-      video.pause();
-      video.removeAttribute('src');
-      video.load();
-      canvas.width = 0;
-      canvas.height = 0;
-    };
-    const finish = (value = '') => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-    const capture = () => {
-      try {
-        const naturalWidth = video.videoWidth || 0;
-        const naturalHeight = video.videoHeight || 0;
-        if (!naturalWidth || !naturalHeight) {
-          finish('');
-          return;
-        }
-        const ratio = Math.min(
-          CANVAS_NAV_THUMB_MAX_WIDTH / naturalWidth,
-          CANVAS_NAV_THUMB_MAX_HEIGHT / naturalHeight,
-          1,
-        );
-        const width = Math.max(1, Math.round(naturalWidth * ratio));
-        const height = Math.max(1, Math.round(naturalHeight * ratio));
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          finish('');
-          return;
-        }
-        ctx.drawImage(video, 0, 0, width, height);
-        finish(canvas.toDataURL('image/webp', CANVAS_NAV_THUMB_QUALITY));
-      } catch (err) {
-        console.warn('画布导航视频缩略图生成失败:', err);
-        finish('');
-      }
-    };
-
-    video.muted = true;
-    video.preload = 'metadata';
-    video.playsInline = true;
-    if (!/^data:/i.test(elementSource)) {
-      video.crossOrigin = 'anonymous';
-    }
-    video.addEventListener('error', () => finish(''), { once: true });
-    video.addEventListener('loadedmetadata', () => {
-      const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      const targetTime = duration > 0.1 ? Math.min(0.8, Math.max(0, duration * 0.12)) : 0;
-      if (targetTime > 0.03) {
-        try {
-          video.currentTime = targetTime;
-        } catch {
-          capture();
-        }
-        return;
-      }
-      capture();
-    }, { once: true });
-    video.addEventListener('seeked', capture, { once: true });
-    timer = window.setTimeout(() => finish(''), 6000);
-    video.src = elementSource;
-    video.load();
-  });
-
   const imageThumbnailInFlightRef = useRef<Set<string>>(new Set());
   const imageThumbnailQueueRef = useRef<BufferItem[]>([]);
   const imageThumbnailActiveCountRef = useRef(0);
@@ -11517,6 +7324,7 @@ function MainApp() {
   const canvasAiOutputThumbnailInFlightRef = useRef(new Set<string>());
   const canvasAiOutputThumbnailRecoveryAttemptedRef = useRef(new Set<string>());
   const canvasAiOutputSourceRecoveryAttemptedRef = useRef(new Set<string>());
+  const canvasAiOutputSourceRecoveryRetryAtRef = useRef(new Map<string, number>());
   const canvasAiOutputSourceRecoveryInFlightRef = useRef(new Set<string>());
   const [canvasAiOutputSourceRecoveryTick, setCanvasAiOutputSourceRecoveryTick] = useState(0);
   const canvasAiTimedOutRecoveryInFlightRef = useRef(new Set<string>());
@@ -11524,51 +7332,6 @@ function MainApp() {
   const [canvasAiTimedOutRecoveryTick, setCanvasAiTimedOutRecoveryTick] = useState(0);
   const generatedImageCachePendingIdsRef = useRef(new Set<string>());
   const generatedImageCachePromisesRef = useRef(new Map<string, Promise<string>>());
-
-  const readDataImageSize = (source?: string) => new Promise<{ width: number; height: number } | null>((resolve) => {
-    const rawSource = (source || '').trim();
-    if (!rawSource.startsWith('data:image/')) {
-      resolve(null);
-      return;
-    }
-
-    const image = new window.Image();
-    let settled = false;
-    const finish = (value: { width: number; height: number } | null) => {
-      if (settled) return;
-      settled = true;
-      image.onload = null;
-      image.onerror = null;
-      image.removeAttribute('src');
-      resolve(value);
-    };
-    const timer = window.setTimeout(() => finish(null), 2000);
-
-    image.onload = () => {
-      window.clearTimeout(timer);
-      const width = image.naturalWidth || image.width || 0;
-      const height = image.naturalHeight || image.height || 0;
-      finish(width > 0 && height > 0 ? { width, height } : null);
-    };
-    image.onerror = () => {
-      window.clearTimeout(timer);
-      finish(null);
-    };
-    image.decoding = 'async';
-    image.src = rawSource;
-  });
-
-  const isLegacyImageThumbnail = async (thumbnail?: string) => {
-    const size = await readDataImageSize(thumbnail);
-    if (!size) return false;
-    return (
-      (
-        size.width >= IMAGE_THUMBNAIL_LEGACY_MAX_WIDTH - 1 ||
-        size.height >= IMAGE_THUMBNAIL_LEGACY_MAX_HEIGHT - 1
-      ) &&
-      (size.width < IMAGE_THUMBNAIL_MAX_WIDTH || size.height < IMAGE_THUMBNAIL_MAX_HEIGHT)
-    );
-  };
 
   const flushImageThumbnailUpdates = () => {
     imageThumbnailUpdateTimerRef.current = null;
@@ -11649,7 +7412,12 @@ function MainApp() {
           if (!refresh) return '';
           if (item.path) {
             return invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', { path: item.path, size: 512 })
-              .then(result => result.url || (result.path ? convertFileSrc(result.path) : ''))
+              .then(result => {
+                if (import.meta.env.DEV) {
+                  console.debug('[DrawerPerf] thumbnail', { assetId: item.id, cacheHit: result.cacheHit === true });
+                }
+                return result.url || (result.path ? convertFileSrc(result.path) : '');
+              })
               .catch(() => createImageThumbnailInWebview(source));
           }
           return createImageThumbnailInWebview(source);
@@ -11748,12 +7516,7 @@ function MainApp() {
   };
 
   useEffect(() => {
-    const visibleIds = new Set([
-      ...renderedDisplayItems.map(item => item.id),
-      ...quickAccessItems.map(item => item.id),
-    ]);
-    const pending = items.find(item =>
-      visibleIds.has(item.id) &&
+    const pending = quickAccessItems.find(item =>
       item.type === 'video' &&
       item.path &&
       !item.thumbnail &&
@@ -11775,7 +7538,7 @@ function MainApp() {
     return () => {
       cancelled = true;
     };
-  }, [items, renderedDisplayItems, quickAccessItems]);
+  }, [items, quickAccessItems]);
 
   const thumbnailRecompressInFlightRef = useRef<Set<string>>(new Set());
 
@@ -11808,37 +7571,6 @@ function MainApp() {
       cancelled = true;
     };
   }, [items]);
-
-  const getCanvasLocalPathsFromDataTransfer = (dt?: DataTransfer | null) => {
-    if (!dt) return [];
-    const paths: string[] = [];
-    const addPath = (raw?: string | null) => {
-      if (!raw) return;
-      const trimmed = raw.trim().replace(/^"|"$/g, '');
-      if (!trimmed || trimmed.startsWith('#')) return;
-      const path = /^file:/i.test(trimmed) ? fileUrlToLocalPath(trimmed) : trimmed;
-      if (path && (
-        isCanvasImageFileName(path)
-        || isCanvasVideoFileName(path)
-        || isCanvasTemplateJsonFileName(path)
-      )) paths.push(path);
-    };
-
-    Array.from(dt.files || []).forEach(file => addPath((file as File & { path?: string }).path));
-    Array.from(dt.items || []).forEach(item => {
-      if (item.kind !== 'file') return;
-      const file = item.getAsFile();
-      addPath((file as (File & { path?: string }) | null)?.path);
-    });
-
-    for (const type of ['text/uri-list', 'text/plain']) {
-      const data = dt.getData(type);
-      if (!data) continue;
-      data.split(/\r?\n/).forEach(line => addPath(line));
-    }
-
-    return Array.from(new Set(paths));
-  };
 
   const getCanvasDropPosition = (index = 0, client?: { x: number; y: number }) => {
     const surface = canvasSurfaceRef.current;
@@ -11911,43 +7643,6 @@ function MainApp() {
       (item.item.createdAt || 0) > (best.item.createdAt || 0) ? item : best
     ), imageItems[0]);
   };
-
-  const getCanvasItemDisplaySource = (item: BufferItem) => (
-    item.url ||
-    (item.path ? convertFileSrc(item.path) : '') ||
-    item.thumbnail ||
-    ''
-  );
-
-  const getCanvasItemThumbnailSource = (item: BufferItem) => (
-    item.thumbnail || ''
-  );
-
-  const getCanvasInitialImageSource = (item: BufferItem) => (
-    item.type === 'image'
-      ? getCanvasItemThumbnailSource(item)
-      : getCanvasItemDisplaySource(item)
-  );
-
-  const getCanvasOriginalImageSource = (item: BufferItem) => {
-    if (item.type !== 'image') return '';
-    const path = String(item.path || '').trim();
-    if (path) {
-      if (/^(?:asset:|file:|blob:|data:|https?:)/i.test(path)) return path;
-      return convertFileSrc(path);
-    }
-    return String(item.url || item.sourceUrl || item.originalUrl || '').trim();
-  };
-
-  const getCanvasImageUpgradeLocalPath = (canvasItem: CanvasImageItem) => {
-    const path = (canvasItem.item.path || '').trim();
-    if (!path || /^(?:https?:|data:|asset:|file:|blob:)/i.test(path)) return '';
-    return path;
-  };
-
-  const getCanvasImageUpgradeFailureKey = (canvasItem: CanvasImageItem) => (
-    `${canvasItem.id}:${getCanvasImageUpgradeLocalPath(canvasItem)}:${CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE}`
-  );
 
   const cancelCanvasImageSourceUpgradeQueue = () => {
     canvasImageUpgradeTokenRef.current += 1;
@@ -12224,93 +7919,13 @@ function MainApp() {
     }, CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS);
   };
 
-  const getCanvasAiOutputDisplaySource = (output?: CanvasAiGeneratedOutput | null) => (
-    output?.url ||
-    (output?.path ? convertFileSrc(output.path) : '') ||
-    ''
-  );
-
-  const getCanvasAiOutputThumbnailSource = (output?: CanvasAiGeneratedOutput | null) => (
-    output?.thumbnail || getCanvasAiOutputDisplaySource(output)
-  );
-
-  const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null) => (
-    (isCanvasAiGeneratorType(canvasItem?.ai?.type) || canvasItem?.ai?.type === 'workflow')
-      ? (canvasItem.ai.outputs || [])
-        .map(recoverCanvasAiOutputWithUsableResult)
-        .filter(output => output.status === 'success' && getCanvasAiOutputDisplaySource(output))
-      : []
-  );
-
-  const getCanvasWorkflowAllRuntimeOutputSlots = (
-    canvasItem: CanvasImageItem,
-    workflow: CanvasWorkflowTemplate
-  ): CanvasAiGeneratedOutput[] => {
-    const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow, undefined, 'all');
-    const runtimeSnapshots = normalizeCanvasWorkflowRuntimeSnapshots(canvasItem.ai?.workflowRuntime);
-    const snapshotsByTemplateId = new Map(runtimeSnapshots.map(snapshot => [snapshot.templateId, snapshot]));
-    return drafts.map((draft) => {
-      const nodeId = draft.nodeId || '';
-      const outputIndex = Number(draft.id.split('_').pop()) || 0;
-      const snapshotOutputs = snapshotsByTemplateId.get(nodeId)?.ai?.outputs;
-      const output = Array.isArray(snapshotOutputs)
-        ? snapshotOutputs[outputIndex] as CanvasAiGeneratedOutput | undefined
-        : undefined;
-      if (!output) return draft;
-      return {
-        ...draft,
-        ...output,
-        id: draft.id,
-        name: output.name || draft.name,
-        nodeId: draft.nodeId,
-        nodeLabel: draft.nodeLabel,
-      };
-    });
-  };
-
-  const getCanvasAiOutputPreviewSlots = (canvasItem?: CanvasImageItem | null): CanvasAiGeneratedOutput[] => {
-    if (!isCanvasAiGeneratorType(canvasItem?.ai?.type) && canvasItem?.ai?.type !== 'workflow') return [];
-    const outputs = canvasItem.ai.outputs || [];
-    const workflow = getCanvasWorkflowTemplateFromNode(canvasItem);
-    if (workflow) {
-      if (canvasItem.ai.workflowOutputMode !== 'final') {
-        return getCanvasWorkflowAllRuntimeOutputSlots(canvasItem, workflow);
-      }
-      const drafts = createCanvasWorkflowOutputDrafts(canvasItem, workflow);
-      if (outputs.length === 0) return drafts;
-      const usedOutputIds = new Set<string>();
-      const merged = drafts.map((draft, index) => {
-        const output = outputs.find(item => item.id === draft.id && !usedOutputIds.has(item.id))
-          || outputs[index];
-        if (!output) return draft;
-        if (output.id) usedOutputIds.add(output.id);
-        return recoverCanvasAiOutputWithUsableResult({
-          ...draft,
-          ...output,
-          id: output.id || draft.id,
-          name: output.name || draft.name,
-        });
-      });
-      const extras = outputs.filter(output => output.id && !usedOutputIds.has(output.id));
-      return [...merged, ...extras.map(recoverCanvasAiOutputWithUsableResult)];
-    }
-    if (outputs.length > 0) return outputs.map(recoverCanvasAiOutputWithUsableResult);
-    const count = clamp(Math.round(Number(canvasItem.ai.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_AI_MAX_OUTPUT_COUNT);
-    const size = getCanvasAiOutputSize(canvasItem.ai.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
-    return Array.from({ length: count }, (_, index) => ({
-      id: `${canvasItem.id}_idle_output_${index}`,
-      mediaType: getCanvasAiMediaType(canvasItem.ai),
-      name: `Output #${index + 1}`,
-      width: size.width,
-      height: size.height,
-    }));
-  };
-
   const getCanvasAiNodeDesignSizeForItem = (
     canvasItem: CanvasImageItem,
     promptExpanded = canvasAiPromptEditingId === canvasItem.id,
+    outputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id),
   ) => {
     const canvasAiOutputs = getCanvasAiOutputPreviewSlots(canvasItem);
+    const visibleOutputs = getCanvasAiVisibleOutputs(canvasAiOutputs, outputsExpanded);
     const canvasAiRealOutputs = canvasItem.ai?.outputs || [];
     const canvasAiOutputAspectRatio = canvasAiOutputs[0]?.width && canvasAiOutputs[0]?.height
       ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
@@ -12319,7 +7934,7 @@ function MainApp() {
       type: getCanvasAiNodeAutoSizeType(canvasItem.ai),
       aspectRatio: canvasAiOutputAspectRatio,
       count: canvasItem.ai?.count,
-      outputCount: canvasAiOutputs.length || undefined,
+      outputCount: visibleOutputs.length || undefined,
       hasPreset: canvasItem.ai?.type !== 'workflow' && !!canvasItem.ai?.presetLabel,
       hasError: !!canvasItem.ai?.error,
       promptText: canvasItem.item.content || '',
@@ -12328,135 +7943,51 @@ function MainApp() {
       localMediaTool: isCanvasAiLocalMediaToolType(canvasItem.ai?.type),
       showLocalMediaProgress: shouldShowCanvasAiLocalMediaProgress(canvasItem.ai),
       imageRulePanelExpanded: canvasItem.ai?.type === 'image-generator' && canvasItem.ai.imagePolicy?.panelExpanded !== false,
+      imageFusion: isCanvasImageFusionAi(canvasItem.ai),
       internalSlotCount: canvasItem.ai?.type === 'workflow'
         ? getCanvasWorkflowInternalSlotNodes(getCanvasWorkflowTemplateFromNode(canvasItem)).length
         : 0,
     });
   };
-  void runAiAlchemyFromCard;
-  void deleteAlchemyOnly;
 
-  const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
-    !!canvasItem
-  );
+  const canvasAiCompactOutputNodeSignature = canvasItems
+    .filter(item => (
+      (isCanvasAiGeneratorType(item.ai?.type) || item.ai?.type === 'workflow')
+      && (item.ai?.outputs?.length || 0) > CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT
+    ))
+    .map(item => [
+      item.id,
+      item.ai?.outputs?.length || 0,
+      Math.round(item.width),
+      Math.round(item.height),
+      canvasAiExpandedOutputNodeIds.has(item.id) ? 1 : 0,
+    ].join(':'))
+    .join('|');
 
-  const canUseCanvasItemAsFrameInterpolationVideoInput = (canvasItem?: CanvasImageItem | null) => {
-    if (!canvasItem) return false;
-    if (canvasItem.item.type === 'video') return true;
-    return getCanvasAiSuccessfulOutputs(canvasItem).some(output => (
-      (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'video' && !!getCanvasAiOutputDisplaySource(output)
-    ));
-  };
-
-  const canUseCanvasItemAsImageEnhancementInput = (canvasItem?: CanvasImageItem | null) => {
-    if (!canvasItem) return false;
-    if (canvasItem.item.type === 'image') return true;
-    return getCanvasAiSuccessfulOutputs(canvasItem).some(output => (
-      (output.mediaType || getCanvasAiMediaType(canvasItem.ai)) === 'image' && !!getCanvasAiOutputDisplaySource(output)
-    ));
-  };
-
-  const canUseCanvasItemAsVideoEnhancementInput = (canvasItem?: CanvasImageItem | null) => (
-    canUseCanvasItemAsFrameInterpolationVideoInput(canvasItem)
-  );
-
-  const canUseCanvasItemAsWorkflowMaterial = (
-    canvasItem: CanvasImageItem | null | undefined,
-    configValue: unknown,
-  ) => {
-    if (!canvasItem) return false;
-    const userInput = normalizeCanvasWorkflowUserInput(configValue);
-    const isImageInput = canvasItem.item.type === 'image'
-      || canvasItem.ai?.type === 'image-generator'
-      || canvasItem.ai?.type === 'workflow'
-      || canUseCanvasItemAsImageEnhancementInput(canvasItem);
-    if (isImageInput) return userInput.acceptImages !== false;
-    if (canvasItem.item.type === 'file' && !isCanvasWorkflowReferenceBridge(canvasItem)) {
-      return userInput.acceptFiles === true;
-    }
-    return true;
-  };
-
-  const isCanvasWorkflowReferenceBridge = (canvasItem?: CanvasImageItem | null) => (
-    canvasItem?.workflowBridge?.type === 'reference-image'
-  );
-
-  const canUseCanvasItemAsReferenceBridgeInput = (canvasItem?: CanvasImageItem | null) => (
-    canUseCanvasItemAsImageEnhancementInput(canvasItem)
-  );
-
-  const canUseCanvasItemAsInputForTarget = (
-    source?: CanvasImageItem | null,
-    target?: CanvasImageItem | null,
-  ) => {
-    if (target?.ai?.type === 'workflow') {
-      if (!canUseCanvasItemAsWorkflowMaterial(source, getCanvasWorkflowTemplateFromNode(target)?.userInput)) return false;
-    }
-    return isCanvasWorkflowReferenceBridge(target)
-      ? canUseCanvasItemAsReferenceBridgeInput(source)
-      : target?.ai?.type === 'frame-interpolation'
-        ? canUseCanvasItemAsFrameInterpolationVideoInput(source)
-        : target?.ai?.type === 'image-enhancement'
-          ? canUseCanvasItemAsImageEnhancementInput(source)
-          : target?.ai?.type === 'video-enhancement'
-            ? canUseCanvasItemAsVideoEnhancementInput(source)
-            : canUseCanvasItemAsAiInput(source);
-  };
-
-  const isCanvasAgentTextTarget = (canvasItem?: CanvasImageItem | null) => (
-    !!canvasItem && canvasItem.item.type === 'text' && !canvasItem.ai && canvasItem.textMode !== 'plain'
-  );
-
-  const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) => (
-    isCanvasAiGeneratorType(canvasItem?.ai?.type)
-    || canvasItem?.ai?.type === 'workflow'
-    || isCanvasAgentTextTarget(canvasItem)
-    || isCanvasWorkflowReferenceBridge(canvasItem)
-  );
-
-  const getCanvasInputTargetLabel = (canvasItem?: CanvasImageItem | null) => (
-    isCanvasWorkflowReferenceBridge(canvasItem)
-      ? canvasItem?.workflowBridge?.label || canvasItem?.item.name || '参考图桥接'
-      : isCanvasAgentTextTarget(canvasItem)
-      ? `Design Agent · ${DESIGN_AGENT_ROLE_LABELS[normalizeDesignAgentConfig(canvasItem?.designAgentConfig).agentRole]}`
-      : canvasItem?.ai?.type === 'workflow'
-        ? canvasItem.ai?.presetLabel || canvasItem.item.name || '工作流模块'
-        : getCanvasAiNodeTitle(canvasItem?.ai)
-  );
-
-  const hasCanvasAiGeneratedResults = (canvasItem?: CanvasImageItem | null) => (
-    getCanvasAiSuccessfulOutputs(canvasItem).length > 0
-  );
-
-  const createCanvasAiOutputBufferItem = (
-    canvasItem: CanvasImageItem,
-    output: CanvasAiGeneratedOutput,
-    index: number
-  ): BufferItem | null => {
-    const source = getCanvasAiOutputDisplaySource(output);
-    if (!source && output.status !== 'working' && output.status !== 'error') return null;
-    const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
-    const titleSeed = (canvasItem.ai?.presetLabel || canvasItem.item.name || canvasItem.item.content || '').trim();
-    const name = output.name || (titleSeed ? `${titleSeed} #${index + 1}` : `AI generated ${mediaType} #${index + 1}`);
-    const generatedAt = output.generatedAt || canvasItem.ai?.generatedAt || canvasItem.item.createdAt || Date.now();
-    const rawUrl = (output.url || source).trim();
-    const rawPath = (output.path || '').trim();
-    const remoteSource = /^https?:\/\//i.test(rawUrl) ? rawUrl : '';
-    return {
-      id: output.id || `${canvasItem.item.id}-output-${index + 1}`,
-      type: mediaType,
-      content: name,
-      name,
-      url: rawUrl,
-      path: rawPath || undefined,
-      thumbnail: output.thumbnail || undefined,
-      sourceUrl: remoteSource || undefined,
-      originalUrl: remoteSource || undefined,
-      createdAt: generatedAt,
-      isQuickAccess: false,
-    };
-  };
-
+  useEffect(() => {
+    if (!isCanvasMode || !canvasAiCompactOutputNodeSignature) return;
+    updateCanvasItemsImmediate(previous => {
+      let changed = false;
+      const next = previous.map(item => {
+        if (canvasAiExpandedOutputNodeIds.has(item.id)
+          || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')
+          || (item.ai?.outputs?.length || 0) <= CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT) return item;
+        const promptExpanded = canvasAiPromptEditingId === item.id;
+        const compactSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded, false);
+        const scale = Math.max(0.1, item.width / Math.max(1, compactSize.width));
+        const compactHeight = compactSize.height * scale;
+        if (item.height <= compactHeight + 8) return item;
+        changed = true;
+        return { ...item, height: compactHeight };
+      });
+      return changed ? next : previous;
+    });
+  }, [
+    canvasAiCompactOutputNodeSignature,
+    canvasAiExpandedOutputNodeIds,
+    canvasAiPromptEditingId,
+    isCanvasMode,
+  ]);
   const collectSimilarImagesFromCanvasItem = (canvasItem: CanvasImageItem) => {
     if (canvasItem.item.type !== 'image') {
       showToast('只有画布图片可以作为收图参考图');
@@ -12501,41 +8032,6 @@ function MainApp() {
     });
   };
 
-  const getCanvasItemNavSource = (item: BufferItem) => (
-    (item.type === 'image' || item.type === 'video')
-      ? item.thumbnail || ''
-      : getCanvasItemDisplaySource(item)
-  );
-
-  const getCanvasBufferItemNavPreview = (item?: BufferItem | null): CanvasNavPreview | null => {
-    if (!item) return null;
-    if (item.type === 'image') {
-      const source = getCanvasItemNavSource(item);
-      return source ? { source, mediaType: 'image' } : null;
-    }
-    if (item.type === 'video') {
-      if (item.thumbnail) return { source: item.thumbnail, mediaType: 'image' };
-      const source = getCanvasItemDisplaySource(item);
-      return source ? { source, mediaType: 'video' } : null;
-    }
-    return null;
-  };
-
-  const getCanvasOutputNavPreview = (
-    canvasItem: CanvasImageItem,
-    output?: CanvasAiGeneratedOutput | null
-  ): CanvasNavPreview | null => {
-    const mediaType = output?.mediaType || getCanvasAiMediaType(canvasItem.ai);
-    const source = mediaType === 'image'
-      ? getCanvasAiOutputThumbnailSource(output)
-      : getCanvasAiOutputDisplaySource(output);
-    if (!source || output?.status === 'error') return null;
-    return {
-      source,
-      mediaType,
-    };
-  };
-
   const makeCanvasItemBoxMap = (ids: string[]) => (
     canvasItemsRef.current
       .filter(item => ids.includes(item.id))
@@ -12544,12 +8040,6 @@ function MainApp() {
         return acc;
       }, {})
   );
-
-  const getCanvasWorkflowGroupIdForSelection = (canvasItem?: CanvasImageItem | null) => {
-    const group = canvasItem?.workflowGroup;
-    if (!group || typeof group !== 'object') return '';
-    return String((group as Partial<CanvasWorkflowExpandedGroup>).groupId || '');
-  };
 
   const getCanvasWorkflowGroupItemIdsForSelection = (
     groupId: string,
@@ -12713,9 +8203,6 @@ function MainApp() {
     const normalizedCanvasId = canvasId || DEFAULT_CANVAS_ID;
     const persistedNode = stripCanvasItemDataImageProvenance(node);
     return enqueueCanvasBackgroundWrite(normalizedCanvasId, async () => {
-      if (persistedNode.item) {
-        await invoke('upsert_assets', { assets: [persistedNode.item] });
-      }
       await patchCanvasNodes(normalizedCanvasId, [persistedNode]);
     });
   };
@@ -12873,12 +8360,6 @@ function MainApp() {
         .map(stripCanvasItemDataImageProvenance);
       if (changedNodes.length === 0) return;
       const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
-      const assetItems = changedNodes.map(item => item.item).filter(Boolean);
-      if (assetItems.length > 0) {
-        invoke('upsert_assets', { assets: assetItems }).catch((err) => {
-          console.warn('同步变更画布素材到 SQLite 失败:', err);
-        });
-      }
       patchCanvasNodes(targetCanvasId, changedNodes)
         .then(() => {
           canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(
@@ -12939,14 +8420,6 @@ function MainApp() {
     const nodesSignature = getCanvasNodesPersistSignature(state.items);
     if (canvasLastSyncedNodesSignatureRef.current === nodesSignature) return;
     const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
-    if (state.items.length > 0) {
-      const assetItems = state.items.map(item => item.item).filter(Boolean);
-      if (assetItems.length > 0) {
-        invoke('upsert_assets', { assets: assetItems }).catch((err) => {
-          console.warn('同步画布素材到 SQLite 失败:', err);
-        });
-      }
-    }
     updateCanvasNodes(targetCanvasId, state.items)
       .then(() => {
         canvasLastSyncedNodesSignatureRef.current = nodesSignature;
@@ -13058,6 +8531,7 @@ function MainApp() {
     setCanvasContextMenu(null);
     setCanvasInputMenuForId(null);
     setCanvasInputPickTargetId(null);
+    pendingCanvasFusionRoleRef.current = null;
     setCanvasConnectionDraft(null);
     setCanvasInputActionDraft(null);
     clearCanvasUndoStack();
@@ -13097,10 +8571,6 @@ function MainApp() {
     await enqueueCanvasBackgroundWrite(currentCanvasId, async () => {
       latestItems = (canvasSessionItemsRef.current.get(currentCanvasId) || state.items)
         .map(stripCanvasItemDataImageProvenance);
-      const assetItems = latestItems.map(item => item.item).filter(Boolean);
-      if (assetItems.length > 0) {
-        await invoke('upsert_assets', { assets: assetItems });
-      }
       await updateCanvasNodes(currentCanvasId, latestItems);
     });
     const latestSignature = getCanvasNodesPersistSignature(latestItems);
@@ -13695,7 +9165,7 @@ function MainApp() {
         : getCanvasAiOutputSize(sourceCanvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
     const pos = getCanvasAiOutputCopyPosition(sourceCanvasItem, size, outputIndex);
     const now = Date.now();
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const canvasItem: CanvasImageItem = {
       id: makeCanvasNodeId(itemId, 'media'),
       item: {
@@ -13796,87 +9266,57 @@ function MainApp() {
       a.x - b.x ||
       (a.item.createdAt || 0) - (b.item.createdAt || 0)
     ));
-    const originalOrder = new Map(sortedItems.map((item, index) => [item.id, index]));
-    const itemById = new Map(sortedItems.map(item => [item.id, item]));
-    const placements = new Map<string, { x: number; y: number }>();
-    const hasInternalLinks = sortedItems.some(item => (item.inputs || []).some(inputId => targetIdSet.has(inputId)));
-    const columnGap = 104;
-    const rowGap = 46;
-
-    if (hasInternalLinks) {
-      const levelMemo = new Map<string, number>();
-      const visiting = new Set<string>();
-      const getLevel = (item: CanvasImageItem): number => {
-        const memo = levelMemo.get(item.id);
-        if (memo !== undefined) return memo;
-        if (visiting.has(item.id)) return 0;
-        visiting.add(item.id);
-        const parents = (item.inputs || [])
-          .map(inputId => itemById.get(inputId))
-          .filter((input): input is CanvasImageItem => !!input);
-        const level = parents.length > 0
-          ? Math.max(...parents.map(parent => getLevel(parent))) + 1
-          : 0;
-        visiting.delete(item.id);
-        levelMemo.set(item.id, level);
-        return level;
+    const normalizeLayoutMediaSource = (source?: string | null) => {
+      const value = String(source || '').trim();
+      if (!value) return '';
+      return /^[a-z]:[\\/]/i.test(value)
+        ? value.replace(/\\/g, '/').toLowerCase()
+        : value;
+    };
+    const outputOwnerBySource = new Map<string, string>();
+    sortedItems.forEach(item => {
+      if (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow') return;
+      (item.ai.outputs || []).forEach(output => {
+        [output.path, output.url, output.sourceUrl].forEach(source => {
+          const key = normalizeLayoutMediaSource(source);
+          if (key && !outputOwnerBySource.has(key)) outputOwnerBySource.set(key, item.id);
+        });
+      });
+    });
+    const layoutItems = sortedItems.map(item => {
+      const isGenerator = isCanvasAiGeneratorType(item.ai?.type) || item.ai?.type === 'workflow';
+      const outputOf = isCanvasAiGeneratedType(item.ai?.type)
+        ? [item.item.path, item.item.url, item.item.sourceUrl, item.item.originalUrl]
+          .map(normalizeLayoutMediaSource)
+          .filter(Boolean)
+          .map(source => outputOwnerBySource.get(source))
+          .find((ownerId): ownerId is string => !!ownerId)
+        : undefined;
+      return {
+        ...item,
+        layoutRole: isGenerator ? 'generator' as const : outputOf ? 'output' as const : undefined,
+        outputOf,
       };
-
-      const grouped = new Map<number, CanvasImageItem[]>();
-      sortedItems.forEach(item => {
-        const level = getLevel(item);
-        grouped.set(level, [...(grouped.get(level) || []), item]);
-      });
-
-      let xCursor = startX;
-      Array.from(grouped.keys()).sort((a, b) => a - b).forEach(level => {
-        const column = [...(grouped.get(level) || [])].sort((a, b) => (
-          (originalOrder.get(a.id) || 0) - (originalOrder.get(b.id) || 0)
-        ));
-        const columnWidth = Math.max(...column.map(item => item.width));
-        let yCursor = startY;
-
-        column.forEach(item => {
-          const parentCenters = (item.inputs || [])
-            .map(inputId => {
-              const parent = itemById.get(inputId);
-              const parentPos = placements.get(inputId);
-              return parent && parentPos ? parentPos.y + parent.height / 2 : null;
-            })
-            .filter((center): center is number => center !== null);
-          const parentAlignedY = parentCenters.length > 0
-            ? parentCenters.reduce((sum, center) => sum + center, 0) / parentCenters.length - item.height / 2
-            : null;
-          const y = snap(parentAlignedY === null ? yCursor : Math.max(yCursor, parentAlignedY));
-          placements.set(item.id, { x: snap(xCursor), y });
-          yCursor = y + item.height + rowGap;
-        });
-
-        xCursor += columnWidth + columnGap;
-      });
-    } else {
-      const maxWidth = Math.max(...sortedItems.map(item => item.width));
-      const maxHeight = Math.max(...sortedItems.map(item => item.height));
-      const columnCount = Math.max(1, Math.min(5, Math.ceil(Math.sqrt(sortedItems.length * 1.35))));
-      const cellWidth = maxWidth + 56;
-      const cellHeight = maxHeight + 56;
-
-      sortedItems.forEach((item, index) => {
-        const column = index % columnCount;
-        const row = Math.floor(index / columnCount);
-        placements.set(item.id, {
-          x: snap(startX + column * cellWidth),
-          y: snap(startY + row * cellHeight),
-        });
-      });
-    }
+    });
+    const { placements, bounds: arrangedBounds } = layoutCanvasItems(layoutItems, {
+      startX,
+      startY,
+      columnGap: 104,
+      masonryColumnGap: 56,
+      rowGap: 46,
+      sectionGap: 120,
+      maxLayerHeight: 1800,
+      maxMasonryWidth: 2400,
+      maxMasonryColumns: 5,
+      maxReferenceColumns: 3,
+      maxGroupColumns: 3,
+      looseGroupSize: 9,
+      groupColumnGap: 176,
+      groupRowGap: 152,
+      gridSize: 8,
+    });
 
     const arrangedIds = sortedItems.map(item => item.id);
-    const arrangedBoxes = sortedItems.map(item => {
-      const pos = placements.get(item.id) || { x: item.x, y: item.y };
-      return { ...item, x: pos.x, y: pos.y };
-    });
-    const arrangedBounds = getCanvasBoundsFromItems(arrangedBoxes);
     const previousSelection = [...selectedIds];
 
     pushCanvasUndoSnapshot('一键整理画布');
@@ -13905,11 +9345,24 @@ function MainApp() {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target?.inputs?.includes(sourceId)) return false;
     pushCanvasUndoSnapshot(label);
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId
-        ? { ...item, inputs: (item.inputs || []).filter(inputId => inputId !== sourceId) }
-        : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      if (!isCanvasImageFusionAi(item.ai)) {
+        return { ...item, inputs: (item.inputs || []).filter(inputId => inputId !== sourceId) };
+      }
+      const fusion = removeCanvasImageFusionInput(item.ai?.imageFusion, item.inputs || [], sourceId);
+      return {
+        ...item,
+        inputs: fusion.inputs,
+        ai: item.ai ? {
+          ...item.ai,
+          imageFusion: fusion.config,
+          sourceImageNodeId: fusion.config.baseNodeId,
+          referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+          referenceRoles: fusion.referenceRoles,
+        } : item.ai,
+      };
+    }));
     return true;
   };
 
@@ -13959,6 +9412,7 @@ function MainApp() {
     const copied = canvasItemsRef.current.filter(item => idSet.has(item.id));
     if (copied.length === 0) return 0;
     canvasClipboardRef.current = cloneDrawerValue(copied);
+    preferCanvasClipboardRef.current = true;
     showToast(`已复制 ${copied.length} 个画布元素`);
     return copied.length;
   };
@@ -13975,7 +9429,7 @@ function MainApp() {
     const idMap = new Map<string, string>();
 
     const nextItems = sourceItems.map((sourceItem, index) => {
-      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextBufferId = createAssetId();
       const nextCanvasId = makeCanvasNodeId(
         nextBufferId,
         sourceItem.id.startsWith('canvas_ai_') ? 'ai'
@@ -14150,7 +9604,7 @@ function MainApp() {
     }
 
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'image',
       content: fileName,
       name: fileName,
@@ -14208,7 +9662,7 @@ function MainApp() {
     }
 
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'video',
       content: fileName,
       name: fileName,
@@ -14234,6 +9688,55 @@ function MainApp() {
     };
   };
 
+  const createCanvasAudioItemFromPath = async (originalPath: string, index = 0, client?: { x: number; y: number }): Promise<CanvasImageItem | null> => {
+    let path = originalPath;
+    let fileName = path.split(/[\\/]/).pop() || '画布音频';
+    let kind: 'file' | 'directory' | 'missing' = 'file';
+    try {
+      kind = await invoke<'file' | 'directory' | 'missing'>('path_kind', { path });
+    } catch (_) {
+      kind = 'file';
+    }
+    if (kind !== 'file' || !isCanvasAudioFileName(fileName)) return null;
+
+    const originalSourcePath = path;
+    const latestCacheDir = await getLatestFileCacheDir();
+    try {
+      const cachedPath = await invoke<string>('cache_local_file_to_dir', {
+        path,
+        dir: latestCacheDir || undefined,
+      });
+      if (cachedPath) {
+        path = cachedPath;
+        fileName = path.split(/[\\/]/).pop() || fileName;
+      }
+    } catch (err) {
+      console.warn('画布音频缓存失败，保留原路径:', err);
+    }
+
+    const item: BufferItem = {
+      id: createAssetId(),
+      type: 'file',
+      content: fileName,
+      name: fileName,
+      path,
+      url: convertFileSrc(path),
+      sourceUrl: originalSourcePath !== path ? originalSourcePath : undefined,
+      originalUrl: originalSourcePath !== path ? originalSourcePath : undefined,
+      createdAt: Date.now(),
+      isQuickAccess: false,
+    };
+    const pos = getCanvasDropPosition(index, client);
+    return {
+      id: makeCanvasNodeId(item.id, 'audio'),
+      item,
+      x: pos.x,
+      y: pos.y,
+      width: 320,
+      height: 92,
+    };
+  };
+
   const addCanvasImageItems = (nextItems: CanvasImageItem[]) => {
     const addedCount = appendCanvasItems(nextItems, '添加素材到画布');
     if (addedCount > 0) showToast(`已添加 ${addedCount} 个素材到无限画布`);
@@ -14242,7 +9745,7 @@ function MainApp() {
   const addCanvasTextItem = (client?: { x: number; y: number }) => {
     const pos = getCanvasDropPosition(0, client);
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: '',
       name: '文字卡片',
@@ -14265,7 +9768,7 @@ function MainApp() {
 
   const addCanvasTextItemAtWorld = (world: { x: number; y: number }) => {
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: '',
       name: '文字卡片',
@@ -14293,7 +9796,7 @@ function MainApp() {
     const longestLine = Math.max(4, ...lines.map(line => Array.from(line).length));
     const pos = getCanvasDropPosition(index, client);
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: normalized,
       name: title,
@@ -14324,7 +9827,7 @@ function MainApp() {
 
   const pasteSystemClipboardToCanvas = async (clipboardData: DataTransfer, client?: { x: number; y: number }) => {
     const imageFiles = getCanvasClipboardImageFiles(clipboardData);
-    const text = clipboardData.getData('text/plain') || '';
+    const text = imageFiles.length > 0 ? '' : clipboardData.getData('text/plain') || '';
     if (imageFiles.length === 0 && !text.trim()) return false;
 
     const createdImages = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index, client)));
@@ -14345,6 +9848,7 @@ function MainApp() {
   };
 
   const updateCanvasTextItem = (canvasId: string, content: string) => {
+    canvasItemsPatchCommitRef.current = true;
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
       canvasItem.id === canvasId
         ? {
@@ -14357,9 +9861,11 @@ function MainApp() {
         }
         : canvasItem
     )));
+    scheduleCanvasChangedNodesPatchSave([canvasId]);
   };
 
   const updateCanvasTextOutputItem = (canvasId: string, output: string) => {
+    canvasItemsPatchCommitRef.current = true;
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
       canvasItem.id === canvasId
         ? {
@@ -14371,6 +9877,7 @@ function MainApp() {
         }
         : canvasItem
     )));
+    scheduleCanvasChangedNodesPatchSave([canvasId]);
   };
 
   const setCanvasTextNodeMode = (canvasId: string, mode: 'agent' | 'plain') => {
@@ -14398,6 +9905,22 @@ function MainApp() {
         ? { ...item, designAgentConfig: normalized }
         : item
     )));
+  };
+
+  const setCanvasTextContextRouting = (canvasId: string, mode: 'full' | 'auto') => {
+    const current = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!current || !isCanvasAgentTextTarget(current)) return;
+    const contextRouting = mode === 'auto' ? 'auto' as const : undefined;
+    if (current.contextRouting === contextRouting) return;
+    pushCanvasUndoSnapshot(mode === 'auto' ? '开启 Agent 下游上下文自动分流' : '关闭 Agent 下游上下文自动分流');
+    updateCanvasItemsImmediate(items => items.map(item => (
+      item.id === canvasId && isCanvasAgentTextTarget(item)
+        ? { ...item, contextRouting }
+        : item
+    )));
+    showToast(mode === 'auto'
+      ? '已开启自动分流，连接下游生图节点后生效'
+      : '已改为向下游传递完整 Agent 输出');
   };
 
   const commitCanvasTextDraft = (canvasId: string, content?: string, sync = false) => {
@@ -14493,7 +10016,7 @@ function MainApp() {
       }
       const displayUrl = savedPath ? convertFileSrc(savedPath) : url;
       const item: BufferItem = {
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         type: 'image',
         content: file.name || '画布图片',
         name: file.name || '画布图片',
@@ -14515,117 +10038,6 @@ function MainApp() {
     };
     reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
-  });
-
-  const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
-    reader.readAsDataURL(blob);
-  });
-
-  const isRemoteHttpImageSource = (source?: string | null) => {
-    const value = String(source || '').trim();
-    return /^https?:\/\//i.test(value) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(value);
-  };
-  const isLikelyJpegOrPngImageSource = (source?: string | null) => {
-    const value = String(source || '').trim();
-    return /^data:image\/(?:png|jpe?g);base64,/i.test(value)
-      || /\.(?:png|jpe?g)(?:[?#].*)?$/i.test(value);
-  };
-  const isXaisAttachmentImageRef = (source?: string | null) => {
-    const value = String(source || '').trim();
-    return value.length > 0
-      && value.length <= 512
-      && !/^(?:https?:|data:|asset:|file:)/i.test(value)
-      && !/^[a-zA-Z]:[\\/]/.test(value)
-      && !/^\\\\/.test(value)
-      && /^[A-Za-z0-9_-]+\/[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp)$/i.test(value);
-  };
-
-  const getDataUrlByteSize = (dataUrl: string) => {
-    const commaIndex = dataUrl.indexOf(',');
-    const payload = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
-    return Math.ceil(payload.length * 0.75);
-  };
-
-  const optimizeCanvasAiInputDataUrl = (
-    dataUrl: string,
-    options?: { maxEdge?: number; targetBytes?: number },
-  ) => new Promise<string>((resolve) => {
-    if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
-      resolve(dataUrl);
-      return;
-    }
-    const image = new window.Image();
-    image.onload = () => {
-      const naturalWidth = image.naturalWidth || image.width;
-      const naturalHeight = image.naturalHeight || image.height;
-      if (!naturalWidth || !naturalHeight) {
-        resolve(dataUrl);
-        return;
-      }
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(dataUrl);
-        return;
-      }
-
-      const originalBytes = getDataUrlByteSize(dataUrl);
-      const candidates: string[] = [];
-      const requestedMaxEdge = Math.max(1, Number(options?.maxEdge) || CANVAS_AI_INPUT_IMAGE_MAX_EDGE);
-      const targetBytes = Math.max(1, Number(options?.targetBytes) || CANVAS_AI_INPUT_IMAGE_TARGET_BYTES);
-      const maxEdges = options?.maxEdge
-        ? Array.from(new Set([
-            Math.min(requestedMaxEdge, Math.max(naturalWidth, naturalHeight)),
-            Math.min(640, requestedMaxEdge),
-          ])).filter(edge => edge > 0)
-        : Array.from(new Set([
-            Math.min(CANVAS_AI_INPUT_IMAGE_MAX_EDGE, Math.max(naturalWidth, naturalHeight)),
-            1120,
-            CANVAS_AI_INPUT_IMAGE_MIN_EDGE,
-          ])).filter(edge => edge > 0);
-      const qualities = Array.from(new Set([
-        CANVAS_AI_INPUT_IMAGE_QUALITY,
-        0.76,
-        CANVAS_AI_INPUT_IMAGE_MIN_QUALITY,
-      ]));
-
-      for (const maxEdge of maxEdges) {
-        const scale = Math.min(1, maxEdge / Math.max(naturalWidth, naturalHeight));
-        const width = Math.max(1, Math.round(naturalWidth * scale));
-        const height = Math.max(1, Math.round(naturalHeight * scale));
-        canvas.width = width;
-        canvas.height = height;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, width, height);
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(image, 0, 0, width, height);
-
-        for (const quality of qualities) {
-          const candidate = canvas.toDataURL('image/jpeg', quality);
-          if (!candidate) continue;
-          candidates.push(candidate);
-          if (getDataUrlByteSize(candidate) <= targetBytes) {
-            canvas.width = 0;
-            canvas.height = 0;
-            resolve(candidate);
-            return;
-          }
-        }
-      }
-
-      canvas.width = 0;
-      canvas.height = 0;
-      const smallestCandidate = candidates.reduce((best, candidate) => (
-        getDataUrlByteSize(candidate) < getDataUrlByteSize(best) ? candidate : best
-      ), candidates[0] || dataUrl);
-      resolve(getDataUrlByteSize(smallestCandidate) < originalBytes ? smallestCandidate : dataUrl);
-    };
-    image.onerror = () => resolve(dataUrl);
-    image.src = dataUrl;
   });
 
   const imageSourceToDataUrl = async (source: string, optimizeForAi = false) => {
@@ -14670,84 +10082,6 @@ function MainApp() {
     return optimizeForAi ? optimizeCanvasAiInputDataUrl(dataUrl) : dataUrl;
   };
 
-  const imageDataUrlToJpegDataUrl = (dataUrl: string) => new Promise<string>((resolve, reject) => {
-    if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
-      reject(new Error('invalid image data url'));
-      return;
-    }
-    const image = new window.Image();
-    image.onload = () => {
-      try {
-        const naturalWidth = image.naturalWidth || image.width;
-        const naturalHeight = image.naturalHeight || image.height;
-        if (!naturalWidth || !naturalHeight) {
-          reject(new Error('empty image'));
-          return;
-        }
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('canvas context unavailable'));
-          return;
-        }
-
-        const candidates: string[] = [];
-        const maxEdges = Array.from(new Set([
-          Math.min(CANVAS_AI_INPUT_IMAGE_MAX_EDGE, Math.max(naturalWidth, naturalHeight)),
-          1600,
-          CANVAS_AI_INPUT_IMAGE_MIN_EDGE,
-        ])).filter(edge => edge > 0);
-        const qualities = Array.from(new Set([
-          CANVAS_AI_INPUT_IMAGE_QUALITY,
-          0.84,
-          CANVAS_AI_INPUT_IMAGE_MIN_QUALITY,
-          0.76,
-        ]));
-
-        for (const maxEdge of maxEdges) {
-          const scale = Math.min(1, maxEdge / Math.max(naturalWidth, naturalHeight));
-          const width = Math.max(1, Math.round(naturalWidth * scale));
-          const height = Math.max(1, Math.round(naturalHeight * scale));
-          canvas.width = width;
-          canvas.height = height;
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
-          ctx.drawImage(image, 0, 0, width, height);
-
-          for (const quality of qualities) {
-            const candidate = canvas.toDataURL('image/jpeg', quality);
-            if (!candidate) continue;
-            candidates.push(candidate);
-            if (getDataUrlByteSize(candidate) <= CANVAS_AI_INPUT_IMAGE_TARGET_BYTES) {
-              canvas.width = 0;
-              canvas.height = 0;
-              resolve(candidate);
-              return;
-            }
-          }
-        }
-
-        canvas.width = 0;
-        canvas.height = 0;
-        const smallestCandidate = candidates.reduce((best, candidate) => (
-          getDataUrlByteSize(candidate) < getDataUrlByteSize(best) ? candidate : best
-        ), candidates[0] || '');
-        if (smallestCandidate) {
-          resolve(smallestCandidate);
-        } else {
-          reject(new Error('jpeg conversion failed'));
-        }
-      } catch (err) {
-        reject(err);
-      }
-    };
-    image.onerror = () => reject(new Error('image decode failed'));
-    image.decoding = 'async';
-    image.src = dataUrl;
-  });
-
   const imageSourceToJpegDataUrl = async (source: string) => {
     const dataUrl = await imageSourceToDataUrl(source, false);
     return imageDataUrlToJpegDataUrl(dataUrl);
@@ -14786,50 +10120,6 @@ function MainApp() {
         }
       };
       image.onerror = () => resolve(dataUrl);
-      image.decoding = 'async';
-      image.src = dataUrl;
-    });
-  };
-
-  const dataUrlToBlob = async (dataUrl: string) => {
-    const response = await fetch(dataUrl);
-    return await response.blob();
-  };
-
-  const imageDataUrlToPngDataUrl = async (dataUrl: string) => {
-    if (/^data:image\/png;base64,/i.test(dataUrl)) return dataUrl;
-    if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
-      throw new Error('invalid image data url');
-    }
-
-    return await new Promise<string>((resolve, reject) => {
-      const image = new window.Image();
-      image.onload = () => {
-        try {
-          const width = image.naturalWidth || image.width;
-          const height = image.naturalHeight || image.height;
-          if (!width || !height) {
-            reject(new Error('empty image'));
-            return;
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            reject(new Error('canvas context unavailable'));
-            return;
-          }
-          ctx.clearRect(0, 0, width, height);
-          ctx.drawImage(image, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/png'));
-          canvas.width = 0;
-          canvas.height = 0;
-        } catch (err) {
-          reject(err);
-        }
-      };
-      image.onerror = () => reject(new Error('image decode failed'));
       image.decoding = 'async';
       image.src = dataUrl;
     });
@@ -15567,7 +10857,7 @@ function MainApp() {
     outputCtx.drawImage(canvas, 0, 0, editor.width, editor.height);
     const dataUrl = outputCanvas.toDataURL('image/png');
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'image',
       content: `${editor.name} 标记`,
       name: `${editor.name} 标记.png`,
@@ -15594,62 +10884,6 @@ function MainApp() {
     }
   };
 
-  const getCanvasAiInputSourceCandidates = (item: BufferItem) => {
-    const path = String(item.path || '').trim();
-    if (item.type === 'video') {
-      const seen = new Set<string>();
-      const remoteCandidates = [
-        item.sourceUrl,
-        item.originalUrl,
-        item.url,
-        path,
-      ].filter(source => isRemoteHttpImageSource(source));
-      return [
-        ...remoteCandidates,
-        path,
-        item.url,
-        item.sourceUrl,
-        item.originalUrl,
-      ]
-        .map(value => String(value || '').trim())
-        .filter((value) => {
-          if (!value || seen.has(value)) return false;
-          seen.add(value);
-          return true;
-        });
-    }
-    const pathPreviewSource = path
-      && !/^(data:(?:image|video)\/|https?:\/\/|asset:|file:\/\/)/i.test(path)
-      ? convertFileSrc(path)
-      : '';
-    const seen = new Set<string>();
-    return [
-      getCanvasItemDisplaySource(item),
-      item.url,
-      pathPreviewSource,
-      item.path,
-      item.sourceUrl,
-      item.originalUrl,
-      item.thumbnail,
-    ]
-      .map(value => String(value || '').trim())
-      .filter((value) => {
-        if (!value || seen.has(value)) return false;
-        seen.add(value);
-        return true;
-      });
-  };
-
-  const isDirectCanvasAiInputSource = (source?: string | null) => {
-    const value = String(source || '').trim();
-    return isDataMediaSourceValue(value)
-      || /^asset:/i.test(value)
-      || /^file:\/\//i.test(value)
-      || /^https?:\/\/(?:asset\.localhost|localhost|127\.0\.0\.1)/i.test(value)
-      || /^[a-zA-Z]:[\\/]/.test(value)
-      || /^\\\\/.test(value);
-  };
-
   const prepareCanvasAiInputSource = async (
     item: BufferItem,
     mode: 'stable' | 'remote-first' = 'stable',
@@ -15667,10 +10901,10 @@ function MainApp() {
     const publishableDirectSource = localCandidates.find(source => (
       isDirectCanvasAiInputSource(source) && !isDataMediaSourceValue(source)
     ));
-    if (item.type === 'video') {
+    if (item.type === 'video' || (item.type === 'file' && isCanvasAudioFileName(item.name || item.path))) {
       if (directSource) return { source: directSource, remoteFallback, usedRemoteFirst: false };
       if (remoteFallback) return { source: remoteFallback, remoteFallback, usedRemoteFirst: false };
-      throw new Error('参考视频没有可用视频源');
+      throw new Error(item.type === 'video' ? '参考视频没有可用视频源' : '参考音频没有可用音频源');
     }
 
     if (delivery === 'remote-only' && publishableDirectSource && !forceJpegReference) {
@@ -15730,17 +10964,11 @@ function MainApp() {
     throw lastError || new Error('参考图没有可用图片源');
   };
 
-  const getCanvasAiOutputSize = (aspectRatio = CANVAS_AI_DEFAULT_ASPECT_RATIO) => {
-    const ratio = parseCanvasAspectRatioValue(aspectRatio);
-    if (ratio >= 1) {
-      const width = 320;
-      return { width, height: Math.round(width / ratio) };
-    }
-    const height = 300;
-    return { width: Math.round(height * ratio), height };
-  };
-
-  const cacheCanvasGeneratedImageSource = async (source: string, name: string) => {
+  const cacheCanvasGeneratedImageSource = async (
+    source: string,
+    name: string,
+    options?: { throwOnFailure?: boolean },
+  ) => {
     const trimmed = source.trim();
     if (!trimmed || (!/^data:(?:image|video)\//i.test(trimmed) && !/^https?:\/\//i.test(trimmed))) {
       return { url: trimmed, path: '', sourceUrl: trimmed };
@@ -15751,27 +10979,36 @@ function MainApp() {
       localStorage.getItem('drawer_web_image_cache_dir') ||
       ''
     ).trim();
-    let resolvedUrl = trimmed;
-    if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(trimmed)) {
+    const retryDelays = /^https?:\/\//i.test(trimmed)
+      ? GENERATED_IMAGE_CACHE_RETRY_DELAYS_MS
+      : [];
+    let lastError: unknown = new Error('AI 生成媒体本地缓存没有返回文件路径');
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
       try {
-        resolvedUrl = await invoke<string>('resolve_ai_image_result_url', { url: trimmed });
+        const cachedPath = await invoke<string>('cache_web_image', {
+          // cache_web_image recognizes stable wallet URLs and refreshes their
+          // temporary OSS signature for each retry.
+          url: trimmed,
+          name: name || AI_GENERATED_FOLDER_NAME,
+          dir: latestCacheDir || undefined,
+        });
+        if (cachedPath) {
+          return { url: convertFileSrc(cachedPath), path: cachedPath, sourceUrl: trimmed };
+        }
+        lastError = new Error('AI 生成媒体本地缓存没有返回文件路径');
       } catch (err) {
-        console.warn('解析 AI 图片 OSS 临时地址失败:', err);
+        lastError = err;
+      }
+      if (attempt < retryDelays.length) {
+        await new Promise<void>(resolve => window.setTimeout(resolve, retryDelays[attempt]));
       }
     }
 
-    try {
-      const cachedPath = await invoke<string>('cache_web_image', {
-        url: resolvedUrl,
-        name: name || AI_GENERATED_FOLDER_NAME,
-        dir: latestCacheDir || undefined,
-      });
-      if (!cachedPath) return { url: resolvedUrl, path: '', sourceUrl: trimmed };
-      return { url: convertFileSrc(cachedPath), path: cachedPath, sourceUrl: trimmed };
-    } catch (err) {
-      console.warn('AI 生成媒体本地缓存失败，保留 OSS 远程预览:', err);
-      return { url: resolvedUrl, path: '', sourceUrl: trimmed };
+    if (options?.throwOnFailure) {
+      throw lastError;
     }
+    console.warn('AI 生成媒体本地缓存失败，保留远程预览:', lastError);
+    return { url: trimmed, path: '', sourceUrl: trimmed };
   };
 
   const createCanvasImagePreviewThumbnail = async (
@@ -15893,7 +11130,7 @@ function MainApp() {
     const now = Date.now();
     const mediaType = getCanvasAiMediaType(target.ai);
     return Array.from({ length: count }, (_, index) => ({
-      id: `canvas_ai_output_${now.toString(36)}_${index}_${Math.random().toString(36).substring(2, 7)}`,
+      id: `canvas_ai_output_${createAssetId()}`,
       mediaType,
       name: `AI generated ${mediaType} #${index + 1}`,
       prompt,
@@ -15917,16 +11154,59 @@ function MainApp() {
       .filter((item): item is CanvasImageItem => !!item && item.id !== canvasItem.id);
   };
 
+  const getCanvasContextRoutingTargetKeys = (canvasItem: CanvasImageItem) => Array.from(new Set([
+    getCanvasWorkflowGroup(canvasItem)?.templateId,
+    canvasItem.workflowTemplateNodeId,
+    canvasItem.id,
+  ].map(value => String(value || '').trim()).filter(Boolean)));
+
+  const getCanvasContextRoutingTargetsForAgent = (
+    agentItem: CanvasImageItem,
+    sourceItems: CanvasImageItem[],
+  ): CanvasContextRoutingTarget[] => {
+    if (agentItem.contextRouting !== 'auto') return [];
+    const targets: CanvasContextRoutingTarget[] = [];
+    const queuedIds = [agentItem.id];
+    const visitedIds = new Set<string>(queuedIds);
+
+    while (queuedIds.length > 0 && targets.length < 32) {
+      const sourceId = queuedIds.shift() || '';
+      sourceItems.forEach(candidate => {
+        if (!(candidate.inputs || []).includes(sourceId) || visitedIds.has(candidate.id)) return;
+        visitedIds.add(candidate.id);
+        if (candidate.ai?.type === 'image-generator') {
+          const stableId = getCanvasContextRoutingTargetKeys(candidate)[0];
+          if (!stableId) return;
+          targets.push({
+            id: stableId,
+            label: candidate.ai.presetLabel || candidate.item.name || stableId,
+            task: candidate.ai.presetPrompt || candidate.ai.prompt || candidate.item.content || '',
+          });
+          return;
+        }
+        if (!candidate.ai && !isCanvasAgentTextTarget(candidate)) queuedIds.push(candidate.id);
+      });
+    }
+    return targets;
+  };
+
   const getCanvasTextInputsForNode = (
     canvasItem: CanvasImageItem,
     sourceItems: CanvasImageItem[] = canvasItemsRef.current
   ) => {
+    const targetKeys = getCanvasContextRoutingTargetKeys(canvasItem);
     const textInputs: string[] = [];
     const seenTextKeys = new Set<string>();
     const pushTextInput = (inputItem: CanvasImageItem) => {
       if (isCanvasWorkflowReferenceBridge(inputItem)) return;
       if ((inputItem.item.type !== 'text' && inputItem.item.type !== 'file') || inputItem.ai) return;
-      const content = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
+      const rawContent = ((inputItem.item.remark || '').trim() || inputItem.item.content || '').trim();
+      const content = isCanvasAgentTextTarget(inputItem)
+        ? applyCanvasTextContextRouting(rawContent, {
+          bindings: canvasItem.ai?.strategyBindings,
+          targetKeys,
+        })
+        : rawContent;
       if (!content) return;
       const key = content;
       if (seenTextKeys.has(key)) return;
@@ -15952,16 +11232,22 @@ function MainApp() {
   ) => {
     const mediaInputs: BufferItem[] = [];
     const isVideoGenerator = canvasItem.ai?.type === 'video-generator';
-    const isFirstLastFrameMode = isVideoGenerator && canvasItem.ai?.videoInputMode === 'FLF';
-    const maxImageInputs = isVideoGenerator ? (isFirstLastFrameMode ? 2 : 9) : 8;
-    const maxVideoInputs = isVideoGenerator && !isFirstLastFrameMode ? 1 : 0;
+    const isImageFusion = isCanvasImageFusionAi(canvasItem.ai);
+    const canvasVideoReferenceSlots = isVideoGenerator
+      ? getCanvasAiVideoReferenceSlots(canvasItem.ai?.model, canvasItem.ai?.videoInputMode, canvasItem.ai?.provider)
+      : null;
+    const maxImageInputs = isImageFusion ? 2 : isVideoGenerator ? (canvasVideoReferenceSlots?.imageSlots || 9) : 8;
+    const maxVideoInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.videoSlots || 0) : 0;
+    const maxAudioInputs = isVideoGenerator ? (canvasVideoReferenceSlots?.audioSlots || 0) : 0;
     let imageInputCount = 0;
     let videoInputCount = 0;
+    let audioInputCount = 0;
+    let currentSourceImageLimit = maxImageInputs;
     const seenMediaKeys = new Set<string>();
     const pushInput = (item: BufferItem) => {
       const key = item.id || item.path || item.url || item.thumbnail || item.content;
       if (key && seenMediaKeys.has(key)) return;
-      if (item.type === 'image' && imageInputCount < maxImageInputs) {
+      if (item.type === 'image' && imageInputCount < maxImageInputs && imageInputCount < currentSourceImageLimit) {
         if (key) seenMediaKeys.add(key);
         mediaInputs.push(item);
         imageInputCount += 1;
@@ -15969,6 +11255,10 @@ function MainApp() {
         if (key) seenMediaKeys.add(key);
         mediaInputs.push(item);
         videoInputCount += 1;
+      } else if (item.type === 'file' && isCanvasAudioFileName(item.name || item.path) && audioInputCount < maxAudioInputs) {
+        if (key) seenMediaKeys.add(key);
+        mediaInputs.push(item);
+        audioInputCount += 1;
       }
     };
     const visitInputItem = (inputItem: CanvasImageItem, seenNodeIds: Set<string>) => {
@@ -15976,7 +11266,11 @@ function MainApp() {
       seenNodeIds.add(inputItem.id);
       if (isCanvasWorkflowReferenceBridge(inputItem)) {
         getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visitInputItem(upstreamItem, seenNodeIds));
-      } else if (inputItem.item.type === 'image' || inputItem.item.type === 'video') {
+      } else if (
+        inputItem.item.type === 'image'
+        || inputItem.item.type === 'video'
+        || (inputItem.item.type === 'file' && isCanvasAudioFileName(inputItem.item.name || inputItem.item.path))
+      ) {
         if (inputItem.item.type === 'image' && (inputItem.workflowSlotAssets || []).length > 0) {
           inputItem.workflowSlotAssets?.forEach((asset, assetIndex) => {
             pushInput({
@@ -15996,12 +11290,12 @@ function MainApp() {
           pushInput(inputItem.item);
         }
       } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
-        getCanvasAiSuccessfulOutputs(inputItem).forEach((output, index) => {
+        getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);
         });
       } else if (inputItem.ai?.type === 'video-generator') {
-        getCanvasAiSuccessfulOutputs(inputItem).forEach((output, index) => {
+        getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
           const outputItem = createCanvasAiOutputBufferItem(inputItem, output, index);
           if (outputItem) pushInput(outputItem);
         });
@@ -16009,9 +11303,17 @@ function MainApp() {
         getCanvasInputItemsForNode(inputItem, sourceItems).forEach(upstreamItem => visitInputItem(upstreamItem, seenNodeIds));
       }
     };
-    for (const inputItem of getCanvasInputItemsForNode(canvasItem, sourceItems)) {
+    const orderedCanvasItem = isImageFusion
+      ? { ...canvasItem, inputs: getCanvasImageFusionInputIds(canvasItem.ai?.imageFusion, canvasItem.inputs || []) }
+      : canvasItem;
+    for (const inputItem of getCanvasInputItemsForNode(orderedCanvasItem, sourceItems)) {
+      currentSourceImageLimit = isImageFusion ? Math.min(maxImageInputs, imageInputCount + 1) : maxImageInputs;
       visitInputItem(inputItem, new Set([canvasItem.id]));
-      if (imageInputCount >= maxImageInputs && videoInputCount >= maxVideoInputs) break;
+      if (
+        imageInputCount >= maxImageInputs
+        && videoInputCount >= maxVideoInputs
+        && audioInputCount >= maxAudioInputs
+      ) break;
     }
     return mediaInputs;
   };
@@ -16220,6 +11522,7 @@ function MainApp() {
     const temporaryShareIds: TemporaryReferenceShare[] = [];
     const failedItems: string[] = [];
     const failedVideoItems: string[] = [];
+    const failedAudioItems: string[] = [];
     const preparationErrors: string[] = [];
     for (const [inputIndex, inputItem] of inputImageItems.entries()) {
       const label = inputItem.name || inputItem.content || (inputItem.type === 'video' ? '参考视频' : '参考图');
@@ -16260,6 +11563,7 @@ function MainApp() {
         preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
         failedItems.push(label);
         if (inputItem.type === 'video') failedVideoItems.push(label);
+        if (inputItem.type === 'file' && isCanvasAudioFileName(inputItem.name || inputItem.path)) failedAudioItems.push(label);
       }
     }
 
@@ -16284,6 +11588,7 @@ function MainApp() {
           preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
           failedItems.push(...localInputsForCloudflared.map(item => item.label));
           failedVideoItems.push(...localInputsForCloudflared.filter(item => item.type === 'video').map(item => item.label));
+          failedAudioItems.push(...localInputsForCloudflared.filter(item => item.type === 'file' && isCanvasAudioFileName(item.label)).map(item => item.label));
         }
       } else if (requireRemoteInputs) {
         try {
@@ -16316,16 +11621,21 @@ function MainApp() {
           const failedLocalVideos = localInputsForCloudflared
             .filter(item => item.type === 'video' && !item.remoteFallback)
             .map(item => item.label);
+          const failedLocalAudios = localInputsForCloudflared
+            .filter(item => item.type === 'file' && isCanvasAudioFileName(item.label) && !item.remoteFallback)
+            .map(item => item.label);
           if (remoteFallbacks.length > 0) {
             console.warn('公网参考图发布失败，img2 改用原始公网 URL 兜底:', err);
             remoteFallbacks.forEach(item => {
               if (item.remoteFallback) resultByInputIndex.set(item.inputIndex, item.remoteFallback);
             });
             failedVideoItems.push(...failedLocalVideos);
+            failedAudioItems.push(...failedLocalAudios);
           } else {
             console.warn('公网参考图发布失败，img2 不使用 base64 兜底，避免请求体过大:', err);
             failedItems.push(...localInputsForCloudflared.map(item => item.label));
             failedVideoItems.push(...localInputsForCloudflared.filter(item => item.type === 'video').map(item => item.label));
+            failedAudioItems.push(...localInputsForCloudflared.filter(item => item.type === 'file' && isCanvasAudioFileName(item.label)).map(item => item.label));
           }
         }
       } else if (useDirectLocalInputs) {
@@ -16338,6 +11648,7 @@ function MainApp() {
           } else {
             failedItems.push(item.label);
             if (item.type === 'video') failedVideoItems.push(item.label);
+            if (item.type === 'file' && isCanvasAudioFileName(item.label)) failedAudioItems.push(item.label);
           }
         });
       } else {
@@ -16366,14 +11677,16 @@ function MainApp() {
           } else {
             console.warn('cloudflared 参考图发布失败，且没有可用兜底源:', err);
             failedItems.push(...localInputsForCloudflared.map(item => item.label));
-            failedVideoItems.push(...localInputsForCloudflared.filter(item => item.type === 'video').map(item => item.label));
+          failedVideoItems.push(...localInputsForCloudflared.filter(item => item.type === 'video').map(item => item.label));
+          failedAudioItems.push(...localInputsForCloudflared.filter(item => item.type === 'file' && isCanvasAudioFileName(item.label)).map(item => item.label));
           }
         }
       }
     }
 
-    if (canvasItem.ai?.type === 'video-generator' && failedVideoItems.length > 0) {
-      throw new Error(`参考视频准备失败：${Array.from(new Set(failedVideoItems)).slice(0, 2).join('、')}`);
+    if (canvasItem.ai?.type === 'video-generator' && (failedVideoItems.length > 0 || failedAudioItems.length > 0)) {
+      const failedReferences = [...failedVideoItems, ...failedAudioItems];
+      throw new Error(`参考素材准备失败：${Array.from(new Set(failedReferences)).slice(0, 2).join('、')}`);
     }
 
     if (inputImageItems.length > 0 && resultByInputIndex.size < inputImageItems.length) {
@@ -16387,7 +11700,17 @@ function MainApp() {
       throw new Error(`有 ${missingCount} 张参考图准备失败，已停止生成以避免图号错位：${failedItems.slice(0, 3).join('、') || hint}${detail ? `；${detail}` : ''}`);
     }
     const orderedResults = orderCanvasAiReferenceSources(inputImageItems.length, resultByInputIndex);
-    return { images: orderedResults, temporaryShareIds, usedRemoteFirst };
+    const images: string[] = [];
+    const videos: string[] = [];
+    const audios: string[] = [];
+    inputImageItems.forEach((item, index) => {
+      const source = orderedResults[index];
+      if (!source) return;
+      if (item.type === 'video') videos.push(source);
+      else if (item.type === 'file' && isCanvasAudioFileName(item.name || item.path)) audios.push(source);
+      else images.push(source);
+    });
+    return { images, videos, audios, temporaryShareIds, usedRemoteFirst };
   };
 
   const getSelectedCanvasAiInputIds = () => (
@@ -16791,14 +12114,16 @@ function MainApp() {
     inputIds: string[] = [],
     mediaType: 'image' | 'video' = 'image'
   ): CanvasImageItem => {
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const presetPrompt = getCanvasAiPresetPrompt(preset);
     const isVideo = mediaType === 'video';
     const defaultImageChoice = !isVideo && canvasAiUnifiedImageModelOptions.length > 0
       ? parseCanvasAiModelChoiceValue(canvasAiUnifiedImageModelOptions[0].value)
       : null;
     const provider = isVideo
-      ? canvasAiProvider === 'new-api' ? 'new-api' : 'xais-chat'
+      ? canvasAiProvider === 'mikoto'
+        ? 'mikoto'
+        : getCanvasAiVideoProviderForModel(NEW_API_VIDEO_MODEL_DEFAULT)
       : defaultImageChoice?.provider || canvasAiProvider;
     const model = defaultImageChoice?.model || getCanvasAiResolvedModel(provider, '', mediaType);
     const name = preset ? `AI ${preset.label}` : (isVideo ? 'AI 视频节点' : 'AI 生图节点');
@@ -16849,13 +12174,96 @@ function MainApp() {
           : supportsCanvasAiImageResolution(provider, model) ? CANVAS_AI_DEFAULT_IMAGE_RESOLUTION : undefined,
         outputFormat: preset?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         count,
-        duration: isVideo ? CANVAS_AI_DEFAULT_VIDEO_DURATION : undefined,
+        duration: isVideo
+          ? provider === 'new-api'
+            ? normalizeNewApiVideoDurationForModel(model, undefined)
+            : CANVAS_AI_DEFAULT_VIDEO_DURATION
+          : undefined,
         videoInputMode: isVideo ? 'REF' : undefined,
-        videoCfrMode: isVideo ? 'auto' : undefined,
+        videoCfrMode: isVideo ? 'off' : undefined,
         imagePolicy,
         status: 'idle',
       },
     };
+  };
+
+  const buildCanvasImageFusionNode = (
+    pos: { x: number; y: number },
+    inputIds: string[] = [],
+  ): CanvasImageItem => {
+    const validInputIds = Array.from(new Set(inputIds))
+      .filter(inputId => {
+        const source = canvasItemsRef.current.find(item => item.id === inputId);
+        return canUseCanvasItemAsImageEnhancementInput(source);
+      })
+      .slice(0, 2);
+    const canvasItem = buildCanvasAiGeneratorNode(pos, undefined, validInputIds);
+    const fusion = assignCanvasImageFusionInputs({ enabled: true }, [], validInputIds);
+    const nodeSize = getCanvasAiNodeAutoSize({
+      type: 'image-generator',
+      aspectRatio: canvasItem.ai?.aspectRatio,
+      count: canvasItem.ai?.count,
+      imageFusion: true,
+    });
+    return {
+      ...canvasItem,
+      width: nodeSize.width,
+      height: nodeSize.height,
+      inputs: fusion.inputs,
+      item: {
+        ...canvasItem.item,
+        name: 'AI 溶图节点',
+      },
+      ai: canvasItem.ai ? {
+        ...canvasItem.ai,
+        imageFusion: fusion.config,
+        sourceImageNodeId: fusion.config.baseNodeId,
+        referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+        referenceRoles: fusion.referenceRoles,
+      } : canvasItem.ai,
+    };
+  };
+
+  const getSelectedCanvasImageFusionInputIds = () => (
+    getSelectedCanvasAiInputIds()
+      .filter(inputId => {
+        const source = canvasItemsRef.current.find(item => item.id === inputId);
+        return canUseCanvasItemAsImageEnhancementInput(source);
+      })
+      .slice(0, 2)
+  );
+
+  const addCanvasImageFusionNode = (client?: { x: number; y: number }) => {
+    const inputIds = getSelectedCanvasImageFusionInputIds();
+    const inputBounds = inputIds.length > 0 ? getCanvasItemsBounds(inputIds) : null;
+    const pos = inputBounds && !client
+      ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+      : getCanvasDropPosition(0, client);
+    const canvasItem = buildCanvasImageFusionNode(pos, inputIds);
+    if (appendCanvasItems([canvasItem], '新增 AI 溶图节点') > 0) {
+      updateCanvasSelection([canvasItem.id]);
+      showToast(inputIds.length === 2
+        ? '已添加 AI 溶图节点，并按选择顺序设置基图与意向图'
+        : inputIds.length === 1
+          ? '已添加 AI 溶图节点，所选图片已设为基图'
+          : '已添加 AI 溶图节点');
+    }
+  };
+
+  const addCanvasImageFusionNodeAtWorld = (
+    world: { x: number; y: number },
+    sourceIds: string[] = getSelectedCanvasImageFusionInputIds(),
+  ) => {
+    const canvasItem = buildCanvasImageFusionNode({
+      x: Math.max(24, world.x),
+      y: Math.max(24, world.y),
+    }, sourceIds);
+    if (appendCanvasItems([canvasItem], '新增 AI 溶图节点') > 0) {
+      updateCanvasSelection([canvasItem.id]);
+      showToast((canvasItem.inputs || []).length >= 2
+        ? '已添加 AI 溶图节点，并设置基图与意向图'
+        : '已添加 AI 溶图节点');
+    }
   };
 
   const addCanvasAiGeneratorNode = (client?: { x: number; y: number }, preset?: CanvasAiPromptPreset) => {
@@ -16916,7 +12324,7 @@ function MainApp() {
   );
 
   const buildCanvasFrameInterpolationNode = (pos: { x: number; y: number }, inputIds: string[] = []): CanvasImageItem => {
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const nodeSize = getCanvasAiNodeAutoSize({
       type: 'video-generator',
       aspectRatio: CANVAS_AI_DEFAULT_ASPECT_RATIO,
@@ -16995,7 +12403,7 @@ function MainApp() {
     mediaType: 'image' | 'video',
     inputIds: string[] = [],
   ): CanvasImageItem => {
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const isVideo = mediaType === 'video';
     const nodeSize = getCanvasAiNodeAutoSize({
       type: isVideo ? 'video-generator' : 'image-generator',
@@ -17070,146 +12478,12 @@ function MainApp() {
     }
   };
 
-  const getCanvasWorkflowTemplateFromNode = (canvasItem?: CanvasImageItem | null) => {
-    if (canvasItem?.ai?.type !== 'workflow') return null;
-    const snapshot = normalizeCanvasWorkflowTemplate(canvasItem.ai.workflow);
-    const builtInWorkflow = canvasItem.ai.presetId
-      ? CANVAS_BUILT_IN_WORKFLOWS.find(workflow => workflow.id === canvasItem.ai?.presetId)
-      : null;
-    return snapshot?.builtin && builtInWorkflow ? builtInWorkflow : snapshot;
-  };
-
-  const getCanvasWorkflowGeneratorNodes = (workflow: CanvasWorkflowTemplate) => (
-    workflow.nodes.filter(node => node.ai?.type === 'image-generator')
-  );
-
-  const getCanvasWorkflowTerminalNodeTemplates = (workflow: CanvasWorkflowTemplate) => {
-    const generatorIds = new Set(getCanvasWorkflowGeneratorNodes(workflow).map(node => node.id));
-    const upstreamGeneratorIds = new Set<string>();
-    workflow.nodes.forEach(node => {
-      if (node.ai?.type !== 'image-generator') return;
-      (node.inputs || []).forEach(inputId => {
-        if (generatorIds.has(inputId)) upstreamGeneratorIds.add(inputId);
-      });
-    });
-    const terminalNodes = getCanvasWorkflowGeneratorNodes(workflow).filter(node => !upstreamGeneratorIds.has(node.id));
-    return terminalNodes.length > 0 ? terminalNodes : getCanvasWorkflowGeneratorNodes(workflow).slice(-1);
-  };
-
-  const getCanvasWorkflowOutputLabel = (node: CanvasWorkflowNodeTemplate, index?: number) => {
-    const label = node.ai?.presetLabel || node.item.name || '工作流输出';
-    return index && index > 0 ? `${label} #${index + 1}` : label;
-  };
-
-  const getCanvasWorkflowOutputSlotTemplates = (
-    workflow: CanvasWorkflowTemplate,
-    mode: 'final' | 'all' = 'final'
-  ) => {
-    const outputNodes = mode === 'all'
-      ? getCanvasWorkflowGeneratorNodes(workflow)
-      : getCanvasWorkflowTerminalNodeTemplates(workflow);
-    const slots = outputNodes.flatMap(node => {
-      const count = clamp(Math.round(Number(node.ai?.count) || CANVAS_AI_DEFAULT_COUNT), 1, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
-      return Array.from({ length: count }, (_, index) => ({ node, index }));
-    });
-    const fallbackNode = outputNodes[outputNodes.length - 1] || workflow.nodes.find(node => node.ai?.type === 'image-generator') || workflow.nodes[0];
-    if (slots.length > 0) return slots.slice(0, CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS);
-    return fallbackNode ? [{ node: fallbackNode, index: 0 }] : [];
-  };
-
-  const createCanvasWorkflowOutputDrafts = (
-    canvasItem: CanvasImageItem,
-    workflow: CanvasWorkflowTemplate,
-    status?: CanvasAiGeneratedOutput['status'],
-    mode: 'final' | 'all' = 'final'
-  ): CanvasAiGeneratedOutput[] => {
-    const now = Date.now();
-    const slots = getCanvasWorkflowOutputSlotTemplates(workflow, mode);
-    return (slots.length > 0 ? slots : [{ node: workflow.nodes[0], index: 0 }]).map((slot, slotIndex) => {
-      const size = getCanvasAiOutputSize(slot.node.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO);
-      const label = getCanvasWorkflowOutputLabel(slot.node, slot.index);
-      return {
-        id: `${canvasItem.id}_workflow_${mode}_output_${slot.node.id}_${slot.index}`,
-        name: label || `输出 ${slotIndex + 1}`,
-        nodeId: slot.node.id,
-        nodeLabel: getCanvasWorkflowOutputLabel(slot.node),
-        prompt: slot.node.ai?.presetPrompt || slot.node.item.content || '',
-        status,
-        generatedAt: status ? now + slotIndex : undefined,
-        width: size.width,
-        height: size.height,
-      };
-    });
-  };
-
-  const normalizeCanvasWorkflowRuntimeSnapshots = (value: unknown): CanvasWorkflowRuntimeNodeSnapshot[] => {
-    return getCanvasWorkflowRuntimeSnapshots(value).map(snapshot => cloneDrawerValue(snapshot));
-  };
-
-  const createCanvasWorkflowRuntimeSnapshots = (
-    workflow: CanvasWorkflowTemplate,
-    runtimeItems: CanvasImageItem[],
-    idMap: Map<string, string>
-  ): CanvasWorkflowRuntimeNodeSnapshot[] => (
-    workflow.nodes.map(node => {
-      const runtimeId = idMap.get(node.id);
-      const runtimeItem = runtimeItems.find(item => item.id === runtimeId);
-      if (!runtimeItem) return null;
-      return {
-        templateId: node.id,
-        item: {
-          content: runtimeItem.item.content,
-          name: runtimeItem.item.name,
-          remark: runtimeItem.item.remark,
-          remarks: runtimeItem.item.remarks,
-        },
-        ai: runtimeItem.ai
-          ? {
-            prompt: runtimeItem.ai.prompt,
-            status: runtimeItem.ai.status,
-            error: runtimeItem.ai.error,
-            generatedAt: runtimeItem.ai.generatedAt,
-            outputs: cloneDrawerValue(runtimeItem.ai.outputs || []),
-          }
-          : undefined,
-      } as CanvasWorkflowRuntimeNodeSnapshot;
-    }).filter((item): item is CanvasWorkflowRuntimeNodeSnapshot => !!item)
-  );
-
-  const getCanvasWorkflowGroup = (canvasItem?: CanvasImageItem | null): CanvasWorkflowExpandedGroup | null => {
-    const group = canvasItem?.workflowGroup;
-    if (!group || typeof group !== 'object') return null;
-    const record = group as Partial<CanvasWorkflowExpandedGroup>;
-    if (!record.groupId || !record.templateId || !record.workflowId || !record.module) return null;
-    return record as CanvasWorkflowExpandedGroup;
-  };
-
   const getCanvasWorkflowExpandedGroupItems = (
     groupId: string,
     sourceItems: CanvasImageItem[] = canvasItemsRef.current,
   ) => (
     sourceItems.filter(item => getCanvasWorkflowGroup(item)?.groupId === groupId)
   );
-
-  const createCanvasWorkflowRuntimeValue = (
-    workflow: CanvasWorkflowTemplate,
-    runtimeItems: CanvasImageItem[],
-    idMap: Map<string, string>,
-    previousRuntime?: unknown,
-  ): CanvasWorkflowRuntime => {
-    const previous = normalizeCanvasWorkflowRuntime(previousRuntime);
-    const snapshots = createCanvasWorkflowRuntimeSnapshots(workflow, runtimeItems, idMap);
-    return {
-      ...previous,
-      nodeSnapshots: Object.fromEntries(snapshots.map(snapshot => [snapshot.templateId, snapshot])),
-      internalSlotBindings: collectCanvasWorkflowInternalSlotBindings({
-        workflow,
-        runtimeItems,
-        idMap,
-        previousRuntime,
-      }),
-    };
-  };
 
   const hydrateCanvasWorkflowSlotAssetsFromDrawer = (
     runtimeItems: CanvasImageItem[],
@@ -17238,47 +12512,6 @@ function MainApp() {
     };
   });
 
-  const applyCanvasWorkflowRuntimeSnapshots = (
-    workflow: CanvasWorkflowTemplate,
-    items: CanvasImageItem[],
-    idMap: Map<string, string>,
-    runtimeSnapshots: CanvasWorkflowRuntimeNodeSnapshot[]
-  ) => {
-    if (runtimeSnapshots.length === 0) return items;
-    const snapshotByTemplateId = new Map(runtimeSnapshots.map(snapshot => [snapshot.templateId, snapshot]));
-    return items.map(item => {
-      const templateEntry = Array.from(idMap.entries()).find(([, runtimeId]) => runtimeId === item.id);
-      const templateId = templateEntry?.[0];
-      if (!templateId) return item;
-      const snapshot = snapshotByTemplateId.get(templateId);
-      if (!snapshot) return item;
-      const templateNode = workflow.nodes.find(node => node.id === templateId);
-      return {
-        ...item,
-        item: {
-          ...item.item,
-          content: snapshot.item?.content ?? item.item.content,
-          name: snapshot.item?.name ?? item.item.name,
-          remark: snapshot.item?.remark ?? item.item.remark,
-          remarks: snapshot.item?.remarks ?? item.item.remarks,
-        },
-        ai: item.ai && snapshot.ai
-          ? {
-            ...item.ai,
-            prompt: snapshot.ai.prompt ?? item.ai.prompt,
-            status: snapshot.ai.status || item.ai.status,
-            error: snapshot.ai.error,
-            generatedAt: snapshot.ai.generatedAt,
-            outputs: cloneDrawerValue(snapshot.ai.outputs || []),
-            aspectRatio: templateNode?.ai?.aspectRatio || item.ai.aspectRatio,
-            outputFormat: templateNode?.ai?.outputFormat || item.ai.outputFormat,
-            count: templateNode?.ai?.count || item.ai.count,
-          }
-          : item.ai,
-      };
-    });
-  };
-
   const instantiateCanvasWorkflowTemplateItems = (
     workflow: CanvasWorkflowTemplate,
     base: { x: number; y: number },
@@ -17303,13 +12536,13 @@ function MainApp() {
     );
 
     cleanWorkflow.nodes.forEach(node => {
-      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextBufferId = createAssetId();
       idMap.set(node.id, makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow'));
     });
 
     const now = Date.now();
     const nextItems = cleanWorkflow.nodes.map((node, index) => {
-      const nextBufferId = Math.random().toString(36).substring(2, 9);
+      const nextBufferId = createAssetId();
       const nextCanvasId = idMap.get(node.id) || makeCanvasNodeId(nextBufferId, node.ai?.type === 'image-generator' ? 'ai' : 'workflow');
       const isAiGenerator = node.ai?.type === 'image-generator';
       const isExternalInputPort = isWorkflowExternalInputPort(node);
@@ -17350,6 +12583,8 @@ function MainApp() {
           ...(shouldAttachExternalInputs ? externalInputIds : []),
         ])),
         textMode: isAgentTextNode ? 'agent' : node.textMode,
+        contextRouting: node.contextRouting,
+        workflowTemplateNodeId: node.id,
         designAgentConfig: isAgentTextNode
           ? normalizeDesignAgentConfig(node.designAgentConfig)
           : undefined,
@@ -17410,7 +12645,7 @@ function MainApp() {
     if (validation.warnings.length > 0) {
       console.warn('Canvas workflow validation warnings:', validation.warnings, cleanWorkflow);
     }
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const acceptedInputIds = Array.from(new Set(inputIds)).filter(inputId => (
       canUseCanvasItemAsWorkflowMaterial(
         canvasItemsRef.current.find(item => item.id === inputId),
@@ -17541,6 +12776,7 @@ function MainApp() {
         inputs: internalInputs,
         fixedInput: !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
+        contextRouting: item.contextRouting,
         designAgentConfig: item.designAgentConfig
           ? normalizeDesignAgentConfig(item.designAgentConfig)
           : undefined,
@@ -18033,6 +13269,7 @@ function MainApp() {
           ? true
           : !item.ai && (item.item.type === 'image' || item.item.type === 'text'),
         textMode: item.textMode,
+        contextRouting: item.contextRouting || originalNode?.contextRouting,
         designAgentConfig: item.designAgentConfig
           ? normalizeDesignAgentConfig(item.designAgentConfig)
           : originalNode?.designAgentConfig,
@@ -18068,78 +13305,6 @@ function MainApp() {
       createdAt: Date.now(),
     });
     return workflow ? { workflow, bounds, externalInputIds, idMap } : null;
-  };
-
-  const getComparableCanvasWorkflowTemplate = (workflow: CanvasWorkflowTemplate) => ({
-    userInput: normalizeCanvasWorkflowUserInput(workflow.userInput),
-    nodes: workflow.nodes
-      .map(node => ({
-        id: node.id,
-        x: Math.round(node.x),
-        y: Math.round(node.y),
-        width: Math.round(node.width),
-        height: Math.round(node.height),
-        item: {
-          type: node.item.type,
-          content: node.item.content || '',
-          name: node.item.name || '',
-          remark: node.item.remark || '',
-          url: isReplaceableInternalImageSlot(node) ? '' : node.item.url || '',
-          path: isReplaceableInternalImageSlot(node) ? '' : node.item.path || '',
-        },
-        inputs: [...(node.inputs || [])].sort(),
-        fixedInput: !!node.fixedInput,
-        textMode: node.textMode || '',
-        acceptsExternalInputs: !!node.acceptsExternalInputs,
-        externalInputTypes: [...(node.externalInputTypes || [])].sort(),
-        outputType: node.outputType || '',
-        bridgeType: node.bridgeType || '',
-        internalSlot: node.internalSlot
-          ? cloneDrawerValue(node.internalSlot)
-          : null,
-        ai: node.ai
-          ? {
-            type: node.ai.type,
-            provider: node.ai.provider,
-            model: node.ai.model,
-            prompt: node.ai.prompt || '',
-            presetId: node.ai.presetId || '',
-            presetLabel: node.ai.presetLabel || '',
-            presetPrompt: node.ai.presetPrompt || '',
-            aspectRatio: node.ai.aspectRatio || '',
-            outputFormat: node.ai.outputFormat || '',
-            count: node.ai.count || 1,
-          }
-          : null,
-      }))
-      .sort((a, b) => a.id.localeCompare(b.id)),
-  });
-
-  const hasCanvasWorkflowTemplateChanged = (
-    currentWorkflow: CanvasWorkflowTemplate,
-    originalWorkflow: CanvasWorkflowTemplate
-  ) => (
-    JSON.stringify(getComparableCanvasWorkflowTemplate(currentWorkflow)) !==
-    JSON.stringify(getComparableCanvasWorkflowTemplate(originalWorkflow))
-  );
-
-  const createCanvasWorkflowModuleOutputsFromExpandedGroup = (
-    moduleNode: CanvasImageItem,
-    workflow: CanvasWorkflowTemplate,
-    groupItems: CanvasImageItem[],
-    idMap: Map<string, string>
-  ) => {
-    const drafts = createCanvasWorkflowOutputDrafts(moduleNode, workflow);
-    const slots = getCanvasWorkflowOutputSlotTemplates(workflow);
-    return drafts.map((draft, index) => {
-      const slot = slots[index];
-      const canvasId = slot ? idMap.get(slot.node.id) : '';
-      const source = canvasId ? groupItems.find(item => item.id === canvasId) : null;
-      const output = source?.ai?.outputs?.[slot?.index || 0];
-      return output
-        ? { ...draft, ...cloneDrawerValue(output), id: draft.id, name: draft.name }
-        : draft;
-    });
   };
 
   const exportCurrentCanvasWorkflow = () => {
@@ -18562,6 +13727,47 @@ function MainApp() {
     }, 900);
   };
 
+  const optimizeCanvasPrompt = async (canvasId: string) => {
+    if (canvasPromptOptimizingId) return;
+    const target = canvasItemsRef.current.find(item => item.id === canvasId);
+    if (!target || (target.ai?.type !== 'image-generator' && target.ai?.type !== 'video-generator')) return;
+
+    const prompt = canvasAiPromptDraftValuesRef.current[canvasId]
+      ?? canvasAiPromptTextAreaRefs.current[canvasId]?.value
+      ?? target.item.content
+      ?? '';
+    if (!prompt.trim()) {
+      showToast('请先在文本框中输入提示词');
+      return;
+    }
+
+    updateCanvasSelection([canvasId]);
+    setCanvasPromptOptimizingId(canvasId);
+    try {
+      const mediaType = target.ai.type === 'video-generator' ? 'video' : 'image';
+      const optimized = await canvasAgent.optimizePrompt(prompt, mediaType);
+      const nextPrompt = optimized.trim();
+      if (!nextPrompt) throw new Error('模型没有返回可用的优化结果');
+
+      const livePrompt = canvasAiPromptTextAreaRefs.current[canvasId]?.value
+        ?? canvasItemsRef.current.find(item => item.id === canvasId)?.item.content
+        ?? '';
+      if (livePrompt.trim() !== prompt.trim()) {
+        showToast('提示词已被修改，未覆盖当前内容');
+        return;
+      }
+
+      const textarea = canvasAiPromptTextAreaRefs.current[canvasId];
+      if (textarea) textarea.value = nextPrompt;
+      commitCanvasAiPromptDraft(canvasId, nextPrompt, true);
+      showToast('提示词已优化');
+    } catch (error) {
+      showToast(`提示词优化失败：${error instanceof Error ? error.message : String(error || '请稍后重试')}`);
+    } finally {
+      setCanvasPromptOptimizingId(current => current === canvasId ? null : current);
+    }
+  };
+
   const resizeCanvasAiPromptEditor = (canvasId: string, expanded: boolean, previousExpanded?: boolean) => {
     updateCanvasItemsImmediate(prev => prev.map(item => {
       if (item.id !== canvasId || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')) return item;
@@ -18575,6 +13781,28 @@ function MainApp() {
         height: nextSize.height * nodeScale,
       };
     }));
+  };
+
+  const toggleCanvasAiOutputsExpanded = (canvasId: string) => {
+    const wasExpanded = canvasAiExpandedOutputNodeIds.has(canvasId);
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== canvasId || (!isCanvasAiGeneratorType(item.ai?.type) && item.ai?.type !== 'workflow')) return item;
+      const promptExpanded = canvasAiPromptEditingId === item.id;
+      const oldSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded, wasExpanded);
+      const nextSize = getCanvasAiNodeDesignSizeForItem(item, promptExpanded, !wasExpanded);
+      const nodeScale = getCanvasDesignScale(item, oldSize);
+      return {
+        ...item,
+        width: nextSize.width * nodeScale,
+        height: nextSize.height * nodeScale,
+      };
+    }));
+    setCanvasAiExpandedOutputNodeIds(previous => {
+      const next = new Set(previous);
+      if (wasExpanded) next.delete(canvasId);
+      else next.add(canvasId);
+      return next;
+    });
   };
 
   const setCanvasWorkflowOutputMode = (canvasId: string, mode: 'final' | 'all') => {
@@ -18620,9 +13848,39 @@ function MainApp() {
     showToast(mode === 'all' ? '已显示工作流全部节点输出' : '已显示工作流最终输出');
   };
 
+  const getCanvasImageFusionPreferredRole = (targetId: string) => {
+    const pending = pendingCanvasFusionRoleRef.current;
+    return pending?.targetId === targetId ? pending.role : null;
+  };
+
+  const applyCanvasImageFusionConnectionPatch = (
+    item: CanvasImageItem,
+    sourceIds: string[],
+    preferredRole?: CanvasImageFusionRole | null,
+  ): CanvasImageItem => {
+    if (!isCanvasImageFusionAi(item.ai)) return item;
+    const fusion = assignCanvasImageFusionInputs(
+      item.ai?.imageFusion,
+      item.inputs || [],
+      sourceIds,
+      preferredRole,
+    );
+    return {
+      ...item,
+      inputs: fusion.inputs,
+      ai: item.ai ? {
+        ...item.ai,
+        imageFusion: fusion.config,
+        sourceImageNodeId: fusion.config.baseNodeId,
+        referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+        referenceRoles: fusion.referenceRoles,
+      } : item.ai,
+    };
+  };
+
   const connectSelectedCanvasItemsToGenerator = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
-    if (!canUseCanvasItemAsAiTarget(target)) {
+    if (!target || !canUseCanvasItemAsAiTarget(target)) {
       showToast('目标节点不能接入输入');
       return;
     }
@@ -18630,20 +13888,29 @@ function MainApp() {
       .filter(id => id !== targetId)
       .filter(id => {
         const source = canvasItemsRef.current.find(item => item.id === id);
-        return canUseCanvasItemAsInputForTarget(source, target);
+        return isCanvasImageFusionAi(target.ai)
+          ? canUseCanvasItemAsImageEnhancementInput(source)
+          : canUseCanvasItemAsInputForTarget(source, target);
       });
     if (sourceIds.length === 0) {
       showToast('先多选要接入的图片或文字节点');
       return;
     }
     pushCanvasUndoSnapshot('连接 AI 输入');
+    const preferredRole = getCanvasImageFusionPreferredRole(targetId);
     updateCanvasItemsImmediate(prev => prev.map(item => {
       if (item.id !== targetId) return item;
+      if (isCanvasImageFusionAi(item.ai)) {
+        return applyCanvasImageFusionConnectionPatch(item, sourceIds.slice(0, 2), preferredRole);
+      }
       const nextInputs = Array.from(new Set([...(item.inputs || []), ...sourceIds]));
       return { ...item, inputs: nextInputs };
     }));
+    pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
-    showToast(`已连接 ${sourceIds.length} 个输入到 ${getCanvasInputTargetLabel(target)}`);
+    showToast(isCanvasImageFusionAi(target.ai)
+      ? '已设置溶图输入槽位'
+      : `已连接 ${sourceIds.length} 个输入到 ${getCanvasInputTargetLabel(target)}`);
   };
 
   const connectCanvasItems = (sourceId: string, targetId: string) => {
@@ -18651,19 +13918,29 @@ function MainApp() {
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!source || !target || !canUseCanvasItemAsAiTarget(target) || !canUseCanvasItemAsInputForTarget(source, target)) return false;
+    if (isCanvasImageFusionAi(target.ai) && !canUseCanvasItemAsImageEnhancementInput(source)) {
+      showToast('溶图节点的基图和意向图都必须是图片素材或图片生成结果');
+      return false;
+    }
     const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
-    if ((target.inputs || []).includes(sourceId)) {
+    const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
+    if (!isCanvasImageFusionAi(target.ai) && (target.inputs || []).includes(sourceId)) {
       updateCanvasSelection([targetId]);
       return true;
     }
     pushCanvasUndoSnapshot('连接 AI 输入');
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId
-        ? { ...item, inputs: isSingleMediaInputTarget ? [sourceId] : Array.from(new Set([...(item.inputs || []), sourceId])) }
-        : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      if (isCanvasImageFusionAi(item.ai)) {
+        return applyCanvasImageFusionConnectionPatch(item, [sourceId], fusionPreferredRole);
+      }
+      return { ...item, inputs: isSingleMediaInputTarget ? [sourceId] : Array.from(new Set([...(item.inputs || []), sourceId])) };
+    }));
+    pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
-    showToast(`已连接到 ${getCanvasInputTargetLabel(target)}`);
+    showToast(isCanvasImageFusionAi(target.ai)
+      ? fusionPreferredRole === 'STYLE_REF' ? '已设置意向图' : fusionPreferredRole === 'BASE' ? '已设置基图' : '已连接到溶图节点'
+      : `已连接到 ${getCanvasInputTargetLabel(target)}`);
     return true;
   };
 
@@ -18674,30 +13951,41 @@ function MainApp() {
       .filter(sourceId => sourceId && sourceId !== targetId)
       .filter(sourceId => {
         const source = canvasItemsRef.current.find(item => item.id === sourceId);
-        return canUseCanvasItemAsInputForTarget(source, target);
+        return isCanvasImageFusionAi(target.ai)
+          ? canUseCanvasItemAsImageEnhancementInput(source)
+          : canUseCanvasItemAsInputForTarget(source, target);
       });
     if (validSourceIds.length === 0) return false;
 
     const previousInputs = target.inputs || [];
     const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
-    const nextInputs = isSingleMediaInputTarget
+    const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
+    const fusionPatch = isCanvasImageFusionAi(target.ai)
+      ? applyCanvasImageFusionConnectionPatch(target, validSourceIds.slice(0, 2), fusionPreferredRole)
+      : null;
+    const nextInputs = fusionPatch?.inputs || (isSingleMediaInputTarget
       ? validSourceIds.slice(0, 1)
-      : Array.from(new Set([...previousInputs, ...validSourceIds]));
+      : Array.from(new Set([...previousInputs, ...validSourceIds])));
     const inputsChanged = previousInputs.length !== nextInputs.length
       || previousInputs.some((inputId, index) => inputId !== nextInputs[index]);
     const addedCount = nextInputs.length - previousInputs.length;
     if (!inputsChanged) {
+      pendingCanvasFusionRoleRef.current = null;
       updateCanvasSelection([targetId]);
-      showToast('这些输入已经连接过了');
+      showToast(isCanvasImageFusionAi(target.ai) ? '两个溶图槽位均已设置，请点击对应槽位进行更换' : '这些输入已经连接过了');
       return true;
     }
 
     pushCanvasUndoSnapshot('连接 AI 输入');
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId ? { ...item, inputs: nextInputs } : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      return fusionPatch || { ...item, inputs: nextInputs };
+    }));
+    pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
-    showToast(isSingleMediaInputTarget ? '已更换输入素材' : `已连接 ${Math.max(1, addedCount)} 个输入到 ${getCanvasInputTargetLabel(target)}`);
+    showToast(isCanvasImageFusionAi(target.ai)
+      ? '已设置溶图输入槽位'
+      : isSingleMediaInputTarget ? '已更换输入素材' : `已连接 ${Math.max(1, addedCount)} 个输入到 ${getCanvasInputTargetLabel(target)}`);
     return true;
   };
 
@@ -18788,7 +14076,7 @@ function MainApp() {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     const item: BufferItem = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text',
       content: '',
       name: '文字说明',
@@ -19059,6 +14347,11 @@ function MainApp() {
       void chooseLocalVideosForCanvasGenerator(targetId);
       return;
     }
+    const pendingFusionRole = pendingCanvasFusionRoleRef.current;
+    pendingCanvasFusionUploadRoleRef.current = pendingFusionRole?.targetId === targetId
+      ? pendingFusionRole
+      : null;
+    pendingCanvasFusionRoleRef.current = null;
     pendingCanvasUploadTargetIdRef.current = targetId;
     setCanvasInputMenuForId(null);
     canvasUploadInputRef.current?.click();
@@ -19069,6 +14362,8 @@ function MainApp() {
     pendingCanvasWorkflowSlotUploadRef.current = null;
     const targetId = pendingCanvasUploadTargetIdRef.current;
     pendingCanvasUploadTargetIdRef.current = null;
+    const fusionUploadRole = pendingCanvasFusionUploadRoleRef.current;
+    pendingCanvasFusionUploadRoleRef.current = null;
     const files = Array.from(event.target.files || []);
     event.target.value = '';
     if (slotTarget) {
@@ -19114,7 +14409,10 @@ function MainApp() {
       return;
     }
 
-    const created = await Promise.all(imageFiles.map((file, index) => createCanvasImageItemFromFile(file, index)));
+    const selectedImageFiles = isCanvasImageFusionAi(target.ai)
+      ? imageFiles.slice(0, fusionUploadRole?.targetId === targetId ? 1 : 2)
+      : imageFiles;
+    const created = await Promise.all(selectedImageFiles.map((file, index) => createCanvasImageItemFromFile(file, index)));
     const images = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
       ...item,
       x: Math.max(24, target.x - item.width - 72 - (index % 2) * 22),
@@ -19127,6 +14425,9 @@ function MainApp() {
 
     const addedCount = appendCanvasItems(images, '添加 AI 输入图片', false);
     if (addedCount <= 0) return;
+    if (fusionUploadRole?.targetId === targetId) {
+      pendingCanvasFusionRoleRef.current = fusionUploadRole;
+    }
     connectCanvasItemsToGenerator(images.map(item => item.id), targetId);
   };
 
@@ -19173,7 +14474,7 @@ function MainApp() {
         file.type ? `类型：${file.type}` : '',
         extractedText ? `内容：\n${extractedText}` : '正文未解析；仅提供文件名称和类型。',
       ].filter(Boolean).join('\n');
-      const itemId = Math.random().toString(36).substring(2, 9);
+      const itemId = createAssetId();
       return {
         id: makeCanvasNodeId(itemId, 'file_input'),
         item: {
@@ -19220,7 +14521,8 @@ function MainApp() {
         .filter((value): value is string => typeof value === 'string' && !!value);
       if (paths.length === 0) return;
 
-      const created = await Promise.all(paths.slice(0, 1).map((path, index) => createCanvasVideoItemFromPath(path, index)));
+      const maxVideoReferences = target.ai?.type === 'video-generator' && isSeedanceLikeVideoModel(target.ai.model) ? 3 : 1;
+      const created = await Promise.all(paths.slice(0, maxVideoReferences).map((path, index) => createCanvasVideoItemFromPath(path, index)));
       const videos = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
         ...item,
         x: Math.max(24, target.x - item.width - 72 - (index % 2) * 22),
@@ -19240,10 +14542,44 @@ function MainApp() {
     }
   };
 
+  const chooseLocalAudiosForCanvasGenerator = async (targetId: string) => {
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!target || target.ai?.type !== 'video-generator' || !isSeedanceLikeVideoModel(target.ai.model)) return;
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'aac', 'flac', 'm4a', 'ogg', 'opus', 'aiff', 'wma'] }],
+        title: '选择参考音频',
+      });
+      const paths = (Array.isArray(selected) ? selected : selected ? [selected] : [])
+        .filter((value): value is string => typeof value === 'string' && !!value)
+        .slice(0, 3);
+      if (paths.length === 0) return;
+      const created = await Promise.all(paths.map((path, index) => createCanvasAudioItemFromPath(path, index)));
+      const audios = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
+        ...item,
+        x: Math.max(24, target.x - item.width - 72),
+        y: Math.max(24, target.y + 120 + index * 42),
+      }));
+      if (audios.length === 0) {
+        showToast('音频读取失败');
+        return;
+      }
+      if (appendCanvasItems(audios, '添加 AI 参考音频', false) <= 0) return;
+      connectCanvasItemsToGenerator(audios.map(item => item.id), targetId);
+    } catch (err) {
+      console.warn('添加 AI 参考音频失败:', err);
+      showToast('添加参考音频失败');
+    }
+  };
+
   const startPickCanvasImageForGenerator = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) return;
     const allowVideoReference = target.ai?.type === 'video-generator' && target.ai?.videoInputMode !== 'FLF';
+    const allowAudioReference = target.ai?.type === 'video-generator'
+      && target.ai.videoInputMode !== 'FLF'
+      && isSeedanceLikeVideoModel(target.ai.model);
     const isFrameInterpolationTarget = target.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target.ai?.type === 'image-enhancement';
@@ -19258,7 +14594,7 @@ function MainApp() {
           ? '点击画布里的视频素材或视频生成结果作为清晰度增强输入，Esc 取消'
           : isImageEnhancementTarget
             ? '点击画布里的图片素材或图片生成结果作为清晰度增强输入，Esc 取消'
-            : allowVideoReference
+            : (allowAudioReference || allowVideoReference)
               ? '点击画布里的图片、视频或生成节点作为输入，Esc 取消'
               : '点击画布里的图片或图片生成节点作为输入，Esc 取消'
     );
@@ -19268,6 +14604,9 @@ function MainApp() {
     const source = canvasItemsRef.current.find(item => item.id === sourceId);
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     const allowVideoReference = target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF';
+    const allowAudioReference = target?.ai?.type === 'video-generator'
+      && target.ai.videoInputMode !== 'FLF'
+      && isSeedanceLikeVideoModel(target.ai.model);
     const isFrameInterpolationTarget = target?.ai?.type === 'frame-interpolation';
     const isVideoEnhancementTarget = target?.ai?.type === 'video-enhancement';
     const isImageEnhancementTarget = target?.ai?.type === 'image-enhancement';
@@ -19283,6 +14622,7 @@ function MainApp() {
           || source.ai?.type === 'image-generator'
           || source.ai?.type === 'workflow'
           || (allowVideoReference && (source.item.type === 'video' || source.ai?.type === 'video-generator'))
+          || (allowAudioReference && source.item.type === 'file' && isCanvasAudioFileName(source.item.name || source.item.path))
         )
     );
     if (!canPickSource) {
@@ -19437,9 +14777,24 @@ function MainApp() {
   const disconnectCanvasInput = (targetId: string, inputId: string) => {
     if (removeCanvasConnection(targetId, inputId, '移除 AI 输入')) return;
     pushCanvasUndoSnapshot('移除 AI 输入');
-    updateCanvasItemsImmediate(prev => prev.map(item => (
-      item.id === targetId ? { ...item, inputs: (item.inputs || []).filter(id => id !== inputId) } : item
-    )));
+    updateCanvasItemsImmediate(prev => prev.map(item => {
+      if (item.id !== targetId) return item;
+      if (!isCanvasImageFusionAi(item.ai)) {
+        return { ...item, inputs: (item.inputs || []).filter(id => id !== inputId) };
+      }
+      const fusion = removeCanvasImageFusionInput(item.ai?.imageFusion, item.inputs || [], inputId);
+      return {
+        ...item,
+        inputs: fusion.inputs,
+        ai: item.ai ? {
+          ...item.ai,
+          imageFusion: fusion.config,
+          sourceImageNodeId: fusion.config.baseNodeId,
+          referenceImageNodeIds: fusion.config.styleNodeId ? [fusion.config.styleNodeId] : [],
+          referenceRoles: fusion.referenceRoles,
+        } : item.ai,
+      };
+    }));
   };
 
   const getCanvasAiRerunNodePosition = (source: CanvasImageItem) => {
@@ -19465,7 +14820,7 @@ function MainApp() {
 
   const cloneCanvasAiGeneratorForRerun = (source: CanvasImageItem) => {
     if (!isCanvasAiGeneratorType(source.ai?.type)) return null;
-    const nextBufferId = Math.random().toString(36).substring(2, 9);
+    const nextBufferId = createAssetId();
     const nextCanvasId = makeCanvasNodeId(nextBufferId, 'ai');
     const pos = getCanvasAiRerunNodePosition(source);
     const now = Date.now();
@@ -19494,6 +14849,7 @@ function MainApp() {
   const runCanvasAiGeneratorTarget = async (
     target: CanvasImageItem,
     options: {
+      canvasId?: string;
       sourceItems?: () => CanvasImageItem[];
       updateAi: (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => void;
       forceUpdateAi?: (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => void;
@@ -19502,24 +14858,37 @@ function MainApp() {
       showResultToast?: boolean;
       toastLabel?: string;
       clientRequestId?: string;
+      requireLocalImageOutputs?: boolean;
     }
   ) => {
     const latestTarget = options.getLatestTarget?.();
     if (latestTarget?.id === target.id) target = latestTarget;
     const targetAi = target.ai;
     if (!isCanvasAiGeneratorType(targetAi?.type)) return [] as CanvasAiGeneratedOutput[];
+    const generatedCanvasId = options.canvasId?.trim()
+      || activeCanvasIdRef.current
+      || DEFAULT_CANVAS_ID;
+    const generatedCanvasName = canvasesRef.current.find(canvas => canvas.id === generatedCanvasId)?.name;
+    const generatedImageFolderLabel = `${AI_GENERATED_FOLDER_NAME} / ${getCanvasGeneratedImageFolderName(
+      generatedCanvasName,
+      generatedCanvasId,
+    )}`;
 
     const clientRequestId = options.clientRequestId || createCanvasAiClientRequestId(target.id);
 
     const mediaType = getCanvasAiMediaType(targetAi);
-    const imageTaskDeadlineAt = mediaType === 'image'
-      ? Date.now() + CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
-      : 0;
+    const taskTimeoutMinutes = mediaType === 'image'
+      ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES
+      : CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES;
+    const taskTimeoutMs = mediaType === 'image'
+      ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
+      : CANVAS_AI_VIDEO_TASK_TIMEOUT_MS;
+    const taskDeadlineAt = Date.now() + taskTimeoutMs;
     const waitForCanvasAiProviderTask = async <T,>(request: Promise<T>): Promise<T> => {
-      if (!imageTaskDeadlineAt) return request;
-      const remainingMs = imageTaskDeadlineAt - Date.now();
+      const remainingMs = taskDeadlineAt - Date.now();
       if (remainingMs <= 0) {
-        throw new Error(`图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消`);
+        void request.catch(() => {});
+        throw new Error(`${mediaType === 'image' ? '图片' : '视频'}生成任务等待超过 ${taskTimeoutMinutes} 分钟，已自动取消`);
       }
       let timeoutId: number | null = null;
       try {
@@ -19527,7 +14896,7 @@ function MainApp() {
           request,
           new Promise<never>((_, reject) => {
             timeoutId = window.setTimeout(() => {
-              reject(new Error(`图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消`));
+              reject(new Error(`${mediaType === 'image' ? '图片' : '视频'}生成任务等待超过 ${taskTimeoutMinutes} 分钟，已自动取消`));
             }, remainingMs);
           }),
         ]);
@@ -19549,6 +14918,10 @@ function MainApp() {
           Boolean(choice && choice.source === imageCredentialSource)
         ))
       : [];
+    const targetRawPublicModel = getCanvasAiPublicImageModelName(targetProvider, targetAi.model);
+    const targetPublicModel = targetRawPublicModel === 'GPT Image 2 H'
+      ? 'GPT Image 2'
+      : targetRawPublicModel;
     const matchingSourceChoice = sourceChoices.find(choice => (
       choice.provider === targetProvider
       && choice.model === targetAi.model
@@ -19556,21 +14929,79 @@ function MainApp() {
       choice.providerCandidates?.some(candidate => (
         candidate.provider === targetProvider && candidate.model === targetAi.model
       ))
-    )) || sourceChoices[0];
+    )) || (targetPublicModel
+      ? sourceChoices.find(choice => (
+        getCanvasAiPublicImageModelName(choice.provider, choice.model) === targetPublicModel
+      ))
+      : undefined) || sourceChoices[0];
     const activeSourceCandidate = matchingSourceChoice?.providerCandidates?.find(candidate => (
       candidate.source === imageCredentialSource
       && candidate.provider === targetProvider
       && candidate.model === targetAi.model
     )) || matchingSourceChoice?.providerCandidates?.find(candidate => candidate.source === imageCredentialSource);
+    const storedVideoCandidates = mediaType === 'video'
+      ? filterCanvasAiVideoModelCandidates(targetAi.model, targetAi.providerCandidates)
+      : [];
+    const resolvedVideoCandidates = mediaType === 'video' && isMiniMaxH3VideoModel(targetAi.model)
+      ? (() => {
+        const walletCandidates = getCanvasAiVideoModelCandidates(
+          targetAi.model,
+          canvasAiCredentialSource,
+          targetProvider,
+          canvasAiCloudImageModels?.videoChannels,
+        );
+        // A wallet response may temporarily omit the MiniMax channel. Keep the
+        // provider explicit and let the server select its configured channel;
+        // never reuse a stale channel id from the previous video model.
+        return walletCandidates.length > 0
+          ? walletCandidates
+          : [{
+            source: canvasAiCredentialSource,
+            provider: 'minimax' as const,
+            model: 'MiniMax-H3',
+          }];
+      })()
+      : storedVideoCandidates;
+    const activeVideoCandidate = mediaType === 'video'
+      ? resolvedVideoCandidates.find(candidate => candidate.provider === targetProvider)
+        || resolvedVideoCandidates[0]
+      : undefined;
     const requestedProvider = normalizeCanvasAiProvider(
-      activeSourceCandidate?.provider
+      activeVideoCandidate?.provider
+      || activeSourceCandidate?.provider
       || matchingSourceChoice?.provider
       || targetAi.provider
       || (mediaType === 'video' ? 'xais-chat' : canvasAiProvider)
     );
-    const selectedModel = activeSourceCandidate?.model || matchingSourceChoice?.model || targetAi.model;
-    const selectedProviderCandidates = (matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
-      .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource);
+    const selectedModel = activeVideoCandidate?.model
+      || activeSourceCandidate?.model
+      || matchingSourceChoice?.model
+      || targetAi.model;
+    const selectedProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
+      (mediaType === 'video'
+        ? resolvedVideoCandidates
+        : matchingSourceChoice?.providerCandidates || targetAi.providerCandidates || [])
+        .filter(candidate => mediaType !== 'image' || candidate.source === imageCredentialSource),
+      mediaType === 'video' ? canvasAiCloudImageModels?.videoChannels : canvasAiCloudImageModels?.channels,
+    );
+    const selectedChannelId = activeVideoCandidate?.providerChannelId
+      || activeSourceCandidate?.providerChannelId
+      || matchingSourceChoice?.providerChannelId
+      || (mediaType === 'video' ? undefined : targetAi.providerChannelId);
+    const selectedChannelCapabilities = selectedChannelId
+      ? (mediaType === 'video'
+        ? canvasAiCloudImageModels?.videoChannels?.find(channel => channel.id === selectedChannelId)?.capabilities
+        : canvasAiCloudImageModels?.channels?.find(channel => channel.id === selectedChannelId)?.capabilities)
+      : undefined;
+    const selectedCandidateImageResolutionValues = mediaType === 'image'
+      ? getCanvasAiImageResolutionValuesForCandidates(selectedProviderCandidates)
+      : [];
+    const selectedModelCapabilities = selectedProviderCandidates.find(candidate => (
+        candidate.provider === requestedProvider && candidate.model === selectedModel
+      ))?.capabilities
+      || activeVideoCandidate?.capabilities
+      || activeSourceCandidate?.capabilities
+      || selectedChannelCapabilities;
     const useCloudWallet = (mediaType === 'image' || mediaType === 'video')
       && !isCanvasAiLicenseManaged
       && Boolean(cloudAccount)
@@ -19593,11 +15024,39 @@ function MainApp() {
     };
     const manualPrompt = (target.item.content || (targetAi.presetPrompt ? '' : targetAi.prompt || '')).trim();
     const resultLabel = options.toastLabel || 'AI 节点';
-    const textInputPrompts = getCanvasTextInputsForNode(target, getSourceItems());
+    const isImageFusion = mediaType === 'image' && isCanvasImageFusionAi(targetAi);
+    const imageFusionConfig = isImageFusion
+      ? normalizeCanvasImageFusionConfig(targetAi.imageFusion, target.inputs || [])
+      : null;
+    if (isImageFusion) {
+      const fusionInputIds = getCanvasImageFusionInputIds(imageFusionConfig, target.inputs || []);
+      const resolvedFusionImages = getCanvasImageInputBufferItemsForNode(target, getSourceItems())
+        .filter(item => item.type === 'image');
+      if (fusionInputIds.length < 2 || resolvedFusionImages.length < 2) {
+        const error = fusionInputIds.length < 2
+          ? '请先分别设置基图和意向图'
+          : '基图或意向图暂时没有可用图片；如果连接的是生图节点，请先让它生成成功';
+        options.updateAi({ status: 'error', error });
+        options.selectTarget?.();
+        showToast(error);
+        return [] as CanvasAiGeneratedOutput[];
+      }
+    }
+    const fusionPrompt = imageFusionConfig
+      ? buildCanvasImageFusionPrompt({
+        baseWeight: imageFusionConfig.baseWeight,
+        styleWeight: imageFusionConfig.styleWeight,
+        originalRequest: manualPrompt,
+      })
+      : '';
+    const textInputPrompts = [
+      fusionPrompt,
+      ...getCanvasTextInputsForNode(target, getSourceItems()),
+    ].filter(Boolean);
     const promptParts = [
       ...textInputPrompts,
       targetAi.presetPrompt || '',
-      manualPrompt,
+      isImageFusion ? '' : manualPrompt,
     ].map(text => text.trim()).filter(Boolean);
     let prompt = promptParts.join('\n\n');
     if (!prompt) {
@@ -19702,6 +15161,9 @@ function MainApp() {
         usePortableWalletReferences,
         provider,
       );
+      if (isImageFusion && preparedInputs.images.length < 2) {
+        throw new Error('基图或意向图读取失败，溶图需要两张可用图片');
+      }
       if (provider === 'xais-chat') {
         debugXaisImage2('referencePreparation', {
           clientRequestId,
@@ -19715,11 +15177,13 @@ function MainApp() {
       if (
         provider === 'xais-chat'
         && Math.max(resolvedReferenceItems.length, globalReferenceItems.length) > 0
-        && preparedInputs.images.length === 0
+        && (preparedInputs.images.length + preparedInputs.videos.length + preparedInputs.audios.length) === 0
       ) {
         throw new Error('XAIS 参考图准备结果为空，已停止本次生成，请查看 xais-image2.log 中的 referenceResolution 记录。');
       }
       let inputImages = preparedInputs.images;
+      let inputVideos = preparedInputs.videos;
+      let inputAudios = preparedInputs.audios;
       let negativePrompt: string | undefined;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
       const imageProtocol = mediaType === 'image' && provider === 'new-api'
@@ -19733,7 +15197,7 @@ function MainApp() {
         const finalPrompt = buildFinalImagePrompt({
           textInputs: textInputPrompts,
           presetPrompt: targetAi.presetPrompt || '',
-          userPrompt: manualPrompt,
+          userPrompt: isImageFusion ? '' : manualPrompt,
           qualityProfile: typeof targetAi.skillMeta?.qualityProfileId === 'string'
             ? targetAi.skillMeta.qualityProfileId
             : '',
@@ -19808,6 +15272,9 @@ function MainApp() {
           candidatePortableReferences,
           candidate.provider,
         );
+        if (isImageFusion && candidatePreparedInputs.images.length < 2) {
+          throw new Error('候选模型未能读取完整的基图与意向图，已停止本次溶图');
+        }
         temporaryReferenceShares = [
           ...temporaryReferenceShares,
           ...candidatePreparedInputs.temporaryShareIds,
@@ -19835,9 +15302,7 @@ function MainApp() {
         provider,
         apiKey,
         cloudWallet: useCloudWallet,
-        providerChannelId: useCloudWallet
-          ? activeSourceCandidate?.providerChannelId || matchingSourceChoice?.providerChannelId || targetAi.providerChannelId
-          : undefined,
+        providerChannelId: useCloudWallet ? selectedChannelId : undefined,
         providerCandidates: selectedProviderCandidates.length > 1
           ? selectedProviderCandidates
           : undefined,
@@ -19876,8 +15341,24 @@ function MainApp() {
             ? canvasAiHeadersText
             : getStoredCanvasAiHeadersText(provider)),
         inputImages,
+        inputVideos,
+        inputAudios,
         aspectRatio: targetAi.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
-        resolution: mediaType === 'video' ? targetAi.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION : targetAi.resolution,
+        resolution: mediaType === 'video'
+          ? targetAi.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION
+          : selectedCandidateImageResolutionValues.length > 0
+            ? normalizeCanvasAiImageResolutionForCandidates(
+              selectedProviderCandidates,
+              targetAi.resolution,
+            )
+            : supportsCanvasAiImageResolution(provider, requestModel, selectedModelCapabilities)
+              ? normalizeCanvasAiImageResolutionForModel(
+                provider,
+                requestModel,
+                targetAi.resolution,
+                selectedModelCapabilities,
+              )
+              : targetAi.resolution,
         outputFormat: targetAi.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT,
         duration: targetAi.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION,
         inputMode: targetAi.videoInputMode || 'REF',
@@ -19912,6 +15393,8 @@ function MainApp() {
             provider,
           );
           inputImages = fallbackInputs.images;
+          inputVideos = fallbackInputs.videos;
+          inputAudios = fallbackInputs.audios;
           temporaryReferenceShares = [
             ...temporaryReferenceShares,
             ...fallbackInputs.temporaryShareIds,
@@ -19919,8 +15402,10 @@ function MainApp() {
           generateOptions = {
             ...generateOptions,
             inputImages,
+            inputVideos,
+            inputAudios,
           };
-          return fallbackInputs.images.length > 0;
+          return (fallbackInputs.images.length + fallbackInputs.videos.length + fallbackInputs.audios.length) > 0;
         } catch (fallbackError) {
           throw new Error(`公网参考图失败：${getCanvasAiErrorSummary(cause instanceof Error ? cause.message : String(cause))}；本地兜底也失败：${getCanvasAiErrorSummary(fallbackError instanceof Error ? fallbackError.message : String(fallbackError))}`);
         }
@@ -19949,8 +15434,10 @@ function MainApp() {
             usePortableWalletReferences,
             provider,
           );
-          if (freshInputs.images.length === 0) return false;
+          if ((freshInputs.images.length + freshInputs.videos.length + freshInputs.audios.length) === 0) return false;
           inputImages = freshInputs.images;
+          inputVideos = freshInputs.videos;
+          inputAudios = freshInputs.audios;
           temporaryReferenceShares = [
             ...temporaryReferenceShares,
             ...freshInputs.temporaryShareIds,
@@ -19958,6 +15445,8 @@ function MainApp() {
           generateOptions = {
             ...generateOptions,
             inputImages,
+            inputVideos,
+            inputAudios,
           };
           await new Promise<void>(resolve => window.setTimeout(resolve, 3200));
           return true;
@@ -19973,30 +15462,17 @@ function MainApp() {
       ) => {
         const source = url.trim();
         const durableOutputName = `${outputClientRequestId}${index > 0 ? `_${index + 1}` : ''}`;
-        const publishRemoteImageImmediately = mediaType === 'image' && /^https?:\/\//i.test(source);
-        // Remote image results are usable as soon as the provider responds.
-        // Publish them immediately and let addGeneratedImagesToDrawer cache in
-        // the background so a slow OSS transfer never keeps the node working.
-        let cached = publishRemoteImageImmediately
+        const requireLocalImage = mediaType === 'image' && options.requireLocalImageOutputs === true;
+        const publishRemoteMediaImmediately = /^https?:\/\//i.test(source) && !requireLocalImage;
+        const cached = publishRemoteMediaImmediately
           ? buildCanvasAiOutputRemoteResultPatch(source)
           : await cacheCanvasGeneratedImageSource(
             source,
-            mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName
+            mediaType === 'video' ? `${durableOutputName}.mp4` : durableOutputName,
+            { throwOnFailure: requireLocalImage },
           );
-        if (mediaType === 'video' && cached.path) {
-          try {
-            const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
-              inputPath: cached.path,
-              mode: (target.ai?.videoCfrMode || 'auto') === 'auto' ? 'auto-ai' : target.ai?.videoCfrMode,
-              progressId: target.id,
-            });
-            const normalizedPath = (normalized.outputPath || '').trim();
-            if (normalized.converted && normalizedPath) {
-              cached = { path: normalizedPath, url: convertFileSrc(normalizedPath), sourceUrl: source };
-            }
-          } catch (error) {
-            console.warn('AI 视频帧率自动检测/标准化失败，保留原视频:', error);
-          }
+        if (requireLocalImage && !cached.path) {
+          throw new Error('图片已生成，但下载到本地失败，已停止后续工作流节点');
         }
         const displayUrl = cached.url || source;
         // Avoid decoding a potentially huge generated image in the renderer
@@ -20022,7 +15498,7 @@ function MainApp() {
           name: durableOutputName,
           prompt,
           status: 'success',
-          cacheStatus: cached.path ? 'ready' : publishRemoteImageImmediately ? 'pending' : 'failed',
+          cacheStatus: cached.path ? 'ready' : publishRemoteMediaImmediately ? 'pending' : 'failed',
           error: undefined,
           generatedAt,
           width: size.width,
@@ -20047,6 +15523,7 @@ function MainApp() {
         if (drawerItem) {
           if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
           else addGeneratedImagesToDrawer([drawerItem], {
+            canvasId: generatedCanvasId,
             canvasOutputClientRequestId: outputClientRequestId,
             onOutputCachePatch: (outputId, matchSources, patch) => {
               const sourceSet = new Set(matchSources);
@@ -20059,6 +15536,67 @@ function MainApp() {
               currentOutputs = nextOutputs;
               options.updateAi({ outputs: nextOutputs });
             },
+          });
+        }
+        if (mediaType === 'video') {
+          const patchPublishedVideo = (patch: Partial<CanvasAiGeneratedOutput>) => {
+            currentOutputs = currentOutputs.map(currentOutput => (
+              currentOutput.id === output.id
+                ? recoverCanvasAiOutputWithUsableResult({ ...currentOutput, ...patch })
+                : currentOutput
+            ));
+            (options.forceUpdateAi || options.updateAi)({ outputs: currentOutputs });
+            if (drawerItem) {
+              setItems(prev => prev.map(item => item.id === drawerItem.id
+                ? {
+                    ...item,
+                    ...(patch.url ? { url: patch.url } : {}),
+                    ...(patch.path ? { path: patch.path } : {}),
+                    sourceUrl: source,
+                  }
+                : item));
+            }
+            if (patch.path) {
+              window.setTimeout(() => {
+                setCanvasAiOutputSourceRecoveryTick(value => value + 1);
+              }, 0);
+            }
+          };
+          void (async () => {
+            const localCached = cached.path
+              ? cached
+              : await cacheCanvasGeneratedImageSource(source, `${durableOutputName}.mp4`);
+            if (!localCached.path) throw new Error('视频本地缓存没有返回文件路径');
+            const localUrl = localCached.url || convertFileSrc(localCached.path);
+            patchPublishedVideo({
+              url: localUrl,
+              path: localCached.path,
+              sourceUrl: source,
+              cacheStatus: 'ready',
+            });
+            const videoCfrMode = target.ai?.videoCfrMode || 'off';
+            if (videoCfrMode === 'off') return;
+            try {
+              const normalized = await invoke<VideoCfrNormalizationResult>('normalize_video_cfr_if_needed', {
+                inputPath: localCached.path,
+                mode: videoCfrMode === 'auto' ? 'auto-ai' : videoCfrMode,
+                progressId: target.id,
+              });
+              const normalizedPath = (normalized.outputPath || '').trim();
+              if (normalized.converted && normalizedPath) {
+                patchPublishedVideo({
+                  url: convertFileSrc(normalizedPath),
+                  path: normalizedPath,
+                  sourceUrl: source,
+                  cacheStatus: 'ready',
+                });
+              }
+            } catch (error) {
+              console.warn('AI 视频帧率后台检测/标准化失败，保留原视频:', error);
+            }
+          })().catch((error) => {
+            console.warn('AI 生成视频后台缓存失败，保留 OSS 远程预览:', error);
+            patchPublishedVideo({ cacheStatus: 'failed' });
           });
         }
         return output;
@@ -20209,7 +15747,7 @@ function MainApp() {
       options.selectTarget?.();
       if (options.showResultToast !== false) {
         showToast(generatedOutputs.length >= requestedCount
-          ? `${resultLabel}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : AI_GENERATED_FOLDER_NAME}」`
+          ? `${resultLabel}生成 ${generatedOutputs.length} ${unit}，已放入「${mediaType === 'video' ? AI_GENERATED_VIDEO_FOLDER_NAME : generatedImageFolderLabel}」`
           : `${resultLabel}生成 ${generatedOutputs.length}/${requestedCount} ${unit}`);
         notifyCanvasAiGenerationResult({
           status: generatedOutputs.length >= requestedCount ? 'success' : 'partial',
@@ -20592,6 +16130,7 @@ function MainApp() {
   }, [canvasItems, isCanvasMode]);
 
   const runCanvasEnhancementNode = async (targetId: string) => {
+    const runCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !isCanvasAiEnhancementType(target.ai?.type)) return;
 
@@ -20707,7 +16246,7 @@ function MainApp() {
       const drawerItem = createCanvasAiOutputBufferItem(latestTarget, output, 0);
       if (drawerItem) {
         if (mediaType === 'video') addGeneratedVideosToDrawer([drawerItem]);
-        else addGeneratedImagesToDrawer([drawerItem]);
+        else addGeneratedImagesToDrawer([drawerItem], { canvasId: runCanvasId });
       }
       showToast(isQuickVideoEnhancement
         ? `快速视频增强完成（${(result as QuickVideoEnhancementResult).encoder || '高质量编码'}）`
@@ -20746,6 +16285,7 @@ function MainApp() {
     };
     try {
       await runCanvasAiGeneratorTarget(target, {
+        canvasId: runCanvasId,
         sourceItems: () => getCanvasSessionItems(runCanvasId),
         updateAi: updateAiIfCurrent,
         forceUpdateAi: updateAiIfCurrent,
@@ -20776,36 +16316,55 @@ function MainApp() {
         }
         releaseCanvasAiRun(canvasAiRunTokensRef.current, runKey, runToken);
       }
-      await waitForCanvasBackgroundPatches(runCanvasId);
       markCanvasRunNodeSettled(runCanvasId, targetId);
+      // The visible generation result is already committed. Let durable background
+      // writes finish asynchronously so they cannot keep the App Agent tool card
+      // stuck in "running" after the image has completed.
+      void waitForCanvasBackgroundPatches(runCanvasId);
     }
   };
 
   useEffect(() => {
     if (!isCanvasMode) return;
-    const settleStaleImageNodes = () => {
+    const settleStaleGeneratorNodes = () => {
       const now = Date.now();
-      const staleNodes = canvasItemsRef.current.filter(item => {
+      const generalizedStaleNodes = canvasItemsRef.current.filter(item => {
         const ai = item.ai;
-        if (ai?.type !== 'image-generator' || ai.status !== 'working' || !ai.generatedAt) return false;
-        return now - ai.generatedAt >= CANVAS_AI_IMAGE_TASK_TIMEOUT_MS;
+        if (
+          (ai?.type !== 'image-generator' && ai?.type !== 'video-generator')
+          || ai.status !== 'working'
+          || !ai.generatedAt
+        ) return false;
+        const timeoutMs = ai.type === 'image-generator'
+          ? CANVAS_AI_IMAGE_TASK_TIMEOUT_MS
+          : CANVAS_AI_VIDEO_TASK_TIMEOUT_MS;
+        return now - ai.generatedAt >= timeoutMs;
       });
-      staleNodes.forEach(item => {
-        canvasAiRunTokensRef.current.delete(item.id);
-        const error = `图片生成任务等待超过 ${CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES} 分钟，已自动取消，请手动重试。`;
-        updateCanvasAiGeneratorData(item.id, {
-          status: 'error',
-          error,
-          generatedAt: now,
-          outputs: (item.ai?.outputs || []).map(output => output.status === 'working'
-            ? { ...output, status: 'error' as const, error, generatedAt: output.generatedAt || now }
-            : output),
+      if (generalizedStaleNodes.length > 0) {
+        generalizedStaleNodes.forEach(item => {
+          for (const key of canvasAiRunTokensRef.current.keys()) {
+            if (key === item.id || key.endsWith(`:${item.id}`)) canvasAiRunTokensRef.current.delete(key);
+          }
+          const isVideo = item.ai?.type === 'video-generator';
+          const timeoutMinutes = isVideo
+            ? CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES
+            : CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES;
+          const mediaLabel = isVideo ? '视频' : '图片';
+          const error = `${mediaLabel}生成任务等待超过 ${timeoutMinutes} 分钟，已自动取消，请手动重试。`;
+          updateCanvasAiGeneratorData(item.id, {
+            status: 'error',
+            error,
+            generatedAt: now,
+            outputs: (item.ai?.outputs || []).map(output => output.status === 'working'
+              ? { ...output, status: 'error' as const, error, generatedAt: output.generatedAt || now }
+              : output),
+          });
         });
-      });
-      if (staleNodes.length > 0) showToast(`已自动取消 ${staleNodes.length} 个超时的图片生成任务，可手动重试`);
+        showToast(`已自动取消 ${generalizedStaleNodes.length} 个超时的图片/视频生成任务，可手动重试`);
+      }
     };
-    settleStaleImageNodes();
-    const timer = window.setInterval(settleStaleImageNodes, 5000);
+    settleStaleGeneratorNodes();
+    const timer = window.setInterval(settleStaleGeneratorNodes, 5000);
     return () => window.clearInterval(timer);
   }, [isCanvasMode]);
 
@@ -20871,86 +16430,6 @@ function MainApp() {
       setCanvasSizeImmediate({ width: nextWidth, height: nextHeight });
       scheduleCanvasStateSave();
     }
-  };
-
-  const sortCanvasWorkflowRuntimeNodeIds = (sourceItems: CanvasImageItem[]) => {
-    const itemsById = new Map(sourceItems.map(item => [item.id, item]));
-    const runnableIds = sourceItems
-      .filter(item => item.ai?.type === 'image-generator' || (isCanvasAgentTextTarget(item) && (item.inputs || []).length > 0))
-      .map(item => item.id);
-    const nodeSet = new Set(runnableIds);
-    const indegree = new Map(runnableIds.map(id => [id, 0]));
-    const children = new Map<string, string[]>();
-
-    runnableIds.forEach(targetId => {
-      const target = itemsById.get(targetId);
-      (target?.inputs || []).forEach(inputId => {
-        const source = itemsById.get(inputId);
-        if (!source || !nodeSet.has(inputId)) return;
-        indegree.set(targetId, (indegree.get(targetId) || 0) + 1);
-        children.set(inputId, [...(children.get(inputId) || []), targetId]);
-      });
-    });
-
-    const byCanvasPosition = (a: string, b: string) => {
-      const itemA = itemsById.get(a);
-      const itemB = itemsById.get(b);
-      return (itemA?.x || 0) - (itemB?.x || 0) || (itemA?.y || 0) - (itemB?.y || 0);
-    };
-    const queue = runnableIds.filter(id => (indegree.get(id) || 0) === 0).sort(byCanvasPosition);
-    const order: string[] = [];
-
-    while (queue.length > 0) {
-      const id = queue.shift();
-      if (!id) break;
-      order.push(id);
-      (children.get(id) || []).forEach(childId => {
-        const nextDegree = (indegree.get(childId) || 0) - 1;
-        indegree.set(childId, nextDegree);
-        if (nextDegree === 0) {
-          queue.push(childId);
-          queue.sort(byCanvasPosition);
-        }
-      });
-    }
-
-    if (order.length < runnableIds.length) {
-      const ordered = new Set(order);
-      order.push(...runnableIds.filter(id => !ordered.has(id)).sort(byCanvasPosition));
-    }
-    return order;
-  };
-
-  const getCanvasExpandedWorkflowDownstreamGeneratorIds = (
-    sourceId: string,
-    groupItems: CanvasImageItem[]
-  ) => {
-    const groupIds = new Set(groupItems.map(item => item.id));
-    const children = new Map<string, string[]>();
-    groupItems.forEach(item => {
-      (item.inputs || []).forEach(inputId => {
-        if (!groupIds.has(inputId)) return;
-        children.set(inputId, [...(children.get(inputId) || []), item.id]);
-      });
-    });
-
-    const reachable = new Set<string>([sourceId]);
-    const queue = [sourceId];
-    while (queue.length > 0) {
-      const currentId = queue.shift();
-      if (!currentId) break;
-      (children.get(currentId) || []).forEach(childId => {
-        if (reachable.has(childId)) return;
-        reachable.add(childId);
-        queue.push(childId);
-      });
-    }
-
-    const order = sortCanvasWorkflowRuntimeNodeIds(groupItems);
-    const orderedReachable = order.filter(id => reachable.has(id));
-    return orderedReachable.includes(sourceId)
-      ? orderedReachable
-      : [sourceId, ...orderedReachable];
   };
 
   const runCanvasExpandedWorkflowFromNode = async (targetId: string) => {
@@ -21102,14 +16581,16 @@ function MainApp() {
       if (current.ai?.type !== 'image-generator') continue;
 
       await runCanvasAiGeneratorTarget(current, {
+        canvasId: runCanvasId,
         sourceItems: getExpandedWorkflowSourceItems,
         updateAi: (patch, content) => updateRunNodeAi(nodeId, patch, content),
         getLatestTarget: () => getExpandedWorkflowSourceItems().find(item => item.id === nodeId),
         showResultToast: false,
+        requireLocalImageOutputs: true,
       });
 
       const latest = getRunCanvasItems().find(item => item.id === nodeId);
-      if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
         successCount += 1;
       } else {
         failedIds.add(nodeId);
@@ -21200,15 +16681,18 @@ function MainApp() {
       const singleTarget = getSingleTarget();
       if (!singleTarget) return true;
       await runCanvasAiGeneratorTarget(singleTarget, {
+        canvasId: runCanvasId,
         sourceItems: () => getCanvasSessionItems(runCanvasId),
         updateAi: updateRetrySlot,
         getLatestTarget: getSingleTarget,
         showResultToast: false,
         clientRequestId: runToken,
+        requireLocalImageOutputs: true,
       });
       const latest = getCanvasSessionItems(runCanvasId).find(item => item.id === targetId);
-      const succeeded = latest?.ai?.outputs?.[outputIndex]?.status === 'success'
-        && !!getCanvasAiOutputDisplaySource(latest.ai.outputs[outputIndex]);
+      const succeeded = isCanvasAiImageOutputReadyForWorkflowDependency(
+        latest?.ai?.outputs?.[outputIndex],
+      );
       if (!succeeded) {
         updateCanvasNodeForCanvas(runCanvasId, targetId, item => {
           if (item.ai?.type !== 'image-generator') return item;
@@ -21395,16 +16879,17 @@ function MainApp() {
       const singleTarget = getSingleTarget();
       if (!singleTarget) return true;
       await runCanvasAiGeneratorTarget(singleTarget, {
+        canvasId: runCanvasId,
         sourceItems: getRuntimeSourceItems,
         updateAi: updateRuntimeRetrySlot,
         getLatestTarget: getSingleTarget,
         showResultToast: false,
         clientRequestId: runToken,
+        requireLocalImageOutputs: true,
       });
       const latestOutput = runtimeItems.find(item => item.id === runtimeTargetId)
         ?.ai?.outputs?.[selectedSlot.index];
-      const succeeded = latestOutput?.status === 'success'
-        && !!getCanvasAiOutputDisplaySource(latestOutput);
+      const succeeded = isCanvasAiImageOutputReadyForWorkflowDependency(latestOutput);
       if (!succeeded) {
         runtimeItems = runtimeItems.map(item => {
           if (item.id !== runtimeTargetId || item.ai?.type !== 'image-generator') return item;
@@ -21938,7 +17423,7 @@ function MainApp() {
     ) => {
       runtimeItems = runtimeItems.map(item => {
         if (item.id !== nodeId) return item;
-        return {
+        const nextItem: CanvasImageItem = {
           ...item,
           ai: item.ai
             ? {
@@ -21953,6 +17438,7 @@ function MainApp() {
             name: content.trim().split(/\r?\n/)[0]?.slice(0, 24) || item.item.name,
           },
         };
+        return recoverCanvasAiNodeWithUsableResults(nextItem);
       });
     };
     const markRuntimeNodeSkipped = (nodeId: string, reason = '上游依赖失败') => {
@@ -22055,20 +17541,22 @@ function MainApp() {
         publishWorkflowProgress();
         return;
       }
-      if (getCanvasAiSuccessfulOutputs(current).length > 0) {
+      if (getCanvasAiSuccessfulOutputs(current).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         publishWorkflowProgress();
         return;
       }
       await runCanvasAiGeneratorTarget(current, {
+        canvasId: runCanvasId,
         sourceItems: getRuntimeSourceItems,
         updateAi: (patch, content) => updateRuntimeItemAi(nodeId, patch, content),
         getLatestTarget: () => runtimeItems.find(item => item.id === nodeId),
         showResultToast: false,
+        requireLocalImageOutputs: true,
       });
       const latest = runtimeItems.find(item => item.id === nodeId);
-      if (getCanvasAiSuccessfulOutputs(latest).length > 0) {
+      if (getCanvasAiSuccessfulOutputs(latest).some(isCanvasAiImageOutputReadyForWorkflowDependency)) {
         runStatus.set(nodeId, 'success');
         completedCount += 1;
         updateModuleAi({
@@ -22423,7 +17911,8 @@ function MainApp() {
     client?: { x: number; y: number },
     options: { reuseExisting?: boolean; select?: boolean; toast?: boolean; label?: string; dropIndex?: number } = {},
   ) => {
-    const source = itemsRef.current.find(item => item.id === itemId);
+    const source = itemsRef.current.find(item => item.id === itemId)
+      || (assetStorageMode === 'sqlite' ? await getAssetById(itemId) : null);
     if (!source || !isCanvasDrawerMediaItem(source)) return '';
     const rawSource = getCanvasDrawerMediaSource(source);
     const sourceAsset = source.path && rawSource === source.path && !/^(?:asset:|file:|blob:|data:|https?:)/i.test(rawSource)
@@ -22443,7 +17932,7 @@ function MainApp() {
 
     const item: BufferItem = {
       ...source,
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       sourceItemId: source.id,
       createdAt: Date.now(),
       isQuickAccess: false,
@@ -22477,7 +17966,7 @@ function MainApp() {
       showToast('图片源丢失，无法作为 workflow 输入');
       return '';
     }
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     const item: BufferItem = {
       id: itemId,
       type: 'image',
@@ -22538,24 +18027,146 @@ function MainApp() {
       ));
   };
 
-  const requestAddFolderMediaToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
-    const count = getFolderMediaItemsForCanvas(folderId).length;
-    if (count === 0) {
-      showToast('这个文件夹里还没有图片或视频');
+  const closeCanvasFolderMediaPicker = () => {
+    canvasFolderPickerRequestRef.current += 1;
+    canvasFolderPickerLoadingRef.current = false;
+    canvasFolderPickerItemsRef.current = [];
+    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
+    setCanvasFolderPickerItems([]);
+    setCanvasFolderPickerTotal(0);
+    setCanvasFolderPickerHasMore(false);
+    setIsCanvasFolderPickerLoading(false);
+    setCanvasFolderPickerError('');
+    setCanvasFolderImportPrompt(null);
+  };
+
+  const loadCanvasFolderMediaPage = async (folderId?: string, reset = false) => {
+    if (!reset && canvasFolderPickerLoadingRef.current) return;
+
+    const folderKey = folderId || '__main_drawer__';
+    const requestId = reset
+      ? canvasFolderPickerRequestRef.current + 1
+      : canvasFolderPickerRequestRef.current;
+    if (reset) {
+      canvasFolderPickerRequestRef.current = requestId;
+      canvasFolderPickerItemsRef.current = [];
+      canvasFolderPickerPagingRef.current = {
+        folderKey,
+        imageOffset: 0,
+        videoOffset: 0,
+        imageTotal: 0,
+        videoTotal: 0,
+      };
+      setCanvasFolderPickerItems([]);
+      setCanvasFolderPickerTotal(0);
+      setCanvasFolderPickerHasMore(false);
+      setCanvasFolderPickerError('');
+    }
+
+    if (assetStorageMode === 'json') {
+      const mediaItems = getFolderMediaItemsForCanvas(folderId);
+      canvasFolderPickerItemsRef.current = mediaItems;
+      setCanvasFolderPickerItems(mediaItems);
+      setCanvasFolderPickerTotal(mediaItems.length);
+      setCanvasFolderPickerHasMore(false);
+      setCanvasFolderImportPrompt(prev => (
+        prev && prev.folderId === folderId ? { ...prev, count: mediaItems.length } : prev
+      ));
+      if (mediaItems.length === 0) {
+        closeCanvasFolderMediaPicker();
+        showToast('这个文件夹里还没有图片或视频');
+      }
       return;
     }
+
+    if (assetStorageMode !== 'sqlite') {
+      setCanvasFolderPickerError('素材库仍在初始化，请稍后重试');
+      return;
+    }
+
+    const paging = canvasFolderPickerPagingRef.current;
+    if (!reset && paging.folderKey !== folderKey) return;
+    if (!reset && paging.imageOffset >= paging.imageTotal && paging.videoOffset >= paging.videoTotal) {
+      setCanvasFolderPickerHasMore(false);
+      return;
+    }
+
+    canvasFolderPickerLoadingRef.current = true;
+    setIsCanvasFolderPickerLoading(true);
+    setCanvasFolderPickerError('');
+
+    try {
+      const imageQuery = buildCanvasFolderMediaQuery(folders, folderId, 'image', reset ? 0 : paging.imageOffset);
+      const videoQuery = buildCanvasFolderMediaQuery(folders, folderId, 'video', reset ? 0 : paging.videoOffset);
+      const [imagePage, videoPage, imageTotal, videoTotal] = reset
+        ? await Promise.all([
+          listAssets(imageQuery),
+          listAssets(videoQuery),
+          getAssetCount(imageQuery),
+          getAssetCount(videoQuery),
+        ])
+        : await Promise.all([
+          paging.imageOffset < paging.imageTotal ? listAssets(imageQuery) : Promise.resolve([] as BufferItem[]),
+          paging.videoOffset < paging.videoTotal ? listAssets(videoQuery) : Promise.resolve([] as BufferItem[]),
+          Promise.resolve(paging.imageTotal),
+          Promise.resolve(paging.videoTotal),
+        ]);
+
+      if (canvasFolderPickerRequestRef.current !== requestId) return;
+
+      const compactPage = [...imagePage, ...videoPage].map(stripHeavyDataThumbnail);
+      const merged = mergeCanvasFolderMediaItems(
+        reset ? [] : canvasFolderPickerItemsRef.current,
+        compactPage,
+      );
+      const nextPaging: CanvasFolderMediaPagingState = {
+        folderKey,
+        imageOffset: (reset ? 0 : paging.imageOffset) + imagePage.length,
+        videoOffset: (reset ? 0 : paging.videoOffset) + videoPage.length,
+        imageTotal,
+        videoTotal,
+      };
+      const total = imageTotal + videoTotal;
+      const hasMore = nextPaging.imageOffset < imageTotal || nextPaging.videoOffset < videoTotal;
+
+      canvasFolderPickerItemsRef.current = merged;
+      canvasFolderPickerPagingRef.current = nextPaging;
+      setCanvasFolderPickerItems(merged);
+      setCanvasFolderPickerTotal(total);
+      setCanvasFolderPickerHasMore(hasMore);
+      setCanvasFolderImportPrompt(prev => (
+        prev && prev.folderId === folderId ? { ...prev, count: total } : prev
+      ));
+
+      if (total === 0) {
+        closeCanvasFolderMediaPicker();
+        showToast('这个文件夹里还没有图片或视频');
+      }
+    } catch (err) {
+      if (canvasFolderPickerRequestRef.current !== requestId) return;
+      console.error('load canvas folder media failed:', err);
+      setCanvasFolderPickerError('素材加载失败，点击重试');
+    } finally {
+      if (canvasFolderPickerRequestRef.current === requestId) {
+        canvasFolderPickerLoadingRef.current = false;
+        setIsCanvasFolderPickerLoading(false);
+      }
+    }
+  };
+
+  const requestAddFolderMediaToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
     setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt({
       folderId,
       folderName,
-      count,
+      count: 0,
       x: anchor?.x ?? 72,
       y: anchor?.y ?? 96,
     });
+    void loadCanvasFolderMediaPage(folderId, true);
   };
 
-  const addFolderMediaToCanvas = async (folderId?: string) => {
-    const mediaItems = getFolderMediaItemsForCanvas(folderId);
+  const addFolderMediaToCanvas = async (mediaItems: BufferItem[]) => {
     if (mediaItems.length === 0) {
       showToast('这个文件夹里还没有图片或视频');
       return;
@@ -22565,7 +18176,7 @@ function MainApp() {
     const nextItems = mediaItems.map((source, index) => {
       const item: BufferItem = {
         ...source,
-        id: Math.random().toString(36).substring(2, 9),
+        id: createAssetId(),
         sourceItemId: source.id,
         createdAt: now + index,
         isQuickAccess: false,
@@ -22589,16 +18200,14 @@ function MainApp() {
   };
 
   const confirmAddFolderMediaToCanvas = () => {
-    const prompt = canvasFolderImportPrompt;
-    if (!prompt) return;
-    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
-    setCanvasFolderImportPrompt(null);
-    void addFolderMediaToCanvas(prompt.folderId);
+    if (!canvasFolderImportPrompt) return;
+    const loadedMediaItems = canvasFolderPickerItemsRef.current;
+    closeCanvasFolderMediaPicker();
+    void addFolderMediaToCanvas(loadedMediaItems);
   };
 
   const addFolderMediaPickerItemToCanvas = (itemId: string) => {
-    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
-    setCanvasFolderImportPrompt(null);
+    closeCanvasFolderMediaPicker();
     void addDrawerMediaItemToCanvas(itemId);
   };
 
@@ -22665,7 +18274,7 @@ function MainApp() {
     const normalizedUrl = normalizeDraggedUrl(url);
     if (!normalizedUrl) return;
 
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     if (!claimExternalWebImageDrop(normalizedUrl, itemId, 'canvas')) return;
     const displayName = name || getNameFromUrl(normalizedUrl);
     const item: BufferItem = {
@@ -23342,6 +18951,10 @@ function MainApp() {
     let frameAttempts = 0;
     const tryFocus = () => {
       if (!isCanvasModeRef.current || pendingCanvasFocusItemIdRef.current !== id) return;
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) {
+        pendingCanvasFocusItemIdRef.current = null;
+        return;
+      }
       if (focusCanvasItemById(id)) {
         pendingCanvasFocusItemIdRef.current = null;
         return;
@@ -23360,6 +18973,7 @@ function MainApp() {
     let frameAttempts = 0;
     const tryFocus = () => {
       if (!isCanvasModeRef.current || activeCanvasIdRef.current !== canvasId) return;
+      if (isCanvasInteractingRef.current || isCanvasZoomingRef.current || canvasPanRef.current) return;
       const surface = canvasSurfaceRef.current;
       if (!surface || surface.clientWidth <= 0 || surface.clientHeight <= 0) {
         frameAttempts += 1;
@@ -23385,8 +18999,15 @@ function MainApp() {
     if (!surface) return;
     e.preventDefault();
     e.stopPropagation();
+    canvasPanCleanupRef.current?.();
+    pendingCanvasFocusItemIdRef.current = null;
+    surface.focus({ preventScroll: true });
     const pointerCaptureTarget = e.currentTarget;
-    pointerCaptureTarget.setPointerCapture?.(e.pointerId);
+    try {
+      pointerCaptureTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      // The WebView can revoke an active pointer while the window is changing focus.
+    }
     setCanvasInteractionActive(true);
     canvasPanRef.current = {
       pointerId: e.pointerId,
@@ -23405,6 +19026,7 @@ function MainApp() {
       const pan = canvasPanRef.current;
       const targetSurface = canvasSurfaceRef.current;
       if (!pan || !targetSurface) return;
+      if (event.pointerId !== pan.pointerId) return;
       const pressedButtonMask = pan.button === 1 ? 4 : 1;
       if ((event.buttons & pressedButtonMask) === 0) {
         onUp();
@@ -23441,6 +19063,16 @@ function MainApp() {
       if (canvasPanRef.current?.pointerId === e.pointerId) {
         canvasPanRef.current = null;
       }
+      if (canvasPanCleanupRef.current === onUp) {
+        canvasPanCleanupRef.current = null;
+      }
+      const finalSurface = canvasSurfaceRef.current;
+      if (finalSurface) {
+        canvasScrollLockRef.current = {
+          left: finalSurface.scrollLeft,
+          top: finalSurface.scrollTop,
+        };
+      }
       scheduleCanvasViewportUpdate();
       scheduleCanvasStateSave();
       setCanvasInteractionActive(false, 0);
@@ -23448,22 +19080,32 @@ function MainApp() {
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
       document.removeEventListener('mouseup', onMouseUp, true);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('blur', onUp);
       pointerCaptureTarget.removeEventListener('lostpointercapture', onUp);
-      if (pointerCaptureTarget.hasPointerCapture?.(e.pointerId)) {
-        pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+      try {
+        if (pointerCaptureTarget.hasPointerCapture?.(e.pointerId)) {
+          pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
+        }
+      } catch {
+        // Pointer capture may already be gone after a window blur/cancel.
       }
     };
     const onMouseUp = (event: MouseEvent) => {
       if (event.button === e.button) onUp();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') onUp();
     };
 
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
     document.addEventListener('pointercancel', onUp, true);
     document.addEventListener('mouseup', onMouseUp, true);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('blur', onUp);
     pointerCaptureTarget.addEventListener('lostpointercapture', onUp);
+    canvasPanCleanupRef.current = onUp;
   };
 
   const zoomCanvasAt = (clientX: number, clientY: number, deltaY: number) => {
@@ -23804,14 +19446,6 @@ function MainApp() {
           }
           return;
         }
-        if (isMod && !event.altKey && key === 'v') {
-          if (canvasClipboardRef.current.length === 0) return;
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          pasteCanvasItems();
-          return;
-        }
         if (isMod && !event.altKey && key === 'd') {
           const selectedIds = canvasSelectedIdsRef.current;
           if (selectedIds.length === 0) return;
@@ -23891,6 +19525,7 @@ function MainApp() {
           setCanvasContextMenu(null);
           setCanvasInputMenuForId(null);
           setCanvasInputPickTargetId(null);
+          pendingCanvasFusionRoleRef.current = null;
           setCanvasConnectionDraft(null);
           updateCanvasSelection([]);
           hideCanvasSelectionOverlay();
@@ -23914,7 +19549,7 @@ function MainApp() {
         }
         canvasSpaceKeyCapturedRef.current = false;
         setIsCanvasSpacePressed(false);
-        canvasPanRef.current = null;
+        if (canvasPanRef.current?.button === 0) canvasPanCleanupRef.current?.();
         const surface = canvasSurfaceRef.current;
         if (surface) {
           canvasScrollLockRef.current = {
@@ -23925,9 +19560,10 @@ function MainApp() {
       }
     };
     const handleCanvasKeyBlur = () => {
+      preferCanvasClipboardRef.current = false;
       setIsCanvasSpacePressed(false);
       canvasSpaceKeyCapturedRef.current = false;
-      canvasPanRef.current = null;
+      canvasPanCleanupRef.current?.();
       cancelCanvasItemDragVisuals();
       setCanvasInteractionActive(false, 0);
     };
@@ -23937,27 +19573,45 @@ function MainApp() {
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"], [data-canvas-edit-control="true"]')) return;
       const clipboardData = event.clipboardData;
-      if (!clipboardData) return;
-      const hasImage = getCanvasClipboardImageFiles(clipboardData).length > 0;
-      const hasText = !!clipboardData.getData('text/plain').trim();
-      if (!hasImage && !hasText) return;
+      const imageCount = clipboardData ? getCanvasClipboardImageFiles(clipboardData).length : 0;
+      const text = clipboardData?.getData('text/plain') || '';
+      const pasteSource = resolveCanvasPasteSource({
+        systemImageCount: imageCount,
+        systemText: text,
+        canvasItemCount: canvasClipboardRef.current.length,
+        preferCanvasItems: preferCanvasClipboardRef.current,
+      });
+      if (pasteSource === 'none') return;
       event.preventDefault();
       event.stopPropagation();
-      void pasteSystemClipboardToCanvas(clipboardData).catch((err) => {
-        console.warn('粘贴剪贴板内容到画布失败:', err);
-        showToast('粘贴失败');
-      });
+      event.stopImmediatePropagation();
+      if (pasteSource === 'canvas') {
+        pasteCanvasItems();
+        return;
+      }
+      if (clipboardData) {
+        preferCanvasClipboardRef.current = false;
+        void pasteSystemClipboardToCanvas(clipboardData).catch((err) => {
+          console.warn('粘贴剪贴板内容到画布失败:', err);
+          showToast('粘贴失败');
+        });
+      }
+    };
+    const handleNativeCopy = () => {
+      preferCanvasClipboardRef.current = false;
     };
 
     window.addEventListener('keydown', handleCanvasKeysDown, true);
     window.addEventListener('keyup', handleCanvasKeysUp, true);
     window.addEventListener('blur', handleCanvasKeyBlur);
     document.addEventListener('paste', handleCanvasPaste, true);
+    document.addEventListener('copy', handleNativeCopy, true);
     return () => {
       window.removeEventListener('keydown', handleCanvasKeysDown, true);
       window.removeEventListener('keyup', handleCanvasKeysUp, true);
       window.removeEventListener('blur', handleCanvasKeyBlur);
       document.removeEventListener('paste', handleCanvasPaste, true);
+      document.removeEventListener('copy', handleNativeCopy, true);
     };
   }, []);
 
@@ -23998,7 +19652,7 @@ function MainApp() {
     const now = Date.now();
     const folderName = buildCanvasDrawerFolderName(canvas, now);
     const newFolder: Folder = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name: folderName,
       color: '#f59e0b',
     };
@@ -24008,7 +19662,7 @@ function MainApp() {
       const sourceItem = cloneDrawerValue(snapshot.item);
       const desiredId = sourceItem.id || '';
       const needsFreshId = !desiredId || existingDrawerIds.has(desiredId) || usedSavedIds.has(desiredId);
-      const id = needsFreshId ? Math.random().toString(36).substring(2, 9) : desiredId;
+      const id = needsFreshId ? createAssetId() : desiredId;
       usedSavedIds.add(id);
       return {
         ...sourceItem,
@@ -24030,10 +19684,15 @@ function MainApp() {
       itemsRef.current = nextItems;
       return nextItems;
     });
-    triggerAutoPaletteForItems(savedItems);
     setActiveFolderId(newFolder.id);
     setActiveTab('all');
     return { savedCount: savedItems.length, folderName };
+  };
+
+  const invalidateDrawerAssetQueryForImport = () => {
+    assetQueryRequestIdRef.current += 1;
+    assetPageOffsetsInFlightRef.current.clear();
+    setIsAssetPageLoading(false);
   };
 
   const addDroppedPaths = async (paths: string[]) => {
@@ -24046,14 +19705,12 @@ function MainApp() {
     lastDroppedPathsKeyRef.current = key;
     lastNativeDropAtRef.current = now;
 
-    const newItems = await Promise.all(cleanPaths.map(async originalPath => {
-      let path = originalPath;
-      let fileName = path.split(/[\\/]/).pop() || '未知文件';
-      let ext = fileName.split('.').pop()?.toLowerCase() || '';
-
+    const stagedItems = await Promise.all(cleanPaths.map(async originalPath => {
+      const fileName = originalPath.split(/[\\/]/).pop() || '未知文件';
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
       let kind: 'file' | 'directory' | 'missing' = 'file';
       try {
-        kind = await invoke<'file' | 'directory' | 'missing'>('path_kind', { path });
+        kind = await invoke<'file' | 'directory' | 'missing'>('path_kind', { path: originalPath });
       } catch (_) {
         kind = 'file';
       }
@@ -24062,32 +19719,54 @@ function MainApp() {
       let type: 'image' | 'video' | 'file' | 'text' = 'file';
       if (!isDirectory && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) type = 'image';
       else if (!isDirectory && ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) type = 'video';
+      return {
+        id: createAssetId(), type, content: fileName, name: fileName,
+        path: originalPath,
+        url: isDirectory ? '' : convertFileSrc(originalPath),
+        createdAt: Date.now(), isQuickAccess: false,
+        folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
+        isDirectory,
+      } as BufferItem & { isDirectory?: boolean };
+    }));
 
-      const originalSourcePath = path;
+    pushDrawerUndoSnapshot('拖入素材');
+    invalidateDrawerAssetQueryForImport();
+    const persistImport = prependAssetsAndPersist(stagedItems);
+    void persistImport.then(
+      () => setActiveTab('all'),
+      () => setActiveTab('all'),
+    );
+    setIsOpen(true);
+
+    // 卡片先用原始路径即时显示；文件复制和视频缩略图放到后台完成，
+    // 避免大文件导入期间抽屉看起来没有响应。
+    void (async () => {
       const latestCacheDir = await getLatestFileCacheDir();
+      const cachedItems = await Promise.all(stagedItems.map(async stagedItem => {
+        if (stagedItem.isDirectory || !stagedItem.path) return stagedItem;
+        const originalSourcePath = stagedItem.path;
+        let path = originalSourcePath;
+        let fileName = stagedItem.name || stagedItem.content || '未知文件';
 
-      // 有些浏览器/Windows OLE 拖网页图片时不会给 URL，只给一个已经落到 App 默认目录的临时文件路径。
-      // 这类路径不会经过 addWebImageUrl，所以这里再兜底把 App 默认缓存里的图片迁移到用户设置的缓存目录。
-      if (type === 'image' && !isDirectory && latestCacheDir) {
-        try {
-          const relocatedPath = await invoke<string>('relocate_web_cache_file', {
-            path,
-            dir: latestCacheDir,
-          });
-          if (relocatedPath) {
-            path = relocatedPath;
-            fileName = path.split(/[\\/]/).pop() || fileName;
-            ext = fileName.split('.').pop()?.toLowerCase() || ext;
+        // 有些浏览器/Windows OLE 拖网页图片时不会给 URL，只给一个已经落到 App 默认目录的临时文件路径。
+        // 这类路径不会经过 addWebImageUrl，所以这里再兜底把 App 默认缓存里的图片迁移到用户设置的缓存目录。
+        if (stagedItem.type === 'image' && latestCacheDir) {
+          try {
+            const relocatedPath = await invoke<string>('relocate_web_cache_file', {
+              path,
+              dir: latestCacheDir,
+            });
+            if (relocatedPath) {
+              path = relocatedPath;
+              fileName = path.split(/[\\/]/).pop() || fileName;
+            }
+          } catch (err) {
+            console.warn('文件缓存路径迁移失败:', err);
           }
-        } catch (err) {
-          console.warn('文件缓存路径迁移失败:', err);
         }
-      }
 
-
-      // 本地拖入的文件/图片/视频统一复制一份到缓存目录，卡片后续指向缓存副本。
-      // 这样即使原文件被移动，抽屉里的灵感也还能打开、预览和炼金。
-      if (!isDirectory) {
+        // 本地拖入的文件/图片/视频统一复制一份到缓存目录，卡片后续指向缓存副本。
+        // 这样即使原文件被移动，抽屉里的灵感也还能打开、预览和进行 AI 分析。
         try {
           const cachedPath = await invoke<string>('cache_local_file_to_dir', {
             path,
@@ -24096,48 +19775,58 @@ function MainApp() {
           if (cachedPath) {
             path = cachedPath;
             fileName = path.split(/[\\/]/).pop() || fileName;
-            ext = fileName.split('.').pop()?.toLowerCase() || ext;
           }
         } catch (err) {
           console.warn('本地文件缓存失败，保留原路径:', err);
         }
-      }
 
-      const assetUrl = isDirectory ? '' : convertFileSrc(path);
-      let thumbnail = '';
-      if (type === 'video' && !isDirectory) {
-        try {
-          thumbnail = await getVideoThumbnail(path);
-        } catch (err) {
-          console.warn('视频缩略图生成失败:', err);
-          thumbnail = '';
+        let thumbnail = stagedItem.thumbnail;
+        if (stagedItem.type === 'video') {
+          try {
+            thumbnail = await getVideoThumbnail(path);
+          } catch (err) {
+            console.warn('视频缩略图生成失败:', err);
+          }
         }
-      }
 
-      return {
-        id: Math.random().toString(36).substring(2, 9),
-        type, content: fileName, name: fileName, path, url: assetUrl, thumbnail: thumbnail || undefined,
-        sourceUrl: originalSourcePath !== path ? originalSourcePath : undefined,
-        originalUrl: originalSourcePath !== path ? originalSourcePath : undefined,
-        createdAt: Date.now(), isQuickAccess: false,
-        folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
-        isDirectory,
-      } as BufferItem & { isDirectory?: boolean };
-    }));
-
-    pushDrawerUndoSnapshot('拖入素材');
-    setItems(prev => [...newItems, ...prev]);
-    triggerAutoPaletteForItems(newItems as BufferItem[]);
-    enqueueAutoAiTaggingForItems(newItems as BufferItem[]);
-    setActiveTab('all');
-    setIsOpen(true);
+        return {
+          ...stagedItem,
+          content: fileName,
+          name: fileName,
+          path,
+          url: convertFileSrc(path),
+          thumbnail: thumbnail || undefined,
+          sourceUrl: originalSourcePath !== path ? originalSourcePath : undefined,
+          originalUrl: originalSourcePath !== path ? originalSourcePath : undefined,
+        } as BufferItem;
+      }));
+      const cachedById = new Map(cachedItems.map(item => [item.id, item]));
+      const stagedById = new Map(stagedItems.map(item => [item.id, item]));
+      invalidateDrawerAssetQueryForImport();
+      setItems(previous => previous.map(item => {
+        const cached = cachedById.get(item.id);
+        const staged = stagedById.get(item.id);
+        if (!cached || !staged) return item;
+        return {
+          ...item,
+          content: item.content === staged.content ? cached.content : item.content,
+          name: item.name === staged.name ? cached.name : item.name,
+          path: cached.path,
+          url: cached.url,
+          thumbnail: cached.thumbnail,
+          sourceUrl: cached.sourceUrl,
+          originalUrl: cached.originalUrl,
+        };
+      }));
+      enqueueAutoAiTaggingForItems(cachedItems);
+    })().catch(err => console.warn('后台缓存拖入素材失败:', err));
   };
 
   const addWebImageUrl = (url: string, name?: string, fallbackUrls: string[] = []) => {
     const normalizedUrl = normalizeDraggedUrl(url);
     if (!normalizedUrl) return;
 
-    const itemId = Math.random().toString(36).substring(2, 9);
+    const itemId = createAssetId();
     if (!claimExternalWebImageDrop(normalizedUrl, itemId, 'drawer')) return;
     const displayName = name || getNameFromUrl(normalizedUrl);
     const newItem: BufferItem = {
@@ -24154,9 +19843,12 @@ function MainApp() {
       folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
     };
     pushDrawerUndoSnapshot('添加网页图片');
-    setItems(prev => [newItem, ...prev]);
-    triggerAutoPaletteForItems([newItem]);
-    setActiveTab('image');
+    invalidateDrawerAssetQueryForImport();
+    const persistImport = prependAssetsAndPersist([newItem]);
+    void persistImport.then(
+      () => setActiveTab('image'),
+      () => setActiveTab('image'),
+    );
     setIsOpen(true);
     showToast('已添加网页图片，正在缓存');
 
@@ -24182,8 +19874,8 @@ function MainApp() {
           sourceUrl,
           originalUrl: normalizedUrl,
         } as BufferItem;
+        invalidateDrawerAssetQueryForImport();
         setItems(prev => prev.map(item => item.id === itemId ? cachedItem : item));
-        triggerAutoPaletteForItems([cachedItem]);
         enqueueAutoAiTaggingForItems([cachedItem]);
         showToast('网页图片已缓存');
       })
@@ -24607,7 +20299,7 @@ function MainApp() {
       return;
     }
     const newFolder: Folder = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name,
       color: parent?.color || '#10b981',
       parentId,
@@ -24636,6 +20328,11 @@ function MainApp() {
     setItems(prev => prev.map(item => (
       item.folderId && removedIds.has(item.folderId) ? { ...item, folderId: destinationId } : item
     )));
+    if (assetStorageMode === 'sqlite') {
+      void moveAssetsFromFolders([...removedIds], destinationId)
+        .then(() => setAssetStatsRevision(revision => revision + 1))
+        .catch(error => console.warn('移动已删除文件夹中的素材失败:', error));
+    }
     setCollapsedFolderIds(prev => prev.filter(folderId => !removedIds.has(folderId)));
     if (removedIds.has(activeFolderId)) setActiveFolderId(destinationId || 'all');
     showToast(target.parentId
@@ -24779,6 +20476,20 @@ function MainApp() {
         ? { ...item, folderId: getDestinationId(item.folderId) }
         : item
     )));
+    if (assetStorageMode === 'sqlite') {
+      const sourceIdsByDestination = new Map<string, string[]>();
+      removedIds.forEach(sourceId => {
+        const destinationId = getDestinationId(sourceId) || '';
+        sourceIdsByDestination.set(destinationId, [
+          ...(sourceIdsByDestination.get(destinationId) || []),
+          sourceId,
+        ]);
+      });
+      void Promise.all([...sourceIdsByDestination].map(([destinationId, sourceIds]) => (
+        moveAssetsFromFolders(sourceIds, destinationId || undefined)
+      ))).then(() => setAssetStatsRevision(revision => revision + 1))
+        .catch(error => console.warn('批量移动已删除文件夹中的素材失败:', error));
+    }
     setCollapsedFolderIds(prev => prev.filter(folderId => !removedIds.has(folderId)));
     setSelectedFolderIds([]);
     lastSelectedFolderIdRef.current = null;
@@ -25177,7 +20888,7 @@ function MainApp() {
       return;
     }
     const newFolder: Folder = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       name,
       color: parentFolder?.color || '#10b981',
       parentId,
@@ -26021,10 +21732,10 @@ useEffect(() => {
       transitionStyle = 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
   }
   const drawerShellTransform = transformX === '0px' ? 'none' : `translateX(${transformX})`;
-  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 w-full h-full min-w-[320px] bg-white/82 dark:bg-stone-900/94 backdrop-blur-2xl border border-white/60 dark:border-stone-800/60 shadow-[0_18px_50px_rgba(0,0,0,0.10)] flex flex-row rounded-[30px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
+  const drawerShellClassName = `pointer-events-auto absolute inset-0 z-40 h-full w-full min-h-[560px] min-w-[880px] border flex flex-row rounded-[16px] overflow-hidden isolate${drawerShellTransform === 'none' ? '' : ' will-change-transform'}`;
   const drawerSidebarClassName = isCanvasMode && isCanvasChromeHidden
     ? 'hidden'
-    : `${isFolderSidebarLayout ? '' : 'w-16'} relative h-full bg-stone-100/60 dark:bg-stone-900/40 border-r border-stone-200/50 dark:border-stone-800/50 flex flex-col pt-3 pb-4 z-10 shadow-[4px_0_12px_rgba(0,0,0,0.02)] shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
+    : `${isFolderSidebarLayout ? '' : 'w-16'} relative h-full border-r flex flex-col pt-3 pb-4 z-10 shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${isFolderSidebarLayout ? 'items-stretch' : 'items-center'}`;
 
   // 🌟 退出截图时，必须先把 Tauri 窗口恢复到抽屉尺寸，再卸载全屏截图层。
   // 否则 React 会先把抽屉内容显示在全屏窗口里，视觉上就像“先放大再缩小”。
@@ -26146,7 +21857,7 @@ useEffect(() => {
     const shouldAutoPinNote = screenshotAutoPinNoteRef.current;
 
     const createdAt = Date.now();
-    const placeholderId = `snip_${createdAt}_${Math.random().toString(36).substring(2, 7)}`;
+    const placeholderId = `snip_${createAssetId()}`;
     const placeholderItem: BufferItem = {
       id: placeholderId,
       type: 'image',
@@ -26409,7 +22120,7 @@ useEffect(() => {
     const width = Number(payload?.width) || 320;
     const height = Number(payload?.height) || 220;
     const finalItem = {
-      id: `snip_${createdAt}_${Math.random().toString(36).substring(2, 7)}`,
+      id: `snip_${createAssetId()}`,
       type: 'image',
       content: '截图内容',
       name: `截图_${createdAt}.png`,
@@ -26762,7 +22473,7 @@ useEffect(() => {
   const createTextOrUrlItem = (rawText: string, defaultName = '文本片段'): BufferItem => {
     const text = rawText.trim();
     const base = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: createAssetId(),
       type: 'text' as const,
       content: text,
       createdAt: Date.now(),
@@ -26793,10 +22504,9 @@ useEffect(() => {
             const reader = new FileReader();
             reader.onload = (ev) => {
               const url = ev.target?.result as string;
-              const newItem = { id: Math.random().toString(36).substring(2, 9), type: 'image', content: '图片', name: `粘贴图 ${new Date().toLocaleTimeString()}.png`, url, createdAt: Date.now(), folderId: activeFolderId !== 'all' ? activeFolderId : undefined } as BufferItem;
+              const newItem = { id: createAssetId(), type: 'image', content: '图片', name: `粘贴图 ${new Date().toLocaleTimeString()}.png`, url, createdAt: Date.now(), folderId: activeFolderId !== 'all' ? activeFolderId : undefined } as BufferItem;
               pushDrawerUndoSnapshot('粘贴图片');
               setItems(prev => [newItem, ...prev]);
-              triggerAutoPaletteForItems([newItem]);
               enqueueAutoAiTaggingForItems([newItem]);
               setActiveTab('image'); setIsOpen(true);
             };
@@ -26967,10 +22677,6 @@ useEffect(() => {
     return true;
   };
 
-  const stopCanvasEditEvent = (event: React.SyntheticEvent) => {
-    event.stopPropagation();
-  };
-
   const runCanvasAiNodeFromControl = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || target.ai?.status === 'working') return;
@@ -27011,7 +22717,11 @@ useEffect(() => {
     if (!isCanvasMode) return;
     const handleCanvasPointerDownForBlur = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('[data-canvas-run-control="true"]')) return;
+      if (target?.closest([
+        '[data-canvas-run-control="true"]',
+        '[data-canvas-edit-control="true"]',
+        '[data-canvas-floating-layer="true"]',
+      ].join(','))) return;
       blurCanvasActiveTextEntry(event.target);
     };
     document.addEventListener('pointerdown', handleCanvasPointerDownForBlur, true);
@@ -27938,6 +23648,7 @@ useEffect(() => {
           sourceItemId: canvasItem.item.sourceItemId,
           name: canvasItem.item.name || canvasItem.item.content || '选中图片',
           mediaType: 'image',
+          sourceMediaType: 'image',
           source: source || canvasItem.item.thumbnail,
           path: canvasItem.item.path,
           thumbnail: getCanvasItemNavSource(canvasItem.item) || source || canvasItem.item.thumbnail,
@@ -27950,6 +23661,7 @@ useEffect(() => {
         sourceItemId: canvasItem.item.sourceItemId,
         name: `${canvasItem.item.name || canvasItem.item.content || '选中视频'} 预览图`,
         mediaType: 'image',
+        sourceMediaType: 'video',
         source: canvasItem.item.thumbnail,
         thumbnail: canvasItem.item.thumbnail,
       });
@@ -27960,6 +23672,22 @@ useEffect(() => {
       .forEach((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         const source = getCanvasAiOutputDisplaySource(output);
+        if (mediaType === 'video') {
+          const thumbnail = output.thumbnail?.trim();
+          if (!thumbnail) return;
+          pushReference({
+            id: `${canvasItem.id}:${output.id || outputIndex}:video-preview`,
+            nodeId: canvasItem.id,
+            sourceItemId: output.id || canvasItem.item.sourceItemId,
+            outputId: output.id || `${outputIndex}`,
+            name: `${output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `节点输出视频 ${outputIndex + 1}`} 预览图`,
+            mediaType: 'image',
+            sourceMediaType: 'video',
+            source: thumbnail,
+            thumbnail,
+          });
+          return;
+        }
         if (mediaType !== 'image' || !source) return;
         pushReference({
           id: `${canvasItem.id}:${output.id || outputIndex}`,
@@ -27968,6 +23696,7 @@ useEffect(() => {
           outputId: output.id || `${outputIndex}`,
           name: output.name || canvasItem.ai?.presetLabel || canvasItem.item.name || `节点输出图 ${outputIndex + 1}`,
           mediaType: 'image',
+          sourceMediaType: 'image',
           source,
           path: output.path,
           thumbnail: source,
@@ -28087,9 +23816,11 @@ useEffect(() => {
   const prepareCanvasAgentVisualReferences = async (
     references: AgentCanvasVisualReference[],
     provider: 'openai-compatible' | 'codex',
+    maxReferences = 6,
   ): Promise<AgentCanvasVisualReference[]> => prepareAgentVisualReferences(references, {
     provider,
     toModelDataUrl: imageSourceToModelDataUrl,
+    maxReferences,
   });
 
   const analyzeDrawerInspirationWithLlm = async (input: {
@@ -28100,7 +23831,9 @@ useEffect(() => {
     userNotes?: string[];
     forceRefresh?: boolean;
   }): Promise<InspirationProfile> => {
-    const item = itemsRef.current.find(candidate => candidate.id === input.itemId);
+    const cachedItem = itemsRef.current.find(candidate => candidate.id === input.itemId);
+    const item = cachedItem
+      || (assetStorageMode === 'sqlite' ? await getAssetById(input.itemId) : null);
     if (!item) throw new Error(`灵感素材不存在：${input.itemId}`);
     if (item.type !== 'image') throw new Error('只有图片素材可以建立 InspirationProfile');
     if (
@@ -28108,25 +23841,59 @@ useEffect(() => {
       && !input.forceRefresh
       && !input.existingProfile
     ) return item.inspirationProfile!;
-    let rawSource = String(input.imageSource || item.thumbnail || '').trim();
-    if (!rawSource && item.path) {
+    let generatedThumbnail = '';
+    if (!input.imageSource && item.path) {
       try {
         const thumbnail = await invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', {
           path: item.path,
-          size: 512,
+          size: INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
         });
-        rawSource = String(thumbnail.url || thumbnail.path || '').trim();
+        generatedThumbnail = String(thumbnail.url || thumbnail.path || '').trim();
       } catch (error) {
         console.warn('生成图片分析缩略图失败，使用本地文件压缩兜底:', item.id, error);
       }
     }
-    rawSource = String(rawSource || item.path || item.url || item.sourceUrl || item.originalUrl || '').trim();
-    if (!rawSource) throw new Error('图片素材没有可读取的图像来源');
-    const readableDataUrl = await imageSourceToDataUrl(rawSource, false);
-    const modelSource = await optimizeCanvasAiInputDataUrl(readableDataUrl, {
-      maxEdge: INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
-      targetBytes: INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
+    const sourceCandidates = getInspirationAnalysisSourceCandidates({
+      explicitSource: input.imageSource,
+      generatedThumbnail,
+      path: item.path,
+      url: item.url,
+      sourceUrl: item.sourceUrl,
+      originalUrl: item.originalUrl,
+      // Legacy inline thumbnails may be tiny, stale, or have the wrong aspect
+      // ratio after migration, so they are strictly the final fallback.
+      storedThumbnail: item.thumbnail,
     });
+    if (sourceCandidates.length === 0) throw new Error('图片素材没有可读取的图像来源');
+    let readableDataUrl = '';
+    let usedGeneratedThumbnail = false;
+    let lastSourceError: unknown;
+    for (const source of sourceCandidates) {
+      try {
+        const candidate = await imageSourceToDataUrl(source, false);
+        if (/^data:image\//i.test(candidate)) {
+          readableDataUrl = candidate;
+          usedGeneratedThumbnail = Boolean(generatedThumbnail && source === generatedThumbnail);
+          break;
+        }
+      } catch (error) {
+        lastSourceError = error;
+      }
+    }
+    if (!readableDataUrl) {
+      throw lastSourceError instanceof Error
+        ? lastSourceError
+        : new Error('图片素材没有可读取的图像来源');
+    }
+    // The native thumbnail worker has already decoded and resized local images
+    // off the UI thread. Re-encoding that 512px JPEG through a WebView canvas
+    // caused periodic input/scroll stalls while the background queue ran.
+    const modelSource = usedGeneratedThumbnail
+      ? readableDataUrl
+      : await optimizeCanvasAiInputDataUrl(readableDataUrl, {
+        maxEdge: INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
+        targetBytes: INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
+      });
     if (!/^data:image\/|^https?:\/\//i.test(modelSource)) throw new Error('图片无法转换为 LLM 可读取的来源');
     const existingProfile = input.existingProfile || item.inspirationProfile;
     const userTags = (input.userTags || [])
@@ -28140,13 +23907,13 @@ useEffect(() => {
     // The server selects the visual provider/model from the manager's encrypted
     // Provider Channel configuration. The desktop never supplies a tag-analysis API key.
     const serverProfile = await invoke<unknown>('agent_analyze_inspiration', {
-      request: {
+      request: buildInspirationAnalysisRequest({
         itemId: item.id,
         imageSource: modelSource,
         userTags,
         userNotes,
         existingProfile,
-      },
+      }),
     });
     const serverProfileRecord = serverProfile && typeof serverProfile === 'object' && !Array.isArray(serverProfile)
       ? serverProfile as Record<string, unknown>
@@ -28157,12 +23924,22 @@ useEffect(() => {
       userTags,
       userNotes,
     });
-    const nextItems = itemsRef.current.map(candidate => candidate.id === item.id
-      ? { ...candidate, inspirationProfile: profile, inspirationAnalysisFailure: undefined }
-      : candidate);
-    itemsRef.current = nextItems;
+    const updatedItem = { ...item, inspirationProfile: profile, inspirationAnalysisFailure: undefined };
     inspirationRetrievalCacheRef.current.clear();
-    startTransition(() => setItems(nextItems));
+    if (cachedItem) {
+      const nextItems = itemsRef.current.map(candidate => candidate.id === item.id ? updatedItem : candidate);
+      itemsRef.current = nextItems;
+      startTransition(() => {
+        if (assetStorageMode === 'sqlite') updateAssetsFromQuery([updatedItem]);
+        else setItems(nextItems);
+      });
+    }
+    if (assetStorageMode === 'sqlite') {
+      await updateAsset(item.id, {
+        metadata: updatedItem,
+        clear_inspiration_analysis_failure: true,
+      });
+    }
     return profile;
   };
 
@@ -28176,25 +23953,40 @@ useEffect(() => {
     return canRetryInspirationAnalysis(item.inspirationAnalysisFailure);
   };
 
-  const recordAutoAiAnalysisFailure = (itemId: string, error: unknown) => {
+  const recordAutoAiAnalysisFailure = async (itemId: string, error: unknown) => {
     const message = String(error instanceof Error ? error.message : error || '图片分析失败')
       .replace(/data:image\/[^\s]+/gi, '[image data]')
       .replace(/([?&](?:token|key|signature|authorization)=)[^&\s]+/gi, '$1[REDACTED]')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 240);
-    let recordedFailure: BufferItem['inspirationAnalysisFailure'];
+    const cachedItem = itemsRef.current.find(candidate => candidate.id === itemId);
+    const storedItem = cachedItem
+      || (assetStorageMode === 'sqlite' ? await getAssetById(itemId) : null);
+    if (!storedItem) return undefined;
+    const attempts = Math.max(0, Number(storedItem.inspirationAnalysisFailure?.attempts) || 0) + 1;
+    const recordedFailure: BufferItem['inspirationAnalysisFailure'] = {
+      attemptedAt: Date.now(),
+      attempts: isPermanentInspirationAnalysisFailure(message)
+        ? AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS
+        : attempts,
+      message,
+    };
+    const updatedItem = { ...storedItem, inspirationAnalysisFailure: recordedFailure };
     const nextItems = itemsRef.current.map(candidate => {
       if (candidate.id !== itemId) return candidate;
-      recordedFailure = {
-        attemptedAt: Date.now(),
-        attempts: Math.max(0, Number(candidate.inspirationAnalysisFailure?.attempts) || 0) + 1,
-        message,
-      };
-      return { ...candidate, inspirationAnalysisFailure: recordedFailure };
+      return updatedItem;
     });
-    itemsRef.current = nextItems;
-    startTransition(() => setItems(nextItems));
+    if (cachedItem) {
+      itemsRef.current = nextItems;
+      startTransition(() => {
+        if (assetStorageMode === 'sqlite') updateAssetsFromQuery([updatedItem]);
+        else setItems(nextItems);
+      });
+    }
+    if (assetStorageMode === 'sqlite') {
+      await updateAsset(itemId, { metadata: updatedItem });
+    }
     return recordedFailure;
   };
 
@@ -28210,6 +24002,10 @@ useEffect(() => {
 
   const enqueueAutoAiTaggingForItems = (incomingItems: BufferItem[]) => {
     if (!AUTO_INSPIRATION_ANALYSIS_ENABLED) return;
+    if (assetStorageMode === 'sqlite') {
+      setAutoAiAnalysisRetryTick(current => current + 1);
+      return;
+    }
     const newItemIds = incomingItems
       .filter(isAutoAiTaggableItem)
       .map(item => item.id)
@@ -28227,6 +24023,22 @@ useEffect(() => {
       ));
     });
   };
+
+  useEffect(() => {
+    const recordUserActivity = () => {
+      autoInspirationAnalysisLastUserActivityAtRef.current = Date.now();
+    };
+    window.addEventListener('pointerdown', recordUserActivity, { passive: true });
+    window.addEventListener('pointermove', recordUserActivity, { passive: true });
+    window.addEventListener('keydown', recordUserActivity);
+    window.addEventListener('wheel', recordUserActivity, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', recordUserActivity);
+      window.removeEventListener('pointermove', recordUserActivity);
+      window.removeEventListener('keydown', recordUserActivity);
+      window.removeEventListener('wheel', recordUserActivity);
+    };
+  }, []);
 
   const startDrawerInspirationAnalysisBatch = (input: {
     itemIds: string[];
@@ -28288,12 +24100,21 @@ useEffect(() => {
       referenceRole: input.referenceRole || '',
       folderIds: [...(input.folderIds || [])].sort(),
       topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
-      itemCount: itemsRef.current.length,
+      itemCount: assetStorageMode === 'sqlite' ? assetQueryTotalCountRef.current : itemsRef.current.length,
       folderNames,
     });
     const cached = inspirationRetrievalCacheRef.current.get(cacheKey);
     if (cached && Date.now() - cached.createdAt < 5 * 60 * 1000) return cached.candidates;
-    const candidates = searchDrawerInspirations(itemsRef.current, {
+    const sourceAssets = assetStorageMode === 'sqlite'
+      ? await listAssets({
+          keyword: input.query.trim() || undefined,
+          folder_ids: input.folderIds && input.folderIds.length > 0 ? input.folderIds : undefined,
+          file_type: 'image',
+          sort: 'updated_at_desc',
+          limit: 1000,
+        })
+      : itemsRef.current;
+    const candidates = searchDrawerInspirations(sourceAssets, {
       ...input,
       folderNames,
       topK: Math.min(8, Math.max(1, Number(input.topK) || 8)),
@@ -28337,10 +24158,159 @@ useEffect(() => {
     if (
       !AUTO_INSPIRATION_ANALYSIS_ENABLED
       || !isDataLoaded
+      || !isAutoAiAnalysisStartupReady
       || isDraggingTitle
       || isResizingState.current
       || autoInspirationAnalysisRunningRef.current
     ) return;
+
+    const idleFor = Date.now() - autoInspirationAnalysisLastUserActivityAtRef.current;
+    if (idleFor < AUTO_INSPIRATION_ANALYSIS_UI_IDLE_MS) {
+      const timer = window.setTimeout(() => {
+        autoInspirationAnalysisRetryTimersRef.current.delete(timer);
+        setAutoAiAnalysisRetryTick(current => current + 1);
+      }, AUTO_INSPIRATION_ANALYSIS_UI_IDLE_MS - idleFor + 50);
+      autoInspirationAnalysisRetryTimersRef.current.add(timer);
+      return;
+    }
+
+    if (assetStorageMode === 'sqlite') {
+      autoInspirationAnalysisRunningRef.current = true;
+      let activeItemId = '';
+      let recordedFailure: BufferItem['inspirationAnalysisFailure'];
+      let continueImmediately = false;
+
+      const refreshDatabaseProgress = async () => {
+        const { total, analyzed, waitingRetry, skipped } = await getInspirationAnalysisCounts(
+          DEFAULT_LIBRARY_ID,
+        );
+        const summary = { analyzed, skipped, waitingRetry, total };
+        setSqliteAiAnalysisSummary(current => (
+          current
+          && current.analyzed === summary.analyzed
+          && current.skipped === summary.skipped
+          && current.waitingRetry === summary.waitingRetry
+          && current.total === summary.total
+            ? current
+            : summary
+        ));
+        setAutoAiAnalysisProgress(current => {
+          const completed = Math.min(total, analyzed + skipped);
+          if (
+            current
+            && current.completed === completed
+            && current.failed === waitingRetry
+            && current.total === total
+          ) return current;
+          return { completed, failed: waitingRetry, total };
+        });
+        return summary;
+      };
+
+      const markUnusableCandidatesSkipped = async (candidates: BufferItem[]) => {
+        const now = Date.now();
+        const updated = candidates.flatMap(item => {
+          const hasSource = Boolean(
+            item.url || item.thumbnail || item.path || item.sourceUrl || item.originalUrl,
+          );
+          const shouldSkip = shouldSkipInspirationAnalysis(item.inspirationAnalysisFailure);
+          if (hasSource && !shouldSkip) return [];
+          return [{
+            ...item,
+            inspirationAnalysisFailure: {
+              attemptedAt: item.inspirationAnalysisFailure?.attemptedAt || now,
+              attempts: AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS,
+              message: item.inspirationAnalysisFailure?.message
+                || '图片素材没有可读取的图像来源',
+            },
+          }];
+        });
+        if (updated.length === 0) return 0;
+        await updateAssetsBatch(updated.map(item => ({
+          ids: [item.id],
+          patch: { metadata: item },
+        })));
+        const updatedById = new Map(updated.map(item => [item.id, item]));
+        itemsRef.current = itemsRef.current.map(item => updatedById.get(item.id) || item);
+        startTransition(() => updateAssetsFromQuery(updated));
+        return updated.length;
+      };
+
+      void (async () => {
+        await refreshDatabaseProgress();
+        const unprocessed = await listAssets({
+          file_type: 'image',
+          inspiration_status: 'unprocessed',
+          sort: 'created_at_asc',
+          offset: 0,
+          limit: ASSET_PAGE_SIZE,
+        });
+        let nextItem = unprocessed.find(isAutoAiTaggableItem);
+        if (!nextItem && unprocessed.length > 0) {
+          continueImmediately = await markUnusableCandidatesSkipped(unprocessed) > 0;
+          return;
+        }
+
+        if (!nextItem) {
+          const retryable = await listAssets({
+            file_type: 'image',
+            inspiration_status: 'retryable',
+            sort: 'updated_at_asc',
+            offset: 0,
+            limit: ASSET_PAGE_SIZE,
+          });
+          const normalizedSkipped = await markUnusableCandidatesSkipped(retryable);
+          if (normalizedSkipped > 0) {
+            continueImmediately = true;
+            return;
+          }
+          nextItem = retryable.find(isAutoAiTaggableItem);
+          if (!nextItem) {
+            const nextFailure = retryable
+              .map(item => item.inspirationAnalysisFailure)
+              .filter((failure): failure is NonNullable<typeof failure> => Boolean(failure))
+              .sort((left, right) => (
+                getInspirationAnalysisRetryAt(left) - getInspirationAnalysisRetryAt(right)
+              ))[0];
+            scheduleAutoAiAnalysisRetry(nextFailure);
+            return;
+          }
+        }
+
+        activeItemId = nextItem.id;
+        autoInspirationAnalysisPendingIdsRef.current.add(activeItemId);
+        autoInspirationAnalysisAttemptedRef.current.add(activeItemId);
+        try {
+          await analyzeDrawerInspirationWithLlm({ itemId: activeItemId });
+        } catch (error) {
+          recordedFailure = await recordAutoAiAnalysisFailure(activeItemId, error);
+          console.warn('灵感素材后台分析失败:', activeItemId, error);
+        }
+        // The wallet API limits task creation to 20 requests per minute.
+        await new Promise(resolve => window.setTimeout(resolve, 3200));
+        continueImmediately = true;
+      })()
+        .catch(error => {
+          console.warn('SQLite 全库图片分析调度失败:', error);
+          const timer = window.setTimeout(() => {
+            autoInspirationAnalysisRetryTimersRef.current.delete(timer);
+            setAutoAiAnalysisRetryTick(current => current + 1);
+          }, 12_000);
+          autoInspirationAnalysisRetryTimersRef.current.add(timer);
+        })
+        .finally(() => {
+          autoInspirationAnalysisRunningRef.current = false;
+          if (activeItemId) {
+            autoInspirationAnalysisPendingIdsRef.current.delete(activeItemId);
+            autoInspirationAnalysisAttemptedRef.current.delete(activeItemId);
+          }
+          scheduleAutoAiAnalysisRetry(recordedFailure);
+          if (continueImmediately) {
+            setAutoAiAnalysisRetryTick(current => current + 1);
+          }
+        });
+      return;
+    }
 
     // Existing drawer images are queued on startup; new images join the same
     // single-file queue so visual analysis never floods the provider channel.
@@ -28373,9 +24343,9 @@ useEffect(() => {
     let failed = false;
     let recordedFailure: BufferItem['inspirationAnalysisFailure'];
     void analyzeDrawerInspirationWithLlm({ itemId: nextItem.id })
-      .catch(error => {
+      .catch(async error => {
         failed = true;
-        recordedFailure = recordAutoAiAnalysisFailure(nextItem.id, error);
+        recordedFailure = await recordAutoAiAnalysisFailure(nextItem.id, error);
         console.warn('灵感素材自动分析失败:', nextItem.id, error);
       })
       .finally(async () => {
@@ -28393,7 +24363,16 @@ useEffect(() => {
           } : current);
         });
       });
-  }, [autoAiAnalysisProgress, autoAiAnalysisRetryTick, isDataLoaded, isDraggingTitle, items]);
+  }, [
+    assetStatsRevision,
+    assetStorageMode,
+    autoAiAnalysisProgress,
+    autoAiAnalysisRetryTick,
+    isDataLoaded,
+    isAutoAiAnalysisStartupReady,
+    isDraggingTitle,
+    items,
+  ]);
 
   const canvasAgent = useCanvasAgentRuntime({
     getContext: () => {
@@ -29057,7 +25036,7 @@ useEffect(() => {
           item.sourceUrl,
           item.originalUrl,
         ].map(normalizeAgentSourceKey).filter(Boolean);
-        const resolveDrawerTargets = (ids: string[]) => {
+        const resolveDrawerTargets = async (ids: string[]) => {
           const drawerById = new Map(itemsRef.current.map(item => [item.id, item]));
           const drawerBySource = new Map<string, BufferItem>();
           itemsRef.current.forEach(item => {
@@ -29112,9 +25091,16 @@ useEffect(() => {
               .find(Boolean);
             if (matchedBySource) resolved.set(matchedBySource.id, matchedBySource);
           });
+          if (assetStorageMode === 'sqlite') {
+            const unresolvedIds = ids.filter(id => !resolved.has(id) && !id.includes(':'));
+            if (unresolvedIds.length > 0) {
+              const storedAssets = await getAssetsByIds(unresolvedIds);
+              storedAssets.forEach(item => resolved.set(item.id, item));
+            }
+          }
           return [...resolved.values()];
         };
-        const targets = resolveDrawerTargets(targetIds);
+        const targets = await resolveDrawerTargets(targetIds);
         if (action === 'create_text') {
           const content = String(args.content || '').trim();
           if (!content) throw new Error('文字内容不能为空');
@@ -29145,7 +25131,7 @@ useEffect(() => {
             throw new Error('已有同名文件夹');
           }
           const folder: Folder = {
-            id: Math.random().toString(36).substring(2, 9),
+            id: createAssetId(),
             name: folderName,
             color: parent?.color || '#10b981',
             parentId,
@@ -29195,7 +25181,11 @@ useEffect(() => {
           if (targets.length === 0) throw new Error('没有找到要删除的抽屉素材');
           const deletable = targets.filter(item => !item.isQuickAccess);
           if (deletable.length === 0) throw new Error('目标均已星标保护，请先取消星标');
+          if (assetStorageMode === 'sqlite') {
+            await deleteAssetsBatch(deletable.map(item => item.id));
+          }
           const removed = removeDrawerItemsFromDrawer(deletable, 'Agent 删除素材');
+          setAssetStatsRevision(revision => revision + 1);
           setSelectedIds(prev => prev.filter(id => !deletable.some(item => item.id === id)));
           return { action, removed };
         }
@@ -29205,7 +25195,14 @@ useEffect(() => {
           if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
           pushDrawerUndoSnapshot('Agent 移动素材');
           const idSet = new Set(targets.map(item => item.id));
+          if (assetStorageMode === 'sqlite') {
+            await updateAssetsBatch([{
+              ids: [...idSet],
+              patch: { folder_id: folderId || '' },
+            }]);
+          }
           setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, folderId } : item));
+          setAssetStatsRevision(revision => revision + 1);
           return { action, moved: idSet.size, folderId: folderId || 'all' };
         }
         if (action === 'set_quick_access') {
@@ -29213,7 +25210,18 @@ useEffect(() => {
           const enabled = args.enabled !== false;
           pushDrawerUndoSnapshot(enabled ? 'Agent 添加星标' : 'Agent 取消星标');
           const idSet = new Set(targets.map(item => item.id));
+          if (assetStorageMode === 'sqlite') {
+            await updateAssetsBatch(targets.map(item => ({
+              ids: [item.id],
+              patch: { metadata: { ...item, isQuickAccess: enabled } },
+            })));
+          }
           setItems(prev => prev.map(item => idSet.has(item.id) ? { ...item, isQuickAccess: enabled } : item));
+          setQuickAccessItems(previous => enabled
+            ? [...new Map([...targets.map(item => ({ ...item, isQuickAccess: true })), ...previous]
+                .map(item => [item.id, item])).values()]
+            : previous.filter(item => !idSet.has(item.id)));
+          setAssetStatsRevision(revision => revision + 1);
           return { action, updated: idSet.size, enabled };
         }
         if (action === 'open_item') {
@@ -29255,12 +25263,23 @@ useEffect(() => {
           if (folderId && !foldersRef.current.some(folder => folder.id === folderId)) throw new Error('目标文件夹不存在');
           pushDrawerUndoSnapshot('Agent 修改素材');
           const idSet = new Set(targets.map(item => item.id));
+          if (assetStorageMode === 'sqlite') {
+            await updateAssetsBatch([{
+              ids: [...idSet],
+              patch: {
+                name: nextName || undefined,
+                content: nextContent || undefined,
+                folder_id: args.folderId !== undefined && args.folderId !== null ? folderId : undefined,
+              },
+            }]);
+          }
           setItems(prev => prev.map(item => idSet.has(item.id) ? {
             ...item,
             ...(nextName ? { name: nextName } : {}),
             ...(nextContent ? { content: nextContent } : {}),
             ...(args.folderId !== undefined && args.folderId !== null ? { folderId: folderId || undefined } : {}),
           } : item));
+          setAssetStatsRevision(revision => revision + 1);
           return { action, updated: idSet.size };
         }
         throw new Error(`不支持的抽屉操作：${action}`);
@@ -29493,14 +25512,13 @@ useEffect(() => {
           return { action };
         }
         if (action === 'add_drawer_items') {
-          const drawerIds = requestedIds.filter(id => itemsRef.current.some(item => (
-            item.id === id && isCanvasDrawerMediaItem(item)
-          )));
+          const drawerIds = [...new Set(requestedIds.map(String).filter(Boolean))];
           if (drawerIds.length === 0) throw new Error('没有找到可加入画布的抽屉图片或视频');
           let added = 0;
           for (const itemId of drawerIds) {
             if (await addDrawerMediaItemToCanvas(itemId)) added += 1;
           }
+          if (added === 0) throw new Error('没有找到可加入画布的抽屉图片或视频');
           return { action, added };
         }
         if (action === 'update_node') {
@@ -29549,6 +25567,260 @@ useEffect(() => {
         return {
           selectedIds: [...canvasSelectedIdsRef.current],
           nodeCount: canvasItemsRef.current.length,
+        };
+      }
+
+      if (name === 'canvas_create_design_pipeline') {
+        const request = String(args.request || executionUserRequest || '').trim();
+        if (!request) throw new Error('产品设计链路需要明确的设计需求');
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        setIsAgentChatOpen(true);
+
+        const referenceCount = 5;
+        const projectBrief = args.projectBrief && typeof args.projectBrief === 'object'
+          ? args.projectBrief as Record<string, unknown>
+          : String(args.projectBrief || request);
+        const folderNames = Object.fromEntries(foldersRef.current.map(folder => [
+          folder.id,
+          getDrawerFolderPathName(foldersRef.current, folder.id) || folder.name,
+        ]));
+        const explicitStyleTerms = extractExplicitProductStyleTerms(request);
+        const expandedStyleSearchTerms = expandProductStyleSearchTerms(explicitStyleTerms);
+        const searchTaggedReferences = (
+          query: string,
+          referenceRole: DrawerSearchInspirationsInput['referenceRole'],
+        ) => searchDrawerInspirations(itemsRef.current, {
+          query,
+          projectBrief,
+          folderNames,
+          referenceRole,
+          topK: 8,
+        });
+        const categoryCandidates = searchTaggedReferences(
+          `${request}\n品类参考：同类产品、产品身份、核心功能和使用场景`,
+          'SUBJECT_REF',
+        );
+        const formCandidates = searchTaggedReferences(
+          `${request}\n造型参考：外轮廓、比例、体块、几何和曲面语言`,
+          'FORM_REF',
+        );
+        const cmfCandidates = searchTaggedReferences(
+          `${request}\n颜色与 CMF 参考：主色、配色、材质、表面处理和质感`,
+          'CMF_REF',
+        );
+        const styleCandidates = explicitStyleTerms.length > 0
+          ? filterExplicitStyleReferences(searchTaggedReferences(
+            `${request}\n明确风格及相近标签：${expandedStyleSearchTerms.join('、')}，必须优先匹配已有风格标签`,
+            'MOOD_REF',
+          ), explicitStyleTerms)
+          : [];
+        const selectedReferences = selectProductDesignReferencesByAxis({
+          category: categoryCandidates,
+          form: formCandidates,
+          color: [...styleCandidates, ...cmfCandidates],
+          count: referenceCount,
+        });
+        const candidates = Array.from(new Map(
+          [...categoryCandidates, ...formCandidates, ...styleCandidates, ...cmfCandidates]
+            .map(candidate => [candidate.itemId, candidate]),
+        ).values());
+        const explicitInputIds = Array.isArray(args.inputIds)
+          ? Array.from(new Set(args.inputIds.map(String))).filter(id => (
+            canUseCanvasItemAsAiInput(canvasItemsRef.current.find(item => item.id === id))
+          ))
+          : [];
+        const explicitInputBounds = explicitInputIds.length > 0 ? getCanvasItemsBounds(explicitInputIds) : null;
+        const referenceBase = explicitInputBounds
+          ? { x: explicitInputBounds.x + explicitInputBounds.width + 96, y: explicitInputBounds.y }
+          : getCanvasDropPosition(0);
+        const resolvedReferences: Array<{ match: ProductDesignSelectedReference; nodeId: string }> = [];
+
+        for (let index = 0; index < selectedReferences.length; index += 1) {
+          const match = selectedReferences[index];
+          const nodeId = await createDrawerMediaCanvasNode(match.itemId, undefined, {
+            reuseExisting: false,
+            select: false,
+            toast: false,
+            dropIndex: index,
+            label: 'Agent 自动加入设计意向图',
+          });
+          if (nodeId) resolvedReferences.push({ match, nodeId });
+        }
+
+        const referenceNodeIdSet = new Set(resolvedReferences.map(item => item.nodeId));
+        if (referenceNodeIdSet.size > 0) {
+          pushCanvasUndoSnapshot('Agent 整理设计意向图');
+          updateCanvasItemsImmediate(prev => prev.map(item => {
+            if (!referenceNodeIdSet.has(item.id)) return item;
+            const referenceIndex = resolvedReferences.findIndex(reference => reference.nodeId === item.id);
+            const width = 240;
+            const aspectHeight = item.width > 0 ? width * (item.height / item.width) : 200;
+            return {
+              ...item,
+              x: Math.max(24, referenceBase.x + (referenceIndex % 2) * 272),
+              y: Math.max(24, referenceBase.y + Math.floor(referenceIndex / 2) * 216),
+              width,
+              height: clamp(aspectHeight, 148, 192),
+            };
+          }));
+        }
+
+        const referenceNodeIds = resolvedReferences.map(item => item.nodeId);
+        const analysisInputIds = Array.from(new Set([...referenceNodeIds, ...explicitInputIds]));
+        const analysisPrompt = buildProductDesignPipelineAnalysisPrompt({
+          request,
+          basePrompt: typeof args.analysisPrompt === 'string' ? args.analysisPrompt : undefined,
+          references: resolvedReferences.map(item => item.match),
+          explicitStyleTerms,
+        });
+        const analysisItemId = createAssetId();
+        const analysisX = Math.max(24, referenceBase.x + 640);
+        const analysisY = Math.max(24, referenceBase.y);
+        const analysisNode: CanvasImageItem = {
+          id: makeCanvasNodeId(analysisItemId, 'text'),
+          item: {
+            id: analysisItemId,
+            type: 'text',
+            content: analysisPrompt,
+            name: '设计需求与意向图分析',
+            createdAt: Date.now(),
+            isQuickAccess: false,
+          },
+          inputs: analysisInputIds,
+          textMode: 'agent',
+          designAgentConfig: {
+            agentRole: 'design_strategist',
+            outputArtifactType: 'DesignStrategy',
+            thinkingMode: 'analysis',
+          },
+          x: analysisX,
+          y: analysisY,
+          width: 560,
+          height: 520,
+        };
+
+        const requestedPresetId = typeof args.presetId === 'string' ? args.presetId.trim() : '';
+        const preset = canvasAiPromptPresets.find(item => item.id === requestedPresetId);
+        const generatorPrompt = buildProductDesignPipelineGeneratorPrompt({
+          request,
+          basePrompt: typeof args.generatorPrompt === 'string' ? args.generatorPrompt : undefined,
+        });
+        const generatorInputIds = Array.from(new Set([analysisNode.id, ...analysisInputIds]));
+        const generatorNode = buildCanvasAiGeneratorNode(
+          { x: analysisX + 632, y: analysisY },
+          preset,
+          generatorInputIds,
+          'image',
+        );
+        const visualReferenceIds = analysisInputIds.filter(id => (
+          canUseCanvasItemAsImageEnhancementInput(canvasItemsRef.current.find(item => item.id === id))
+        ));
+        const autoReferenceRoles = resolvedReferences.map(({ match, nodeId }) => ({
+          nodeId,
+          role: mapInspirationRoleToGeneratorRole(match.recommendedRole),
+        }));
+        const explicitReferenceRoles = explicitInputIds
+          .filter(id => visualReferenceIds.includes(id) && !referenceNodeIds.includes(id))
+          .map(nodeId => ({ nodeId, role: 'SUBJECT_REF' as const }));
+        const designReferencePlan = {
+          references: resolvedReferences.map(({ match }) => ({
+            itemId: match.itemId,
+            role: match.recommendedRole,
+            selectionAxis: match.selectionAxis,
+            reason: match.reason,
+            matchedFeatures: match.matchedFeatures,
+            confidence: match.confidence,
+          })),
+        };
+        const requestedSkillMeta = args.skillMeta && typeof args.skillMeta === 'object' && !Array.isArray(args.skillMeta)
+          ? args.skillMeta as NonNullable<CanvasImageItem['ai']>['skillMeta']
+          : undefined;
+        const requestedProvider = typeof args.provider === 'string' ? args.provider.trim() : '';
+        const requestedModel = typeof args.model === 'string' ? args.model.trim() : '';
+        const requestedAspectRatio = typeof args.aspectRatio === 'string' ? args.aspectRatio.trim() : '';
+        const requestedTargetSize = typeof args.targetSize === 'string' ? args.targetSize.trim() : '';
+        const requestedResolution = typeof args.resolution === 'string' ? args.resolution.trim() : '';
+        const requestedToolHint = typeof args.toolHint === 'string' ? args.toolHint.trim() : '';
+        generatorNode.item = {
+          ...generatorNode.item,
+          content: generatorPrompt,
+          name: '产品设计生图',
+        };
+        generatorNode.ai = {
+          ...generatorNode.ai!,
+          prompt: generatorPrompt,
+          referenceImageNodeIds: visualReferenceIds,
+          referenceRoles: [...autoReferenceRoles, ...explicitReferenceRoles],
+          ...(requestedProvider ? { provider: normalizeCanvasAiProvider(requestedProvider) } : {}),
+          ...(requestedModel ? { model: requestedModel } : {}),
+          ...(requestedAspectRatio ? {
+            aspectRatio: normalizeCanvasAiAspectRatioForModel(requestedModel || generatorNode.ai?.model, requestedAspectRatio),
+          } : {}),
+          ...(requestedTargetSize ? { targetSize: requestedTargetSize } : {}),
+          ...(requestedResolution ? { resolution: requestedResolution } : {}),
+          ...(requestedToolHint ? { toolHint: requestedToolHint } : {}),
+          skillMeta: {
+            ...(requestedSkillMeta || {}),
+            skillId: requestedSkillMeta?.skillId || 'creative-product-design-skill',
+            originalRequest: request,
+            taskKind: 'product_design_pipeline',
+            designReferencePlan,
+            inspirationCandidates: candidates.map(candidate => ({
+              itemId: candidate.itemId,
+              state: referenceNodeIds.some((_, index) => resolvedReferences[index]?.match.itemId === candidate.itemId)
+                ? 'selected'
+                : candidate.state,
+              confidence: candidate.confidence,
+              referenceRole: candidate.recommendedRole,
+              reason: candidate.reason,
+            })),
+          },
+        };
+
+        if (appendCanvasItems([analysisNode, generatorNode], 'Agent 创建产品设计分析与生图链路') <= 0) {
+          throw new Error('创建产品设计链路失败');
+        }
+        updateCanvasItemsImmediate(prev => prev.map(item => {
+          if (item.id === analysisNode.id) return { ...item, inputs: [...analysisInputIds] };
+          if (item.id === generatorNode.id) return { ...item, inputs: [...generatorInputIds] };
+          return item;
+        }));
+        const linkedAnalysisNode = canvasItemsRef.current.find(item => item.id === analysisNode.id);
+        const missingAnalysisReferenceIds = referenceNodeIds.filter(id => !(linkedAnalysisNode?.inputs || []).includes(id));
+        if (missingAnalysisReferenceIds.length > 0) {
+          throw new Error(`设计分析节点缺少 ${missingAnalysisReferenceIds.length} 条参考图连接`);
+        }
+        updateCanvasSelection([generatorNode.id]);
+
+        const autoRunGenerator = args.autoRunGenerator === true;
+        const autoRunAnalysis = args.autoRunAnalysis !== false || autoRunGenerator;
+        let analysisCompleted = false;
+        if (autoRunAnalysis) {
+          await runCanvasTextAgentNode(analysisNode.id);
+          analysisCompleted = Boolean(canvasItemsRef.current.find(item => item.id === analysisNode.id)?.item.remark?.trim());
+        }
+        if (autoRunGenerator && analysisCompleted) {
+          await generateCanvasAiGeneratorNode(generatorNode.id);
+        }
+        const latestGenerator = canvasItemsRef.current.find(item => item.id === generatorNode.id);
+        if (resolvedReferences.length < referenceCount) {
+          showToast(`仅找到 ${resolvedReferences.length} 张相关意向图，链路已按现有素材建立`);
+        } else {
+          showToast('已按品类、造型、颜色/风格检索 5 张意向图，并连接设计分析与生图节点');
+        }
+        return {
+          nodeId: generatorNode.id,
+          analysisNodeId: analysisNode.id,
+          generatorNodeId: generatorNode.id,
+          referenceNodeIds,
+          analysisInputIds,
+          selectedInspirationItemIds: resolvedReferences.map(item => item.match.itemId),
+          requestedReferenceCount: referenceCount,
+          resolvedReferenceCount: resolvedReferences.length,
+          analysisCompleted,
+          generatorAutoRunRequested: autoRunGenerator,
+          generatorStatus: latestGenerator?.ai?.status,
+          outputCount: latestGenerator?.ai?.outputs?.length || 0,
         };
       }
 
@@ -29995,7 +26267,7 @@ useEffect(() => {
         const pos = inputBounds
           ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
           : getCanvasDropPosition(0);
-        const itemId = Math.random().toString(36).substring(2, 9);
+        const itemId = createAssetId();
         const title = prompt.split(/\r?\n/)[0]?.slice(0, 32) || 'Agent 文字节点';
         const node: CanvasImageItem = {
           id: makeCanvasNodeId(itemId, 'text'),
@@ -30907,25 +27179,41 @@ useEffect(() => {
   const buildCanvasTextAgentUserContent = (
     text: string,
     references: AgentCanvasVisualReference[],
+    seedanceMode = false,
   ) => {
     const imageReferences = references
       .filter(reference => reference.mediaType === 'image' && /^data:image\/|^https?:\/\//i.test(reference.source || ''))
-      .slice(0, 6);
+      .slice(0, seedanceMode ? 9 : 6);
+    let imageIndex = 0;
+    let videoIndex = 0;
+    const labeledReferences = imageReferences.map((reference, index) => {
+      if (!seedanceMode) return { reference, label: '图' + String(index + 1) + '（Image ' + String(index + 1) + '）' };
+      if (reference.sourceMediaType === 'video') {
+        videoIndex += 1;
+        return { reference, label: '@视频' + String(videoIndex) + '的预览帧' };
+      }
+      imageIndex += 1;
+      return { reference, label: '@图片' + String(imageIndex) };
+    });
     const notice = imageReferences.length > 0
       ? [
-        '已连接 ' + imageReferences.length + ' 张参考图，并随本次请求附加：',
-        ...imageReferences.map((reference, index) => (
-          '图' + String(index + 1) + '（Image ' + String(index + 1) + '）：' + reference.name + '（nodeId: ' + reference.nodeId + (reference.outputId ? ', outputId: ' + reference.outputId : '') + '）'
+        seedanceMode
+          ? '已连接以下 Seedance 视觉素材，并随本次请求附加：'
+          : '已连接 ' + imageReferences.length + ' 张参考图，并随本次请求附加：',
+        ...labeledReferences.map(({ reference, label }) => (
+          label + '：' + reference.name + '（nodeId: ' + reference.nodeId + (reference.outputId ? ', outputId: ' + reference.outputId : '') + '）'
         )),
-        '图号严格对应附件顺序，不得交换或重排。',
+        seedanceMode
+          ? '图片和视频编号分别按上述清单递增，不得交换或重排；视频附件这里只提供预览帧，不得臆测未展示的动作、运镜或声音。'
+          : '图号严格对应附件顺序，不得交换或重排。',
       ].join('\n')
       : '';
     const textPart = [text, notice].filter(Boolean).join('\n\n');
     if (imageReferences.length === 0) return textPart;
     return [
       { type: 'text', text: textPart },
-      ...imageReferences.flatMap((reference, index) => ([
-        { type: 'text', text: '紧随此文字的图片附件是图' + String(index + 1) + '（Image ' + String(index + 1) + '）：' + reference.name },
+      ...labeledReferences.flatMap(({ reference, label }) => ([
+        { type: 'text', text: '紧随此文字的图片附件对应' + label + '：' + reference.name },
         {
           type: 'image_url',
           image_url: {
@@ -30950,6 +27238,8 @@ useEffect(() => {
     if (!isCanvasAgentTextTarget(target)) return '';
     const getSourceItems = options.sourceItems || (() => canvasItemsRef.current);
     const latestTarget = options.getLatestTarget?.() || target;
+    const designAgentConfig = normalizeDesignAgentConfig(latestTarget.designAgentConfig);
+    const isSeedanceVideoAnalysis = designAgentConfig.agentRole === 'seedance_video_analyzer';
     const userRequest = (latestTarget.item.content || target.item.content || '').trim();
     if (!userRequest) {
       throw new Error('先在文字节点里输入需求');
@@ -30962,7 +27252,11 @@ useEffect(() => {
 
     if (visualReferences.length > 0) {
       try {
-        preparedReferences = await prepareCanvasAgentVisualReferences(visualReferences, 'openai-compatible');
+        preparedReferences = await prepareCanvasAgentVisualReferences(
+          visualReferences,
+          'openai-compatible',
+          isSeedanceVideoAnalysis ? 9 : 6,
+        );
         if (preparedReferences.length === 0 && options.showReferenceToast !== false) {
             showToast('连接的参考图暂时无法读取，本次仅使用文字运行');
         }
@@ -30978,13 +27272,18 @@ useEffect(() => {
     const customAgentPrompt = isBuiltInAgentSystemPrompt(canvasAgent.settings.systemPrompt)
       ? ''
       : canvasAgent.settings.systemPrompt.trim();
-    const designAgentPrompt = buildDesignAgentSystemPrompt(latestTarget.designAgentConfig);
+    const designAgentPrompt = buildDesignAgentSystemPrompt(designAgentConfig);
+    const contextRoutingInstruction = buildCanvasContextRoutingInstruction(
+      getCanvasContextRoutingTargetsForAgent(latestTarget, getSourceItems()),
+    );
     const systemPrompt = truncatePromptToUtf8ByteLimit([
       customAgentPrompt,
       [
         '你是画布中的 Design Agent Node 执行器。',
         '用户会在当前文字节点里写需求，也可能连接上游文字和参考图。',
-        '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
+        contextRoutingInstruction
+          ? '请直接产出要写回当前文字节点的结果，不要调用工具，不要寒暄；严格遵守用户消息末尾的上下文自动路由协议，只输出协议要求的 JSON。'
+          : '请直接产出要写回当前文字节点的结果，不要调用工具，不要输出 JSON 包装，不要寒暄。',
         '如果参考图存在，请把它们作为视觉依据；如果没有参考图，就只根据文字需求完成。',
       ].join('\n'),
       designAgentPrompt,
@@ -30992,6 +27291,7 @@ useEffect(() => {
     const promptParts = [
       '当前文字节点需求：\n' + userRequest,
       upstreamTexts.length > 0 ? upstreamTexts.join('\n\n') : '',
+      contextRoutingInstruction,
     ].filter(Boolean);
     const requestId = 'canvas_text_agent_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
     const selectedAgentModel = agentModelRef.current.trim();
@@ -31008,7 +27308,7 @@ useEffect(() => {
         model: requestedAgentModel,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences) },
+          { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
         ],
       },
     });
@@ -31256,6 +27556,7 @@ useEffect(() => {
     if (canvasSingleSelectedItemForRender) ids.add(canvasSingleSelectedItemForRender.id);
     if (canvasInputMenuForId) ids.add(canvasInputMenuForId);
     if (canvasAiPromptEditingId) ids.add(canvasAiPromptEditingId);
+    if (canvasPromptOptimizingId) ids.add(canvasPromptOptimizingId);
     if (canvasInputPickTargetId) ids.add(canvasInputPickTargetId);
     if (canvasConnectionDraft) {
       ids.add(canvasConnectionDraft.fromId);
@@ -31269,6 +27570,7 @@ useEffect(() => {
     canvasInputActionDraft,
     canvasInputMenuForId,
     canvasInputPickTargetId,
+    canvasPromptOptimizingId,
     canvasSelectedIds,
     canvasSingleSelectedItemForRender,
   ]);
@@ -31317,12 +27619,13 @@ useEffect(() => {
             shouldPollAgain = true;
             return;
           }
-          if (lookup.status !== 'succeeded' || lookup.images.length === 0) {
+          const recoveredImages = getCloudWalletImageLookupImages(lookup);
+          if (recoveredImages.length === 0) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
           }
 
-          const source = lookup.images[0]?.trim();
+          const source = recoveredImages[0]?.trim();
           if (!source) {
             canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
             return;
@@ -31374,6 +27677,7 @@ useEffect(() => {
           );
           if (drawerItem) {
             addGeneratedImagesToDrawer([drawerItem], {
+              canvasId: activeCanvasIdRef.current || DEFAULT_CANVAS_ID,
               canvasOutputClientRequestId: clientRequestId,
             });
           }
@@ -31387,6 +27691,7 @@ useEffect(() => {
             source,
           });
           canvasAiTimedOutRecoverySettledRef.current.add(recoveryKey);
+          void refreshCloudAccount(true).catch(() => {});
           showToast('已自动找回一张此前超时的生成图片');
         })
         .catch((error) => {
@@ -31421,26 +27726,36 @@ useEffect(() => {
     );
     if (availableSlots === 0) return;
 
+    const drawerItemsById = new Map(itemsRef.current.map(item => [item.id, item]));
     const candidates = canvasItems.flatMap((canvasItem) => (
       getCanvasAiOutputPreviewSlots(canvasItem).map((output, outputIndex) => {
         const mediaType = output.mediaType || getCanvasAiMediaType(canvasItem.ai);
         const source = output.sourceUrl || output.url || '';
-        const stableSource = getAutoRecoverableAiImageResultSource({
+        const drawerItem = output.id ? drawerItemsById.get(output.id) : undefined;
+        const drawerPath = drawerItem?.type === mediaType ? String(drawerItem.path || '').trim() : '';
+        const drawerCanRepair = output.status === 'success' && !output.path && !!drawerPath;
+        const stableSource = getAutoRecoverableAiMediaResultSource({
           mediaType,
           status: output.status,
           cacheStatus: output.cacheStatus,
           path: output.path,
           source,
         });
-        const recoveryKey = stableSource
-          ? `${canvasItem.id}:${output.id || outputIndex}:${stableSource}`
+        const recoveryKey = drawerCanRepair
+          ? `${canvasItem.id}:${output.id || outputIndex}:drawer:${drawerPath}`
+          : stableSource
+            ? `${canvasItem.id}:${output.id || outputIndex}:${stableSource}`
           : '';
-        const shouldRecover = !!stableSource
+        const retryAt = recoveryKey
+          ? (canvasAiOutputSourceRecoveryRetryAtRef.current.get(recoveryKey) || 0)
+          : 0;
+        const shouldRecover = (drawerCanRepair || !!stableSource)
           && !!recoveryKey
+          && retryAt <= Date.now()
           && !canvasAiOutputSourceRecoveryAttemptedRef.current.has(recoveryKey)
           && !canvasAiOutputSourceRecoveryInFlightRef.current.has(recoveryKey);
         return shouldRecover
-          ? { canvasItem, output, outputIndex, stableSource, recoveryKey }
+          ? { canvasItem, output, outputIndex, stableSource, recoveryKey, drawerItem, drawerPath, mediaType }
           : null;
       })
     )).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
@@ -31452,9 +27767,42 @@ useEffect(() => {
         outputIndex,
         stableSource,
         recoveryKey,
+        drawerItem,
+        drawerPath,
+        mediaType,
       } = candidate;
       canvasAiOutputSourceRecoveryAttemptedRef.current.add(recoveryKey);
+      canvasAiOutputSourceRecoveryRetryAtRef.current.delete(recoveryKey);
+      if (drawerItem && drawerPath) {
+        const localUrl = convertFileSrc(drawerPath);
+        updateCanvasItemsImmediate(prev => prev.map((item) => {
+          if (item.id !== canvasItem.id || !item.ai?.outputs?.length) return item;
+          let changed = false;
+          const outputs = item.ai.outputs.map((currentOutput, currentIndex) => {
+            const matches = output.id
+              ? currentOutput.id === output.id
+              : currentIndex === outputIndex;
+            if (!matches) return currentOutput;
+            changed = true;
+            return {
+              ...currentOutput,
+              mediaType,
+              url: localUrl,
+              path: drawerPath,
+              sourceUrl: currentOutput.sourceUrl || drawerItem.sourceUrl || drawerItem.originalUrl,
+              thumbnail: currentOutput.thumbnail || drawerItem.thumbnail,
+              cacheStatus: 'ready' as const,
+            };
+          });
+          return changed ? { ...item, ai: { ...item.ai, outputs } } : item;
+        }));
+        scheduleCanvasChangedNodesPatchSave([canvasItem.id]);
+        scheduleCanvasStateSave({ syncNodes: false });
+        return;
+      }
+      if (!stableSource) return;
       canvasAiOutputSourceRecoveryInFlightRef.current.add(recoveryKey);
+      let shouldRetrySourceRecovery = false;
       void cacheCanvasGeneratedImageSource(
         stableSource,
         output.name || output.taskId || output.id || `recovered-${outputIndex + 1}`,
@@ -31492,21 +27840,33 @@ useEffect(() => {
         }
         scheduleCanvasChangedNodesPatchSave([canvasItem.id]);
         scheduleCanvasStateSave({ syncNodes: false });
-        enqueueCanvasAiOutputThumbnailJob({
-          key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}`,
-          canvasItemId: canvasItem.id,
-          outputIndex,
-          outputId: output.id,
-          source: cached.url,
-          path: cached.path,
-        });
+        if (mediaType === 'image') {
+          enqueueCanvasAiOutputThumbnailJob({
+            key: `recovered:${canvasItem.id}:${output.id || outputIndex}:${cached.path}`,
+            canvasItemId: canvasItem.id,
+            outputIndex,
+            outputId: output.id,
+            source: cached.url,
+            path: cached.path,
+          });
+        }
       }).catch((error) => {
-        console.warn('旧 AI 图片节点自动恢复失败:', error);
+        const generatedAt = Number(output.generatedAt || canvasItem.ai?.generatedAt || 0);
+        const outputAge = generatedAt > 0 ? Math.max(0, Date.now() - generatedAt) : Number.POSITIVE_INFINITY;
+        shouldRetrySourceRecovery = outputAge < CANVAS_AI_TIMED_OUT_RECOVERY_MAX_AGE_MS;
+        if (shouldRetrySourceRecovery) {
+          canvasAiOutputSourceRecoveryRetryAtRef.current.set(
+            recoveryKey,
+            Date.now() + CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS,
+          );
+          canvasAiOutputSourceRecoveryAttemptedRef.current.delete(recoveryKey);
+        }
+        console.warn('AI output source recovery failed; will retry while the result is recent:', error);
       }).finally(() => {
         canvasAiOutputSourceRecoveryInFlightRef.current.delete(recoveryKey);
         window.setTimeout(() => {
           setCanvasAiOutputSourceRecoveryTick(value => value + 1);
-        }, 180);
+        }, shouldRetrySourceRecovery ? CANVAS_AI_OUTPUT_SOURCE_RECOVERY_RETRY_DELAY_MS : 180);
       });
     });
   }, [isCanvasMode, canvasItems, canvasAiOutputSourceRecoveryTick]);
@@ -31784,14 +28144,6 @@ useEffect(() => {
       return canUseCanvasItemAsAiInput(item);
     }).length
     : 0;
-  const canvasFolderPickerItems = useMemo(() => (
-    canvasFolderImportPrompt
-      ? getFolderMediaItemsForCanvas(canvasFolderImportPrompt.folderId)
-      : []
-  // `folderId` is undefined for the main drawer both while the picker is
-  // closed and while it is open. Depending only on folderId therefore leaves
-  // the memo stuck at the closed-state empty array.
-  ), [canvasFolderImportPrompt, folders, items]);
   const visibleCanvasFolderPickerItems = useMemo(
     () => canvasFolderPickerItems.slice(0, canvasFolderPickerVisibleCount),
     [canvasFolderPickerItems, canvasFolderPickerVisibleCount],
@@ -31912,6 +28264,9 @@ useEffect(() => {
     const nestedOffset = Math.min(depth, 3) * 5;
     return (
       <div
+        data-folder-row="true"
+        data-folder-active={isFolderActive ? 'true' : 'false'}
+        data-folder-depth={depth}
         key={folder.id}
         className="relative shrink-0 flex flex-col items-center w-full group/folder"
         style={isNested ? { paddingLeft: nestedOffset } : undefined}
@@ -32032,12 +28387,15 @@ useEffect(() => {
         ? 'bg-red-50 text-red-700 ring-1 ring-red-200 dark:bg-red-400/14 dark:text-red-100 dark:ring-red-300/25'
         : 'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-400/14 dark:text-blue-100 dark:ring-blue-300/25'
       : isFolderActive
-        ? 'bg-stone-900 text-white shadow-sm dark:bg-white/14 dark:text-white'
+        ? 'bg-stone-900 text-white shadow-sm dark:bg-stone-100 dark:text-stone-950'
         : 'text-stone-700 hover:bg-white/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/[0.07] dark:hover:text-white';
 
     return (
       <div
         key={folder.id}
+        data-folder-row="true"
+        data-folder-active={isFolderActive ? 'true' : 'false'}
+        data-folder-depth={depth}
         className="group/folder-list relative w-full shrink-0"
         data-folder-drop-id={folder.id}
         data-folder-drop-name={folderPathName}
@@ -32086,7 +28444,7 @@ useEffect(() => {
                   prev.includes(folder.id) ? prev.filter(id => id !== folder.id) : [...prev, folder.id]
                 ));
               }}
-              className={`-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors ${isFolderActive ? 'text-white/70 hover:bg-white/12 hover:text-white' : 'text-stone-400 hover:bg-stone-200/70 hover:text-stone-700 dark:text-stone-500 dark:hover:bg-white/10 dark:hover:text-stone-200'}`}
+              className={`-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md transition-colors ${isFolderActive ? 'text-white/70 hover:bg-white/12 hover:text-white dark:text-stone-700 dark:hover:bg-black/10 dark:hover:text-stone-950' : 'text-stone-400 hover:bg-stone-200/70 hover:text-stone-700 dark:text-stone-500 dark:hover:bg-white/10 dark:hover:text-stone-200'}`}
               title={isCollapsed ? '展开子目录' : '收起子目录'}
             >
               {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -32095,7 +28453,7 @@ useEffect(() => {
             <span className="h-5 w-5 shrink-0" />
           )}
           {depth > 0 && <span aria-hidden="true" className="h-px w-3 shrink-0 bg-stone-300 dark:bg-stone-700" />}
-          <FolderOpen className={`h-4 w-4 shrink-0 ${isFolderActive ? 'text-amber-300' : 'fill-amber-300/35 text-amber-500 dark:fill-amber-300/18 dark:text-amber-300'}`} />
+          <FolderOpen className={`h-4 w-4 shrink-0 ${isFolderActive ? 'text-white/90 dark:text-stone-800' : 'text-stone-500 dark:text-stone-400'}`} />
           {editingFolderId === folder.id ? (
             <input
               autoFocus
@@ -32119,7 +28477,7 @@ useEffect(() => {
               {folder.name}
             </span>
           )}
-          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black leading-none ${isFolderActive ? 'bg-white/16 text-white/78' : 'bg-stone-200/75 text-stone-500 dark:bg-white/[0.08] dark:text-stone-400'}`}>
+          <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-black leading-none ${isFolderActive ? 'bg-white/16 text-white/80 dark:bg-black/10 dark:text-stone-700' : 'bg-stone-200/75 text-stone-500 dark:bg-white/[0.08] dark:text-stone-400'}`}>
             {folderItemCount}
           </span>
         </button>
@@ -32249,7 +28607,7 @@ useEffect(() => {
   const textInputDialogCanConfirm = textInputDialog.value.trim().length > 0;
 
   return (
-    <div
+      <div
         data-drawer-theme="true"
         className={`${isDark ? 'dark' : ''} drawer-theme w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
         // 把全局拖拽接管挂在最外层
@@ -32626,14 +28984,15 @@ useEffect(() => {
 
       {/* 🌟 抽屉主体窗口：主窗口里不再包含小条，关闭时直接隐藏整个 main 窗口 */}
       <div
+        data-drawer-shell="true"
         className={drawerShellClassName}
         style={{
           opacity: isLicenseGateActive ? 0.42 : snipMode.active ? 0 : 1,
           transform: drawerShellTransform,
           transition: transitionStyle,
           filter: isLicenseGateActive ? 'grayscale(1) saturate(0)' : undefined,
-          borderRadius: 30,
-          clipPath: 'inset(0 round 30px)',
+          borderRadius: 16,
+          clipPath: 'inset(0 round 16px)',
           contain: 'paint',
           pointerEvents: !isLicenseGateActive && isDrawerActive && (isStartupOverlayActive || (drawerState !== 'closed' && drawerState !== 'closing')) ? 'auto' : 'none',
         }}
@@ -32706,6 +29065,7 @@ useEffect(() => {
             </AnimatePresence>
 
             <div
+              data-drawer-sidebar="true"
               className={drawerSidebarClassName}
               style={isFolderSidebarLayout ? { width: drawerFolderSidebarWidth } : undefined}
             >
@@ -32734,6 +29094,8 @@ useEffect(() => {
                     onDrop={(e) => handleDrawerItemDropToFolder(e, undefined)}
                   >
                     <button
+                      data-sidebar-home="true"
+                      data-sidebar-home-active={activeFolderId === 'all' || isCanvasMode ? 'true' : 'false'}
                       type="button"
                       onClick={(e) => {
                         if (mainDrawerLongPressTriggeredRef.current) {
@@ -32778,9 +29140,10 @@ useEffect(() => {
                       }}
                     >
                       <button
+                        data-new-folder="true"
                         type="button"
                         onClick={() => handleOpenFolderModal()}
-                        className={`mb-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed px-2 text-left text-[12px] font-bold transition-all ${showFolderModal ? 'border-blue-300 bg-blue-500 text-white shadow-md shadow-blue-500/20 dark:border-blue-300/55 dark:bg-blue-400 dark:text-stone-950' : 'border-blue-200 bg-blue-50/30 text-blue-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-blue-400/28 dark:bg-blue-400/10 dark:text-blue-300 dark:hover:border-blue-300/55 dark:hover:bg-blue-400/18'}`}
+                        className="mb-1 flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-stone-200 bg-stone-100 px-2 text-left text-[12px] font-bold text-stone-700 shadow-none transition-all hover:bg-stone-200 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"
                         title="新建收纳夹"
                       >
                         <Plus className="h-4 w-4 shrink-0" />
@@ -32875,9 +29238,12 @@ useEffect(() => {
                   <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
                     <div
                       data-no-drag="true"
+                      data-quick-switch="true"
                       className="mb-2 grid shrink-0 grid-cols-2 gap-1 rounded-[12px] border border-white/70 bg-white/55 p-1 shadow-sm backdrop-blur-md dark:border-stone-700/60 dark:bg-stone-800/50"
                     >
                       <button
+                        data-quick-mode="quick"
+                        data-active={quickRailMode === 'quick' ? 'true' : 'false'}
                         type="button"
                         onClick={(e) => {
                           e.preventDefault();
@@ -32885,13 +29251,15 @@ useEffect(() => {
                           setQuickRailMode('quick');
                           if (activeTab === 'notes') setActiveTab('all');
                         }}
-                        className={`flex h-7 items-center justify-center gap-1 rounded-[9px] text-[11px] font-black transition-all ${quickRailMode === 'quick' ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/18 dark:text-blue-200 dark:ring-blue-400/25' : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'}`}
+                        className={`flex h-7 items-center justify-center gap-1 rounded-[9px] border text-[11px] font-black transition-all ${quickRailMode === 'quick' ? 'border-stone-200 bg-white text-stone-800 shadow-sm dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100' : 'border-transparent text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'}`}
                         title="快速访问"
                       >
                         <Compass className="h-3.5 w-3.5" />
                         快捷
                       </button>
                       <button
+                        data-quick-mode="notes"
+                        data-active={quickRailMode === 'notes' ? 'true' : 'false'}
                         type="button"
                         onClick={(e) => {
                           e.preventDefault();
@@ -32900,13 +29268,13 @@ useEffect(() => {
                           refreshNoteManager();
                           if (activeTab === 'notes') setActiveTab('all');
                         }}
-                        className={`relative flex h-7 items-center justify-center gap-1 rounded-[9px] text-[11px] font-black transition-all ${quickRailMode === 'notes' ? 'bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 dark:bg-amber-900/35 dark:text-amber-300 dark:ring-amber-800/55' : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'}`}
+                        className={`relative flex h-7 items-center justify-center gap-1 rounded-[9px] border text-[11px] font-black transition-all ${quickRailMode === 'notes' ? 'border-stone-200 bg-white text-stone-800 shadow-sm dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100' : 'border-transparent text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'}`}
                         title={openFloatingNoteCount > 0 ? `便签（${openFloatingNoteCount} 个）` : '便签'}
                       >
                         <BookOpen className="h-3.5 w-3.5" />
                         便签
                         {openFloatingNoteCount > 0 && (
-                          <span className="absolute right-1 top-1 min-w-[14px] rounded-full bg-amber-500 px-1 text-[8px] leading-[14px] text-white">
+                          <span data-quick-badge="true" className="absolute right-1 top-1 min-w-[14px] rounded-full bg-stone-700 px-1 text-[8px] leading-[14px] text-white dark:bg-stone-200 dark:text-stone-900">
                             {openFloatingNoteCount}
                           </span>
                         )}
@@ -32977,7 +29345,7 @@ useEffect(() => {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       pushDrawerUndoSnapshot('取消快速访问');
-                                      setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: false } : i));
+                                      setDrawerItemQuickAccess(item, false);
                                     }}
                                     className="absolute right-1 top-1/2 hidden -translate-y-1/2 rounded-full bg-red-500 p-1 text-white shadow-sm transition-transform hover:scale-110 group-hover/quick-list:block"
                                     title="取消快速访问"
@@ -32992,18 +29360,19 @@ useEffect(() => {
                       ) : (
                         <>
                           <button
+                            data-new-note="true"
                             type="button"
                             onClick={createBlankFloatingNote}
                             disabled={isCreatingBlankNote}
-                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-amber-100/80 bg-amber-50/70 px-2 text-left text-[12px] font-bold text-amber-700 shadow-sm transition-all hover:bg-amber-100 disabled:opacity-55 dark:border-amber-800/45 dark:bg-amber-900/24 dark:text-amber-300 dark:hover:bg-amber-900/38"
+                            className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-stone-200 bg-white px-2 text-left text-[12px] font-bold text-stone-700 shadow-none transition-all hover:bg-stone-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
                             title={`新增便签（${noteShortcut}）`}
                           >
-                            <Plus className="h-4 w-4 shrink-0" />
+                            <Plus className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
                             <span className="min-w-0 flex-1 truncate">新增便签</span>
                           </button>
                           {openFloatingNoteEntries.length === 0 ? (
-                            <div className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed border-amber-200/90 px-2 text-[12px] font-semibold text-stone-400 opacity-75 dark:border-amber-800/60 dark:text-stone-500">
-                              <StickyNote className="h-4 w-4 shrink-0 text-amber-400" />
+                            <div className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-dashed border-stone-300 px-2 text-[12px] font-semibold text-stone-400 opacity-75 dark:border-stone-700 dark:text-stone-500">
+                              <StickyNote className="h-4 w-4 shrink-0 text-stone-400" />
                               <span className="min-w-0 flex-1 truncate">无便签</span>
                             </div>
                           ) : (
@@ -33202,10 +29571,13 @@ useEffect(() => {
                 <div className="relative shrink-0 flex flex-col items-center w-full mb-4 mt-1">
                   <div
                     data-no-drag="true"
+                    data-quick-switch-compact="true"
                     className="relative flex flex-col items-center gap-1 rounded-full bg-white/60 dark:bg-stone-800/60 border border-white/75 dark:border-stone-700/60 p-1 shadow-sm backdrop-blur-md"
                     title={quickRailMode === 'quick' ? '当前：快速访问' : '当前：便签'}
                   >
                     <button
+                      data-quick-mode="quick"
+                      data-active={quickRailMode === 'quick' ? 'true' : 'false'}
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
@@ -33215,8 +29587,8 @@ useEffect(() => {
                       }}
                       className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-all overflow-visible ${
                         quickRailMode === 'quick'
-                          ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/18 dark:text-blue-200 dark:ring-blue-400/25'
-                          : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'
+                          ? 'bg-white text-stone-800 shadow-sm ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-100 dark:ring-stone-700'
+                          : 'text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'
                       }`}
                       title="快速访问"
                     >
@@ -33224,6 +29596,8 @@ useEffect(() => {
                     </button>
 
                     <button
+                      data-quick-mode="notes"
+                      data-active={quickRailMode === 'notes' ? 'true' : 'false'}
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
@@ -33234,14 +29608,14 @@ useEffect(() => {
                       }}
                       className={`relative flex h-8 w-8 items-center justify-center rounded-full transition-all overflow-visible ${
                         quickRailMode === 'notes'
-                          ? 'bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 dark:bg-amber-900/35 dark:text-amber-300 dark:ring-amber-800/55'
-                          : 'text-stone-400 hover:bg-white/70 hover:text-stone-600 dark:text-stone-500 dark:hover:bg-stone-700/70 dark:hover:text-stone-300'
+                          ? 'bg-white text-stone-800 shadow-sm ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-100 dark:ring-stone-700'
+                          : 'text-stone-500 hover:bg-white/60 hover:text-stone-800 dark:text-stone-500 dark:hover:bg-white/[0.06] dark:hover:text-stone-200'
                       }`}
                       title={openFloatingNoteCount > 0 ? `便签（${openFloatingNoteCount} 个）` : '便签'}
                     >
                       <BookOpen className="h-4 w-4" />
                       {openFloatingNoteCount > 0 && (
-                        <span className="absolute right-0 top-0 z-30 min-w-[15px] h-[15px] translate-x-1/3 -translate-y-1/3 rounded-full bg-amber-500 px-1 text-[9px] font-bold leading-[15px] text-white shadow-sm ring-2 ring-white/80 dark:ring-stone-800/80">
+                        <span data-quick-badge="true" className="absolute right-0 top-0 z-30 min-w-[15px] h-[15px] translate-x-1/3 -translate-y-1/3 rounded-full bg-stone-700 px-1 text-[9px] font-bold leading-[15px] text-white shadow-sm ring-2 ring-white/80 dark:bg-stone-200 dark:text-stone-900 dark:ring-stone-800/80">
                           {openFloatingNoteCount}
                         </span>
                       )}
@@ -33308,7 +29682,7 @@ useEffect(() => {
                                   e.preventDefault();
                                   e.stopPropagation();
                                   pushDrawerUndoSnapshot('取消快速访问');
-                                  setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: false } : i));
+                                  setDrawerItemQuickAccess(item, false);
                                 }}
                                 className="absolute -top-1.5 right-1 opacity-0 group-hover/quick:opacity-100 bg-red-500 text-white rounded-full p-0.5 shadow-sm transition-opacity hover:scale-110"
                                 title="取消快速访问"
@@ -33323,18 +29697,19 @@ useEffect(() => {
                   ) : (
                     <>
                       <button
+                        data-new-note="compact"
                         type="button"
                         onClick={createBlankFloatingNote}
                         disabled={isCreatingBlankNote}
                         title={`新增便签（${noteShortcut}）`}
-                        className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border border-amber-100/80 bg-amber-50/70 text-amber-600 shadow-sm transition-all hover:scale-105 hover:bg-amber-100 disabled:scale-100 disabled:opacity-55 dark:border-amber-800/45 dark:bg-amber-900/24 dark:text-amber-300 dark:hover:bg-amber-900/38"
+                        className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border border-stone-200 bg-white text-blue-600 shadow-none transition-all hover:scale-105 hover:bg-stone-100 disabled:scale-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-blue-400 dark:hover:bg-stone-800"
                       >
                         <Plus className="h-4 w-4" />
                       </button>
                       {openFloatingNoteEntries.length === 0 ? (
                         <div className="flex flex-col items-center w-full opacity-70">
-                          <div className="w-10 h-10 mb-1 rounded-[16px] border border-dashed border-amber-200 dark:border-amber-800/60 bg-amber-50/45 dark:bg-amber-900/10 flex items-center justify-center">
-                            <StickyNote className="w-5 h-5 text-amber-400" />
+                          <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-[16px] border border-dashed border-stone-300 bg-white/45 dark:border-stone-700 dark:bg-stone-900/45">
+                            <StickyNote className="h-5 w-5 text-stone-400" />
                           </div>
                           <span className="text-[10px] w-14 text-center text-stone-400 dark:text-stone-500 pb-1">无便签</span>
                         </div>
@@ -33431,20 +29806,27 @@ useEffect(() => {
             )}
 
             {/* ====== 右侧主内容区开始 ====== */}
-            <div className="flex-1 h-full flex flex-col relative min-w-0 bg-stone-50/30 dark:bg-stone-900/30">
+            <div data-drawer-main="true" className="flex-1 h-full flex flex-col relative min-w-0 bg-white dark:bg-stone-950">
 
                 {/* 🌟 标题栏区域：安全的动态拖拽魔法 */}
                 <div
-                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'px-4 pt-3.5 pb-4.5 border-b border-stone-200/50 dark:border-stone-800/50 flex flex-wrap justify-between items-center gap-2 bg-white/50 dark:bg-stone-900/50 relative cursor-move z-20'}
+                  data-drawer-header="true"
+                  data-canvas-header={isCanvasMode ? 'true' : undefined}
+                  className={isCanvasMode && isCanvasChromeHidden ? 'hidden' : 'min-h-16 px-5 border-b border-stone-200/70 dark:border-stone-800 flex flex-nowrap justify-between items-center gap-4 bg-white dark:bg-stone-950 relative cursor-move z-20'}
                   onPointerDown={startDrawerTitleDrag}
                 >
-                  <h2 className="flex h-9 min-w-[140px] max-w-full items-center gap-1.5 font-semibold leading-none text-stone-800 pointer-events-none relative dark:text-stone-100">
+                  <h2 data-drawer-title="true" className="flex h-9 min-w-[140px] max-w-full items-center gap-2 text-[18px] font-semibold tracking-[-0.02em] leading-none text-stone-900 pointer-events-none relative dark:text-stone-100">
                         {isCanvasMode
-                      ? <LayoutGrid className="w-4 h-4 text-blue-500 dark:text-blue-300" />
+                      ? <LayoutGrid className="w-4 h-4 text-stone-500 dark:text-stone-400" />
                       : activeFolderId === 'all'
                         ? <Lightbulb className="w-4 h-4 text-blue-500 dark:text-blue-300" />
                         : <FolderOpen className="w-4 h-4 text-emerald-500" />}
                     {isCanvasMode ? '无限画布' : activeFolderId === 'all' ? '灵感抽屉' : getDrawerFolderPathName(folders, activeFolderId) || '未知分类'}
+                    {!isCanvasMode && isDrawerAiClassificationMode && (
+                      <span className="ml-1 rounded-[6px] border border-stone-200 bg-stone-100 px-1.5 py-0.5 text-[9px] font-semibold text-stone-600 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
+                        AI 分类
+                      </span>
+                    )}
 
                     {/* 小圆点：阻止冒泡，防止触发拖拽 */}
                     <div
@@ -33481,11 +29863,12 @@ useEffect(() => {
                   </h2>
 
                   {/* 右侧按钮组：按钮本身不拖动，按钮之间的空白仍可拖动 */}
-                  <div className="z-[100] flex flex-wrap justify-end gap-1.5 flex-1 min-w-[180px] max-w-full">
+                  <div data-drawer-tools="true" data-canvas-header-tools={isCanvasMode ? 'true' : undefined} className="z-[100] flex flex-nowrap items-center justify-end gap-2 flex-1 min-w-[180px] max-w-full">
 
                     {isDrawerWorkbenchActive && (
                       <div
                         data-no-drag="true"
+                        data-drawer-window-controls="true"
                         className="mr-1 flex items-center gap-1 rounded-[14px] border border-stone-200/70 bg-white/72 p-0.5 shadow-sm backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-800/65"
                         title="抽屉工作台窗口控制"
                       >
@@ -33564,17 +29947,10 @@ useEffect(() => {
                       <>
                         {isCanvasMode && (
                           <>
-                          <button
-                            onClick={() => activeCanvas && void saveCurrentCanvasAsSnapshot(activeCanvas)}
-                            disabled={!activeCanvas || isSwitchingCanvas}
-                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-indigo-50 text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100 disabled:cursor-wait disabled:opacity-55 dark:bg-indigo-400/14 dark:text-indigo-200 dark:hover:bg-indigo-400/20"
-                            title="保存当前画布为快照"
-                          >
-                            <Layers className="w-3.5 h-3.5" /> 保存快照
-                          </button>
                           {isCanvasWorkbenchActive && (
                             <div
                               data-no-drag="true"
+                              data-canvas-window-controls="true"
                               className="mr-1 flex items-center gap-1 rounded-[14px] border border-stone-200/70 bg-white/72 p-0.5 shadow-sm backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-800/65"
                               title="画布工作台窗口控制"
                             >
@@ -33609,19 +29985,24 @@ useEffect(() => {
                           )}
                           {selectedCanvasAiGenerator && selectedCanvasConnectableCount > 0 && (
                             <button
+                              data-canvas-header-action="connect"
                               onClick={() => connectSelectedCanvasItemsToGenerator(selectedCanvasAiGenerator.id)}
-                              className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-emerald-50 text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+                              className="flex h-9 items-center gap-1.5 rounded-[9px] border border-stone-200 bg-white px-3 text-xs font-medium text-stone-600 transition-colors hover:border-stone-300 hover:bg-stone-100 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white"
                               title="把当前多选的图片/文字连接到 AI 或文字节点"
                             >
-                              <Link className="w-3.5 h-3.5" /> 连接 {selectedCanvasConnectableCount}
+                              <Link className="w-3.5 h-3.5 shrink-0" />
+                              <span data-canvas-header-label="true">连接</span>
+                              <span>{selectedCanvasConnectableCount}</span>
                             </button>
                           )}
                           <button
+                            data-canvas-header-action="exit"
                             onClick={requestExitCanvasMode}
-                            className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] bg-blue-50 text-blue-700 shadow-sm transition-colors hover:bg-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:hover:bg-blue-400/20"
+                            className="flex h-9 items-center gap-1.5 rounded-[9px] border border-stone-200 bg-stone-100 px-3 text-xs font-medium text-stone-700 transition-colors hover:border-stone-300 hover:bg-stone-200 hover:text-stone-950 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700 dark:hover:text-white"
                             title="退出无限画布"
                           >
-                            <X className="w-3.5 h-3.5" /> 退出画布
+                            <X className="w-3.5 h-3.5 shrink-0" />
+                            <span data-canvas-header-label="true">退出画布</span>
                           </button>
                           </>
                         )}
@@ -33633,7 +30014,6 @@ useEffect(() => {
                               title={`进入生图画布 (${canvasShortcut})`}
                             >
                               <LayoutGrid className="w-3.5 h-3.5" />
-                              生图画布
                             </button>
                             <button
                               onClick={() => { setIsSelectMode(true); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null; setShowSettings(false); setIsSearchActive(false); }}
@@ -33644,20 +30024,59 @@ useEffect(() => {
                             </button>
                           </>
                         )}
-                        <button
-                          type="button"
-                          onClick={toggleSearch}
-                          className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${isSearchActive ? 'bg-teal-50 text-teal-700 ring-1 ring-teal-100 dark:bg-teal-400/14 dark:text-teal-200 dark:ring-teal-400/20' : 'hover:bg-teal-50 hover:text-teal-600 dark:hover:bg-teal-400/12 dark:hover:text-teal-200'}`}
+                        <div
+                          data-drawer-search-trigger="true"
+                          data-canvas-header-search={isCanvasMode ? 'true' : undefined}
+                          className="group/search relative inline-flex h-9 w-[184px] items-center rounded-[9px] border border-stone-200 bg-white text-[12px] transition-[background-color,border-color] duration-200 hover:border-stone-300 dark:border-stone-700 dark:bg-stone-900 dark:hover:border-stone-600"
                           title={isCanvasMode ? '搜索图片 (Ctrl+F)' : '搜索 (Ctrl+F)'}
                         >
-                          <Search className="w-3.5 h-3.5" />
-                        </button>
-                        <button data-drawer-settings-toggle="true" onClick={toggleSettings} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${showSettings ? 'bg-violet-50 text-violet-700 ring-1 ring-violet-100 dark:bg-violet-400/14 dark:text-violet-200 dark:ring-violet-400/20' : 'hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-400/12 dark:hover:text-violet-200'}`} title="设置与帮助">
-                          <Settings className="w-3.5 h-3.5" />
+                          <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-stone-400" />
+                          <input
+                            ref={searchInputRef}
+                            type="search"
+                            value={searchQuery}
+                            onFocus={activateSearch}
+                            onBlur={() => {
+                              if (!searchQuery.trim()) setIsSearchActive(false);
+                            }}
+                            onChange={(event) => {
+                              if (!isSearchActive) activateSearch();
+                              setSearchQuery(event.target.value);
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Escape') return;
+                              event.preventDefault();
+                              setSearchQuery('');
+                              setIsSearchActive(false);
+                              event.currentTarget.blur();
+                            }}
+                            placeholder={isCanvasMode ? '搜索图片...' : '搜索文件...'}
+                            aria-label={isCanvasMode ? '搜索图片' : '搜索文件'}
+                            className="h-full min-w-0 flex-1 appearance-none bg-transparent pl-9 pr-8 text-[12px] font-normal text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-200 dark:placeholder:text-stone-500 [&::-webkit-search-cancel-button]:hidden"
+                          />
+                          {searchQuery && (
+                            <button
+                              type="button"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setSearchQuery('');
+                                setIsSearchActive(false);
+                                searchInputRef.current?.focus();
+                              }}
+                              className="absolute right-2 flex h-5 w-5 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                              aria-label="清空搜索"
+                              title="清空搜索"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                        <button data-drawer-settings-toggle="true" data-canvas-header-action={isCanvasMode ? 'settings' : undefined} data-active={showSettings ? 'true' : 'false'} onClick={toggleSettings} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${showSettings ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950' : 'hover:bg-stone-100 hover:text-stone-800 dark:hover:bg-stone-800 dark:hover:text-stone-200'}`} title="设置与帮助">
+                          <Settings className="block h-3.5 w-3.5 shrink-0 opacity-100" strokeWidth={2} />
                         </button>
                         {!isMainWorkbenchActive && (
-                          <button onClick={handleTogglePin} className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-[14px] transition-colors cursor-pointer shadow-sm bg-white/72 dark:bg-stone-800/65 backdrop-blur-md ${isPinned ? 'text-blue-700 bg-blue-50 ring-1 ring-blue-100 dark:bg-blue-400/14 dark:text-blue-200 dark:ring-blue-400/20' : 'text-stone-500 dark:text-stone-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-400/12 dark:hover:text-blue-200'}`}>
-                            {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />} {isPinned ? '收回' : '钉住'}
+                          <button onClick={handleTogglePin} className={`${DRAWER_TOOL_BUTTON_BASE_CLASS} ${isPinned ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-400/30 dark:bg-blue-400/14 dark:text-blue-200' : ''}`} title={isPinned ? '收回抽屉' : '钉住抽屉'}>
+                            {isPinned ? <RotateCcw className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
                           </button>
                         )}
                       </>
@@ -33671,12 +30090,13 @@ useEffect(() => {
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.15, ease: 'easeOut' }}
-                      className="shrink-0 overflow-hidden border-b border-violet-100/80 bg-violet-50/45 px-3 py-1.5 dark:border-violet-400/15 dark:bg-violet-400/8"
+                      data-drawer-analysis-progress="true"
+                      className="shrink-0 overflow-hidden border-b border-stone-200/80 bg-stone-50/80 px-3 py-1.5 dark:border-white/8 dark:bg-stone-900/72"
                       onMouseDown={event => event.stopPropagation()}
                     >
-                      <div className="flex items-center justify-between gap-3 text-[10px] font-semibold text-violet-700 dark:text-violet-200">
-                        <span className="flex min-w-0 items-center gap-1.5"><Sparkles className="h-3 w-3 shrink-0" /> 正在分析抽屉图片</span>
-                        <span className="shrink-0 tabular-nums">
+                      <div className="flex items-center justify-between gap-3 text-[10px] font-semibold text-stone-600 dark:text-stone-300">
+                        <span className="flex min-w-0 items-center gap-1.5"><Sparkles className="h-3 w-3 shrink-0 text-black dark:text-white" /> 正在分析抽屉图片</span>
+                        <span className="shrink-0 tabular-nums text-stone-500 dark:text-stone-400">
                           已完成 {drawerAiAnalysisSummary.analyzed} / {drawerAiAnalysisSummary.total}
                           {drawerAiAnalysisSummary.waitingRetry > 0 ? ` · 待重试 ${drawerAiAnalysisSummary.waitingRetry}` : ''}
                           {drawerAiAnalysisSummary.skipped > 0 ? ` · 跳过 ${drawerAiAnalysisSummary.skipped}` : ''}
@@ -33688,18 +30108,18 @@ useEffect(() => {
                         aria-valuemin={0}
                         aria-valuemax={drawerAiAnalysisSummary.total}
                         aria-valuenow={drawerAiAnalysisSummary.analyzed + drawerAiAnalysisSummary.skipped}
-                        className="mt-1 h-1 overflow-hidden rounded-full bg-violet-200/75 dark:bg-violet-300/20"
+                        className="mt-1.5 h-1 overflow-hidden rounded-full bg-stone-200/90 dark:bg-white/10"
                       >
                         <motion.div
-                          className="h-full rounded-full bg-violet-500"
+                          className="h-full rounded-full bg-black dark:bg-white"
                           animate={{ width: `${Math.max(2, Math.min(100, ((drawerAiAnalysisSummary.analyzed + drawerAiAnalysisSummary.skipped) / Math.max(1, drawerAiAnalysisSummary.total)) * 100))}%` }}
-                          transition={{ duration: 0.2, ease: 'easeOut' }}
+                          transition={{ duration: 0.3, ease: 'easeOut' }}
                         />
                       </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className={`${isCanvasMode ? 'hidden' : 'px-2 py-2 flex'} flex-wrap items-center gap-1.5 border-b border-stone-200/50 dark:border-stone-800/50 bg-stone-50/50 dark:bg-stone-900/50 z-10 shrink-0`} onMouseDown={e => e.stopPropagation()}>
+                <div data-drawer-tabs="true" className={`${isCanvasMode ? 'hidden' : 'px-5 py-3 flex'} flex-wrap items-center gap-1.5 border-b border-stone-200/60 dark:border-stone-800 bg-white dark:bg-stone-950 z-10 shrink-0`} onMouseDown={e => e.stopPropagation()}>
                   {!isCanvasMode && (
                     <>
                     <div className="hidden items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-700 dark:bg-amber-900/24 dark:text-amber-300">
@@ -33708,39 +30128,25 @@ useEffect(() => {
                     </div>
                     {
                     TABS.map(tab => (
-                      <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all whitespace-nowrap cursor-pointer ${activeTab === tab.id ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 shadow-sm' : 'bg-transparent text-stone-500 dark:text-stone-400 hover:bg-stone-200/50 dark:hover:bg-stone-800/50'}`}>
+                      <button data-tab-active={activeTab === tab.id ? 'true' : 'false'} key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex h-8 items-center gap-1.5 px-3 rounded-[8px] text-[12px] font-medium transition-colors whitespace-nowrap cursor-pointer ${activeTab === tab.id ? 'bg-stone-100 text-stone-900 dark:bg-stone-800 dark:text-stone-100' : 'bg-transparent text-stone-500 dark:text-stone-400 hover:bg-stone-100/80 hover:text-stone-800 dark:hover:bg-stone-800/70 dark:hover:text-stone-200'}`}>
                         <tab.icon className={`w-3.5 h-3.5 ${activeTab === tab.id ? 'opacity-100' : 'opacity-70'}`} />{tab.label}
                       </button>
                     ))}
                     </>
                   )}
                 </div>
-                <AnimatePresence>
-                  {isSearchActive && (
-                    <motion.div
-                      initial={isShortcutReveal ? false : { height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={isShortcutReveal ? { duration: 0 } : { duration: 0.15, ease: "easeOut" }}
-                      className="overflow-hidden z-20 shrink-0 will-change-transform" onMouseDown={e => e.stopPropagation()}
-                    >
-                      <div className="px-4 py-2 bg-stone-50/50 dark:bg-stone-900/50 border-b border-stone-200/50 dark:border-stone-800/50">
-                        <div className="relative group">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400 group-focus-within:text-blue-500 transition-colors" />
-                          <input
-                            ref={searchInputRef} type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={isCanvasMode ? '搜索所有图片、视频、AI 标签...' : '搜索灵感、文件、备注标签...'}
-                            className="w-full bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 rounded-[16px] pl-9 pr-8 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all shadow-sm"
-                          />
-                          {searchQuery && (
-                            <button onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition-colors">
-                              <X className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
+                {!isCanvasMode && isDrawerAiClassificationMode && activeTab !== 'notes' && activeTab !== 'calendar' && (
+                  <DrawerAiClassificationBar
+                    dimension={drawerAiClassificationDimension}
+                    activeLabel={activeDrawerAiClassificationLabel}
+                    total={drawerScopedItems.length}
+                    groups={drawerAiClassificationGroups}
+                    onDimensionChange={setDrawerAiClassificationDimension}
+                    onLabelChange={setActiveDrawerAiClassificationLabel}
+                  />
+                )}
                 <AnimatePresence initial={false}>
-                  {isCanvasMode && isSearchActive && searchQuery.trim() && (
+                  {isCanvasMode && isSearchActive && searchQuery.trim() && normalizedDeferredSearchQuery && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
@@ -33773,7 +30179,7 @@ useEffect(() => {
                             const preview = getCanvasDrawerMediaPreviewSource(candidate)
                               || (candidate.type === 'image' && candidate.path ? convertFileSrc(candidate.path) : '');
                             const mediaLabel = candidate.type === 'video' ? '视频' : '图片';
-                            const isOnCanvas = canvasItems.some(canvasItem => canvasItem.item.sourceItemId === candidate.id);
+                            const isOnCanvas = canvasDrawerSourceItemIds.has(candidate.id);
                             return (
                               <button
                                 key={candidate.id}
@@ -33855,17 +30261,17 @@ useEffect(() => {
                       data-drawer-settings-panel="true"
                       className="bg-stone-50/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200/50 dark:border-stone-800/50 overflow-hidden relative z-[99] will-change-transform" onMouseDown={e => e.stopPropagation()}
                     >
-                      <div className="p-3 space-y-2 max-h-[60vh] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full">
+                      <div data-settings-scroll="true" className="p-3 space-y-2 max-h-[60vh] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full">
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'appearance' ? '' : 'appearance')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'appearance' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'appearance' ? '' : 'appearance')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Palette className="w-4 h-4 text-emerald-500"/> 外观模式</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'appearance' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'appearance' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-xs font-medium text-stone-600 dark:text-stone-300 flex items-center gap-1.5"><Sun className="w-3.5 h-3.5 text-stone-400" /> 色彩主题</span>
                                     <button onClick={() => setIsDark(!isDark)} className="flex items-center gap-1.5 px-3 py-1 rounded border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-600 text-[11px] font-medium transition-colors">
@@ -33886,21 +30292,27 @@ useEffect(() => {
                                       <ChevronRight className="w-3 h-3 opacity-45 transition-transform group-hover:translate-x-0.5" />
                                     </span>
                                   </button>
+                                  <DrawerOrganizationPanel
+                                    classificationView={drawerClassificationView}
+                                    onChange={setDrawerClassificationView}
+                                    onResetLabel={() => setActiveDrawerAiClassificationLabel('all')}
+                                    onToast={showToast}
+                                  />
                                 </div>
                               </motion.div>
                             )}
                           </AnimatePresence>
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'shortcuts' ? '' : 'shortcuts')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'shortcuts' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'shortcuts' ? '' : 'shortcuts')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Keyboard className="w-4 h-4 text-blue-500"/> 快捷键配置</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'shortcuts' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'shortcuts' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">防误触模式</span>
                                     <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : shortcut}</button>
@@ -33935,17 +30347,19 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'ai-overview' ? '' : 'ai-overview')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'ai-overview' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'ai-overview' ? '' : 'ai-overview')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Sparkles className="w-4 h-4 text-blue-500"/> AI 与额度</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'ai-overview' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'ai-overview' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="flex flex-col gap-2.5 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="flex flex-col gap-2.5 border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/50">
                                   <div className="grid gap-2 sm:grid-cols-2">
                                     <button
+                                      data-settings-choice="true"
+                                      data-active={canvasAiCredentialSource === 'wallet' ? 'true' : 'false'}
                                       type="button"
                                       onClick={() => setCanvasAiCredentialSource('wallet')}
                                       aria-pressed={canvasAiCredentialSource === 'wallet'}
@@ -33960,6 +30374,8 @@ useEffect(() => {
                                       </div>
                                     </button>
                                     <button
+                                      data-settings-choice="true"
+                                      data-active={canvasAiCredentialSource === 'local' ? 'true' : 'false'}
                                       type="button"
                                       onClick={() => {
                                         setCanvasAiCredentialSource('local');
@@ -34270,75 +30686,6 @@ useEffect(() => {
                                       </label>
                                     )}
                                   </div>
-                                  {false && (
-                                  <div className="flex flex-col gap-2.5 rounded-[18px] border border-amber-100 bg-amber-50/45 px-3 py-2.5 dark:border-amber-800/40 dark:bg-amber-950/12">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="flex items-center gap-1.5 text-[11px] font-black text-amber-800 dark:text-amber-200">
-                                        <Palette className="h-3.5 w-3.5" />
-                                        CMF 接口
-                                      </span>
-                                    </div>
-
-                                  <label className="flex flex-col gap-1">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">接口类型</span>
-                                    <select value={aiApiProvider} onChange={e => handleAiProviderChange(e.target.value)} className="w-full rounded-[14px] bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20">
-                                      <option value="siliconflow">硅基流动 SiliconFlow / 视觉模型</option>
-                                      <option value="openai-compatible">OpenAI Compatible</option>
-                                      <option value="local">本地分析软件</option>
-                                      <option value="custom">自定义 HTTP API</option>
-                                    </select>
-                                  </label>
-                                  <label className="flex flex-col gap-1">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">API Base URL / 本地软件地址</span>
-                                    <div className="flex gap-1.5">
-                                      <input value={aiApiEndpoint} onChange={e => setAiApiEndpoint(e.target.value)} placeholder={isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_ENDPOINT : '例如 http://127.0.0.1:8787/analyze 或 https://api.example.com/v1'} className="min-w-0 flex-1 rounded-[14px] bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20" />
-                                      {isSiliconFlowProvider(aiApiProvider) && (
-                                        <button onClick={() => setAiApiEndpoint(SILICONFLOW_DEFAULT_ENDPOINT)} className="shrink-0 rounded-[14px] bg-amber-100 dark:bg-amber-900/30 px-2.5 py-1.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-900/50">默认</button>
-                                      )}
-                                    </div>
-                                  </label>
-                                  <label className="flex flex-col gap-1">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">API Key</span>
-                                    <input type="password" value={aiApiKey} onChange={e => setAiApiKey(e.target.value)} placeholder={isSiliconFlowProvider(aiApiProvider) ? '填入 cloud.siliconflow.cn 创建的 API Key' : '可选，保存在本机配置中'} className="w-full rounded-[14px] bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20" />
-                                  </label>
-                                  <label className="flex flex-col gap-1">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">视觉模型 / 分析方案</span>
-                                      {isSiliconFlowProvider(aiApiProvider) && (
-                                        <button
-                                          type="button"
-                                          onClick={refreshSiliconFlowVisionModels}
-                                          disabled={isRefreshingSiliconFlowModels}
-                                          className="shrink-0 rounded-[12px] bg-emerald-50 dark:bg-emerald-900/25 px-2.5 py-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 disabled:cursor-wait disabled:opacity-60"
-                                        >{isRefreshingSiliconFlowModels ? '刷新中' : '刷新视觉模型'}</button>
-                                      )}
-                                    </div>
-                                    {isSiliconFlowProvider(aiApiProvider) ? (
-                                      <>
-                                        <select value={aiApiModel} onChange={e => setAiApiModel(e.target.value)} className="w-full rounded-[14px] bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20">
-                                          {siliconFlowModelOptions.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
-                                        </select>
-                                        <input value={aiApiModel} onChange={e => setAiApiModel(e.target.value)} placeholder="也可以手动粘贴模型 ID，例如 Qwen/Qwen3-VL-32B-Instruct" className="w-full rounded-[14px] bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20" />
-                                      </>
-                                    ) : (
-                                      <input value={aiApiModel} onChange={e => setAiApiModel(e.target.value)} placeholder="例如 gpt-4o-mini / cmf-v1 / local-default" className="w-full rounded-[14px] bg-stone-50 dark:bg-stone-700 border border-stone-200 dark:border-stone-600 px-3 py-1.5 text-xs text-stone-700 dark:text-stone-200 outline-none focus:ring-2 focus:ring-emerald-500/20" />
-                                    )}
-                                    {isSiliconFlowProvider(aiApiProvider) && siliconFlowModelListError && (
-                                      <span className="text-[10px] leading-4 text-red-500 dark:text-red-300">{siliconFlowModelListError}</span>
-                                    )}
-                                    {isSiliconFlowProvider(aiApiProvider) && !isSiliconFlowVisionModel(aiApiModel) && (
-                                      <span className="text-[10px] leading-4 text-amber-600 dark:text-amber-300">当前模型可能不是视觉模型。图片 CMF 建议选择 Qwen3-VL、Qwen3-Omni、GLM-V、DeepSeek-OCR 等视觉模型。</span>
-                                    )}
-                                    {isSiliconFlowProvider(aiApiProvider) && (
-                                      <span className="text-[10px] leading-4 text-stone-400 dark:text-stone-500">内置列表只做兜底；刷新后会读取你当前 API Key 在 /v1/models 可见的视觉模型。</span>
-                                    )}
-                                  </label>
-                                  <div className="flex items-center justify-between pt-1 text-[11px] text-stone-500 dark:text-stone-400">
-                                    <span>{hasAiAnalysis ? (isSiliconFlowProvider(aiApiProvider) ? `已启用硅基流动：${aiApiModel}` : '已启用 AI 分析：配色 + CMF / 造型 / 材料 / 借鉴判断。') : (isSiliconFlowProvider(aiApiProvider) ? '未填写完整硅基流动配置：将使用本地大模型炼金。' : '未配置 AI：将使用本地大模型炼金。')}</span>
-                                    <button onClick={() => { setAiApiEndpoint(isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_ENDPOINT : ''); setAiApiKey(''); setAiApiModel(isSiliconFlowProvider(aiApiProvider) ? SILICONFLOW_DEFAULT_MODEL : ''); }} className="rounded-full bg-stone-100 dark:bg-stone-700 px-3 py-1 text-[10px] font-bold text-stone-500 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-600">清空</button>
-                                  </div>
-                                  </div>
-                                  )}
                                   <div className="flex flex-col gap-2 rounded-[18px] border border-sky-100 bg-sky-50/50 px-3 py-2.5 dark:border-sky-400/20 dark:bg-sky-400/10">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="flex items-center gap-1.5 text-[11px] font-black text-sky-800 dark:text-sky-100">
@@ -34424,15 +30771,15 @@ useEffect(() => {
                           )}
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 账户授权</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'license' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between gap-2 pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">授权状态</span>
                                     <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-black text-stone-700 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200">
@@ -34521,15 +30868,15 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
-                        <div className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button onClick={() => setActiveSettingCategory(prev => prev === 'system' ? '' : 'system')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'system' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'system' ? '' : 'system')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Settings className="w-4 h-4 text-purple-500"/> 高级与系统</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'system' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'system' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
+                                <div data-settings-section-content="true" className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <button
                                     type="button"
                                     disabled={isAutoStartChanging}
@@ -34775,19 +31122,21 @@ useEffect(() => {
                 </AnimatePresence>
 
                 <div
-                  ref={!isCanvasMode ? drawerScrollRef : undefined}
-                  onScroll={!isCanvasMode ? handleDrawerContentScroll : undefined}
+                  data-drawer-content="true"
+                  data-canvas-ui-root={isCanvasMode ? 'true' : undefined}
+                  ref={!isCanvasMode ? setDrawerScrollElement : undefined}
                   className={`min-h-0 min-w-0 flex-1 relative flex ${isCanvasMode ? 'flex-row' : 'flex-col'} ${
                   isCanvasMode
                     ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
-                    : 'overflow-y-auto p-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
+                    : 'overflow-y-auto p-5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-600 [&::-webkit-scrollbar-thumb]:rounded-full'
                 }`}
                 >
                   {isCanvasMode && (
                     <div
                       ref={canvasSurfaceRef}
+                      data-canvas-surface="true"
                       tabIndex={-1}
-                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(96,122,158,0.18)_1px,transparent_0)] bg-[length:26px_26px] bg-blue-50/30 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950/40 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[28px] border border-blue-100/80 dark:border-blue-400/18'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(113,113,122,0.16)_1px,transparent_0)] bg-[length:26px_26px] bg-stone-50 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[18px] border border-stone-200 dark:border-stone-800'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto', overflowAnchor: 'none' }}
                       onPointerEnter={() => {
                         isCanvasPointerInsideRef.current = true;
@@ -34870,11 +31219,18 @@ useEffect(() => {
                             className="fixed left-1/2 top-5 z-[100090] flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-200/70 bg-stone-950/86 px-3 py-2 text-[11px] font-bold text-white shadow-[0_12px_32px_rgba(0,0,0,0.24)] backdrop-blur-xl"
                           >
                             {allowVideoReference ? <Film className="h-3.5 w-3.5 text-emerald-300" /> : <ImageIcon className="h-3.5 w-3.5 text-cyan-300" />}
-                            {allowVideoReference ? '点击画布图片/视频作为输入' : '点击画布图片作为输入'}
+                            {pendingCanvasFusionRoleRef.current?.targetId === canvasInputPickTargetId
+                              ? pendingCanvasFusionRoleRef.current.role === 'BASE'
+                                ? '点击画布图片设置为基图'
+                                : '点击画布图片设置为意向图'
+                              : allowVideoReference ? '点击画布图片/视频作为输入' : '点击画布图片作为输入'}
                             <button
                               type="button"
                               className="ml-1 rounded-full bg-white/10 px-2 py-0.5 text-white/70 hover:bg-white/16 hover:text-white"
-                              onClick={() => setCanvasInputPickTargetId(null)}
+                              onClick={() => {
+                                pendingCanvasFusionRoleRef.current = null;
+                                setCanvasInputPickTargetId(null);
+                              }}
                             >
                               取消
                             </button>
@@ -34903,9 +31259,9 @@ useEffect(() => {
                           }}
                         >
                         {canvasItems.length === 0 && (
-                          <div className="absolute left-10 top-10 w-[320px] rounded-[26px] border border-dashed border-blue-200 bg-white/68 p-5 text-stone-500 shadow-sm backdrop-blur-xl dark:border-blue-400/24 dark:bg-stone-900/68 dark:text-stone-300">
+                          <div className="absolute left-10 top-10 w-[320px] rounded-[14px] border border-dashed border-stone-300 bg-white p-5 text-stone-500 shadow-sm dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300">
                             <div className="flex items-center gap-2 text-sm font-black text-stone-800 dark:text-stone-100">
-                              <LayoutGrid className="h-4 w-4 text-blue-500 dark:text-blue-300" />
+                              <LayoutGrid className="h-4 w-4 text-stone-500 dark:text-stone-400" />
                               无限画布
                             </div>
                             <p className="mt-2 text-xs leading-5">
@@ -35028,19 +31384,99 @@ useEffect(() => {
                             canvasItem.ai?.provider || (canvasAiMediaType === 'video' ? 'xais-chat' : canvasAiProvider)
                           );
                           const canvasAiItemModel = getCanvasAiResolvedModel(canvasAiItemProvider, canvasItem.ai?.model, canvasAiMediaType);
-                          const canvasAiSupportsImageResolution = canvasAiMediaType === 'image'
-                            && supportsCanvasAiImageResolution(canvasAiItemProvider, canvasAiItemModel);
-                          const canvasAiImageResolutionValues = getCanvasAiImageResolutionValues(
-                            canvasAiItemProvider,
-                            canvasAiItemModel,
+                          const canvasAiItemCapabilities = canvasAiMediaType === 'image'
+                            ? canvasAiCloudImageModels?.channels?.find(channel => (
+                              channel.id === canvasItem.ai?.providerChannelId
+                              && canvasAiProviderForCloudKind(channel.provider) === canvasAiItemProvider
+                            ))?.capabilities
+                              || canvasItem.ai?.providerCandidates?.find(candidate => (
+                                candidate.provider === canvasAiItemProvider
+                                && candidate.model === canvasAiItemModel
+                              ))?.capabilities
+                            : undefined;
+                          const canvasAiItemProviderCandidates = hydrateCanvasAiModelCandidateCapabilities(
+                            canvasItem.ai?.providerCandidates || [],
+                            canvasAiCloudImageModels?.channels,
                           );
+                          const canvasAiCandidateImageResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
+                            canvasAiItemProviderCandidates,
+                          );
+                          const canvasAiImageResolutionValues = canvasAiCandidateImageResolutionValues.length > 0
+                            ? canvasAiCandidateImageResolutionValues
+                            : getCanvasAiImageResolutionValues(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                              canvasAiItemCapabilities,
+                            );
+                          const canvasAiSupportsImageResolution = canvasAiMediaType === 'image'
+                            && canvasAiImageResolutionValues.length > 0;
                           const canvasAiImageResolutionOptions = CANVAS_AI_IMAGE_RESOLUTION_OPTIONS.filter(option => (
                             canvasAiImageResolutionValues.includes(option.value as '1k' | '2k' | '4k')
                           ));
-                          const canvasAiItemImageResolution = normalizeCanvasAiImageResolutionForModel(
-                            canvasAiItemProvider,
-                            canvasAiItemModel,
-                            canvasItem.ai?.resolution,
+                          const canvasAiItemImageResolution = canvasAiCandidateImageResolutionValues.length > 0
+                            ? normalizeCanvasAiImageResolutionForCandidates(
+                              canvasAiItemProviderCandidates,
+                              canvasItem.ai?.resolution,
+                            )
+                            : normalizeCanvasAiImageResolutionForModel(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                              canvasItem.ai?.resolution,
+                              canvasAiItemCapabilities,
+                            );
+                          const isCanvasAiNewApiVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'new-api';
+                          const isCanvasAiSeedanceVideo = canvasAiMediaType === 'video'
+                            && isSeedance20VideoModel(canvasAiItemModel);
+                          const isCanvasAiSeedanceLikeVideo = canvasAiMediaType === 'video'
+                            && isSeedanceLikeVideoModel(canvasAiItemModel);
+                          const isCanvasAiMiniMaxVideo = canvasAiMediaType === 'video'
+                            && canvasAiItemProvider === 'minimax'
+                            && isMiniMaxH3VideoModel(canvasAiItemModel);
+                          const isCanvasAiMikotoVideo = canvasAiMediaType === 'video' && canvasAiItemProvider === 'mikoto';
+                          const isCanvasAiMikotoKlingVideo = isCanvasAiMikotoVideo
+                            && /^kling(?:-omni)?-video$/i.test(String(canvasAiItemModel || '').trim());
+                          const canvasAiVideoResolutionValues = isCanvasAiMikotoVideo
+                            ? getMikotoVideoResolutionValues(canvasAiItemModel)
+                            : isCanvasAiMiniMaxVideo
+                            ? getMiniMaxH3VideoResolutionValues()
+                            : isCanvasAiSeedanceLikeVideo
+                            ? getMikotoVideoResolutionValues(canvasAiItemModel)
+                            : isCanvasAiNewApiVideo
+                              ? getNewApiVideoResolutionValues(canvasAiItemModel)
+                              : CANVAS_AI_VIDEO_RESOLUTIONS;
+                          const canvasAiVideoResolutionOptions = isCanvasAiMiniMaxVideo
+                            ? canvasAiVideoResolutionValues.map(value => ({ value, label: value }))
+                            : CANVAS_AI_VIDEO_RESOLUTION_OPTIONS.filter(option => (
+                              canvasAiVideoResolutionValues.includes(option.value)
+                            ));
+                          const canvasAiVideoResolution = isCanvasAiMikotoVideo
+                            ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
+                            : isCanvasAiMiniMaxVideo
+                            ? normalizeMiniMaxH3VideoResolution(canvasItem.ai?.resolution)
+                            : isCanvasAiSeedanceLikeVideo
+                            ? normalizeMikotoVideoResolution(canvasAiItemModel, canvasItem.ai?.resolution)
+                            : isCanvasAiNewApiVideo
+                              ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, canvasItem.ai?.resolution)
+                              : canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION;
+                          const canvasAiVideoDurationValues = isCanvasAiMikotoVideo
+                            ? getMikotoVideoDurationValues(canvasAiItemModel)
+                            : isCanvasAiSeedanceLikeVideo
+                            ? getMikotoVideoDurationValues(canvasAiItemModel)
+                            : isCanvasAiNewApiVideo
+                            ? getNewApiVideoDurationValues(canvasAiItemModel)
+                            : CANVAS_AI_VIDEO_DURATIONS;
+                          const canvasAiVideoDurationOptions = CANVAS_AI_VIDEO_DURATION_OPTIONS.filter(option => (
+                            canvasAiVideoDurationValues.includes(Number(option.value))
+                          ));
+                          const canvasAiVideoDuration = isCanvasAiMikotoVideo
+                            ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
+                            : isCanvasAiSeedanceLikeVideo
+                            ? normalizeMikotoVideoDuration(canvasAiItemModel, canvasItem.ai?.duration)
+                            : isCanvasAiNewApiVideo
+                            ? normalizeNewApiVideoDurationForModel(canvasAiItemModel, canvasItem.ai?.duration)
+                            : canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION;
+                          const canvasAiVideoSupportsFirstLastFrame = !(
+                            isCanvasAiNewApiVideo && canvasAiItemModel === 'sora-2'
                           );
                           const canvasAiSupportsTransparentPng = supportsCanvasAiTransparentPng(
                             canvasAiItemProvider,
@@ -35074,27 +31510,63 @@ useEffect(() => {
                             && isReplaceableInternalImageSlot(node)
                           ));
                           const canvasExpandedInternalSlot = canvasExpandedInternalSlotNode?.internalSlot;
+                          const canvasWalletPricing = canvasAiCloudImageModels?.pricing;
+                          // Keep the estimate visible while pricing is being
+                          // refreshed. The credit helpers provide conservative
+                          // client defaults until the wallet pricing arrives.
                           const showCanvasRunCreditEstimate = shouldShowCanvasGenerationCredits(canvasAiCredentialSource);
+                          const canvasImagePricingChoice = canvasItem.ai?.type === 'image-generator'
+                            ? parseCanvasAiModelChoiceValue(getCanvasAiUnifiedImageModelValue(
+                              canvasAiItemProvider,
+                              canvasAiItemModel,
+                            ))
+                            : null;
+                          const canvasImagePricingCandidates = canvasImagePricingChoice
+                            ? selectCanvasAiImageCandidatesForResolution(
+                              canvasImagePricingChoice.providerCandidates?.length
+                                ? canvasImagePricingChoice.providerCandidates
+                                : [{
+                                  source: canvasImagePricingChoice.source,
+                                  provider: canvasImagePricingChoice.provider,
+                                  model: canvasImagePricingChoice.model,
+                                  providerChannelId: canvasImagePricingChoice.providerChannelId,
+                                }],
+                              canvasAiItemImageResolution,
+                            )
+                            : [];
+                          const canvasImagePricingModel = canvasImagePricingCandidates[0]?.model || canvasAiItemModel;
+                          const canvasImagePricingCapabilities = canvasImagePricingCandidates[0]?.capabilities
+                            || canvasAiItemCapabilities;
                           const canvasWorkflowCreditEstimate = showCanvasRunCreditEstimate && isCanvasWorkflowItem
                             ? estimateCanvasWorkflowCredits(canvasWorkflow, {
                               resolveImageModel: node => getCanvasAiDefaultModel(normalizeCanvasAiProvider(
                                 node.ai?.provider || canvasAiProvider,
                               )),
-                              pricing: canvasAiCloudImageModels?.pricing,
+                              pricing: canvasWalletPricing,
                             })
                             : null;
                           const canvasImageCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'image-generator'
                             ? estimateCanvasImageGenerationCredits({
-                              model: canvasAiItemModel,
+                              model: canvasImagePricingModel,
                               resolution: canvasAiItemImageResolution,
                               count: canvasItem.ai.count,
-                            }, canvasAiCloudImageModels?.pricing)
+                              capabilities: canvasImagePricingCapabilities,
+                            }, canvasWalletPricing)
                             : null;
+                          const canvasVideoPricingReferences = canvasItem.ai?.type === 'video-generator'
+                            ? getCanvasImageInputBufferItemsForNode(canvasItem, canvasItems)
+                            : [];
+                          const canvasVideoPricingReferenceCounts = {
+                            imageCount: canvasVideoPricingReferences.filter(item => item.type === 'image').length,
+                            videoCount: canvasVideoPricingReferences.filter(item => item.type === 'video').length,
+                          };
                           const canvasVideoCreditEstimate = showCanvasRunCreditEstimate && canvasItem.ai?.type === 'video-generator'
                             ? estimateCanvasVideoGenerationCredits({
                               model: canvasAiItemModel,
                               count: canvasItem.ai.count,
-                            }, canvasAiCloudImageModels?.pricing)
+                              duration: canvasAiVideoDuration,
+                              resolution: canvasAiVideoResolution,
+                            }, canvasWalletPricing, canvasVideoPricingReferenceCounts)
                             : null;
                           const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate
                             ? [
@@ -35121,7 +31593,7 @@ useEffect(() => {
                             : canvasImageCreditEstimate
                               ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
                               : canvasVideoCreditEstimate
-                                ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：生成 ${canvasVideoCreditEstimate.outputCount} 条，每条 ${canvasVideoCreditEstimate.unitCredits} 积分`
+                                ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：${canvasVideoCreditEstimate.creditsPerSecond} 积分/秒 × ${canvasVideoCreditEstimate.durationSeconds} 秒 × ${canvasVideoCreditEstimate.outputCount} 条；已计入 ${canvasVideoPricingReferenceCounts.imageCount} 张参考图和 ${canvasVideoPricingReferenceCounts.videoCount} 段参考视频`
                               : undefined;
                           const canvasWorkflowUserInput = isCanvasWorkflowItem
                             ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)
@@ -35132,6 +31604,9 @@ useEffect(() => {
                             || canvasWorkflowAllowsImages
                             || canvasWorkflowAllowsFiles;
                           const canvasAiOutputs = isCanvasAiNodeItem ? getCanvasAiOutputPreviewSlots(canvasItem) : [];
+                          const isCanvasAiOutputsExpanded = canvasAiExpandedOutputNodeIds.has(canvasItem.id);
+                          const canvasAiVisibleOutputs = getCanvasAiVisibleOutputs(canvasAiOutputs, isCanvasAiOutputsExpanded);
+                          const canvasAiHiddenOutputCount = Math.max(0, canvasAiOutputs.length - canvasAiVisibleOutputs.length);
                           const canvasAiRealOutputs = isCanvasAiNodeItem ? canvasItem.ai?.outputs || [] : [];
                           const showCanvasAiOutputPreview = isCanvasWorkflowItem || canvasAiRealOutputs.length > 0;
                           const isCanvasAiPromptExpanded = canvasAiPromptEditingId === canvasItem.id;
@@ -35155,7 +31630,7 @@ useEffect(() => {
                             ? `${canvasAiOutputs[0].width}:${canvasAiOutputs[0].height}`
                             : canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO;
                           const canvasAiNodeDesignSize = isCanvasAiNodeItem
-                            ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded)
+                            ? getCanvasAiNodeDesignSizeForItem(canvasItem, isCanvasAiPromptExpanded, isCanvasAiOutputsExpanded)
                             : null;
                           const canvasAiMainColumnLayoutWidth = canvasItem.ai?.type === 'image-generator'
                             ? CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
@@ -35166,7 +31641,7 @@ useEffect(() => {
                             ? getCanvasAiOutputTileLayout({
                               width: canvasAiMainColumnLayoutWidth,
                               aspectRatio: canvasAiOutputAspectRatio,
-                              outputCount: canvasAiOutputs.length || undefined,
+                              outputCount: canvasAiVisibleOutputs.length || undefined,
                               count: canvasItem.ai?.count,
                               isWorkflow: isCanvasWorkflowItem,
                             })
@@ -35181,7 +31656,22 @@ useEffect(() => {
                           const canvasAiPromptHeight = isCanvasAiGeneratorItem && canvasAiNodeDesignSize
                             ? getCanvasAiPromptAutoHeight(canvasItem.item.content || '', canvasAiMainColumnLayoutWidth, isCanvasAiPromptExpanded)
                             : 0;
-                          const canvasVideoInputMode = canvasItem.ai?.videoInputMode === 'FLF' ? 'FLF' : 'REF';
+                          const canvasVideoReferenceSlots = getCanvasAiVideoReferenceSlots(
+                            canvasAiItemModel,
+                            canvasItem.ai?.videoInputMode,
+                            canvasAiItemProvider,
+                          );
+                          const canvasVideoInputMode = canvasVideoReferenceSlots.mode;
+                          const canvasVideoReferenceSlotLabels = getCanvasAiVideoReferenceSlotLabels(
+                            canvasAiItemModel,
+                            canvasVideoInputMode,
+                            canvasAiItemProvider,
+                          );
+                          const canvasAllowsSeedanceOmniReferences = !isCanvasAiSeedanceVideo
+                            || canvasVideoReferenceSlots.mode === 'REF';
+                          const isCanvasVeoIngredientMode = isCanvasAiNewApiVideo
+                            && canvasAiItemModel !== 'sora-2'
+                            && canvasVideoInputMode === 'REF';
                           const isCanvasVideoReferenceItem = (inputItem: CanvasImageItem) => {
                             const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem)[0];
                             return inputItem.item.type === 'video'
@@ -35196,6 +31686,10 @@ useEffect(() => {
                               || inputItem.ai?.type === 'workflow'
                               || generatorOutput?.mediaType === 'image';
                           };
+                          const isCanvasAudioReferenceItem = (inputItem: CanvasImageItem) => (
+                            inputItem.item.type === 'file'
+                            && isCanvasAudioFileName(inputItem.item.name || inputItem.item.path)
+                          );
                           type CanvasInputPreviewItem = {
                             id: string;
                             node: CanvasImageItem;
@@ -35218,6 +31712,11 @@ useEffect(() => {
                             if (inputItem.bufferItem) return inputItem.bufferItem.type === 'video';
                             return isCanvasVideoReferenceItem(inputItem.node);
                           };
+                          const isCanvasAudioReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => {
+                            if (inputItem.bufferItem) return inputItem.bufferItem.type === 'file'
+                              && isCanvasAudioFileName(inputItem.bufferItem.name || inputItem.bufferItem.path);
+                            return isCanvasAudioReferenceItem(inputItem.node);
+                          };
                           const isCanvasImageReferencePreviewItem = (inputItem: CanvasInputPreviewItem) => {
                             if (inputItem.bufferItem) return inputItem.bufferItem.type === 'image';
                             return isCanvasImageReferenceItem(inputItem.node);
@@ -35232,6 +31731,7 @@ useEffect(() => {
                             if (inputItem.bufferItem) return getCanvasItemNavSource(inputItem.bufferItem);
                             if (inputItem.node.item.type === 'image') return getCanvasItemNavSource(inputItem.node.item);
                             if (inputItem.node.item.type === 'video') return inputItem.node.item.thumbnail || '';
+                            if (isCanvasAudioReferenceItem(inputItem.node)) return '';
                             const generatorOutput = getCanvasAiSuccessfulOutputs(inputItem.node)[0];
                             return generatorOutput?.mediaType === 'image'
                               ? getCanvasAiOutputThumbnailSource(generatorOutput)
@@ -35239,16 +31739,29 @@ useEffect(() => {
                           };
                           const expandedCanvasInputPreviewItems = rawCanvasInputPreviewItems.flatMap(getCanvasExpandedInputPreviewItems);
                           const canvasVisualInputPreviewItems = expandedCanvasInputPreviewItems.filter(item => (
-                            isCanvasImageReferencePreviewItem(item) || isCanvasVideoReferencePreviewItem(item)
+                            isCanvasImageReferencePreviewItem(item)
+                            || (canvasAllowsSeedanceOmniReferences && isCanvasVideoReferencePreviewItem(item))
+                            || (canvasAllowsSeedanceOmniReferences && isCanvasAiSeedanceLikeVideo && isCanvasAudioReferencePreviewItem(item))
                           ));
                           const canvasInputPreviewItems = isCanvasAiNodeItem
                             ? expandedCanvasInputPreviewItems.filter(item => (
                               isCanvasImageReferencePreviewItem(item)
-                              || isCanvasVideoReferencePreviewItem(item)
+                              || (canvasAllowsSeedanceOmniReferences && isCanvasVideoReferencePreviewItem(item))
+                              || (canvasAllowsSeedanceOmniReferences && isCanvasAiSeedanceLikeVideo && isCanvasAudioReferencePreviewItem(item))
                               || isCanvasTextReferencePreviewItem(item)
                               || (isCanvasWorkflowItem && isCanvasFileReferencePreviewItem(item))
                             ))
                             : expandedCanvasInputPreviewItems;
+                          const isCanvasImageFusionItem = isCanvasImageFusionAi(canvasItem.ai);
+                          const canvasImageFusionConfig = isCanvasImageFusionItem
+                            ? normalizeCanvasImageFusionConfig(canvasItem.ai?.imageFusion, canvasItem.inputs || [])
+                            : null;
+                          const canvasImageFusionBasePreview = canvasImageFusionConfig?.baseNodeId
+                            ? canvasInputPreviewItems.find(item => item.disconnectId === canvasImageFusionConfig.baseNodeId)
+                            : undefined;
+                          const canvasImageFusionStylePreview = canvasImageFusionConfig?.styleNodeId
+                            ? canvasInputPreviewItems.find(item => item.disconnectId === canvasImageFusionConfig.styleNodeId)
+                            : undefined;
                           const canvasTextMediaInputItems = isTextCanvasItem
                             ? canvasVisualInputPreviewItems
                             : [];
@@ -35258,11 +31771,24 @@ useEffect(() => {
                           const canvasVideoReferenceVideoItems = canvasAiMediaType === 'video'
                             ? canvasVisualInputPreviewItems.filter(isCanvasVideoReferencePreviewItem)
                             : [];
-                          const canvasVideoReferenceImageSlotCount = isCanvasSingleVideoInputItem ? 0 : canvasVideoInputMode === 'FLF' ? 2 : 9;
-                          const canvasVideoReferenceVideoSlotCount = isCanvasSingleVideoInputItem ? 1 : canvasVideoInputMode === 'FLF' ? 0 : 1;
-                          const canvasVideoReferenceSlotCount = canvasVideoReferenceImageSlotCount + canvasVideoReferenceVideoSlotCount;
+                          const canvasVideoReferenceAudioItems = canvasAiMediaType === 'video'
+                            ? canvasVisualInputPreviewItems.filter(isCanvasAudioReferencePreviewItem)
+                            : [];
+                          const canvasVideoReferenceImageSlotCount = isCanvasSingleVideoInputItem
+                            ? 0
+                            : canvasVideoReferenceSlots.imageSlots;
+                          const canvasVideoReferenceVideoSlotCount = isCanvasSingleVideoInputItem
+                            ? 1
+                            : canvasVideoReferenceSlots.videoSlots;
+                          const canvasVideoReferenceAudioSlotCount = isCanvasSingleVideoInputItem
+                            ? 0
+                            : canvasVideoReferenceSlots.audioSlots;
+                          const canvasVideoReferenceSlotCount = canvasVideoReferenceImageSlotCount
+                            + canvasVideoReferenceVideoSlotCount
+                            + canvasVideoReferenceAudioSlotCount;
                           const canvasVideoReferenceOverflowCount = Math.max(0, canvasVideoReferenceImageItems.length - canvasVideoReferenceImageSlotCount)
-                            + Math.max(0, canvasVideoReferenceVideoItems.length - canvasVideoReferenceVideoSlotCount);
+                            + Math.max(0, canvasVideoReferenceVideoItems.length - canvasVideoReferenceVideoSlotCount)
+                            + Math.max(0, canvasVideoReferenceAudioItems.length - canvasVideoReferenceAudioSlotCount);
                           const frameInterpolationEstimate = isCanvasFrameInterpolationItem
                             ? canvasItem.ai?.interpolationEstimate as RifeFrameInterpolationEstimate | undefined
                             : undefined;
@@ -35319,12 +31845,13 @@ useEffect(() => {
                             key={canvasItem.id}
                             data-canvas-item-id={canvasItem.id}
                             data-canvas-ai-input-id={isCanvasAiNodeItem && canvasConnectionDraft ? canvasItem.id : undefined}
-                            className="group/canvas-item absolute overflow-visible"
+                            className="group/canvas-item absolute isolate overflow-visible"
                             style={{
                               left: canvasItem.x,
                               top: canvasItem.y,
                               width: canvasItem.width,
                               height: canvasItem.height,
+                              zIndex: isSelected ? 2 : 0,
                               touchAction: 'none',
                             }}
                             onPointerDown={(e) => startCanvasItemDrag(e, canvasItem.id)}
@@ -35352,8 +31879,19 @@ useEffect(() => {
                             >
                               {isCanvasAiNodeItem ? (
                                 <>
-                                <div
-                                  className="relative h-full w-full overflow-hidden"
+                                 <div
+                                   data-canvas-tool-node-surface={
+                                     isCanvasImageFusionItem
+                                       ? 'fusion'
+                                       : isCanvasFrameInterpolationItem
+                                         ? 'frame-interpolation'
+                                         : isCanvasImageEnhancementItem
+                                           ? 'image-enhancement'
+                                           : isCanvasVideoEnhancementItem
+                                             ? 'video-enhancement'
+                                             : undefined
+                                   }
+                                   className="relative h-full w-full overflow-hidden"
                                   style={{ borderRadius: canvasScaledNodeRadius }}
                                 >
                                   <div
@@ -35372,6 +31910,37 @@ useEffect(() => {
                                       <div className="flex min-w-0 flex-1 flex-col gap-3">
                                       <div className="flex items-start justify-between gap-3">
                                         {showCanvasAiAttachmentControl && (
+                                        isCanvasImageFusionItem && canvasImageFusionConfig ? (
+                                          <CanvasImageFusionControls
+                                            basePreviewSource={canvasImageFusionBasePreview ? getCanvasReferencePreviewSource(canvasImageFusionBasePreview) : undefined}
+                                            stylePreviewSource={canvasImageFusionStylePreview ? getCanvasReferencePreviewSource(canvasImageFusionStylePreview) : undefined}
+                                            baseConnected={!!canvasImageFusionConfig.baseNodeId}
+                                            styleConnected={!!canvasImageFusionConfig.styleNodeId}
+                                            baseWeight={canvasImageFusionConfig.baseWeight || 0}
+                                            styleWeight={canvasImageFusionConfig.styleWeight || 0}
+                                            disabled={canvasItem.ai?.status === 'working'}
+                                            onOpenSlot={(role) => {
+                                              pendingCanvasFusionRoleRef.current = { targetId: canvasItem.id, role };
+                                              setCanvasInputMenuForId(canvasItem.id);
+                                            }}
+                                            onRemoveBase={() => {
+                                              if (canvasImageFusionConfig.baseNodeId) {
+                                                disconnectCanvasInput(canvasItem.id, canvasImageFusionConfig.baseNodeId);
+                                              }
+                                            }}
+                                            onRemoveStyle={() => {
+                                              if (canvasImageFusionConfig.styleNodeId) {
+                                                disconnectCanvasInput(canvasItem.id, canvasImageFusionConfig.styleNodeId);
+                                              }
+                                            }}
+                                            onBaseWeightChange={(baseWeight) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                              imageFusion: { ...canvasImageFusionConfig, baseWeight },
+                                            })}
+                                            onStyleWeightChange={(styleWeight) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                              imageFusion: { ...canvasImageFusionConfig, styleWeight },
+                                            })}
+                                          />
+                                        ) : (
                                         <button
                                           data-no-drag="true"
                                           type="button"
@@ -35381,29 +31950,38 @@ useEffect(() => {
                                             event.stopPropagation();
                                             setCanvasInputMenuForId(prev => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
-                                          className={`group/reference relative flex h-[58px] ${canvasAiMediaType === 'video' ? 'max-w-[560px]' : 'max-w-[330px]'} shrink-0 items-center justify-start overflow-visible rounded-[14px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
+                                          className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'max-w-[600px] flex-initial' : 'max-w-[330px] shrink-0'} items-center justify-start overflow-visible rounded-[14px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
                                           title={isCanvasWorkflowItem ? '添加或管理工作流素材' : '添加或管理参考图'}
                                         >
                                           {canvasAiMediaType === 'video' ? (
-                                            <span className="flex h-[58px] max-w-full items-center gap-1.5 overflow-hidden">
+                                            <span className="flex h-[58px] min-w-0 max-w-full items-center gap-1.5 overflow-x-auto overscroll-contain [scrollbar-width:thin]">
                                               {Array.from({ length: canvasVideoReferenceSlotCount }).map((_, inputIndex) => {
-                                                const isVideoReferenceSlot = canvasVideoInputMode === 'REF' && inputIndex >= canvasVideoReferenceImageSlotCount;
-                                                const inputItem = isVideoReferenceSlot
-                                                  ? canvasVideoReferenceVideoItems[inputIndex - canvasVideoReferenceImageSlotCount]
-                                                  : canvasVideoReferenceImageItems[inputIndex];
+                                                const isVideoReferenceSlot = canvasVideoInputMode === 'REF'
+                                                  && inputIndex >= canvasVideoReferenceImageSlotCount
+                                                  && inputIndex < canvasVideoReferenceImageSlotCount + canvasVideoReferenceVideoSlotCount;
+                                                const isAudioReferenceSlot = canvasVideoInputMode === 'REF'
+                                                  && !isCanvasSingleVideoInputItem
+                                                  && inputIndex >= canvasVideoReferenceImageSlotCount + canvasVideoReferenceVideoSlotCount;
+                                                const inputItem = isAudioReferenceSlot
+                                                  ? canvasVideoReferenceAudioItems[inputIndex - canvasVideoReferenceImageSlotCount - canvasVideoReferenceVideoSlotCount]
+                                                  : isVideoReferenceSlot
+                                                    ? canvasVideoReferenceVideoItems[inputIndex - canvasVideoReferenceImageSlotCount]
+                                                    : canvasVideoReferenceImageItems[inputIndex];
                                                 const inputSourceNode = inputItem?.node;
                                                 const inputPreviewSource = inputItem
                                                   ? getCanvasReferencePreviewSource(inputItem)
                                                   : '';
-                                                const slotLabel = isCanvasSingleVideoInputItem ? '视频输入' : isVideoReferenceSlot
+                                                const slotLabel = isCanvasSingleVideoInputItem ? '视频输入' : isAudioReferenceSlot
+                                                  ? '参考音频'
+                                                  : isVideoReferenceSlot
                                                   ? '参考视频1'
                                                   : canvasVideoInputMode === 'FLF'
                                                   ? (inputIndex === 0 ? '首帧' : '尾帧')
-                                                  : `参考图${inputIndex + 1}`;
+                                                  : canvasVideoReferenceSlotLabels[inputIndex] || `参考图${inputIndex + 1}`;
                                                 return (
                                                   <span
                                                     key={inputItem?.id || `video-reference-${inputIndex}`}
-                                                    className={`group/reference-thumbnail relative flex h-14 ${canvasVideoInputMode === 'FLF' || isVideoReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[14px] text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60`}
+                                                    className={`group/reference-thumbnail relative flex h-14 ${isCanvasVeoIngredientMode ? 'w-[68px]' : canvasVideoInputMode === 'FLF' || isVideoReferenceSlot || isAudioReferenceSlot ? 'w-14' : 'w-12'} shrink-0 items-center justify-center overflow-hidden rounded-[14px] text-stone-400 transition-transform hover:z-10 hover:scale-[1.03] dark:text-white/60`}
                                                     aria-label={inputItem ? '双击移除输入' : `添加${slotLabel}`}
                                                     title={inputItem ? '双击移除输入' : `添加${slotLabel}`}
                                                     onPointerDown={(event) => event.stopPropagation()}
@@ -35429,6 +32007,10 @@ useEffect(() => {
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
                                                         {getCanvasAiMediaType(inputSourceNode.ai) === 'video' ? <Film className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
                                                       </span>
+                                                    ) : inputItem && isCanvasAudioReferencePreviewItem(inputItem) ? (
+                                                      <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-fuchsia-500 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-fuchsia-300 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                        <Music className="h-4 w-4" />
+                                                      </span>
                                                     ) : inputItem && isCanvasVideoReferencePreviewItem(inputItem) ? (
                                                       <span className="flex h-full w-full items-center justify-center rounded-[14px] border border-stone-200/32 text-stone-400 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:text-white/58 dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
                                                         <Film className="h-4 w-4" />
@@ -35440,13 +32022,18 @@ useEffect(() => {
                                                     ) : (
                                                       <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 rounded-[14px] border border-dashed border-stone-300/48 px-1 text-center text-[9px] font-black leading-[11px] text-stone-400 transition-colors group-hover/reference:border-stone-400/70 group-hover/reference:text-stone-500 dark:border-white/[0.12] dark:text-white/34 dark:group-hover/reference:border-white/24 dark:group-hover/reference:text-white/52">
                                                         <span className="text-[10px] leading-none">+</span>
-                                                        {isVideoReferenceSlot && <Film className="h-3 w-3" />}
+                                                        {isAudioReferenceSlot ? <Music className="h-3 w-3" /> : isVideoReferenceSlot ? <Film className="h-3 w-3" /> : null}
                                                         <span>{slotLabel}</span>
                                                       </span>
                                                     )}
                                                     <span className="pointer-events-none absolute left-1 top-1 z-10 flex h-4 min-w-4 items-center justify-center rounded bg-black/68 px-1 text-[9px] font-black leading-none text-white shadow-sm">
                                                       {inputIndex + 1}
                                                     </span>
+                                                    {isCanvasVeoIngredientMode && inputItem && (
+                                                      <span className="pointer-events-none absolute inset-x-1 bottom-1 z-10 rounded bg-black/68 px-1 py-0.5 text-center text-[8px] font-black leading-[10px] text-white shadow-sm">
+                                                        {slotLabel}
+                                                      </span>
+                                                    )}
                                                     {inputItem && (
                                                       <span
                                                         data-no-drag="true"
@@ -35560,9 +32147,9 @@ useEffect(() => {
                                                   </span>
                                                 );
                                               })}
-                                              {canvasInputPreviewItems.length > 6 && (
+                                              {canvasVideoReferenceOverflowCount > 0 && (
                                                 <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[14px] text-[11px] font-black text-stone-500 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:text-white/68 dark:shadow-[0_12px_28px_rgba(0,0,0,0.28)]">
-                                                  +{canvasInputPreviewItems.length - 6}
+                                                  +{canvasVideoReferenceOverflowCount}
                                                 </span>
                                               )}
                                             </span>
@@ -35575,6 +32162,7 @@ useEffect(() => {
                                             </span>
                                           )}
                                         </button>
+                                        )
                                         )}
                                         <div className="ml-auto flex min-w-[132px] flex-col items-end gap-1.5 pt-0.5">
                                           <span className="max-w-[250px] truncate text-[11px] font-black text-stone-500 dark:text-white/58">
@@ -35882,6 +32470,22 @@ useEffect(() => {
                                                   {isCanvasWorkflowAllOutputMode ? '最终输出' : '全部节点'}
                                                 </button>
                                               )}
+                                              {canvasAiOutputs.length > CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT && (
+                                                <button
+                                                  data-no-drag="true"
+                                                  type="button"
+                                                  onPointerDown={(event) => event.stopPropagation()}
+                                                  onClick={(event) => {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    toggleCanvasAiOutputsExpanded(canvasItem.id);
+                                                  }}
+                                                  className="rounded-full bg-white/70 px-2 py-0.5 text-[9px] font-black text-stone-500 transition-colors hover:bg-white hover:text-stone-900 dark:bg-white/10 dark:text-white/58 dark:hover:bg-white/16 dark:hover:text-white"
+                                                  title={isCanvasAiOutputsExpanded ? '收起输出预览' : `展开其余 ${canvasAiHiddenOutputCount} 个输出`}
+                                                >
+                                                  {isCanvasAiOutputsExpanded ? '收起' : `展开全部 +${canvasAiHiddenOutputCount}`}
+                                                </button>
+                                              )}
                                               <span>{canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO}</span>
                                             </div>
                                           </div>
@@ -35891,7 +32495,7 @@ useEffect(() => {
                                               gridTemplateColumns: `repeat(${canvasAiOutputTileLayout.columns}, ${canvasAiOutputTileLayout.tileWidth}px)`,
                                             }}
                                           >
-                                            {canvasAiOutputs.map((output, outputIndex) => {
+                                            {canvasAiVisibleOutputs.map((output, outputIndex) => {
                                               const outputSource = getCanvasAiOutputDisplaySource(output);
                                               const outputPreviewSource = getCanvasAiOutputThumbnailSource(output);
                                               const outputPreviewItem = createCanvasAiOutputBufferItem(canvasItem, output, outputIndex);
@@ -36163,18 +32767,18 @@ useEffect(() => {
                                           )}
                                         </div>
                                       ) : isCanvasFrameInterpolationItem ? (
-                                        <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
+                                        <div data-canvas-local-tool-panel="true" className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
                                           <div className="flex items-center justify-between gap-3">
                                             <div className="flex min-w-0 items-center gap-2 text-[13px] font-black text-stone-800 dark:text-white/82">
                                               <RefreshCw className="h-4 w-4 text-cyan-500" />
                                               <span>本地 RIFE 视频补帧</span>
                                             </div>
-                                            <span className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-black text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-100">
+                                            <span data-canvas-tool-badge="true" className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-black text-cyan-700 dark:bg-cyan-300/12 dark:text-cyan-100">
                                               v4.6 / HD / UHD
                                             </span>
                                           </div>
                                           <div className="mt-2 grid gap-1.5">
-                                            <div className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
+                                            <div data-canvas-tool-metric="true" className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
                                               <span className="inline-flex items-center gap-1.5">
                                                 <Clock className="h-3.5 w-3.5" />
                                                 预计耗时
@@ -36193,8 +32797,9 @@ useEffect(() => {
                                                   </span>
                                                   <span className="shrink-0 text-cyan-700 dark:text-cyan-100">{frameInterpolationProgressDetail}</span>
                                                 </div>
-                                                <div className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                <div data-canvas-tool-progress-track="true" className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
+                                                    data-canvas-tool-progress="true"
                                                     className={`h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-[width] duration-200 ${frameInterpolationProgress?.total ? '' : 'animate-pulse'}`}
                                                     style={{ width: `${frameInterpolationProgress?.total ? Math.max(4, frameInterpolationProgressPercent) : 38}%` }}
                                                   />
@@ -36204,7 +32809,7 @@ useEffect(() => {
                                           </div>
                                         </div>
                                       ) : isCanvasEnhancementItem ? (
-                                        <div className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
+                                        <div data-canvas-local-tool-panel="true" className="shrink-0 rounded-[16px] border border-stone-950/[0.055] bg-stone-950/[0.025] px-3.5 py-3 text-[12px] font-semibold leading-5 text-stone-600 dark:border-white/[0.075] dark:bg-white/[0.045] dark:text-white/64">
                                           <div className="flex items-center justify-between gap-3">
                                             <div className="flex min-w-0 items-center gap-2 text-[13px] font-black text-stone-800 dark:text-white/82">
                                               {isCanvasVideoEnhancementItem
@@ -36214,12 +32819,12 @@ useEffect(() => {
                                                 ? '本地视频快速增强'
                                                 : isCanvasVideoEnhancementItem ? '本地视频清晰度增强' : '本地图片清晰度增强'}</span>
                                             </div>
-                                            <span className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-black text-violet-700 dark:bg-violet-300/12 dark:text-violet-100">
+                                            <span data-canvas-tool-badge="true" className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-black text-violet-700 dark:bg-violet-300/12 dark:text-violet-100">
                                               {isQuickVideoEnhancementItem ? 'FFmpeg + NVENC' : 'Real-ESRGAN'}
                                             </span>
                                           </div>
                                           <div className="mt-2 grid gap-1.5">
-                                            <div className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
+                                            <div data-canvas-tool-metric="true" className="flex items-center justify-between gap-3 rounded-full bg-white/64 px-2.5 py-1 text-[11px] text-stone-500 ring-1 ring-stone-950/[0.04] dark:bg-black/12 dark:text-white/48 dark:ring-white/[0.05]">
                                               <span className="inline-flex items-center gap-1.5">
                                                 <Clock className="h-3.5 w-3.5" />
                                                 预计耗时
@@ -36240,8 +32845,9 @@ useEffect(() => {
                                                   </span>
                                                   <span className="shrink-0 text-violet-700 dark:text-violet-100">{enhancementProgressDetail}</span>
                                                 </div>
-                                                <div className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
+                                                <div data-canvas-tool-progress-track="true" className="h-1 overflow-hidden rounded-full bg-stone-950/[0.07] dark:bg-white/[0.08]">
                                                   <div
+                                                    data-canvas-tool-progress="true"
                                                     className={`h-full rounded-full bg-gradient-to-r from-violet-400 to-blue-500 transition-[width] duration-200 ${enhancementProgress?.total ? '' : 'animate-pulse'}`}
                                                     style={{ width: `${enhancementProgress?.total ? Math.max(4, enhancementProgressPercent) : 38}%` }}
                                                   />
@@ -36251,7 +32857,15 @@ useEffect(() => {
                                           </div>
                                         </div>
                                       ) : (
-                                        <textarea
+                                        <div
+                                          className="relative shrink-0"
+                                          style={{ height: canvasAiPromptHeight || undefined }}
+                                        >
+                                          <textarea
+                                          ref={(element) => {
+                                            if (element) canvasAiPromptTextAreaRefs.current[canvasItem.id] = element;
+                                            else delete canvasAiPromptTextAreaRefs.current[canvasItem.id];
+                                          }}
                                           data-no-drag="true"
                                           data-canvas-node-prompt="true"
                                           rows={4}
@@ -36270,11 +32884,33 @@ useEffect(() => {
                                           onPointerDown={(event) => event.stopPropagation()}
                                           onWheel={(event) => event.stopPropagation()}
                                           placeholder={canvasItem.ai?.presetLabel ? '补充这个预设的细节，不填也可以直接生成。' : canvasAiMediaType === 'video' ? '描述你想要的视频运动、镜头和画面...' : '描述你想要的画面...'}
-                                          className="shrink-0 resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
-                                          style={{
-                                            height: canvasAiPromptHeight || undefined,
-                                          }}
-                                        />
+                                          className="block h-full w-full resize-none overflow-y-auto border-0 bg-transparent px-0.5 py-0 pr-10 text-[15px] font-semibold leading-7 text-stone-700 outline-none placeholder:text-stone-400 focus:ring-0 dark:text-white/74 dark:placeholder:text-white/32"
+                                          />
+                                          {(canvasAiMediaType === 'image' || canvasAiMediaType === 'video') && (
+                                            <button
+                                              data-no-drag="true"
+                                              data-canvas-edit-control="true"
+                                              type="button"
+                                              disabled={canvasPromptOptimizingId === canvasItem.id}
+                                              onPointerDown={(event) => {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                              }}
+                                              onClick={(event) => {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                void optimizeCanvasPrompt(canvasItem.id);
+                                              }}
+                                              className="group/prompt-optimize absolute bottom-1.5 right-1.5 inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent bg-transparent text-stone-400 transition-[border-color,background-color,color,transform] hover:border-cyan-500/15 hover:bg-cyan-500/[0.07] hover:text-cyan-600 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/30 disabled:cursor-wait disabled:opacity-55 dark:text-white/36 dark:hover:border-cyan-300/15 dark:hover:bg-cyan-300/[0.08] dark:hover:text-cyan-200 motion-reduce:transition-colors"
+                                              title={canvasPromptOptimizingId === canvasItem.id ? '正在优化提示词' : '使用 Agent 优化提示词'}
+                                              aria-label={canvasPromptOptimizingId === canvasItem.id ? '正在优化提示词' : '优化提示词'}
+                                            >
+                                              {canvasPromptOptimizingId === canvasItem.id
+                                                ? <RefreshCw className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                                                : <Sparkles className="h-4 w-4" strokeWidth={2.1} />}
+                                            </button>
+                                          )}
+                                        </div>
                                       )}
                                       {canvasItem.ai?.error && (
                                         <div
@@ -36299,557 +32935,212 @@ useEffect(() => {
                                         </div>
                                       )}
                                     </div>
-                                    <div className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}>
+                                    <div
+                                      data-canvas-edit-control="true"
+                                      className={`flex h-[52px] shrink-0 items-center ${canvasAiMediaType === 'video' ? 'gap-1.5 px-3' : 'gap-2 px-4'} border-t border-stone-950/[0.045] pb-3 pt-2 text-stone-600 dark:border-white/[0.055] dark:text-white/70`}
+                                    >
                                       {!isCanvasWorkflowItem && (
                                         <>
-                                          {isCanvasFrameInterpolationItem ? (
-                                            <>
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={isFrameInterpolationFixed2xMode ? 'auto-2x' : getCanvasRifeRateValue(canvasItem.ai)}
-                                                options={isFrameInterpolationFixed2xMode ? CANVAS_RIFE_AUTO_TARGET_FPS_OPTIONS : CANVAS_RIFE_RATE_OPTIONS}
-                                                onChange={(value) => {
-                                                  if (value.startsWith('target-')) {
-                                                    updateCanvasAiGeneratorData(canvasItem.id, {
-                                                      interpolationRateMode: 'target-fps',
-                                                      interpolationTargetFps: Number(value.slice('target-'.length)) || 60,
-                                                    });
-                                                  } else {
-                                                    updateCanvasAiGeneratorData(canvasItem.id, {
-                                                      interpolationRateMode: 'multiplier',
-                                                      interpolationFactor: Number(value.slice('factor-'.length)) || 2,
-                                                    });
-                                                  }
-                                                }}
-                                                disabled={isFrameInterpolationFixed2xMode}
-                                                icon={<RefreshCw className="h-3.5 w-3.5" />}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={isFrameInterpolationFixed2xMode ? 'HD / UHD 固定使用原帧率 × 2' : '倍率补帧与目标帧率二选一'}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px] ${isFrameInterpolationFixed2xMode ? 'cursor-not-allowed opacity-45 hover:bg-transparent dark:hover:bg-transparent' : ''}`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={138}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.videoCfrMode || 'auto'}
-                                                options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  videoCfrMode: value === '24' || value === '30' || value === 'off' ? value : 'auto',
-                                                })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title="补帧前检测 VFR；自动模式只在需要时标准化"
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[104px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.interpolationMode || 'normal'}
-                                                options={CANVAS_RIFE_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  interpolationMode: value,
-                                                  ...(isRifeFixed2xMode(value) ? { interpolationFactor: 2 } : {}),
-                                                })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`模式：${CANVAS_RIFE_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.interpolationMode || 'normal'))?.label || '普通'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[82px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={118}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.interpolationQuality || 'standard'}
-                                                options={CANVAS_RIFE_QUALITY_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationQuality: value })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`质量：${CANVAS_RIFE_QUALITY_OPTIONS.find(option => option.value === (canvasItem.ai?.interpolationQuality || 'standard'))?.label || '标准'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[76px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={104}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.interpolationKeepAudio === false ? 'no' : 'yes'}
-                                                options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { interpolationKeepAudio: value !== 'no' })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={canvasItem.ai?.interpolationKeepAudio === false ? '不保留音频' : '保留音频'}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[88px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={112}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={String(canvasItem.ai?.outputFormat || 'mp4').toLowerCase()}
-                                                options={CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                                labelClassName="text-center leading-none uppercase"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`输出格式：${String(canvasItem.ai?.outputFormat || 'mp4').toUpperCase()}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[66px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={88}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                            </>
-                                          ) : isCanvasEnhancementItem ? (
-                                            <>
-                                              {isCanvasVideoEnhancementItem && (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={canvasItem.ai?.enhancementEngine || 'ai'}
-                                                  options={CANVAS_VIDEO_ENHANCEMENT_ENGINE_OPTIONS}
-                                                  onChange={(value) => {
-                                                    if (value === 'quick') {
-                                                      void cancelCanvasEnhancementEstimate(canvasItem.id);
-                                                    }
-                                                    updateCanvasAiGeneratorData(canvasItem.id, {
-                                                      enhancementEngine: value === 'quick' ? 'quick' : 'ai',
-                                                      enhancementEstimate: undefined,
-                                                      enhancementEstimateKey: undefined,
-                                                      enhancementProgress: undefined,
-                                                    });
-                                                  }}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title={isQuickVideoEnhancementItem ? 'FFmpeg 滤镜 + NVENC 优先' : 'Real-ESRGAN AI 清晰度增强'}
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[104px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                                />
-                                              )}
-                                              {isQuickVideoEnhancementItem ? (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={String(canvasItem.ai?.quickEnhancementScale || 2)}
-                                                  options={CANVAS_QUICK_ENHANCEMENT_SCALE_OPTIONS}
-                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { quickEnhancementScale: Number(value) >= 2 ? 2 : 1 })}
-                                                  icon={<Maximize2 className="h-3.5 w-3.5" />}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title="快速增强输出分辨率"
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                                />
-                                              ) : (
-                                                <>
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={String(canvasItem.ai?.enhancementScale || 2)}
-                                                options={CANVAS_ESRGAN_SCALE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementScale: Number(value) || 2 })}
-                                                icon={<Maximize2 className="h-3.5 w-3.5" />}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`增强倍率：${canvasItem.ai?.enhancementScale || 2}×`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[102px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={118}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.enhancementMode || 'general'}
-                                                options={CANVAS_ESRGAN_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  enhancementMode: value,
-                                                  model: value === 'anime' ? 'realesr-animevideov3' : 'realesrgan-x4plus',
-                                                })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`模式：${CANVAS_ESRGAN_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.enhancementMode || 'general'))?.label || '通用增强'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={128}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.enhancementResizeMode || 'upscale'}
-                                                options={CANVAS_ESRGAN_RESIZE_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementResizeMode: value })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`增强方式：${CANVAS_ESRGAN_RESIZE_MODE_OPTIONS.find(option => option.value === (canvasItem.ai?.enhancementResizeMode || 'upscale'))?.label || '放大并增强'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[112px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={142}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                                </>
-                                              )}
-                                              {isCanvasVideoEnhancementItem && (
-                                                <RoundedSelect
-                                                  data-no-drag="true"
-                                                  data-canvas-edit-control="true"
-                                                  value={canvasItem.ai?.enhancementKeepAudio === false ? 'no' : 'yes'}
-                                                  options={CANVAS_RIFE_KEEP_AUDIO_OPTIONS}
-                                                  onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { enhancementKeepAudio: value !== 'no' })}
-                                                  labelClassName="text-center leading-none"
-                                                  chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                  title={canvasItem.ai?.enhancementKeepAudio === false ? '不保留音频' : '保留音频'}
-                                                  className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[88px]`}
-                                                  menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                  optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                  selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                  menuMinWidth={112}
-                                                menuScale={canvasAiMenuScale}
-                                                />
-                                              )}
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={String(canvasItem.ai?.outputFormat || (isCanvasVideoEnhancementItem ? 'mp4' : 'png')).toLowerCase()}
-                                                options={isCanvasVideoEnhancementItem ? CANVAS_RIFE_OUTPUT_FORMAT_OPTIONS : CANVAS_ESRGAN_IMAGE_FORMAT_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                                labelClassName="text-center leading-none uppercase"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`输出格式：${String(canvasItem.ai?.outputFormat || (isCanvasVideoEnhancementItem ? 'mp4' : 'png')).toUpperCase()}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[68px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={88}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                            </>
+                                          {isCanvasFrameInterpolationItem || isCanvasEnhancementItem ? (
+                                            <CanvasLocalMediaControls
+                                              canvasItem={canvasItem}
+                                              isCanvasFrameInterpolationItem={isCanvasFrameInterpolationItem}
+                                              isFrameInterpolationFixed2xMode={isFrameInterpolationFixed2xMode}
+                                              isCanvasEnhancementItem={isCanvasEnhancementItem}
+                                              isCanvasVideoEnhancementItem={isCanvasVideoEnhancementItem}
+                                              isQuickVideoEnhancementItem={isQuickVideoEnhancementItem}
+                                              canvasAiMenuScale={canvasAiMenuScale}
+                                              updateCanvasAiGeneratorData={updateCanvasAiGeneratorData}
+                                              cancelCanvasEnhancementEstimate={cancelCanvasEnhancementEstimate}
+                                            />
                                           ) : (
-                                            <>
-                                          {canvasAiMediaType === 'video' && (
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={canvasAiItemProvider}
-                                            options={canvasAiMediaType === 'video'
-                                              ? CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS
-                                              : CANVAS_AI_PROVIDER_SELECT_OPTIONS}
-                                            onChange={(value) => {
-                                              const provider = normalizeCanvasAiProvider(value);
-                                              const model = getCanvasAiResolvedModel(provider, '', canvasAiMediaType);
-                                              updateCanvasAiGeneratorData(canvasItem.id, {
-                                                provider,
-                                                model,
-                                                imageProtocol: undefined,
-                                                ...(supportsCanvasAiImageResolution(provider, model) ? {
-                                                  resolution: normalizeCanvasAiImageResolution(canvasItem.ai?.resolution),
-                                                } : {}),
-                                              });
-                                            }}
-                                            icon={<Settings className="h-3.5 w-3.5" />}
-                                            hideLabel
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`中转：${(canvasAiMediaType === 'video'
-                                              ? CANVAS_AI_VIDEO_PROVIDER_SELECT_OPTIONS
-                                              : CANVAS_AI_PROVIDER_SELECT_OPTIONS).find(option => option.value === canvasAiItemProvider)?.label || ''}`}
-                                            className={CANVAS_AI_NODE_ICON_SELECT_CLASS}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={190}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          )}
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            data-canvas-edit-control="true"
-                                            value={canvasAiMediaType === 'image'
-                                              ? canvasItem.ai?.providerCandidates && canvasItem.ai.providerCandidates.length > 1
-                                                ? canvasAiGroupedModelChoiceValue(
-                                                  canvasItem.ai.providerCandidates[0].source,
-                                                  {
-                                                    source: canvasItem.ai.providerCandidates[0].source,
-                                                    provider: canvasAiItemProvider,
-                                                    model: canvasAiItemModel,
-                                                    providerChannelId: canvasItem.ai.providerChannelId,
-                                                  },
-                                                  canvasItem.ai.providerCandidates,
-                                                )
-                                                : canvasAiModelChoiceValue(
-                                                getCanvasAiImageCredentialSource(
-                                                  canvasAiItemProvider,
-                                                  canvasAiItemModel,
-                                                  canvasItem.ai?.credentialSource,
-                                                  canvasItem.ai?.providerChannelId,
-                                                ),
-                                                canvasAiItemProvider,
-                                                canvasAiItemModel,
-                                                canvasItem.ai?.providerChannelId,
-                                                )
-                                              : canvasAiItemModel}
-                                            options={canvasAiMediaType === 'image'
-                                              ? getCanvasAiUnifiedImageModelOptions(
-                                                canvasAiItemProvider,
-                                                canvasAiItemModel,
-                                                canvasItem.ai?.credentialSource,
-                                                canvasItem.ai?.providerChannelId,
-                                                canvasItem.ai?.providerCandidates,
-                                              )
-                                              : getCanvasAiModelOptionsForProvider(canvasAiItemProvider, canvasAiMediaType)}
-                                            onChange={(value) => {
-                                              const choice = canvasAiMediaType === 'image'
-                                                ? parseCanvasAiModelChoiceValue(value)
-                                                : null;
-                                              const provider = choice?.provider || canvasAiItemProvider;
-                                              const model = choice?.model || value;
-                                              updateCanvasAiGeneratorData(canvasItem.id, {
-                                                ...(choice ? {
-                                                  provider,
-                                                  credentialSource: choice.source,
-                                                  providerChannelId: choice.providerChannelId,
-                                                  providerCandidates: choice.providerCandidates,
-                                                } : {}),
-                                                model,
-                                                imageProtocol: undefined,
-                                                aspectRatio: normalizeCanvasAiAspectRatioForModel(
-                                                  model,
-                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
-                                                ),
-                                                ...(supportsCanvasAiImageResolution(provider, model) ? {
-                                                  resolution: normalizeCanvasAiImageResolutionForModel(
-                                                    provider,
-                                                    model,
+                                            <CanvasGeneratorControls
+                                              mediaType={canvasAiMediaType}
+                                              menuScale={canvasAiMenuScale}
+                                              modelValue={canvasAiMediaType === 'image'
+                                                ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel)
+                                                : getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
+                                              modelOptions={canvasAiMediaType === 'image'
+                                                ? canvasAiUnifiedImageModelOptions
+                                                : CANVAS_AI_VIDEO_MODEL_OPTIONS}
+                                              modelTitle={`模型：${canvasAiMediaType === 'image'
+                                                ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
+                                                : CANVAS_AI_VIDEO_MODEL_OPTIONS.find(option => option.value === getCanvasAiVideoModelOptionValue(canvasAiItemModel))?.label || canvasAiItemModel}`}
+                                              onModelChange={(value) => {
+                                                const choice = canvasAiMediaType === 'image'
+                                                  ? parseCanvasAiModelChoiceValue(value)
+                                                  : null;
+                                                const videoCandidates = canvasAiMediaType === 'video'
+                                                  ? getCanvasAiVideoModelCandidates(
+                                                    value,
+                                                    canvasAiCredentialSource,
+                                                    canvasAiItemProvider,
+                                                    canvasAiCloudImageModels?.videoChannels,
+                                                  )
+                                                  : [];
+                                                const provider = choice?.provider
+                                                  || videoCandidates[0]?.provider
+                                                  || (canvasAiMediaType === 'video'
+                                                    ? getCanvasAiVideoProviderForModel(value)
+                                                    : canvasAiItemProvider);
+                                                const model = choice?.model || videoCandidates[0]?.model || value;
+                                                const modelCapabilities = choice?.providerCandidates?.find(candidate => (
+                                                  candidate.provider === provider && candidate.model === model
+                                                ))?.capabilities;
+                                                const modelResolutionCandidates = choice?.providerCandidates || [];
+                                                const modelResolutionValues = getCanvasAiImageResolutionValuesForCandidates(
+                                                  modelResolutionCandidates,
+                                                );
+                                                const resolution = modelResolutionValues.length > 0
+                                                  ? normalizeCanvasAiImageResolutionForCandidates(
+                                                    modelResolutionCandidates,
                                                     canvasItem.ai?.resolution,
+                                                  )
+                                                  : supportsCanvasAiImageResolution(provider, model, modelCapabilities)
+                                                    ? normalizeCanvasAiImageResolutionForModel(provider, model, canvasItem.ai?.resolution, modelCapabilities)
+                                                  : canvasAiMediaType === 'video' && provider === 'new-api'
+                                                    ? isSeedance20VideoModel(model)
+                                                      ? normalizeMikotoVideoResolution(model, canvasItem.ai?.resolution)
+                                                      : normalizeNewApiVideoResolutionForModel(model, canvasItem.ai?.resolution)
+                                                    : canvasAiMediaType === 'video' && provider === 'minimax'
+                                                      ? normalizeMiniMaxH3VideoResolution(canvasItem.ai?.resolution)
+                                                    : canvasAiMediaType === 'video' && provider === 'mikoto'
+                                                      ? normalizeMikotoVideoResolution(model, canvasItem.ai?.resolution)
+                                                    : canvasItem.ai?.resolution;
+                                                updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  ...(choice ? {
+                                                    provider,
+                                                    credentialSource: choice.source,
+                                                    providerChannelId: choice.providerChannelId,
+                                                    providerCandidates: choice.providerCandidates,
+                                                  } : canvasAiMediaType === 'video' ? {
+                                                    provider,
+                                                    credentialSource: canvasAiCredentialSource,
+                                                    providerChannelId: videoCandidates[0]?.providerChannelId,
+                                                    providerCandidates: videoCandidates.length > 1 ? videoCandidates : undefined,
+                                                  } : {}),
+                                                  model,
+                                                  imageProtocol: undefined,
+                                                  aspectRatio: canvasAiMediaType === 'video'
+                                                    && (provider === 'new-api'
+                                                      || (provider === 'mikoto' && /^kling(?:-omni)?-video$/i.test(model)))
+                                                    ? isSeedance20VideoModel(model)
+                                                      ? normalizeSeedanceVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                      : normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                    : normalizeCanvasAiAspectRatioForModel(
+                                                      model,
+                                                      canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                      resolution,
+                                                    ),
+                                                  ...(canvasAiMediaType === 'video' && provider === 'new-api' ? {
+                                                    resolution,
+                                                    duration: normalizeNewApiVideoDurationForModel(model, canvasItem.ai?.duration),
+                                                    videoInputMode: model === 'sora-2' ? 'REF' : canvasItem.ai?.videoInputMode || 'REF',
+                                                  } : {}),
+                                                  ...(canvasAiMediaType === 'video' && (provider === 'mikoto' || provider === 'minimax') ? { resolution } : {}),
+                                                  ...(modelResolutionValues.length > 0
+                                                    || supportsCanvasAiImageResolution(provider, model, modelCapabilities)
+                                                    ? { resolution }
+                                                    : {}),
+                                                });
+                                              }}
+                                              aspectRatioValue={(isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
+                                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                : normalizeCanvasAiAspectRatioForModel(
+                                                  canvasAiItemModel,
+                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                  canvasAiItemImageResolution,
+                                                )}
+                                              aspectRatioOptions={(isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
+                                                ? CANVAS_AI_NEW_API_VIDEO_ASPECT_RATIO_OPTIONS
+                                                : getCanvasAiAspectRatioOptionsForModel(canvasAiItemModel, canvasAiItemImageResolution)}
+                                              aspectRatioTitle={`比例：${(isCanvasAiNewApiVideo && !isCanvasAiSeedanceVideo) || isCanvasAiMikotoKlingVideo
+                                                ? normalizeNewApiVideoAspectRatio(canvasItem.ai?.aspectRatio)
+                                                : normalizeCanvasAiAspectRatioForModel(
+                                                  canvasAiItemModel,
+                                                  canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                  canvasAiItemImageResolution,
+                                                )}`}
+                                              useWideAspectRatioMenu={usesCanvasAiImage2DimensionOptions(canvasAiItemModel, canvasAiItemImageResolution)}
+                                              onAspectRatioChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
+                                              supportsImageResolution={canvasAiSupportsImageResolution}
+                                              imageResolutionValue={canvasAiItemImageResolution}
+                                              imageResolutionOptions={canvasAiImageResolutionOptions}
+                                              onImageResolutionChange={(value) => {
+                                                const resolution = canvasAiCandidateImageResolutionValues.length > 0
+                                                  ? normalizeCanvasAiImageResolutionForCandidates(
+                                                    canvasAiItemProviderCandidates,
+                                                    value,
+                                                  )
+                                                  : normalizeCanvasAiImageResolutionForModel(
+                                                    canvasAiItemProvider,
+                                                    canvasAiItemModel,
+                                                    value,
+                                                    canvasAiItemCapabilities,
+                                                  );
+                                                updateCanvasAiGeneratorData(canvasItem.id, {
+                                                  resolution,
+                                                  aspectRatio: normalizeCanvasAiAspectRatioForModel(
+                                                    canvasAiItemModel,
+                                                    canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO,
+                                                    resolution,
                                                   ),
-                                                } : {}),
-                                              });
-                                            }}
-                                            labelClassName={`${canvasAiMediaType === 'video' ? 'max-w-[104px]' : 'max-w-[150px]'} truncate text-center leading-none`}
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`模型：${canvasAiMediaType === 'image'
-                                              ? getCanvasAiPublicImageModelName(canvasAiItemProvider, canvasAiItemModel) || '未支持的图像模型'
-                                              : canvasAiItemModel}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${canvasAiMediaType === 'video' ? 'max-w-[132px]' : 'max-w-[178px]'}`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={260}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={normalizeCanvasAiAspectRatioForModel(
-                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
-                                              canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
-                                            )}
-                                            options={getCanvasAiAspectRatioOptionsForModel(
-                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType))
-                                            )}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { aspectRatio: value })}
-                                            labelClassName="text-center leading-none"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`${isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? '分辨率' : '比例'}：${normalizeCanvasAiAspectRatioForModel(
-                                              normalizeXaisImage2Model(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)),
-                                              canvasItem.ai?.aspectRatio || CANVAS_AI_DEFAULT_ASPECT_RATIO
-                                            )}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} ${isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 'w-[156px]' : 'w-[62px]'}`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={isCanvasAiResolutionOptionModel(canvasItem.ai?.model || getCanvasAiDefaultModel(normalizeCanvasAiProvider(canvasItem.ai?.provider || canvasAiProvider), canvasAiMediaType)) ? 188 : 86}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          {canvasAiSupportsImageResolution && (
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={canvasAiItemImageResolution}
-                                            options={canvasAiImageResolutionOptions}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                              resolution: normalizeCanvasAiImageResolutionForModel(
-                                                canvasAiItemProvider,
-                                                canvasAiItemModel,
-                                                value,
-                                              ),
-                                            })}
-                                            labelClassName="text-center leading-none"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`清晰度：${canvasAiItemImageResolution.toUpperCase()}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[62px]`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={78}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          )}
-                                          {canvasAiMediaType !== 'video' ? (
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={canvasAiOutputFormat}
-                                            options={canvasAiOutputFormatOptions}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
-                                            labelClassName="text-center leading-none uppercase"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
-                                            className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[68px]`}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={78}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                          ) : (
-                                            <>
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                value={canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION}
-                                                options={CANVAS_AI_VIDEO_RESOLUTION_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { resolution: value })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`分辨率：${canvasItem.ai?.resolution || CANVAS_AI_DEFAULT_VIDEO_RESOLUTION}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[70px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={86}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                value={canvasItem.ai?.videoInputMode || 'REF'}
-                                                options={CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { videoInputMode: value === 'FLF' ? 'FLF' : 'REF' })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`参考模式：${(canvasItem.ai?.videoInputMode || 'REF') === 'FLF' ? '首尾帧' : '参考图'}`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[76px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={92}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                value={String(canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION)}
-                                                options={CANVAS_AI_VIDEO_DURATION_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { duration: Number(value) || CANVAS_AI_DEFAULT_VIDEO_DURATION })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title={`时长：${canvasItem.ai?.duration || CANVAS_AI_DEFAULT_VIDEO_DURATION} 秒`}
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[64px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={82}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                              <RoundedSelect
-                                                data-no-drag="true"
-                                                data-canvas-edit-control="true"
-                                                value={canvasItem.ai?.videoCfrMode || 'auto'}
-                                                options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
-                                                onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
-                                                  videoCfrMode: value === '24' || value === '30' || value === 'off' ? value : 'auto',
-                                                })}
-                                                labelClassName="text-center leading-none"
-                                                chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                                title="生成后检测帧率；自动模式只在需要时转 CFR"
-                                                className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} w-[96px]`}
-                                                menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                                optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                                selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                                menuMinWidth={132}
-                                                menuScale={canvasAiMenuScale}
-                                              />
-                                            </>
-                                          )}
-                                          <RoundedSelect
-                                            data-no-drag="true"
-                                            value={String(canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT)}
-                                            options={CANVAS_AI_COUNT_OPTIONS}
-                                            onChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { count: Number(value) || CANVAS_AI_DEFAULT_COUNT })}
-                                            labelClassName="text-center text-[11px] leading-none"
-                                            chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
-                                            title={`${canvasAiMediaType === 'video' ? '条数' : '张数'}：${canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT}`}
-                                            className={CANVAS_AI_NODE_COUNT_SELECT_CLASS}
-                                            menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
-                                            optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
-                                            selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-                                            menuMinWidth={86}
-                                                menuScale={canvasAiMenuScale}
-                                          />
-                                            </>
+                                                });
+                                              }}
+                                              outputFormatValue={canvasAiOutputFormat}
+                                              outputFormatOptions={canvasAiOutputFormatOptions}
+                                              outputFormatTitle={`格式：${(canvasItem.ai?.outputFormat || CANVAS_AI_DEFAULT_OUTPUT_FORMAT).toUpperCase()}`}
+                                              onOutputFormatChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { outputFormat: value })}
+                                              videoResolutionValue={canvasAiVideoResolution}
+                                              videoResolutionOptions={canvasAiVideoResolutionOptions}
+                                              onVideoResolutionChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, {
+                                                resolution: isCanvasAiMiniMaxVideo
+                                                  ? normalizeMiniMaxH3VideoResolution(value)
+                                                  : isCanvasAiSeedanceLikeVideo
+                                                    ? normalizeMikotoVideoResolution(canvasAiItemModel, value)
+                                                  : isCanvasAiNewApiVideo
+                                                    ? normalizeNewApiVideoResolutionForModel(canvasAiItemModel, value)
+                                                    : isCanvasAiMikotoVideo
+                                                      ? normalizeMikotoVideoResolution(canvasAiItemModel, value)
+                                                    : value,
+                                              })}
+                                              videoSupportsFirstLastFrame={canvasAiVideoSupportsFirstLastFrame}
+                                              videoInputMode={canvasVideoInputMode}
+                                              onVideoInputModeChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { videoInputMode: value === 'FLF' ? 'FLF' : 'REF' })}
+                                              videoDuration={canvasAiVideoDuration}
+                                              videoDurationOptions={canvasAiVideoDurationOptions}
+                                              onVideoDurationChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { duration: Number(value) || CANVAS_AI_DEFAULT_VIDEO_DURATION })}
+                                              videoCfrMode={canvasItem.ai?.videoCfrMode || 'off'}
+                                              onVideoCfrModeChange={(value) => {
+                                                const videoCfrMode = value === '24' || value === '30' || value === 'off' ? value : 'auto';
+                                                updateCanvasAiGeneratorData(canvasItem.id, { videoCfrMode });
+                                                if (videoCfrMode !== 'off') {
+                                                  void invoke<void>('ensure_video_cfr_tools', { progressId: canvasItem.id })
+                                                    .catch(error => console.warn('FFmpeg / FFprobe 后台准备失败:', error));
+                                                }
+                                              }}
+                                              count={canvasItem.ai?.count || CANVAS_AI_DEFAULT_COUNT}
+                                              onCountChange={(value) => updateCanvasAiGeneratorData(canvasItem.id, { count: Number(value) || CANVAS_AI_DEFAULT_COUNT })}
+                                            />
                                           )}
                                         </>
                                       )}
-                                      <button
-                                        data-no-drag="true"
-                                        data-canvas-run-control="true"
-                                        type="button"
+                                      <CanvasAiRunButton
                                         disabled={canvasItem.ai?.status === 'working' || isLocalMediaBenchmarking}
+                                        isWorking={canvasItem.ai?.status === 'working'}
+                                        isFrameInterpolation={isCanvasFrameInterpolationItem}
+                                        isEnhancement={isCanvasEnhancementItem}
+                                        isVideoEnhancement={isCanvasVideoEnhancementItem}
+                                        isQuickVideoEnhancement={isQuickVideoEnhancementItem}
+                                        isWorkflow={isCanvasWorkflowItem}
+                                        hasResults={hasCanvasAiGeneratedResults(canvasItem)}
+                                        workingElapsedText={canvasAiWorkingElapsedText}
+                                        workingStatusText={canvasAiWorkingStatusText}
+                                        creditLabel={canvasRunCreditLabel}
+                                        creditTitle={canvasRunCreditTitle}
                                         onPointerDown={(event) => handleCanvasAiRunPointerDown(event, canvasItem.id)}
                                         onClick={(event) => handleCanvasAiRunClick(event, canvasItem.id)}
-                                        title={canvasRunCreditTitle}
-                                        className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
-                                      >
-                                        <Play className={`h-4 w-4 fill-current ${canvasItem.ai?.status === 'working' ? 'animate-pulse' : ''}`} />
-                                        {isCanvasFrameInterpolationItem
-                                          ? (canvasItem.ai?.status === 'working' ? `补帧中 ${canvasAiWorkingElapsedText}` : hasCanvasAiGeneratedResults(canvasItem) ? '再次补帧' : '补帧')
-                                          : isCanvasEnhancementItem
-                                            ? (isCanvasVideoEnhancementItem
-                                              ? (canvasItem.ai?.status === 'working'
-                                                ? `${isQuickVideoEnhancementItem ? '快速增强中' : '后台增强中'} ${canvasAiWorkingElapsedText}`
-                                                : (isQuickVideoEnhancementItem ? '快速增强' : '完整增强'))
-                                              : (canvasItem.ai?.status === 'working' ? `增强中 ${canvasAiWorkingElapsedText}` : hasCanvasAiGeneratedResults(canvasItem) ? '再次增强' : '增强'))
-                                          : canvasItem.ai?.status === 'working'
-                                          ? canvasAiWorkingStatusText
-                                          : isCanvasWorkflowItem
-                                            ? (hasCanvasAiGeneratedResults(canvasItem) ? '再次运行' : '运行')
-                                            : hasCanvasAiGeneratedResults(canvasItem)
-                                              ? '再次生成'
-                                              : '生成'}
-                                        {canvasItem.ai?.status !== 'working' && canvasRunCreditLabel && (
-                                          <span className="whitespace-nowrap text-[10px] font-bold text-amber-600 dark:text-amber-300">
-                                            · {canvasRunCreditLabel}
-                                          </span>
-                                        )}
-                                      </button>
+                                      />
                                     </div>
                                   </div>
                                 </div>
@@ -36926,7 +33217,9 @@ useEffect(() => {
                                 >
                                   <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stone-950/[0.045] px-3 text-[11px] font-black text-stone-500 dark:border-white/[0.055] dark:text-white/58">
                                     <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[7px] bg-stone-950/[0.055] text-stone-500 dark:bg-white/[0.07] dark:text-white/62">
-                                      <Type className="h-3.5 w-3.5" />
+                                      {canvasDesignAgentConfig.agentRole === 'seedance_video_analyzer'
+                                        ? <Film className="h-3.5 w-3.5" />
+                                        : <Type className="h-3.5 w-3.5" />}
                                     </span>
                                     <span className="truncate">{canvasItem.item.name || '文字卡片'}</span>
                                     <button
@@ -36947,7 +33240,7 @@ useEffect(() => {
                                       简洁
                                     </button>
                                     <span className="rounded-full bg-stone-950/[0.045] px-2 py-0.5 text-[9px] font-black tracking-[0.12em] text-stone-400 dark:bg-white/[0.07] dark:text-white/38">
-                                      DESIGN
+                                      {canvasDesignAgentConfig.agentRole === 'seedance_video_analyzer' ? 'SEEDANCE' : 'DESIGN'}
                                     </span>
                                   </div>
                                   <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-stone-950/[0.045] bg-white/38 px-2.5 dark:border-white/[0.055] dark:bg-white/[0.025]">
@@ -36960,6 +33253,7 @@ useEffect(() => {
                                       className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[1.25]`}
                                       labelClassName="truncate text-left"
                                       chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
                                       menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="Design Agent 角色"
@@ -36976,6 +33270,7 @@ useEffect(() => {
                                       className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[1.1]`}
                                       labelClassName="truncate text-left"
                                       chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
                                       menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="输出设计资产"
@@ -36992,9 +33287,27 @@ useEffect(() => {
                                       className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[0.72]`}
                                       labelClassName="truncate text-left"
                                       chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
                                       menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
                                       optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
                                       title="思考模式"
+                                    />
+                                    <RoundedSelect
+                                      data-no-drag="true"
+                                      data-canvas-edit-control="true"
+                                      value={canvasItem.contextRouting === 'auto' ? 'auto' : 'full'}
+                                      options={CANVAS_TEXT_CONTEXT_ROUTING_OPTIONS}
+                                      onChange={(value) => setCanvasTextContextRouting(
+                                        canvasItem.id,
+                                        value === 'auto' ? 'auto' : 'full',
+                                      )}
+                                      className={`${CANVAS_AI_NODE_TEXT_SELECT_CLASS} min-w-0 flex-[0.86]`}
+                                      labelClassName="truncate text-left"
+                                      chevronClassName={CANVAS_AI_NODE_CHEVRON_CLASS}
+                                      menuScale={canvasAiMenuScale}
+                                      menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
+                                      optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
+                                      title="下游上下文：完整传递或按生图节点自动分流"
                                     />
                                   </div>
                                   {canvasTextMediaInputItems.length > 0 && (
@@ -37438,8 +33751,8 @@ useEffect(() => {
                         })}
                         {canvasRenderableItems.map(canvasItem => {
                           const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
-                          const isCanvasConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
-                          if (!canUseCanvasItemAsAiInput(canvasItem) || (!isSelected && !isCanvasConnectedSource)) return null;
+                          const isConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
+                          if (!canUseCanvasItemAsAiInput(canvasItem) || (!isSelected && !isConnectedSource)) return null;
                           const itemBox = getCanvasItemRenderedBox(canvasItem);
                           const centerX = itemBox.x + itemBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
                           const centerY = itemBox.y + itemBox.height / 2;
@@ -37448,7 +33761,7 @@ useEffect(() => {
                               key={`canvas-source-handle-${canvasItem.id}`}
                               data-no-drag="true"
                               type="button"
-                              className="absolute z-[90] flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
+                              className="absolute z-[3] flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
                               style={{
                                 left: centerX - 18,
                                 top: centerY - 18,
@@ -37465,9 +33778,10 @@ useEffect(() => {
                         {canvasRenderableItems.map(canvasItem => {
                           if (!canUseCanvasItemAsAiTarget(canvasItem)) return null;
                           const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
-                          const isCanvasConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
-                          const showCanvasTargetHandle = canvasConnectionDraft || canvasInputActionDraft || isSelected || isCanvasConnectedTarget || canvasInputMenuForId === canvasItem.id;
-                          if (!showCanvasTargetHandle) return null;
+                          const isConnectedTarget = canvasConnectedTargetIds.has(canvasItem.id);
+                          const showTargetHandle = canvasConnectionDraft || canvasInputActionDraft || isSelected
+                            || isConnectedTarget || canvasInputMenuForId === canvasItem.id;
+                          if (!showTargetHandle) return null;
                           const itemBox = getCanvasItemRenderedBox(canvasItem);
                           const centerX = itemBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
                           const centerY = itemBox.y + itemBox.height / 2;
@@ -37476,7 +33790,7 @@ useEffect(() => {
                               key={`canvas-target-handle-${canvasItem.id}`}
                               data-no-drag="true"
                               data-canvas-ai-input-id={canvasItem.id}
-                              className="absolute z-[90] flex h-9 w-9 items-center justify-center rounded-full text-white"
+                              className="absolute z-[3] flex h-9 w-9 items-center justify-center rounded-full text-white"
                               style={{
                                 left: centerX - 18,
                                 top: centerY - 18,
@@ -37490,19 +33804,6 @@ useEffect(() => {
                               }}
                               title={'连接到此 ' + getCanvasInputTargetLabel(canvasItem)}
                             >
-                              <button
-                                type="button"
-                                data-no-drag="true"
-                                data-canvas-edit-control="true"
-                                onPointerDown={stopCanvasEditEvent}
-                                onMouseDown={stopCanvasEditEvent}
-                                onClick={() => void testCanvasAiConnection()}
-                                disabled={isTestingCanvasAiConnection || (!canvasAiUsesCloudImageModels && (!(effectiveCanvasAiEndpoint || canvasAiEndpoint).trim() || !canvasAiHasApiCredential))}
-                                className="h-[30px] shrink-0 rounded-[13px] bg-violet-100 px-2 text-[10px] font-bold text-violet-700 disabled:opacity-45 dark:bg-violet-400/15 dark:text-violet-100"
-                                title="测试连接"
-                              >
-                                {isTestingCanvasAiConnection ? '测试中' : '测试'}
-                              </button>
                               <button
                                 type="button"
                                 data-canvas-ai-input-id={canvasItem.id}
@@ -37528,12 +33829,18 @@ useEffect(() => {
                             || canvasItem.ai?.type === 'video-enhancement'
                             || (canvasItem.ai?.type === 'video-generator' && canvasItem.ai?.videoInputMode !== 'FLF')
                           );
+                          const canUploadReferenceAudio = canvasItem.ai?.type === 'video-generator'
+                            && canvasItem.ai?.videoInputMode !== 'FLF'
+                            && isSeedanceLikeVideoModel(canvasItem.ai?.model);
                           const isVideoOnlyInput = canvasItem.ai?.type === 'frame-interpolation' || canvasItem.ai?.type === 'video-enhancement';
                           const workflowUserInput = canvasItem.ai?.type === 'workflow'
                             ? normalizeCanvasWorkflowUserInput(getCanvasWorkflowTemplateFromNode(canvasItem)?.userInput)
                             : null;
                           const canUploadWorkflowImages = canvasItem.ai?.type !== 'workflow' || workflowUserInput?.acceptImages !== false;
                           const canUploadWorkflowFiles = canvasItem.ai?.type === 'workflow' && workflowUserInput?.acceptFiles === true;
+                          const pendingFusionRole = pendingCanvasFusionRoleRef.current?.targetId === canvasItem.id
+                            ? pendingCanvasFusionRoleRef.current.role
+                            : null;
                           return (
                             <div
                               key={`canvas-input-menu-${canvasItem.id}`}
@@ -37549,6 +33856,11 @@ useEffect(() => {
                                 event.stopPropagation();
                               }}
                             >
+                              {pendingFusionRole && (
+                                <div className="px-2.5 pb-1 pt-1 text-[9px] font-black uppercase tracking-[0.14em] text-fuchsia-500 dark:text-fuchsia-300">
+                                  {pendingFusionRole === 'BASE' ? '设置基图' : '设置意向图'}
+                                </div>
+                              )}
                               {!isVideoOnlyInput && canUploadWorkflowImages && (
                                 <button
                                   type="button"
@@ -37592,6 +33904,21 @@ useEffect(() => {
                                   本地视频
                                 </button>
                               )}
+                              {canUploadReferenceAudio && (
+                                <button
+                                  type="button"
+                                  className="flex w-full items-center gap-2 rounded-[12px] px-2.5 py-2 text-left text-stone-600 hover:bg-stone-100 hover:text-stone-950 dark:text-white/88 dark:hover:bg-white/10 dark:hover:text-white"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    void chooseLocalAudiosForCanvasGenerator(canvasItem.id);
+                                    setCanvasInputMenuForId(null);
+                                  }}
+                                >
+                                  <Music className="h-3.5 w-3.5 text-fuchsia-500 dark:text-fuchsia-300" />
+                                  本地音频
+                                </button>
+                              )}
                               {canUploadWorkflowImages && (
                               <button
                                 type="button"
@@ -37626,7 +33953,7 @@ useEffect(() => {
                         })()}
                         {canvasSingleSelectedBoxForRender && canvasSingleSelectedItemForRender && (
                           <div
-                            className="pointer-events-none absolute z-[60] border-2 border-blue-300/90 bg-blue-300/[0.04] shadow-[0_0_0_3px_rgba(255,255,255,0.28)] dark:border-blue-400/50 dark:shadow-[0_0_0_3px_rgba(0,0,0,0.16)]"
+                            className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] shadow-[0_0_0_3px_rgba(255,255,255,0.42)] dark:border-stone-100/70 dark:bg-white/[0.035] dark:shadow-[0_0_0_3px_rgba(0,0,0,0.24)]"
                             style={{
                               left: canvasSingleSelectedBoxForRender.x - 12,
                               top: canvasSingleSelectedBoxForRender.y - 12,
@@ -37658,14 +33985,14 @@ useEffect(() => {
                                 )}
                                 title="拖动缩放"
                               >
-                                <span className="h-3 w-3 rounded-[4px] border-2 border-white bg-blue-500 shadow-[0_2px_8px_rgba(37,99,235,0.45)] dark:border-stone-950 dark:bg-blue-400" />
+                                <span className="h-3 w-3 rounded-[3px] border-2 border-white bg-stone-900 shadow-[0_2px_8px_rgba(24,24,27,0.28)] dark:border-stone-950 dark:bg-stone-100" />
                               </button>
                             ))}
                           </div>
                         )}
                         {canvasSelectedBounds && (
                           <div
-                            className="pointer-events-none absolute z-[60] border-2 border-blue-400/85 bg-blue-300/[0.06]"
+                            className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] dark:border-stone-100/70 dark:bg-white/[0.035]"
                             style={{
                               left: canvasSelectedBounds.x,
                               top: canvasSelectedBounds.y,
@@ -37693,14 +34020,14 @@ useEffect(() => {
                                 onPointerDown={(event) => startCanvasGroupResize(event, corner)}
                                 title="整体缩放"
                               >
-                                <span className="h-3 w-3 rounded-[4px] border-2 border-white bg-blue-500 shadow-[0_2px_8px_rgba(37,99,235,0.45)] dark:border-stone-950 dark:bg-blue-400" />
+                                <span className="h-3 w-3 rounded-[3px] border-2 border-white bg-stone-900 shadow-[0_2px_8px_rgba(24,24,27,0.28)] dark:border-stone-950 dark:bg-stone-100" />
                               </button>
                             ))}
                           </div>
                         )}
                         <div
                           ref={canvasSelectionOverlayRef}
-                          className="pointer-events-none absolute left-0 top-0 hidden border border-blue-400 bg-blue-300/16"
+                          className="pointer-events-none absolute left-0 top-0 hidden border border-stone-800 bg-stone-500/10 dark:border-stone-200 dark:bg-white/10"
                           style={{
                             width: 0,
                             height: 0,
@@ -37713,193 +34040,71 @@ useEffect(() => {
                     </div>
                   )}
                   {isCanvasMode && isCanvasAiPanelOpen && (
-                    <motion.div
-                      data-no-drag="true"
-                      data-canvas-floating-layer="true"
-                      data-canvas-soft-panel="true"
-                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="absolute left-4 top-4 z-[100050] w-[320px] rounded-[22px] border border-white/60 bg-white/86 p-3 text-stone-700 shadow-[0_16px_42px_rgba(0,0,0,0.16)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-900/84 dark:text-stone-200"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onWheel={(event) => event.stopPropagation()}
-                    >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-black">
-                          <Settings className="h-4 w-4 text-cyan-500" />
-                          <span>AI API 设置</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setIsCanvasAiPanelOpen(false)}
-                          className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
-                          title="关闭"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-
-                      <div className="grid gap-2">
-                        {isCanvasAiLicenseManaged ? (
-                          <div
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            className="rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs font-bold text-stone-700 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
-                          >
-                            {managedCanvasAiProviderLabel}
-                          </div>
-                        ) : (
-                          <RoundedSelect
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            value={effectiveCanvasAiProvider}
-                            options={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
-                            onChange={(value) => {
-                              const provider = normalizeCanvasAiProvider(value);
-                              setCanvasAiProvider(provider);
-                              setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
-                              setCanvasAiHeadersText(getStoredCanvasAiHeadersText(provider));
-                              setCanvasAiApiProvider(getStoredCanvasAiApiProvider(provider));
-                              const endpoint = getStoredCanvasAiEndpoint(provider);
-                              if (endpoint) setCanvasAiEndpoint(endpoint);
-                            }}
-                            className={CANVAS_AI_PANEL_SELECT_CLASS}
-                            menuMinWidth={220}
-                          />
-                        )}
-                        <input
-                          data-no-drag="true"
-                          data-canvas-edit-control="true"
-                          value={effectiveCanvasAiApiProvider}
-                          onPointerDown={stopCanvasEditEvent}
-                          onMouseDown={stopCanvasEditEvent}
-                          onDoubleClick={stopCanvasEditEvent}
-                          onKeyDown={stopCanvasEditEvent}
-                          onChange={event => {
-                            if (!isCanvasAiLicenseManaged) setCanvasAiApiProvider(event.target.value);
-                          }}
-                          disabled={isCanvasAiLicenseManaged}
-                          placeholder="Provider"
-                          className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 disabled:opacity-75 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
-                        />
-                        <input
-                          data-no-drag="true"
-                          data-canvas-edit-control="true"
-                          type={isCanvasAiLicenseManaged ? 'text' : 'password'}
-                          value={isCanvasAiLicenseManaged ? `由高级版授权提供${licenseAiAccess?.canvas_api_key_last4 ? ` · ****${licenseAiAccess.canvas_api_key_last4}` : ''}` : canvasAiApiKey}
-                          onPointerDown={stopCanvasEditEvent}
-                          onMouseDown={stopCanvasEditEvent}
-                          onDoubleClick={stopCanvasEditEvent}
-                          onKeyDown={stopCanvasEditEvent}
-                          onChange={(event) => {
-                            if (!isCanvasAiLicenseManaged) setCanvasAiApiKey(event.target.value);
-                          }}
-                          disabled={isCanvasAiLicenseManaged}
-                          placeholder={isCanvasAiLicenseManaged ? 'API 配置由高级版授权提供' : getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
-                          className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                        />
-                        {!isCanvasAiLicenseManaged && effectiveCanvasAiProvider === 'new-api' && (
-                          <input
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            type="password"
-                            value={canvasAiNewApiVideoKey}
-                            onPointerDown={stopCanvasEditEvent}
-                            onMouseDown={stopCanvasEditEvent}
-                            onDoubleClick={stopCanvasEditEvent}
-                            onKeyDown={stopCanvasEditEvent}
-                            onChange={event => setCanvasAiNewApiVideoKey(event.target.value)}
-                            placeholder="视频 API Key（可留空，默认复用主 Key）"
-                            className="w-full rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                          />
-                        )}
-                        {isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider) && (
-                          <div className="flex items-center justify-between gap-2 rounded-[14px] border border-stone-200/80 bg-white/64 px-2.5 py-2 dark:border-stone-700 dark:bg-stone-950/34">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <Wallet className="h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-300" />
-                              <span className={`truncate text-[10px] font-bold ${canvasAiXaisBalance.status === 'error' ? 'text-red-500 dark:text-red-300' : 'text-stone-500 dark:text-stone-300'}`}>
-                                {canvasAiXaisBalanceText}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              data-no-drag="true"
-                              data-canvas-edit-control="true"
-                              onPointerDown={stopCanvasEditEvent}
-                              onMouseDown={stopCanvasEditEvent}
-                              onClick={() => void checkCanvasAiXaisBalance()}
-                              disabled={canvasAiXaisBalance.status === 'loading' || !canvasAiHasApiCredential}
-                              className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-cyan-100 px-2 text-[10px] font-black text-cyan-700 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-900/42 dark:text-cyan-100 dark:hover:bg-cyan-900/70"
-                              title="查询 Gateway 余额"
-                            >
-                              <RefreshCw className={`h-3 w-3 ${canvasAiXaisBalance.status === 'loading' ? 'animate-spin' : ''}`} />
-                              查询
-                            </button>
-                          </div>
-                        )}
-                        {isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider) && (
-                          <div className="grid gap-1">
-                            <div className="flex items-center gap-1.5">
-                              {isCanvasAiEndpointVisible(effectiveCanvasAiProvider) && (
-                                <input
-                                  data-no-drag="true"
-                                  data-canvas-edit-control="true"
-                                  value={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
-                                  onPointerDown={stopCanvasEditEvent}
-                                  onMouseDown={stopCanvasEditEvent}
-                                  onDoubleClick={stopCanvasEditEvent}
-                                  onKeyDown={stopCanvasEditEvent}
-                                  onChange={(event) => {
-                                    if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(event.target.value);
-                                  }}
-                                  disabled={isCanvasAiLicenseManaged}
-                                  placeholder={isCanvasAiLicenseManaged ? 'API Base URL 由高级版授权提供' : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
-                                  className="min-w-0 flex-1 rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-1.5 text-xs text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
-                                />
-                              )}
-                              <button
-                                type="button"
-                                data-no-drag="true"
-                                data-canvas-edit-control="true"
-                                onPointerDown={stopCanvasEditEvent}
-                                onMouseDown={stopCanvasEditEvent}
-                                onClick={() => refreshCanvasAiOpenAiModels(false)}
-                                disabled={isRefreshingCanvasAiOpenAiModels || !canvasAiCanRefreshModels}
-                                className="h-[30px] shrink-0 rounded-[13px] bg-cyan-100 px-2 text-[10px] font-bold text-cyan-700 disabled:opacity-45 dark:bg-cyan-900/35 dark:text-cyan-200"
-                              >
-                                {isRefreshingCanvasAiOpenAiModels ? '刷新中' : '模型'}
-                              </button>
-                            </div>
-                            <span className={`px-1 text-[10px] leading-4 ${canvasAiOpenAiModelError ? 'text-red-500 dark:text-red-300' : 'text-stone-400 dark:text-stone-500'}`}>
-                              {canvasAiOpenAiModelError || (canvasAiRemoteModelCount > 0 ? `已读取 ${canvasAiRemoteModelCount} 个模型` : canvasAiRemoteModelEmptyHint)}
-                            </span>
-                          </div>
-                        )}
-                        {!isCanvasAiLicenseManaged && (
-                          <textarea
-                            data-no-drag="true"
-                            data-canvas-edit-control="true"
-                            value={canvasAiHeadersText}
-                            onPointerDown={stopCanvasEditEvent}
-                            onMouseDown={stopCanvasEditEvent}
-                            onDoubleClick={stopCanvasEditEvent}
-                            onKeyDown={stopCanvasEditEvent}
-                            onChange={event => setCanvasAiHeadersText(event.target.value)}
-                            rows={2}
-                            spellCheck={false}
-                            placeholder='Headers JSON，例如 {"X-Tenant":"demo"}'
-                            className="w-full resize-y rounded-[14px] border border-stone-200/80 bg-white/76 px-3 py-2 font-mono text-[10px] text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/36 dark:text-stone-100"
-                          />
-                        )}
-                      </div>
-                    </motion.div>
+                    <CanvasAiSettingsPanel
+                      licenseManaged={isCanvasAiLicenseManaged}
+                      managedProviderLabel={managedCanvasAiProviderLabel}
+                      providerValue={effectiveCanvasAiProvider}
+                      providerOptions={CANVAS_AI_PROVIDER_SELECT_OPTIONS}
+                      onProviderChange={(value) => {
+                        const provider = normalizeCanvasAiProvider(value);
+                        setCanvasAiProvider(provider);
+                        setCanvasAiApiKey(getStoredCanvasAiApiKey(provider));
+                        setCanvasAiHeadersText(getStoredCanvasAiHeadersText(provider));
+                        setCanvasAiApiProvider(getStoredCanvasAiApiProvider(provider));
+                        const endpoint = getStoredCanvasAiEndpoint(provider);
+                        if (endpoint) setCanvasAiEndpoint(endpoint);
+                      }}
+                      apiProviderValue={effectiveCanvasAiApiProvider}
+                      onApiProviderChange={(value) => {
+                        if (!isCanvasAiLicenseManaged) setCanvasAiApiProvider(value);
+                      }}
+                      apiKeyType={isCanvasAiLicenseManaged ? 'text' : 'password'}
+                      apiKeyValue={isCanvasAiLicenseManaged
+                        ? `由高级版授权提供${licenseAiAccess?.canvas_api_key_last4 ? ` · ****${licenseAiAccess.canvas_api_key_last4}` : ''}`
+                        : canvasAiApiKey}
+                      onApiKeyChange={(value) => {
+                        if (!isCanvasAiLicenseManaged) setCanvasAiApiKey(value);
+                      }}
+                      apiKeyPlaceholder={isCanvasAiLicenseManaged
+                        ? 'API 配置由高级版授权提供'
+                        : getCanvasAiApiKeyPlaceholder(canvasAiProvider)}
+                      showVideoKey={!isCanvasAiLicenseManaged && effectiveCanvasAiProvider === 'new-api'}
+                      videoKeyValue={canvasAiNewApiVideoKey}
+                      onVideoKeyChange={setCanvasAiNewApiVideoKey}
+                      showBalance={isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)}
+                      balanceStatus={canvasAiXaisBalance.status}
+                      balanceText={canvasAiXaisBalanceText}
+                      canCheckBalance={canvasAiHasApiCredential}
+                      onCheckBalance={() => void checkCanvasAiXaisBalance()}
+                      showEndpoint={isCanvasAiEndpointVisible(effectiveCanvasAiProvider)}
+                      endpointValue={isCanvasAiLicenseManaged ? effectiveCanvasAiEndpoint : canvasAiEndpoint}
+                      onEndpointChange={(value) => {
+                        if (!isCanvasAiLicenseManaged) setCanvasAiEndpoint(value);
+                      }}
+                      endpointPlaceholder={isCanvasAiLicenseManaged
+                        ? 'API Base URL 由高级版授权提供'
+                        : getCanvasAiEndpointPlaceholder(canvasAiProvider)}
+                      showRemoteModels={isCanvasAiRemoteModelProvider(effectiveCanvasAiProvider)}
+                      isRefreshingModels={isRefreshingCanvasAiOpenAiModels}
+                      canRefreshModels={canvasAiCanRefreshModels}
+                      onRefreshModels={() => refreshCanvasAiOpenAiModels(false)}
+                      modelHint={canvasAiOpenAiModelError
+                        || (canvasAiRemoteModelCount > 0
+                          ? `已读取 ${canvasAiRemoteModelCount} 个模型`
+                          : canvasAiRemoteModelEmptyHint)}
+                      modelError={!!canvasAiOpenAiModelError}
+                      showHeaders={!isCanvasAiLicenseManaged}
+                      headersValue={canvasAiHeadersText}
+                      onHeadersChange={setCanvasAiHeadersText}
+                      onClose={() => setIsCanvasAiPanelOpen(false)}
+                    />
                   )}
                   {isCanvasMode && isCanvasPresetEditorOpen && (
                     <motion.div
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-template-panel="true"
+                      data-canvas-manager="preset"
                       initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
                       animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
                       exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
@@ -37912,8 +34117,8 @@ useEffect(() => {
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
                     >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-black">
+                      <div data-canvas-manager-header="true" className="mb-2 flex items-center justify-between gap-2">
+                        <div data-canvas-manager-title="true" className="flex items-center gap-1.5 text-xs font-black">
                           <Sparkles className="h-4 w-4 text-cyan-500" />
                           <span>{canvasPresetEditorTitle}</span>
                         </div>
@@ -37926,7 +34131,7 @@ useEffect(() => {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <div className="mb-2 flex flex-wrap gap-1.5">
+                      <div data-canvas-manager-toolbar="true" className="mb-2 flex flex-wrap gap-1.5">
                         <button
                           type="button"
                           onClick={() => void importCanvasTemplateFile('preset')}
@@ -37953,7 +34158,7 @@ useEffect(() => {
                       </div>
                       <div className="grid gap-2">
                         {canvasPresetEditorMode === 'manage' && (
-                          <div className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
+                          <div data-canvas-manager-list="true" className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
                             <div className="flex items-center justify-between gap-2">
                               <span className="text-[10px] font-black uppercase tracking-wide text-stone-500 dark:text-stone-400">节点预设列表</span>
                               <div className="flex items-center gap-1">
@@ -37988,6 +34193,8 @@ useEffect(() => {
                                 return (
                                   <div
                                     key={preset.id}
+                                    data-canvas-manager-row="true"
+                                    data-active={isEditing ? 'true' : 'false'}
                                     role="button"
                                     tabIndex={0}
                                     onClick={() => selectCanvasPresetForEdit(preset.id)}
@@ -38005,6 +34212,8 @@ useEffect(() => {
                                   >
                                     <button
                                       type="button"
+                                      data-canvas-manager-check="true"
+                                      data-selected={isSelectedForDelete ? 'true' : 'false'}
                                       aria-pressed={isSelectedForDelete}
                                       onClick={(event) => {
                                         event.stopPropagation();
@@ -38040,6 +34249,7 @@ useEffect(() => {
                         )}
                         <input
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasPresetNameDraft}
                           onChange={(event) => setCanvasPresetNameDraft(event.target.value)}
                           placeholder="预设名称"
@@ -38048,13 +34258,14 @@ useEffect(() => {
                         />
                         <textarea
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasPresetPromptDraft}
                           onChange={(event) => setCanvasPresetPromptDraft(event.target.value)}
                           onWheel={(event) => event.stopPropagation()}
                           placeholder="写入这个预设的隐藏 Prompt。创建预设卡片时，节点输入框会保持空白。"
                           className="h-36 resize-y rounded-[10px] border border-stone-200/80 bg-white px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-cyan-700 dark:focus:ring-cyan-900/30"
                         />
-                        <div className="flex items-center justify-between gap-2">
+                        <div data-canvas-manager-footer="true" className="flex items-center justify-between gap-2">
                           <div>
                             {canvasPresetEditorMode === 'manage' && (
                               <button
@@ -38079,6 +34290,7 @@ useEffect(() => {
                           <button
                             type="button"
                             onClick={saveCanvasAiCustomPromptPreset}
+                            data-canvas-manager-primary="true"
                             className="rounded-[15px] bg-cyan-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-cyan-500/20 transition-colors hover:bg-cyan-400 dark:bg-cyan-400 dark:text-stone-950 dark:hover:bg-cyan-300"
                           >
                             {canvasPresetEditorMode === 'manage' ? '保存修改' : '保存'}
@@ -38093,6 +34305,7 @@ useEffect(() => {
                       data-no-drag="true"
                       data-canvas-floating-layer="true"
                       data-canvas-template-panel="true"
+                      data-canvas-manager="workflow"
                       initial={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
                       animate={{ opacity: 1, x: 0, y: '-50%', scale: 1 }}
                       exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
@@ -38105,8 +34318,8 @@ useEffect(() => {
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
                     >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 text-xs font-black">
+                      <div data-canvas-manager-header="true" className="mb-2 flex items-center justify-between gap-2">
+                        <div data-canvas-manager-title="true" className="flex items-center gap-1.5 text-xs font-black">
                           <BookOpen className="h-4 w-4 text-emerald-500" />
                           <span>管理工作流</span>
                         </div>
@@ -38119,7 +34332,7 @@ useEffect(() => {
                           <X className="h-3.5 w-3.5" />
                         </button>
                       </div>
-                      <div className="mb-2 flex flex-wrap gap-1.5">
+                      <div data-canvas-manager-toolbar="true" className="mb-2 flex flex-wrap gap-1.5">
                         <button
                           type="button"
                           onClick={() => void importCanvasTemplateFile('workflow')}
@@ -38143,7 +34356,7 @@ useEffect(() => {
                         </button>
                       </div>
                       <div className="grid gap-2">
-                        <div className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
+                        <div data-canvas-manager-list="true" className="grid gap-1.5 rounded-[12px] border border-stone-200/80 bg-stone-50/80 p-2 dark:border-stone-700/80 dark:bg-white/5">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] font-black uppercase tracking-wide text-stone-500 dark:text-stone-400">工作流列表</span>
                             <div className="flex items-center gap-1">
@@ -38179,6 +34392,8 @@ useEffect(() => {
                               return (
                                 <div
                                   key={workflow.id}
+                                  data-canvas-manager-row="true"
+                                  data-active={isEditing ? 'true' : 'false'}
                                   role="button"
                                   tabIndex={0}
                                   onClick={() => selectCanvasWorkflowForEdit(workflow.id)}
@@ -38196,6 +34411,8 @@ useEffect(() => {
                                 >
                                   <button
                                     type="button"
+                                    data-canvas-manager-check="true"
+                                    data-selected={isSelectedForDelete ? 'true' : 'false'}
                                     aria-pressed={isSelectedForDelete}
                                     onClick={(event) => {
                                       event.stopPropagation();
@@ -38230,6 +34447,7 @@ useEffect(() => {
                         </div>
                         <input
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasWorkflowNameDraft}
                           onChange={(event) => setCanvasWorkflowNameDraft(event.target.value)}
                           placeholder="工作流名称"
@@ -38238,6 +34456,7 @@ useEffect(() => {
                         />
                         <textarea
                           data-no-drag="true"
+                          data-canvas-manager-input="true"
                           value={canvasWorkflowHintDraft}
                           onChange={(event) => setCanvasWorkflowHintDraft(event.target.value)}
                           onWheel={(event) => event.stopPropagation()}
@@ -38245,20 +34464,21 @@ useEffect(() => {
                           maxLength={80}
                           className="h-20 resize-y rounded-[10px] border border-stone-200/80 bg-white px-3 py-2 text-xs leading-5 text-stone-700 outline-none transition focus:border-emerald-300 focus:ring-2 focus:ring-emerald-200/50 dark:border-stone-700 dark:bg-stone-950/60 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-emerald-700 dark:focus:ring-emerald-900/30"
                         />
-                        <div className="flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
+                        <div data-canvas-manager-stats="true" className="flex flex-wrap gap-1.5 text-[10px] font-black text-stone-500 dark:text-stone-400">
                           <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingNodeCount} 个节点</span>
                           <span className="rounded-full bg-stone-100 px-2 py-1 dark:bg-white/10">{canvasWorkflowEditingAiCount} 个生图节点</span>
                         </div>
                         <button
                           type="button"
                           onClick={replaceCanvasWorkflowManagerWithSelection}
+                          data-canvas-manager-replace="true"
                           className="flex h-8 items-center justify-center gap-1.5 rounded-[14px] border border-emerald-200/80 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100 dark:hover:bg-emerald-400/16"
                           title="用当前框选的节点替换这个工作流的内部结构；内置工作流会保存为本地修改"
                         >
                           <LayoutGrid className="h-3.5 w-3.5" />
                           用当前选中覆盖结构
                         </button>
-                        <div className="flex items-center justify-between gap-2 pt-1">
+                        <div data-canvas-manager-footer="true" className="flex items-center justify-between gap-2 pt-1">
                           <button
                             type="button"
                             onClick={deleteSelectedCanvasWorkflows}
@@ -38279,6 +34499,7 @@ useEffect(() => {
                             <button
                               type="button"
                               onClick={saveCanvasWorkflowManagerChanges}
+                              data-canvas-manager-primary="true"
                               className="rounded-[15px] bg-emerald-500 px-3 py-1.5 text-xs font-black text-white shadow-sm shadow-emerald-500/20 transition-colors hover:bg-emerald-400 dark:bg-emerald-400 dark:text-stone-950 dark:hover:bg-emerald-300"
                             >
                               保存修改
@@ -38317,6 +34538,17 @@ useEffect(() => {
                               >
                                 <Sparkles className="h-3.5 w-3.5 text-cyan-300" />
                                 AI 生图节点
+                              </button>
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-fuchsia-500/18 hover:text-fuchsia-200"
+                                onClick={() => {
+                                  addCanvasImageFusionNodeAtWorld({ x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <Layers className="h-3.5 w-3.5 text-fuchsia-300" />
+                                AI 溶图节点
                               </button>
                               <button
                                 type="button"
@@ -38646,6 +34878,20 @@ useEffect(() => {
                             </button>
                             <button
                               type="button"
+                              className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-fuchsia-500/18 hover:text-fuchsia-200"
+                              onClick={() => {
+                                addCanvasImageFusionNodeAtWorld(
+                                  { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY },
+                                  sourceIds,
+                                );
+                                setCanvasContextMenu(null);
+                              }}
+                            >
+                              <Layers className="h-3.5 w-3.5 text-fuchsia-300" />
+                              新建 AI 溶图节点
+                            </button>
+                            <button
+                              type="button"
                               className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-emerald-500/18 hover:text-emerald-200"
                               onClick={() => {
                                 addCanvasAiVideoGeneratorNodeForSources(sourceIds, { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY });
@@ -38868,6 +35114,7 @@ useEffect(() => {
                       isAgentChatOpen={isAgentChatOpen}
                       onToggleAgentChat={() => setIsAgentChatOpen(value => !value)}
                       onAddImage={() => addCanvasAiGeneratorNode()}
+                      onAddFusion={() => addCanvasImageFusionNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
                       onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}
                       onAddEnhancement={mediaType => addCanvasEnhancementNode(mediaType)}
@@ -38903,16 +35150,17 @@ useEffect(() => {
                   {isCanvasMode && isCanvasGeneratedListVisible && (
                     <div
                       data-no-drag="true"
-                      className="absolute bottom-4 left-4 z-[100050] flex max-h-[42vh] w-[292px] flex-col rounded-[20px] border border-white/60 bg-white/80 p-2.5 text-stone-700 shadow-[0_14px_36px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-stone-700/70 dark:bg-stone-900/78 dark:text-stone-200"
+                      data-canvas-generated-panel="true"
+                      className="absolute bottom-4 left-4 z-[100050] flex max-h-[42vh] w-[292px] flex-col rounded-[14px] border border-stone-200 bg-white p-2.5 text-stone-700 shadow-[0_10px_28px_rgba(24,24,27,0.10)] dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
                       onWheel={(event) => event.stopPropagation()}
                     >
                       <div className="flex items-center justify-between gap-2 px-0.5">
                         <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-black">
-                          <ImageIcon className="h-3.5 w-3.5 text-cyan-500" />
+                          <ImageIcon className="h-3.5 w-3.5 text-stone-500" />
                           <span>已生成</span>
-                          <span className="rounded-full bg-cyan-100 px-1.5 py-0.5 font-mono text-[9px] text-cyan-700 dark:bg-cyan-400/14 dark:text-cyan-200">
+                          <span className="rounded-[6px] bg-stone-100 px-1.5 py-0.5 font-mono text-[9px] text-stone-600 dark:bg-stone-800 dark:text-stone-300">
                             {canvasGeneratedItemsForList.length}
                           </span>
                         </div>
@@ -38928,8 +35176,8 @@ useEffect(() => {
                               }}
                               className={`flex h-[22px] items-center gap-1 rounded-[7px] px-1.5 text-[9px] font-black transition-colors ${
                                 isCanvasGeneratedMultiSelect
-                                  ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-400/16 dark:text-cyan-200'
-                                  : 'text-stone-400 hover:bg-stone-100 hover:text-cyan-600 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-cyan-200'
+                                  ? 'bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-950'
+                                  : 'text-stone-400 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-stone-100'
                               }`}
                               title={isCanvasGeneratedMultiSelect ? '退出多选' : '批量选择下载'}
                             >
@@ -38958,7 +35206,7 @@ useEffect(() => {
                         </div>
                       </div>
                       {isCanvasGeneratedMultiSelect && (
-                        <div className="mt-2 flex items-center justify-between gap-2 rounded-[11px] bg-cyan-50/80 px-2 py-1.5 dark:bg-cyan-400/10">
+                        <div className="mt-2 flex items-center justify-between gap-2 rounded-[10px] bg-stone-100 px-2 py-1.5 dark:bg-stone-800">
                           <button
                             type="button"
                             onClick={() => {
@@ -38971,8 +35219,8 @@ useEffect(() => {
                             <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-[4px] border ${
                               canvasGeneratedDownloadableItems.length > 0
                               && canvasGeneratedDownloadableItems.every(entry => canvasGeneratedSelectedIdSet.has(entry.id))
-                                ? 'border-cyan-500 bg-cyan-500 text-white'
-                                : 'border-cyan-300 bg-white/80 dark:border-cyan-500/60 dark:bg-stone-900/60'
+                                ? 'border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-950'
+                                : 'border-stone-300 bg-white dark:border-stone-600 dark:bg-stone-900'
                             }`}>
                               {canvasGeneratedDownloadableItems.length > 0
                               && canvasGeneratedDownloadableItems.every(entry => canvasGeneratedSelectedIdSet.has(entry.id))
@@ -38990,7 +35238,7 @@ useEffect(() => {
                             onClick={() => {
                               void downloadBufferItems(canvasGeneratedSelectedDownloadItems, { feature: 'commercial_export' });
                             }}
-                            className="flex h-6 items-center gap-1 rounded-[8px] bg-cyan-500 px-2 text-[9px] font-black text-white transition-colors hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-stone-300 dark:disabled:bg-stone-700"
+                            className="flex h-6 items-center gap-1 rounded-[7px] bg-stone-900 px-2 text-[9px] font-semibold text-white transition-colors hover:bg-stone-700 disabled:cursor-not-allowed disabled:bg-stone-300 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-white dark:disabled:bg-stone-700"
                           >
                             <Download className="h-3 w-3" />
                             下载
@@ -39060,9 +35308,9 @@ useEffect(() => {
                                   }}
                                   className={`group/generated flex w-full cursor-pointer items-center gap-2 rounded-[14px] border p-1.5 text-left transition-colors ${
                                     isCanvasGeneratedMultiSelect && canvasGeneratedSelectedIdSet.has(generatedItem.id)
-                                      ? 'border-cyan-400 bg-cyan-50/90 ring-1 ring-cyan-300/60 dark:border-cyan-400/50 dark:bg-cyan-400/14'
+                                      ? 'border-stone-900 bg-stone-100 ring-1 ring-stone-300/60 dark:border-stone-100 dark:bg-stone-800'
                                       : canvasSelectedIdsSet.has(generatedItem.canvasItem.id)
-                                      ? 'border-cyan-200 bg-cyan-50/76 dark:border-cyan-400/24 dark:bg-cyan-400/12'
+                                      ? 'border-stone-400 bg-stone-100 dark:border-stone-500 dark:bg-stone-800'
                                       : 'border-white/70 bg-white/58 hover:bg-white/90 dark:border-stone-700/60 dark:bg-stone-950/28 dark:hover:bg-stone-800/70'
                                   }`}
                                   title={prompt || generatedItem.item.name || '定位已生成内容'}
@@ -39071,7 +35319,7 @@ useEffect(() => {
                                     {isCanvasGeneratedMultiSelect && (
                                       <span className={`absolute left-1 top-1 z-10 flex h-4 w-4 items-center justify-center rounded-[5px] border shadow-sm ${
                                         canvasGeneratedSelectedIdSet.has(generatedItem.id)
-                                          ? 'border-cyan-500 bg-cyan-500 text-white'
+                                          ? 'border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-950'
                                           : isPending || isError
                                             ? 'border-stone-300 bg-stone-200/90 text-stone-400 dark:border-stone-600 dark:bg-stone-700/90'
                                             : 'border-white bg-white/90 text-transparent dark:border-stone-500 dark:bg-stone-900/90'
@@ -39178,7 +35426,7 @@ useEffect(() => {
                       type="button"
                       data-no-drag="true"
                       onClick={() => setIsCanvasGeneratedListVisible(true)}
-                      className="absolute bottom-4 left-4 z-[100050] flex h-9 items-center gap-1.5 rounded-full border border-white/45 bg-white/76 px-3 text-[11px] font-black text-cyan-700 shadow-[0_8px_20px_rgba(0,0,0,0.13)] backdrop-blur-xl transition-colors hover:bg-white dark:border-stone-700/70 dark:bg-stone-900/76 dark:text-cyan-200 dark:hover:bg-stone-800"
+                      className="absolute bottom-4 left-4 z-[100050] flex h-9 items-center gap-1.5 rounded-[10px] border border-stone-200 bg-white px-3 text-[11px] font-semibold text-stone-700 shadow-[0_4px_14px_rgba(24,24,27,0.08)] transition-colors hover:bg-stone-100 hover:text-stone-950 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
                       title="显示已生成列表"
                     >
                       <ImageIcon className="h-3.5 w-3.5" />
@@ -39197,7 +35445,7 @@ useEffect(() => {
                           canvasSurfaceRef.current?.focus({ preventScroll: true });
                         });
                       }}
-                      className="absolute bottom-4 z-[100050] flex h-11 w-11 items-center justify-center rounded-full border border-white/35 bg-stone-950/42 text-white shadow-[0_10px_30px_rgba(0,0,0,0.22)] backdrop-blur-xl transition-all hover:bg-stone-950/62 focus:outline-none focus:ring-2 focus:ring-emerald-300/80"
+                      className="absolute bottom-4 z-[100050] flex h-10 w-10 items-center justify-center rounded-[10px] border border-stone-700 bg-stone-900 text-white shadow-[0_6px_18px_rgba(24,24,27,0.16)] transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400/50 dark:border-stone-600 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-white"
                       style={{ right: isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16 }}
                       title={isCanvasChromeHidden ? '显示菜单栏 (Tab)' : '隐藏菜单栏，画布全屏 (Tab)'}
                     >
@@ -39331,8 +35579,8 @@ useEffect(() => {
                     </div>
                   )}
                   {activeTab === 'calendar' && (
-                    <div className="mx-auto flex-1 flex w-full flex-col gap-3 origin-top" style={calendarPageStyle}>
-                      <div className="rounded-[24px] bg-white/62 dark:bg-stone-900/46 border border-white/70 dark:border-stone-700/58 px-4 py-3 shadow-sm shadow-black/[0.02] backdrop-blur-xl">
+                    <div data-calendar-page="true" className="mx-auto flex w-full flex-1 origin-top flex-col gap-3" style={calendarPageStyle}>
+                      <div className="rounded-[16px] border border-stone-200 bg-white px-4 py-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 text-sm font-bold text-stone-800 dark:text-stone-100">
@@ -39349,13 +35597,13 @@ useEffect(() => {
                               options={calendarTagOptions}
                               onChange={setCalendarTagFilter}
                               icon={<Tag className="h-3.5 w-3.5 shrink-0 text-stone-400" />}
-                              className="h-8 max-w-[118px] rounded-full border border-stone-200/70 bg-white/72 pl-2.5 pr-2 text-[11px] font-bold text-stone-600 shadow-sm shadow-black/[0.02] hover:bg-white dark:border-stone-700/60 dark:bg-stone-800/60 dark:text-stone-200 dark:hover:bg-stone-800"
+                              className="h-8 max-w-[118px] rounded-[9px] border border-stone-200 bg-stone-50 pl-2.5 pr-2 text-[11px] font-bold text-stone-600 shadow-none hover:border-stone-300 hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:border-stone-600 dark:hover:bg-stone-700"
                               menuMinWidth={150}
                               title={`筛选：${calendarTagFilterLabel}`}
                             />
                             <button
                               onClick={jumpCalendarToday}
-                              className="shrink-0 rounded-full bg-stone-900 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-stone-800 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
+                              className="shrink-0 rounded-[9px] bg-stone-900 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-stone-800 active:translate-y-px dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
                             >
                               今天
                             </button>
@@ -39363,12 +35611,12 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      <div className="rounded-[28px] border border-white/70 bg-white/58 p-2.5 shadow-sm shadow-black/[0.02] backdrop-blur-xl dark:border-stone-700/58 dark:bg-stone-900/38">
+                      <div className="rounded-[16px] border border-stone-200 bg-white p-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                         <div className="mb-2.5 flex items-center justify-between px-1">
                           <button
                             type="button"
                             onClick={() => moveCalendarMonth(-1)}
-                            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-white/72 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                            className="rounded-[8px] border border-transparent p-1.5 text-stone-400 transition-colors hover:border-stone-200 hover:bg-stone-100 hover:text-stone-700 dark:hover:border-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
                             title="上个月"
                           >
                             <ChevronLeft className="h-4 w-4" />
@@ -39379,7 +35627,7 @@ useEffect(() => {
                           <button
                             type="button"
                             onClick={() => moveCalendarMonth(1)}
-                            className="rounded-full p-1.5 text-stone-400 transition-colors hover:bg-white/72 hover:text-stone-600 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                            className="rounded-[8px] border border-transparent p-1.5 text-stone-400 transition-colors hover:border-stone-200 hover:bg-stone-100 hover:text-stone-700 dark:hover:border-stone-700 dark:hover:bg-stone-800 dark:hover:text-stone-200"
                             title="下个月"
                           >
                             <ChevronRight className="h-4 w-4" />
@@ -39413,19 +35661,17 @@ useEffect(() => {
                                   setCalendarSelectedDate(startOfLocalDay(day));
                                   setCalendarMonth(new Date(date.getFullYear(), date.getMonth(), 1).getTime());
                                 }}
-                                className={`group/day flex min-h-[92px] flex-col rounded-[16px] border border-transparent px-0.5 py-1 text-left transition-colors ${
+                                data-calendar-day="true"
+                                data-selected={isSelected ? 'true' : 'false'}
+                                className={`group/day flex min-h-[92px] flex-col rounded-[10px] border px-1 py-1.5 text-left transition-[background-color,border-color,color] ${
                                   isSelected
-                                    ? 'text-stone-900 dark:text-stone-100'
-                                    : 'text-stone-700 hover:bg-white/34 dark:text-stone-300 dark:hover:bg-stone-900/34'
+                                    ? 'border-blue-300 bg-blue-50/70 text-stone-900 dark:border-blue-500/55 dark:bg-blue-500/10 dark:text-stone-100'
+                                    : 'border-transparent text-stone-700 hover:border-stone-200 hover:bg-stone-50 dark:text-stone-300 dark:hover:border-stone-700 dark:hover:bg-stone-800/65'
                                 } ${isCurrentMonth ? '' : 'opacity-38'}`}
                               >
-                                <div className={`w-full rounded-[12px] border px-1 py-0.5 transition-colors ${
-                                  isSelected
-                                    ? 'border-stone-200 bg-white/92 dark:border-stone-600 dark:bg-stone-800/76'
-                                    : 'border-transparent'
-                                }`}>
+                                <div className="w-full rounded-[8px] px-1 py-0.5">
                                   <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-                                    <span className={`shrink-0 text-[16px] font-black leading-[18px] ${isToday ? 'text-rose-500 dark:text-rose-300' : ''}`}>
+                                    <span className={`shrink-0 text-[16px] font-black leading-[18px] ${isToday ? 'text-blue-600 dark:text-blue-300' : ''}`}>
                                       {displayDay}
                                     </span>
                                     <span className="flex shrink-0 items-center gap-0.5">
@@ -39455,7 +35701,10 @@ useEffect(() => {
                                     return (
                                       <span
                                         key={event.id}
-                                        className={`block h-[13px] w-full overflow-hidden whitespace-nowrap rounded-[5px] border px-1 text-[8px] font-black leading-[13px] ${getCalendarMiniEventClass(event)}`}
+                                        data-calendar-mini-event="true"
+                                        data-calendar-priority={priority}
+                                        data-done={event.schedule.done ? 'true' : 'false'}
+                                        className="block h-[13px] w-full overflow-hidden whitespace-nowrap rounded-[4px] px-1 text-[8px] font-black leading-[13px]"
                                         title={`${priority} ${event.title}`}
                                       >
                                         {formatCalendarPreviewTitle(event.title)}
@@ -39475,17 +35724,17 @@ useEffect(() => {
                         </div>
                       </div>
 
-                      <div className="rounded-[26px] border border-white/70 bg-white/50 p-3 shadow-sm shadow-black/[0.02] backdrop-blur-xl dark:border-stone-700/58 dark:bg-stone-900/34">
+                      <div className="rounded-[16px] border border-stone-200 bg-white p-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                         <div className="mb-2 flex items-center justify-between">
                           <div className="flex items-center gap-2 text-xs font-black text-stone-700 dark:text-stone-100">
                             <Clock className="h-4 w-4 text-stone-400" />
                             {formatScheduleDateLabel(calendarSelectedDate)}
                           </div>
-                          <span className="rounded-full bg-white/64 px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:bg-stone-800/58 dark:text-stone-500">
+                          <span className="rounded-[7px] bg-stone-100 px-2 py-0.5 text-[10px] font-bold tabular-nums text-stone-500 dark:bg-stone-800 dark:text-stone-400">
                             {selectedCalendarEvents.length === 0 ? '0 项' : `${selectedCalendarOpenCount}/${selectedCalendarEvents.length}`}
                           </span>
                         </div>
-                        <div className="mb-3 flex items-center gap-2 rounded-[18px] border border-stone-200/58 bg-white/48 p-2 dark:border-stone-700/58 dark:bg-stone-950/22">
+                        <div data-calendar-composer="true" className="mb-3 flex items-center gap-2 rounded-[12px] border border-stone-200 bg-stone-50 p-2 transition-colors focus-within:border-blue-300 focus-within:bg-white dark:border-stone-700 dark:bg-stone-800/70 dark:focus-within:border-blue-500/60 dark:focus-within:bg-stone-800">
                           <input
                             value={calendarDraftText}
                             onChange={(e) => setCalendarDraftText(e.target.value)}
@@ -39497,14 +35746,14 @@ useEffect(() => {
                             }}
                             onMouseDown={(e) => e.stopPropagation()}
                             placeholder="添加日程..."
-                            className="min-w-0 flex-1 bg-transparent px-1 text-xs font-bold text-stone-700 outline-none placeholder:text-stone-400 dark:text-stone-100 dark:placeholder:text-stone-500"
+                            className="h-7 min-w-0 flex-1 bg-transparent px-1 text-xs font-semibold text-stone-800 outline-none placeholder:font-medium placeholder:text-stone-500 dark:text-stone-100 dark:placeholder:text-stone-400"
                           />
                           <RoundedSelect
                             value={calendarTargetNoteLabel}
                             options={calendarScheduleNoteOptions}
                             onChange={setCalendarTargetNoteLabel}
                             icon={<StickyNote className="h-3 w-3 shrink-0 text-stone-400" />}
-                            className="max-w-[112px] shrink-0 rounded-full border border-stone-200 bg-white/70 px-2 py-1 text-[10px] font-black text-stone-500 hover:bg-white dark:border-stone-700 dark:bg-stone-900/70 dark:text-stone-300 dark:hover:bg-stone-800"
+                            className="max-w-[112px] shrink-0 rounded-[8px] border border-stone-200 bg-white px-2 py-1 text-[10px] font-bold text-stone-600 hover:border-stone-300 hover:bg-stone-100 dark:border-stone-600 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
                             menuMinWidth={150}
                             title="选择写入的日程便签"
                           />
@@ -39512,7 +35761,8 @@ useEffect(() => {
                             value={calendarDraftPriority}
                             options={SCHEDULE_PRIORITY_OPTIONS.map(priority => ({ value: priority, label: priority }))}
                             onChange={(next) => setCalendarDraftPriority(normalizeSchedulePriority(next))}
-                            className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-black ${getSchedulePriorityClass(calendarDraftPriority)}`}
+                            data-calendar-priority={calendarDraftPriority}
+                            className="shrink-0 rounded-[7px] px-2 py-1 text-[10px] font-black"
                             menuMinWidth={58}
                             title="优先级"
                           />
@@ -39520,14 +35770,14 @@ useEffect(() => {
                             type="button"
                             onClick={addCalendarScheduleItem}
                             disabled={!calendarDraftText.trim()}
-                            className="shrink-0 rounded-full bg-stone-900 p-1.5 text-white transition-colors hover:bg-stone-800 disabled:bg-stone-200 disabled:text-stone-400 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white dark:disabled:bg-stone-800 dark:disabled:text-stone-600"
+                            className="shrink-0 rounded-[8px] bg-stone-900 p-1.5 text-white transition-colors hover:bg-stone-800 active:translate-y-px disabled:translate-y-0 disabled:bg-stone-200 disabled:text-stone-400 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white dark:disabled:bg-stone-700 dark:disabled:text-stone-500"
                             title="添加日程"
                           >
                             <Plus className="h-3.5 w-3.5" />
                           </button>
                         </div>
                         {selectedCalendarEvents.length === 0 ? (
-                          <div className="rounded-[18px] border border-dashed border-stone-200/80 bg-white/34 px-4 py-6 text-center text-xs font-bold text-stone-400 dark:border-stone-700 dark:bg-stone-950/18 dark:text-stone-500">
+                          <div className="rounded-[12px] border border-dashed border-stone-200 bg-stone-50/70 px-4 py-6 text-center text-xs font-semibold text-stone-400 dark:border-stone-700 dark:bg-stone-800/45 dark:text-stone-500">
                             这天还没有安排
                           </div>
                         ) : (
@@ -39538,7 +35788,7 @@ useEffect(() => {
                       </div>
 
                       {unscheduledCalendarEvents.length > 0 && (
-                        <div className="rounded-[26px] border border-white/70 bg-white/42 p-3 shadow-sm shadow-black/[0.02] backdrop-blur-xl dark:border-stone-700/58 dark:bg-stone-900/28">
+                        <div className="rounded-[16px] border border-stone-200 bg-white p-3 shadow-none dark:border-stone-700 dark:bg-stone-900">
                           <div className="mb-2 flex items-center gap-2 text-xs font-black text-stone-600 dark:text-stone-300">
                             <StickyNote className="h-4 w-4 text-stone-400" />
                             未安排日期
@@ -39558,7 +35808,7 @@ useEffect(() => {
                       )}
                     </div>
                   )}
-                  {!isUtilityActiveTab && items.length === 0 && (
+                  {!isUtilityActiveTab && isDataLoaded && !isAssetPageLoading && totalAssetCount === 0 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-80 px-6">
                       <Download className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
@@ -39573,12 +35823,20 @@ useEffect(() => {
                       </div>
                     </div>
                   )}
-                  {!isUtilityActiveTab && items.length > 0 && displayItems.length === 0 && (
+                  {!isUtilityActiveTab && totalAssetCount > 0 && displayItems.length === 0 && (
                     <div className="flex-1 flex flex-col items-center justify-center text-stone-400 dark:text-stone-600 space-y-3 opacity-80 px-6">
                       <Search className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
-                        <p className="text-xs font-bold text-stone-500 dark:text-stone-400">当前分类没有匹配卡片</p>
-                        <p className="text-[11px] leading-5">试试切到“全部”、清空搜索，或把素材拖到当前文件夹。</p>
+                        <p className="text-xs font-bold text-stone-500 dark:text-stone-400">
+                          {isDrawerAiClassificationMode && activeDrawerAiClassificationLabel !== 'all'
+                            ? `AI 分类“${activeDrawerAiClassificationLabel}”没有匹配素材`
+                            : '当前分类没有匹配卡片'}
+                        </p>
+                        <p className="text-[11px] leading-5">
+                          {isDrawerAiClassificationMode
+                            ? '切换上方分类标签、清空搜索，或选择“未分析”查看尚未生成标签的素材。'
+                            : '试试切到“全部”、清空搜索，或把素材拖到当前文件夹。'}
+                        </p>
                         <p className="text-[11px] leading-5">
                           也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span> 进入画布整理参考。
                         </p>
@@ -39587,17 +35845,20 @@ useEffect(() => {
                     </div>
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
-                    <>
-                    {canVirtualizeDrawerGrid && drawerVirtualWindow.top > 0 && (
-                      <div style={{ height: drawerVirtualWindow.top, flexShrink: 0 }} />
-                    )}
-                    <div
-                      className="grid shrink-0 gap-2.5 items-start"
+                    <DrawerAssetGrid
+                      items={displayItems}
+                      windowOffset={assetWindowOffset}
+                      hasMore={hasMoreAssets}
+                      isLoading={isAssetPageLoading}
+                      cardWidth={cardWidth}
+                      mediaHeight={cardMediaHeight}
+                      resetKey={drawerAssetQueryKey}
+                      scrollContainer={drawerScrollNode}
+                      onLoadMore={loadNextDrawerAssetPage}
+                      onLoadPrevious={loadPreviousDrawerAssetPage}
                       onWheel={handleDrawerCardWheel}
-                      style={{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${cardWidth}px), 1fr))` }}
-                    >
-                      <AnimatePresence mode={optimizeLargeDrawerList ? 'sync' : 'popLayout'}>
-                        {renderedDisplayItems.map(item => (
+                      onVisibleItemsChange={visibleItems => visibleItems.forEach(ensureMediaThumbnail)}
+                      renderItem={(item, optimizeLargeDrawerList, onMediaDimensionsResolved) => (
                           <div
                             key={item.id}
                             className={`${draggingItemId === item.id ? 'opacity-50 scale-[0.99]' : ''} transition-opacity`}
@@ -39637,7 +35898,7 @@ useEffect(() => {
                                   }}
                                   onTogglePin={() => {
                                     pushDrawerUndoSnapshot(item.isQuickAccess ? '取消快速访问' : '固定快速访问');
-                                    setItems(prev => prev.map(i => i.id === item.id ? { ...i, isQuickAccess: !i.isQuickAccess } : i));
+                                    setDrawerItemQuickAccess(item, !item.isQuickAccess);
                                   }}
                                   onImageClick={() => openSelectedImagePreview(item)}
                                   onVideoClick={() => {
@@ -39648,12 +35909,13 @@ useEffect(() => {
                                   onTextEditStart={beginDrawerTextEditUndo}
                                   onTextEditEnd={endDrawerTextEditUndo}
                                   optimizeLargeList={optimizeLargeDrawerList}
+                                  onMediaDimensionsResolved={onMediaDimensionsResolved}
                                   preferFullImageSource={
                                     !generatedImageCachePendingIdsRef.current.has(item.id) && (
                                       displayItems.length < DRAWER_VIRTUALIZATION_THRESHOLD
                                       || item.type !== 'image'
                                       || !!item.thumbnail
-                                      || item.folderId === AI_GENERATED_FOLDER_ID
+                                      || aiGeneratedImageFolderIds.has(item.folderId || '')
                                       || String(item.sourceUrl || item.originalUrl || '').startsWith('data:image/')
                                     )
                                   }
@@ -39672,12 +35934,11 @@ useEffect(() => {
                                       if (urlLike) {
                                         return { ...i, type: 'text', content: text, name: '网址链接', url: text, path: text, isUrl: true } as BufferItem;
                                       }
-                                      const current: any = i;
                                       return {
                                         ...i,
                                         type: 'text',
                                         content: text,
-                                        name: current.isUrl || i.name === '网址链接' ? '文本片段' : i.name,
+                                        name: i.isUrl || i.name === '网址链接' ? '文本片段' : i.name,
                                         url: undefined,
                                         path: undefined,
                                         sourceUrl: undefined,
@@ -39692,28 +35953,12 @@ useEffect(() => {
                                   onEnsureThumbnail={ensureMediaThumbnail}
                                   onCreateFloatingNote={createFloatingNote}
                                   onCollectSimilarImages={() => collectSimilarImagesFromItem(item)}
-                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${searchQuery}`}
+                                  selectionScopeKey={`${activeTab}|${activeFolderId}|${deferredSearchQuery}|${drawerClassificationView}|${drawerAiClassificationDimension}|${activeDrawerAiClassificationLabel}`}
                                   actionContext={drawerCardActionContext}
                             />
                           </div>
-                        ))}
-                      </AnimatePresence>
-                    </div>
-                    {canVirtualizeDrawerGrid && drawerVirtualWindow.bottom > 0 && (
-                      <div style={{ height: drawerVirtualWindow.bottom, flexShrink: 0 }} />
-                    )}
-                    </>
-                  )}
-                  {!isUtilityActiveTab && hasMoreDisplayItems && (
-                    <div className="mt-4 flex justify-center">
-                      <button
-                        type="button"
-                        onClick={loadMoreDisplayItems}
-                        className="rounded-[18px] border border-stone-200/70 dark:border-stone-700/70 bg-white/76 dark:bg-stone-900/48 px-3 py-2 text-[11px] font-bold text-stone-500 dark:text-stone-400 shadow-sm backdrop-blur-xl transition-colors hover:bg-stone-100 dark:hover:bg-stone-800"
-                      >
-                        加载更多 {Math.min(displayItems.length, drawerRenderLimit + DRAWER_RENDER_BATCH_SIZE)} / {displayItems.length}
-                      </button>
-                    </div>
+                      )}
+                    />
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
                     <div className="mt-4 mb-1 rounded-[22px] bg-stone-50/70 dark:bg-stone-900/30 border border-stone-200/60 dark:border-stone-700/60 px-3 py-2 text-[11px] leading-5 text-stone-500 dark:text-stone-400">
@@ -39762,7 +36007,8 @@ useEffect(() => {
                         setShowSettings(false);
                         setShowFolderModal(false);
                       }}
-                      className="absolute bottom-[84px] right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full border border-blue-100/80 bg-white/92 text-blue-600 shadow-[0_8px_20px_rgba(43,85,145,0.18)] backdrop-blur-xl transition-transform hover:scale-105 hover:bg-blue-50 active:scale-95 dark:border-blue-400/20 dark:bg-stone-900/90 dark:text-blue-300 dark:hover:bg-stone-800"
+                      data-drawer-fab="secondary"
+                      className="absolute bottom-[84px] right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full border border-stone-200 bg-stone-900 text-white shadow-[0_6px_16px_rgba(24,24,27,0.14)] transition-[background-color,transform] hover:-translate-y-0.5 hover:bg-stone-800 active:translate-y-0 dark:border-stone-700 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
                       title="软件 Agent"
                     >
                       <Bot className="h-5 w-5" />
@@ -39775,7 +36021,8 @@ useEffect(() => {
                     <motion.button
                       initial={isShortcutReveal ? false : { opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }} transition={isShortcutReveal ? { duration: 0 } : { duration: 0.2, ease: "easeOut" }}
                       onClick={handleOpenTextInput}
-                      className="absolute bottom-6 right-6 z-[120] bg-blue-500 hover:bg-blue-600 text-white p-3.5 rounded-full shadow-[0_8px_16px_rgba(59,130,246,0.28)] transition-transform hover:scale-105 active:scale-95 will-change-transform"
+                      data-drawer-fab="primary"
+                      className="absolute bottom-6 right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_6px_16px_rgba(37,99,235,0.22)] transition-[background-color,transform] hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 will-change-transform"
                       title="写下灵感"
                     ><Edit3 className="w-5 h-5" /></motion.button>
                   )}
@@ -39783,12 +36030,13 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showTextInput && (
-                    <motion.div initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-blue-500" /> 记录灵感</span>
-                        <button onClick={handleCloseTextInput} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                    <motion.div data-drawer-dialog="true" initial={isShortcutReveal ? false : { opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={isShortcutReveal ? { duration: 0 } : { type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Edit3 className="w-4 h-4 text-blue-500" /> 记录灵感</span>
+                        <button data-drawer-dialog-close="true" onClick={handleCloseTextInput} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <textarea
+                        data-drawer-dialog-field="true"
                         autoFocus value={quickText} onChange={e => setQuickText(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter' && !e.shiftKey) {
@@ -39803,6 +36051,7 @@ useEffect(() => {
                       <div className="flex justify-between items-center px-1">
                         <span className="text-[10px] text-stone-400 font-mono font-medium">{quickText.length} 字</span>
                         <button
+                          data-drawer-dialog-primary="true"
                           onClick={() => {
                             commitQuickText();
                           }}
@@ -39817,6 +36066,7 @@ useEffect(() => {
                 <AnimatePresence>
                   {showWebImageCollector && (
                     <motion.div
+                      data-drawer-dialog="true"
                       ref={webImageCollectorPanelRef}
                       initial={{ opacity: 0, y: 40, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -39827,9 +36077,10 @@ useEffect(() => {
                       onMouseDown={handleDrawerPanelMouseDown}
                       onKeyDown={handleDrawerPanelKeyDown}
                     >
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><ImageIcon className="w-4 h-4 text-sky-500" /> 网络收图</span>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><ImageIcon className="w-4 h-4 text-sky-500" /> 网络收图</span>
                         <button
+                          data-drawer-dialog-close="true"
                           onClick={closeWebImageCollector}
                           disabled={isCollectingWebImages || isGeneratingWebImageQuery}
                           className="text-stone-400 hover:text-stone-600 disabled:cursor-wait disabled:opacity-45 dark:hover:text-stone-300 transition-colors"
@@ -39872,6 +36123,7 @@ useEffect(() => {
                         </div>
                       )}
                       <input
+                        data-drawer-dialog-field="true"
                         autoFocus
                         value={webImageCollectorQuery}
                         onChange={e => setWebImageCollectorQuery(e.target.value)}
@@ -40013,6 +36265,7 @@ useEffect(() => {
                             : '自动收集 10 张网络图片，并新建同名文件夹保存。'}
                         </span>
                         <button
+                          data-drawer-dialog-primary="true"
                           onClick={() => void collectWebImagesToDrawer()}
                           disabled={!webImageCollectorQuery.trim() || isCollectingWebImages || isGeneratingWebImageQuery}
                           className="shrink-0 flex items-center gap-1.5 px-4 py-1.5 bg-sky-500 hover:bg-sky-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none disabled:cursor-wait"
@@ -40031,10 +36284,10 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showMoveFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Move className="w-4 h-4 text-emerald-500" /> 移动 {selectedIds.length} 个卡片</span>
-                        <button onClick={() => setShowMoveFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                    <motion.div data-drawer-dialog="true" initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><Move className="w-4 h-4 text-emerald-500" /> 移动 {selectedIds.length} 个卡片</span>
+                        <button data-drawer-dialog-close="true" onClick={() => setShowMoveFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <div className="grid grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
                         <button
@@ -40055,6 +36308,7 @@ useEffect(() => {
                         <div className="mb-2 text-[11px] font-bold text-stone-500 dark:text-stone-400">{moveFolderParent ? `在「${moveFolderParent.name}」中新建子目录并移动` : '新建项目文件夹并移动'}</div>
                         <div className="flex gap-2">
                           <input
+                            data-drawer-dialog-field="true"
                             value={moveFolderName}
                             onChange={e => setMoveFolderName(e.target.value)}
                             onKeyDown={e => {
@@ -40065,6 +36319,7 @@ useEffect(() => {
                             className="min-w-0 flex-1 bg-white/75 dark:bg-stone-800/75 rounded-[14px] px-3 py-2 border border-white/80 dark:border-stone-700/70 outline-none text-xs text-stone-700 dark:text-stone-200 placeholder:text-stone-400 focus:ring-2 focus:ring-emerald-500/20 transition-all"
                           />
                           <button
+                            data-drawer-dialog-primary="true"
                             onClick={createFolderAndMoveSelected}
                             disabled={!moveFolderName.trim()}
                             className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[14px] transition-colors shadow-sm disabled:shadow-none"
@@ -40077,13 +36332,13 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showMoveExistingFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex items-center justify-between gap-3 px-1">
-                        <span className="min-w-0 truncate text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5">
+                    <motion.div data-drawer-dialog="true" initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/92 dark:bg-stone-800/92 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex items-center justify-between gap-3 px-1">
+                        <span data-drawer-dialog-title="true" className="min-w-0 truncate text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5">
                           <Move className="w-4 h-4 text-emerald-500" />
                           移动 {folderMoveSelectionIds.length} 个文件夹到…
                         </span>
-                        <button onClick={() => setShowMoveExistingFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                        <button data-drawer-dialog-close="true" onClick={() => setShowMoveExistingFolderModal(false)} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <div className="grid max-h-56 grid-cols-1 gap-2 overflow-y-auto pr-1">
                         <button
@@ -40112,6 +36367,7 @@ useEffect(() => {
                       </div>
                       <div className="flex justify-end gap-2 px-1">
                         <button
+                          data-drawer-dialog-secondary="true"
                           type="button"
                           onClick={() => setShowMoveExistingFolderModal(false)}
                           className="rounded-[14px] bg-stone-100 px-3 py-2 text-xs font-bold text-stone-500 transition-colors hover:bg-stone-200 dark:bg-stone-900/60 dark:text-stone-300 dark:hover:bg-stone-700"
@@ -40119,6 +36375,7 @@ useEffect(() => {
                           取消
                         </button>
                         <button
+                          data-drawer-dialog-primary="true"
                           type="button"
                           onClick={() => void moveDrawerFoldersToParent(folderMoveSelectionIds, folderMoveTargetId)}
                           disabled={isMovingFolders || folderMoveSelectionIds.length === 0 || isInvalidFolderMoveTarget(folderMoveTargetId, folderMoveSelectionIds)}
@@ -40134,12 +36391,13 @@ useEffect(() => {
 
                 <AnimatePresence>
                   {showFolderModal && (
-                    <motion.div initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> {newFolderParent ? `在「${newFolderParent.name}」中新建子目录` : '新建项目文件夹'}</span>
-                        <button onClick={closeFolderModal} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
+                    <motion.div data-drawer-dialog="true" initial={{ opacity: 0, y: 40, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 40, scale: 0.95 }} transition={{ type: 'tween', duration: 0.2, ease: "easeOut" }} className="absolute bottom-6 left-6 right-6 z-50 bg-white/90 dark:bg-stone-800/90 backdrop-blur-2xl rounded-[26px] shadow-[0_24px_60px_rgba(0,0,0,0.16)] border border-stone-200/60 dark:border-stone-700/60 p-4 flex flex-col gap-3 will-change-transform" onPointerDown={handleDrawerPanelPointerDown} onMouseDown={handleDrawerPanelMouseDown} onKeyDown={handleDrawerPanelKeyDown}>
+                      <div data-drawer-dialog-header="true" className="flex justify-between items-center px-1">
+                        <span data-drawer-dialog-title="true" className="text-xs font-bold text-stone-700 dark:text-stone-200 flex items-center gap-1.5"><FolderPlus className="w-4 h-4 text-emerald-500" /> {newFolderParent ? `在「${newFolderParent.name}」中新建子目录` : '新建项目文件夹'}</span>
+                        <button data-drawer-dialog-close="true" onClick={closeFolderModal} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"><X className="w-4 h-4" /></button>
                       </div>
                       <input
+                        data-drawer-dialog-field="true"
                         autoFocus value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter') { e.preventDefault(); handleAddFolder(); }
@@ -40150,6 +36408,7 @@ useEffect(() => {
                       />
                       <div className="flex justify-end px-1 mt-1">
                         <button
+                          data-drawer-dialog-primary="true"
                           onClick={handleAddFolder}
                           disabled={!newFolderName.trim()}
                           className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-stone-200 dark:disabled:bg-stone-700 disabled:text-stone-400 text-white text-xs font-medium rounded-[16px] transition-colors shadow-sm disabled:shadow-none"
@@ -40633,6 +36892,7 @@ useEffect(() => {
         {canvasFolderImportPrompt && (
           <motion.div
             data-canvas-floating-layer="true"
+            data-canvas-folder-picker="true"
             initial={{ opacity: 0, scale: 0.96, x: -6 }}
             animate={{ opacity: 1, scale: 1, x: 0 }}
             exit={{ opacity: 0, scale: 0.96, x: -6 }}
@@ -40648,22 +36908,24 @@ useEffect(() => {
             onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-2">
+            <div data-canvas-folder-picker-header="true" className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200">
+                <span data-canvas-folder-picker-icon="true" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] bg-blue-100 text-blue-700 dark:bg-blue-400/15 dark:text-blue-200">
                   <FolderOpen className="h-4 w-4" />
                 </span>
                 <div className="min-w-0">
                   <div className="truncate text-xs font-black">{canvasFolderImportPrompt.folderName}</div>
-                  <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500">{canvasFolderPickerItems.length} 个图片或视频</div>
+                  <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500">
+                    {isCanvasFolderPickerLoading && canvasFolderPickerTotal === 0
+                      ? '正在读取图片和视频…'
+                      : `${canvasFolderPickerTotal} 个图片或视频`}
+                  </div>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
-                  setCanvasFolderImportPrompt(null);
-                }}
+                data-canvas-folder-picker-close="true"
+                onClick={closeCanvasFolderMediaPicker}
                 className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
                 title="关闭"
               >
@@ -40673,22 +36935,29 @@ useEffect(() => {
 
             <button
               type="button"
+              data-canvas-folder-picker-primary="true"
               onClick={confirmAddFolderMediaToCanvas}
-              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400"
+              disabled={canvasFolderPickerItems.length === 0}
+              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 disabled:shadow-none dark:disabled:bg-stone-800 dark:disabled:text-stone-500"
             >
               <Plus className="h-3.5 w-3.5" />
-              全部素材加入画布
+              已加载素材加入画布（{canvasFolderPickerItems.length}）
             </button>
 
             <div
+              data-canvas-folder-picker-scroll="true"
               className="mt-2 max-h-[320px] overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               onScroll={(event) => {
                 const target = event.currentTarget;
                 if (target.scrollTop + target.clientHeight < target.scrollHeight - CANVAS_FOLDER_PICKER_SCROLL_EDGE) return;
-                setCanvasFolderPickerVisibleCount(prev => Math.min(
+                const nextVisibleCount = Math.min(
                   canvasFolderPickerItems.length,
-                  prev + CANVAS_FOLDER_PICKER_VISIBLE_STEP,
-                ));
+                  canvasFolderPickerVisibleCount + CANVAS_FOLDER_PICKER_VISIBLE_STEP,
+                );
+                setCanvasFolderPickerVisibleCount(nextVisibleCount);
+                if (nextVisibleCount >= canvasFolderPickerItems.length && canvasFolderPickerHasMore) {
+                  void loadCanvasFolderMediaPage(canvasFolderImportPrompt.folderId);
+                }
               }}
             >
               <div className="grid grid-cols-3 gap-1.5">
@@ -40699,6 +36968,7 @@ useEffect(() => {
                     <button
                       key={item.id}
                       type="button"
+                      data-canvas-folder-picker-item="true"
                       onClick={() => addFolderMediaPickerItemToCanvas(item.id)}
                       className="group relative aspect-square overflow-hidden rounded-[12px] border border-stone-200/70 bg-stone-100 shadow-sm transition hover:border-blue-300 hover:ring-2 hover:ring-blue-200/70 dark:border-white/10 dark:bg-stone-900 dark:hover:border-blue-300/50 dark:hover:ring-blue-300/20"
                       title={item.name || item.content || '加入画布'}
@@ -40729,9 +36999,35 @@ useEffect(() => {
                   );
                 })}
               </div>
-              {visibleCanvasFolderPickerItems.length < canvasFolderPickerItems.length && (
+              {isCanvasFolderPickerLoading && canvasFolderPickerItems.length === 0 && (
+                <div className="py-8 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                  正在按需加载素材…
+                </div>
+              )}
+              {canvasFolderPickerError && (
+                <button
+                  type="button"
+                  onClick={() => void loadCanvasFolderMediaPage(
+                    canvasFolderImportPrompt.folderId,
+                    canvasFolderPickerItems.length === 0,
+                  )}
+                  className="my-2 w-full rounded-[10px] bg-stone-100 px-2 py-2 text-center text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                >
+                  {canvasFolderPickerError}
+                </button>
+              )}
+              {!canvasFolderPickerError && visibleCanvasFolderPickerItems.length < canvasFolderPickerItems.length && (
                 <div className="py-2 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                  继续滚动加载更多（{visibleCanvasFolderPickerItems.length}/{canvasFolderPickerItems.length}）
+                  继续向下浏览（{visibleCanvasFolderPickerItems.length}/{canvasFolderPickerTotal}）
+                </div>
+              )}
+              {!canvasFolderPickerError
+                && visibleCanvasFolderPickerItems.length >= canvasFolderPickerItems.length
+                && canvasFolderPickerHasMore && (
+                <div className="py-2 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                  {isCanvasFolderPickerLoading
+                    ? `正在加载更多（${canvasFolderPickerItems.length}/${canvasFolderPickerTotal}）`
+                    : `继续向下滚动加载更多（${canvasFolderPickerItems.length}/${canvasFolderPickerTotal}）`}
                 </div>
               )}
             </div>
@@ -40971,6 +37267,7 @@ useEffect(() => {
       <AnimatePresence>
         {textInputDialog.isOpen && (
           <motion.div
+            data-drawer-dialog-backdrop="true"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -40984,6 +37281,7 @@ useEffect(() => {
             }}
           >
             <motion.form
+              data-drawer-dialog="true"
               initial={{ scale: 0.96, y: 12 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.96, y: 12 }}
@@ -41003,12 +37301,12 @@ useEffect(() => {
                 }
               }}
             >
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] bg-stone-900 text-white shadow-sm shadow-stone-900/15 dark:bg-white dark:text-stone-950">
+              <div data-drawer-dialog-header="true" className="flex items-start gap-3">
+                <div data-drawer-dialog-icon="true" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] bg-stone-900 text-white shadow-sm shadow-stone-900/15 dark:bg-white dark:text-stone-950">
                   <TextInputDialogIcon className="h-4 w-4" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-sm font-black text-stone-900 dark:text-stone-50">{textInputDialog.title}</h3>
+                  <h3 data-drawer-dialog-title="true" className="truncate text-sm font-black text-stone-900 dark:text-stone-50">{textInputDialog.title}</h3>
                   {textInputDialog.description && (
                     <p className="mt-1 text-[11px] font-medium leading-5 text-stone-500 dark:text-stone-400">
                       {textInputDialog.description}
@@ -41016,6 +37314,7 @@ useEffect(() => {
                   )}
                 </div>
                 <button
+                  data-drawer-dialog-close="true"
                   type="button"
                   onClick={() => closeTextInputDialog(null)}
                   className="-mr-1 -mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 dark:text-white/45 dark:hover:bg-white/10 dark:hover:text-white"
@@ -41026,6 +37325,7 @@ useEffect(() => {
               </div>
 
               <input
+                data-drawer-dialog-field="true"
                 ref={textInputDialogInputRef}
                 value={textInputDialog.value}
                 onChange={(event) => setTextInputDialog(prev => ({ ...prev, value: event.target.value }))}
@@ -41036,6 +37336,7 @@ useEffect(() => {
 
               <div className="mt-4 flex justify-end gap-2">
                 <button
+                  data-drawer-dialog-secondary="true"
                   type="button"
                   onClick={() => closeTextInputDialog(null)}
                   className="rounded-[16px] bg-stone-100 px-3.5 py-2 text-xs font-bold text-stone-600 transition-colors hover:bg-stone-200 dark:bg-white/8 dark:text-stone-300 dark:hover:bg-white/12"
@@ -41043,6 +37344,7 @@ useEffect(() => {
                   取消
                 </button>
                 <button
+                  data-drawer-dialog-primary="true"
                   type="submit"
                   disabled={!textInputDialogCanConfirm}
                   className="inline-flex items-center gap-1.5 rounded-[16px] bg-blue-600 px-4 py-2 text-xs font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 disabled:shadow-none dark:bg-blue-500 dark:hover:bg-blue-400 dark:disabled:bg-white/10 dark:disabled:text-white/35"
@@ -41058,12 +37360,12 @@ useEffect(() => {
 
       <AnimatePresence>
         {confirmDialog.isOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} data-canvas-floating-layer="true" className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
-              <h3 className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} data-canvas-floating-layer="true" className="fixed inset-0 z-[100220] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={(event) => { if (event.button === 0) closeConfirmDialog(); }}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[320px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-4" onMouseDown={(event) => event.stopPropagation()}>
+              <h3 data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100">{confirmDialog.title || '确认操作'}</h3>
               <p className="mt-2 text-xs leading-5 text-stone-500 dark:text-stone-400">{confirmDialog.message || '确定继续吗？'}</p>
               <div className="mt-4 flex justify-end gap-2">
-                <button onClick={closeConfirmDialog} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
+                <button data-drawer-dialog-secondary="true" onClick={closeConfirmDialog} className="px-3 py-1.5 rounded-[16px] text-xs bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">取消</button>
                 {(confirmDialog.actions && confirmDialog.actions.length > 0
                   ? confirmDialog.actions
                   : [{
@@ -41094,11 +37396,11 @@ useEffect(() => {
 
       <AnimatePresence>
         {showQR && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => { setShowQR(false); }}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[300px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5 text-center" onMouseDown={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Smartphone className="w-4 h-4 text-emerald-500" /> 手机配对</span>
-                <button onClick={() => { setShowQR(false); }} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9997] rounded-[30px] overflow-hidden bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => { setShowQR(false); }}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[300px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5 text-center" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+                <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Smartphone className="w-4 h-4 text-emerald-500" /> 手机配对</span>
+                <button data-drawer-dialog-close="true" onClick={() => { setShowQR(false); }} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="mx-auto w-fit p-3 rounded-[20px] bg-white">
                 <QRCode value={mobilePairUrl || (localIP ? `http://${localIP}:1420/pair` : 'inspiration-drawer')} size={160} />
@@ -41142,7 +37444,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '5.0.15'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.17'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -41155,9 +37457,9 @@ useEffect(() => {
               <div className="mt-5 space-y-2.5 text-xs leading-5 text-stone-600 dark:text-stone-300">
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">本次更新</p>
-                  <p>工作流新增通用可替换内部图片槽位，支持单图、多图、必填和数量限制。</p>
-                  <p className="mt-1">可从抽屉、全库搜索、本地文件或拖放添加槽位图片，并支持替换、清空与排序。</p>
-                  <p className="mt-1">展开与折叠会保留槽位状态，同时支持不含图片的模板导出和含图片的实例导出。</p>
+                  <p>优化图片保存逻辑：画布参考图只保留在画布，需要时仍可主动保存到素材抽屉。</p>
+                  <p className="mt-1">素材卡片按图片或视频的实际比例显示，并自动补齐瀑布流空位。</p>
+                  <p className="mt-1">滑动到底部会自动加载更多素材，无需再手动点击。</p>
                 </div>
                 <div className="rounded-[20px] bg-stone-50/90 dark:bg-stone-800/70 border border-stone-100 dark:border-stone-700/70 p-3">
                   <p className="font-bold text-stone-800 dark:text-stone-100 mb-1">免责说明</p>
@@ -41357,11 +37659,11 @@ useEffect(() => {
 
       <AnimatePresence>
         {showHelp && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 rounded-[30px] overflow-hidden z-[9997] bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => setShowHelp(false)}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><BookOpen className="w-4 h-4 text-blue-500" /> 使用说明</span>
-                <button onClick={() => setShowHelp(false)} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 rounded-[30px] overflow-hidden z-[9997] bg-black/30 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={() => setShowHelp(false)}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+                <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><BookOpen className="w-4 h-4 text-blue-500" /> 使用说明</span>
+                <button data-drawer-dialog-close="true" onClick={() => setShowHelp(false)} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="max-h-[62vh] overflow-y-auto pr-1 space-y-4 text-xs leading-5 text-stone-600 dark:text-stone-300 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-stone-300 dark:[&::-webkit-scrollbar-thumb]:bg-stone-700 [&::-webkit-scrollbar-thumb]:rounded-full">
                 <section className="space-y-1.5">
@@ -41423,24 +37725,25 @@ useEffect(() => {
 
       <AnimatePresence>
         {showUpdateLog && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9996] rounded-[30px] overflow-hidden bg-black/20 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={closeUpdateLog}>
-            <motion.div initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 更新日志</span>
-                <button onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          <motion.div data-drawer-dialog-backdrop="true" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[9996] rounded-[30px] overflow-hidden bg-black/20 backdrop-blur-sm flex items-center justify-center p-6 pointer-events-auto" onPointerEnter={keepDrawerOpenByPointer} onPointerMove={keepDrawerOpenByPointer} onPointerLeave={handleFloatingLayerPointerLeave} onMouseDown={closeUpdateLog}>
+            <motion.div data-drawer-dialog="true" initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[360px] rounded-[28px] bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 shadow-2xl p-5" onMouseDown={e => e.stopPropagation()}>
+              <div data-drawer-dialog-header="true" className="flex items-center justify-between mb-3">
+                <span data-drawer-dialog-title="true" className="text-sm font-bold text-stone-800 dark:text-stone-100 flex items-center gap-1.5"><Sparkles className="w-4 h-4 text-amber-500" /> 更新日志</span>
+                <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v5.0.15</p>
-                <p>修复检查更新时可能触发的后台运行时崩溃，提升多源更新检查稳定性。</p>
-                <p>从画布删除节点时只移除节点与相关连线，不再同步删除抽屉中的图片和素材。</p>
-                <p>“关于软件”新增微信联系方式，可直接扫码咨询产品使用、商务合作与售后支持。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.17</p>
+                <p>画布现在会按需读取抽屉文件夹中的图片和视频，继续向下浏览即可加载更多，并支持把视频加入画布。</p>
+                <p>图片、视频或文件拖入抽屉后会立即显示，文件复制、缓存和视频缩略图改为后台处理。</p>
+                <p>修复从画布切回抽屉后偶发只显示一列、滚动区域空白以及无法继续自动加载的问题。</p>
+                <p>素材卡片会根据抽屉实际宽度重新排版，并在接近底部时自动请求下一批素材。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>
                   <p className="mt-1">{isCloudflaredDisclaimerAccepted ? '当前已同意本软件免责声明。' : '点击下方按钮后，将视为同意本软件免责声明。'}</p>
                 </div>
               </div>
-              <button onClick={acceptUpdateLogAndClose} className="mt-4 w-full py-2 rounded-[20px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold">
+              <button data-drawer-dialog-primary="true" onClick={acceptUpdateLogAndClose} className="mt-4 w-full py-2 rounded-[20px] bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-xs font-bold">
                 {isCloudflaredDisclaimerAccepted ? '知道了' : '同意并知道了'}
               </button>
             </motion.div>

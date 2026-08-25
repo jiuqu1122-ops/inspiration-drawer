@@ -1,24 +1,24 @@
 import { clamp } from './common';
 
-const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
-const CANVAS_AI_DEFAULT_COUNT = 1;
-const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
-const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
-const CANVAS_IMAGE_RULE_COLLAPSED_WIDTH = 34;
-const CANVAS_IMAGE_RULE_PANEL_GAP = 12;
-const CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+export const CANVAS_AI_DEFAULT_ASPECT_RATIO = '16:9';
+export const CANVAS_AI_DEFAULT_COUNT = 1;
+export const CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH = 560;
+export const CANVAS_IMAGE_RULE_PANEL_WIDTH = 190;
+export const CANVAS_IMAGE_RULE_COLLAPSED_WIDTH = 34;
+export const CANVAS_IMAGE_RULE_PANEL_GAP = 12;
+export const CANVAS_IMAGE_GENERATOR_NODE_WITH_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
   + CANVAS_IMAGE_RULE_PANEL_WIDTH
   + CANVAS_IMAGE_RULE_PANEL_GAP
   + 32;
-const CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
+export const CANVAS_IMAGE_GENERATOR_NODE_COLLAPSED_RULES_WIDTH = CANVAS_AI_GENERATOR_NODE_DEFAULT_WIDTH
   + CANVAS_IMAGE_RULE_COLLAPSED_WIDTH
   + CANVAS_IMAGE_RULE_PANEL_GAP
   + 32;
-const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
-const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
-const CANVAS_AI_NODE_GRID_GAP = 8;
-const CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT = 108;
-const CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT = 142;
+export const CANVAS_AI_VIDEO_GENERATOR_NODE_DEFAULT_WIDTH = 760;
+export const CANVAS_AI_WORKFLOW_MODULE_DEFAULT_WIDTH = 590;
+export const CANVAS_AI_NODE_GRID_GAP = 8;
+export const CANVAS_AI_LOCAL_TOOL_PANEL_HEIGHT = 108;
+export const CANVAS_AI_LOCAL_TOOL_PROGRESS_PANEL_HEIGHT = 142;
 
 export const CANVAS_AI_MAX_OUTPUT_COUNT = 64;
 export const CANVAS_WORKFLOW_MAX_OUTPUT_SLOTS = 64;
@@ -92,6 +92,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
   localMediaTool?: boolean;
   showLocalMediaProgress?: boolean;
   imageRulePanelExpanded?: boolean;
+  imageFusion?: boolean;
   internalSlotCount?: number;
 }) => {
   const isWorkflow = options?.type === 'workflow';
@@ -116,7 +117,7 @@ export const getCanvasAiNodeAutoSize = (options?: {
       isWorkflow,
     })
     : null;
-  const headerSectionHeight = 58;
+  const headerSectionHeight = options?.imageFusion ? 112 : 58;
   const outputSectionHeight = outputLayout ? 36 + outputLayout.gridHeight : 220;
   const metaSectionHeight = isWorkflow || options?.hasPreset ? 44 : 0;
   const promptHeight = isWorkflow

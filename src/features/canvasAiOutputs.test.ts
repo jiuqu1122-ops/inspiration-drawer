@@ -1,14 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT,
   buildCanvasAiOutputLocalCachePatch,
   buildCanvasAiOutputRemoteResultPatch,
   createCanvasAiOutputBufferItem,
+  getCanvasAiVisibleOutputs,
+  isCanvasAiImageOutputReadyForWorkflowDependency,
   recoverCanvasAiNodeWithUsableResults,
   recoverCanvasAiOutputWithUsableResult,
 } from './canvasAiOutputs';
 import type { CanvasImageItem } from './canvasModel';
 
 describe('canvas AI output cache patches', () => {
+  it('keeps generator nodes compact until the user expands all outputs', () => {
+    const outputs = Array.from({ length: 20 }, (_, index) => index);
+    expect(CANVAS_AI_COLLAPSED_OUTPUT_PREVIEW_LIMIT).toBe(6);
+    expect(getCanvasAiVisibleOutputs(outputs)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(getCanvasAiVisibleOutputs(outputs, true)).toEqual(outputs);
+  });
+
   it('adds the local path without replacing the remote generation URL', () => {
     const patch = buildCanvasAiOutputLocalCachePatch('C:\\cache\\generated.png');
 
@@ -26,6 +36,23 @@ describe('canvas AI output cache patches', () => {
       path: undefined,
       cacheStatus: 'pending',
     });
+  });
+
+  it('does not release a workflow image dependency until the local file exists', () => {
+    expect(isCanvasAiImageOutputReadyForWorkflowDependency({
+      id: 'remote-output',
+      status: 'success',
+      url: 'https://example.com/generated.png',
+      cacheStatus: 'pending',
+    })).toBe(false);
+
+    expect(isCanvasAiImageOutputReadyForWorkflowDependency({
+      id: 'local-output',
+      status: 'success',
+      url: 'asset://localhost/generated.png',
+      path: 'C:\\cache\\generated.png',
+      cacheStatus: 'pending',
+    })).toBe(true);
   });
 
   it('keeps the stable API result URL when the preview uses a signed OSS URL', () => {
@@ -159,5 +186,47 @@ describe('canvas AI output cache patches', () => {
     expect(complete.ai?.status).toBe('success');
     expect(complete.ai?.error).toBeUndefined();
     expect(complete.ai?.outputs?.every(output => output.status === 'success')).toBe(true);
+  });
+
+  it('settles a working node after every requested output has completed', () => {
+    const workingItem = {
+      id: 'node-working',
+      x: 0,
+      y: 0,
+      width: 320,
+      height: 320,
+      item: {
+        id: 'item-working',
+        type: 'image',
+        content: 'result',
+        createdAt: 1,
+      },
+      ai: {
+        type: 'image-generator',
+        status: 'working',
+        count: 2,
+        outputs: [
+          { id: 'output-1', status: 'success', url: 'https://example.com/one.png' },
+          { id: 'output-2', status: 'working' },
+        ],
+      },
+    } as CanvasImageItem;
+
+    const partial = recoverCanvasAiNodeWithUsableResults(workingItem);
+    expect(partial).toBe(workingItem);
+    expect(partial.ai?.status).toBe('working');
+
+    const complete = recoverCanvasAiNodeWithUsableResults({
+      ...workingItem,
+      ai: {
+        ...workingItem.ai!,
+        outputs: [
+          ...workingItem.ai!.outputs!.slice(0, 1),
+          { id: 'output-2', status: 'success', path: 'C:\\cache\\two.png' },
+        ],
+      },
+    });
+    expect(complete.ai?.status).toBe('success');
+    expect(complete.ai?.error).toBeUndefined();
   });
 });

@@ -1,13 +1,13 @@
 import { clamp } from './common';
 
-export const DEFAULT_DRAWER_WIDTH = 560;
+export const DEFAULT_DRAWER_WIDTH = 960;
 export const DEFAULT_DRAWER_HEIGHT = 800;
-export const MIN_DRAWER_WIDTH = 360;
-export const MAX_DRAWER_WIDTH = Math.max(420, window.screen.availWidth - 120);
-export const MIN_DRAWER_HEIGHT = 220;
-export const MAX_DRAWER_HEIGHT = Math.max(500, window.screen.availHeight);
+export const MIN_DRAWER_WIDTH = 880;
+export const MAX_DRAWER_WIDTH = Math.max(MIN_DRAWER_WIDTH, window.screen.availWidth - 120);
+export const MIN_DRAWER_HEIGHT = 560;
+export const MAX_DRAWER_HEIGHT = Math.max(MIN_DRAWER_HEIGHT, window.screen.availHeight);
 export const DRAWER_ANIM_MS = 350;
-export const DRAWER_SIZE_DEFAULT_VERSION = '2026-05-default-width-560';
+export const DRAWER_SIZE_DEFAULT_VERSION = '2026-08-min-workspace-880x560';
 export const DRAWER_SIDE_RAIL_WIDTH = 64;
 export const DRAWER_CONTENT_X_PADDING = 32;
 export const CALENDAR_COMPACT_DRAWER_WIDTH = 480;

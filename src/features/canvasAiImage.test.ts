@@ -2,23 +2,57 @@ import { describe, expect, it } from 'vitest';
 import {
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,
+  CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,
+  CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
+  CANVAS_AI_VIDEO_MODEL_OPTIONS,
+  NEW_API_SEEDANCE_2_FAST_MODEL,
+  NEW_API_SEEDANCE_2_MODEL,
+  NEW_API_VIDEO_MODEL_DEFAULT,
   NEW_API_IMAGE_TASK_MAX_WAIT_MS,
   NEW_API_IMAGE_RESPONSE_FORMAT,
   NEW_API_IMAGE_REQUEST_TIMEOUT_SECS,
+  buildNewApiVideoPrompt,
   buildCanvasAiIndexedReferencePrompt,
+  collectVideoStrings,
+  selectCloudWalletVideoTaskPayload,
   executeNewApiImageProtocol,
   formatNewApiImageProtocolError,
   getCanvasAiImageModelFamily,
   getCanvasAiPublicImageModelPriority,
   getCanvasAiPublicImageModelName,
+  getCanvasAiPublicImageModelId,
   getCanvasAiImageResolutionValues,
+  getCanvasAiImageResolutionValuesForCandidates,
+  hydrateCanvasAiModelCandidateCapabilities,
   getCanvasAiSlotClientRequestId,
+  getCanvasAiVideoReferenceSlotLabels,
+  getCanvasAiVideoReferenceSlots,
+  getCanvasAiVideoModelCandidates,
+  getCanvasAiVideoModelOptionValue,
+  getCanvasAiVideoProviderForModel,
+  getMiniMaxH3VideoResolutionValues,
+  normalizeMiniMaxH3VideoResolution,
+  filterCanvasAiVideoModelCandidates,
+  isSeedance20VideoModel,
+  getCloudWalletImageLookupImages,
   getDefaultNewApiImageProtocol,
   getNewApiImageModelDisplayName,
   getNewApiImageModelFamily,
   getNewApiVideoDimensions,
+  getNewApiVideoDurationValues,
+  getNewApiVideoReferenceLimit,
+  getNewApiVideoResolutionValues,
+  getMikotoVideoResolutionValues,
+  getMikotoVideoDurationValues,
+  normalizeMikotoVideoResolution,
+  normalizeMikotoVideoDuration,
   getXaisImageModelDisplayName,
   formatNewApiVideoFailureMessage,
+  getNewApiVideoTaskState,
+  isNewApiVideoResultReady,
+  isNewApiVideoSuccessState,
+  isNewApiVideoFailureState,
   gptImage2SizeFromAspectRatio,
   isLikelyNewApiVideoModel,
   isNewApiImageProtocolUnsupportedError,
@@ -29,7 +63,14 @@ import {
   newApiVideoRequestParams,
   normalizeCanvasAiImageResolution,
   normalizeCanvasAiImageResolutionForModel,
+  normalizeCanvasAiImageResolutionForCandidates,
+  normalizeCloudWalletImageAspectRatio,
+  normalizeCloudWalletImageProvider,
+  normalizeCloudWalletVideoProvider,
   normalizeNewApiBaseEndpoint,
+  normalizeSeedanceVideoAspectRatio,
+  normalizeNewApiVideoDurationForModel,
+  validateCanvasAiVideoReferences,
   orderCanvasAiReferenceSources,
   reconcileWalletImageCandidates,
   resolveCanvasAiReferenceProvider,
@@ -46,7 +87,91 @@ import {
   supportsCanvasAiImageResolution,
 } from './canvasAiImage';
 
+describe('wallet provider protocol compatibility', () => {
+  it('omits newer channel labels from the legacy image request provider field', () => {
+    expect(normalizeCloudWalletImageProvider('mikoto')).toBeUndefined();
+    expect(normalizeCloudWalletImageProvider('bigmodel')).toBeUndefined();
+    expect(normalizeCloudWalletImageProvider('new-api')).toBe('new-api');
+  });
+
+  it('preserves the selected video channel provider', () => {
+    expect(normalizeCloudWalletVideoProvider('mikoto')).toBe('mikoto');
+    expect(normalizeCloudWalletVideoProvider('bigmodel')).toBeUndefined();
+    expect(normalizeCloudWalletVideoProvider('xais-chat')).toBe('xais-chat');
+  });
+});
+
+describe('cloud wallet video result parsing', () => {
+  it('prefers mirrored OSS results without duplicating upstream video URLs', () => {
+    expect(collectVideoStrings({
+      walletVideoResults: [
+        'https://api.unmind.art/v1/ai/video-results/stable-1.mp4',
+        'https://api.unmind.art/v1/ai/video-results/stable-2.mp4',
+      ],
+      upstream: {
+        results: [
+          'https://upstream.example/video-1.mp4',
+          'https://upstream.example/video-2.mp4',
+        ],
+      },
+    })).toEqual([
+      'https://api.unmind.art/v1/ai/video-results/stable-1.mp4',
+      'https://api.unmind.art/v1/ai/video-results/stable-2.mp4',
+    ]);
+  });
+
+  it('isolates the current H3 task from failed history and old result URLs', () => {
+    const response = {
+      status: 'processing',
+      walletVideoResults: [
+        'https://api.unmind.art/v1/ai/video-results/old.mp4',
+      ],
+      tasks: [
+        {
+          task_id: 'old-task',
+          status: 'failed',
+          errorMessage: 'HTTP 402: H3 积分余额不足 (1008)',
+          video_url: 'https://upstream.example/old.mp4',
+        },
+        {
+          task_id: 'current-task',
+          status: 'processing',
+        },
+      ],
+    };
+
+    const current = selectCloudWalletVideoTaskPayload(response, 'current-task');
+    expect(getNewApiVideoTaskState(current)).toBe('processing');
+    expect(collectVideoStrings(current)).toEqual([]);
+
+    const completed = selectCloudWalletVideoTaskPayload({
+      tasks: [
+        ...response.tasks,
+        {
+          task_id: 'completed-task',
+          status: 'succeeded',
+          video_url: 'https://upstream.example/current.mp4',
+        },
+      ],
+    }, 'completed-task');
+    expect(getNewApiVideoTaskState(completed)).toBe('succeeded');
+    expect(collectVideoStrings(completed)).toEqual(['https://upstream.example/current.mp4']);
+  });
+});
+
 describe('NewAPI image model mapping', () => {
+  it('keeps the canvas model menu fixed to the three public image models', () => {
+    expect(CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES).toEqual([
+      'Nano Banana Pro',
+      'Nano Banana 2',
+      'GPT Image 2',
+    ]);
+    expect(getCanvasAiPublicImageModelId('new-api', 'Nano Banana 2')).toBe('gemini-3.1-flash-image');
+    expect(getCanvasAiPublicImageModelId('xais-chat', 'GPT Image 2')).toBe('Xais Img2_2K');
+    expect(getCanvasAiPublicImageModelId('bigmodel', 'Nano Banana Pro')).toBe('gemini-3-pro-image-preview');
+    expect(getCanvasAiPublicImageModelId('bigmodel', 'GPT Image 2')).toBe('gpt-image-2');
+  });
+
   it.each([
     'gemini-3-pro-image',
     'Gemini3Pro',
@@ -315,6 +440,147 @@ describe('unified wallet image model families', () => {
       ]);
   });
 
+  it('preserves Mikoto wallet channels when refreshing candidate routes', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'mikoto' as const,
+      providerChannelId: 'mikoto-image2',
+      model: 'gpt-image-2',
+    }];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'mikoto-image2',
+      provider: 'MIKOTO',
+      models: ['gpt-image-2'],
+    }])).toEqual(candidates);
+  });
+
+  it('keeps Mikoto native Gemini Banana models visible to the canvas', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'mikoto' as const,
+      providerChannelId: 'mikoto-banana',
+      model: 'gemini-3-pro-image-preview',
+    }];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'mikoto-banana',
+      provider: 'MIKOTO',
+      models: ['gemini-3-pro-image-preview'],
+    }])).toEqual(candidates);
+  });
+
+  it('preserves Bigmodel Gemini wallet channels when refreshing candidate routes', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'bigmodel' as const,
+      providerChannelId: 'bigmodel-banana-pro',
+      model: 'gemini-3-pro-image-preview',
+    }];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'bigmodel-banana-pro',
+      provider: 'BIGMODEL',
+      models: ['gemini-3-pro-image-preview'],
+    }])).toEqual(candidates);
+  });
+
+  it('keeps Bigmodel Banana Pro and Image2 models on the same wallet channel', () => {
+    const candidates = [
+      {
+        source: 'wallet' as const,
+        provider: 'bigmodel' as const,
+        providerChannelId: 'bigmodel-main',
+        model: 'gemini-3-pro-image-preview',
+      },
+      {
+        source: 'wallet' as const,
+        provider: 'bigmodel' as const,
+        providerChannelId: 'bigmodel-main',
+        model: 'gpt-image-2',
+      },
+    ];
+    expect(reconcileWalletImageCandidates(candidates, [{
+      id: 'bigmodel-main',
+      provider: 'BIGMODEL',
+      models: ['gemini-3-pro-image-preview', 'gpt-image-2'],
+      capabilities: ['IMAGE', 'IMAGE_NANO_BANANA_PRO'],
+    }])).toEqual(candidates.map(candidate => ({
+      ...candidate,
+      capabilities: ['IMAGE', 'IMAGE_NANO_BANANA_PRO'],
+    })));
+  });
+
+  it('skips Image2 channels that only advertise the 1K capability for higher resolutions', () => {
+    const candidates = [
+      {
+        source: 'wallet' as const,
+        provider: 'mikoto' as const,
+        providerChannelId: 'mikoto-1k',
+        model: 'gpt-image-2',
+        capabilities: ['IMAGE_GPT_1K'],
+      },
+      {
+        source: 'wallet' as const,
+        provider: 'new-api' as const,
+        providerChannelId: 'new-api-full',
+        model: 'gpt-image-2',
+        capabilities: ['IMAGE_GPT'],
+      },
+    ];
+    expect(selectCanvasAiImageCandidatesForResolution(candidates, '1k'))
+      .toHaveLength(2);
+    expect(selectCanvasAiImageCandidatesForResolution(candidates, '4k'))
+      .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
+  });
+
+  it('routes the dual Banana 2K channel to both public models at 2K only', () => {
+    const proCandidates = [
+      {
+        source: 'wallet' as const,
+        provider: 'bigmodel' as const,
+        providerChannelId: 'bigmodel-dual-2k',
+        model: 'gemini-3-pro-image-preview',
+        capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
+      },
+      {
+        source: 'wallet' as const,
+        provider: 'new-api' as const,
+        providerChannelId: 'new-api-full',
+        model: 'gemini-3-pro-image',
+        capabilities: ['IMAGE_NANO_BANANA_PRO'],
+      },
+    ];
+    const banana2Candidates = [{
+      source: 'wallet' as const,
+      provider: 'bigmodel' as const,
+      providerChannelId: 'bigmodel-dual-2k',
+      model: 'gemini-3.1-flash-image-preview',
+      capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
+    }];
+    expect(selectCanvasAiImageCandidatesForResolution(proCandidates, '2k'))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ providerChannelId: 'bigmodel-dual-2k' })]));
+    expect(selectCanvasAiImageCandidatesForResolution(banana2Candidates, '2k'))
+      .toEqual([expect.objectContaining({ providerChannelId: 'bigmodel-dual-2k' })]);
+    expect(selectCanvasAiImageCandidatesForResolution(proCandidates, '1k')).toEqual([]);
+    expect(selectCanvasAiImageCandidatesForResolution(proCandidates, '4k'))
+      .toEqual([expect.objectContaining({ providerChannelId: 'new-api-full' })]);
+    expect(getCanvasAiImageResolutionValuesForCandidates(proCandidates)).toEqual(['2k', '4k']);
+    expect(normalizeCanvasAiImageResolutionForCandidates(banana2Candidates, '4k')).toBe('2k');
+  });
+
+  it('rehydrates dedicated dual 2K capabilities for legacy node candidates', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'bigmodel' as const,
+      providerChannelId: 'banana-dual-2k',
+      model: 'gemini-3-pro-image-preview',
+    }];
+    const hydrated = hydrateCanvasAiModelCandidateCapabilities(candidates, [{
+      id: 'banana-dual-2k',
+      capabilities: ['IMAGE_NANO_BANANA_DUAL_2K'],
+    }]);
+    expect(getCanvasAiImageResolutionValuesForCandidates(hydrated)).toEqual(['2k']);
+    expect(normalizeCanvasAiImageResolutionForCandidates(hydrated, '4k')).toBe('2k');
+  });
+
   it('only fails over after an explicit rejection', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=400, invalid reference image'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 402: insufficient_credits'))).toBe(true);
@@ -324,7 +590,8 @@ describe('unified wallet image model families', () => {
     expect(shouldTryNextCanvasAiImageCandidate(new Error('service overloaded: no available worker'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, operation copy failed: source path does not exist'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, Provided image is not valid'))).toBe(true);
-    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, internal server error'))).toBe(false);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('status_code=500, internal server error'))).toBe(true);
+    expect(shouldTryNextCanvasAiImageCandidate(new Error('HTTP 502: upstream provider failed'))).toBe(true);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('channel returned no image data'))).toBe(false);
     expect(shouldTryNextCanvasAiImageCandidate(new Error('request timed out after upstream accepted it'))).toBe(false);
   });
@@ -361,6 +628,27 @@ describe('unified wallet image model families', () => {
   });
 });
 
+describe('cloud wallet image recovery', () => {
+  it('only treats a terminal lookup with usable image URLs as success', () => {
+    expect(getCloudWalletImageLookupImages({
+      status: 'processing',
+      images: ['https://example.com/pending.png'],
+    })).toEqual([]);
+    expect(getCloudWalletImageLookupImages({
+      status: 'succeeded',
+      images: [' https://example.com/result.png ', 'https://example.com/result.png', ''],
+    })).toEqual(['https://example.com/result.png']);
+    expect(getCloudWalletImageLookupImages({
+      status: 'failed',
+      images: ['https://example.com/failed.png'],
+    })).toEqual(['https://example.com/failed.png']);
+    expect(getCloudWalletImageLookupImages({
+      status: 'processing',
+      images: ['https://example.com/partial.png'],
+    })).toEqual([]);
+  });
+});
+
 describe('image resolution routing', () => {
   it('enables 2K/4K for NewAPI Gemini image families and GPT Image 2', () => {
     expect(supportsCanvasAiImageResolution('new-api', 'gemini-3-pro-image')).toBe(true);
@@ -368,6 +656,11 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('new-api', 'gpt-image-2')).toBe(true);
     expect(supportsCanvasAiImageResolution('custom', 'gpt_image_2_guan')).toBe(true);
     expect(supportsCanvasAiImageResolution('openai-compatible', 'gptimage2')).toBe(true);
+    expect(getCanvasAiImageModelFamily('bigmodel', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
+    expect(getCanvasAiImageModelFamily('mikoto', 'gemini-3-pro-image-preview')).toBe('nano-banana-pro');
+    expect(getCanvasAiImageModelFamily('mikoto', 'gemini-3.1-flash-image-preview')).toBe('nano-banana-2');
+    expect(getCanvasAiImageModelFamily('bigmodel', 'gpt-image-2')).toBe('gpt-image-2');
+    expect(getCanvasAiImageModelFamily('bigmodel', 'gpt_image_2')).toBe('gpt-image-2');
   });
 
   it('enables clarity routing for XAIS families and leaves unrelated models unchanged', () => {
@@ -376,6 +669,34 @@ describe('image resolution routing', () => {
     expect(supportsCanvasAiImageResolution('xais-chat', 'gpt-image-2')).toBe(true);
     expect(supportsCanvasAiImageResolution('new-api', 'gpt-image-1')).toBe(false);
     expect(supportsCanvasAiImageResolution('new-api', 'gemini-lite-image')).toBe(false);
+    expect(supportsCanvasAiImageResolution('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toBe(true);
+    expect(getCanvasAiImageResolutionValues('mikoto', 'gpt-image-2', ['IMAGE_GPT_1K'])).toEqual(['1k']);
+    expect(normalizeCanvasAiImageResolutionForModel('mikoto', 'gpt-image-2', '4k', ['IMAGE_GPT_1K'])).toBe('1k');
+  });
+
+  it('uses Mikoto-specific Kling duration choices', () => {
+    expect(getMikotoVideoDurationValues('kling-video')).toEqual([5, 10, 15]);
+    expect(normalizeMikotoVideoDuration('kling-video', 4)).toBe(5);
+    expect(normalizeMikotoVideoDuration('seedance2', 4)).toBe(4);
+  });
+
+  it('exposes the dual Banana channel at 2K for Pro and Banana 2', () => {
+    const pro = 'gemini-3-pro-image-preview';
+    const banana2 = 'gemini-3.1-flash-image-preview';
+    expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_DUAL_2K']))
+      .toEqual(['2k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', banana2, ['IMAGE_NANO_BANANA_DUAL_2K']))
+      .toEqual(['2k']);
+    expect(normalizeCanvasAiImageResolutionForModel(
+      'bigmodel', pro, '4k', ['IMAGE_NANO_BANANA_DUAL_2K'],
+    )).toBe('2k');
+    expect(getCanvasAiImageResolutionValues(
+      'bigmodel', pro, ['IMAGE_NANO_BANANA_DUAL_2K', 'IMAGE_NANO_BANANA_PRO'],
+    )).toEqual(['2k', '4k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_PRO_1K']))
+      .toEqual(['2k']);
+    expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_PRO']))
+      .toEqual(['2k', '4k']);
   });
 
   it('normalizes resolution casing and calculates GPT Image 2 sizes', () => {
@@ -385,6 +706,16 @@ describe('image resolution routing', () => {
     expect(gptImage2SizeFromAspectRatio('16:9', '1K')).toBe('1280x720');
     expect(gptImage2SizeFromAspectRatio('16:9', '2K')).toBe('2048x1152');
     expect(gptImage2SizeFromAspectRatio('3:4', '4K')).toBe('2400x3200');
+    expect(gptImage2SizeFromAspectRatio('2064x1376', '2K')).toBe('2064x1376');
+    expect(gptImage2SizeFromAspectRatio('3520x2352', '4K')).toBe('3520x2352');
+  });
+
+  it('converts GPT Image 2 dimension options into wallet aspect ratios', () => {
+    expect(normalizeCloudWalletImageAspectRatio('2048x1152')).toBe('16:9');
+    expect(normalizeCloudWalletImageAspectRatio('1152×2048')).toBe('9:16');
+    expect(normalizeCloudWalletImageAspectRatio('2048x2048')).toBe('1:1');
+    expect(normalizeCloudWalletImageAspectRatio('1536x2048')).toBe('3:4');
+    expect(normalizeCloudWalletImageAspectRatio('2048x1536')).toBe('4:3');
   });
 
   it('adds size and quality for mapped NewAPI models', () => {
@@ -413,6 +744,11 @@ describe('image resolution routing', () => {
       quality: 'medium',
       output_format: 'png',
       background: 'transparent',
+    });
+    expect(newApiImageRequestParams('gpt-image-2', 1, '3520x2352', '4K')).toEqual({
+      n: 1,
+      size: '3520x2352',
+      quality: 'medium',
     });
   });
 
@@ -536,6 +872,170 @@ describe('NewAPI image protocol errors', () => {
 });
 
 describe('NewAPI video routing', () => {
+  it('uses a bounded total timeout for image and video generator nodes', () => {
+    expect(CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES).toBe(30);
+    expect(CANVAS_AI_VIDEO_TASK_TIMEOUT_MS).toBe(30 * 60 * 1000);
+  });
+
+  it('recognizes nested terminal failure states from provider status payloads', () => {
+    expect(getNewApiVideoTaskState({
+      status: 'processing',
+      payload: { job: { taskStatus: 'FAILED', errorMessage: 'upstream rejected' } },
+    })).toBe('failed');
+    expect(isNewApiVideoFailureState('task_failed')).toBe(true);
+    expect(isNewApiVideoFailureState('timed-out')).toBe(true);
+    expect(formatNewApiVideoFailureMessage('upstream model overloaded')).toBe('upstream model overloaded');
+  });
+
+  it('limits Mikoto Seedance resolutions by the public model family', () => {
+    expect(getMikotoVideoResolutionValues('seedance2')).toEqual(['720p', '1080p']);
+    expect(getMikotoVideoResolutionValues('seedance2fast')).toEqual(['480p', '720p']);
+    expect(normalizeMikotoVideoResolution('seedance2fast', '1080p')).toBe('480p');
+    expect(normalizeMikotoVideoResolution('seedance2', '480p')).toBe('720p');
+  });
+
+  it('exposes one fixed video model list and resolves its underlying provider', () => {
+    expect(NEW_API_VIDEO_MODEL_DEFAULT).toBe('veo-3.1');
+    expect(CANVAS_AI_VIDEO_MODEL_OPTIONS.map(option => option.value)).toEqual([
+      'seedance2',
+      'seedance2fast',
+      'sora-2',
+      'veo-3.1',
+      'veo-3.1-fast',
+      'kling-video',
+      'kling-omni-video',
+      'MiniMax-H3',
+    ]);
+    expect(getCanvasAiVideoProviderForModel('seedance2')).toBe('xais-chat');
+    expect(getCanvasAiVideoProviderForModel('seedance2.0')).toBe('xais-chat');
+    expect(getCanvasAiVideoModelOptionValue('seedance2.0')).toBe('seedance2');
+    expect(isSeedance20VideoModel('seedance2.0')).toBe(true);
+    expect(isSeedance20VideoModel('SourceMix2.0-fast')).toBe(true);
+    expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_MODEL)).toBe('new-api');
+    expect(getCanvasAiVideoProviderForModel(NEW_API_SEEDANCE_2_FAST_MODEL)).toBe('new-api');
+    expect(getCanvasAiVideoProviderForModel('veo-3.1-fast')).toBe('new-api');
+    expect(getCanvasAiVideoProviderForModel('MiniMax-H3')).toBe('minimax');
+    expect(getCanvasAiVideoModelOptionValue('MiniMax H3')).toBe('MiniMax-H3');
+    expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet')).toEqual([
+      { source: 'wallet', provider: 'minimax', model: 'MiniMax-H3' },
+    ]);
+    expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet', undefined, [
+      { id: 'minimax-h3', provider: 'MINIMAX', capabilities: ['VIDEO_MINIMAX'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'minimax', model: 'MiniMax-H3', providerChannelId: 'minimax-h3' }),
+    ]);
+    expect(getCanvasAiVideoModelCandidates('MiniMax-H3', 'wallet', undefined, [
+      { id: 'wrong-channel', provider: 'NEW_API', models: ['MiniMax-H3'], capabilities: ['VIDEO'] },
+      { id: 'minimax-h3', provider: 'MINIMAX', models: ['MiniMax-H3'], capabilities: ['VIDEO_MINIMAX'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'minimax', providerChannelId: 'minimax-h3' }),
+    ]);
+    expect(getCanvasAiVideoModelOptionValue('seedance2')).toBe('seedance2');
+    expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet')).toEqual([
+      { source: 'wallet', provider: 'new-api', model: 'SourceMix2.0' },
+      { source: 'wallet', provider: 'xais-chat', model: 'seedance2' },
+    ]);
+    expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet', 'mikoto')).toEqual([
+      { source: 'wallet', provider: 'mikoto', model: 'seedance2' },
+    ]);
+    expect(getCanvasAiVideoModelCandidates('seedance2', 'wallet', 'mikoto', [
+      { id: 'mikoto-sd2', provider: 'MIKOTO', capabilities: ['VIDEO'] },
+      { id: 'source-mix', provider: 'NEW_API', capabilities: ['VIDEO'] },
+    ])).toEqual([
+      {
+        source: 'wallet', provider: 'mikoto', model: 'seedance2',
+        providerChannelId: 'mikoto-sd2', capabilities: ['VIDEO'],
+      },
+      {
+        source: 'wallet', provider: 'new-api', model: 'SourceMix2.0',
+        providerChannelId: 'source-mix', capabilities: ['VIDEO'],
+      },
+    ]);
+    expect(getCanvasAiVideoModelCandidates('kling-video', 'wallet', 'mikoto', [
+      { id: 'mikoto-kling', provider: 'MIKOTO', models: ['kling-video'], capabilities: ['VIDEO'] },
+      { id: 'source-mix', provider: 'NEW_API', models: ['SourceMix2.0'], capabilities: ['VIDEO'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'mikoto', model: 'kling-video', providerChannelId: 'mikoto-kling' }),
+    ]);
+    expect(getCanvasAiVideoModelCandidates('veo-3.1', 'wallet', 'new-api', [
+      { id: 'mikoto-kling', provider: 'MIKOTO', models: ['kling-video'], capabilities: ['VIDEO'] },
+      { id: 'veo-channel', provider: 'NEW_API', models: ['veo-3.1'], capabilities: ['VIDEO'] },
+    ])).toEqual([
+      expect.objectContaining({ provider: 'new-api', model: 'veo-3.1', providerChannelId: 'veo-channel' }),
+    ]);
+  });
+
+  it('filters persisted video candidates by the selected public model and provider', () => {
+    const staleCandidates = [
+      { source: 'wallet' as const, provider: 'new-api' as const, model: 'veo-3.1', providerChannelId: 'veo' },
+      { source: 'wallet' as const, provider: 'xais-chat' as const, model: 'seedance2', providerChannelId: 'seedance' },
+      { source: 'wallet' as const, provider: 'minimax' as const, model: 'MiniMax-H3', providerChannelId: 'minimax' },
+    ];
+    expect(filterCanvasAiVideoModelCandidates('MiniMax H3', staleCandidates)).toEqual([
+      staleCandidates[2],
+    ]);
+    expect(filterCanvasAiVideoModelCandidates('seedance2', staleCandidates)).toEqual([
+      staleCandidates[1],
+    ]);
+    expect(filterCanvasAiVideoModelCandidates('veo-3.1', staleCandidates)).toEqual([
+      staleCandidates[0],
+    ]);
+  });
+
+  it('uses MiniMax H3 native resolution labels in the video control', () => {
+    expect(getMiniMaxH3VideoResolutionValues()).toEqual(['768P', '2K']);
+    expect(normalizeMiniMaxH3VideoResolution('720p')).toBe('768P');
+    expect(normalizeMiniMaxH3VideoResolution('1080p')).toBe('2K');
+    expect(normalizeMiniMaxH3VideoResolution('2K')).toBe('2K');
+  });
+
+  it('does not accept media from a still-processing task response', () => {
+    const oldResult = { status: 'processing', video_url: 'https://example.com/old.mp4' };
+    expect(isNewApiVideoSuccessState('processing')).toBe(false);
+    expect(isNewApiVideoResultReady(oldResult)).toBe(false);
+    expect(isNewApiVideoResultReady({ status: 'succeeded', video_url: 'https://example.com/new.mp4' })).toBe(true);
+    expect(isNewApiVideoResultReady({ video_url: 'https://example.com/legacy.mp4' })).toBe(true);
+    expect(isNewApiVideoResultReady({ status: 'failed', video_url: 'https://example.com/old.mp4' })).toBe(false);
+  });
+
+  it('adapts the reference UI slots to each video model', () => {
+    expect(getCanvasAiVideoReferenceSlots('sora-2', 'FLF')).toEqual({
+      mode: 'REF', imageSlots: 1, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('veo-3.1', 'REF')).toEqual({
+      mode: 'REF', imageSlots: 3, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('veo-3.1-fast', 'FLF')).toEqual({
+      mode: 'FLF', imageSlots: 2, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('seedance2', 'REF')).toEqual({
+      mode: 'REF', imageSlots: 9, videoSlots: 3, audioSlots: 3,
+    });
+    expect(getCanvasAiVideoReferenceSlots('seedance2fast', 'FLF')).toEqual({
+      mode: 'FLF', imageSlots: 2, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots(NEW_API_SEEDANCE_2_MODEL, 'REF')).toEqual({
+      mode: 'REF', imageSlots: 9, videoSlots: 3, audioSlots: 3,
+    });
+    expect(getCanvasAiVideoReferenceSlots('MiniMax-H3', 'REF', 'minimax')).toEqual({
+      mode: 'REF', imageSlots: 9, videoSlots: 3, audioSlots: 3,
+    });
+    expect(getCanvasAiVideoReferenceSlots('kling-video', 'REF', 'mikoto')).toEqual({
+      mode: 'REF', imageSlots: 2, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlots('kling-omni-video', 'REF', 'mikoto')).toEqual({
+      mode: 'REF', imageSlots: 3, videoSlots: 0, audioSlots: 0,
+    });
+    expect(getCanvasAiVideoReferenceSlotLabels(NEW_API_SEEDANCE_2_MODEL, 'REF')).toHaveLength(9);
+    expect(getCanvasAiVideoReferenceSlotLabels('veo-3.1', 'REF')).toEqual([
+      '主体', '场景/背景', '风格/纹理',
+    ]);
+    const oneReferencePrompt = buildNewApiVideoPrompt('veo-3.1', '产品环绕镜头', 'REF', 1);
+    expect(oneReferencePrompt).toContain('参考图1为主体参考');
+    expect(oneReferencePrompt).not.toContain('参考图2为场景/背景参考');
+    expect(buildNewApiVideoPrompt('veo-3.1', '产品环绕镜头', 'FLF', 2)).toBe('产品环绕镜头');
+  });
+
   it('explains upstream Cloudflare channel failures without blaming local networking', () => {
     expect(formatNewApiVideoFailureMessage('list recipes failed: cloudflare 403 challenge (status=429)'))
       .toContain('NewAPI 上游视频渠道');
@@ -561,35 +1061,126 @@ describe('NewAPI video routing', () => {
   it('normalizes video endpoints without duplicating v1', () => {
     expect(normalizeNewApiBaseEndpoint('https://api.example.com/v1/video/generations/task-123'))
       .toBe('https://api.example.com/v1');
+    expect(normalizeNewApiBaseEndpoint('https://api.example.com/v1/videos/task-123'))
+      .toBe('https://api.example.com/v1');
   });
 
-  it('builds standard NewAPI video parameters and preserves first/last frame metadata', () => {
+  it('applies the Sora 2 and Veo 3.1 model constraints', () => {
+    expect(getNewApiVideoResolutionValues('sora-2')).toEqual(['720p']);
+    expect(getNewApiVideoResolutionValues('veo-3.1')).toEqual(['720p', '1080p']);
+    expect(getNewApiVideoResolutionValues('SourceMix2.0-fast')).toEqual(['480p', '720p']);
+    expect(getNewApiVideoDurationValues('sora-2')).toEqual([8, 12]);
+    expect(getNewApiVideoDurationValues('veo-3.1-fast')).toEqual([4, 5, 6, 7, 8]);
+    expect(getNewApiVideoDurationValues('SourceMix2.0')).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(normalizeSeedanceVideoAspectRatio('3:4')).toBe('3:4');
+    expect(normalizeSeedanceVideoAspectRatio('2:1')).toBe('16:9');
+    expect(normalizeNewApiVideoDurationForModel('sora-2', 10)).toBe(8);
+    expect(getNewApiVideoReferenceLimit('sora-2')).toBe(1);
+    expect(getNewApiVideoReferenceLimit('veo-3.1')).toBe(3);
+    expect(validateCanvasAiVideoReferences('veo-3.1-fast', 'FLF', 1)).toContain('首帧和尾帧');
+    expect(validateCanvasAiVideoReferences('veo-3.1-fast', 'FLF', 2)).toBe('');
+    expect(validateCanvasAiVideoReferences('veo-3.1-fast', 'REF', 1)).toBe('');
+  });
+
+  it('builds the /v1/videos payload for Veo with up to three ingredient references', () => {
     expect(getNewApiVideoDimensions('16:9', '1080p')).toEqual({ width: 1920, height: 1080 });
     expect(newApiVideoRequestParams({
-      model: 'seedance-1.5-pro',
+      model: 'veo-3.1-fast',
       prompt: 'Camera moves around the product',
-      inputImages: ['https://example.com/start.png', 'https://example.com/end.png'],
+      inputImages: [
+        'https://example.com/person.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+        'https://example.com/ignored.png',
+      ],
       aspectRatio: '16:9',
       resolution: '1080p',
       duration: 8,
-      inputMode: 'FLF',
+      inputMode: 'REF',
       count: 1,
     })).toEqual({
-      model: 'seedance-1.5-pro',
-      prompt: 'Camera moves around the product',
-      image: 'https://example.com/start.png',
+      model: 'veo-3.1-fast',
+      prompt: [
+        'Camera moves around the product',
+        '',
+        '参考图用途（请按编号分别使用，不要混淆）：',
+        '参考图1为主体参考：保持主体（人物、角色或产品等）的外观、结构、颜色和关键识别特征一致。',
+        '参考图2为场景/背景参考：保持环境、空间关系、构图和光线氛围。',
+        '参考图3为风格/纹理参考：保持材质、色彩、质感和整体视觉风格。',
+      ].join('\n'),
       duration: 8,
-      width: 1920,
-      height: 1080,
-      n: 1,
-      response_format: 'url',
-      metadata: {
-        aspect_ratio: '16:9',
-        resolution: '1080p',
-        input_mode: 'FLF',
-        end_image: 'https://example.com/end.png',
-        reference_images: ['https://example.com/start.png', 'https://example.com/end.png'],
-      },
+      size: '1920x1080',
+      images: [
+        'https://example.com/person.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+      ],
+    });
+  });
+
+  it('uses the Veo request shape for NewAPI Seedance 2 models', () => {
+    expect(newApiVideoRequestParams({
+      model: NEW_API_SEEDANCE_2_MODEL,
+      prompt: 'Orbit around the product',
+      inputImages: [
+        'https://example.com/product.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+        'https://example.com/ignored.png',
+      ],
+      aspectRatio: '9:16',
+      resolution: '1080p',
+      duration: 6,
+      inputMode: 'REF',
+    })).toEqual({
+      model: 'SourceMix2.0',
+      prompt: 'Orbit around the product',
+      duration: 6,
+      size: '1080x1920',
+      images: [
+        'https://example.com/product.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+        'https://example.com/ignored.png',
+      ],
+      ref: [
+        'https://example.com/product.png',
+        'https://example.com/scene.png',
+        'https://example.com/style.png',
+        'https://example.com/ignored.png',
+      ],
+    });
+  });
+
+  it('keeps Seedance omni references in their dedicated categories', () => {
+    const request = newApiVideoRequestParams({
+      model: NEW_API_SEEDANCE_2_FAST_MODEL,
+      prompt: 'Use every reference',
+      inputImages: Array.from({ length: 10 }, (_, index) => `https://example.com/image-${index}.png`),
+      inputVideos: Array.from({ length: 4 }, (_, index) => `https://example.com/video-${index}.mp4`),
+      inputAudios: Array.from({ length: 4 }, (_, index) => `https://example.com/audio-${index}.mp3`),
+      inputMode: 'REF',
+    });
+    expect(request.images).toHaveLength(9);
+    expect(request.videos).toHaveLength(3);
+    expect(request.audios).toHaveLength(3);
+    expect(request.ref).toHaveLength(15);
+  });
+
+  it('limits Sora 2 to one reference image and 720p', () => {
+    expect(newApiVideoRequestParams({
+      model: 'sora-2',
+      prompt: 'Slow push in',
+      inputImages: ['https://example.com/start.png', 'https://example.com/ignored.png'],
+      aspectRatio: '9:16',
+      resolution: '1080p',
+      duration: 12,
+    })).toEqual({
+      model: 'sora-2',
+      prompt: 'Slow push in',
+      duration: 12,
+      size: '720x1280',
+      images: ['https://example.com/start.png'],
     });
   });
 });

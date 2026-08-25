@@ -19,6 +19,9 @@ export type MigrationStatus = {
 export const getMigrationStatus = () =>
   invoke<MigrationStatus>('get_migration_status');
 
+export const ensureSqliteAssetLibrary = () =>
+  invoke<MigrationStatus>('ensure_sqlite_asset_library');
+
 export const migrateJsonToSqlite = () =>
   invoke<MigrationStatus>('migrate_json_to_sqlite');
 

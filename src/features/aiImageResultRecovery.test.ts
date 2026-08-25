@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   getAutoRecoverableAiImageResultSource,
+  getAutoRecoverableAiMediaResultSource,
   getStableAiImageResultSource,
+  getStableAiVideoResultSource,
 } from './aiImageResultRecovery';
 
 describe('AI image result recovery source', () => {
@@ -24,6 +26,15 @@ describe('AI image result recovery source', () => {
     expect(getStableAiImageResultSource(
       'https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/reference-images/abc.png',
     )).toBeNull();
+  });
+
+  it('normalizes stable wallet and OSS video result URLs', () => {
+    expect(getStableAiVideoResultSource(
+      'https://api.unmind.art/v1/ai/video-results/abc.mp4?redirect=0',
+    )).toBe('https://api.unmind.art/v1/ai/video-results/abc.mp4');
+    expect(getStableAiVideoResultSource(
+      'https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/abc.mp4?Expires=1&Signature=expired',
+    )).toBe('https://api.unmind.art/v1/ai/video-results/abc.mp4');
   });
 
   it('only selects completed image outputs whose local cache needs repair', () => {
@@ -51,6 +62,22 @@ describe('AI image result recovery source', () => {
       mediaType: 'video',
       status: 'success',
       cacheStatus: 'failed',
+      source,
+    })).toBeNull();
+  });
+
+  it('selects completed video outputs whose local cache needs repair', () => {
+    const source = 'https://api.unmind.art/v1/ai/video-results/abc.mp4';
+    expect(getAutoRecoverableAiMediaResultSource({
+      mediaType: 'video',
+      status: 'success',
+      cacheStatus: 'failed',
+      source,
+    })).toBe(source);
+    expect(getAutoRecoverableAiMediaResultSource({
+      mediaType: 'video',
+      status: 'success',
+      cacheStatus: 'pending',
       source,
     })).toBeNull();
   });

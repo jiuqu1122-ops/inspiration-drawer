@@ -6,6 +6,7 @@ import type {
   InspirationProfile,
   InspirationReferenceRole,
 } from './types';
+import { getReliableInspirationAiTags } from './inspirationAnalysis';
 
 const ROLE_TERMS: Record<InspirationReferenceRole, string[]> = {
   FORM_REF: ['form', 'shape', 'silhouette', 'geometry', 'proportion', '造型', '轮廓', '几何', '比例', '圆润', '方正'],
@@ -151,7 +152,7 @@ export const getInspirationProfile = (item: BufferItem): InspirationProfile => {
 };
 
 const aiTagNames = (profile: InspirationProfile, categories?: string[]) => (
-  (profile.aiTags || [])
+  getReliableInspirationAiTags(profile)
     .filter(tag => !categories || categories.includes(tag.category))
     .map(tag => tag.name)
 );

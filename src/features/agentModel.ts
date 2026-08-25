@@ -296,6 +296,7 @@ export type AgentCanvasVisualReference = {
   outputId?: string;
   name: string;
   mediaType: 'image' | 'video';
+  sourceMediaType?: 'image' | 'video';
   source?: string;
   path?: string;
   thumbnail?: string;

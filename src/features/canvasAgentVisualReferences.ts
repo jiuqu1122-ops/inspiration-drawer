@@ -16,7 +16,7 @@ export async function prepareAgentVisualReferences(
   options: PrepareCanvasAgentVisualReferencesOptions,
 ): Promise<AgentCanvasVisualReference[]> {
   const prepared: AgentCanvasVisualReference[] = [];
-  const maxReferences = Math.max(1, Math.min(6, options.maxReferences || 6));
+  const maxReferences = Math.max(1, Math.min(9, options.maxReferences || 6));
 
   for (const reference of references.filter(item => item.mediaType === 'image').slice(0, maxReferences)) {
     const source = (reference.source || reference.thumbnail || '').trim();

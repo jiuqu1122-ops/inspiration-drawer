@@ -1,4 +1,5 @@
 import type { DesignAgentConfig } from './canvasModel';
+import { SEEDANCE_PROMPT_OPTIMIZER_SYSTEM_PROMPT } from './seedancePromptOptimizer';
 
 export const DESIGN_AGENT_ROLES = [
   'requirement_analyzer',
@@ -6,6 +7,7 @@ export const DESIGN_AGENT_ROLES = [
   'design_strategist',
   'design_reviewer',
   'presentation_writer',
+  'seedance_video_analyzer',
   'general',
 ] as const satisfies readonly NonNullable<DesignAgentConfig['agentRole']>[];
 
@@ -16,6 +18,7 @@ export const DESIGN_AGENT_ARTIFACT_TYPES = [
   'DesignStrategy',
   'DesignReview',
   'PromptPackage',
+  'SeedancePrompt',
   'Document',
 ] as const satisfies readonly NonNullable<DesignAgentConfig['outputArtifactType']>[];
 
@@ -31,6 +34,7 @@ export const DESIGN_AGENT_ROLE_LABELS: Record<NonNullable<DesignAgentConfig['age
   design_strategist: '设计策略',
   design_reviewer: '方案评审',
   presentation_writer: '交付整理',
+  seedance_video_analyzer: 'Seedance 视频分析',
   general: '通用设计 Agent',
 };
 
@@ -41,6 +45,7 @@ export const DESIGN_AGENT_ARTIFACT_LABELS: Record<NonNullable<DesignAgentConfig[
   DesignStrategy: '设计策略',
   DesignReview: '设计评审',
   PromptPackage: '提示词包',
+  SeedancePrompt: 'Seedance 提示词',
   Document: '设计文档',
 };
 
@@ -56,6 +61,7 @@ const DEFAULT_ARTIFACT_BY_ROLE: Record<NonNullable<DesignAgentConfig['agentRole'
   design_strategist: 'DesignStrategy',
   design_reviewer: 'DesignReview',
   presentation_writer: 'Document',
+  seedance_video_analyzer: 'SeedancePrompt',
   general: 'Document',
 };
 
@@ -65,6 +71,7 @@ const DEFAULT_MODE_BY_ROLE: Record<NonNullable<DesignAgentConfig['agentRole']>, 
   design_strategist: 'analysis',
   design_reviewer: 'review',
   presentation_writer: 'generation',
+  seedance_video_analyzer: 'analysis',
   general: 'generation',
 };
 
@@ -115,6 +122,10 @@ const ROLE_INSTRUCTIONS: Record<NonNullable<DesignAgentConfig['agentRole']>, str
     '把上游设计资产整理成面向评审或交付的清晰文档。',
     '保留关键决策依据、方案亮点、约束、风险和后续行动，不添加上游没有支持的营销结论或工程参数。',
   ],
+  seedance_video_analyzer: [
+    '调用内置 Seedance 2.0 提示词优化 Skill，分析当前需求与已连接素材。',
+    '输出可直接用于 Seedance 2.0 的最终视频提示词。',
+  ],
   general: [
     '根据当前需求和上游内容生成可继续连接到设计流程的文本资产。',
     '涉及产品设计时，优先保证需求、产品逻辑、比例、功能、结构和 CMF 判断可追溯。',
@@ -134,11 +145,15 @@ const ARTIFACT_INSTRUCTIONS: Record<NonNullable<DesignAgentConfig['outputArtifac
   DesignStrategy: '输出结构至少包含：设计原则、概念方向、造型与比例、结构/交互、CMF、风险和验证计划。',
   DesignReview: '输出结构至少包含：评审结论、通过项、问题分级、修改建议、待验证项和下一轮标准。',
   PromptPackage: '输出可直接供图片生成节点使用的提示词包，包含 Original request、设计原则、主体/造型/结构/CMF、视角与光线、参考角色和负面约束。',
+  SeedancePrompt: '输出一份可直接用于 Seedance 2.0 的最终视频提示词正文。',
   Document: '输出标题清楚、层级稳定、可直接复制交付的 Markdown 文档。',
 };
 
 export const buildDesignAgentSystemPrompt = (value?: DesignAgentConfig) => {
   const config = normalizeDesignAgentConfig(value);
+  if (config.agentRole === 'seedance_video_analyzer') {
+    return SEEDANCE_PROMPT_OPTIMIZER_SYSTEM_PROMPT;
+  }
   return [
     `当前节点角色：${DESIGN_AGENT_ROLE_LABELS[config.agentRole]} (${config.agentRole})。`,
     `目标产物：${DESIGN_AGENT_ARTIFACT_LABELS[config.outputArtifactType]} (${config.outputArtifactType})。`,

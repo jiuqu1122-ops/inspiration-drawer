@@ -1636,7 +1636,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                               value={schedulePriorityDraft}
                               options={schedulePriorityOptions}
                               onChange={(next) => setSchedulePriorityDraft(normalizeSchedulePriority(next))}
-                              className={`h-6 rounded-full border px-2 text-[10px] font-black opacity-86 ${getSchedulePriorityClass(schedulePriorityDraft)}`}
+                              data-schedule-priority={schedulePriorityDraft}
+                              className={`h-6 rounded-[7px] px-2 text-[10px] font-black ${getSchedulePriorityClass(schedulePriorityDraft)}`}
                               menuMinWidth={68}
                               title="优先级"
                             />
@@ -1698,7 +1699,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                                   value={normalizeSchedulePriority(item.priority)}
                                   options={schedulePriorityOptions}
                                   onChange={(next) => updateScheduleItem(item.id, { priority: normalizeSchedulePriority(next) })}
-                                  className={`h-5 rounded-full border px-2 text-[10px] font-black ${getSchedulePriorityClass(item.priority)}`}
+                                  data-schedule-priority={normalizeSchedulePriority(item.priority)}
+                                  className={`h-5 rounded-[6px] px-2 text-[10px] font-black ${getSchedulePriorityClass(item.priority)}`}
                                   menuMinWidth={58}
                                   title="优先级"
                                 />

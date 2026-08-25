@@ -151,6 +151,8 @@ struct ImageThumbnailFileResult {
     file_size: u64,
     #[serde(rename = "modifiedAt")]
     modified_at: u64,
+    #[serde(rename = "cacheHit")]
+    cache_hit: bool,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -177,6 +179,7 @@ struct R2Share {
 static CLOUDFLARED_SHARES: OnceLock<Mutex<HashMap<String, CloudflaredShare>>> = OnceLock::new();
 static R2_SHARES: OnceLock<Mutex<HashMap<String, R2Share>>> = OnceLock::new();
 static LOCAL_MEDIA_CACHE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static FFMPEG_TOOLS_INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static REAL_ESRGAN_ESTIMATE_TASKS: OnceLock<Mutex<HashMap<String, RealEsrganEstimateTaskHandle>>> =
     OnceLock::new();
 
@@ -680,6 +683,14 @@ fn is_wallet_ai_image_result_url(value: &str) -> bool {
     })
 }
 
+fn is_wallet_ai_video_result_url(value: &str) -> bool {
+    Url::parse(value).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
+            && url.path().starts_with("/v1/ai/video-results/")
+    })
+}
+
 fn generated_oss_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
     if url.scheme() != "https"
@@ -699,8 +710,30 @@ fn generated_oss_result_key(value: &str) -> Option<String> {
     valid.then(|| key.to_string())
 }
 
+fn generated_oss_video_result_key(value: &str) -> Option<String> {
+    let url = Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || !url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case(
+                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
+            )
+        })
+    {
+        return None;
+    }
+    let key = url.path().strip_prefix("/generated-videos/")?;
+    let valid = key.len() <= 80
+        && key
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_');
+    valid.then(|| key.to_string())
+}
+
 fn is_wallet_ai_image_result_source(value: &str) -> bool {
-    is_wallet_ai_image_result_url(value) || generated_oss_result_key(value).is_some()
+    is_wallet_ai_image_result_url(value)
+        || is_wallet_ai_video_result_url(value)
+        || generated_oss_result_key(value).is_some()
+        || generated_oss_video_result_key(value).is_some()
 }
 
 fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
@@ -711,7 +744,8 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
                 "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
             )
         })
-        && url.path().starts_with("/generated-images/");
+        && (url.path().starts_with("/generated-images/")
+            || url.path().starts_with("/generated-videos/"));
     if !allowed {
         return Err("OSS 签名地址不属于允许的生成结果 Bucket".to_string());
     }
@@ -722,7 +756,12 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
 }
 
 fn image_result_json_url(value: &str) -> Result<Url, String> {
-    let mut url = if let Some(key) = generated_oss_result_key(value) {
+    let mut url = if let Some(key) = generated_oss_video_result_key(value) {
+        Url::parse(&format!(
+            "https://api.unmind.art/v1/ai/video-results/{key}"
+        ))
+        .map_err(|error| error.to_string())?
+    } else if let Some(key) = generated_oss_result_key(value) {
         Url::parse(&format!(
             "https://api.unmind.art/v1/ai/image-results/{key}"
         ))
@@ -826,7 +865,8 @@ async fn resolve_ai_image_result_url(
 mod ai_image_result_url_tests {
     use super::{
         build_direct_http_client, download_url_to_file_with_client, image_result_json_url,
-        generated_oss_result_key, is_wallet_ai_image_result_url,
+        generated_oss_result_key, generated_oss_video_result_key, is_wallet_ai_image_result_source,
+        is_wallet_ai_image_result_url, is_wallet_ai_video_result_url,
         should_prefer_direct_generated_image_download, validate_generated_image_oss_url,
     };
     use std::fs;
@@ -872,11 +912,35 @@ mod ai_image_result_url_tests {
     }
 
     #[test]
-    fn only_accepts_https_signed_urls_from_the_generated_image_bucket() {
+    fn recognizes_wallet_video_results_and_rebuilds_the_stable_api_url() {
+        let stable = "https://api.unmind.art/v1/ai/video-results/abc.mp4";
+        assert!(is_wallet_ai_video_result_url(stable));
+        assert!(is_wallet_ai_image_result_source(stable));
+
+        let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/abc.mp4?token=expired";
+        assert_eq!(generated_oss_video_result_key(signed).as_deref(), Some("abc.mp4"));
+        assert!(is_wallet_ai_image_result_source(signed));
+        let endpoint = image_result_json_url(signed).expect("stable video API endpoint");
+        assert_eq!(endpoint.path(), "/v1/ai/video-results/abc.mp4");
+        assert_eq!(
+            endpoint.query_pairs()
+                .find(|(key, _)| key == "redirect")
+                .map(|(_, value)| value.into_owned()),
+            Some("0".to_string())
+        );
+    }
+
+    #[test]
+    fn only_accepts_https_signed_urls_from_the_generated_media_bucket() {
         let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-images/a.png?token=a%2Bb";
         assert_eq!(
             validate_generated_image_oss_url(signed).expect("allowed signed URL"),
             signed
+        );
+        let video = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/a.mp4?token=a%2Bb";
+        assert_eq!(
+            validate_generated_image_oss_url(video).expect("allowed signed video URL"),
+            video
         );
         assert!(validate_generated_image_oss_url(
             "https://evil.example/generated-images/a.png?token=x"
@@ -1081,11 +1145,13 @@ fn download_url_to_file_with_client(
 
 const RIFE_ENGINE_VERSION: &str = "20221029";
 const RIFE_ENGINE_DIR_NAME: &str = "rife-ncnn-vulkan-20221029-windows";
-const RIFE_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
+const RIFE_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
+const RIFE_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_SHA256: &str = "A4DA55EC5629DBD5E9C6594D96225308325FC39A3DF67CD8E77010207525CE77";
 const RIFE_ENGINE_ZIP_SIZE: u64 = 123_750_542;
 const FFMPEG_TOOLS_DIR_NAME: &str = "ffmpeg-tools-n8.1-win64-gpl";
-const FFMPEG_TOOLS_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
+const FFMPEG_TOOLS_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
+const FFMPEG_TOOLS_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_SHA256: &str =
     "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
 const FFMPEG_TOOLS_ZIP_SIZE: u64 = 109_205_730;
@@ -1097,7 +1163,8 @@ const REALESRGAN_SAFE_INTERMEDIATE_MAX_PIXELS: u64 = 48_000_000;
 const REALESRGAN_SAFE_FINAL_MAX_EDGE: u32 = 4_096;
 const REALESRGAN_SAFE_FINAL_MAX_PIXELS: u64 = 16_000_000;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
-const REALESRGAN_ENGINE_ASSET_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
+const REALESRGAN_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
+const REALESRGAN_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
     "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D";
 const REALESRGAN_ENGINE_ZIP_SIZE: u64 = 45_474_481;
@@ -2749,56 +2816,154 @@ fn copy_response_to_file_with_progress(
     Ok(())
 }
 
+fn download_engine_archive_from_sources(
+    app_handle: &tauri::AppHandle,
+    archive_path: &Path,
+    progress_id: Option<&str>,
+    display_name: &str,
+    connecting_stage: &str,
+    downloading_stage: &str,
+    sources: &[(&str, &str)],
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 {display_name} 下载目录失败：{e}"))?;
+    }
+
+    let temporary_path = archive_path.with_extension("download.tmp");
+    let has_configured_proxy = effective_proxy(Some(app_handle), None).is_some();
+    let mut failures = Vec::new();
+
+    for (source_name, source_url) in sources {
+        let prefer_direct = should_prefer_direct_generated_image_download(source_url);
+        let network_modes: &[&str] = if has_configured_proxy && prefer_direct {
+            &["直连", "代理"]
+        } else if has_configured_proxy {
+            &["代理", "直连"]
+        } else {
+            &["直连"]
+        };
+
+        for network_mode in network_modes {
+            let _ = fs::remove_file(&temporary_path);
+            emit_rife_engine_progress(
+                app_handle,
+                progress_id,
+                connecting_stage,
+                &format!("连接 {display_name} 下载源（{source_name} / {network_mode}）"),
+                0,
+                expected_size,
+            );
+
+            let client = match *network_mode {
+                "代理" => build_engine_download_http_client(app_handle, 1800),
+                _ => build_direct_http_client(1800),
+            };
+            let client = match client {
+                Ok(value) => value,
+                Err(error) => {
+                    failures.push(format!("{source_name} / {network_mode}: {error}"));
+                    continue;
+                }
+            };
+
+            let attempt = (|| -> Result<(), String> {
+                let mut response = client
+                    .get(*source_url)
+                    .send()
+                    .map_err(|e| format!("连接失败：{e}"))?;
+                if !response.status().is_success() {
+                    return Err(format!("HTTP {}", response.status()));
+                }
+                if let Some(content_length) = response.content_length() {
+                    if content_length != expected_size {
+                        return Err(format!(
+                            "文件大小不符：期望 {expected_size}，服务器返回 {content_length}"
+                        ));
+                    }
+                }
+
+                {
+                    let mut file = File::create(&temporary_path)
+                        .map_err(|e| format!("创建临时下载文件失败：{e}"))?;
+                    copy_response_to_file_with_progress(
+                        &mut response,
+                        &mut file,
+                        app_handle,
+                        progress_id,
+                        downloading_stage,
+                        &format!("下载 {display_name}（{source_name}）"),
+                        expected_size,
+                    )?;
+                    file.flush()
+                        .map_err(|e| format!("写入临时下载文件失败：{e}"))?;
+                }
+
+                let actual_size = fs::metadata(&temporary_path)
+                    .map_err(|e| format!("读取临时下载文件失败：{e}"))?
+                    .len();
+                if actual_size != expected_size {
+                    return Err(format!(
+                        "下载不完整：期望 {expected_size} 字节，实际 {actual_size} 字节"
+                    ));
+                }
+                let actual_sha256 = sha256_file_upper(&temporary_path)?;
+                if actual_sha256 != expected_sha256 {
+                    return Err(format!(
+                        "SHA-256 校验失败：期望 {expected_sha256}，实际 {actual_sha256}"
+                    ));
+                }
+
+                fs::rename(&temporary_path, archive_path)
+                    .or_else(|_| {
+                        fs::copy(&temporary_path, archive_path).map(|_| ())?;
+                        let _ = fs::remove_file(&temporary_path);
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .map_err(|e| format!("保存 {display_name} 失败：{e}"))
+            })();
+
+            match attempt {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let _ = fs::remove_file(&temporary_path);
+                    failures.push(format!("{source_name} / {network_mode}: {error}"));
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "{display_name} 下载失败，已尝试 OSS 主源和备用源：\n{}",
+        failures
+            .iter()
+            .map(|failure| format!("- {failure}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
 fn download_rife_engine_archive(
     app_handle: &tauri::AppHandle,
     archive_path: &Path,
     progress_id: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建引擎下载目录失败: {}", e))?;
-    }
-    emit_rife_engine_progress(
+    download_engine_archive_from_sources(
         app_handle,
+        archive_path,
         progress_id,
+        "RIFE 引擎",
         "connecting-rife",
-        "连接 RIFE 下载源",
-        0,
-        0,
-    );
-    let client = build_engine_download_http_client(app_handle, 1800)?;
-    let mut response = client.get(RIFE_ENGINE_ASSET_URL).send().map_err(|e| {
-        format!(
-            "下载 RIFE 引擎失败: {}。请检查网络/代理后重试，或稍后再试。",
-            e
-        )
-    })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载 RIFE 引擎失败，HTTP 状态码: {}",
-            response.status()
-        ));
-    }
-
-    let tmp_path = archive_path.with_extension("download.tmp");
-    {
-        let mut file = File::create(&tmp_path).map_err(|e| format!("创建下载文件失败: {}", e))?;
-        copy_response_to_file_with_progress(
-            &mut response,
-            &mut file,
-            app_handle,
-            progress_id,
-            "downloading-rife",
-            "下载 RIFE 引擎",
-            RIFE_ENGINE_ZIP_SIZE,
-        )?;
-    }
-    fs::rename(&tmp_path, archive_path)
-        .or_else(|_| {
-            fs::copy(&tmp_path, archive_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("保存 RIFE 引擎失败: {}", e))
+        "downloading-rife",
+        &[
+            ("OSS 主源", RIFE_ENGINE_ASSET_URL),
+            ("GitHub 备用源", RIFE_ENGINE_ASSET_FALLBACK_URL),
+        ],
+        RIFE_ENGINE_ZIP_SIZE,
+        RIFE_ENGINE_SHA256,
+    )
 }
 
 fn download_realesrgan_engine_archive(
@@ -2806,54 +2971,20 @@ fn download_realesrgan_engine_archive(
     archive_path: &Path,
     progress_id: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建 Real-ESRGAN 下载目录失败: {}", e))?;
-    }
-    emit_rife_engine_progress(
+    download_engine_archive_from_sources(
         app_handle,
+        archive_path,
         progress_id,
+        "Real-ESRGAN 引擎",
         "connecting-realesrgan",
-        "连接 Real-ESRGAN 下载源",
-        0,
-        0,
-    );
-    let client = build_engine_download_http_client(app_handle, 120)?;
-    let mut response = client
-        .get(REALESRGAN_ENGINE_ASSET_URL)
-        .send()
-        .map_err(|e| {
-            format!(
-                "下载 Real-ESRGAN 引擎失败: {}。请检查网络/代理后重试，或稍后再试。",
-                e
-            )
-        })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载 Real-ESRGAN 引擎失败，HTTP 状态码: {}",
-            response.status()
-        ));
-    }
-
-    let tmp_path = archive_path.with_extension("download.tmp");
-    {
-        let mut file = File::create(&tmp_path).map_err(|e| format!("创建下载文件失败: {}", e))?;
-        copy_response_to_file_with_progress(
-            &mut response,
-            &mut file,
-            app_handle,
-            progress_id,
-            "downloading-realesrgan",
-            "下载 Real-ESRGAN 引擎",
-            REALESRGAN_ENGINE_ZIP_SIZE,
-        )?;
-    }
-    fs::rename(&tmp_path, archive_path)
-        .or_else(|_| {
-            fs::copy(&tmp_path, archive_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("保存 Real-ESRGAN 引擎失败: {}", e))
+        "downloading-realesrgan",
+        &[
+            ("OSS 主源", REALESRGAN_ENGINE_ASSET_URL),
+            ("GitHub 备用源", REALESRGAN_ENGINE_ASSET_FALLBACK_URL),
+        ],
+        REALESRGAN_ENGINE_ZIP_SIZE,
+        REALESRGAN_ENGINE_SHA256,
+    )
 }
 
 fn extract_rife_engine_archive(archive_path: &Path, base_dir: &Path) -> Result<(), String> {
@@ -2894,52 +3025,20 @@ fn download_ffmpeg_tools_archive(
     archive_path: &Path,
     progress_id: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建 FFmpeg 工具下载目录失败: {}", e))?;
-    }
-    emit_rife_engine_progress(
+    download_engine_archive_from_sources(
         app_handle,
+        archive_path,
         progress_id,
+        "FFmpeg / FFprobe 工具",
         "connecting-ffmpeg-tools",
-        "连接 FFmpeg / FFprobe 下载源",
-        0,
-        0,
-    );
-    let client = build_engine_download_http_client(app_handle, 1800)?;
-    let mut response = client.get(FFMPEG_TOOLS_ASSET_URL).send().map_err(|e| {
-        format!(
-            "下载 FFmpeg / FFprobe 工具失败: {}。请检查网络/代理后重试，或稍后再试。",
-            e
-        )
-    })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "下载 FFmpeg / FFprobe 工具失败，HTTP 状态码: {}",
-            response.status()
-        ));
-    }
-
-    let tmp_path = archive_path.with_extension("download.tmp");
-    {
-        let mut file =
-            File::create(&tmp_path).map_err(|e| format!("创建工具下载文件失败: {}", e))?;
-        copy_response_to_file_with_progress(
-            &mut response,
-            &mut file,
-            app_handle,
-            progress_id,
-            "downloading-ffmpeg-tools",
-            "下载 FFmpeg / FFprobe",
-            FFMPEG_TOOLS_ZIP_SIZE,
-        )?;
-    }
-    fs::rename(&tmp_path, archive_path)
-        .or_else(|_| {
-            fs::copy(&tmp_path, archive_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|e| format!("保存 FFmpeg / FFprobe 工具失败: {}", e))
+        "downloading-ffmpeg-tools",
+        &[
+            ("OSS 主源", FFMPEG_TOOLS_ASSET_URL),
+            ("GitHub 备用源", FFMPEG_TOOLS_ASSET_FALLBACK_URL),
+        ],
+        FFMPEG_TOOLS_ZIP_SIZE,
+        FFMPEG_TOOLS_SHA256,
+    )
 }
 
 fn ensure_ffmpeg_tools_installed(
@@ -2948,6 +3047,13 @@ fn ensure_ffmpeg_tools_installed(
 ) -> Result<(), String> {
     let ffmpeg_path = bundled_media_tool_path("ffmpeg")?;
     let ffprobe_path = bundled_media_tool_path("ffprobe")?;
+    if ffmpeg_path.is_file() && ffprobe_path.is_file() {
+        return Ok(());
+    }
+    let _install_guard = FFMPEG_TOOLS_INSTALL_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "FFmpeg tools install lock is poisoned".to_string())?;
     if ffmpeg_path.is_file() && ffprobe_path.is_file() {
         return Ok(());
     }
@@ -4695,6 +4801,18 @@ async fn run_rife_frame_interpolation(
 }
 
 #[tauri::command]
+async fn ensure_video_cfr_tools(
+    app_handle: tauri::AppHandle,
+    progress_id: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_media_tools_available(&app_handle, progress_id.as_deref()).map(|_| ())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn normalize_video_cfr_if_needed(
     app_handle: tauri::AppHandle,
     input_path: String,
@@ -6225,6 +6343,220 @@ fn image_mime_extension(mime: &str) -> &'static str {
     }
 }
 
+// Keep the raw file below provider limits even after Base64/JSON overhead.
+const AI_REFERENCE_IMAGE_TARGET_BYTES: usize = 6 * 1024 * 1024;
+
+fn is_ai_upload_compatible_image_mime(mime: &str) -> bool {
+    matches!(
+        mime.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
+    )
+}
+
+fn should_normalize_ai_reference_image(mime: &str, byte_len: usize) -> bool {
+    !is_ai_upload_compatible_image_mime(mime) || byte_len > AI_REFERENCE_IMAGE_TARGET_BYTES
+}
+
+fn flatten_dynamic_image_to_rgb(
+    image: &screenshots::image::DynamicImage,
+    background: impl Fn(u32, u32) -> [u8; 3],
+) -> screenshots::image::RgbImage {
+    let rgba = image.to_rgba8();
+    let mut rgb = screenshots::image::RgbImage::new(rgba.width(), rgba.height());
+    for (index, (target, source)) in rgb.pixels_mut().zip(rgba.pixels()).enumerate() {
+        let x = (index as u32) % rgba.width().max(1);
+        let y = (index as u32) / rgba.width().max(1);
+        let background = background(x, y);
+        let alpha = u32::from(source[3]);
+        for channel in 0..3 {
+            target[channel] = ((u32::from(source[channel]) * alpha
+                + u32::from(background[channel]) * (255 - alpha)
+                + 127)
+                / 255) as u8;
+        }
+    }
+    rgb
+}
+
+fn flatten_dynamic_image_to_white_rgb(
+    image: &screenshots::image::DynamicImage,
+) -> screenshots::image::RgbImage {
+    flatten_dynamic_image_to_rgb(image, |_, _| [255, 255, 255])
+}
+
+fn flatten_dynamic_image_to_transparency_preview_rgb(
+    image: &screenshots::image::DynamicImage,
+) -> screenshots::image::RgbImage {
+    // Keep transparent thumbnails readable without exposing the magenta matte
+    // that some PNG encoders store in fully transparent pixels.
+    const LIGHT: [u8; 3] = [230, 230, 230];
+    const DARK: [u8; 3] = [207, 207, 207];
+    const TILE_SIZE: u32 = 16;
+    flatten_dynamic_image_to_rgb(image, |x, y| {
+        if ((x / TILE_SIZE) + (y / TILE_SIZE)) % 2 == 0 {
+            LIGHT
+        } else {
+            DARK
+        }
+    })
+}
+
+fn encode_ai_reference_jpeg(
+    image: &screenshots::image::DynamicImage,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
+    let rgb = flatten_dynamic_image_to_white_rgb(image);
+    let mut bytes = Vec::new();
+    let encoder = screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut bytes,
+        quality,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        screenshots::image::ColorType::Rgb8,
+    )
+    .map_err(|error| format!("参考图 JPEG 压缩失败：{error}"))?;
+    Ok(bytes)
+}
+
+fn normalize_ai_reference_image_bytes(
+    bytes: Vec<u8>,
+    mime: String,
+) -> Result<(Vec<u8>, String), String> {
+    if !should_normalize_ai_reference_image(&mime, bytes.len()) {
+        return Ok((bytes, mime));
+    }
+
+    let image = screenshots::image::load_from_memory(&bytes)
+        .map_err(|error| format!("参考图格式转换失败：{error}"))?;
+    let original_max_edge = image.width().max(image.height()).max(1);
+    let max_edges = [4096_u32, 3072, 2560, 2048, 1600, 1280, 1024];
+    let qualities = [92_u8, 86, 80, 72, 64];
+    let mut smallest: Option<Vec<u8>> = None;
+    let mut last_dimensions: Option<(u32, u32)> = None;
+
+    for max_edge in max_edges {
+        let prepared = if original_max_edge > max_edge {
+            image.resize(
+                max_edge,
+                max_edge,
+                screenshots::image::imageops::FilterType::Lanczos3,
+            )
+        } else {
+            image.clone()
+        };
+        let dimensions = (prepared.width(), prepared.height());
+        if last_dimensions == Some(dimensions) {
+            continue;
+        }
+        last_dimensions = Some(dimensions);
+        for quality in qualities {
+            let candidate = encode_ai_reference_jpeg(&prepared, quality)?;
+            if candidate.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES {
+                return Ok((candidate, "image/jpeg".to_string()));
+            }
+            if smallest
+                .as_ref()
+                .map(|current| candidate.len() < current.len())
+                .unwrap_or(true)
+            {
+                smallest = Some(candidate);
+            }
+        }
+    }
+
+    smallest
+        .map(|candidate| (candidate, "image/jpeg".to_string()))
+        .ok_or_else(|| "参考图压缩没有生成可用文件".to_string())
+}
+
+#[cfg(test)]
+mod ai_reference_image_preparation_tests {
+    use super::{
+        normalize_ai_reference_image_bytes, should_normalize_ai_reference_image,
+        AI_REFERENCE_IMAGE_TARGET_BYTES,
+    };
+
+    #[test]
+    fn normalizes_bmp_reference_images_to_jpeg() {
+        let image = screenshots::image::RgbaImage::from_pixel(
+            4,
+            3,
+            screenshots::image::Rgba([30, 80, 140, 255]),
+        );
+        let mut bmp = Vec::new();
+        let encoder = screenshots::image::codecs::bmp::BmpEncoder::new(&mut bmp);
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgba8,
+        )
+        .expect("encode bmp fixture");
+
+        let (prepared, mime) =
+            normalize_ai_reference_image_bytes(bmp, "image/bmp".to_string())
+                .expect("normalize bmp");
+
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(&prepared[..2], &[0xff, 0xd8]);
+        assert!(prepared.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES);
+    }
+
+    #[test]
+    fn only_reencodes_compatible_images_when_they_are_too_large() {
+        assert!(!should_normalize_ai_reference_image("image/png", 1024));
+        assert!(should_normalize_ai_reference_image(
+            "image/png",
+            AI_REFERENCE_IMAGE_TARGET_BYTES + 1,
+        ));
+        assert!(should_normalize_ai_reference_image("image/gif", 1024));
+        assert!(should_normalize_ai_reference_image("image/bmp", 1024));
+    }
+
+    #[test]
+    fn compresses_an_oversized_png_below_the_upload_target() {
+        let width = 1920;
+        let height = 1440;
+        let mut seed = 0x1234_5678_u32;
+        let image = screenshots::image::RgbaImage::from_fn(width, height, |_x, _y| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let red = (seed >> 24) as u8;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let green = (seed >> 24) as u8;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let blue = (seed >> 24) as u8;
+            screenshots::image::Rgba([red, green, blue, 255])
+        });
+        let mut png = Vec::new();
+        let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+            &mut png,
+            screenshots::image::codecs::png::CompressionType::Fast,
+            screenshots::image::codecs::png::FilterType::NoFilter,
+        );
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgba8,
+        )
+        .expect("encode oversized png fixture");
+        assert!(png.len() > AI_REFERENCE_IMAGE_TARGET_BYTES);
+
+        let (prepared, mime) =
+            normalize_ai_reference_image_bytes(png, "image/png".to_string())
+                .expect("compress oversized png");
+
+        assert_eq!(mime, "image/jpeg");
+        assert!(prepared.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES);
+    }
+}
+
 fn decode_data_image(input: &str) -> Result<(Vec<u8>, String), String> {
     let value = input.trim();
     let Some((header, payload)) = value.split_once(',') else {
@@ -6248,18 +6580,16 @@ fn decode_data_image(input: &str) -> Result<(Vec<u8>, String), String> {
 
 fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, String), String> {
     let value = input.trim();
-    if value.starts_with("data:image/") {
-        return decode_data_image(value);
-    }
-
-    if let Some(path) = local_path_from_url_like(value) {
+    let loaded = if value.starts_with("data:image/") {
+        decode_data_image(value)
+    } else if let Some(path) = local_path_from_url_like(value) {
         if path.is_file() {
             let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
-            return Ok((bytes, guess_mime_from_path(&path).to_string()));
+            Ok((bytes, guess_mime_from_path(&path).to_string()))
+        } else {
+            Err("参考图本地文件不存在".to_string())
         }
-    }
-
-    if value.starts_with("http://") || value.starts_with("https://") {
+    } else if value.starts_with("http://") || value.starts_with("https://") {
         let response = client
             .get(value)
             .header("accept", "image/*,*/*")
@@ -6291,16 +6621,18 @@ fn image_edit_source_to_bytes(client: &Client, input: &str) -> Result<(Vec<u8>, 
             .bytes()
             .map_err(|e| format!("读取参考图失败：{}", e))?
             .to_vec();
-        return Ok((bytes, mime));
-    }
+        Ok((bytes, mime))
+    } else {
+        let path = PathBuf::from(value);
+        if path.is_file() {
+            let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
+            Ok((bytes, guess_mime_from_path(&path).to_string()))
+        } else {
+            Err("参考图必须是公网 URL、data URL 或本地图片路径".to_string())
+        }
+    }?;
 
-    let path = PathBuf::from(value);
-    if path.is_file() {
-        let bytes = fs::read(&path).map_err(|e| format!("读取参考图失败：{}", e))?;
-        return Ok((bytes, guess_mime_from_path(&path).to_string()));
-    }
-
-    Err("参考图必须是公网 URL、data URL 或本地图片路径".to_string())
+    normalize_ai_reference_image_bytes(loaded.0, loaded.1)
 }
 
 #[derive(Clone)]
@@ -8388,7 +8720,7 @@ fn save_dropped_file(
     save_dropped_data_url_impl(&app_handle, &file_name, &data_url)
 }
 
-fn save_dropped_data_url_impl(
+pub(crate) fn save_dropped_data_url_impl(
     app_handle: &tauri::AppHandle,
     file_name: &str,
     data_url: &str,
@@ -9468,12 +9800,51 @@ fn normalize_thumbnail_size(size: Option<u32>) -> u32 {
     }
 }
 
+#[cfg(windows)]
+struct BackgroundImageThreadPriorityGuard {
+    previous: Option<i32>,
+}
+
+#[cfg(windows)]
+impl BackgroundImageThreadPriorityGuard {
+    fn lower_current_thread() -> Self {
+        use winapi::um::processthreadsapi::{
+            GetCurrentThread, GetThreadPriority, SetThreadPriority,
+        };
+        use winapi::um::winbase::{
+            THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_ERROR_RETURN,
+        };
+
+        unsafe {
+            let thread = GetCurrentThread();
+            let previous = GetThreadPriority(thread);
+            let lowered = SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL as i32) != 0;
+            Self {
+                previous: (lowered && previous != THREAD_PRIORITY_ERROR_RETURN as i32)
+                    .then_some(previous),
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BackgroundImageThreadPriorityGuard {
+    fn drop(&mut self) {
+        use winapi::um::processthreadsapi::{GetCurrentThread, SetThreadPriority};
+
+        if let Some(previous) = self.previous {
+            unsafe {
+                SetThreadPriority(GetCurrentThread(), previous);
+            }
+        }
+    }
+}
+
 fn save_thumbnail_jpeg(
     image: &screenshots::image::DynamicImage,
     path: &Path,
 ) -> Result<(), String> {
-    image
-        .to_rgb8()
+    flatten_dynamic_image_to_transparency_preview_rgb(image)
         .save_with_format(path, screenshots::image::ImageFormat::Jpeg)
         .map_err(|e| e.to_string())
 }
@@ -9490,7 +9861,9 @@ fn ensure_image_thumbnail_file_impl(
         .join(thumb_size.to_string());
     fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
 
-    let out_path = cache_root.join(format!("{}.jpg", metadata.fingerprint));
+    // Bump the filename when thumbnail compositing changes so old JPEGs with
+    // baked-in transparent magenta mattes are not reused.
+    let out_path = cache_root.join(format!("{}.alpha-v2.jpg", metadata.fingerprint));
     if out_path.is_file() {
         if let Ok((thumb_width, thumb_height)) = screenshots::image::image_dimensions(&out_path) {
             if thumb_width > 0 && thumb_height > 0 {
@@ -9502,6 +9875,7 @@ fn ensure_image_thumbnail_file_impl(
                     fingerprint: metadata.fingerprint,
                     file_size: metadata.size,
                     modified_at: metadata.modified_at,
+                    cache_hit: true,
                 });
             }
         }
@@ -9529,6 +9903,7 @@ fn ensure_image_thumbnail_file_impl(
         fingerprint: metadata.fingerprint,
         file_size: metadata.size,
         modified_at: metadata.modified_at,
+        cache_hit: false,
     })
 }
 
@@ -9557,6 +9932,31 @@ mod image_thumbnail_tests {
         );
         let _ = fs::remove_file(output);
     }
+
+    #[test]
+    fn jpeg_thumbnail_writer_neutralizes_transparent_magenta_pixels() {
+        let output = std::env::temp_dir().join(format!(
+            "inspiration-drawer-transparent-thumbnail-{}-{}.jpg",
+            std::process::id(),
+            now_millis_u64()
+        ));
+        let rgba = screenshots::image::RgbaImage::from_pixel(
+            32,
+            16,
+            screenshots::image::Rgba([255, 0, 255, 0]),
+        );
+        let image = screenshots::image::DynamicImage::ImageRgba8(rgba);
+
+        save_thumbnail_jpeg(&image, &output).unwrap();
+        let preview = screenshots::image::open(&output).unwrap().to_rgb8();
+        let first = preview.get_pixel(0, 0).0;
+        let second_tile = preview.get_pixel(16, 0).0;
+        assert!(first[0] > 205 && first[1] > 205 && first[2] > 205);
+        assert!(second_tile[0] > 180 && second_tile[1] > 180 && second_tile[2] > 180);
+        assert!((i16::from(first[0]) - i16::from(first[1])).abs() < 12);
+        assert!((i16::from(first[1]) - i16::from(first[2])).abs() < 12);
+        let _ = fs::remove_file(output);
+    }
 }
 
 #[tauri::command]
@@ -9566,6 +9966,8 @@ async fn ensure_image_thumbnail_file(
     size: Option<u32>,
 ) -> Result<ImageThumbnailFileResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        let _priority_guard = BackgroundImageThreadPriorityGuard::lower_current_thread();
         ensure_image_thumbnail_file_impl(app_handle, path, size)
     })
     .await
@@ -9651,8 +10053,26 @@ fn media_ext_from_mime(mime: &str) -> Option<&'static str> {
         Some("avi")
     } else if lower.contains("matroska") || lower.contains("mkv") {
         Some("mkv")
+    } else if lower.contains("audio/mp4") || lower.contains("mp4a") || lower.contains("m4a") {
+        Some("m4a")
     } else if lower.contains("mp4") || lower.contains("video/") {
         Some("mp4")
+    } else if lower.contains("mpeg") || lower.contains("mp3") {
+        Some("mp3")
+    } else if lower.contains("wav") || lower.contains("wave") {
+        Some("wav")
+    } else if lower.contains("ogg") || lower.contains("opus") {
+        Some("ogg")
+    } else if lower.contains("flac") {
+        Some("flac")
+    } else if lower.contains("aac") {
+        Some("aac")
+    } else if lower.contains("aiff") {
+        Some("aiff")
+    } else if lower.contains("wma") {
+        Some("wma")
+    } else if lower.contains("audio/") {
+        Some("bin")
     } else {
         None
     }
@@ -9678,6 +10098,15 @@ fn is_supported_media_ext(ext: &str) -> bool {
             | "m4v"
             | "avi"
             | "mkv"
+            | "mp3"
+            | "wav"
+            | "ogg"
+            | "opus"
+            | "flac"
+            | "aac"
+            | "m4a"
+            | "aiff"
+            | "wma"
     )
 }
 
@@ -9718,9 +10147,17 @@ fn source_to_cloudflared_image_file(
         return Err("参考文件为空".to_string());
     }
 
-    if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
+    if trimmed.starts_with("data:image/")
+        || trimmed.starts_with("data:video/")
+        || trimmed.starts_with("data:audio/")
+    {
         let (mime, bytes) = decode_data_url(trimmed)?;
-        let ext = image_ext_from_mime(&mime);
+        let (bytes, mime) = if mime.starts_with("image/") {
+            normalize_ai_reference_image_bytes(bytes, mime)?
+        } else {
+            (bytes, mime)
+        };
+        let ext = media_ext_from_mime(&mime).unwrap_or_else(|| image_ext_from_mime(&mime));
         let file_name = format!("{}.{}", cloudflared_ref_stem(index), ext);
         fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
         return Ok(file_name);
@@ -9731,14 +10168,25 @@ fn source_to_cloudflared_image_file(
         return Err("本地参考需要本地图片、视频或 data URL".to_string());
     }
 
-    let ext = local
+    let mime = guess_mime_from_path(&local).to_string();
+    let fallback_ext = local
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .filter(|value| is_supported_media_ext(value))
         .unwrap_or_else(|| "jpg".to_string());
+    if !mime.starts_with("image/") {
+        let file_name = format!("{}.{}", cloudflared_ref_stem(index), fallback_ext);
+        fs::copy(local, dir.join(&file_name)).map_err(|e| e.to_string())?;
+        return Ok(file_name);
+    }
+    let bytes = fs::read(&local).map_err(|e| e.to_string())?;
+    let (bytes, mime) = normalize_ai_reference_image_bytes(bytes, mime)?;
+    let ext = media_ext_from_mime(&mime)
+        .map(str::to_string)
+        .unwrap_or(fallback_ext);
     let file_name = format!("{}.{}", cloudflared_ref_stem(index), ext);
-    fs::copy(local, dir.join(&file_name)).map_err(|e| e.to_string())?;
+    fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
     Ok(file_name)
 }
 
@@ -9848,8 +10296,16 @@ fn source_to_r2_object(source: &str) -> Result<R2PreparedObject, String> {
         return Err("R2 参考文件为空".to_string());
     }
 
-    if trimmed.starts_with("data:image/") || trimmed.starts_with("data:video/") {
+    if trimmed.starts_with("data:image/")
+        || trimmed.starts_with("data:video/")
+        || trimmed.starts_with("data:audio/")
+    {
         let (mime, bytes) = decode_data_url(trimmed)?;
+        let (bytes, mime) = if mime.starts_with("image/") {
+            normalize_ai_reference_image_bytes(bytes, mime)?
+        } else {
+            (bytes, mime)
+        };
         let ext = media_ext_from_mime(&mime).unwrap_or("png").to_string();
         return Ok(R2PreparedObject {
             bytes,
@@ -9865,12 +10321,20 @@ fn source_to_r2_object(source: &str) -> Result<R2PreparedObject, String> {
 
     let bytes = fs::read(&path).map_err(|e| format!("读取 R2 参考文件失败：{}", e))?;
     let content_type = guess_mime_from_path(&path).to_string();
-    let ext = path
+    let fallback_ext = path
         .extension()
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .filter(|value| is_supported_media_ext(value))
         .unwrap_or_else(|| image_ext_from_mime(&content_type).to_string());
+    let (bytes, content_type) = if content_type.starts_with("image/") {
+        normalize_ai_reference_image_bytes(bytes, content_type)?
+    } else {
+        (bytes, content_type)
+    };
+    let ext = media_ext_from_mime(&content_type)
+        .map(str::to_string)
+        .unwrap_or(fallback_ext);
     Ok(R2PreparedObject {
         bytes,
         content_type,
@@ -11687,6 +12151,14 @@ fn guess_mime_from_path(path: &std::path::Path) -> &'static str {
         "mov" => "video/quicktime",
         "avi" => "video/x-msvideo",
         "mkv" => "video/x-matroska",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "aac" => "audio/aac",
+        "m4a" => "audio/mp4",
+        "aiff" => "audio/aiff",
+        "wma" => "audio/x-ms-wma",
         "json" => "application/json; charset=utf-8",
         "wasm" => "application/wasm",
         "onnx" => "application/octet-stream",
@@ -15096,7 +15568,7 @@ async fn complete_snip_selection(
 
     let app_for_capture = app_handle.clone();
     let capture_result = tauri::async_runtime::spawn_blocking(move || {
-        capture_physical_area_to_bmp_file(
+        capture_physical_area_to_file(
             Some(&app_for_capture),
             physical_x,
             physical_y,
@@ -15224,60 +15696,12 @@ fn capture_physical_area_to_file(
     Ok(out_path.to_string_lossy().to_string())
 }
 
-fn capture_physical_area_to_bmp_file(
-    app_handle: Option<&tauri::AppHandle>,
-    physical_x: i32,
-    physical_y: i32,
-    physical_w: u32,
-    physical_h: u32,
-) -> Result<String, String> {
-    let screen =
-        screenshots::Screen::from_point(physical_x, physical_y).map_err(|e| e.to_string())?;
-    let display = screen.display_info;
-    let rel_x = physical_x - display.x;
-    let rel_y = physical_y - display.y;
-
-    let max_w = (display.width as i32 - rel_x).max(1) as u32;
-    let max_h = (display.height as i32 - rel_y).max(1) as u32;
-    let safe_w = physical_w.min(max_w).max(1);
-    let safe_h = physical_h.min(max_h).max(1);
-
-    let image = screen
-        .capture_area(rel_x.max(0), rel_y.max(0), safe_w, safe_h)
-        .map_err(|e| e.to_string())?;
-    let file_name = format!(
-        "drawer_snip_area_{}.bmp",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_millis()
-    );
-    let out_dir = app_handle
-        .map(read_web_image_cache_dir)
-        .unwrap_or_else(std::env::temp_dir);
-    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-    let out_path = out_dir.join(file_name);
-    let file = File::create(&out_path).map_err(|e| e.to_string())?;
-    let mut writer = BufWriter::new(file);
-    let encoder = screenshots::image::codecs::bmp::BmpEncoder::new(&mut writer);
-    screenshots::image::ImageEncoder::write_image(
-        encoder,
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        screenshots::image::ColorType::Rgba8,
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(out_path.to_string_lossy().to_string())
-}
-
 const EDGE_WINDOW_WIDTH: f64 = 20.0;
 const EDGE_STRIP_HEIGHT: f64 = 96.0;
 const FLOAT_TRIGGER_SIZE: f64 = 56.0;
 const FLOAT_MARGIN: f64 = 12.0;
-const DRAWER_MIN_WIDTH: f64 = 360.0;
-const DRAWER_MIN_HEIGHT: f64 = 220.0;
+const DRAWER_MIN_WIDTH: f64 = 880.0;
+const DRAWER_MIN_HEIGHT: f64 = 560.0;
 const DRAWER_EDGE_MARGIN: f64 = 12.0;
 static EDGE_STRIP_Y: OnceLock<Mutex<Option<f64>>> = OnceLock::new();
 
@@ -16898,7 +17322,10 @@ fn main() {
             commands::assets::get_asset_count,
             commands::assets::upsert_assets,
             commands::assets::update_asset,
+            commands::assets::update_assets_batch,
             commands::assets::delete_asset,
+            commands::assets::delete_assets_batch,
+            commands::assets::move_assets_from_folders,
             commands::assets::get_assets_by_ids,
             commands::assets::get_assets_in_viewport,
             commands::assets::debug_get_all_canvas_nodes,
@@ -16907,6 +17334,9 @@ fn main() {
             commands::assets::replace_folders,
             commands::assets::move_folders,
             commands::assets::list_tags,
+            commands::assets::get_folder_asset_counts,
+            commands::assets::get_tag_asset_counts,
+            commands::assets::get_inspiration_analysis_counts,
             commands::assets::get_asset_thumbnails,
             commands::canvas::list_canvases,
             commands::canvas::list_deleted_canvases,
@@ -16926,6 +17356,7 @@ fn main() {
             commands::canvas::update_canvas_nodes,
             commands::canvas::patch_canvas_nodes,
             commands::migration::migrate_json_to_sqlite,
+            commands::migration::ensure_sqlite_asset_library,
             commands::migration::get_migration_status,
             commands::migration::rollback_to_json_mode,
             agent::agent_load_settings,
@@ -16965,6 +17396,7 @@ fn main() {
             install_rife_engine,
             get_rife_frame_interpolation_estimate,
             run_rife_frame_interpolation,
+            ensure_video_cfr_tools,
             normalize_video_cfr_if_needed,
             get_realesrgan_engine_status,
             install_realesrgan_engine,

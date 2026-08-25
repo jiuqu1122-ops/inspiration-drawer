@@ -9,33 +9,6 @@ export type Folder = {
   parentId?: string;
 };
 
-export type AlchemyState = 'raw' | 'analyzing' | 'alchemy' | 'error';
-
-export type AlchemyResult = {
-  title?: string;
-  colors: string[];
-  keywords: string[];
-  form: string;
-  cmf: string;
-  summary?: string;
-  borrow: string[];
-  avoid: string[];
-  materials: string[];
-  analysisMode?: 'palette' | 'local' | 'ai' | 'mock';
-  colorSource?: string;
-  apiStatus?: string;
-  generatedAt?: number;
-};
-
-export type AlchemyData = {
-  state: AlchemyState;
-  note?: string;
-  result?: AlchemyResult;
-  createdAt?: number;
-  analyzedAt?: number;
-  error?: string;
-};
-
 export type BufferItem = { 
   id: string; 
   type: 'text' | 'image' | 'file' | 'video'; 
@@ -50,19 +23,21 @@ export type BufferItem = {
   width?: number;
   height?: number;
   createdAt: number; 
+  updatedAt?: number;
+  importedAt?: number;
+  rating?: number;
   isQuickAccess?: boolean; 
   remark?: string; 
   remarks?: string[];
   folderId?: string;
   sourceItemId?: string;
 
-  // 扩展字段：用于文件夹、网址、网页图片来源和 CMF 炼金卡。
+  // 扩展字段：用于文件夹、网址、网页图片来源和 AI 图片分析。
   isDirectory?: boolean;
   isUrl?: boolean;
   sourceUrl?: string;
   pageUrl?: string;
   originalUrl?: string;
-  alchemy?: AlchemyData;
   inspirationProfile?: InspirationProfile;
   inspirationAnalysisFailure?: {
     attemptedAt: number;
@@ -110,7 +85,7 @@ export type FloatingNoteScheduleItem = {
 };
 
 export type TabItem = {
-  id: 'all' | 'image' | 'text' | 'video' | 'file' | 'alchemy';
+  id: 'all' | 'image' | 'text' | 'video' | 'file';
   label: string;
   icon: LucideIcon;
 };

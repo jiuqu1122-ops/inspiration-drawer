@@ -171,6 +171,7 @@ const DESIGN_AGENT_ROLE_VALUES = [
   'design_strategist',
   'design_reviewer',
   'presentation_writer',
+  'seedance_video_analyzer',
   'general',
 ] as const;
 const DESIGN_AGENT_ARTIFACT_VALUES = [
@@ -180,6 +181,7 @@ const DESIGN_AGENT_ARTIFACT_VALUES = [
   'DesignStrategy',
   'DesignReview',
   'PromptPackage',
+  'SeedancePrompt',
   'Document',
 ] as const;
 const DESIGN_AGENT_THINKING_MODE_VALUES = ['analysis', 'generation', 'review'] as const;
@@ -275,6 +277,25 @@ const CANVAS_CREATE_GENERATOR_PROPERTIES = {
   skillMeta: GENERATOR_SKILL_META_SCHEMA,
   imagePolicy: IMAGE_POLICY_SCHEMA,
   inspirationReferences: { type: 'array', items: INSPIRATION_REFERENCE_SCHEMA },
+};
+
+const CANVAS_CREATE_DESIGN_PIPELINE_PROPERTIES = {
+  request: { type: 'string' },
+  projectBrief: { anyOf: [{ type: 'string' }, { type: 'object', additionalProperties: true }] },
+  analysisPrompt: { type: ['string', 'null'] },
+  generatorPrompt: { type: ['string', 'null'] },
+  inputIds: { type: 'array', items: { type: 'string' } },
+  referenceCount: { type: ['number', 'null'], minimum: 5, maximum: 5 },
+  autoRunAnalysis: { type: 'boolean' },
+  autoRunGenerator: { type: 'boolean' },
+  presetId: { type: ['string', 'null'] },
+  provider: { type: ['string', 'null'] },
+  model: { type: ['string', 'null'] },
+  aspectRatio: { type: ['string', 'null'] },
+  targetSize: { type: ['string', 'null'] },
+  resolution: { type: ['string', 'null'] },
+  toolHint: { type: ['string', 'null'] },
+  skillMeta: GENERATOR_SKILL_META_SCHEMA,
 };
 
 const WORKFLOW_STEP_SCHEMA = {
@@ -484,6 +505,14 @@ export const CANVAS_AGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
       name: 'canvas_get_context',
       description: '读取当前画布节点、选择、可用预设和工作流。',
       parameters: objectSchema({}),
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'canvas_create_design_pipeline',
+      description: '根据产品设计需求仅检索灵感抽屉里已有的分析标签和元数据，按品类 2 张、造型 2 张、颜色/明确风格 1 张选取五张图片；把五张图同时连接设计分析 Agent 和下游生图节点。',
+      parameters: objectSchema(CANVAS_CREATE_DESIGN_PIPELINE_PROPERTIES, ['request']),
     },
   },
   {
@@ -827,6 +856,15 @@ export const CANVAS_AGENT_ACTION_SCHEMA = {
           {
             type: 'object',
             properties: {
+              tool: { type: 'string', enum: ['canvas_create_design_pipeline'] },
+              arguments: objectSchema(CANVAS_CREATE_DESIGN_PIPELINE_PROPERTIES, ['request']),
+            },
+            required: ['tool', 'arguments'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: {
               tool: { type: 'string', enum: ['canvas_create_generator'] },
               arguments: objectSchema(CANVAS_CREATE_GENERATOR_PROPERTIES, [
                 'mediaType',
@@ -1041,6 +1079,10 @@ export const isCanvasAgentToolSensitive = (name: string, args: Record<string, un
   || (name === 'drawer_manage' && ['delete_items', 'delete_folder'].includes(String(args.action || '')))
   || (name === 'canvas_manage' && ['delete_nodes', 'clear_canvas', 'run_nodes'].includes(String(args.action || '')))
   || (
+    name === 'canvas_create_design_pipeline'
+    && (args.autoRunAnalysis !== false || args.autoRunGenerator === true)
+  )
+  || (
     name === 'canvas_create_generator'
     && args.mediaType === 'video'
     && args.autoRun === true
@@ -1063,6 +1105,7 @@ export const getCanvasAgentToolLabel = (name: string) => ({
   canvas_manage: '操作画布节点',
   calendar_manage: '操作日历日程',
   canvas_get_context: '读取画布',
+  canvas_create_design_pipeline: '创建产品设计链路',
   canvas_create_generator: '创建生成节点',
   canvas_create_media_tool: '创建媒体处理节点',
   canvas_create_preset: '创建节点预设',
