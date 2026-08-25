@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDrawerMasonryLayout,
+  getDrawerMasonryColumnMetrics,
   getItemMediaDimensions,
   getMediaAspectRatio,
   getMediaDisplayHeight,
@@ -40,5 +41,11 @@ describe('drawer media aspect ratio', () => {
     expect(layout.positions[0]).toMatchObject({ left: 0, top: 0, height: 88 });
     expect(layout.positions[1]).toMatchObject({ left: 116, top: 0, height: 238 });
     expect(layout.positions[2]).toMatchObject({ left: 0, top: 104, height: 138 });
+  });
+
+  it('keeps the final masonry column inside the gallery content width', () => {
+    const metrics = getDrawerMasonryColumnMetrics(928, 300, 16);
+    expect(metrics).toEqual({ columnCount: 2, columnWidth: 456 });
+    expect(metrics.columnCount * metrics.columnWidth + 16).toBe(928);
   });
 });

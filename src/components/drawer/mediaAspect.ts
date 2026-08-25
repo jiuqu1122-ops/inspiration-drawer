@@ -14,6 +14,23 @@ export type DrawerMasonryLayout = {
   positions: DrawerMasonryPosition[];
 };
 
+export const getDrawerMasonryColumnMetrics = (
+  availableWidth: number,
+  preferredCardWidth: number,
+  gap: number,
+) => {
+  const safeWidth = Math.max(1, availableWidth);
+  const safeGap = Math.max(0, gap);
+  const columnCount = Math.max(
+    1,
+    Math.floor((safeWidth + safeGap) / Math.max(1, preferredCardWidth + safeGap)),
+  );
+  return {
+    columnCount,
+    columnWidth: Math.max(1, (safeWidth - safeGap * (columnCount - 1)) / columnCount),
+  };
+};
+
 const normalizeDimension = (value: unknown) => {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;

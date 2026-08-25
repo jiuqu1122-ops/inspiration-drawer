@@ -416,16 +416,21 @@ import type { WorkflowRecipeDraft, WorkflowOutputSpec, WorkflowTextPolicy } from
 import { WorkflowDraftPanel } from './features/appAgent/components/WorkflowDraftPanel';
 import {
   AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS,
+  INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
+  INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
   INSPIRATION_REFERENCE_ROLES,
   applyInspirationCandidateRanking,
+  buildInspirationAnalysisRequest,
   buildInspirationCandidateRankingPrompt,
   canRetryInspirationAnalysis,
   extractJsonObject,
+  getInspirationAnalysisSourceCandidates,
   getInspirationAnalysisRetryAt,
   hasUsableInspirationAiTags,
   isPermanentInspirationAnalysisFailure,
   isRetryableInspirationAnalysisFailure,
   normalizeInspirationProfile,
+  requeueInspirationAnalysisItemAfterRestart,
   searchDrawerInspirations,
   shouldSkipInspirationAnalysis,
   shouldRankInspirationCandidates,
@@ -947,8 +952,6 @@ const createAssetId = () => globalThis.crypto.randomUUID();
 const PREVIEW_ORIGINAL_CACHE_LIMIT = 5;
 const CANVAS_NAV_PANEL_TOP_MARGIN = 12;
 const CANVAS_PASTE_OFFSET = 54;
-const INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE = 512;
-const INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES = 360 * 1024;
 const STARTUP_CONSENT_DELAY_MS = 15000;
 const CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY = 'drawer_cloudflared_disclaimer_accepted';
 const CANVAS_CONNECTION_HANDLE_OUTSET = 0;
@@ -1065,6 +1068,7 @@ function MainApp() {
     setAssets: setItems,
     replaceAssetsFromQuery,
     appendAssetsFromQuery,
+    updateAssetsFromQuery,
   } = useDrawerAssetCache({
     storageMode: assetStorageMode,
     onPersisted: () => setAssetStatsRevision(revision => revision + 1),
@@ -1085,6 +1089,7 @@ function MainApp() {
     total: number;
   } | null>(null);
   const [autoAiAnalysisRetryTick, setAutoAiAnalysisRetryTick] = useState(0);
+  const [isAutoAiAnalysisStartupReady, setIsAutoAiAnalysisStartupReady] = useState(false);
   const itemsRef = useRef<BufferItem[]>([]);
   const inspirationAnalysisJobsRef = useRef(new Map<string, InspirationAnalysisJob>());
   const drawerOrganizationPlansRef = useRef(new Map<string, {
@@ -2016,23 +2021,64 @@ function MainApp() {
   useEffect(() => {
     if (
       !isDataLoaded
-      || assetStorageMode !== 'json'
+      || assetStorageMode === 'initializing'
       || autoInspirationAnalysisStartupRequeueRef.current
     ) return;
     autoInspirationAnalysisStartupRequeueRef.current = true;
-    let changed = false;
-    const nextItems = itemsRef.current.map(item => {
-      if (item.type !== 'image' || hasUsableInspirationAiTags(item.inspirationProfile) || !item.inspirationAnalysisFailure) {
-        return item;
+
+    const applyRequeuedItems = (requeuedItems: BufferItem[]) => {
+      if (requeuedItems.length === 0) return;
+      const requeuedById = new Map(requeuedItems.map(item => [item.id, item]));
+      requeuedItems.forEach(item => {
+        autoInspirationAnalysisAttemptedRef.current.delete(item.id);
+        autoInspirationAnalysisPendingIdsRef.current.delete(item.id);
+      });
+      const nextItems = itemsRef.current.map(item => requeuedById.get(item.id) || item);
+      itemsRef.current = nextItems;
+      startTransition(() => {
+        if (assetStorageMode === 'sqlite') updateAssetsFromQuery(requeuedItems);
+        else setItems(nextItems);
+      });
+    };
+
+    if (assetStorageMode === 'json') {
+      const requeuedItems = itemsRef.current.flatMap((item) => {
+        const requeued = requeueInspirationAnalysisItemAfterRestart(item);
+        return requeued === item ? [] : [requeued];
+      });
+      applyRequeuedItems(requeuedItems);
+      setIsAutoAiAnalysisStartupReady(true);
+      return;
+    }
+
+    void (async () => {
+      const requeuedItems: BufferItem[] = [];
+      for (const inspirationStatus of ['retryable', 'skipped'] as const) {
+        while (true) {
+          const failedItems = await listAssets({
+            file_type: 'image',
+            inspiration_status: inspirationStatus,
+            sort: 'updated_at_asc',
+            offset: 0,
+            limit: ASSET_PAGE_SIZE,
+          });
+          if (failedItems.length === 0) break;
+          const batch = failedItems.map(item => requeueInspirationAnalysisItemAfterRestart(item));
+          await updateAssetsBatch(batch.map(item => ({
+            ids: [item.id],
+            patch: { metadata: item },
+          })));
+          requeuedItems.push(...batch);
+        }
       }
-      changed = true;
-      autoInspirationAnalysisAttemptedRef.current.delete(item.id);
-      autoInspirationAnalysisPendingIdsRef.current.delete(item.id);
-      return { ...item, inspirationAnalysisFailure: undefined };
-    });
-    if (!changed) return;
-    itemsRef.current = nextItems;
-    startTransition(() => setItems(nextItems));
+      applyRequeuedItems(requeuedItems);
+      if (requeuedItems.length > 0) {
+        setAssetStatsRevision(revision => revision + 1);
+        setAutoAiAnalysisRetryTick(current => current + 1);
+      }
+    })()
+      .catch(error => console.warn('重启后恢复图片分析队列失败:', error))
+      .finally(() => setIsAutoAiAnalysisStartupReady(true));
   }, [assetStorageMode, isDataLoaded]);
   useEffect(() => {
     if (
@@ -6713,10 +6759,25 @@ function MainApp() {
         setAssetLibraryReady(true);
       }
     };
-    void initializeAssetLibrary();
     const restoreLegacyCanvasState = async () => {
       const savedState = await invoke('load_canvas_state');
       const restored = sanitizeCanvasPersistedState(savedState);
+      const now = Date.now();
+      const fallbackCanvas: CanvasRecord = {
+        id: DEFAULT_CANVAS_ID,
+        projectId: DEFAULT_PROJECT_ID,
+        libraryId: DEFAULT_LIBRARY_ID,
+        name: '默认画布',
+        sortOrder: 0,
+        isActive: true,
+        isSnapshot: false,
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: now,
+      };
+      activeCanvasIdRef.current = DEFAULT_CANVAS_ID;
+      setActiveCanvasId(DEFAULT_CANVAS_ID);
+      setCanvases(previous => previous.length > 0 ? previous : [fallbackCanvas]);
       canvasItemsRef.current = restored.items;
       canvasSessionItemsRef.current.set(DEFAULT_CANVAS_ID, restored.items);
       canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(restored.items.map(stripCanvasItemDataImageProvenance));
@@ -6759,7 +6820,6 @@ function MainApp() {
         canvasStateLoadedRef.current = true;
       }
     };
-    void restoreActiveCanvas();
     const restoreFolders = async () => {
       const cachedSnapshot = readFoldersFromCache();
       const cachedFolders = cachedSnapshot.isValid
@@ -6798,7 +6858,14 @@ function MainApp() {
         setIsFoldersLoaded(true);
       }
     };
-    void restoreFolders();
+    // 6.0.15 started the SQLite migration and canvas restore concurrently.
+    // On a large upgrade the canvas query could lose the database lock race,
+    // leaving the in-memory canvas list empty even though its rows were intact.
+    // Finish storage initialization first, then restore canvas/folder state.
+    void (async () => {
+      await initializeAssetLibrary();
+      await Promise.all([restoreActiveCanvas(), restoreFolders()]);
+    })();
   }, [replaceAssetsFromQuery]);
 
   const saveDrawerItemsNow = () => {
@@ -9738,6 +9805,7 @@ function MainApp() {
   };
 
   const updateCanvasTextItem = (canvasId: string, content: string) => {
+    canvasItemsPatchCommitRef.current = true;
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
       canvasItem.id === canvasId
         ? {
@@ -9750,9 +9818,11 @@ function MainApp() {
         }
         : canvasItem
     )));
+    scheduleCanvasChangedNodesPatchSave([canvasId]);
   };
 
   const updateCanvasTextOutputItem = (canvasId: string, output: string) => {
+    canvasItemsPatchCommitRef.current = true;
     updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
       canvasItem.id === canvasId
         ? {
@@ -9764,6 +9834,7 @@ function MainApp() {
         }
         : canvasItem
     )));
+    scheduleCanvasChangedNodesPatchSave([canvasId]);
   };
 
   const setCanvasTextNodeMode = (canvasId: string, mode: 'agent' | 'plain') => {
@@ -23565,25 +23636,59 @@ useEffect(() => {
       && !input.forceRefresh
       && !input.existingProfile
     ) return item.inspirationProfile!;
-    let rawSource = String(input.imageSource || item.thumbnail || '').trim();
-    if (!rawSource && item.path) {
+    let generatedThumbnail = '';
+    if (!input.imageSource && item.path) {
       try {
         const thumbnail = await invoke<ImageThumbnailFileResult>('ensure_image_thumbnail_file', {
           path: item.path,
-          size: 512,
+          size: INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
         });
-        rawSource = String(thumbnail.url || thumbnail.path || '').trim();
+        generatedThumbnail = String(thumbnail.url || thumbnail.path || '').trim();
       } catch (error) {
         console.warn('生成图片分析缩略图失败，使用本地文件压缩兜底:', item.id, error);
       }
     }
-    rawSource = String(rawSource || item.path || item.url || item.sourceUrl || item.originalUrl || '').trim();
-    if (!rawSource) throw new Error('图片素材没有可读取的图像来源');
-    const readableDataUrl = await imageSourceToDataUrl(rawSource, false);
-    const modelSource = await optimizeCanvasAiInputDataUrl(readableDataUrl, {
-      maxEdge: INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
-      targetBytes: INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
+    const sourceCandidates = getInspirationAnalysisSourceCandidates({
+      explicitSource: input.imageSource,
+      generatedThumbnail,
+      path: item.path,
+      url: item.url,
+      sourceUrl: item.sourceUrl,
+      originalUrl: item.originalUrl,
+      // Legacy inline thumbnails may be tiny, stale, or have the wrong aspect
+      // ratio after migration, so they are strictly the final fallback.
+      storedThumbnail: item.thumbnail,
     });
+    if (sourceCandidates.length === 0) throw new Error('图片素材没有可读取的图像来源');
+    let readableDataUrl = '';
+    let usedGeneratedThumbnail = false;
+    let lastSourceError: unknown;
+    for (const source of sourceCandidates) {
+      try {
+        const candidate = await imageSourceToDataUrl(source, false);
+        if (/^data:image\//i.test(candidate)) {
+          readableDataUrl = candidate;
+          usedGeneratedThumbnail = Boolean(generatedThumbnail && source === generatedThumbnail);
+          break;
+        }
+      } catch (error) {
+        lastSourceError = error;
+      }
+    }
+    if (!readableDataUrl) {
+      throw lastSourceError instanceof Error
+        ? lastSourceError
+        : new Error('图片素材没有可读取的图像来源');
+    }
+    // The native thumbnail worker has already decoded and resized local images
+    // off the UI thread. Re-encoding that 512px JPEG through a WebView canvas
+    // caused periodic input/scroll stalls while the background queue ran.
+    const modelSource = usedGeneratedThumbnail
+      ? readableDataUrl
+      : await optimizeCanvasAiInputDataUrl(readableDataUrl, {
+        maxEdge: INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
+        targetBytes: INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
+      });
     if (!/^data:image\/|^https?:\/\//i.test(modelSource)) throw new Error('图片无法转换为 LLM 可读取的来源');
     const existingProfile = input.existingProfile || item.inspirationProfile;
     const userTags = (input.userTags || [])
@@ -23597,15 +23702,13 @@ useEffect(() => {
     // The server selects the visual provider/model from the manager's encrypted
     // Provider Channel configuration. The desktop never supplies a tag-analysis API key.
     const serverProfile = await invoke<unknown>('agent_analyze_inspiration', {
-      request: {
+      request: buildInspirationAnalysisRequest({
         itemId: item.id,
         imageSource: modelSource,
-        // Keep the server's strict request schema while avoiding unrelated
-        // profile/note text in the model context.
-        userTags: [],
-        userNotes: [],
-        existingProfile: null,
-      },
+        userTags,
+        userNotes,
+        existingProfile,
+      }),
     });
     const serverProfileRecord = serverProfile && typeof serverProfile === 'object' && !Array.isArray(serverProfile)
       ? serverProfile as Record<string, unknown>
@@ -23621,11 +23724,13 @@ useEffect(() => {
     if (cachedItem) {
       const nextItems = itemsRef.current.map(candidate => candidate.id === item.id ? updatedItem : candidate);
       itemsRef.current = nextItems;
-      startTransition(() => setItems(nextItems));
+      startTransition(() => {
+        if (assetStorageMode === 'sqlite') updateAssetsFromQuery([updatedItem]);
+        else setItems(nextItems);
+      });
     }
     if (assetStorageMode === 'sqlite') {
       await updateAsset(item.id, { metadata: updatedItem });
-      setAssetStatsRevision(revision => revision + 1);
     }
     return profile;
   };
@@ -23666,11 +23771,13 @@ useEffect(() => {
     });
     if (cachedItem) {
       itemsRef.current = nextItems;
-      startTransition(() => setItems(nextItems));
+      startTransition(() => {
+        if (assetStorageMode === 'sqlite') updateAssetsFromQuery([updatedItem]);
+        else setItems(nextItems);
+      });
     }
     if (assetStorageMode === 'sqlite') {
       await updateAsset(itemId, { metadata: updatedItem });
-      setAssetStatsRevision(revision => revision + 1);
     }
     return recordedFailure;
   };
@@ -23827,6 +23934,7 @@ useEffect(() => {
     if (
       !AUTO_INSPIRATION_ANALYSIS_ENABLED
       || !isDataLoaded
+      || !isAutoAiAnalysisStartupReady
       || isDraggingTitle
       || isResizingState.current
       || autoInspirationAnalysisRunningRef.current
@@ -23889,8 +23997,8 @@ useEffect(() => {
           patch: { metadata: item },
         })));
         const updatedById = new Map(updated.map(item => [item.id, item]));
-        setItems(previous => previous.map(item => updatedById.get(item.id) || item));
-        setAssetStatsRevision(revision => revision + 1);
+        itemsRef.current = itemsRef.current.map(item => updatedById.get(item.id) || item);
+        startTransition(() => updateAssetsFromQuery(updated));
         return updated.length;
       };
 
@@ -24027,6 +24135,7 @@ useEffect(() => {
     autoAiAnalysisProgress,
     autoAiAnalysisRetryTick,
     isDataLoaded,
+    isAutoAiAnalysisStartupReady,
     isDraggingTitle,
     items,
   ]);
@@ -37365,7 +37474,10 @@ useEffect(() => {
                 <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.16</p>
                 <p>画布中直接拖入的参考图片和视频不再进入素材抽屉或后台分析。</p>
                 <p>启动新版后会自动隐藏此前误入抽屉的画布参考素材，同时保留画布内容与本地文件。</p>
-                <p>修复隐藏素材更新后重新显示的问题，主动保存到抽屉仍可正常恢复。</p>
+                <p>修复 6.0.15 升级后画布列表可能为空的问题，原有画布会在存储迁移完成后恢复。</p>
+                <p>修复大图库分析期间抽屉、画布和打字卡顿，并降低后台分析的重复计算与数据库写入。</p>
+                <p>软件重启后会自动重试未成功分析的图片，并修复旧缩略图影响识别准确度的问题。</p>
+                <p>修复最右侧素材卡片和操作按钮被窗口边缘裁切的问题。</p>
                 <p>图片分析进度和“展开阅读全文”操作统一为黑色视觉样式。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>

@@ -5,9 +5,14 @@ import { applyCreativeGeneratorDefaults, applyCreativeWorkflowDefaults, extractC
 import { getInspirationCandidateState, searchDrawerInspirations } from './drawerSemanticRetrieval';
 import {
   buildInspirationAnalysisPrompt,
+  buildInspirationAnalysisRequest,
   extractJsonObject,
+  getInspirationAnalysisSourceCandidates,
   getReliableInspirationAiTags,
+  INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,
+  INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,
   normalizeInspirationProfile,
+  requeueInspirationAnalysisItemAfterRestart,
 } from './inspirationAnalysis';
 import {
   applyInspirationCandidateRanking,
@@ -131,6 +136,48 @@ assert(analysisPrompt.includes('"p"'), 'LLM analysis prompt should require the c
 assert(analysisPrompt.includes('p品类、c颜色、f造型语言、m材质、s设计风格'), 'analysis prompt should focus on the five requested dimensions');
 assert(analysisPrompt.includes('禁工艺/交互/场景/视角'), 'analysis prompt should exclude secondary dimensions');
 assert(analysisPrompt.length < 420, 'analysis prompt should stay compact to minimize input tokens');
+assert(INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE === 512, 'analysis should use a stable file-derived 512px input');
+assert(INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES === 360 * 1024, 'analysis image budget should stay compact');
+const analysisRequest = buildInspirationAnalysisRequest({
+  itemId: 'warm-appliance',
+  imageSource: 'data:image/jpeg;base64,AA==',
+  userTags: ['生活方式'],
+  userNotes: ['保留用户备注'],
+  existingProfile: items[0].inspirationProfile,
+});
+assert(analysisRequest.userTags[0] === '生活方式', 'analysis request must preserve user tags');
+assert(analysisRequest.userNotes[0] === '保留用户备注', 'analysis request must preserve user notes');
+assert(analysisRequest.existingProfile === items[0].inspirationProfile, 'analysis request must preserve the existing profile');
+const sourceCandidates = getInspirationAnalysisSourceCandidates({
+  generatedThumbnail: 'asset://fresh-analysis.jpg',
+  path: 'C:/library/original.png',
+  url: 'asset://original.png',
+  storedThumbnail: 'data:image/webp;base64,stale',
+});
+assert(sourceCandidates[0] === 'asset://fresh-analysis.jpg', 'fresh analysis thumbnail must be preferred');
+assert(sourceCandidates[sourceCandidates.length - 1] === 'data:image/webp;base64,stale', 'legacy inline thumbnail must be the final fallback');
+const failedImage = {
+  ...baseItem('retry-after-restart', 'retry-after-restart.png'),
+  inspirationAnalysisFailure: {
+    attemptedAt: 1,
+    attempts: 3,
+    message: 'temporary upstream failure',
+  },
+};
+const requeuedImage = requeueInspirationAnalysisItemAfterRestart(failedImage);
+assert(!requeuedImage.inspirationAnalysisFailure, 'restart should requeue failed unanalyzed images after the retry limit');
+const analyzedImageWithFailure = {
+  ...items[0],
+  inspirationProfile: {
+    ...items[0].inspirationProfile!,
+    analysisVersion: 2,
+  },
+  inspirationAnalysisFailure: failedImage.inspirationAnalysisFailure,
+};
+assert(
+  requeueInspirationAnalysisItemAfterRestart(analyzedImageWithFailure) === analyzedImageWithFailure,
+  'restart should not requeue images that already have a usable analysis',
+);
 const parsedAnalysis = extractJsonObject('```json\n{"summary":"暖白磨砂设备","category":"生活家电","cmf":{"colors":["暖白"]}}\n```');
 const normalizedProfile = normalizeInspirationProfile(parsedAnalysis, {
   itemId: 'warm-appliance',

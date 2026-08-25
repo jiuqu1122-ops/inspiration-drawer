@@ -8,6 +8,44 @@ export type InspirationAnalysisFailure = {
 
 export const AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS = 3;
 export const INSPIRATION_ANALYSIS_VERSION = 2;
+export const INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE = 512;
+export const INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES = 360 * 1024;
+
+export function buildInspirationAnalysisRequest(input: {
+  itemId: string;
+  imageSource: string;
+  userTags: string[];
+  userNotes: string[];
+  existingProfile?: InspirationProfile;
+}) {
+  return {
+    itemId: input.itemId,
+    imageSource: input.imageSource,
+    userTags: input.userTags,
+    userNotes: input.userNotes,
+    existingProfile: input.existingProfile,
+  };
+}
+
+export function getInspirationAnalysisSourceCandidates(input: {
+  explicitSource?: string;
+  generatedThumbnail?: string;
+  path?: string;
+  url?: string;
+  sourceUrl?: string;
+  originalUrl?: string;
+  storedThumbnail?: string;
+}) {
+  return Array.from(new Set([
+    input.explicitSource,
+    input.generatedThumbnail,
+    input.path,
+    input.url,
+    input.sourceUrl,
+    input.originalUrl,
+    input.storedThumbnail,
+  ].map(value => String(value || '').trim()).filter(Boolean)));
+}
 
 const AUTO_INSPIRATION_ANALYSIS_RETRY_DELAYS_MS = [12_000, 45_000];
 
@@ -19,6 +57,20 @@ export function hasUsableInspirationAiTags(
       && profile.aiTags.some(tag => String(tag?.name || '').trim().length > 0))
     || Number(profile?.analysisVersion || 0) >= INSPIRATION_ANALYSIS_VERSION,
   );
+}
+
+export function requeueInspirationAnalysisItemAfterRestart<T extends {
+  type?: string;
+  inspirationProfile?: InspirationProfile;
+  inspirationAnalysisFailure?: InspirationAnalysisFailure;
+}>(item: T): T {
+  if (
+    item.type !== 'image'
+    || hasUsableInspirationAiTags(item.inspirationProfile)
+    || !item.inspirationAnalysisFailure
+  ) return item;
+  const { inspirationAnalysisFailure: _failure, ...requeuedItem } = item;
+  return requeuedItem as T;
 }
 
 export function isPermanentInspirationAnalysisFailure(message: string) {

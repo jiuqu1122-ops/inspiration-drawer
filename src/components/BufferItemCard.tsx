@@ -810,7 +810,7 @@ return (
       {isSelectMode && <div className="absolute inset-0 z-50 bg-black/[0.03] dark:bg-black/20 cursor-pointer flex items-start justify-end p-2.5" style={{ borderRadius: cardRadius }} onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSelect(e); }}><div className={`w-4 h-4 rounded-[5px] shadow-sm border flex items-center justify-center transition-colors ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-stone-300 dark:border-stone-500 bg-white/90 dark:bg-stone-800/90'}`}>{isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}</div></div>}
 
       {!isSelectMode && (
-        <div data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-[80] flex flex-wrap justify-end gap-1.5 min-w-[160px] pointer-events-auto">
+        <div data-card-action-toolbar="true" data-no-drag="true" onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} className="absolute inset-x-2 top-2 z-[80] flex min-w-0 flex-wrap justify-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto">
           <button
             onMouseDown={beginNewRemark}
             onClick={e => { e.preventDefault(); e.stopPropagation(); }} title="新增标签备注" className={btnClass}

@@ -4,6 +4,7 @@ import { AnimatePresence } from 'framer-motion';
 import type { BufferItem } from '../../types';
 import {
   buildDrawerMasonryLayout,
+  getDrawerMasonryColumnMetrics,
   type DrawerMasonryPosition,
   type MediaDimensions,
 } from './mediaAspect';
@@ -85,15 +86,14 @@ export const DrawerAssetGrid = React.memo(({
       const nextScrollTop = node.scrollTop || 0;
       setScrollTop(nextScrollTop);
       setViewportHeight(node.clientHeight || 1);
-      const nextColumnCount = Math.max(
-        1,
-        Math.floor((node.clientWidth + MASONRY_GAP) / Math.max(1, cardWidth + MASONRY_GAP)),
-      );
-      setColumnCount(nextColumnCount);
-      setColumnWidth(Math.max(
-        1,
-        (node.clientWidth - MASONRY_GAP * (nextColumnCount - 1)) / nextColumnCount,
-      ));
+      // The scroll container includes its horizontal padding in clientWidth,
+      // while the gallery is laid out inside that padding. Measuring the
+      // container made the last masonry column extend underneath the right
+      // edge and clipped the outermost card/actions.
+      const availableWidth = Math.max(1, galleryRef.current?.clientWidth || node.clientWidth);
+      const metrics = getDrawerMasonryColumnMetrics(availableWidth, cardWidth, MASONRY_GAP);
+      setColumnCount(metrics.columnCount);
+      setColumnWidth(metrics.columnWidth);
       const gallery = galleryRef.current;
       if (gallery) {
         const nodeRect = node.getBoundingClientRect();

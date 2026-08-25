@@ -11,7 +11,12 @@ import {
 import type { AssetBatchUpdate } from '../services/assetsApi';
 import type { BufferItem } from '../types';
 
-type AssetSnapshot = Map<string, string>;
+type AssetSnapshotEntry = {
+  asset: BufferItem;
+  serialized?: string;
+};
+
+type AssetSnapshot = Map<string, AssetSnapshotEntry>;
 
 export type DrawerAssetDiff = {
   added: BufferItem[];
@@ -20,7 +25,9 @@ export type DrawerAssetDiff = {
   snapshot: AssetSnapshot;
 };
 
-const snapshotAsset = (asset: BufferItem) => JSON.stringify(asset);
+const snapshotAsset = (asset: BufferItem): AssetSnapshotEntry => ({
+  asset,
+});
 
 export const capDrawerAssetCache = (
   assets: BufferItem[],
@@ -48,7 +55,7 @@ export const diffDrawerAssets = (
   previous: AssetSnapshot,
   assets: BufferItem[],
 ): DrawerAssetDiff => {
-  const snapshot = createDrawerAssetSnapshot(assets);
+  const snapshot: AssetSnapshot = new Map();
   const added: BufferItem[] = [];
   const changed: BufferItem[] = [];
   const currentIds = new Set<string>();
@@ -56,9 +63,19 @@ export const diffDrawerAssets = (
   assets.forEach(asset => {
     currentIds.add(asset.id);
     const before = previous.get(asset.id);
+    // Almost every drawer edit preserves object identity for unchanged rows.
+    // Reuse their snapshots so changing one card does not JSON.stringify the
+    // entire 2,000-item cache on the WebView's UI thread.
+    if (before?.asset === asset) {
+      snapshot.set(asset.id, before);
+      return;
+    }
+    const nextSerialized = JSON.stringify(asset);
+    const next: AssetSnapshotEntry = { asset, serialized: nextSerialized };
+    snapshot.set(asset.id, next);
     if (before === undefined) {
       added.push(asset);
-    } else if (before !== snapshot.get(asset.id)) {
+    } else if ((before.serialized ?? JSON.stringify(before.asset)) !== nextSerialized) {
       changed.push(asset);
     }
   });
@@ -105,6 +122,27 @@ export const useDrawerAssetCache = ({
       nextAssets.forEach(asset => merged.set(asset.id, asset));
       const next = [...merged.values()];
       baselineRef.current = createDrawerAssetSnapshot(next);
+      return next;
+    });
+  }, []);
+
+  const updateAssetsFromQuery = useCallback((updatedAssets: BufferItem[]) => {
+    if (updatedAssets.length === 0) return;
+    const updatedById = new Map(updatedAssets.map(asset => [asset.id, asset]));
+    setAssetState(previous => {
+      let changed = false;
+      const next = previous.map(asset => {
+        const updated = updatedById.get(asset.id);
+        if (!updated || updated === asset) return asset;
+        changed = true;
+        return updated;
+      });
+      if (!changed) return previous;
+      const baseline = new Map(baselineRef.current);
+      updatedAssets.forEach(asset => {
+        if (baseline.has(asset.id)) baseline.set(asset.id, snapshotAsset(asset));
+      });
+      baselineRef.current = baseline;
       return next;
     });
   }, []);
@@ -159,5 +197,6 @@ export const useDrawerAssetCache = ({
     setAssets: mutateAssets,
     replaceAssetsFromQuery,
     appendAssetsFromQuery,
+    updateAssetsFromQuery,
   };
 };

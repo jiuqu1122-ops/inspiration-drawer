@@ -26,6 +26,26 @@ describe('drawer asset cache diff', () => {
     expect(result.removedIds).toEqual(['c']);
   });
 
+  it('reuses snapshots for unchanged object references', () => {
+    let serializedReads = 0;
+    const unchanged = asset('a');
+    Object.defineProperty(unchanged, 'remark', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        serializedReads += 1;
+        return 'unchanged';
+      },
+    });
+    const before = createDrawerAssetSnapshot([unchanged]);
+    expect(serializedReads).toBe(0);
+
+    const result = diffDrawerAssets(before, [unchanged]);
+
+    expect(serializedReads).toBe(0);
+    expect(result.changed).toEqual([]);
+  });
+
   it('keeps a bounded current-window cache', () => {
     const assets = Array.from({ length: 6 }, (_, index) => asset(String(index)));
 
