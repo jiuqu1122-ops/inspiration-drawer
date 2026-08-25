@@ -47,6 +47,18 @@ export const mergeDrawerAssetPageWindow = (
   };
 };
 
+export const mergeDrawerQueryAssetsWithPending = (
+  queriedAssets: BufferItem[],
+  pendingAssets: Iterable<BufferItem>,
+) => {
+  const merged = new Map<string, BufferItem>();
+  for (const asset of pendingAssets) merged.set(asset.id, asset);
+  queriedAssets.forEach(asset => {
+    if (!merged.has(asset.id)) merged.set(asset.id, asset);
+  });
+  return [...merged.values()];
+};
+
 export const createDrawerAssetSnapshot = (assets: BufferItem[]): AssetSnapshot => (
   new Map(assets.map(asset => [asset.id, snapshotAsset(asset)]))
 );
@@ -102,6 +114,7 @@ export const useDrawerAssetCache = ({
   const [assets, setAssetState] = useState<BufferItem[]>([]);
   const [mutationRevision, setMutationRevision] = useState(0);
   const baselineRef = useRef<AssetSnapshot>(new Map());
+  const pendingAddedAssetsRef = useRef(new Map<string, BufferItem>());
   const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
   const onPersistedRef = useRef(onPersisted);
   const onErrorRef = useRef(onError);
@@ -110,7 +123,10 @@ export const useDrawerAssetCache = ({
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
   const replaceAssetsFromQuery = useCallback((nextAssets: BufferItem[]) => {
-    const deduped = [...new Map(nextAssets.map(asset => [asset.id, asset])).values()];
+    const deduped = mergeDrawerQueryAssetsWithPending(
+      nextAssets,
+      pendingAddedAssetsRef.current.values(),
+    );
     baselineRef.current = createDrawerAssetSnapshot(deduped);
     setAssetState(deduped);
   }, []);
@@ -148,13 +164,51 @@ export const useDrawerAssetCache = ({
   }, []);
 
   const mutateAssets = useCallback<Dispatch<SetStateAction<BufferItem[]>>>((update) => {
-    setAssetState(previous => (
-      typeof update === 'function'
+    setAssetState(previous => {
+      const next = typeof update === 'function'
         ? update(previous)
-        : update
-    ));
+        : update;
+      if (pendingAddedAssetsRef.current.size > 0) {
+        next.forEach(asset => {
+          if (pendingAddedAssetsRef.current.has(asset.id)) {
+            pendingAddedAssetsRef.current.set(asset.id, asset);
+          }
+        });
+      }
+      return next;
+    });
     setMutationRevision(revision => revision + 1);
   }, []);
+
+  const prependAssetsAndPersist = useCallback((newAssets: BufferItem[]) => {
+    const uniqueAssets = [...new Map(newAssets.map(asset => [asset.id, asset])).values()];
+    if (uniqueAssets.length === 0) return Promise.resolve();
+
+    if (storageMode !== 'sqlite') {
+      mutateAssets(previous => mergeDrawerQueryAssetsWithPending(previous, uniqueAssets));
+      return Promise.resolve();
+    }
+
+    uniqueAssets.forEach(asset => pendingAddedAssetsRef.current.set(asset.id, asset));
+    setAssetState(previous => {
+      const next = mergeDrawerQueryAssetsWithPending(previous, uniqueAssets);
+      const baseline = new Map(baselineRef.current);
+      uniqueAssets.forEach(asset => baseline.set(asset.id, snapshotAsset(asset)));
+      baselineRef.current = baseline;
+      return next;
+    });
+
+    const persist = persistenceQueueRef.current.then(async () => {
+      await upsertAssetsInBatches(uniqueAssets);
+      uniqueAssets.forEach(asset => pendingAddedAssetsRef.current.delete(asset.id));
+      onPersistedRef.current?.();
+    });
+    persistenceQueueRef.current = persist.catch(error => {
+      uniqueAssets.forEach(asset => pendingAddedAssetsRef.current.delete(asset.id));
+      onErrorRef.current?.(error);
+    });
+    return persist;
+  }, [mutateAssets, storageMode]);
 
   useEffect(() => {
     if (mutationRevision === 0) return;
@@ -198,5 +252,6 @@ export const useDrawerAssetCache = ({
     replaceAssetsFromQuery,
     appendAssetsFromQuery,
     updateAssetsFromQuery,
+    prependAssetsAndPersist,
   };
 };

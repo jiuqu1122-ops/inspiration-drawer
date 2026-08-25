@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前版本：**6.0.16**
+当前版本：**6.0.17**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.16/Inspiration.Drawer_6.0.16_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.16)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.17/Inspiration.Drawer_6.0.17_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.17)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.17 更新
+
+- 画布按需读取抽屉文件夹中的图片和视频，向下浏览可继续加载，并支持把视频加入画布。
+- 图片、视频或文件拖入抽屉后立即显示，复制、缓存和视频缩略图改为后台处理。
+- 修复从画布切回抽屉后偶发单列、空白以及无法继续自动加载的问题。
+- 素材卡片按抽屉实际宽度重新排版，接近底部时自动请求下一批素材。
 
 ## 6.0.16 更新
 

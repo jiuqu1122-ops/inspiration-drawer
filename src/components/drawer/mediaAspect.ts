@@ -14,6 +14,17 @@ export type DrawerMasonryLayout = {
   positions: DrawerMasonryPosition[];
 };
 
+export const getDrawerContentBoxWidth = (
+  clientWidth: number,
+  paddingLeft: number,
+  paddingRight: number,
+) => Math.max(
+  1,
+  (Number.isFinite(clientWidth) ? clientWidth : 0)
+    - (Number.isFinite(paddingLeft) ? paddingLeft : 0)
+    - (Number.isFinite(paddingRight) ? paddingRight : 0),
+);
+
 export const getDrawerMasonryColumnMetrics = (
   availableWidth: number,
   preferredCardWidth: number,

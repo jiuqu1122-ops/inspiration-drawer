@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDrawerMasonryLayout,
+  getDrawerContentBoxWidth,
   getDrawerMasonryColumnMetrics,
   getItemMediaDimensions,
   getMediaAspectRatio,
@@ -9,6 +10,11 @@ import {
 } from './mediaAspect';
 
 describe('drawer media aspect ratio', () => {
+  it('uses the scroll container content box instead of a shrink-wrapped gallery width', () => {
+    expect(getDrawerContentBoxWidth(1000, 20, 20)).toBe(960);
+    expect(getDrawerContentBoxWidth(30, 20, 20)).toBe(1);
+  });
+
   it('uses declared image or video dimensions for the displayed height', () => {
     const item = { width: 3840, height: 2400 };
     expect(getMediaAspectRatio(item)).toBe(1.6);

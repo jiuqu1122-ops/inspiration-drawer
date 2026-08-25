@@ -492,6 +492,10 @@ import {
   normalizeDrawerFolders,
 } from './features/folderModel';
 import {
+  buildCanvasFolderMediaQuery,
+  mergeCanvasFolderMediaItems,
+} from './features/canvasFolderMedia';
+import {
   AI_CLASSIFICATION_DIMENSIONS,
   buildAiClassificationGroups,
   itemMatchesAiClassification,
@@ -546,6 +550,7 @@ import {
   getCanvasDrawerMediaPreviewSource,
   getCanvasDrawerMediaSource,
   isCanvasDrawerMediaItem,
+  type CanvasDrawerMediaItem,
 } from './features/canvasDrawerMedia';
 import {
   getGeneratedImageCacheSource,
@@ -898,6 +903,14 @@ const CANVAS_FOLDER_PICKER_INITIAL_VISIBLE = 24;
 const CANVAS_FOLDER_PICKER_VISIBLE_STEP = 24;
 const CANVAS_FOLDER_PICKER_SCROLL_EDGE = 96;
 
+type CanvasFolderMediaPagingState = {
+  folderKey: string;
+  imageOffset: number;
+  videoOffset: number;
+  imageTotal: number;
+  videoTotal: number;
+};
+
 const getCanvasAiErrorSummary = (error?: string | null) => {
   const message = String(error || '').replace(/\s+/g, ' ').trim();
   if (!message) return '生成失败，请重试';
@@ -1070,6 +1083,7 @@ function MainApp() {
     replaceAssetsFromQuery,
     appendAssetsFromQuery,
     updateAssetsFromQuery,
+    prependAssetsAndPersist,
   } = useDrawerAssetCache({
     storageMode: assetStorageMode,
     onPersisted: () => setAssetStatsRevision(revision => revision + 1),
@@ -1200,6 +1214,21 @@ function MainApp() {
   const [canvasInputPickTargetId, setCanvasInputPickTargetId] = useState<string | null>(null);
   const [canvasBrushEditor, setCanvasBrushEditor] = useState<CanvasBrushEditorState | null>(null);
   const [canvasFolderPickerVisibleCount, setCanvasFolderPickerVisibleCount] = useState(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
+  const [canvasFolderPickerItems, setCanvasFolderPickerItems] = useState<CanvasDrawerMediaItem[]>([]);
+  const [canvasFolderPickerTotal, setCanvasFolderPickerTotal] = useState(0);
+  const [canvasFolderPickerHasMore, setCanvasFolderPickerHasMore] = useState(false);
+  const [isCanvasFolderPickerLoading, setIsCanvasFolderPickerLoading] = useState(false);
+  const [canvasFolderPickerError, setCanvasFolderPickerError] = useState('');
+  const canvasFolderPickerItemsRef = useRef<CanvasDrawerMediaItem[]>([]);
+  const canvasFolderPickerRequestRef = useRef(0);
+  const canvasFolderPickerLoadingRef = useRef(false);
+  const canvasFolderPickerPagingRef = useRef<CanvasFolderMediaPagingState>({
+    folderKey: '',
+    imageOffset: 0,
+    videoOffset: 0,
+    imageTotal: 0,
+    videoTotal: 0,
+  });
   const [canvasBrushMode, setCanvasBrushMode] = useState<CanvasBrushEditorMode>('brush');
   const [canvasBrushColor, setCanvasBrushColor] = useState(CANVAS_BRUSH_COLORS[0]);
   const [canvasBrushSize, setCanvasBrushSize] = useState(26);
@@ -1988,6 +2017,11 @@ function MainApp() {
 
   const [isResizingCards, setIsResizingCards] = useState(false);
   const drawerScrollRef = useRef<HTMLDivElement | null>(null);
+  const [drawerScrollNode, setDrawerScrollNode] = useState<HTMLDivElement | null>(null);
+  const setDrawerScrollElement = useCallback((node: HTMLDivElement | null) => {
+    drawerScrollRef.current = node;
+    setDrawerScrollNode(current => current === node ? current : node);
+  }, []);
   const [isAntiTouchMode, setIsAntiTouchMode] = useState(() => localStorage.getItem('drawer_anti_touch_mode') === 'true');
   useEffect(() => {
     invoke('set_anti_touch_lock', { locked: isAntiTouchMode }).catch(() => {});
@@ -17993,24 +18027,146 @@ function MainApp() {
       ));
   };
 
-  const requestAddFolderMediaToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
-    const count = getFolderMediaItemsForCanvas(folderId).length;
-    if (count === 0) {
-      showToast('这个文件夹里还没有图片或视频');
+  const closeCanvasFolderMediaPicker = () => {
+    canvasFolderPickerRequestRef.current += 1;
+    canvasFolderPickerLoadingRef.current = false;
+    canvasFolderPickerItemsRef.current = [];
+    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
+    setCanvasFolderPickerItems([]);
+    setCanvasFolderPickerTotal(0);
+    setCanvasFolderPickerHasMore(false);
+    setIsCanvasFolderPickerLoading(false);
+    setCanvasFolderPickerError('');
+    setCanvasFolderImportPrompt(null);
+  };
+
+  const loadCanvasFolderMediaPage = async (folderId?: string, reset = false) => {
+    if (!reset && canvasFolderPickerLoadingRef.current) return;
+
+    const folderKey = folderId || '__main_drawer__';
+    const requestId = reset
+      ? canvasFolderPickerRequestRef.current + 1
+      : canvasFolderPickerRequestRef.current;
+    if (reset) {
+      canvasFolderPickerRequestRef.current = requestId;
+      canvasFolderPickerItemsRef.current = [];
+      canvasFolderPickerPagingRef.current = {
+        folderKey,
+        imageOffset: 0,
+        videoOffset: 0,
+        imageTotal: 0,
+        videoTotal: 0,
+      };
+      setCanvasFolderPickerItems([]);
+      setCanvasFolderPickerTotal(0);
+      setCanvasFolderPickerHasMore(false);
+      setCanvasFolderPickerError('');
+    }
+
+    if (assetStorageMode === 'json') {
+      const mediaItems = getFolderMediaItemsForCanvas(folderId);
+      canvasFolderPickerItemsRef.current = mediaItems;
+      setCanvasFolderPickerItems(mediaItems);
+      setCanvasFolderPickerTotal(mediaItems.length);
+      setCanvasFolderPickerHasMore(false);
+      setCanvasFolderImportPrompt(prev => (
+        prev && prev.folderId === folderId ? { ...prev, count: mediaItems.length } : prev
+      ));
+      if (mediaItems.length === 0) {
+        closeCanvasFolderMediaPicker();
+        showToast('这个文件夹里还没有图片或视频');
+      }
       return;
     }
+
+    if (assetStorageMode !== 'sqlite') {
+      setCanvasFolderPickerError('素材库仍在初始化，请稍后重试');
+      return;
+    }
+
+    const paging = canvasFolderPickerPagingRef.current;
+    if (!reset && paging.folderKey !== folderKey) return;
+    if (!reset && paging.imageOffset >= paging.imageTotal && paging.videoOffset >= paging.videoTotal) {
+      setCanvasFolderPickerHasMore(false);
+      return;
+    }
+
+    canvasFolderPickerLoadingRef.current = true;
+    setIsCanvasFolderPickerLoading(true);
+    setCanvasFolderPickerError('');
+
+    try {
+      const imageQuery = buildCanvasFolderMediaQuery(folders, folderId, 'image', reset ? 0 : paging.imageOffset);
+      const videoQuery = buildCanvasFolderMediaQuery(folders, folderId, 'video', reset ? 0 : paging.videoOffset);
+      const [imagePage, videoPage, imageTotal, videoTotal] = reset
+        ? await Promise.all([
+          listAssets(imageQuery),
+          listAssets(videoQuery),
+          getAssetCount(imageQuery),
+          getAssetCount(videoQuery),
+        ])
+        : await Promise.all([
+          paging.imageOffset < paging.imageTotal ? listAssets(imageQuery) : Promise.resolve([] as BufferItem[]),
+          paging.videoOffset < paging.videoTotal ? listAssets(videoQuery) : Promise.resolve([] as BufferItem[]),
+          Promise.resolve(paging.imageTotal),
+          Promise.resolve(paging.videoTotal),
+        ]);
+
+      if (canvasFolderPickerRequestRef.current !== requestId) return;
+
+      const compactPage = [...imagePage, ...videoPage].map(stripHeavyDataThumbnail);
+      const merged = mergeCanvasFolderMediaItems(
+        reset ? [] : canvasFolderPickerItemsRef.current,
+        compactPage,
+      );
+      const nextPaging: CanvasFolderMediaPagingState = {
+        folderKey,
+        imageOffset: (reset ? 0 : paging.imageOffset) + imagePage.length,
+        videoOffset: (reset ? 0 : paging.videoOffset) + videoPage.length,
+        imageTotal,
+        videoTotal,
+      };
+      const total = imageTotal + videoTotal;
+      const hasMore = nextPaging.imageOffset < imageTotal || nextPaging.videoOffset < videoTotal;
+
+      canvasFolderPickerItemsRef.current = merged;
+      canvasFolderPickerPagingRef.current = nextPaging;
+      setCanvasFolderPickerItems(merged);
+      setCanvasFolderPickerTotal(total);
+      setCanvasFolderPickerHasMore(hasMore);
+      setCanvasFolderImportPrompt(prev => (
+        prev && prev.folderId === folderId ? { ...prev, count: total } : prev
+      ));
+
+      if (total === 0) {
+        closeCanvasFolderMediaPicker();
+        showToast('这个文件夹里还没有图片或视频');
+      }
+    } catch (err) {
+      if (canvasFolderPickerRequestRef.current !== requestId) return;
+      console.error('load canvas folder media failed:', err);
+      setCanvasFolderPickerError('素材加载失败，点击重试');
+    } finally {
+      if (canvasFolderPickerRequestRef.current === requestId) {
+        canvasFolderPickerLoadingRef.current = false;
+        setIsCanvasFolderPickerLoading(false);
+      }
+    }
+  };
+
+  const requestAddFolderMediaToCanvas = (folderId?: string, folderName = '主抽屉', anchor?: { x: number; y: number }) => {
     setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
     setCanvasFolderImportPrompt({
       folderId,
       folderName,
-      count,
+      count: 0,
       x: anchor?.x ?? 72,
       y: anchor?.y ?? 96,
     });
+    void loadCanvasFolderMediaPage(folderId, true);
   };
 
-  const addFolderMediaToCanvas = async (folderId?: string) => {
-    const mediaItems = getFolderMediaItemsForCanvas(folderId);
+  const addFolderMediaToCanvas = async (mediaItems: BufferItem[]) => {
     if (mediaItems.length === 0) {
       showToast('这个文件夹里还没有图片或视频');
       return;
@@ -18044,16 +18200,14 @@ function MainApp() {
   };
 
   const confirmAddFolderMediaToCanvas = () => {
-    const prompt = canvasFolderImportPrompt;
-    if (!prompt) return;
-    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
-    setCanvasFolderImportPrompt(null);
-    void addFolderMediaToCanvas(prompt.folderId);
+    if (!canvasFolderImportPrompt) return;
+    const loadedMediaItems = canvasFolderPickerItemsRef.current;
+    closeCanvasFolderMediaPicker();
+    void addFolderMediaToCanvas(loadedMediaItems);
   };
 
   const addFolderMediaPickerItemToCanvas = (itemId: string) => {
-    setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
-    setCanvasFolderImportPrompt(null);
+    closeCanvasFolderMediaPicker();
     void addDrawerMediaItemToCanvas(itemId);
   };
 
@@ -19535,6 +19689,12 @@ function MainApp() {
     return { savedCount: savedItems.length, folderName };
   };
 
+  const invalidateDrawerAssetQueryForImport = () => {
+    assetQueryRequestIdRef.current += 1;
+    assetPageOffsetsInFlightRef.current.clear();
+    setIsAssetPageLoading(false);
+  };
+
   const addDroppedPaths = async (paths: string[]) => {
     const cleanPaths = Array.from(new Set((paths || []).filter(Boolean)));
     if (cleanPaths.length === 0) return;
@@ -19545,14 +19705,12 @@ function MainApp() {
     lastDroppedPathsKeyRef.current = key;
     lastNativeDropAtRef.current = now;
 
-    const newItems = await Promise.all(cleanPaths.map(async originalPath => {
-      let path = originalPath;
-      let fileName = path.split(/[\\/]/).pop() || '未知文件';
-      let ext = fileName.split('.').pop()?.toLowerCase() || '';
-
+    const stagedItems = await Promise.all(cleanPaths.map(async originalPath => {
+      const fileName = originalPath.split(/[\\/]/).pop() || '未知文件';
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
       let kind: 'file' | 'directory' | 'missing' = 'file';
       try {
-        kind = await invoke<'file' | 'directory' | 'missing'>('path_kind', { path });
+        kind = await invoke<'file' | 'directory' | 'missing'>('path_kind', { path: originalPath });
       } catch (_) {
         kind = 'file';
       }
@@ -19561,32 +19719,54 @@ function MainApp() {
       let type: 'image' | 'video' | 'file' | 'text' = 'file';
       if (!isDirectory && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) type = 'image';
       else if (!isDirectory && ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) type = 'video';
+      return {
+        id: createAssetId(), type, content: fileName, name: fileName,
+        path: originalPath,
+        url: isDirectory ? '' : convertFileSrc(originalPath),
+        createdAt: Date.now(), isQuickAccess: false,
+        folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
+        isDirectory,
+      } as BufferItem & { isDirectory?: boolean };
+    }));
 
-      const originalSourcePath = path;
+    pushDrawerUndoSnapshot('拖入素材');
+    invalidateDrawerAssetQueryForImport();
+    const persistImport = prependAssetsAndPersist(stagedItems);
+    void persistImport.then(
+      () => setActiveTab('all'),
+      () => setActiveTab('all'),
+    );
+    setIsOpen(true);
+
+    // 卡片先用原始路径即时显示；文件复制和视频缩略图放到后台完成，
+    // 避免大文件导入期间抽屉看起来没有响应。
+    void (async () => {
       const latestCacheDir = await getLatestFileCacheDir();
+      const cachedItems = await Promise.all(stagedItems.map(async stagedItem => {
+        if (stagedItem.isDirectory || !stagedItem.path) return stagedItem;
+        const originalSourcePath = stagedItem.path;
+        let path = originalSourcePath;
+        let fileName = stagedItem.name || stagedItem.content || '未知文件';
 
-      // 有些浏览器/Windows OLE 拖网页图片时不会给 URL，只给一个已经落到 App 默认目录的临时文件路径。
-      // 这类路径不会经过 addWebImageUrl，所以这里再兜底把 App 默认缓存里的图片迁移到用户设置的缓存目录。
-      if (type === 'image' && !isDirectory && latestCacheDir) {
-        try {
-          const relocatedPath = await invoke<string>('relocate_web_cache_file', {
-            path,
-            dir: latestCacheDir,
-          });
-          if (relocatedPath) {
-            path = relocatedPath;
-            fileName = path.split(/[\\/]/).pop() || fileName;
-            ext = fileName.split('.').pop()?.toLowerCase() || ext;
+        // 有些浏览器/Windows OLE 拖网页图片时不会给 URL，只给一个已经落到 App 默认目录的临时文件路径。
+        // 这类路径不会经过 addWebImageUrl，所以这里再兜底把 App 默认缓存里的图片迁移到用户设置的缓存目录。
+        if (stagedItem.type === 'image' && latestCacheDir) {
+          try {
+            const relocatedPath = await invoke<string>('relocate_web_cache_file', {
+              path,
+              dir: latestCacheDir,
+            });
+            if (relocatedPath) {
+              path = relocatedPath;
+              fileName = path.split(/[\\/]/).pop() || fileName;
+            }
+          } catch (err) {
+            console.warn('文件缓存路径迁移失败:', err);
           }
-        } catch (err) {
-          console.warn('文件缓存路径迁移失败:', err);
         }
-      }
 
-
-      // 本地拖入的文件/图片/视频统一复制一份到缓存目录，卡片后续指向缓存副本。
-      // 这样即使原文件被移动，抽屉里的灵感也还能打开、预览和进行 AI 分析。
-      if (!isDirectory) {
+        // 本地拖入的文件/图片/视频统一复制一份到缓存目录，卡片后续指向缓存副本。
+        // 这样即使原文件被移动，抽屉里的灵感也还能打开、预览和进行 AI 分析。
         try {
           const cachedPath = await invoke<string>('cache_local_file_to_dir', {
             path,
@@ -19595,40 +19775,51 @@ function MainApp() {
           if (cachedPath) {
             path = cachedPath;
             fileName = path.split(/[\\/]/).pop() || fileName;
-            ext = fileName.split('.').pop()?.toLowerCase() || ext;
           }
         } catch (err) {
           console.warn('本地文件缓存失败，保留原路径:', err);
         }
-      }
 
-      const assetUrl = isDirectory ? '' : convertFileSrc(path);
-      let thumbnail = '';
-      if (type === 'video' && !isDirectory) {
-        try {
-          thumbnail = await getVideoThumbnail(path);
-        } catch (err) {
-          console.warn('视频缩略图生成失败:', err);
-          thumbnail = '';
+        let thumbnail = stagedItem.thumbnail;
+        if (stagedItem.type === 'video') {
+          try {
+            thumbnail = await getVideoThumbnail(path);
+          } catch (err) {
+            console.warn('视频缩略图生成失败:', err);
+          }
         }
-      }
 
-      return {
-        id: createAssetId(),
-        type, content: fileName, name: fileName, path, url: assetUrl, thumbnail: thumbnail || undefined,
-        sourceUrl: originalSourcePath !== path ? originalSourcePath : undefined,
-        originalUrl: originalSourcePath !== path ? originalSourcePath : undefined,
-        createdAt: Date.now(), isQuickAccess: false,
-        folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
-        isDirectory,
-      } as BufferItem & { isDirectory?: boolean };
-    }));
-
-    pushDrawerUndoSnapshot('拖入素材');
-    setItems(prev => [...newItems, ...prev]);
-    enqueueAutoAiTaggingForItems(newItems as BufferItem[]);
-    setActiveTab('all');
-    setIsOpen(true);
+        return {
+          ...stagedItem,
+          content: fileName,
+          name: fileName,
+          path,
+          url: convertFileSrc(path),
+          thumbnail: thumbnail || undefined,
+          sourceUrl: originalSourcePath !== path ? originalSourcePath : undefined,
+          originalUrl: originalSourcePath !== path ? originalSourcePath : undefined,
+        } as BufferItem;
+      }));
+      const cachedById = new Map(cachedItems.map(item => [item.id, item]));
+      const stagedById = new Map(stagedItems.map(item => [item.id, item]));
+      invalidateDrawerAssetQueryForImport();
+      setItems(previous => previous.map(item => {
+        const cached = cachedById.get(item.id);
+        const staged = stagedById.get(item.id);
+        if (!cached || !staged) return item;
+        return {
+          ...item,
+          content: item.content === staged.content ? cached.content : item.content,
+          name: item.name === staged.name ? cached.name : item.name,
+          path: cached.path,
+          url: cached.url,
+          thumbnail: cached.thumbnail,
+          sourceUrl: cached.sourceUrl,
+          originalUrl: cached.originalUrl,
+        };
+      }));
+      enqueueAutoAiTaggingForItems(cachedItems);
+    })().catch(err => console.warn('后台缓存拖入素材失败:', err));
   };
 
   const addWebImageUrl = (url: string, name?: string, fallbackUrls: string[] = []) => {
@@ -19652,8 +19843,12 @@ function MainApp() {
       folderId: activeFolderIdRef.current !== 'all' ? activeFolderIdRef.current : undefined,
     };
     pushDrawerUndoSnapshot('添加网页图片');
-    setItems(prev => [newItem, ...prev]);
-    setActiveTab('image');
+    invalidateDrawerAssetQueryForImport();
+    const persistImport = prependAssetsAndPersist([newItem]);
+    void persistImport.then(
+      () => setActiveTab('image'),
+      () => setActiveTab('image'),
+    );
     setIsOpen(true);
     showToast('已添加网页图片，正在缓存');
 
@@ -19679,6 +19874,7 @@ function MainApp() {
           sourceUrl,
           originalUrl: normalizedUrl,
         } as BufferItem;
+        invalidateDrawerAssetQueryForImport();
         setItems(prev => prev.map(item => item.id === itemId ? cachedItem : item));
         enqueueAutoAiTaggingForItems([cachedItem]);
         showToast('网页图片已缓存');
@@ -27948,14 +28144,6 @@ useEffect(() => {
       return canUseCanvasItemAsAiInput(item);
     }).length
     : 0;
-  const canvasFolderPickerItems = useMemo(() => (
-    canvasFolderImportPrompt
-      ? getFolderMediaItemsForCanvas(canvasFolderImportPrompt.folderId)
-      : []
-  // `folderId` is undefined for the main drawer both while the picker is
-  // closed and while it is open. Depending only on folderId therefore leaves
-  // the memo stuck at the closed-state empty array.
-  ), [canvasFolderImportPrompt, folders, items]);
   const visibleCanvasFolderPickerItems = useMemo(
     () => canvasFolderPickerItems.slice(0, canvasFolderPickerVisibleCount),
     [canvasFolderPickerItems, canvasFolderPickerVisibleCount],
@@ -30936,7 +31124,7 @@ useEffect(() => {
                 <div
                   data-drawer-content="true"
                   data-canvas-ui-root={isCanvasMode ? 'true' : undefined}
-                  ref={!isCanvasMode ? drawerScrollRef : undefined}
+                  ref={!isCanvasMode ? setDrawerScrollElement : undefined}
                   className={`min-h-0 min-w-0 flex-1 relative flex ${isCanvasMode ? 'flex-row' : 'flex-col'} ${
                   isCanvasMode
                     ? isCanvasChromeHidden ? 'overflow-hidden p-0' : 'overflow-hidden p-3'
@@ -35665,7 +35853,7 @@ useEffect(() => {
                       cardWidth={cardWidth}
                       mediaHeight={cardMediaHeight}
                       resetKey={drawerAssetQueryKey}
-                      scrollContainerRef={drawerScrollRef}
+                      scrollContainer={drawerScrollNode}
                       onLoadMore={loadNextDrawerAssetPage}
                       onLoadPrevious={loadPreviousDrawerAssetPage}
                       onWheel={handleDrawerCardWheel}
@@ -36727,16 +36915,17 @@ useEffect(() => {
                 </span>
                 <div className="min-w-0">
                   <div className="truncate text-xs font-black">{canvasFolderImportPrompt.folderName}</div>
-                  <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500">{canvasFolderPickerItems.length} 个图片或视频</div>
+                  <div className="text-[10px] font-medium text-stone-400 dark:text-stone-500">
+                    {isCanvasFolderPickerLoading && canvasFolderPickerTotal === 0
+                      ? '正在读取图片和视频…'
+                      : `${canvasFolderPickerTotal} 个图片或视频`}
+                  </div>
                 </div>
               </div>
               <button
                 type="button"
                 data-canvas-folder-picker-close="true"
-                onClick={() => {
-                  setCanvasFolderPickerVisibleCount(CANVAS_FOLDER_PICKER_INITIAL_VISIBLE);
-                  setCanvasFolderImportPrompt(null);
-                }}
+                onClick={closeCanvasFolderMediaPicker}
                 className="rounded-full p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:text-stone-500 dark:hover:bg-stone-800 dark:hover:text-red-300"
                 title="关闭"
               >
@@ -36748,10 +36937,11 @@ useEffect(() => {
               type="button"
               data-canvas-folder-picker-primary="true"
               onClick={confirmAddFolderMediaToCanvas}
-              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400"
+              disabled={canvasFolderPickerItems.length === 0}
+              className="mt-2 flex h-8 w-full items-center justify-center gap-1.5 rounded-[13px] bg-blue-500 text-[11px] font-black text-white shadow-sm shadow-blue-500/20 transition-colors hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400 disabled:shadow-none dark:disabled:bg-stone-800 dark:disabled:text-stone-500"
             >
               <Plus className="h-3.5 w-3.5" />
-              全部素材加入画布
+              已加载素材加入画布（{canvasFolderPickerItems.length}）
             </button>
 
             <div
@@ -36760,10 +36950,14 @@ useEffect(() => {
               onScroll={(event) => {
                 const target = event.currentTarget;
                 if (target.scrollTop + target.clientHeight < target.scrollHeight - CANVAS_FOLDER_PICKER_SCROLL_EDGE) return;
-                setCanvasFolderPickerVisibleCount(prev => Math.min(
+                const nextVisibleCount = Math.min(
                   canvasFolderPickerItems.length,
-                  prev + CANVAS_FOLDER_PICKER_VISIBLE_STEP,
-                ));
+                  canvasFolderPickerVisibleCount + CANVAS_FOLDER_PICKER_VISIBLE_STEP,
+                );
+                setCanvasFolderPickerVisibleCount(nextVisibleCount);
+                if (nextVisibleCount >= canvasFolderPickerItems.length && canvasFolderPickerHasMore) {
+                  void loadCanvasFolderMediaPage(canvasFolderImportPrompt.folderId);
+                }
               }}
             >
               <div className="grid grid-cols-3 gap-1.5">
@@ -36805,9 +36999,35 @@ useEffect(() => {
                   );
                 })}
               </div>
-              {visibleCanvasFolderPickerItems.length < canvasFolderPickerItems.length && (
+              {isCanvasFolderPickerLoading && canvasFolderPickerItems.length === 0 && (
+                <div className="py-8 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                  正在按需加载素材…
+                </div>
+              )}
+              {canvasFolderPickerError && (
+                <button
+                  type="button"
+                  onClick={() => void loadCanvasFolderMediaPage(
+                    canvasFolderImportPrompt.folderId,
+                    canvasFolderPickerItems.length === 0,
+                  )}
+                  className="my-2 w-full rounded-[10px] bg-stone-100 px-2 py-2 text-center text-[10px] font-black text-stone-600 transition-colors hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700"
+                >
+                  {canvasFolderPickerError}
+                </button>
+              )}
+              {!canvasFolderPickerError && visibleCanvasFolderPickerItems.length < canvasFolderPickerItems.length && (
                 <div className="py-2 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
-                  继续滚动加载更多（{visibleCanvasFolderPickerItems.length}/{canvasFolderPickerItems.length}）
+                  继续向下浏览（{visibleCanvasFolderPickerItems.length}/{canvasFolderPickerTotal}）
+                </div>
+              )}
+              {!canvasFolderPickerError
+                && visibleCanvasFolderPickerItems.length >= canvasFolderPickerItems.length
+                && canvasFolderPickerHasMore && (
+                <div className="py-2 text-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
+                  {isCanvasFolderPickerLoading
+                    ? `正在加载更多（${canvasFolderPickerItems.length}/${canvasFolderPickerTotal}）`
+                    : `继续向下滚动加载更多（${canvasFolderPickerItems.length}/${canvasFolderPickerTotal}）`}
                 </div>
               )}
             </div>
@@ -37224,7 +37444,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.16'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.17'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -37512,12 +37732,11 @@ useEffect(() => {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.16</p>
-                <p>优化图片保存逻辑：画布中直接拖入的参考图片和视频只保留在画布，不再自动加入素材抽屉；需要时仍可主动保存。</p>
-                <p>新版会自动整理此前误入抽屉的画布参考素材，同时保留画布内容与本地文件。</p>
-                <p>素材卡片改为按图片或视频的实际比例显示，瀑布流会自动补齐不同高度卡片之间的空位。</p>
-                <p>滑动到底部会自动加载更多素材，无需手动点击“加载更多”。</p>
-                <p>同时修复卡片边缘裁切、旧画布恢复以及大图库操作卡顿等稳定性问题。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.17</p>
+                <p>画布现在会按需读取抽屉文件夹中的图片和视频，继续向下浏览即可加载更多，并支持把视频加入画布。</p>
+                <p>图片、视频或文件拖入抽屉后会立即显示，文件复制、缓存和视频缩略图改为后台处理。</p>
+                <p>修复从画布切回抽屉后偶发只显示一列、滚动区域空白以及无法继续自动加载的问题。</p>
+                <p>素材卡片会根据抽屉实际宽度重新排版，并在接近底部时自动请求下一批素材。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

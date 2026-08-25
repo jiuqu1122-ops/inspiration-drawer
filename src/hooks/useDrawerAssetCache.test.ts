@@ -6,6 +6,7 @@ import {
   createDrawerAssetSnapshot,
   diffDrawerAssets,
   mergeDrawerAssetPageWindow,
+  mergeDrawerQueryAssetsWithPending,
 } from './useDrawerAssetCache';
 
 const asset = (id: string, name = id): BufferItem => ({
@@ -62,5 +63,15 @@ describe('drawer asset cache diff', () => {
     expect(result.evictedFromStart).toBe(1);
     expect(result.assets.map(item => item.id)).toEqual(['1', '2', '3', '4']);
     expect(result.assets.find(item => item.id === '2')?.name).toBe('newer');
+  });
+
+  it('keeps optimistic imports ahead of a stale query response', () => {
+    const result = mergeDrawerQueryAssetsWithPending(
+      [asset('old'), asset('pending', 'stale database row')],
+      [asset('pending', 'optimistic import')],
+    );
+
+    expect(result.map(item => item.id)).toEqual(['pending', 'old']);
+    expect(result[0].name).toBe('optimistic import');
   });
 });

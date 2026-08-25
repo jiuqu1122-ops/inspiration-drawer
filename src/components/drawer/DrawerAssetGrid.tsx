@@ -4,6 +4,7 @@ import { AnimatePresence } from 'framer-motion';
 import type { BufferItem } from '../../types';
 import {
   buildDrawerMasonryLayout,
+  getDrawerContentBoxWidth,
   getDrawerMasonryColumnMetrics,
   type DrawerMasonryPosition,
   type MediaDimensions,
@@ -13,6 +14,7 @@ const LOAD_AHEAD_PX = 640;
 const VIRTUALIZATION_THRESHOLD = 80;
 const VIRTUAL_OVERSCAN_PX = 900;
 const MASONRY_GAP = 16;
+let lastKnownDrawerGalleryWidth = 0;
 
 type DrawerAssetGridProps = {
   items: BufferItem[];
@@ -22,7 +24,7 @@ type DrawerAssetGridProps = {
   cardWidth: number;
   mediaHeight: number;
   resetKey: string;
-  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  scrollContainer: HTMLDivElement | null;
   onLoadMore: () => void;
   onLoadPrevious: () => void;
   onWheel: (event: React.WheelEvent<HTMLDivElement>) => void;
@@ -47,21 +49,29 @@ export const DrawerAssetGrid = React.memo(({
   cardWidth,
   mediaHeight,
   resetKey,
-  scrollContainerRef,
+  scrollContainer,
   onLoadMore,
   onLoadPrevious,
   onWheel,
   onVisibleItemsChange,
   renderItem,
 }: DrawerAssetGridProps) => {
+  const initialGalleryWidth = lastKnownDrawerGalleryWidth || cardWidth;
+  const initialColumnMetrics = getDrawerMasonryColumnMetrics(
+    initialGalleryWidth,
+    cardWidth,
+    MASONRY_GAP,
+  );
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(1);
   const [galleryOffsetTop, setGalleryOffsetTop] = useState(0);
-  const [columnCount, setColumnCount] = useState(1);
-  const [columnWidth, setColumnWidth] = useState(cardWidth);
+  const [galleryWidth, setGalleryWidth] = useState(initialGalleryWidth);
+  const [columnCount, setColumnCount] = useState(initialColumnMetrics.columnCount);
+  const [columnWidth, setColumnWidth] = useState(initialColumnMetrics.columnWidth);
   const [resolvedMediaDimensions, setResolvedMediaDimensions] = useState<Record<string, MediaDimensions>>({});
   const [measuredCardHeights, setMeasuredCardHeights] = useState<Record<string, number>>({});
   const galleryRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
   const itemNodesRef = useRef(new Map<string, HTMLDivElement>());
   const itemRefCallbacksRef = useRef(new Map<string, (node: HTMLDivElement | null) => void>());
   const itemResizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -72,26 +82,46 @@ export const DrawerAssetGrid = React.memo(({
   const isLoadingRef = useRef(isLoading);
   const frameRef = useRef<number | null>(null);
 
-  useEffect(() => { loadMoreRef.current = onLoadMore; }, [onLoadMore]);
-  useEffect(() => { loadPreviousRef.current = onLoadPrevious; }, [onLoadPrevious]);
-  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
-  useEffect(() => { windowOffsetRef.current = windowOffset; }, [windowOffset]);
-  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+  useLayoutEffect(() => { loadMoreRef.current = onLoadMore; }, [onLoadMore]);
+  useLayoutEffect(() => { loadPreviousRef.current = onLoadPrevious; }, [onLoadPrevious]);
+  useLayoutEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
+  useLayoutEffect(() => { windowOffsetRef.current = windowOffset; }, [windowOffset]);
+  useLayoutEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+
+  const requestLoadMore = useCallback(() => {
+    if (isLoadingRef.current || !hasMoreRef.current) return;
+    // Lock synchronously. IntersectionObserver and a native scroll event can
+    // run in the same frame before the loading prop has rendered.
+    isLoadingRef.current = true;
+    loadMoreRef.current();
+  }, []);
+
+  const requestLoadPrevious = useCallback(() => {
+    if (isLoadingRef.current || windowOffsetRef.current <= 0) return;
+    isLoadingRef.current = true;
+    loadPreviousRef.current();
+  }, []);
 
   useLayoutEffect(() => {
-    const node = scrollContainerRef.current;
+    const node = scrollContainer;
     if (!node) return;
 
     const updateMetrics = () => {
       const nextScrollTop = node.scrollTop || 0;
       setScrollTop(nextScrollTop);
       setViewportHeight(node.clientHeight || 1);
-      // The scroll container includes its horizontal padding in clientWidth,
-      // while the gallery is laid out inside that padding. Measuring the
-      // container made the last masonry column extend underneath the right
-      // edge and clipped the outermost card/actions.
-      const availableWidth = Math.max(1, galleryRef.current?.clientWidth || node.clientWidth);
+      // The gallery contains only absolutely positioned cards, so after
+      // switching from canvas it can shrink-wrap to one card. Always derive
+      // the real width from the scroll container's content box instead.
+      const computedStyle = window.getComputedStyle(node);
+      const availableWidth = getDrawerContentBoxWidth(
+        node.clientWidth,
+        Number.parseFloat(computedStyle.paddingLeft),
+        Number.parseFloat(computedStyle.paddingRight),
+      );
       const metrics = getDrawerMasonryColumnMetrics(availableWidth, cardWidth, MASONRY_GAP);
+      lastKnownDrawerGalleryWidth = availableWidth;
+      setGalleryWidth(availableWidth);
       setColumnCount(metrics.columnCount);
       setColumnWidth(metrics.columnWidth);
       const gallery = galleryRef.current;
@@ -106,34 +136,41 @@ export const DrawerAssetGrid = React.memo(({
       frameRef.current = window.requestAnimationFrame(() => {
         frameRef.current = null;
         updateMetrics();
-        if (!isLoadingRef.current) {
-          if (windowOffsetRef.current > 0 && node.scrollTop <= LOAD_AHEAD_PX) {
-            loadPreviousRef.current();
-          } else if (
-            hasMoreRef.current
-            && node.scrollTop + node.clientHeight >= node.scrollHeight - LOAD_AHEAD_PX
-          ) {
-            loadMoreRef.current();
-          }
+        if (windowOffsetRef.current > 0 && node.scrollTop <= LOAD_AHEAD_PX) {
+          requestLoadPrevious();
+        } else if (node.scrollTop + node.clientHeight >= node.scrollHeight - LOAD_AHEAD_PX) {
+          requestLoadMore();
         }
       });
     };
 
     updateMetrics();
+    // Switching back from canvas changes the parent flex direction and the
+    // folder rail can still be in its 200 ms width transition. Measure again
+    // after layout settles so the first transient 1 px width cannot leave the
+    // masonry stuck at one column until the user zooms a card.
+    let settleFrame = window.requestAnimationFrame(() => {
+      updateMetrics();
+      settleFrame = window.requestAnimationFrame(updateMetrics);
+    });
+    const settleTimer = window.setTimeout(updateMetrics, 240);
     const observer = typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(updateMetrics)
       : null;
     observer?.observe(node);
     if (galleryRef.current) observer?.observe(galleryRef.current);
+    if (node.parentElement) observer?.observe(node.parentElement);
     node.addEventListener('scroll', handleScroll, { passive: true });
     window.addEventListener('resize', updateMetrics);
     return () => {
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+      window.cancelAnimationFrame(settleFrame);
+      window.clearTimeout(settleTimer);
       observer?.disconnect();
       node.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', updateMetrics);
     };
-  }, [cardWidth, scrollContainerRef]);
+  }, [cardWidth, requestLoadMore, requestLoadPrevious, scrollContainer]);
 
   useLayoutEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;
@@ -176,12 +213,12 @@ export const DrawerAssetGrid = React.memo(({
   }, []);
 
   useEffect(() => {
-    const node = scrollContainerRef.current;
+    const node = scrollContainer;
     node?.scrollTo({ top: 0 });
     setScrollTop(0);
     setResolvedMediaDimensions({});
     setMeasuredCardHeights({});
-  }, [resetKey, scrollContainerRef]);
+  }, [resetKey, scrollContainer]);
 
   const handleMediaDimensionsResolved = useCallback((itemId: string, dimensions: MediaDimensions) => {
     setResolvedMediaDimensions(current => {
@@ -201,16 +238,31 @@ export const DrawerAssetGrid = React.memo(({
   }), [columnCount, columnWidth, items, measuredCardHeights, mediaHeight, resolvedMediaDimensions]);
 
   useEffect(() => {
-    const node = scrollContainerRef.current;
+    const node = scrollContainer;
     if (
       node
       && hasMore
       && !isLoading
       && node.scrollHeight <= node.clientHeight + LOAD_AHEAD_PX
     ) {
-      loadMoreRef.current();
+      requestLoadMore();
     }
-  }, [hasMore, isLoading, items.length, masonryLayout.height, scrollContainerRef, viewportHeight]);
+  }, [hasMore, isLoading, items.length, masonryLayout.height, requestLoadMore, scrollContainer, viewportHeight]);
+
+  useLayoutEffect(() => {
+    const root = scrollContainer;
+    const sentinel = loadMoreSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some(entry => entry.isIntersecting)) requestLoadMore();
+    }, {
+      root,
+      rootMargin: `0px 0px ${LOAD_AHEAD_PX}px 0px`,
+      threshold: 0,
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [requestLoadMore, resetKey, scrollContainer]);
 
   const canVirtualize = items.length >= VIRTUALIZATION_THRESHOLD;
   const visibleMasonryItems = useMemo<VisibleMasonryItem[]>(() => {
@@ -242,9 +294,13 @@ export const DrawerAssetGrid = React.memo(({
       <div
         ref={galleryRef}
         data-drawer-gallery="true"
-        className="relative w-full shrink-0"
+        className="relative min-w-0 shrink-0 self-stretch"
         onWheel={onWheel}
-        style={{ height: Math.max(1, masonryLayout.height) }}
+        style={{
+          width: galleryWidth,
+          maxWidth: '100%',
+          height: Math.max(1, masonryLayout.height),
+        }}
       >
         <AnimatePresence mode={optimizeLargeList ? 'sync' : 'popLayout'}>
           {visibleMasonryItems.map(({ item, position }) => (
@@ -264,6 +320,12 @@ export const DrawerAssetGrid = React.memo(({
           ))}
         </AnimatePresence>
       </div>
+      <div
+        ref={loadMoreSentinelRef}
+        data-drawer-load-more-sentinel="true"
+        aria-hidden="true"
+        className="h-px w-full shrink-0"
+      />
       {isLoading && (
         <div className="mt-4 flex justify-center text-[11px] font-bold text-stone-400 dark:text-stone-500">
           正在加载…
