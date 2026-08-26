@@ -37655,7 +37655,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.17'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.18'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -37943,7 +37943,7 @@ useEffect(() => {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.17</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.18</p>
                 <p>画布现在会按需读取抽屉文件夹中的图片和视频，继续向下浏览即可加载更多，并支持把视频加入画布。</p>
                 <p>图片、视频或文件拖入抽屉后会立即显示，文件复制、缓存和视频缩略图改为后台处理。</p>
                 <p>修复从画布切回抽屉后偶发只显示一列、滚动区域空白以及无法继续自动加载的问题。</p>

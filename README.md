@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**6.0.17**
+当前版本：**6.0.18**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.17/Inspiration.Drawer_6.0.17_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.17)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.18/Inspiration.Drawer_6.0.18_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.18)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.18 更新
+
+- 新增积分使用明细，可查看最近 50 条非零积分消耗记录。
+- 修复生图参考图一致性约束默认注入的问题，现在仅在开启“产品一致性”时生效。
+- 优化云端额度明细读取，避免重复同步导致请求频繁。
 
 ## 6.0.17 更新
 
