@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CanvasWorkflowTemplate } from './canvasTemplates';
 import {
   estimateCanvasImageGenerationCredits,
+  estimateCanvasTextAgentCredits,
   estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   getCanvasImageUnitCredits,
@@ -36,6 +37,53 @@ describe('canvas generation credits', () => {
       resolution: '4k',
       count: 3,
     })).toEqual({ outputCount: 3, unitCredits: 20, totalCredits: 60 });
+  });
+
+  it('uses independent fast-channel pricing for the same Banana model IDs', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [{
+        model: 'nano-banana-pro',
+        credits2k: '8',
+        credits4k: '10',
+      }, {
+        model: 'nano-banana-pro-fast',
+        credits2k: '28',
+        credits4k: '30',
+      }, {
+        model: 'nano-banana-2',
+        credits2k: '11',
+        credits4k: '13',
+      }, {
+        model: 'nano-banana-2-fast',
+        credits2k: '24',
+        credits4k: '27',
+      }],
+      videoModels: [],
+    };
+
+    expect(getCanvasImageUnitCredits(
+      'gemini-3-pro-image',
+      '2k',
+      pricing,
+      ['IMAGE_NANO_BANANA_PRO_FAST'],
+    )).toBe(28);
+    expect(getCanvasImageUnitCredits(
+      'gemini-3-pro-image',
+      '4k',
+      pricing,
+      ['IMAGE_NANO_BANANA_PRO_FAST'],
+    )).toBe(30);
+    expect(getCanvasImageUnitCredits(
+      'gemini-3.1-flash-image',
+      '2k',
+      pricing,
+      ['IMAGE_NANO_BANANA_2_FAST'],
+    )).toBe(24);
+    expect(getCanvasImageUnitCredits('gemini-3-pro-image', '2k', pricing)).toBe(8);
   });
 
   it('uses server pricing for image and workflow LLM estimates', () => {
@@ -100,6 +148,19 @@ describe('canvas generation credits', () => {
       ],
     } as CanvasWorkflowTemplate;
     expect(estimateCanvasWorkflowCredits(workflow, { pricing }).totalCredits).toBe(13);
+  });
+
+  it('uses role-specific wallet pricing for standalone text Agent nodes', () => {
+    const pricing = {
+      agentRequestCredits: '7',
+      inspirationAnalysisCredits: '3',
+      imageDefaultCredits: '55',
+      videoDefaultCredits: '500',
+      imageModels: [],
+      videoModels: [],
+    };
+    expect(estimateCanvasTextAgentCredits(pricing, 'general')).toEqual({ unitCredits: 7, totalCredits: 7 });
+    expect(estimateCanvasTextAgentCredits(pricing, 'inspiration_analyzer')).toEqual({ unitCredits: 3, totalCredits: 3 });
   });
 
   it('uses 2K pricing for the dual Banana Pro and Banana 2 capability', () => {

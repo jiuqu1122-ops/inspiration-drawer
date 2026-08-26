@@ -99,6 +99,26 @@ pub struct CloudAccountSummary {
     wallet: CloudWalletSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudCreditUsageEntry {
+    id: String,
+    request_id: Option<String>,
+    #[serde(rename = "type")]
+    entry_type: String,
+    amount: String,
+    balance_after: String,
+    description: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudCreditUsageResult {
+    items: Vec<CloudCreditUsageEntry>,
+    next_cursor: Option<String>,
+}
+
 #[derive(Serialize)]
 struct CreditRedemptionRequest<'a> {
     code: &'a str,
@@ -130,6 +150,8 @@ pub struct CloudImageGenerationRequest {
     prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     negative_prompt: Option<String>,
+    #[serde(default)]
+    preserve_reference_identity: bool,
     input_images: Vec<String>,
     aspect_ratio: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -565,7 +587,18 @@ async fn sync_cloud_account(
     )
     .await?;
     verify_and_save_cloud_license(app_handle, machine_id, response.license.clone())?;
+    cache_cloud_access_token(&response.access_token);
     Ok(response)
+}
+
+fn cache_cloud_access_token(access_token: &str) {
+    let cache = CLOUD_TOKEN_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedCloudToken {
+            value: access_token.to_string(),
+            expires_at: Instant::now() + Duration::from_secs(12 * 60),
+        });
+    }
 }
 
 pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<String, String> {
@@ -579,12 +612,6 @@ pub(crate) async fn cloud_access_token(app_handle: &tauri::AppHandle) -> Result<
         }
     }
     let access_token = sync_cloud_account(app_handle).await?.access_token;
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedCloudToken {
-            value: access_token.clone(),
-            expires_at: Instant::now() + Duration::from_secs(12 * 60),
-        });
-    }
     Ok(access_token)
 }
 
@@ -716,6 +743,14 @@ pub async fn get_cloud_account(
 ) -> Result<CloudAccountSummary, String> {
     let response = sync_cloud_account(&app_handle).await?;
     summarize_cloud_account(&response)
+}
+
+#[tauri::command]
+pub async fn get_cloud_credit_usage(
+    app_handle: tauri::AppHandle,
+) -> Result<CloudCreditUsageResult, String> {
+    let access_token = cloud_access_token(&app_handle).await?;
+    get_cloud_with_bearer("/v1/wallet/usage?limit=50", &access_token).await
 }
 
 #[tauri::command]
@@ -1075,7 +1110,7 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 mod tests {
     use super::{
         normalize_cloud_image_references, validate_display_name, validate_email,
-        CloudImageModelsResponse,
+        CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
     };
     use base64::Engine as _;
     use std::fs;
@@ -1097,6 +1132,45 @@ mod tests {
             "designer@example.com"
         );
         assert!(validate_email("not-an-email").is_err());
+    }
+
+    #[test]
+    fn keeps_reference_identity_unlocked_unless_the_client_enables_it() {
+        let base = serde_json::json!({
+            "clientRequestId": "canvas-image-request-1",
+            "model": "gemini-3-pro-image",
+            "prompt": "render a projector",
+            "inputImages": ["https://example.test/projector.png"],
+            "aspectRatio": "16:9",
+            "outputFormat": "jpg",
+            "count": 1
+        });
+        let unlocked: CloudImageGenerationRequest = serde_json::from_value(base.clone()).unwrap();
+        assert!(!unlocked.preserve_reference_identity);
+
+        let mut locked_value = base;
+        locked_value["preserveReferenceIdentity"] = serde_json::json!(true);
+        let locked: CloudImageGenerationRequest = serde_json::from_value(locked_value).unwrap();
+        assert!(locked.preserve_reference_identity);
+    }
+
+    #[test]
+    fn parses_credit_usage_entries_from_the_wallet_api() {
+        let result: CloudCreditUsageResult = serde_json::from_value(serde_json::json!({
+            "items": [{
+                "id": "ledger-1",
+                "requestId": "request-1",
+                "type": "CHARGE",
+                "amount": "16",
+                "balanceAfter": "84",
+                "description": "生图结算 1 张",
+                "createdAt": "2026-08-27T10:00:00.000Z"
+            }],
+            "nextCursor": null
+        })).unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].entry_type, "CHARGE");
+        assert_eq!(result.items[0].amount, "16");
     }
 
     #[test]

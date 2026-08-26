@@ -17466,6 +17466,7 @@ fn main() {
             commands::license::verify_email_registration,
             commands::license::sync_email_license,
             commands::license::get_cloud_account,
+            commands::license::get_cloud_credit_usage,
             commands::license::redeem_credit_code,
             commands::license::generate_cloud_images,
             commands::license::get_cloud_image_generation_by_request,

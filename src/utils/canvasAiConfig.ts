@@ -305,6 +305,9 @@ export const parseCanvasAiModelChoiceValue = (value: string) => {
           providerChannelId: typeof candidate.providerChannelId === 'string' && candidate.providerChannelId.trim()
             ? candidate.providerChannelId.trim()
             : undefined,
+          providerChannelName: typeof candidate.providerChannelName === 'string' && candidate.providerChannelName.trim()
+            ? candidate.providerChannelName.trim()
+            : undefined,
           capabilities: Array.isArray(candidate.capabilities)
             ? Array.from(new Set(candidate.capabilities
               .filter((capability): capability is string => typeof capability === 'string')

@@ -5,6 +5,16 @@ export const CANVAS_LLM_NODE_CREDITS = 10;
 export const CANVAS_DEFAULT_IMAGE_UNIT_CREDITS = 100;
 export const CANVAS_DEFAULT_VIDEO_CREDITS_PER_SECOND = 500;
 
+export type CanvasTextAgentCreditRole =
+  | 'requirement_analyzer'
+  | 'inspiration_analyzer'
+  | 'design_strategist'
+  | 'design_reviewer'
+  | 'presentation_writer'
+  | 'seedance_video_analyzer'
+  | 'general'
+  | string;
+
 export type CanvasAiCreditPricing = {
   agentRequestCredits: string;
   inspirationAnalysisCredits: string;
@@ -36,6 +46,28 @@ export const shouldShowCanvasGenerationCredits = (
   credentialSource?: CanvasAiCredentialSource | null,
 ) => credentialSource === 'wallet';
 
+export const getCanvasTextAgentRequestCredits = (
+  pricing?: CanvasAiCreditPricing | null,
+  role?: CanvasTextAgentCreditRole | null,
+) => {
+  const configuredCredits = Number(
+    role === 'inspiration_analyzer'
+      ? pricing?.inspirationAnalysisCredits
+      : pricing?.agentRequestCredits,
+  );
+  return Number.isSafeInteger(configuredCredits) && configuredCredits >= 0
+    ? configuredCredits
+    : CANVAS_LLM_NODE_CREDITS;
+};
+
+export const estimateCanvasTextAgentCredits = (
+  pricing?: CanvasAiCreditPricing | null,
+  role?: CanvasTextAgentCreditRole | null,
+) => {
+  const unitCredits = getCanvasTextAgentRequestCredits(pricing, role);
+  return { unitCredits, totalCredits: unitCredits };
+};
+
 const rawImageModelToken = (model?: string | null) => String(model || '')
   .trim()
   .toLowerCase()
@@ -44,6 +76,8 @@ const rawImageModelToken = (model?: string | null) => String(model || '')
 
 const imageModelToken = (model?: string | null) => {
   const token = rawImageModelToken(model);
+  if (token.includes('nanobananaprofast')) return 'nanobananaprofast';
+  if (token.includes('nanobanana2fast')) return 'nanobanana2fast';
   if (token.includes('nanobananapro')
     || token.includes('xaisnanopro')
     || token.includes('gemini3proimage')
@@ -53,6 +87,21 @@ const imageModelToken = (model?: string | null) => {
     || token.includes('gemini31flashimage')
     || token.includes('gemini3flashimage')) return 'nanobanana2';
   if (token.includes('gptimage2') || token.includes('image2') || token.includes('img2')) return 'image2';
+  return token;
+};
+
+const imagePricingToken = (
+  model?: string | null,
+  capabilities?: readonly string[] | null,
+) => {
+  const token = imageModelToken(model);
+  const normalizedCapabilities = new Set((capabilities || [])
+    .map(item => String(item || '').trim().toUpperCase())
+    .filter(Boolean));
+  if (token === 'nanobananapro'
+    && normalizedCapabilities.has('IMAGE_NANO_BANANA_PRO_FAST')) return 'nanobananaprofast';
+  if (token === 'nanobanana2'
+    && normalizedCapabilities.has('IMAGE_NANO_BANANA_2_FAST')) return 'nanobanana2fast';
   return token;
 };
 
@@ -93,12 +142,16 @@ export const getCanvasImageUnitCredits = (
   model?: string | null,
   resolution?: string | null,
   pricing?: CanvasAiCreditPricing | null,
-  _capabilities?: readonly string[] | null,
+  capabilities?: readonly string[] | null,
 ) => {
   const rawModel = String(model || '');
   const token = imageModelToken(rawModel);
+  const pricingToken = imagePricingToken(rawModel, capabilities);
   const selectedResolution = getPricedImageResolution(rawModel, resolution);
-  const configuredModel = pricing?.imageModels.find(item => imageModelToken(item.model) === token);
+  const configuredModel = pricing?.imageModels.find(item => imageModelToken(item.model) === pricingToken)
+    || (pricingToken !== token
+      ? pricing?.imageModels.find(item => imageModelToken(item.model) === token)
+      : undefined);
   if (configuredModel) {
     const configuredCredits = selectedResolution === '1k'
       ? configuredModel.credits1k ?? configuredModel.credits2k
@@ -121,10 +174,10 @@ export const getCanvasImageUnitCredits = (
     return selectedResolution === '4k' ? 18 : 15;
   }
 
-  const isNanoBananaPro = token === 'nanobananapro';
+  const isNanoBananaPro = token === 'nanobananapro' || token === 'nanobananaprofast';
   if (isNanoBananaPro) return selectedResolution === '4k' ? 20 : 18;
 
-  const isNanoBanana2 = token === 'nanobanana2';
+  const isNanoBanana2 = token === 'nanobanana2' || token === 'nanobanana2fast';
   if (isNanoBanana2) return selectedResolution === '4k' ? 18 : 15;
 
   const configuredDefault = Number(pricing?.imageDefaultCredits);
@@ -337,10 +390,7 @@ export const estimateCanvasWorkflowCredits = (
     };
   }, { outputCount: 0, credits: 0 });
   const llmNodeCount = workflow.nodes.filter(isWorkflowLlmNode).length;
-  const configuredLlmCredits = Number(options.pricing?.agentRequestCredits);
-  const llmUnitCredits = Number.isSafeInteger(configuredLlmCredits) && configuredLlmCredits >= 0
-    ? configuredLlmCredits
-    : CANVAS_LLM_NODE_CREDITS;
+  const llmUnitCredits = getCanvasTextAgentRequestCredits(options.pricing);
   const llmCredits = llmNodeCount * llmUnitCredits;
 
   return {

@@ -91,6 +91,8 @@ export type CanvasAiModelCandidate = {
   provider: CanvasAiProvider;
   model: string;
   providerChannelId?: string;
+  /** Human-readable wallet channel name, used for channel-specific public labels. */
+  providerChannelName?: string;
   capabilities?: string[];
 };
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
+  CANVAS_AI_IMAGE_MODEL_MENU_NAMES,
   CANVAS_AI_VIDEO_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_VIDEO_TASK_TIMEOUT_MS,
   CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
@@ -21,6 +22,7 @@ import {
   getCanvasAiImageModelFamily,
   getCanvasAiPublicImageModelPriority,
   getCanvasAiPublicImageModelName,
+  getCanvasAiPublicImageModelVariantName,
   getCanvasAiPublicImageModelId,
   getCanvasAiImageResolutionValues,
   getCanvasAiImageResolutionValuesForCandidates,
@@ -167,9 +169,37 @@ describe('NewAPI image model mapping', () => {
       'GPT Image 2',
     ]);
     expect(getCanvasAiPublicImageModelId('new-api', 'Nano Banana 2')).toBe('gemini-3.1-flash-image');
+    expect(getCanvasAiPublicImageModelId('new-api', 'Nano Banana Pro（稳定高速）'))
+      .toBe('gemini-3-pro-image');
+    expect(getCanvasAiPublicImageModelId('new-api', 'Nano Banana 2（稳定高速）'))
+      .toBe('gemini-3.1-flash-image');
     expect(getCanvasAiPublicImageModelId('xais-chat', 'GPT Image 2')).toBe('Xais Img2_2K');
     expect(getCanvasAiPublicImageModelId('bigmodel', 'Nano Banana Pro')).toBe('gemini-3-pro-image-preview');
     expect(getCanvasAiPublicImageModelId('bigmodel', 'GPT Image 2')).toBe('gpt-image-2');
+    expect(CANVAS_AI_IMAGE_MODEL_MENU_NAMES).toEqual([
+      'Nano Banana Pro',
+      'Nano Banana Pro（稳定高速）',
+      'Nano Banana 2',
+      'Nano Banana 2（稳定高速）',
+      'GPT Image 2',
+    ]);
+    expect(CANVAS_AI_IMAGE_MODEL_MENU_NAMES).not.toContain('Nano Banana Lite 1K');
+    expect(CANVAS_AI_IMAGE_MODEL_MENU_NAMES).not.toContain('GPT Image 2 H');
+  });
+
+  it('exposes stable high-speed Banana variants from wallet channel metadata', () => {
+    expect(getCanvasAiPublicImageModelVariantName(
+      'new-api',
+      'gemini-3-pro-image',
+      ['IMAGE_NANO_BANANA_PRO_FAST'],
+      'Nano Banana Pro 高速',
+    )).toBe('Nano Banana Pro（稳定高速）');
+    expect(getCanvasAiPublicImageModelVariantName(
+      'new-api',
+      'gemini-3.1-flash-image',
+      [],
+      'stable-fast banana 2',
+    )).toBe('Nano Banana 2（稳定高速）');
   });
 
   it.each([
@@ -482,6 +512,33 @@ describe('unified wallet image model families', () => {
     }])).toEqual(candidates);
   });
 
+  it('keeps a selected stable high-speed Banana route scoped to high-speed channels', () => {
+    const candidates = [{
+      source: 'wallet' as const,
+      provider: 'new-api' as const,
+      providerChannelId: 'banana-pro-fast',
+      providerChannelName: 'Nano Banana Pro 高速',
+      model: 'gemini-3-pro-image',
+      capabilities: ['IMAGE_NANO_BANANA_PRO_FAST'],
+    }];
+    expect(reconcileWalletImageCandidates(candidates, [
+      {
+        id: 'banana-pro-normal',
+        name: 'Nano Banana Pro 稳定',
+        provider: 'NEW_API',
+        models: ['gemini-3-pro-image'],
+        capabilities: ['IMAGE_NANO_BANANA_PRO'],
+      },
+      {
+        id: 'banana-pro-fast',
+        name: 'Nano Banana Pro 高速',
+        provider: 'NEW_API',
+        models: ['gemini-3-pro-image'],
+        capabilities: ['IMAGE_NANO_BANANA_PRO_FAST'],
+      },
+    ])).toEqual([expect.objectContaining({ providerChannelId: 'banana-pro-fast' })]);
+  });
+
   it('keeps Bigmodel Banana Pro and Image2 models on the same wallet channel', () => {
     const candidates = [
       {
@@ -697,6 +754,19 @@ describe('image resolution routing', () => {
       .toEqual(['2k']);
     expect(getCanvasAiImageResolutionValues('bigmodel', pro, ['IMAGE_NANO_BANANA_PRO']))
       .toEqual(['2k', '4k']);
+  });
+
+  it('exposes 2K and 4K for both stable fast Banana channels', () => {
+    expect(getCanvasAiImageResolutionValues(
+      'new-api',
+      'gemini-3-pro-image',
+      ['IMAGE_NANO_BANANA_PRO_FAST'],
+    )).toEqual(['2k', '4k']);
+    expect(getCanvasAiImageResolutionValues(
+      'new-api',
+      'gemini-3.1-flash-image',
+      ['IMAGE_NANO_BANANA_2_FAST'],
+    )).toEqual(['2k', '4k']);
   });
 
   it('normalizes resolution casing and calculates GPT Image 2 sizes', () => {

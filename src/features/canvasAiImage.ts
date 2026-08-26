@@ -368,6 +368,8 @@ export const mergeCanvasAiReferenceSourceItems = <T extends { id: string }>(
 export type NewApiImageModelFamily = 'nano-banana-pro' | 'nano-banana-2' | 'nano-banana-lite';
 export type CanvasAiImageResolution = '1k' | '2k' | '4k';
 export const CANVAS_AI_NANO_BANANA_DUAL_2K_CAPABILITY = 'IMAGE_NANO_BANANA_DUAL_2K';
+export const CANVAS_AI_NANO_BANANA_PRO_FAST_CAPABILITY = 'IMAGE_NANO_BANANA_PRO_FAST';
+export const CANVAS_AI_NANO_BANANA_2_FAST_CAPABILITY = 'IMAGE_NANO_BANANA_2_FAST';
 const LEGACY_NANO_BANANA_PRO_1K_CAPABILITY = 'IMAGE_NANO_BANANA_PRO_1K';
 
 const normalizeCanvasAiCapabilities = (capabilities?: readonly string[] | null) => (
@@ -388,6 +390,26 @@ const hasNanoBananaDual2KCapability = (capabilities: ReadonlySet<string>) => (
   capabilities.has(CANVAS_AI_NANO_BANANA_DUAL_2K_CAPABILITY)
   || capabilities.has(LEGACY_NANO_BANANA_PRO_1K_CAPABILITY)
 );
+
+const hasFastNanoBananaCapability = (
+  family: 'nano-banana-pro' | 'nano-banana-2',
+  capabilities?: readonly string[] | null,
+  channelName?: string | null,
+) => {
+  const normalized = normalizeCanvasAiCapabilities(capabilities);
+  const explicit = family === 'nano-banana-pro'
+    ? CANVAS_AI_NANO_BANANA_PRO_FAST_CAPABILITY
+    : CANVAS_AI_NANO_BANANA_2_FAST_CAPABILITY;
+  if (normalized.has(explicit)) return true;
+  // Accept capability spellings used by older quota-manager deployments.
+  const familyToken = family === 'nano-banana-pro' ? 'PRO' : '2';
+  if (Array.from(normalized).some(value => (
+    value.includes('FAST')
+      && value.includes('BANANA')
+      && (familyToken === 'PRO' ? value.includes('PRO') : value.includes('2'))
+  ))) return true;
+  return /高速|稳定高速|high[\s_-]*speed|stable[\s_-]*fast|\bfast\b|\bturbo\b/i.test(String(channelName || ''));
+};
 
 const toImageModelToken = (model?: string | null) => (
   String(model || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
@@ -485,6 +507,7 @@ export type CanvasAiBaseImageOptions = {
   licenseManaged?: boolean;
   prompt: string;
   negativePrompt?: string;
+  preserveReferenceIdentity?: boolean;
   model?: string;
   inputImages?: string[];
   prepareInputImagesForCandidate?: (candidate: CanvasAiModelCandidate) => Promise<string[]>;
@@ -574,6 +597,7 @@ const generateCloudWalletImages = async (options: CanvasAiImageOptions) => {
         model,
         prompt: options.prompt.trim(),
         negativePrompt: options.negativePrompt?.trim() || undefined,
+        preserveReferenceIdentity: options.preserveReferenceIdentity === true,
         inputImages: (options.inputImages || []).filter(Boolean).slice(0, options.provider === 'new-api' ? 9 : 8),
         aspectRatio: normalizeCloudWalletImageAspectRatio(options.aspectRatio),
         resolution: options.resolution?.trim() || undefined,
@@ -1662,6 +1686,24 @@ export const getCanvasAiPublicImageModelName = (
   return family ? imageFamilyLabel(family) : null;
 };
 
+export const getCanvasAiPublicImageModelVariantName = (
+  provider?: string | null,
+  model?: string | null,
+  capabilities?: readonly string[] | null,
+  channelName?: string | null,
+): string | null => {
+  const publicName = getCanvasAiPublicImageModelName(provider, model);
+  if (publicName === 'Nano Banana Pro'
+    && hasFastNanoBananaCapability('nano-banana-pro', capabilities, channelName)) {
+    return 'Nano Banana Pro（稳定高速）';
+  }
+  if (publicName === 'Nano Banana 2'
+    && hasFastNanoBananaCapability('nano-banana-2', capabilities, channelName)) {
+    return 'Nano Banana 2（稳定高速）';
+  }
+  return publicName;
+};
+
 export const isHiddenCanvasAiImageModel = (provider?: string | null, model?: string | null) => {
   if (provider !== 'xais-chat') return false;
   if (getCanvasAiImageModelFamily(provider, model) === 'nano-banana-lite') return true;
@@ -1684,25 +1726,38 @@ export const CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES = [
   'GPT Image 2',
 ] as const;
 
+export const CANVAS_AI_IMAGE_MODEL_MENU_NAMES = [
+  'Nano Banana Pro',
+  'Nano Banana Pro（稳定高速）',
+  'Nano Banana 2',
+  'Nano Banana 2（稳定高速）',
+  'GPT Image 2',
+] as const;
+
 export type CanvasAiPublicImageModelName = typeof CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES[number];
 
 export const getCanvasAiPublicImageModelId = (
   provider: CanvasAiImageProvider,
-  publicName: CanvasAiPublicImageModelName,
+  publicName: string,
 ) => {
+  const normalizedPublicName = publicName.startsWith('Nano Banana Pro')
+    ? 'Nano Banana Pro'
+    : publicName.startsWith('Nano Banana 2')
+      ? 'Nano Banana 2'
+      : publicName;
   if (provider === 'xais-chat') {
-    if (publicName === 'Nano Banana Pro') return 'Xais Nano Pro_2K';
-    if (publicName === 'Nano Banana 2') return 'Xais Nano2_2K';
+    if (normalizedPublicName === 'Nano Banana Pro') return 'Xais Nano Pro_2K';
+    if (normalizedPublicName === 'Nano Banana 2') return 'Xais Nano2_2K';
     return 'Xais Img2_2K';
   }
-  if (provider === 'bigmodel' && publicName === 'Nano Banana Pro') {
+  if (provider === 'bigmodel' && normalizedPublicName === 'Nano Banana Pro') {
     return BIGMODEL_NANO_BANANA_PRO_MODEL;
   }
-  if (provider === 'bigmodel' && publicName === 'GPT Image 2') {
+  if (provider === 'bigmodel' && normalizedPublicName === 'GPT Image 2') {
     return BIGMODEL_GPT_IMAGE_2_MODEL;
   }
-  if (publicName === 'Nano Banana Pro') return NEW_API_NANO_BANANA_PRO_MODEL;
-  if (publicName === 'Nano Banana 2') return NEW_API_NANO_BANANA_2_MODEL;
+  if (normalizedPublicName === 'Nano Banana Pro') return NEW_API_NANO_BANANA_PRO_MODEL;
+  if (normalizedPublicName === 'Nano Banana 2') return NEW_API_NANO_BANANA_2_MODEL;
   return NEW_API_GPT_IMAGE_2_MODEL;
 };
 
@@ -1865,6 +1920,7 @@ export const sortCanvasAiImageCandidatesByChannelPriority = (
 
 type WalletImageChannelSnapshot = {
   id?: string;
+  name?: string;
   provider?: string;
   models?: string[];
   capabilities?: string[];
@@ -1888,7 +1944,12 @@ export const reconcileWalletImageCandidates = (
   const walletCandidates = candidates.filter(candidate => candidate.source === 'wallet');
   const nonWalletCandidates = candidates.filter(candidate => candidate.source !== 'wallet');
   const requestedPublicNames = new Set(walletCandidates
-    .map(candidate => getCanvasAiPublicImageModelName(candidate.provider, candidate.model))
+    .map(candidate => getCanvasAiPublicImageModelVariantName(
+      candidate.provider,
+      candidate.model,
+      candidate.capabilities,
+      candidate.providerChannelName,
+    ))
     .filter(Boolean));
   if (walletCandidates.length === 0 || requestedPublicNames.size === 0) return candidates;
 
@@ -1900,13 +1961,19 @@ export const reconcileWalletImageCandidates = (
     (channel.models || []).forEach(rawModel => {
       const model = String(rawModel || '').trim();
       if (!model || isHiddenCanvasAiImageModel(provider, model)) return;
-      const publicName = getCanvasAiPublicImageModelName(provider, model);
+      const publicName = getCanvasAiPublicImageModelVariantName(
+        provider,
+        model,
+        channel.capabilities,
+        channel.name,
+      );
       if (!publicName || !requestedPublicNames.has(publicName)) return;
       refreshedWalletCandidates.push({
         source: 'wallet',
         provider,
         model,
         providerChannelId: channelId,
+        providerChannelName: channel.name,
         capabilities: channel.capabilities,
       });
     });

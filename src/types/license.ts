@@ -56,6 +56,21 @@ export type CloudAccountSummary = {
   wallet: CloudWalletSummary;
 };
 
+export type CloudCreditUsageEntry = {
+  id: string;
+  requestId?: string | null;
+  type: string;
+  amount: string;
+  balanceAfter: string;
+  description?: string | null;
+  createdAt: string;
+};
+
+export type CloudCreditUsageResult = {
+  items: CloudCreditUsageEntry[];
+  nextCursor?: string | null;
+};
+
 export type CloudImageModelsResult = {
   provider: string;
   defaultModel?: string | null;

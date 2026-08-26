@@ -35,7 +35,7 @@ import {
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
-  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, ArchiveRestore, ArrowUp, MessageCircle,
+  Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, ArchiveRestore, ArrowUp, MessageCircle, History,
   LogOut, Music
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
@@ -89,6 +89,8 @@ import type {
 } from './types/dialogs';
 import type {
   CloudAccountSummary,
+  CloudCreditUsageEntry,
+  CloudCreditUsageResult,
   CloudImageModelsResult,
   CreditRedemptionResult,
   EmailCodeChallenge,
@@ -96,6 +98,11 @@ import type {
   LicenseState,
   LicenseStatus,
 } from './types/license';
+import {
+  formatCreditUsageAmount,
+  formatCreditUsageDate,
+  selectRecentNonZeroCreditUsage,
+} from './features/cloudCreditUsage';
 import type {
   ActiveShortcutScope,
   CanvasBrushCropRect,
@@ -593,6 +600,7 @@ import {
 } from './features/canvasAiRunGuard';
 import {
   estimateCanvasImageGenerationCredits,
+  estimateCanvasTextAgentCredits,
   estimateCanvasVideoGenerationCredits,
   estimateCanvasWorkflowCredits,
   shouldShowCanvasGenerationCredits,
@@ -731,7 +739,7 @@ import {
 } from './features/canvasWorkflowInternalSlots';
 import { publishCanvasReferencesInOrder } from './features/canvasReferencePublication';
 import {
-  CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES,
+  CANVAS_AI_IMAGE_MODEL_MENU_NAMES,
   CANVAS_AI_VIDEO_MODEL_OPTIONS,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MINUTES,
   CANVAS_AI_IMAGE_TASK_TIMEOUT_MS,
@@ -769,6 +777,7 @@ import {
   isSeedanceLikeVideoModel,
   isMiniMaxH3VideoModel,
   getCanvasAiPublicImageModelName,
+  getCanvasAiPublicImageModelVariantName,
   getCanvasAiPublicImageModelId,
   getDefaultNewApiImageProtocol,
   getNewApiVideoDurationValues,
@@ -2656,6 +2665,10 @@ function MainApp() {
   const [creditRedemptionCode, setCreditRedemptionCode] = useState('');
   const [creditRedemptionError, setCreditRedemptionError] = useState('');
   const [isRedeemingCredits, setIsRedeemingCredits] = useState(false);
+  const [showCreditUsage, setShowCreditUsage] = useState(false);
+  const [creditUsageItems, setCreditUsageItems] = useState<CloudCreditUsageEntry[]>([]);
+  const [isCreditUsageLoading, setIsCreditUsageLoading] = useState(false);
+  const [creditUsageError, setCreditUsageError] = useState('');
   const licenseGateActiveRef = useRef(true);
 
   const [shortcut, setShortcut] = useState('Alt+G');
@@ -2827,6 +2840,25 @@ function MainApp() {
     }
   };
 
+  const loadCloudCreditUsage = async () => {
+    setIsCreditUsageLoading(true);
+    setCreditUsageError('');
+    try {
+      const result = await invoke<CloudCreditUsageResult>('get_cloud_credit_usage');
+      setCreditUsageItems(selectRecentNonZeroCreditUsage(result.items, 50));
+    } catch (err) {
+      console.error('读取积分使用明细失败:', err);
+      setCreditUsageError(formatLicenseCommandError(err));
+    } finally {
+      setIsCreditUsageLoading(false);
+    }
+  };
+
+  const openCloudCreditUsage = () => {
+    setShowCreditUsage(true);
+    void loadCloudCreditUsage();
+  };
+
   const confirmCloudAccountLogout = () => {
     if (isCloudAccountLoggingOut) return;
     setConfirmDialog({
@@ -2853,6 +2885,9 @@ function MainApp() {
               setEmailRegistrationError('');
               setCreditRedemptionCode('');
               setCreditRedemptionError('');
+              setShowCreditUsage(false);
+              setCreditUsageItems([]);
+              setCreditUsageError('');
               await canvasAgent.refreshSettings().catch(() => {});
               showToast('已退出登录');
             } catch (err) {
@@ -3107,6 +3142,7 @@ function MainApp() {
           provider: canvasAiProviderForCloudKind(channel.provider),
           model,
           providerChannelId: channel.id,
+          providerChannelName: channel.name,
           capabilities: channel.capabilities,
         })));
       } else {
@@ -3129,10 +3165,15 @@ function MainApp() {
         (modelSources.get(provider) || []).forEach(model => candidates.push({ source: 'local', provider, model }));
       });
     }
-    return CANVAS_AI_PUBLIC_IMAGE_MODEL_NAMES.map(label => {
+    return CANVAS_AI_IMAGE_MODEL_MENU_NAMES.map(label => {
       const modelCandidates = candidates.filter(candidate => (
         isCanvasAiPublicImageModel(candidate.provider, candidate.model)
-        && getCanvasAiPublicImageModelName(candidate.provider, candidate.model) === label
+        && getCanvasAiPublicImageModelVariantName(
+          candidate.provider,
+          candidate.model,
+          candidate.capabilities,
+          candidate.providerChannelName,
+        ) === label
       ));
       const fallbackProvider = canvasAiCredentialSource === 'wallet'
         ? canvasAiCloudImageModels?.channels?.[0]
@@ -3147,9 +3188,12 @@ function MainApp() {
         model: getCanvasAiPublicImageModelId(fallbackProvider, label),
       };
       const routes = modelCandidates.length > 0 ? modelCandidates : [first];
+      const fastChannelUnavailable = label.endsWith('（稳定高速）') && modelCandidates.length === 0;
       return {
         value: canvasAiGroupedModelChoiceValue(first.source, first, routes),
         label,
+        disabled: fastChannelUnavailable,
+        hint: fastChannelUnavailable ? '后台未配置对应高速渠道' : undefined,
       };
     });
   }, [canvasAiApiKey, canvasAiCloudImageModels, canvasAiCredentialSource, canvasAiMikotoModels, canvasAiNewApiModels, canvasAiOpenAiModels, canvasAiProvider, canvasAiXaisModels]);
@@ -3180,11 +3224,13 @@ function MainApp() {
           : rawCurrentPublicModel;
         const matchingChoice = sourceChoices.find(choice => (
           (choice.provider === item.ai?.provider
-            && choice.model === item.ai?.model)
+            && choice.model === item.ai?.model
+            && (!item.ai?.providerChannelId || choice.providerChannelId === item.ai.providerChannelId))
           || choice.providerCandidates?.some(candidate => (
             candidate.source === preferredSource
             && candidate.provider === item.ai?.provider
             && candidate.model === item.ai?.model
+            && (!item.ai?.providerChannelId || candidate.providerChannelId === item.ai.providerChannelId)
           ))
         )) || (currentPublicModel
           ? sourceChoices.find(choice => (
@@ -3227,8 +3273,17 @@ function MainApp() {
   const getCanvasAiUnifiedImageModelValue = (
     provider: CanvasAiProvider,
     model: string,
+    providerChannelId?: string,
   ) => {
-    const rawPublicName = getCanvasAiPublicImageModelName(provider, model);
+    const channel = providerChannelId
+      ? canvasAiCloudImageModels?.channels?.find(item => item.id === providerChannelId)
+      : undefined;
+    const rawPublicName = getCanvasAiPublicImageModelVariantName(
+      provider,
+      model,
+      channel?.capabilities,
+      channel?.name,
+    );
     const publicName = rawPublicName === 'GPT Image 2 H' ? 'GPT Image 2' : rawPublicName;
     const matchingOption = canvasAiUnifiedImageModelOptions.find(option => option.label === publicName);
     return matchingOption?.value || canvasAiUnifiedImageModelOptions[0]?.value
@@ -15185,6 +15240,7 @@ function MainApp() {
       let inputVideos = preparedInputs.videos;
       let inputAudios = preparedInputs.audios;
       let negativePrompt: string | undefined;
+      let preserveReferenceIdentity = false;
       temporaryReferenceShares = preparedInputs.temporaryShareIds;
       const imageProtocol = mediaType === 'image' && provider === 'new-api'
         ? getDefaultNewApiImageProtocol(requestModel, inputImages.length > 0)
@@ -15194,6 +15250,8 @@ function MainApp() {
       }
       if (mediaType === 'image') {
         const hasReferenceImage = inputImages.length > 0 || (target.inputs || []).length > 0;
+        const imageRules = getCanvasImageRuleState(target, hasReferenceImage);
+        preserveReferenceIdentity = imageRules.product_consistency === true;
         const finalPrompt = buildFinalImagePrompt({
           textInputs: textInputPrompts,
           presetPrompt: targetAi.presetPrompt || '',
@@ -15201,7 +15259,7 @@ function MainApp() {
           qualityProfile: typeof targetAi.skillMeta?.qualityProfileId === 'string'
             ? targetAi.skillMeta.qualityProfileId
             : '',
-          rules: getCanvasImageRuleState(target, hasReferenceImage),
+          rules: imageRules,
           nodeType: {
             mediaType: 'image',
             hasReferenceImage,
@@ -15332,6 +15390,7 @@ function MainApp() {
         ),
         prompt,
         negativePrompt,
+        preserveReferenceIdentity,
         model: requestModel,
         imageProtocol,
         clientRequestId,
@@ -30814,6 +30873,21 @@ useEffect(() => {
                                     {cloudAccount?.email && (
                                       <div className="truncate text-[10px] text-blue-600/80 dark:text-blue-200/75">{cloudAccount.email}</div>
                                     )}
+                                    <button
+                                      type="button"
+                                      onClick={openCloudCreditUsage}
+                                      disabled={!cloudAccount || isCloudAccountLoading}
+                                      className="group flex min-h-9 w-full items-center justify-between gap-2 rounded-[12px] border border-blue-100/90 bg-white/70 px-2.5 py-2 text-left transition-colors hover:border-blue-200 hover:bg-white disabled:cursor-not-allowed disabled:opacity-45 dark:border-blue-300/15 dark:bg-stone-950/20 dark:hover:border-blue-300/25 dark:hover:bg-stone-950/35"
+                                    >
+                                      <span className="flex min-w-0 items-center gap-2 text-[10px] font-black text-blue-800 dark:text-blue-100">
+                                        <History className="h-3.5 w-3.5 shrink-0 text-blue-500 dark:text-blue-300" />
+                                        积分使用明细
+                                      </span>
+                                      <span className="flex shrink-0 items-center gap-0.5 text-[9px] font-bold text-blue-500/75 transition-colors group-hover:text-blue-600 dark:text-blue-200/60 dark:group-hover:text-blue-100">
+                                        最近 50 条
+                                        <ChevronRight className="h-3 w-3" />
+                                      </span>
+                                    </button>
                                     <div className="flex gap-1.5">
                                       <input
                                         value={creditRedemptionCode}
@@ -31519,6 +31593,7 @@ useEffect(() => {
                             ? parseCanvasAiModelChoiceValue(getCanvasAiUnifiedImageModelValue(
                               canvasAiItemProvider,
                               canvasAiItemModel,
+                              canvasItem.ai?.providerChannelId,
                             ))
                             : null;
                           const canvasImagePricingCandidates = canvasImagePricingChoice
@@ -31568,6 +31643,11 @@ useEffect(() => {
                               resolution: canvasAiVideoResolution,
                             }, canvasWalletPricing, canvasVideoPricingReferenceCounts)
                             : null;
+                          const isCanvasAgentWalletFunding = canvasAgent.settings.apiProvider.trim().toLowerCase() === 'unmind-wallet'
+                            || canvasAgent.settings.apiCredentialSource === 'cloud_wallet';
+                          const canvasTextCreditEstimate = isCanvasAgentWalletFunding && isCanvasAgentTextTarget(canvasItem)
+                            ? estimateCanvasTextAgentCredits(canvasWalletPricing, canvasDesignAgentConfig.agentRole)
+                            : null;
                           const canvasWorkflowCreditNodeLabel = canvasWorkflowCreditEstimate
                             ? [
                               canvasWorkflowCreditEstimate.imageNodeCount > 0
@@ -31587,6 +31667,8 @@ useEffect(() => {
                               ? `${canvasImageCreditEstimate.totalCredits}积分`
                               : canvasVideoCreditEstimate
                                 ? `${canvasVideoCreditEstimate.totalCredits}积分`
+                                : canvasTextCreditEstimate
+                                  ? `${canvasTextCreditEstimate.totalCredits}积分`
                               : '';
                           const canvasRunCreditTitle = canvasWorkflowCreditEstimate
                             ? `预计需要 ${canvasWorkflowCreditEstimate.totalCredits} 积分：图片 ${canvasWorkflowCreditEstimate.imageOutputCount} 张（${canvasWorkflowCreditEstimate.imageCredits} 积分）；视频 ${canvasWorkflowCreditEstimate.videoOutputCount} 条（${canvasWorkflowCreditEstimate.videoCredits} 积分）；LLM ${canvasWorkflowCreditEstimate.llmNodeCount} 次（${canvasWorkflowCreditEstimate.llmCredits} 积分）`
@@ -31594,7 +31676,9 @@ useEffect(() => {
                               ? `预计需要 ${canvasImageCreditEstimate.totalCredits} 积分：生成 ${canvasImageCreditEstimate.outputCount} 张，每张 ${canvasImageCreditEstimate.unitCredits} 积分`
                               : canvasVideoCreditEstimate
                                 ? `预计需要 ${canvasVideoCreditEstimate.totalCredits} 积分：${canvasVideoCreditEstimate.creditsPerSecond} 积分/秒 × ${canvasVideoCreditEstimate.durationSeconds} 秒 × ${canvasVideoCreditEstimate.outputCount} 条；已计入 ${canvasVideoPricingReferenceCounts.imageCount} 张参考图和 ${canvasVideoPricingReferenceCounts.videoCount} 段参考视频`
-                              : undefined;
+                                : canvasTextCreditEstimate
+                                  ? `预计需要 ${canvasTextCreditEstimate.totalCredits} 积分：运行 ${canvasDesignAgentConfig.agentRole === 'inspiration_analyzer' ? '灵感分析' : 'Agent'} 1 次`
+                                : undefined;
                           const canvasWorkflowUserInput = isCanvasWorkflowItem
                             ? normalizeCanvasWorkflowUserInput(canvasWorkflow?.userInput)
                             : null;
@@ -32958,7 +33042,7 @@ useEffect(() => {
                                               mediaType={canvasAiMediaType}
                                               menuScale={canvasAiMenuScale}
                                               modelValue={canvasAiMediaType === 'image'
-                                                ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel)
+                                                ? getCanvasAiUnifiedImageModelValue(canvasAiItemProvider, canvasAiItemModel, canvasItem.ai?.providerChannelId)
                                                 : getCanvasAiVideoModelOptionValue(canvasAiItemModel)}
                                               modelOptions={canvasAiMediaType === 'image'
                                                 ? canvasAiUnifiedImageModelOptions
@@ -33444,11 +33528,16 @@ useEffect(() => {
                                           event.stopPropagation();
                                           void runCanvasTextAgentNode(canvasItem.id);
                                         }}
+                                        title={canvasRunCreditTitle || '使用 Agent API 运行此文字节点'}
                                         className="ml-auto flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[11px] px-2.5 text-[12px] font-black text-stone-500 transition-colors hover:bg-stone-950/[0.05] hover:text-stone-900 disabled:cursor-wait disabled:opacity-45 dark:text-white/58 dark:hover:bg-white/[0.07] dark:hover:text-white"
-                                        title="用 Agent API 运行此文字节点"
                                       >
                                         <Play className={'h-4 w-4 fill-current ' + (isCanvasTextAgentRunning ? 'animate-pulse' : '')} />
                                         {isCanvasTextAgentRunning ? '运行中' : (canvasItem.item.remark ? '再次运行' : '运行')}
+                                        {!isCanvasTextAgentRunning && canvasRunCreditLabel && (
+                                          <span className="whitespace-nowrap text-[10px] font-bold text-amber-600 dark:text-amber-300">
+                                            · {canvasRunCreditLabel}
+                                          </span>
+                                        )}
                                       </button>
                                     </div>
                                   </div>
@@ -36420,6 +36509,128 @@ useEffect(() => {
 
               </div>
         </div>
+      <AnimatePresence>
+        {showCreditUsage && (
+          <motion.div
+            data-drawer-dialog-backdrop="true"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100130] flex items-center justify-center overflow-hidden rounded-[30px] bg-black/30 p-5 backdrop-blur-sm pointer-events-auto"
+            onPointerEnter={keepDrawerOpenByPointer}
+            onPointerMove={keepDrawerOpenByPointer}
+            onPointerLeave={handleFloatingLayerPointerLeave}
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setShowCreditUsage(false);
+            }}
+          >
+            <motion.div
+              data-drawer-dialog="true"
+              initial={{ scale: 0.95, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 12 }}
+              transition={{ type: 'tween', duration: 0.18, ease: 'easeOut' }}
+              className="flex max-h-[76vh] w-full max-w-[390px] flex-col overflow-hidden rounded-[28px] border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div data-drawer-dialog-header="true" className="flex shrink-0 items-center justify-between gap-3 border-b border-stone-100 px-5 py-4 dark:border-stone-800">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+                    <History className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div data-drawer-dialog-title="true" className="truncate text-sm font-black text-stone-800 dark:text-stone-100">积分使用明细</div>
+                    <div className="mt-0.5 text-[10px] font-medium text-stone-400 dark:text-stone-500">最近 50 条非零积分消耗记录</div>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => void loadCloudCreditUsage()}
+                    disabled={isCreditUsageLoading}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:cursor-wait disabled:opacity-50 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                    title="刷新明细"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isCreditUsageLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    data-drawer-dialog-close="true"
+                    type="button"
+                    onClick={() => setShowCreditUsage(false)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-500 dark:hover:bg-stone-800"
+                    title="关闭"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="shrink-0 px-4 pt-4">
+                <div className="flex items-center justify-between gap-4 rounded-[18px] border border-stone-200 bg-stone-50/75 px-3.5 py-3 dark:border-stone-800 dark:bg-stone-950/30">
+                  <div>
+                    <div className="text-[10px] font-bold text-stone-400 dark:text-stone-500">当前可用积分</div>
+                    <div className="mt-0.5 text-xl font-black tabular-nums text-stone-800 dark:text-stone-100">{cloudAccount?.wallet.availableCredits ?? '—'}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] font-bold text-stone-400 dark:text-stone-500">本次显示</div>
+                    <div className="mt-0.5 text-xs font-black tabular-nums text-stone-600 dark:text-stone-300">{creditUsageItems.length} 条</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 [scrollbar-width:thin] [scrollbar-color:rgba(168,162,158,0.45)_transparent]">
+                {isCreditUsageLoading && creditUsageItems.length === 0 ? (
+                  <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-stone-400 dark:text-stone-500">
+                    <RefreshCw className="h-5 w-5 animate-spin text-stone-500" />
+                    <span className="text-[11px] font-bold">正在读取积分明细…</span>
+                  </div>
+                ) : creditUsageError ? (
+                  <div className="flex min-h-40 flex-col items-center justify-center gap-3 rounded-[18px] border border-stone-200 bg-stone-50/60 px-5 text-center dark:border-stone-800 dark:bg-stone-950/25">
+                    <div className="text-[11px] leading-5 text-stone-600 dark:text-stone-300">{creditUsageError}</div>
+                    <button
+                      type="button"
+                      onClick={() => void loadCloudCreditUsage()}
+                      className="rounded-[12px] bg-stone-900 px-3 py-1.5 text-[10px] font-black text-white transition-colors hover:bg-stone-700 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
+                    >
+                      重新加载
+                    </button>
+                  </div>
+                ) : creditUsageItems.length === 0 ? (
+                  <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-center text-stone-400 dark:text-stone-500">
+                    <History className="h-6 w-6 opacity-60" />
+                    <div className="text-[11px] font-bold">最近没有产生积分消耗</div>
+                    <div className="text-[10px]">0 积分记录不会显示在这里</div>
+                  </div>
+                ) : (
+                  <div className="grid gap-1.5">
+                    {creditUsageItems.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="flex items-center justify-between gap-3 rounded-[16px] border border-stone-100 bg-stone-50/65 px-3 py-2.5 transition-colors hover:border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:bg-stone-950/25 dark:hover:border-stone-700 dark:hover:bg-stone-950/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[11px] font-black text-stone-700 dark:text-stone-200" title={entry.description || 'AI 积分结算'}>
+                            {entry.description || 'AI 积分结算'}
+                          </div>
+                          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[9px] font-medium text-stone-400 dark:text-stone-500">
+                            <span className="shrink-0">{formatCreditUsageDate(entry.createdAt)}</span>
+                            <span className="h-0.5 w-0.5 shrink-0 rounded-full bg-stone-300 dark:bg-stone-600" />
+                            <span className="truncate">余额 {entry.balanceAfter}</span>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className="text-sm font-black tabular-nums text-stone-800 dark:text-stone-100">{formatCreditUsageAmount(entry.amount)}</div>
+                          <div className="mt-0.5 text-[9px] font-bold text-stone-400 dark:text-stone-500">积分</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {canvasBrushEditor && (
           <motion.div
