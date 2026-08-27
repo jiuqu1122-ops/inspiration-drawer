@@ -22565,9 +22565,14 @@ useEffect(() => {
               const url = ev.target?.result as string;
               const newItem = { id: createAssetId(), type: 'image', content: '图片', name: `粘贴图 ${new Date().toLocaleTimeString()}.png`, url, createdAt: Date.now(), folderId: activeFolderId !== 'all' ? activeFolderId : undefined } as BufferItem;
               pushDrawerUndoSnapshot('粘贴图片');
-              setItems(prev => [newItem, ...prev]);
+              invalidateDrawerAssetQueryForImport();
+              const persistImport = prependAssetsAndPersist([newItem]);
+              void persistImport.then(
+                () => setActiveTab('image'),
+                () => setActiveTab('image'),
+              );
               enqueueAutoAiTaggingForItems([newItem]);
-              setActiveTab('image'); setIsOpen(true);
+              setIsOpen(true);
             };
             reader.readAsDataURL(file);
           }
@@ -22575,8 +22580,13 @@ useEffect(() => {
           clipboardItems[i].getAsString((text: string) => {
             if (text.trim()) {
               pushDrawerUndoSnapshot('粘贴文本');
-              setItems(prev => [createTextOrUrlItem(text, '文本片段'), ...prev]);
-              setActiveTab('text'); setIsOpen(true);
+              invalidateDrawerAssetQueryForImport();
+              const persistImport = prependAssetsAndPersist([createTextOrUrlItem(text, '文本片段')]);
+              void persistImport.then(
+                () => setActiveTab('text'),
+                () => setActiveTab('text'),
+              );
+              setIsOpen(true);
             }
           });
         }
