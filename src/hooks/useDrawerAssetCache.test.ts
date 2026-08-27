@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { BufferItem } from '../types';
 import {
   capDrawerAssetCache,
+  collectRemovedDrawerAssetIds,
   createDrawerAssetSnapshot,
   diffDrawerAssets,
   mergeDrawerAssetPageWindow,
@@ -73,5 +74,20 @@ describe('drawer asset cache diff', () => {
 
     expect(result.map(item => item.id)).toEqual(['pending', 'old']);
     expect(result[0].name).toBe('optimistic import');
+  });
+
+  it('tracks removals only from an explicit asset mutation', () => {
+    expect(collectRemovedDrawerAssetIds(
+      [asset('folder-image'), asset('kept')],
+      [asset('kept')],
+    )).toEqual(['folder-image']);
+  });
+
+  it('does not turn a query-window diff into an explicit removal', () => {
+    const previousQuery = createDrawerAssetSnapshot([asset('folder-image')]);
+    const queryDiff = diffDrawerAssets(previousQuery, []);
+
+    expect(queryDiff.removedIds).toEqual(['folder-image']);
+    expect(collectRemovedDrawerAssetIds([], [])).toEqual([]);
   });
 });

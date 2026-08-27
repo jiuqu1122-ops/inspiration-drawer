@@ -100,6 +100,14 @@ export const diffDrawerAssets = (
   };
 };
 
+export const collectRemovedDrawerAssetIds = (
+  previous: BufferItem[],
+  next: BufferItem[],
+) => {
+  const nextIds = new Set(next.map(asset => asset.id));
+  return previous.map(asset => asset.id).filter(id => !nextIds.has(id));
+};
+
 type UseDrawerAssetCacheOptions = {
   storageMode: 'initializing' | 'sqlite' | 'json';
   onPersisted?: () => void;
@@ -115,6 +123,8 @@ export const useDrawerAssetCache = ({
   const [mutationRevision, setMutationRevision] = useState(0);
   const baselineRef = useRef<AssetSnapshot>(new Map());
   const pendingAddedAssetsRef = useRef(new Map<string, BufferItem>());
+  const pendingRemovedAssetIdsRef = useRef(new Set<string>());
+  const scheduledRemovedAssetIdsRef = useRef(new Set<string>());
   const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
   const onPersistedRef = useRef(onPersisted);
   const onErrorRef = useRef(onError);
@@ -168,6 +178,12 @@ export const useDrawerAssetCache = ({
       const next = typeof update === 'function'
         ? update(previous)
         : update;
+      collectRemovedDrawerAssetIds(previous, next).forEach(id => {
+        pendingRemovedAssetIdsRef.current.add(id);
+      });
+      next.forEach(asset => {
+        pendingRemovedAssetIdsRef.current.delete(asset.id);
+      });
       if (pendingAddedAssetsRef.current.size > 0) {
         next.forEach(asset => {
           if (pendingAddedAssetsRef.current.has(asset.id)) {
@@ -215,28 +231,38 @@ export const useDrawerAssetCache = ({
     const diff = diffDrawerAssets(baselineRef.current, assets);
     baselineRef.current = diff.snapshot;
     if (storageMode !== 'sqlite') return;
-    if (diff.added.length === 0 && diff.changed.length === 0 && diff.removedIds.length === 0) return;
+    const currentIds = new Set(assets.map(asset => asset.id));
+    const removedIds = [...pendingRemovedAssetIdsRef.current].filter(id => (
+      !currentIds.has(id) && !scheduledRemovedAssetIdsRef.current.has(id)
+    ));
+    if (diff.added.length === 0 && diff.changed.length === 0 && removedIds.length === 0) return;
+    removedIds.forEach(id => scheduledRemovedAssetIdsRef.current.add(id));
 
     const persist = async () => {
-      if (diff.added.length > 0) {
-        await upsertAssetsInBatches(diff.added);
+      try {
+        if (diff.added.length > 0) {
+          await upsertAssetsInBatches(diff.added);
+        }
+        for (let offset = 0; offset < diff.changed.length; offset += ASSET_WRITE_BATCH_SIZE) {
+          const updates: AssetBatchUpdate[] = diff.changed
+            .slice(offset, offset + ASSET_WRITE_BATCH_SIZE)
+            .map(asset => ({ ids: [asset.id], patch: { metadata: asset } }));
+          await updateAssetsBatch(updates);
+        }
+        if (removedIds.length > 0) {
+          await deleteAssetsInBatches(removedIds);
+          removedIds.forEach(id => pendingRemovedAssetIdsRef.current.delete(id));
+        }
+        setAssetState(current => {
+          const capped = capDrawerAssetCache(current);
+          if (capped === current) return current;
+          baselineRef.current = createDrawerAssetSnapshot(capped);
+          return capped;
+        });
+        onPersistedRef.current?.();
+      } finally {
+        removedIds.forEach(id => scheduledRemovedAssetIdsRef.current.delete(id));
       }
-      for (let offset = 0; offset < diff.changed.length; offset += ASSET_WRITE_BATCH_SIZE) {
-        const updates: AssetBatchUpdate[] = diff.changed
-          .slice(offset, offset + ASSET_WRITE_BATCH_SIZE)
-          .map(asset => ({ ids: [asset.id], patch: { metadata: asset } }));
-        await updateAssetsBatch(updates);
-      }
-      if (diff.removedIds.length > 0) {
-        await deleteAssetsInBatches(diff.removedIds);
-      }
-      setAssetState(current => {
-        const capped = capDrawerAssetCache(current);
-        if (capped === current) return current;
-        baselineRef.current = createDrawerAssetSnapshot(capped);
-        return capped;
-      });
-      onPersistedRef.current?.();
     };
 
     persistenceQueueRef.current = persistenceQueueRef.current
