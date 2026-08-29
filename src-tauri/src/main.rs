@@ -48,6 +48,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const APP_USER_AGENT: &str = "inspiration-drawer";
 const MAX_STORED_DATA_THUMBNAIL_CHARS: usize = 96 * 1024;
 const DEFAULT_CANVAS_ID: &str = "default";
+const INSPIRATION_SPACE_API_BASE_URL: &str = "https://api.unmind.art";
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
@@ -17230,6 +17231,111 @@ fn show_windows_toast(_title: &str, _body: &str) -> Result<(), String> {
     Err("system notifications are only wired for Windows right now".to_string())
 }
 
+fn inspiration_space_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("灵感空间网络客户端初始化失败：{error}"))
+}
+
+async fn parse_inspiration_space_response(
+    response: reqwest::Response,
+) -> Result<serde_json::Value, String> {
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("灵感空间响应读取失败：{error}"))?;
+    let payload = serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|_| format!("灵感空间返回了无法识别的响应（HTTP {}）", status.as_u16()))?;
+    if status.is_success() {
+        return Ok(payload);
+    }
+    let message = payload
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("灵感空间请求失败");
+    Err(format!("{message}（HTTP {}）", status.as_u16()))
+}
+
+#[tauri::command]
+async fn inspiration_space_list(
+    kind: Option<String>,
+    query: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let normalized_kind = kind.unwrap_or_default().trim().to_uppercase();
+    if !normalized_kind.is_empty()
+        && !matches!(normalized_kind.as_str(), "NODE_PRESET" | "WORKFLOW" | "PROMPT")
+    {
+        return Err("灵感空间资源类型无效".to_string());
+    }
+    let mut url = Url::parse(&format!(
+        "{INSPIRATION_SPACE_API_BASE_URL}/v1/inspiration-space"
+    ))
+    .map_err(|error| error.to_string())?;
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("limit", "48");
+        if !normalized_kind.is_empty() {
+            pairs.append_pair("kind", &normalized_kind);
+        }
+        let normalized_query = query.unwrap_or_default().trim().to_string();
+        if !normalized_query.is_empty() {
+            pairs.append_pair("query", &normalized_query);
+        }
+    }
+    let response = inspiration_space_http_client()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("灵感空间连接失败：{error}"))?;
+    parse_inspiration_space_response(response).await
+}
+
+#[tauri::command]
+async fn inspiration_space_download(id: String) -> Result<serde_json::Value, String> {
+    let normalized_id = id.trim();
+    if normalized_id.is_empty()
+        || normalized_id.len() > 128
+        || !normalized_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("灵感资源 ID 无效".to_string());
+    }
+    let url = Url::parse(&format!(
+        "{INSPIRATION_SPACE_API_BASE_URL}/v1/inspiration-space/{normalized_id}/download"
+    ))
+    .map_err(|error| error.to_string())?;
+    let response = inspiration_space_http_client()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("灵感资源读取失败：{error}"))?;
+    parse_inspiration_space_response(response).await
+}
+
+#[tauri::command]
+async fn inspiration_space_submit(
+    submission: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if !submission.is_object() {
+        return Err("灵感投稿内容无效".to_string());
+    }
+    let url = Url::parse(&format!(
+        "{INSPIRATION_SPACE_API_BASE_URL}/v1/inspiration-space"
+    ))
+    .map_err(|error| error.to_string())?;
+    let response = inspiration_space_http_client()?
+        .post(url)
+        .json(&submission)
+        .send()
+        .await
+        .map_err(|error| format!("灵感投稿发送失败：{error}"))?;
+    parse_inspiration_space_response(response).await
+}
+
 #[tauri::command]
 fn show_system_notification(title: String, body: String) -> Result<(), String> {
     show_windows_toast(&title, &body)
@@ -17522,6 +17628,9 @@ fn main() {
             animate_current_window_resize,
             cancel_current_window_resize_animation,
             show_system_notification,
+            inspiration_space_list,
+            inspiration_space_download,
+            inspiration_space_submit,
         ])
         .setup(|app| {
             POST_INSTALL_LAUNCH_PENDING.store(take_post_install_launch_marker(), Ordering::Release);

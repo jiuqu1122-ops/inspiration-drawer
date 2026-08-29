@@ -337,6 +337,14 @@ import { DrawerAgentPanel } from './components/DrawerAgentPanel';
 import { DoodleBrushCursor } from './components/DoodleBrushCursor';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
+import {
+  isPromptSharePayload,
+  type InspirationSpaceDrawerImageOption,
+  type InspirationSpacePreparedTemplate,
+  type InspirationSpaceTemplateKind,
+  type InspirationSpaceTemplateOption,
+  type InspirationShare,
+} from './features/inspirationSpace/model';
 import { RoundedSelect, type RoundedSelectOption } from './components/RoundedSelect';
 import { ImageRuleSwitchPanel } from './features/canvas/components/ImageRuleSwitchPanel';
 import {
@@ -826,6 +834,9 @@ clearLegacyStartupFlags();
 const LazyFloatingNoteHost = React.lazy(() => (
   import('./features/FloatingNoteHost').then(module => ({ default: module.FloatingNoteHost }))
 ));
+const LazyInspirationSpaceWindow = React.lazy(() => (
+  import('./features/inspirationSpace/InspirationSpaceWindow').then(module => ({ default: module.InspirationSpaceWindow }))
+));
 const CANVAS_WORKBENCH_MODE_STORAGE_KEY = 'drawer_canvas_workbench_mode';
 const DRAWER_WORKBENCH_MODE_STORAGE_KEY = 'drawer_workbench_mode';
 const DRAWER_SIDEBAR_LAYOUT_STORAGE_KEY = 'drawer_sidebar_layout';
@@ -1197,6 +1208,7 @@ function MainApp() {
   const [isCanvasGeneratedMultiSelect, setIsCanvasGeneratedMultiSelect] = useState(false);
   const [canvasGeneratedSelectedIds, setCanvasGeneratedSelectedIds] = useState<string[]>([]);
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
+  const [isInspirationSpaceOpen, setIsInspirationSpaceOpen] = useState(false);
   const [canvasAgentInput, setCanvasAgentInput] = useState('');
   const [isDrawerAgentOpen, setIsDrawerAgentOpen] = useState(false);
   const [drawerAgentInput, setDrawerAgentInput] = useState('');
@@ -1422,6 +1434,7 @@ function MainApp() {
   const canvasScaleRenderFrameRef = useRef<number | null>(null);
   const canvasWheelZoomFrameRef = useRef<number | null>(null);
   const canvasWheelZoomPayloadRef = useRef<{ clientX: number; clientY: number; deltaY: number } | null>(null);
+  const canvasInteractionSurfaceRectRef = useRef<DOMRect | null>(null);
   const [canvasToolbarTop, setCanvasToolbarTop] = useState('max(50%, 444px)');
   const isCanvasInteractingRef = useRef(false);
   const isCanvasPointerInsideRef = useRef(false);
@@ -1440,6 +1453,8 @@ function MainApp() {
     startItems: Record<string, CanvasItemBox>;
     latestDelta: { dx: number; dy: number };
     hasMoved: boolean;
+    hasConnections: boolean;
+    pendingSelectionIds: string[] | null;
   } | null>(null);
   const canvasResizeRef = useRef<{
     id: string;
@@ -1536,7 +1551,11 @@ function MainApp() {
   const canvasLastSyncedNodesSignatureRef = useRef('');
   const canvasStateSaveDeferredDuringZoomRef = useRef(false);
   const pendingCanvasFocusItemIdRef = useRef<string | null>(null);
-  const setCanvasInteractionActive = (active: boolean, releaseDelay = 120) => {
+  const setCanvasInteractionActive = (
+    active: boolean,
+    releaseDelay = 120,
+    options: { preserveImageSources?: boolean } = {},
+  ) => {
     if (canvasInteractionTimerRef.current !== null) {
       window.clearTimeout(canvasInteractionTimerRef.current);
       canvasInteractionTimerRef.current = null;
@@ -1544,8 +1563,9 @@ function MainApp() {
 
     if (active) {
       cancelCanvasImageSourceUpgradeQueue();
-      downgradeCanvasPreviewSources();
+      if (!options.preserveImageSources) downgradeCanvasPreviewSources();
       isCanvasInteractingRef.current = true;
+      canvasInteractionSurfaceRectRef.current = canvasSurfaceRef.current?.getBoundingClientRect() || null;
       canvasSurfaceRef.current?.setAttribute('data-canvas-interacting', 'true');
       return;
     }
@@ -1554,6 +1574,7 @@ function MainApp() {
       canvasInteractionTimerRef.current = null;
       if (!isCanvasInteractingRef.current) return;
       isCanvasInteractingRef.current = false;
+      canvasInteractionSurfaceRectRef.current = null;
       canvasSurfaceRef.current?.removeAttribute('data-canvas-interacting');
       if (canvasSizeCommitDeferredRef.current) {
         canvasSizeCommitDeferredRef.current = false;
@@ -1586,6 +1607,7 @@ function MainApp() {
         canvasUndoRestoringRef.current = false;
       }
       setIsCanvasSpacePressed(false);
+      canvasSelectedIdsRef.current = [];
       setCanvasSelectedIds([]);
       canvasViewportRef.current = null;
       setCanvasViewport(null);
@@ -1658,7 +1680,6 @@ function MainApp() {
   useEffect(() => { canvasesRef.current = canvases; }, [canvases]);
   useEffect(() => { activeCanvasIdRef.current = activeCanvasId; }, [activeCanvasId]);
   useEffect(() => { isSwitchingCanvasRef.current = isSwitchingCanvas; }, [isSwitchingCanvas]);
-  useEffect(() => { canvasSelectedIdsRef.current = canvasSelectedIds; }, [canvasSelectedIds]);
   useEffect(() => {
     if (canvasScaleCommitTimerRef.current !== null && Math.abs((canvasScaleRef.current || 1) - canvasScale) > 0.001) {
       return;
@@ -3387,6 +3408,25 @@ function MainApp() {
       ...customCanvasWorkflows.filter(workflow => !CANVAS_BUILT_IN_WORKFLOWS.some(builtIn => builtIn.id === workflow.id) || hiddenBuiltInIds.has(workflow.id)),
     ];
   }, [customCanvasWorkflows, hiddenBuiltInCanvasWorkflowIds]);
+  const inspirationSpaceTemplateOptions = useMemo<InspirationSpaceTemplateOption[]>(() => {
+    const builtInPresetIds = new Set(CANVAS_AI_PROMPT_PRESETS.map(preset => preset.id));
+    return [
+      ...canvasAiPromptPresets.map(preset => ({
+        id: preset.id,
+        label: preset.label,
+        hint: preset.hint || '',
+        kind: 'NODE_PRESET' as const,
+        builtin: builtInPresetIds.has(preset.id),
+      })),
+      ...canvasWorkflowTemplates.map(workflow => ({
+        id: workflow.id,
+        label: workflow.label,
+        hint: workflow.hint || '',
+        kind: 'WORKFLOW' as const,
+        builtin: Boolean(workflow.builtin),
+      })),
+    ];
+  }, [canvasAiPromptPresets, canvasWorkflowTemplates]);
   const canvasWorkflowSelectOptions = useMemo<RoundedSelectOption[]>(() => [
     { value: CANVAS_WORKFLOW_SELECT_PLACEHOLDER, label: '工作…', hiddenInMenu: true },
     ...canvasWorkflowTemplates.map(workflow => ({
@@ -7794,49 +7834,6 @@ function MainApp() {
     });
   };
 
-  const updateSelectedCanvasOriginalImageSource = (selectedIds: string[]) => {
-    const selectedId = selectedIds.length === 1 ? selectedIds[0] : '';
-    const selectedItem = selectedId
-      ? canvasItemsRef.current.find(item => item.id === selectedId && item.item.type === 'image')
-      : undefined;
-    const initialSource = selectedItem ? getCanvasInitialImageSource(selectedItem.item) : '';
-    const originalSource = selectedItem ? getCanvasOriginalImageSource(selectedItem.item) : '';
-    const selectedCanUseOriginal = !!selectedItem && !!initialSource && !!originalSource && originalSource !== initialSource;
-
-    Array.from(canvasPreviewSourceIdsRef.current).forEach((id) => {
-      if (selectedCanUseOriginal && id === selectedId) return;
-      const cached = canvasImageSourceCacheRef.current.get(id);
-      if (cached?.quality !== 'original') return;
-      const latest = canvasItemsRef.current.find(item => item.id === id);
-      const fallbackSource = latest ? getCanvasInitialImageSource(latest.item) : '';
-      if (fallbackSource) {
-        canvasImageSourceCacheRef.current.set(id, { src: fallbackSource, quality: 'thumb' });
-        applyCanvasImageSourceToElement(id, fallbackSource);
-      } else {
-        canvasImageSourceCacheRef.current.delete(id);
-      }
-      canvasPreviewSourceIdsRef.current.delete(id);
-    });
-
-    if (!selectedCanUseOriginal || !selectedItem) return;
-    const cached = canvasImageSourceCacheRef.current.get(selectedItem.id);
-    if (
-      cached?.quality === 'original'
-      && cached.src === originalSource
-      && cached.thumbnail === initialSource
-    ) {
-      return;
-    }
-    canvasImageSourceCacheRef.current.set(selectedItem.id, {
-      src: originalSource,
-      quality: 'original',
-      path: String(selectedItem.item.path || '').trim() || undefined,
-      thumbnail: initialSource,
-    });
-    canvasPreviewSourceIdsRef.current.add(selectedItem.id);
-    applyCanvasImageSourceToElement(selectedItem.id, originalSource);
-  };
-
   const shouldUpgradeCanvasImageSource = (canvasItem: CanvasImageItem, scale = canvasScaleRef.current || 1) => {
     if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED) return false;
     if (canvasItem.item.type !== 'image') return false;
@@ -7930,11 +7927,29 @@ function MainApp() {
     }
   };
 
+  const scheduleCanvasSelectedImageSourceUpgrades = (selectedIds: string[]) => {
+    if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED || selectedIds.length === 0) return;
+    if (!isCanvasModeRef.current || isCanvasZoomingRef.current || isCanvasInteractingRef.current || canvasPanRef.current) return;
+    cancelCanvasImageSourceUpgradeQueue();
+    const token = canvasImageUpgradeTokenRef.current;
+    const requestedIds = selectedIds.slice(0, CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE);
+    canvasImageUpgradeTimerRef.current = window.setTimeout(() => {
+      canvasImageUpgradeTimerRef.current = null;
+      if (token !== canvasImageUpgradeTokenRef.current) return;
+      const scale = canvasScaleRef.current || 1;
+      canvasImageUpgradeQueueRef.current = requestedIds.filter(id => {
+        const item = canvasItemsRef.current.find(candidate => candidate.id === id);
+        return !!item && shouldUpgradeCanvasImageSource(item, scale);
+      });
+      if (canvasImageUpgradeQueueRef.current.length === 0) return;
+      runCanvasImageSourceUpgradeQueue(token);
+    }, CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS);
+  };
+
   const scheduleCanvasVisibleImageSourceUpgrades = () => {
     cancelCanvasImageSourceUpgradeQueue();
     if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED) return;
     if (!isCanvasModeRef.current || isCanvasZoomingRef.current || isCanvasInteractingRef.current || canvasPanRef.current) return;
-    updateSelectedCanvasOriginalImageSource(canvasSelectedIdsRef.current);
     const viewport = canvasViewportRef.current || readCanvasViewportRect();
     if (!viewport) return;
     const scale = canvasScaleRef.current || 1;
@@ -8137,9 +8152,10 @@ function MainApp() {
     const current = canvasSelectedIdsRef.current;
     if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     canvasSelectedIdsRef.current = unique;
-    updateSelectedCanvasOriginalImageSource(unique);
-    setCanvasSelectedIds(unique);
-    scheduleCanvasVisibleImageSourceUpgrades();
+    startTransition(() => {
+      setCanvasSelectedIds(unique);
+    });
+    scheduleCanvasSelectedImageSourceUpgrades(unique);
   };
 
   const updateCanvasSelection = (ids: string[]) => {
@@ -8147,9 +8163,10 @@ function MainApp() {
     const current = canvasSelectedIdsRef.current;
     if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     canvasSelectedIdsRef.current = unique;
-    updateSelectedCanvasOriginalImageSource(unique);
-    setCanvasSelectedIds(unique);
-    scheduleCanvasVisibleImageSourceUpgrades();
+    startTransition(() => {
+      setCanvasSelectedIds(unique);
+    });
+    scheduleCanvasSelectedImageSourceUpgrades(unique);
   };
 
   const enableCanvasWorkflowSingleEditForItem = (id: string) => {
@@ -8271,7 +8288,144 @@ function MainApp() {
     return content.querySelector<HTMLElement>(`[data-canvas-item-id="${selectorId}"]`);
   };
 
+  const paintCanvasDragChrome = (ids: string[], dx: number, dy: number) => {
+    const content = canvasContentRef.current;
+    if (!content) return;
+    const movedIds = new Set(ids);
+    const transform = `translate3d(${dx}px, ${dy}px, 0)`;
+
+    content.querySelectorAll<HTMLElement>('[data-canvas-selection-frame="true"]').forEach((element) => {
+      element.style.transform = transform;
+    });
+
+    const activeDrag = canvasDragRef.current;
+    if (!activeDrag?.hasConnections) return;
+    const connectionSelector = ids.flatMap((id) => {
+      const selectorId = typeof CSS !== 'undefined' && CSS.escape
+        ? CSS.escape(id)
+        : id.replace(/["\\]/g, '\\$&');
+      return [
+        `[data-canvas-connection-source-id="${selectorId}"]`,
+        `[data-canvas-connection-target-id="${selectorId}"]`,
+      ];
+    }).join(',');
+    if (!connectionSelector) return;
+
+    content.querySelectorAll<SVGGElement>(connectionSelector).forEach((group) => {
+      const sourceId = group.dataset.canvasConnectionSourceId || '';
+      const targetId = group.dataset.canvasConnectionTargetId || '';
+      const source = canvasItemsById.get(sourceId);
+      const target = canvasItemsById.get(targetId);
+      if (!source || !target) return;
+      const sourceBox = getCanvasItemRenderedBox(source);
+      const targetBox = getCanvasItemRenderedBox(target);
+      const sourceDx = movedIds.has(sourceId) ? dx : 0;
+      const sourceDy = movedIds.has(sourceId) ? dy : 0;
+      const targetDx = movedIds.has(targetId) ? dx : 0;
+      const targetDy = movedIds.has(targetId) ? dy : 0;
+      const sourceX = sourceBox.x + sourceBox.width + CANVAS_CONNECTION_HANDLE_OUTSET + sourceDx;
+      const sourceY = sourceBox.y + sourceBox.height / 2 + sourceDy;
+      const targetX = targetBox.x - CANVAS_CONNECTION_HANDLE_OUTSET + targetDx;
+      const targetY = targetBox.y + targetBox.height / 2 + targetDy;
+      const bend = Math.max(80, Math.abs(targetX - sourceX) * 0.45);
+      const direction = targetX >= sourceX ? 1 : -1;
+      const path = `M ${sourceX} ${sourceY} C ${sourceX + bend * direction} ${sourceY}, ${targetX - bend * direction} ${targetY}, ${targetX} ${targetY}`;
+      group.querySelectorAll<SVGPathElement>('path').forEach(element => element.setAttribute('d', path));
+      const endpoints = group.querySelectorAll<SVGCircleElement>('circle');
+      if (endpoints[0]) {
+        endpoints[0].setAttribute('cx', String(sourceX));
+        endpoints[0].setAttribute('cy', String(sourceY));
+      }
+      if (endpoints[1]) {
+        endpoints[1].setAttribute('cx', String(targetX));
+        endpoints[1].setAttribute('cy', String(targetY));
+      }
+    });
+  };
+
+  const resetCanvasDragChrome = () => {
+    const content = canvasContentRef.current;
+    if (!content) return;
+    content.querySelectorAll<HTMLElement>('[data-canvas-selection-frame="true"], [data-canvas-connection-handle-id]').forEach((element) => {
+      element.style.transform = '';
+    });
+
+    const itemsById = new Map(canvasItemsRef.current.map(item => [item.id, item]));
+    content.querySelectorAll<SVGGElement>('[data-canvas-connection-source-id][data-canvas-connection-target-id]').forEach((group) => {
+      const source = itemsById.get(group.dataset.canvasConnectionSourceId || '');
+      const target = itemsById.get(group.dataset.canvasConnectionTargetId || '');
+      if (!source || !target) return;
+      const sourceBox = getCanvasItemRenderedBox(source);
+      const targetBox = getCanvasItemRenderedBox(target);
+      const sourceX = sourceBox.x + sourceBox.width + CANVAS_CONNECTION_HANDLE_OUTSET;
+      const sourceY = sourceBox.y + sourceBox.height / 2;
+      const targetX = targetBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
+      const targetY = targetBox.y + targetBox.height / 2;
+      const bend = Math.max(80, Math.abs(targetX - sourceX) * 0.45);
+      const direction = targetX >= sourceX ? 1 : -1;
+      const path = `M ${sourceX} ${sourceY} C ${sourceX + bend * direction} ${sourceY}, ${targetX - bend * direction} ${targetY}, ${targetX} ${targetY}`;
+      group.querySelectorAll<SVGPathElement>('path').forEach(element => element.setAttribute('d', path));
+      const endpoints = group.querySelectorAll<SVGCircleElement>('circle');
+      if (endpoints[0]) {
+        endpoints[0].setAttribute('cx', String(sourceX));
+        endpoints[0].setAttribute('cy', String(sourceY));
+      }
+      if (endpoints[1]) {
+        endpoints[1].setAttribute('cx', String(targetX));
+        endpoints[1].setAttribute('cy', String(targetY));
+      }
+    });
+  };
+
+  const refreshCanvasConnectionHandleOcclusion = () => {
+    const content = canvasContentRef.current;
+    if (!content) return;
+    const renderedIds = new Set(
+      Array.from(content.querySelectorAll<HTMLElement>('[data-canvas-item-id]'))
+        .map(element => element.dataset.canvasItemId || '')
+        .filter(Boolean),
+    );
+    const items = canvasItemsRef.current.filter(item => renderedIds.has(item.id));
+    const itemsById = new Map(items.map(item => [item.id, item]));
+    const itemOrder = new Map(items.map((item, index) => [item.id, index]));
+    const selectedIds = new Set(canvasSelectedIdsRef.current);
+    const liveBoxes = new Map(items.map(item => [item.id, getCanvasItemRenderedBox(item)] as const));
+    const isAbove = (candidate: CanvasImageItem, owner: CanvasImageItem) => {
+      const candidateSelected = selectedIds.has(candidate.id);
+      const ownerSelected = selectedIds.has(owner.id);
+      if (candidateSelected !== ownerSelected) return candidateSelected;
+      return (itemOrder.get(candidate.id) || 0) > (itemOrder.get(owner.id) || 0);
+    };
+    content.querySelectorAll<HTMLElement>('[data-canvas-connection-handle-id]').forEach((handle) => {
+      const itemId = handle.dataset.canvasConnectionHandleId || '';
+      const owner = itemsById.get(itemId);
+      if (!owner) {
+        handle.style.visibility = '';
+        return;
+      }
+      const ownerBox = liveBoxes.get(owner.id);
+      if (!ownerBox) return;
+      const side = handle.dataset.canvasConnectionHandleSide;
+      const centerX = side === 'source'
+        ? ownerBox.x + ownerBox.width + CANVAS_CONNECTION_HANDLE_OUTSET
+        : ownerBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
+      const centerY = ownerBox.y + ownerBox.height / 2;
+      const isCovered = items.some((candidate) => {
+        if (candidate.id === owner.id || !isAbove(candidate, owner)) return false;
+        const candidateBox = liveBoxes.get(candidate.id);
+        if (!candidateBox) return false;
+        return centerX >= candidateBox.x
+          && centerX <= candidateBox.x + candidateBox.width
+          && centerY >= candidateBox.y
+          && centerY <= candidateBox.y + candidateBox.height;
+      });
+      handle.style.visibility = isCovered ? 'hidden' : '';
+    });
+  };
+
   const setCanvasItemDraggingFlag = (ids: string[], active: boolean) => {
+    if (active) canvasSurfaceRef.current?.setAttribute('data-canvas-node-moving', 'true');
+    else canvasSurfaceRef.current?.removeAttribute('data-canvas-node-moving');
     ids.forEach((id) => {
       const element = getCanvasItemElement(id);
       if (!element) return;
@@ -8290,6 +8444,8 @@ function MainApp() {
   };
 
   const clearCanvasItemInteractionStyles = (ids: string[]) => {
+    canvasSurfaceRef.current?.removeAttribute('data-canvas-node-moving');
+    canvasSurfaceRef.current?.removeAttribute('data-canvas-selection-pending');
     ids.forEach((id) => {
       const element = getCanvasItemElement(id);
       if (!element) return;
@@ -8297,6 +8453,8 @@ function MainApp() {
       element.removeAttribute('data-canvas-dragging');
       element.removeAttribute('data-canvas-resizing');
     });
+    resetCanvasDragChrome();
+    refreshCanvasConnectionHandleOcclusion();
   };
 
   const restoreCanvasItemBoxStyles = (ids: string[]) => {
@@ -8356,6 +8514,7 @@ function MainApp() {
         if (!element) return;
         element.style.transform = `translate3d(${payload.dx}px, ${payload.dy}px, 0)`;
       });
+      paintCanvasDragChrome(payload.ids, payload.dx, payload.dy);
       return;
     }
 
@@ -8983,9 +9142,12 @@ function MainApp() {
   }
 
   const beginCanvasZoomInteraction = () => {
+    if (isCanvasZoomingRef.current) return;
     cancelCanvasImageSourceUpgradeQueue();
     downgradeCanvasPreviewSources();
     isCanvasZoomingRef.current = true;
+    canvasSurfaceRef.current?.setAttribute('data-canvas-zooming', 'true');
+    if (canvasContentRef.current) canvasContentRef.current.style.willChange = 'transform';
     if (canvasViewportFrameRef.current !== null) {
       window.cancelAnimationFrame(canvasViewportFrameRef.current);
       canvasViewportFrameRef.current = null;
@@ -8998,7 +9160,9 @@ function MainApp() {
     canvasScaleRenderFrameRef.current = window.requestAnimationFrame(() => {
       canvasScaleRenderFrameRef.current = null;
       const nextScale = canvasScaleRef.current || 1;
-      setCanvasScale(current => (Math.abs(current - nextScale) < 0.001 ? current : nextScale));
+      startTransition(() => {
+        setCanvasScale(current => (Math.abs(current - nextScale) < 0.001 ? current : nextScale));
+      });
     });
   };
 
@@ -9006,6 +9170,8 @@ function MainApp() {
     canvasZoomSettleTimerRef.current = null;
     if (!isCanvasZoomingRef.current) return;
     isCanvasZoomingRef.current = false;
+    canvasSurfaceRef.current?.removeAttribute('data-canvas-zooming');
+    if (canvasContentRef.current) canvasContentRef.current.style.willChange = '';
     const visualViewport = canvasVisualViewportRef.current;
     canvasVisualViewportRef.current = null;
     scheduleCanvasScaleRenderSync();
@@ -9083,11 +9249,16 @@ function MainApp() {
     canvasUndoRestoringRef.current = false;
   };
 
-  const takeCanvasUndoSnapshot = (label: string): CanvasUndoSnapshot => {
+  const takeCanvasUndoSnapshot = (
+    label: string,
+    options: { layoutOnly?: boolean } = {},
+  ): CanvasUndoSnapshot => {
     const surface = canvasSurfaceRef.current;
     const fallbackScroll = canvasScrollLockRef.current || canvasReturnScrollRef.current || { left: 0, top: 0 };
     return {
-      items: cloneDrawerValue(canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)),
+      items: options.layoutOnly
+        ? canvasItemsRef.current.map(item => ({ ...item }))
+        : cloneDrawerValue(canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)),
       selectedIds: cloneDrawerValue(canvasSelectedIdsRef.current),
       size: cloneDrawerValue(canvasSizeRef.current),
       scroll: {
@@ -9099,11 +9270,14 @@ function MainApp() {
     };
   };
 
-  const pushCanvasUndoSnapshot = (label: string) => {
+  const pushCanvasUndoSnapshot = (
+    label: string,
+    options: { layoutOnly?: boolean } = {},
+  ) => {
     if (canvasUndoRestoringRef.current || !isCanvasModeRef.current) return;
     canvasUndoStackRef.current = [
       ...canvasUndoStackRef.current,
-      takeCanvasUndoSnapshot(label),
+      takeCanvasUndoSnapshot(label, options),
     ].slice(-CANVAS_UNDO_LIMIT);
   };
 
@@ -9395,6 +9569,145 @@ function MainApp() {
     return targetItems.length;
   };
 
+  const openInspirationSpace = () => {
+    setIsInspirationSpaceOpen(true);
+  };
+
+  const prepareInspirationSpaceTemplate = useEventCallback(async (
+    kind: InspirationSpaceTemplateKind,
+    templateId: string,
+  ): Promise<InspirationSpacePreparedTemplate> => {
+    if (kind === 'NODE_PRESET') {
+      const preset = canvasAiPromptPresets.find(item => item.id === templateId);
+      if (!preset) throw new Error('所选节点预设已经不存在，请刷新后重试');
+      return {
+        label: preset.label,
+        kind,
+        payload: {
+          type: CANVAS_TEMPLATE_EXPORT_TYPE,
+          version: CANVAS_TEMPLATE_EXPORT_VERSION,
+          exportedAt: new Date().toISOString(),
+          presets: [{ ...preset }],
+          workflows: [],
+        },
+      };
+    }
+    const workflowId = templateId;
+    const workflow = canvasWorkflowTemplates.find(item => item.id === workflowId);
+    if (!workflow) throw new Error('所选工作流已经不存在，请刷新后重试');
+    const [portableWorkflow] = await embedCanvasWorkflowFixedImages(
+      [{ ...workflow, builtin: false }],
+      source => imageSourceToDataUrl(source, false),
+    );
+    if (!portableWorkflow) throw new Error('工作流便携数据生成失败');
+    return {
+      label: workflow.label,
+      kind,
+      payload: {
+        type: CANVAS_TEMPLATE_EXPORT_TYPE,
+        version: CANVAS_TEMPLATE_EXPORT_VERSION,
+        exportedAt: new Date().toISOString(),
+        presets: [],
+        workflows: [portableWorkflow],
+      },
+    };
+  });
+
+  const loadInspirationSpaceDrawerImages = useEventCallback(async (): Promise<InspirationSpaceDrawerImageOption[]> => {
+    let storedImages: BufferItem[] = [];
+    if (assetStorageMode === 'sqlite') {
+      try {
+        storedImages = await listAssets({
+          folder_id: 'all',
+          file_type: 'image',
+          sort: 'created_at_desc',
+          offset: 0,
+          limit: 120,
+        });
+      } catch (error) {
+        console.warn('灵感空间读取抽屉图片失败，改用当前素材缓存:', error);
+      }
+    }
+    const uniqueDrawerImages = new Map<string, BufferItem>();
+    [...storedImages, ...itemsRef.current]
+      .filter(item => item.type === 'image')
+      .sort((a, b) => (
+        Math.max(Number(b.importedAt || 0), Number(b.createdAt || 0))
+        - Math.max(Number(a.importedAt || 0), Number(a.createdAt || 0))
+      ))
+      .forEach(item => {
+        if (!uniqueDrawerImages.has(item.id)) uniqueDrawerImages.set(item.id, item);
+      });
+
+    const currentCanvasGeneratedImages = canvasItemsRef.current.flatMap(canvasItem => (
+      getCanvasAiSuccessfulOutputs(canvasItem).flatMap((output, index) => {
+        const image = createCanvasAiOutputBufferItem(canvasItem, output, index);
+        return image?.type === 'image' ? [image] : [];
+      })
+    ));
+    const generatedFolderIds = getAiGeneratedImageFolderIds(foldersRef.current);
+    const isGeneratedImage = (item: BufferItem) => (
+      generatedFolderIds.has(item.folderId || '')
+      || /^canvas_ai_output_/i.test(item.id)
+      || /^canvas_realesrgan_.*_output_/i.test(item.id)
+      || /^AI\s*生图(?:\s|[-·:：]|$)/i.test(item.name || item.content || '')
+      || /^AI generated(?:\s|[-·:：]|$)/i.test(item.name || item.content || '')
+    );
+    const drawerImages = [...uniqueDrawerImages.values()];
+    const candidates = [
+      ...currentCanvasGeneratedImages.map(item => ({ item, origin: 'GENERATED' as const })),
+      ...drawerImages.filter(isGeneratedImage).map(item => ({ item, origin: 'GENERATED' as const })),
+      ...drawerImages.filter(item => !isGeneratedImage(item)).map(item => ({ item, origin: 'DRAWER' as const })),
+    ];
+    const uniqueRecentImages = new Map<string, InspirationSpaceDrawerImageOption>();
+    candidates.forEach(({ item, origin }) => {
+      const source = item.path
+        ? convertFileSrc(item.path)
+        : item.url || item.sourceUrl || item.originalUrl || item.thumbnail || '';
+      const preview = item.thumbnail || source;
+      if (!source || !preview) return;
+      const key = `${origin}:${item.id || item.path || source}`;
+      if (uniqueRecentImages.has(key)) return;
+      uniqueRecentImages.set(key, {
+        id: item.id,
+        name: String(item.name || item.content || '抽屉图片').slice(0, 120),
+        source,
+        preview,
+        origin,
+        createdAt: Math.max(Number(item.importedAt || 0), Number(item.createdAt || 0)),
+        width: item.width,
+        height: item.height,
+      });
+    });
+    const recentImages = [...uniqueRecentImages.values()]
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const recentGenerated = recentImages.filter(image => image.origin === 'GENERATED').slice(0, 60);
+    const recentDrawer = recentImages.filter(image => image.origin === 'DRAWER').slice(0, 60);
+    return [...recentGenerated, ...recentDrawer].sort((a, b) => b.createdAt - a.createdAt);
+  });
+
+  const readInspirationSpaceDrawerImage = useEventCallback(async (
+    image: InspirationSpaceDrawerImageOption,
+  ): Promise<string> => {
+    const candidates = Array.from(new Set([image.source, image.preview].filter(Boolean)));
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      try {
+        if (/^blob:/i.test(candidate)) {
+          const response = await fetch(candidate);
+          if (!response.ok) throw new Error('读取临时图片失败');
+          return await blobToDataUrl(await response.blob());
+        }
+        const dataUrl = await imageSourceToDataUrl(candidate, false);
+        if (dataUrl) return dataUrl;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    console.warn('灵感空间读取抽屉原图失败:', lastError);
+    throw new Error('图片原文件读取失败，请确认文件仍然存在后重试');
+  });
+
   const removeCanvasConnection = (targetId: string, sourceId: string, label = '删除连接线') => {
     if (!targetId || !sourceId) return false;
     const target = canvasItemsRef.current.find(item => item.id === targetId);
@@ -9598,7 +9911,7 @@ function MainApp() {
   const autoScrollCanvasNearEdge = (event: { clientX: number; clientY: number }) => {
     const surface = canvasSurfaceRef.current;
     if (!surface) return;
-    const rect = surface.getBoundingClientRect();
+    const rect = canvasInteractionSurfaceRectRef.current || surface.getBoundingClientRect();
     const getEdgeDelta = (position: number, start: number, end: number) => {
       const maxDelta = CANVAS_EDGE_AUTOSCROLL_SPEED * 0.42;
       if (position > end - CANVAS_EDGE_AUTOSCROLL_MARGIN) {
@@ -11390,8 +11703,13 @@ function MainApp() {
     maxUrlLength = 64,
   ) => {
     if (sources.length === 0) return { urls: [] as string[], shareIds: [] as TemporaryReferenceShare[] };
-    if (!isCloudflaredDisclaimerAccepted) {
-      throw new Error('使用本地图生图前，需要先同意本软件免责声明');
+    // Read the persisted value here instead of relying on the render-time state captured by
+    // this async generation run. This also covers the narrow window immediately after the
+    // user accepts the disclaimer and retries generation.
+    if (localStorage.getItem(CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY) !== 'true') {
+      showUpdateLogRef.current = true;
+      setShowUpdateLog(true);
+      throw new Error('使用本地图生图前，需要先同意本软件免责声明；已为你打开免责说明，请点击“同意并知道了”后重新生成');
     }
 
     const publishViaCloudflared = async () => {
@@ -18425,6 +18743,110 @@ function MainApp() {
     });
   };
 
+  const handleInspirationSpaceAddToCanvas = useEventCallback(async (share: InspirationShare, payload: unknown) => {
+    if (!share?.id) throw new Error('灵感资源信息不完整');
+    if (!isCanvasModeRef.current) enterCanvasMode();
+
+    if (share.kind === 'PROMPT') {
+      if (!isPromptSharePayload(payload)) throw new Error('提示词资源内容无法识别');
+      const prompt = payload.prompt.trim();
+      if (!prompt) throw new Error('提示词资源内容为空');
+      const basePromptNode = buildCanvasAiGeneratorNode(getCanvasDropPosition(0), undefined, []);
+      const promptNode: CanvasImageItem = {
+        ...basePromptNode,
+        item: {
+          ...basePromptNode.item,
+          name: `AI ${share.title}`,
+          content: prompt,
+        },
+        ai: basePromptNode.ai ? {
+          ...basePromptNode.ai,
+          prompt,
+          presetId: undefined,
+          presetLabel: undefined,
+          presetPrompt: undefined,
+          imagePolicy: createCanvasImagePolicy({
+            hasReferenceImage: false,
+            prompt,
+          }),
+        } : undefined,
+      };
+      const addedPromptNode = appendCanvasItems([promptNode], `添加社区提示词「${share.title}」`);
+      if (addedPromptNode === 0) throw new Error('提示词节点未能添加到画布');
+      return `已将填写好提示词的生图节点添加到画布`;
+    }
+
+    const parsed = getCanvasTemplateImportPayload(payload);
+    let createdCount = 0;
+    if (parsed.presets.length > 0 || parsed.workflows.length > 0) {
+      const result = await addCanvasTemplateValuesAtDrop([payload]);
+      if (!result.recognized || result.created === 0) throw new Error('资源已识别，但没有生成可用的画布节点');
+      createdCount += result.created;
+    }
+
+    if (parsed.workflowInstances.length > 0) {
+      const usedWorkflowIds = new Set(canvasWorkflowTemplates.map(workflow => workflow.id));
+      const restoredInstances: Array<{ workflow: CanvasWorkflowTemplate; runtime: CanvasWorkflowRuntime }> = [];
+      for (let index = 0; index < parsed.workflowInstances.length; index += 1) {
+        const candidate = parsed.workflowInstances[index];
+        const restored = await materializeCanvasWorkflowInstance({
+          portable: {
+            type: 'inspiration-drawer-workflow-instance',
+            version: 1,
+            workflow: candidate.workflow,
+            runtime: candidate.runtime,
+          },
+          saveImageDataUrl: (fileName, dataUrl) => invoke<string>('save_dropped_file', { fileName, dataUrl }),
+          getDisplayUrl: path => convertFileSrc(path),
+        });
+        let nextId = '';
+        do {
+          nextId = `community-workflow-${share.id}-${index}-${Math.random().toString(36).slice(2, 6)}`;
+        } while (usedWorkflowIds.has(nextId));
+        usedWorkflowIds.add(nextId);
+        restoredInstances.push({
+          workflow: {
+            ...restored.workflow,
+            id: nextId,
+            label: restored.workflow.label || share.title,
+            builtin: false,
+            createdAt: Date.now() + index,
+          },
+          runtime: restored.runtime,
+        });
+      }
+      setCustomCanvasWorkflows(prev => [
+        ...restoredInstances.map(instance => instance.workflow),
+        ...prev,
+      ].slice(0, 48));
+      const base = getCanvasDropPosition(0);
+      const modules = restoredInstances.flatMap((instance, index) => {
+        const module = buildCanvasWorkflowModuleNode(instance.workflow, {
+          x: base.x + index * 52,
+          y: base.y + index * 52,
+        });
+        if (!module?.ai) return [];
+        return [{
+          ...module,
+          ai: { ...module.ai, workflowRuntime: instance.runtime },
+        }];
+      });
+      createdCount += appendCanvasItems(modules, `添加社区工作流「${share.title}」`);
+    }
+
+    if (createdCount === 0) throw new Error('没有识别到可添加的节点预设或工作流');
+    return `已将「${share.title}」添加到画布`;
+  });
+
+  const addInspirationSpaceShareAndReturnToCanvas = useEventCallback(async (
+    share: InspirationShare,
+    payload: unknown,
+  ) => {
+    const message = await handleInspirationSpaceAddToCanvas(share, payload);
+    showToast(message);
+    return message;
+  });
+
   const clearMainDrawerLongPress = () => {
     if (mainDrawerLongPressTimerRef.current !== null) {
       window.clearTimeout(mainDrawerLongPressTimerRef.current);
@@ -18468,7 +18890,7 @@ function MainApp() {
     e.stopPropagation();
     const pointerCaptureTarget = e.currentTarget as HTMLElement;
     pointerCaptureTarget.setPointerCapture?.(e.pointerId);
-    setCanvasInteractionActive(true);
+    setCanvasInteractionActive(true, 120, { preserveImageSources: true });
     const currentSelected = canvasSelectedIdsRef.current;
     const isAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
     const itemSelectionIds = getCanvasWorkflowSelectionIdsForItem(id);
@@ -18482,8 +18904,18 @@ function MainApp() {
       if (nextSelected.length === 0) nextSelected = itemSelectionIds;
     }
     nextSelected = expandCanvasSelectionIdsWithWorkflowGroups(nextSelected);
-    updateCanvasSelection(nextSelected);
+    const selectionChanged = currentSelected.length !== nextSelected.length
+      || currentSelected.some((value, index) => value !== nextSelected[index]);
+    if (selectionChanged) {
+      canvasSelectedIdsRef.current = nextSelected;
+      canvasSurfaceRef.current?.setAttribute('data-canvas-selection-pending', 'true');
+    }
     const dragIds = nextSelected.includes(id) ? nextSelected : [id];
+    const dragIdSet = new Set(dragIds);
+    const hasConnections = canvasItemsRef.current.some(item => (
+      (dragIdSet.has(item.id) && (item.inputs || []).length > 0)
+      || (item.inputs || []).some(sourceId => dragIdSet.has(sourceId))
+    ));
     canvasDragRef.current = {
       ids: dragIds,
       pointerId: e.pointerId,
@@ -18494,6 +18926,8 @@ function MainApp() {
       startItems: makeCanvasItemBoxMap(dragIds),
       latestDelta: { dx: 0, dy: 0 },
       hasMoved: false,
+      hasConnections,
+      pendingSelectionIds: selectionChanged ? nextSelected : null,
     };
     canvasDragDebugRef.current = {
       startNodeCount: canvasItemsRef.current.length,
@@ -18536,7 +18970,7 @@ function MainApp() {
       const dx = (event.clientX - drag.startClientX) / scale + scrollDx;
       const dy = (event.clientY - drag.startClientY) / scale + scrollDy;
       if (!drag.hasMoved && Math.hypot(dx, dy) > 1.5) {
-        pushCanvasUndoSnapshot('移动画布元素');
+        pushCanvasUndoSnapshot('移动画布元素', { layoutOnly: true });
         drag.hasMoved = true;
       }
       drag.latestDelta = { dx, dy };
@@ -18594,6 +19028,13 @@ function MainApp() {
           }
         }
         clearCanvasItemInteractionStyles(drag.ids);
+        if (drag.pendingSelectionIds) {
+          const pendingSelectionIds = drag.pendingSelectionIds;
+          startTransition(() => {
+            setCanvasSelectedIds(pendingSelectionIds);
+          });
+          scheduleCanvasSelectedImageSourceUpgrades(pendingSelectionIds);
+        }
         const endNodeCount = canvasItemsRef.current.length;
         if (CANVAS_INTERACTION_DEBUG) {
           console.debug('[canvas-drag] pointerup', {
@@ -18653,7 +19094,7 @@ function MainApp() {
       const dx = (event.clientX - resize.startClientX) / scale;
       const dy = (event.clientY - resize.startClientY) / scale;
       if (!resize.hasResized && Math.hypot(dx, dy) > 1.5) {
-        pushCanvasUndoSnapshot('缩放画布元素');
+        pushCanvasUndoSnapshot('缩放画布元素', { layoutOnly: true });
         resize.hasResized = true;
       }
       const isWest = resize.corner.includes('w');
@@ -18757,7 +19198,7 @@ function MainApp() {
       const dx = (event.clientX - resize.startClientX) / scale;
       const dy = (event.clientY - resize.startClientY) / scale;
       if (!resize.hasResized && Math.hypot(dx, dy) > 1.5) {
-        pushCanvasUndoSnapshot('缩放画布元素');
+        pushCanvasUndoSnapshot('缩放画布元素', { layoutOnly: true });
         resize.hasResized = true;
       }
       const isWest = resize.corner.includes('w');
@@ -22600,7 +23041,12 @@ useEffect(() => {
   const finishLaunchIntro = (manualOrEvent?: boolean | React.MouseEvent, acceptDisclaimer = true) => {
     const manual = manualOrEvent === true || (typeof manualOrEvent === 'object' && !!manualOrEvent);
     if (acceptDisclaimer) acceptCloudflaredDisclaimer();
-    else declineCloudflaredDisclaimer();
+    // Closing the recurring welcome screen must not revoke consent granted previously.
+    // Without this guard, users who clicked the X merely to skip the intro lost access to
+    // local reference-image generation on every later launch.
+    else if (localStorage.getItem(CLOUDFLARED_DISCLAIMER_ACCEPTED_STORAGE_KEY) !== 'true') {
+      declineCloudflaredDisclaimer();
+    }
 
     markLaunchIntroDoneThisPage();
     startupAutoCloseSuppressedRef.current = true;
@@ -23468,6 +23914,20 @@ useEffect(() => {
     e.preventDefault();
     e.stopPropagation();
 
+    if (isMainWorkbenchActiveRef.current) {
+      isDraggingTitleRef.current = true;
+      isGlobalMouseDown.current = true;
+      void appWindow.startDragging()
+        .catch((error) => {
+          console.warn('原生窗口拖动启动失败:', error);
+        })
+        .finally(() => {
+          isGlobalMouseDown.current = false;
+          isDraggingTitleRef.current = false;
+        });
+      return;
+    }
+
     setIsDraggingTitle(true);
     isDraggingTitleRef.current = true;
     isGlobalMouseDown.current = true;
@@ -23849,8 +24309,8 @@ useEffect(() => {
   };
 
   const canvasAgentSelectedItems = useMemo(
-    () => buildCanvasAgentSelectedItems(canvasItems, canvasSelectedIds),
-    [canvasItems, canvasSelectedIds],
+    () => (isAgentChatOpen ? buildCanvasAgentSelectedItems(canvasItems, canvasSelectedIds) : []),
+    [canvasItems, canvasSelectedIds, isAgentChatOpen],
   );
 
   const drawerAgentSelectedItems = useMemo<AgentCanvasSelectionItem[]>(() => {
@@ -27621,8 +28081,7 @@ useEffect(() => {
     };
   }, [canvasViewport]);
   const canvasAlwaysRenderedIds = useMemo(() => {
-    const ids = new Set(canvasSelectedIds);
-    if (canvasSingleSelectedItemForRender) ids.add(canvasSingleSelectedItemForRender.id);
+    const ids = new Set<string>();
     if (canvasInputMenuForId) ids.add(canvasInputMenuForId);
     if (canvasAiPromptEditingId) ids.add(canvasAiPromptEditingId);
     if (canvasPromptOptimizingId) ids.add(canvasPromptOptimizingId);
@@ -27640,10 +28099,8 @@ useEffect(() => {
     canvasInputMenuForId,
     canvasInputPickTargetId,
     canvasPromptOptimizingId,
-    canvasSelectedIds,
-    canvasSingleSelectedItemForRender,
   ]);
-  const canvasRenderableItems = useMemo(() => {
+  const canvasViewportRenderableItems = useMemo(() => {
     if (!canvasRenderViewport) return canvasItems;
     return canvasItems.filter(item => (
       canvasAlwaysRenderedIds.has(item.id)
@@ -27654,6 +28111,26 @@ useEffect(() => {
     canvasAiPromptEditingId,
     canvasItems,
     canvasRenderViewport,
+  ]);
+  const canvasRenderableItems = useMemo(() => {
+    if (!canvasRenderViewport || canvasSelectedIds.length === 0) return canvasViewportRenderableItems;
+    const supplementalSelectedItems = canvasSelectedIds.reduce<CanvasImageItem[]>((items, id) => {
+      if (canvasAlwaysRenderedIds.has(id)) return items;
+      const item = canvasItemsById.get(id);
+      if (!item || canvasRectsIntersect(canvasRenderViewport, getCanvasItemRenderedBox(item))) return items;
+      items.push(item);
+      return items;
+    }, []);
+    return supplementalSelectedItems.length > 0
+      ? [...canvasViewportRenderableItems, ...supplementalSelectedItems]
+      : canvasViewportRenderableItems;
+  }, [
+    canvasAiPromptEditingId,
+    canvasAlwaysRenderedIds,
+    canvasItemsById,
+    canvasRenderViewport,
+    canvasSelectedIds,
+    canvasViewportRenderableItems,
   ]);
   useEffect(() => {
     if (!isCanvasMode) return;
@@ -28195,6 +28672,17 @@ useEffect(() => {
   const canvasConnectedTargetIds = useMemo(() => (
     new Set(canvasConnections.map(connection => connection.target.id))
   ), [canvasConnections]);
+  useLayoutEffect(() => {
+    if (!isCanvasMode) return;
+    const frame = window.requestAnimationFrame(() => refreshCanvasConnectionHandleOcclusion());
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    isCanvasMode,
+    canvasRenderableItems,
+    canvasSelectedIds,
+    canvasConnections,
+    canvasRenderScale,
+  ]);
   const canvasConnectionDraftPath = canvasConnectionDraft ? (() => {
     const bend = Math.max(80, Math.abs(canvasConnectionDraft.toX - canvasConnectionDraft.fromX) * 0.45);
     const direction = canvasConnectionDraft.toX >= canvasConnectionDraft.fromX ? 1 : -1;
@@ -28684,6 +29172,44 @@ useEffect(() => {
       <AnimatePresence>
         {toast.show && (
           <motion.div initial={{ opacity: 0, y: -20, scale: 0.9 }} animate={{ opacity: 1, y: 16, scale: 1 }} exit={{ opacity: 0, y: -20, scale: 0.9 }} className="absolute top-0 right-1/2 translate-x-1/2 z-[999999] bg-stone-800/90 dark:bg-white/90 backdrop-blur-md text-white dark:text-stone-800 px-4 py-2 rounded-full shadow-2xl border border-white/10 dark:border-stone-800/10 text-[11px] font-bold flex items-center gap-2 pointer-events-none will-change-transform">{toast.msg}</motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isInspirationSpaceOpen && (
+          <motion.div
+            data-inspiration-space-overlay="true"
+            className="pointer-events-none absolute inset-0 z-[100200] flex items-center justify-center py-8 pl-8 pr-28"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+          >
+            <motion.section
+              data-inspiration-space-panel="true"
+              className="pointer-events-auto h-full max-h-[840px] w-full max-w-[1080px] overflow-hidden rounded-[16px] border border-stone-200/90 bg-[#f5f4ef] shadow-[0_28px_90px_rgba(41,37,36,0.22)]"
+              initial={{ y: 12, scale: 0.975 }}
+              animate={{ y: 0, scale: 1 }}
+              exit={{ y: 8, scale: 0.985 }}
+              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <React.Suspense fallback={(
+                <div className="grid h-full place-items-center bg-[#f5f4ef] text-xs font-semibold text-stone-500">
+                  正在打开灵感空间…
+                </div>
+              )}>
+                <LazyInspirationSpaceWindow
+                  embedded
+                  onClose={() => setIsInspirationSpaceOpen(false)}
+                  onAddToCanvas={addInspirationSpaceShareAndReturnToCanvas}
+                  templateOptions={inspirationSpaceTemplateOptions}
+                  onPrepareTemplate={prepareInspirationSpaceTemplate}
+                  onLoadDrawerImages={loadInspirationSpaceDrawerImages}
+                  onReadDrawerImage={readInspirationSpaceDrawerImage}
+                />
+              </React.Suspense>
+            </motion.section>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -31377,7 +31903,12 @@ useEffect(() => {
                               const direction = targetX >= sourceX ? 1 : -1;
                               const d = `M ${sourceX} ${sourceY} C ${sourceX + bend * direction} ${sourceY}, ${targetX - bend * direction} ${targetY}, ${targetX} ${targetY}`;
                               return (
-                                <g key={`${source.id}-${target.id}`} className="group/canvas-link">
+                                <g
+                                  key={`${source.id}-${target.id}`}
+                                  data-canvas-connection-source-id={source.id}
+                                  data-canvas-connection-target-id={target.id}
+                                  className="group/canvas-link"
+                                >
                                   <path className="pointer-events-none" d={d} stroke="rgba(255,255,255,0.9)" strokeWidth="6" fill="none" strokeLinecap="round" opacity="0.24" />
                                   <path className="pointer-events-none transition-opacity group-hover/canvas-link:opacity-100" d={d} stroke="url(#canvasAiLinkGradient)" strokeWidth="2.5" fill="none" strokeLinecap="round" opacity="0.78" />
                                   <path
@@ -33859,6 +34390,8 @@ useEffect(() => {
                             <button
                               key={`canvas-source-handle-${canvasItem.id}`}
                               data-no-drag="true"
+                              data-canvas-connection-handle-id={canvasItem.id}
+                              data-canvas-connection-handle-side="source"
                               type="button"
                               className="absolute z-[3] flex h-9 w-9 items-center justify-center rounded-full text-cyan-500 transition-all hover:scale-105"
                               style={{
@@ -33888,6 +34421,8 @@ useEffect(() => {
                             <div
                               key={`canvas-target-handle-${canvasItem.id}`}
                               data-no-drag="true"
+                              data-canvas-connection-handle-id={canvasItem.id}
+                              data-canvas-connection-handle-side="target"
                               data-canvas-ai-input-id={canvasItem.id}
                               className="absolute z-[3] flex h-9 w-9 items-center justify-center rounded-full text-white"
                               style={{
@@ -34052,6 +34587,7 @@ useEffect(() => {
                         })()}
                         {canvasSingleSelectedBoxForRender && canvasSingleSelectedItemForRender && (
                           <div
+                            data-canvas-selection-frame="true"
                             className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] shadow-[0_0_0_3px_rgba(255,255,255,0.42)] dark:border-stone-100/70 dark:bg-white/[0.035] dark:shadow-[0_0_0_3px_rgba(0,0,0,0.24)]"
                             style={{
                               left: canvasSingleSelectedBoxForRender.x - 12,
@@ -34091,6 +34627,7 @@ useEffect(() => {
                         )}
                         {canvasSelectedBounds && (
                           <div
+                            data-canvas-selection-frame="true"
                             className="pointer-events-none absolute z-[60] border-2 border-stone-900/80 bg-stone-900/[0.025] dark:border-stone-100/70 dark:bg-white/[0.035]"
                             style={{
                               left: canvasSelectedBounds.x,
@@ -35209,7 +35746,6 @@ useEffect(() => {
                       workflowValue={CANVAS_WORKFLOW_SELECT_PLACEHOLDER}
                       workflowOptions={canvasWorkflowSelectOptions}
                       hasWorkflow={canvasItems.some(item => item.ai?.type === 'workflow')}
-                      canOrganize={canvasItems.length >= 2}
                       isAgentChatOpen={isAgentChatOpen}
                       onToggleAgentChat={() => setIsAgentChatOpen(value => !value)}
                       onAddImage={() => addCanvasAiGeneratorNode()}
@@ -35243,7 +35779,7 @@ useEffect(() => {
                       }}
                       onRunWorkflow={() => runSelectedCanvasWorkflowModules()}
                       onAddText={() => addCanvasTextItem()}
-                      onOrganize={() => organizeCanvasItems()}
+                      onOpenInspirationSpace={openInspirationSpace}
                     />
                   )}
                   {isCanvasMode && isCanvasGeneratedListVisible && (
@@ -37665,7 +38201,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.18'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.19'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -37953,7 +38489,7 @@ useEffect(() => {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.18</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.19</p>
                 <p>画布现在会按需读取抽屉文件夹中的图片和视频，继续向下浏览即可加载更多，并支持把视频加入画布。</p>
                 <p>图片、视频或文件拖入抽屉后会立即显示，文件复制、缓存和视频缩略图改为后台处理。</p>
                 <p>修复从画布切回抽屉后偶发只显示一列、滚动区域空白以及无法继续自动加载的问题。</p>

@@ -2,7 +2,7 @@
 import {
   Film,
   Image as ImageIcon,
-  LayoutGrid,
+  Lightbulb,
   Layers,
   Link,
   Palette,
@@ -29,7 +29,6 @@ type CanvasToolbarProps = {
   workflowValue: string;
   workflowOptions: RoundedSelectOption[];
   hasWorkflow: boolean;
-  canOrganize: boolean;
   isAgentChatOpen: boolean;
   onToggleAgentChat: () => void;
   onAddImage: () => void;
@@ -41,7 +40,7 @@ type CanvasToolbarProps = {
   onWorkflowChange: (value: string) => void;
   onRunWorkflow: () => void | Promise<void>;
   onAddText: () => void;
-  onOrganize: () => void;
+  onOpenInspirationSpace: () => void | Promise<void>;
 };
 
 export function CanvasToolbar({
@@ -54,7 +53,6 @@ export function CanvasToolbar({
   workflowValue,
   workflowOptions,
   hasWorkflow,
-  canOrganize,
   isAgentChatOpen,
   onToggleAgentChat,
   onAddImage,
@@ -66,7 +64,7 @@ export function CanvasToolbar({
   onWorkflowChange,
   onRunWorkflow,
   onAddText,
-  onOrganize,
+  onOpenInspirationSpace,
 }: CanvasToolbarProps) {
   return (
     <div
@@ -209,13 +207,12 @@ export function CanvasToolbar({
       </button>
       <button
         type="button"
-        onClick={onOrganize}
-        disabled={!canOrganize}
-        className={`${CANVAS_SIDE_TOOL_CLASS} disabled:cursor-not-allowed disabled:opacity-45`}
-        title="一键整理画布，多选时只整理选中节点"
+        onClick={() => void onOpenInspirationSpace()}
+        className={`${CANVAS_SIDE_TOOL_CLASS} !w-[88px]`}
+        title="打开灵感空间，浏览和分享节点预设、工作流与提示词"
       >
-        <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-stone-500 dark:text-stone-400" />
-        <span className="min-w-0 flex-1 truncate text-left">整理</span>
+        <Lightbulb className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+        <span className="min-w-0 flex-1 truncate text-left">灵感空间</span>
       </button>
     </div>
   );

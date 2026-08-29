@@ -4,12 +4,20 @@
 
 ## 下载
 
-当前版本：**6.0.18**
+当前版本：**6.0.19**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.18/Inspiration.Drawer_6.0.18_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.18)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.19/Inspiration.Drawer_6.0.19_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.19)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.19 更新
+
+- 无限画布新增应用内原生“灵感空间”，可浏览社区工作流、节点预设和提示词，并直接添加到当前画布。
+- 新增提示词分享：必须附带对应生成图；客户端添加时会创建已填写提示词的生图节点。
+- 分享窗口支持从抽屉选择最近加入或最近生成的图片，并支持直接选择节点预设和工作流。
+- 优化大画布的窗口拖动、节点/图片拖动和滚轮缩放，连接线保持实时同步。
+- 修复灵感空间关闭按钮错位、跨域画布图片导出失败及提示词正文展示问题。
 
 ## 6.0.18 更新
 

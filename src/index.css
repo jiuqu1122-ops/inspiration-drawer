@@ -35,6 +35,24 @@ body,
   background-color: rgba(120, 113, 108, 0.8);
 }
 
+/* Keep high-frequency canvas transforms on a single inexpensive compositor layer. */
+[data-canvas-node-moving="true"] [data-canvas-connection-handle-id],
+[data-canvas-zooming="true"] [data-canvas-connection-handle-id] {
+  visibility: hidden !important;
+}
+
+[data-canvas-selection-pending="true"] [data-canvas-selection-frame="true"] {
+  visibility: hidden !important;
+}
+
+[data-canvas-zooming="true"] [data-canvas-item-id],
+[data-canvas-zooming="true"] [data-canvas-item-id] * {
+  animation-play-state: paused !important;
+  transition: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
 [data-canvas-interacting="true"] [data-canvas-item-id],
 [data-canvas-interacting="true"] [data-canvas-item-id] * {
   transition: none !important;
@@ -54,11 +72,6 @@ body,
 
 [data-canvas-item-id][data-canvas-resizing="true"] {
   will-change: left, top, width, height;
-}
-
-[data-canvas-interacting="true"] [data-canvas-item-id] :is(button, [role="button"]) {
-  opacity: 0 !important;
-  pointer-events: none !important;
 }
 
 [data-canvas-interacting="true"] [data-canvas-item-id] * {
