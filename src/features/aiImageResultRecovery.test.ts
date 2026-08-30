@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getAutoRecoverableAiImageResultSource,
   getAutoRecoverableAiMediaResultSource,
+  getDurableAiMediaSource,
   getStableAiImageResultSource,
   getStableAiVideoResultSource,
 } from './aiImageResultRecovery';
@@ -35,6 +36,15 @@ describe('AI image result recovery source', () => {
     expect(getStableAiVideoResultSource(
       'https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/abc.mp4?Expires=1&Signature=expired',
     )).toBe('https://api.unmind.art/v1/ai/video-results/abc.mp4');
+  });
+
+  it('keeps the stable API URL instead of persisting a temporary COS signed URL', () => {
+    const stable = 'https://api.unmind.art/v1/ai/image-results/abc.png';
+    const signedCos = 'https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/generated-images/abc.png?q-sign-algorithm=sha1&q-sign-time=temporary';
+    expect(getDurableAiMediaSource({
+      url: signedCos,
+      sourceUrl: stable,
+    })).toBe(stable);
   });
 
   it('only selects completed image outputs whose local cache needs repair', () => {

@@ -61,6 +61,23 @@ export function getStableAiVideoResultSource(value?: string | null) {
   );
 }
 
+export function getDurableAiMediaSource(input: {
+  originalUrl?: string | null;
+  sourceUrl?: string | null;
+  url?: string | null;
+  content?: string | null;
+}) {
+  const candidates = [input.originalUrl, input.sourceUrl, input.url, input.content]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  for (const candidate of candidates) {
+    const stableSource = getStableAiImageResultSource(candidate)
+      || getStableAiVideoResultSource(candidate);
+    if (stableSource) return stableSource;
+  }
+  return candidates[0] || '';
+}
+
 export function getAutoRecoverableAiMediaResultSource(input: {
   mediaType?: string | null;
   status?: string | null;

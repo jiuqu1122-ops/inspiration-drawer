@@ -614,7 +614,10 @@ import {
   shouldShowCanvasGenerationCredits,
   type CanvasAiCreditPricing,
 } from './features/canvasGenerationCredits';
-import { getAutoRecoverableAiMediaResultSource } from './features/aiImageResultRecovery';
+import {
+  getAutoRecoverableAiMediaResultSource,
+  getDurableAiMediaSource,
+} from './features/aiImageResultRecovery';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -6344,8 +6347,8 @@ function MainApp() {
         for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
           try {
             const cachedPath = await invoke<string>('cache_web_image', {
-              // Keep the stable result URL intact. The backend refreshes signed
-              // wallet/OSS URLs on every attempt before downloading.
+              // Keep the stable result URL intact. The native downloader follows
+              // its short-lived HTTPS storage redirect without exposing that URL.
               url: source,
               name: item.name || item.content || AI_GENERATED_FOLDER_NAME,
               dir: latestCacheDir || undefined,
@@ -6409,27 +6412,19 @@ function MainApp() {
         .catch((err) => {
           console.warn('AI 生图缓存失败:', err);
           generatedImageCachePendingIdsRef.current.delete(item.id);
-          void (async () => {
-            let fallbackUrl = source;
-            if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
-              try {
-                fallbackUrl = await invoke<string>('resolve_ai_image_result_url', { url: source });
-              } catch (_) {}
-            }
-            setItems(prev => prev.map(existing => existing.id === item.id
-              ? {
-                ...existing,
-                url: fallbackUrl,
-                sourceUrl: source,
-                originalUrl: source,
-              }
-              : existing));
-            patchMatchingOutputs({
-              url: fallbackUrl,
+          setItems(prev => prev.map(existing => existing.id === item.id
+            ? {
+              ...existing,
+              url: source,
               sourceUrl: source,
-              cacheStatus: 'failed',
-            });
-          })();
+              originalUrl: source,
+            }
+            : existing));
+          patchMatchingOutputs({
+            url: source,
+            sourceUrl: source,
+            cacheStatus: 'failed',
+          });
         })
         .finally(() => {
           if (generatedImageCachePromisesRef.current.get(source) === cachePromise) {
@@ -11354,8 +11349,7 @@ function MainApp() {
     for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
       try {
         const cachedPath = await invoke<string>('cache_web_image', {
-          // cache_web_image recognizes stable wallet URLs and refreshes their
-          // temporary OSS signature for each retry.
+          // Rust follows the stable URL's bounded HTTPS redirect natively.
           url: trimmed,
           name: name || AI_GENERATED_FOLDER_NAME,
           dir: latestCacheDir || undefined,
@@ -11805,6 +11799,17 @@ function MainApp() {
     throw new Error(summary || '公网参考图发布失败');
   };
 
+  const uploadWalletReferenceInputs = async (sources: string[]) => {
+    const cleanSources = sources.map(source => source.trim()).filter(Boolean).slice(0, 13);
+    if (cleanSources.length === 0) return [] as string[];
+    const objectKeys = await invoke<string[]>('upload_wallet_reference_images', { sources: cleanSources });
+    const output = (objectKeys || []).map(value => value.trim()).filter(value => value.startsWith('reference-images/'));
+    if (output.length !== cleanSources.length) {
+      throw new Error(`Wallet reference upload returned ${output.length} objects for ${cleanSources.length} inputs.`);
+    }
+    return output;
+  };
+
   const uploadXaisReferenceInputs = async (
     sources: string[],
     provider: CanvasAiProvider
@@ -11965,27 +11970,45 @@ function MainApp() {
         }
       } else if (requireRemoteInputs) {
         try {
+          if (portableWalletReferences) {
+            try {
+              const objectKeys = await uploadWalletReferenceInputs(localSources);
+              assignPreparedSources(objectKeys);
+            } catch (directUploadError) {
+              console.warn('钱包参考图直传失败，回退到兼容上传接口:', directUploadError);
+              const fallbackPublished = await publishCanvasReferencesInOrder(
+                localSources,
+                sources => publishLocalAiInputs(
+                  sources,
+                  'oss-only',
+                  getCanvasAiReferencePublicationMaxUrlLength(portableWalletReferences, provider),
+                ),
+                stopTemporaryReferenceShares,
+              );
+              if (fallbackPublished.urls.length !== localSources.length) {
+                await stopTemporaryReferenceShares(fallbackPublished.shareIds);
+                throw new Error(`Legacy reference upload returned ${fallbackPublished.urls.length} URLs for ${localSources.length} inputs.`);
+              }
+              assignPreparedSources(fallbackPublished.urls);
+              temporaryShareIds.push(...fallbackPublished.shareIds);
+            }
+          } else {
           const publicationMaxUrlLength = getCanvasAiReferencePublicationMaxUrlLength(
             portableWalletReferences,
             provider,
           );
-          const published = portableWalletReferences
-            ? await publishCanvasReferencesInOrder(
-                localSources,
-                sources => publishLocalAiInputs(sources, 'oss-only', publicationMaxUrlLength),
-                stopTemporaryReferenceShares,
-              )
-            : await publishLocalAiInputs(
-                localSources,
-                publicationPreference,
-                publicationMaxUrlLength,
-              );
+          const published = await publishLocalAiInputs(
+            localSources,
+            publicationPreference,
+            publicationMaxUrlLength,
+          );
           if (published.urls.length !== localSources.length) {
             await stopTemporaryReferenceShares(published.shareIds);
             throw new Error(`公网图床返回 ${published.urls.length} 张参考图，预期 ${localSources.length} 张。`);
           }
           assignPreparedSources(published.urls);
           temporaryShareIds.push(...published.shareIds);
+          }
         } catch (err) {
           preparationErrors.push(getCanvasAiErrorSummary(err instanceof Error ? err.message : String(err)));
           const remoteFallbacks = portableWalletReferences
@@ -21248,7 +21271,7 @@ function MainApp() {
     const resolveDurableDownloadSource = async (item: BufferItem) => {
       const localPath = String(item.path || '').trim();
       if (localPath) return localPath;
-      const source = String(item.originalUrl || item.sourceUrl || item.url || item.content || '').trim();
+      const source = getDurableAiMediaSource(item);
       if (!item.type || item.type === 'text' || !/^(?:https?:|data:(?:image|video)\/)/i.test(source)) {
         return source;
       }
@@ -21257,24 +21280,16 @@ function MainApp() {
         || localStorage.getItem('drawer_web_image_cache_dir')
         || ''
       ).trim();
-      let resolvedSource = source;
-      if (/^https:\/\/api\.unmind\.art\/v1\/ai\/image-results\//i.test(source)) {
-        try {
-          resolvedSource = await invoke<string>('resolve_ai_image_result_url', { url: source });
-        } catch (error) {
-          console.warn('下载前解析 OSS 临时地址失败:', error);
-        }
-      }
       try {
         const cachedPath = await invoke<string>('cache_web_image', {
-          url: resolvedSource,
+          url: source,
           name: item.name || item.id || 'generated-output',
           dir: latestCacheDir || undefined,
         });
-        return String(cachedPath || resolvedSource).trim();
+        return String(cachedPath || source).trim();
       } catch (error) {
-        console.warn('下载前缓存生成结果失败，改用 OSS 临时地址直接下载:', error);
-        return resolvedSource;
+        console.warn('下载前缓存生成结果失败，改用稳定结果地址直接下载:', error);
+        return source;
       }
     };
 

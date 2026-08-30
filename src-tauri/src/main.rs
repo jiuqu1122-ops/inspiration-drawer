@@ -49,6 +49,7 @@ const APP_USER_AGENT: &str = "inspiration-drawer";
 const MAX_STORED_DATA_THUMBNAIL_CHARS: usize = 96 * 1024;
 const DEFAULT_CANVAS_ID: &str = "default";
 const INSPIRATION_SPACE_API_BASE_URL: &str = "https://api.unmind.art";
+const MEDIA_DOWNLOAD_MAX_REDIRECTS: usize = 5;
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut SysCommand) -> &mut SysCommand {
@@ -663,6 +664,64 @@ fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
         .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
 }
 
+fn validate_media_redirect_target(url: &Url, previous_count: usize) -> Result<(), &'static str> {
+    if previous_count > MEDIA_DOWNLOAD_MAX_REDIRECTS {
+        return Err("media download exceeded the redirect limit");
+    }
+    if url.scheme() != "https" {
+        return Err("media download redirects must use HTTPS");
+    }
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferenceUploadTicket {
+    object_key: String,
+    upload_url: String,
+    method: String,
+    headers: HashMap<String, String>,
+}
+
+fn media_download_redirect_policy() -> Policy {
+    Policy::custom(|attempt| {
+        match validate_media_redirect_target(attempt.url(), attempt.previous().len()) {
+            Ok(()) => attempt.follow(),
+            Err(message) => attempt.error(std::io::Error::other(message)),
+        }
+    })
+}
+
+fn build_media_download_http_client(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(media_download_redirect_policy())
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(timeout_secs));
+
+    if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
+        let proxy = reqwest::Proxy::all(&proxy).map_err(|e| e.to_string())?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder.build().map_err(|e| e.to_string())
+}
+
+fn build_direct_media_download_http_client(timeout_secs: u64) -> Result<Client, String> {
+    Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(media_download_redirect_policy())
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(timeout_secs))
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 fn should_prefer_direct_generated_image_download(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
@@ -865,16 +924,141 @@ async fn resolve_ai_image_result_url(
 #[cfg(test)]
 mod ai_image_result_url_tests {
     use super::{
-        build_direct_http_client, download_url_to_file_with_client, image_result_json_url,
-        generated_oss_result_key, generated_oss_video_result_key, is_wallet_ai_image_result_source,
+        download_url_to_file_with_client, generated_oss_result_key,
+        generated_oss_video_result_key, image_result_json_url, is_wallet_ai_image_result_source,
         is_wallet_ai_image_result_url, is_wallet_ai_video_result_url,
-        should_prefer_direct_generated_image_download, validate_generated_image_oss_url,
+        media_download_redirect_policy, should_prefer_direct_generated_image_download,
+        validate_generated_image_oss_url, DownloadContentExpectation, DownloadOptions,
+        MEDIA_DOWNLOAD_MAX_REDIRECTS,
     };
+    use rcgen::generate_simple_self_signed;
+    use reqwest::blocking::Client;
+    use rustls::pki_types::PrivatePkcs8KeyDer;
+    use rustls::{ServerConfig, ServerConnection, StreamOwned};
     use std::fs;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::{Arc, Once};
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    struct TestResponse {
+        status: &'static str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    fn install_test_crypto_provider() {
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
+    }
+
+    fn test_response(
+        status: &'static str,
+        content_type: Option<&str>,
+        location: Option<String>,
+        body: &[u8],
+    ) -> TestResponse {
+        let mut headers = Vec::new();
+        if let Some(content_type) = content_type {
+            headers.push(("Content-Type".to_string(), content_type.to_string()));
+        }
+        if let Some(location) = location {
+            headers.push(("Location".to_string(), location));
+        }
+        TestResponse {
+            status,
+            headers,
+            body: body.to_vec(),
+        }
+    }
+
+    fn spawn_https_server<F>(responses: F) -> (String, thread::JoinHandle<()>)
+    where
+        F: FnOnce(SocketAddr) -> Vec<TestResponse>,
+    {
+        install_test_crypto_provider();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTPS test listener");
+        let address = listener.local_addr().expect("HTTPS test address");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking HTTPS listener");
+        let responses = responses(address);
+        let certified = generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("test certificate");
+        let certificate = certified.cert.der().clone();
+        let private_key = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
+        let config = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![certificate], private_key.into())
+                .expect("test TLS server config"),
+        );
+        let handle = thread::spawn(move || {
+            for response in responses {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let tcp = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "timed out waiting for HTTPS request");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("HTTPS accept failed: {error}"),
+                    }
+                };
+                tcp.set_nonblocking(false)
+                    .expect("blocking HTTPS connection");
+                let connection =
+                    ServerConnection::new(config.clone()).expect("test TLS connection");
+                let mut stream = StreamOwned::new(connection, tcp);
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).expect("HTTPS request");
+                let mut bytes = format!("HTTP/1.1 {}\r\n", response.status).into_bytes();
+                for (name, value) in response.headers {
+                    bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+                }
+                bytes.extend_from_slice(
+                    format!(
+                        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        response.body.len()
+                    )
+                    .as_bytes(),
+                );
+                bytes.extend_from_slice(&response.body);
+                stream.write_all(&bytes).expect("HTTPS response");
+                stream.flush().expect("flush HTTPS response");
+            }
+        });
+        (format!("https://localhost:{}", address.port()), handle)
+    }
+
+    fn test_media_client() -> Client {
+        Client::builder()
+            .redirect(media_download_redirect_policy())
+            .danger_accept_invalid_certs(true)
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("test media client")
+    }
+
+    fn image_download_options() -> DownloadOptions {
+        DownloadOptions {
+            expected_content: DownloadContentExpectation::Image,
+            atomic_write: true,
+        }
+    }
+
+    fn temporary_output(label: &str) -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}-{stamp}.png"))
+    }
 
     #[test]
     fn recognizes_wallet_result_urls_and_builds_json_mode_without_double_encoding() {
@@ -967,52 +1151,232 @@ mod ai_image_result_url_tests {
     }
 
     #[test]
-    fn downloads_a_redirected_image_to_a_local_file() {
-        let image_listener = TcpListener::bind("127.0.0.1:0").expect("image listener");
-        let image_address = image_listener.local_addr().expect("image address");
-        let image_thread = thread::spawn(move || {
-            let (mut stream, _) = image_listener.accept().expect("image request");
-            let mut request = [0_u8; 2048];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 8\r\nConnection: close\r\n\r\n\x89PNG\r\n\x1a\n",
-                )
-                .expect("image response");
+    fn downloads_a_direct_200_image_to_an_atomic_local_file() {
+        let (base_url, server) = spawn_https_server(|_| {
+            vec![test_response(
+                "200 OK",
+                Some("image/png"),
+                None,
+                b"\x89PNG\r\n\x1a\n",
+            )]
         });
-
-        let redirect_listener = TcpListener::bind("127.0.0.1:0").expect("redirect listener");
-        let redirect_address = redirect_listener.local_addr().expect("redirect address");
-        let redirect_thread = thread::spawn(move || {
-            let (mut stream, _) = redirect_listener.accept().expect("redirect request");
-            let mut request = [0_u8; 2048];
-            let _ = stream.read(&mut request);
-            let response = format!(
-                "HTTP/1.1 302 Found\r\nLocation: http://{image_address}/signed.png?token=a%2Bb\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("redirect response");
-        });
-
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let output = std::env::temp_dir().join(format!("oss-redirect-test-{stamp}.png"));
-        let client = build_direct_http_client(5).expect("client");
+        let output = temporary_output("direct-image-test");
         let content_type = download_url_to_file_with_client(
-            &client,
-            &format!("http://{redirect_address}/result.png"),
+            &test_media_client(),
+            &format!("{base_url}/result.png"),
             &output,
+            image_download_options(),
         )
-        .expect("download");
+        .expect("direct image download");
 
         assert_eq!(content_type.as_deref(), Some("image/png"));
         assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        assert!(!output.with_extension("download.tmp").exists());
         let _ = fs::remove_file(output);
-        redirect_thread.join().expect("redirect thread");
-        image_thread.join().expect("image thread");
+        server.join().expect("HTTPS server");
+    }
+
+    fn assert_redirected_image_download(status: &'static str, label: &str) {
+        let (base_url, server) = spawn_https_server(|address| {
+            vec![
+                test_response(
+                    status,
+                    None,
+                    Some(format!(
+                        "https://localhost:{}/signed.png?q-sign-time=temporary",
+                        address.port()
+                    )),
+                    b"",
+                ),
+                test_response(
+                    "200 OK",
+                    Some("image/png; charset=binary"),
+                    None,
+                    b"\x89PNG\r\n\x1a\n",
+                ),
+            ]
+        });
+        let output = temporary_output(label);
+        let content_type = download_url_to_file_with_client(
+            &test_media_client(),
+            &format!("{base_url}/stable.png"),
+            &output,
+            image_download_options(),
+        )
+        .expect("redirected image download");
+
+        assert_eq!(content_type.as_deref(), Some("image/png; charset=binary"));
+        assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        let _ = fs::remove_file(output);
+        server.join().expect("HTTPS server");
+    }
+
+    #[test]
+    fn follows_a_302_to_the_final_200_image_body() {
+        assert_redirected_image_download("302 Found", "redirect-302-test");
+    }
+
+    #[test]
+    fn follows_a_307_to_the_final_200_image_body() {
+        assert_redirected_image_download("307 Temporary Redirect", "redirect-307-test");
+    }
+
+    #[test]
+    fn follows_multiple_https_redirects() {
+        let (base_url, server) = spawn_https_server(|address| {
+            let base = format!("https://localhost:{}", address.port());
+            vec![
+                test_response(
+                    "301 Moved Permanently",
+                    None,
+                    Some(format!("{base}/step-0")),
+                    b"",
+                ),
+                test_response("302 Found", None, Some(format!("{base}/step-1")), b""),
+                test_response(
+                    "307 Temporary Redirect",
+                    None,
+                    Some(format!("{base}/step-2")),
+                    b"",
+                ),
+                test_response(
+                    "308 Permanent Redirect",
+                    None,
+                    Some(format!("{base}/signed.png?q-signature=temporary")),
+                    b"",
+                ),
+                test_response(
+                    "200 OK",
+                    Some("image/png"),
+                    None,
+                    b"\x89PNG\r\n\x1a\n",
+                ),
+            ]
+        });
+        let output = temporary_output("multi-redirect-test");
+        download_url_to_file_with_client(
+            &test_media_client(),
+            &format!("{base_url}/stable.png"),
+            &output,
+            image_download_options(),
+        )
+        .expect("multi-hop image download");
+
+        assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        let _ = fs::remove_file(output);
+        server.join().expect("HTTPS server");
+    }
+
+    #[test]
+    fn rejects_more_than_five_redirects() {
+        let (base_url, server) = spawn_https_server(|address| {
+            (0..=MEDIA_DOWNLOAD_MAX_REDIRECTS)
+                .map(|index| {
+                    test_response(
+                        "302 Found",
+                        None,
+                        Some(format!(
+                            "https://localhost:{}/redirect-{}",
+                            address.port(),
+                            index + 1
+                        )),
+                        b"",
+                    )
+                })
+                .collect()
+        });
+        let output = temporary_output("redirect-limit-test");
+        let result = download_url_to_file_with_client(
+            &test_media_client(),
+            &format!("{base_url}/stable.png"),
+            &output,
+            image_download_options(),
+        );
+
+        assert!(result.is_err());
+        assert!(!output.exists());
+        assert!(!output.with_extension("download.tmp").exists());
+        server.join().expect("HTTPS server");
+    }
+
+    #[test]
+    fn rejects_a_redirect_to_http() {
+        let (base_url, server) = spawn_https_server(|_| {
+            vec![test_response(
+                "302 Found",
+                None,
+                Some("http://127.0.0.1:9/insecure.png".to_string()),
+                b"",
+            )]
+        });
+        let output = temporary_output("insecure-redirect-test");
+        let result = download_url_to_file_with_client(
+            &test_media_client(),
+            &format!("{base_url}/stable.png"),
+            &output,
+            image_download_options(),
+        );
+
+        assert!(result.is_err());
+        assert!(!output.exists());
+        server.join().expect("HTTPS server");
+    }
+
+    #[test]
+    fn rejects_a_final_403_without_writing_a_file() {
+        let (base_url, server) = spawn_https_server(|address| {
+            vec![
+                test_response(
+                    "302 Found",
+                    None,
+                    Some(format!(
+                        "https://localhost:{}/signed.png?q-sign-time=expired",
+                        address.port()
+                    )),
+                    b"",
+                ),
+                test_response(
+                    "403 Forbidden",
+                    Some("application/json"),
+                    None,
+                    br#"{"error":"expired"}"#,
+                ),
+            ]
+        });
+        let output = temporary_output("forbidden-image-test");
+        let result = download_url_to_file_with_client(
+            &test_media_client(),
+            &format!("{base_url}/signed.png"),
+            &output,
+            image_download_options(),
+        );
+
+        assert!(result.is_err());
+        assert!(!output.exists());
+        server.join().expect("HTTPS server");
+    }
+
+    #[test]
+    fn rejects_a_final_non_image_response_without_writing_a_file() {
+        let (base_url, server) = spawn_https_server(|_| {
+            vec![test_response(
+                "200 OK",
+                Some("text/html; charset=utf-8"),
+                None,
+                b"<html>not an image</html>",
+            )]
+        });
+        let output = temporary_output("non-image-test");
+        let result = download_url_to_file_with_client(
+            &test_media_client(),
+            &format!("{base_url}/signed.png"),
+            &output,
+            image_download_options(),
+        );
+
+        assert!(result.is_err());
+        assert!(!output.exists());
+        server.join().expect("HTTPS server");
     }
 }
 
@@ -1036,13 +1400,62 @@ fn build_engine_download_http_client(
         .map_err(|e| format!("初始化引擎下载客户端失败：{}", e))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DownloadContentExpectation {
+    Any,
+    Image,
+    Video,
+    ImageOrVideo,
+}
+
+#[derive(Clone, Copy)]
+struct DownloadOptions {
+    expected_content: DownloadContentExpectation,
+    atomic_write: bool,
+}
+
+fn validate_download_content_type(
+    content_type: Option<&str>,
+    expected: DownloadContentExpectation,
+) -> Result<(), String> {
+    if expected == DownloadContentExpectation::Any {
+        return Ok(());
+    }
+    let content_type = content_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "download response is missing Content-Type".to_string())?;
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let allowed = match expected {
+        DownloadContentExpectation::Any => true,
+        DownloadContentExpectation::Image => mime.starts_with("image/"),
+        DownloadContentExpectation::Video => mime.starts_with("video/"),
+        DownloadContentExpectation::ImageOrVideo => {
+            mime.starts_with("image/") || mime.starts_with("video/")
+        }
+    };
+    if !allowed {
+        return Err(format!(
+            "download response is not the expected media type: {}",
+            content_type
+        ));
+    }
+    Ok(())
+}
+
 fn download_url_to_file(
     app_handle: &tauri::AppHandle,
     url: &str,
     out_path: &PathBuf,
     explicit_proxy: Option<&str>,
+    options: DownloadOptions,
 ) -> Result<Option<String>, String> {
-    download_url_to_file_with_timeout(app_handle, url, out_path, explicit_proxy, 90)
+    download_url_to_file_with_timeout(app_handle, url, out_path, explicit_proxy, 90, options)
 }
 
 fn download_url_to_file_with_timeout(
@@ -1051,20 +1464,21 @@ fn download_url_to_file_with_timeout(
     out_path: &PathBuf,
     explicit_proxy: Option<&str>,
     timeout_secs: u64,
+    options: DownloadOptions,
 ) -> Result<Option<String>, String> {
     let has_configured_proxy = effective_proxy(Some(app_handle), explicit_proxy).is_some();
     let allow_direct_first = has_configured_proxy
         && should_prefer_direct_generated_image_download(url);
     if allow_direct_first {
-        let direct_result = build_direct_http_client(timeout_secs)
-            .and_then(|client| download_url_to_file_with_client(&client, url, out_path));
+        let direct_result = build_direct_media_download_http_client(timeout_secs)
+            .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options));
         match direct_result {
             Ok(content_type) => return Ok(content_type),
             Err(direct_err) => {
                 let _ = fs::remove_file(out_path);
                 let _ = fs::remove_file(out_path.with_extension("download.tmp"));
-                return build_http_client(Some(app_handle), explicit_proxy, timeout_secs)
-                    .and_then(|client| download_url_to_file_with_client(&client, url, out_path))
+                return build_media_download_http_client(Some(app_handle), explicit_proxy, timeout_secs)
+                    .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options))
                     .map_err(|proxy_err| {
                         format!(
                             "直连下载失败：{}；代理下载也失败：{}",
@@ -1075,8 +1489,8 @@ fn download_url_to_file_with_timeout(
         }
     }
 
-    let first_result = build_http_client(Some(app_handle), explicit_proxy, timeout_secs)
-        .and_then(|client| download_url_to_file_with_client(&client, url, out_path));
+    let first_result = build_media_download_http_client(Some(app_handle), explicit_proxy, timeout_secs)
+        .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options));
     match first_result {
         Ok(content_type) => Ok(content_type),
         Err(first_err) => {
@@ -1090,8 +1504,8 @@ fn download_url_to_file_with_timeout(
 
             let _ = fs::remove_file(out_path);
             let _ = fs::remove_file(out_path.with_extension("download.tmp"));
-            let direct_client = build_direct_http_client(timeout_secs)?;
-            download_url_to_file_with_client(&direct_client, url, out_path).map_err(|second_err| {
+            let direct_client = build_direct_media_download_http_client(timeout_secs)?;
+            download_url_to_file_with_client(&direct_client, url, out_path, options).map_err(|second_err| {
                 format!("{}；无代理直连重试也失败：{}", first_err, second_err)
             })
         }
@@ -1102,6 +1516,7 @@ fn download_url_to_file_with_client(
     client: &Client,
     url: &str,
     out_path: &PathBuf,
+    options: DownloadOptions,
 ) -> Result<Option<String>, String> {
     let mut response = client
         .get(url)
@@ -1120,13 +1535,17 @@ fn download_url_to_file_with_client(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_string());
+    validate_download_content_type(content_type.as_deref(), options.expected_content)?;
 
     let tmp_path = out_path.with_extension("download.tmp");
+    let _ = fs::remove_file(&tmp_path);
     let write_result = (|| -> Result<(), String> {
         let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
         response
             .copy_to(&mut file)
             .map_err(|e| format!("写入下载文件失败：{}", e))?;
+        file.flush().map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
         Ok(())
     })();
     if let Err(err) = write_result {
@@ -1134,13 +1553,18 @@ fn download_url_to_file_with_client(
         return Err(err);
     }
 
-    fs::rename(&tmp_path, out_path)
-        .or_else(|_| {
+    let commit_result = if options.atomic_write {
+        fs::rename(&tmp_path, out_path)
+    } else {
+        fs::rename(&tmp_path, out_path).or_else(|_| {
             fs::copy(&tmp_path, out_path).map(|_| ())?;
-            let _ = fs::remove_file(&tmp_path);
-            Ok::<(), std::io::Error>(())
+            fs::remove_file(&tmp_path)
         })
-        .map_err(|e| e.to_string())?;
+    };
+    if let Err(error) = commit_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(error.to_string());
+    }
     Ok(content_type)
 }
 
@@ -8627,7 +9051,21 @@ fn save_item_source_as_impl(
     }
 
     if input.starts_with("http://") || input.starts_with("https://") {
-        let _ = download_url_to_file(&app_handle, input, &dest_path, None)?;
+        let expected_content = match kind.as_str() {
+            "image" => DownloadContentExpectation::Image,
+            "video" => DownloadContentExpectation::Video,
+            _ => DownloadContentExpectation::Any,
+        };
+        let _ = download_url_to_file(
+            &app_handle,
+            input,
+            &dest_path,
+            None,
+            DownloadOptions {
+                expected_content,
+                atomic_write: false,
+            },
+        )?;
         return Ok(());
     }
 
@@ -8643,17 +9081,6 @@ async fn save_item_source_as(
     item_type: Option<String>,
     feature: Option<String>,
 ) -> Result<(), String> {
-    let source = if is_wallet_ai_image_result_source(source.trim()) {
-        let access_token = commands::license::cloud_access_token(&app_handle).await?;
-        let resolver_handle = app_handle.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            resolve_ai_image_result_url_blocking(&resolver_handle, source.trim(), &access_token)
-        })
-        .await
-        .map_err(|error| error.to_string())??
-    } else {
-        source
-    };
     tauri::async_runtime::spawn_blocking(move || {
         save_item_source_as_impl(app_handle, source, dest, content, item_type, feature)
     })
@@ -11393,6 +11820,95 @@ async fn create_r2_public_image_urls(
 }
 
 #[tauri::command]
+async fn upload_wallet_reference_images(
+    app_handle: tauri::AppHandle,
+    sources: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if sources.is_empty() {
+        return Err("没有需要上传的参考图".to_string());
+    }
+    let access_token = commands::license::cloud_access_token(&app_handle).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let prepared = sources
+            .iter()
+            .take(13)
+            .map(|source| {
+                let object = source_to_r2_object(source)?;
+                if !object.content_type.starts_with("image/") {
+                    return Err("钱包参考图上传仅支持图片".to_string());
+                }
+                Ok(object)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let ticket_client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| format!("参考图授权连接初始化失败：{error}"))?;
+        let upload_client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(Policy::none())
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|error| format!("参考图直传连接初始化失败：{error}"))?;
+        let mut object_keys = Vec::with_capacity(prepared.len());
+        for (index, object) in prepared.into_iter().enumerate() {
+            let extension = object.ext.trim().trim_start_matches('.');
+            let filename = format!("reference-{}.{}", index + 1, extension);
+            let ticket_response = ticket_client
+                .post(format!("{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"))
+                .bearer_auth(&access_token)
+                .header("x-client-version", env!("CARGO_PKG_VERSION"))
+                .header("x-wallet-protocol", "1")
+                .json(&serde_json::json!({
+                    "filename": filename,
+                    "mime": object.content_type.clone(),
+                    "sizeBytes": object.bytes.len(),
+                }))
+                .send()
+                .map_err(|error| format!("参考图上传授权失败：{error}"))?;
+            let ticket_status = ticket_response.status();
+            let ticket_body = ticket_response
+                .text()
+                .map_err(|error| format!("读取参考图上传授权响应失败：{error}"))?;
+            if !ticket_status.is_success() {
+                return Err(format!("参考图上传授权失败（HTTP {}）：{}", ticket_status.as_u16(), ticket_body));
+            }
+            let ticket: ReferenceUploadTicket = serde_json::from_str(&ticket_body)
+                .map_err(|error| format!("参考图上传授权响应无效：{error}"))?;
+            if ticket.method.to_ascii_uppercase() != "PUT"
+                || !ticket.object_key.starts_with("reference-images/")
+            {
+                return Err("参考图上传授权参数无效".to_string());
+            }
+            let upload_url = reqwest::Url::parse(ticket.upload_url.trim())
+                .map_err(|error| format!("参考图上传 URL 无效：{error}"))?;
+            if upload_url.scheme() != "https" {
+                return Err("参考图上传 URL 必须使用 HTTPS".to_string());
+            }
+            let mut request = upload_client
+                .put(upload_url)
+                .header(reqwest::header::CONTENT_LENGTH, object.bytes.len())
+                .body(object.bytes);
+            for (name, value) in ticket.headers {
+                request = request.header(name, value);
+            }
+            let response = request
+                .send()
+                .map_err(|error| format!("参考图直传 COS 失败：{error}"))?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(format!("参考图直传 COS 失败（HTTP {}）", status.as_u16()));
+            }
+            object_keys.push(ticket.object_key);
+        }
+        Ok(object_keys)
+    })
+    .await
+    .map_err(|error| format!("参考图直传任务失败：{error}"))?
+}
+
+#[tauri::command]
 async fn create_oss_public_image_urls(
     app_handle: tauri::AppHandle,
     sources: Vec<String>,
@@ -11573,17 +12089,6 @@ async fn cache_web_image(
     dir: Option<String>,
     proxy: Option<String>,
 ) -> Result<String, String> {
-    let url = if is_wallet_ai_image_result_source(url.trim()) {
-        let access_token = commands::license::cloud_access_token(&app_handle).await?;
-        let resolver_handle = app_handle.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            resolve_ai_image_result_url_blocking(&resolver_handle, url.trim(), &access_token)
-        })
-        .await
-        .map_err(|error| error.to_string())??
-    } else {
-        url
-    };
     tauri::async_runtime::spawn_blocking(move || {
         cache_web_image_impl(app_handle, url, name, dir, proxy)
     })
@@ -11963,6 +12468,10 @@ fn cache_web_image_impl(
             &out_path,
             proxy.as_deref(),
             45,
+            DownloadOptions {
+                expected_content: DownloadContentExpectation::ImageOrVideo,
+                atomic_write: true,
+            },
         ) {
             Ok(value) => value,
             Err(err) => {
@@ -11984,11 +12493,9 @@ fn cache_web_image_impl(
         if let Some(mime_ext) = content_type.as_deref().and_then(media_ext_from_mime) {
             let next_path = replace_media_extension(&out_path, mime_ext);
             if next_path != out_path {
-                if let Err(err) = fs::rename(&out_path, &next_path) {
-                    let _ = fs::copy(&out_path, &next_path).map_err(|copy_err| {
-                        format!("{}；fallback copy failed: {}", err, copy_err)
-                    })?;
+                if let Err(error) = fs::rename(&out_path, &next_path) {
                     let _ = fs::remove_file(&out_path);
+                    return Err(error.to_string());
                 }
                 out_path = next_path;
             }
@@ -17522,6 +18029,7 @@ fn main() {
             post_ai_text,
             post_ai_image_edit,
             upload_xais_reference_images,
+            upload_wallet_reference_images,
             get_ai_text,
             get_ai_image_content,
             check_newapi_reference_urls_ready,
