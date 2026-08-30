@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { startTransition, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Plus, Settings2 } from 'lucide-react';
 
@@ -33,6 +33,7 @@ type RoundedSelectProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'v
   revealLabelOnHover?: boolean;
   collapsedLabel?: string;
   expandedLabel?: string;
+  deferChange?: boolean;
 };
 
 function RoundedSelect({
@@ -54,6 +55,7 @@ function RoundedSelect({
   revealLabelOnHover = false,
   collapsedLabel,
   expandedLabel,
+  deferChange = false,
   ...buttonProps
 }: RoundedSelectProps) {
   const [open, setOpen] = useState(false);
@@ -195,8 +197,12 @@ function RoundedSelect({
             e.preventDefault();
             e.stopPropagation();
             if (isDisabled) return;
-            onChange(option.value);
             setOpen(false);
+            if (deferChange) {
+              startTransition(() => onChange(option.value));
+            } else {
+              onChange(option.value);
+            }
           }}
           className={`group/rounded-select-option flex w-full min-w-0 items-center gap-2.5 overflow-hidden rounded-[10px] px-2.5 py-2 text-left transition-colors ${
             isDisabled

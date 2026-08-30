@@ -2310,11 +2310,21 @@ function MainApp() {
     };
   }, []);
 
-  const takeDrawerUndoSnapshot = (label: string): DrawerUndoSnapshot => {
+  const takeDrawerUndoSnapshot = (
+    label: string,
+    options: { shareImmutableItems?: boolean } = {},
+  ): DrawerUndoSnapshot => {
     const openFloatingNoteLabels = readOpenFloatingNoteLabels();
     return {
-      items: cloneDrawerValue(itemsRef.current.map(stripHeavyDataThumbnail)),
-      folders: cloneDrawerValue(foldersRef.current),
+      // Generated media only adds immutable records. Sharing those existing records
+      // keeps the completion path from cloning the entire drawer on the UI thread;
+      // restoreDrawerUndoSnapshot still clones them before putting them back in state.
+      items: options.shareImmutableItems
+        ? itemsRef.current.slice()
+        : cloneDrawerValue(itemsRef.current.map(stripHeavyDataThumbnail)),
+      folders: options.shareImmutableItems
+        ? foldersRef.current.map(folder => ({ ...folder }))
+        : cloneDrawerValue(foldersRef.current),
       activeFolderId: activeFolderIdStateRef.current,
       activeTab: activeTabRef.current,
       openFloatingNoteLabels: cloneDrawerValue(openFloatingNoteLabels),
@@ -2329,12 +2339,26 @@ function MainApp() {
     };
   };
 
-  const pushDrawerUndoSnapshot = (label: string) => {
+  const pushDrawerUndoSnapshot = (
+    label: string,
+    options: { shareImmutableItems?: boolean } = {},
+  ) => {
     if (drawerUndoRestoringRef.current) return;
     drawerUndoStackRef.current = [
       ...drawerUndoStackRef.current,
-      takeDrawerUndoSnapshot(label),
+      takeDrawerUndoSnapshot(label, options),
     ].slice(-DRAWER_UNDO_LIMIT);
+  };
+
+  const updateDrawerItemsDeferred = (updater: (previous: BufferItem[]) => BufferItem[]) => {
+    const nextItems = updater(itemsRef.current);
+    if (nextItems === itemsRef.current) return;
+    itemsRef.current = nextItems;
+    startTransition(() => {
+      // Reapply the pure updater to React's latest snapshot so an urgent drawer
+      // edit made while this transition is pending cannot be overwritten.
+      setItems(current => updater(current));
+    });
   };
 
   const beginDrawerTextEditUndo = (itemId: string) => {
@@ -6315,7 +6339,7 @@ function MainApp() {
         generatedImageCachePendingIdsRef.current.add(item.id);
       }
     });
-    setItems(prev => [
+    updateDrawerItemsDeferred(prev => [
       ...savedItems.filter(item => !prev.some(existing => existing.id === item.id)),
       ...prev,
     ]);
@@ -6398,7 +6422,7 @@ function MainApp() {
         .then((cachedPath) => {
           if (!cachedPath) {
             generatedImageCachePendingIdsRef.current.delete(item.id);
-            setItems(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
+            updateDrawerItemsDeferred(prev => prev.map(existing => existing.id === item.id ? { ...existing } : existing));
             patchMatchingOutputs({ cacheStatus: 'failed' });
             return;
           }
@@ -6414,7 +6438,7 @@ function MainApp() {
             sourceUrl: sourceIsDataImage ? undefined : source,
             originalUrl,
           } as BufferItem;
-          setItems(prev => prev.map(existing => existing.id === item.id ? cachedItem : existing));
+          updateDrawerItemsDeferred(prev => prev.map(existing => existing.id === item.id ? cachedItem : existing));
           if (!options?.onOutputCachePatch) {
             updateCanvasItemsImmediate(prev => prev.map(canvasItem => (
               canvasItem.item.id === item.id
@@ -6439,7 +6463,7 @@ function MainApp() {
         .catch((err) => {
           console.warn('AI 生图缓存失败:', err);
           generatedImageCachePendingIdsRef.current.delete(item.id);
-          setItems(prev => prev.map(existing => existing.id === item.id
+          updateDrawerItemsDeferred(prev => prev.map(existing => existing.id === item.id
             ? {
               ...existing,
               url: source,
@@ -6461,8 +6485,10 @@ function MainApp() {
     });
 
     if (savedIds.size > 0) {
-      setActiveFolderId(folderId);
-      setActiveTab('image');
+      startTransition(() => {
+        setActiveFolderId(folderId);
+        setActiveTab('image');
+      });
     }
   };
 
@@ -6479,13 +6505,15 @@ function MainApp() {
       isQuickAccess: false,
     } as BufferItem));
     const savedIds = new Set(savedItems.map(item => item.id));
-    setItems(prev => [
+    updateDrawerItemsDeferred(prev => [
       ...savedItems.filter(item => !prev.some(existing => existing.id === item.id)),
       ...prev,
     ]);
     if (savedIds.size > 0) {
-      setActiveFolderId(folderId);
-      setActiveTab('video');
+      startTransition(() => {
+        setActiveFolderId(folderId);
+        setActiveTab('video');
+      });
     }
   };
 
@@ -8597,11 +8625,6 @@ function MainApp() {
       if (changedNodes.length === 0) return;
       const targetCanvasId = activeCanvasIdRef.current || DEFAULT_CANVAS_ID;
       patchCanvasNodes(targetCanvasId, changedNodes)
-        .then(() => {
-          canvasLastSyncedNodesSignatureRef.current = getCanvasNodesPersistSignature(
-            canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)
-          );
-        })
         .catch((err) => {
           pendingIds.forEach(id => canvasPatchSavePendingIdsRef.current.add(id));
           console.warn('保存变更画布节点失败:', err);
@@ -11447,7 +11470,7 @@ function MainApp() {
     }));
     if (job.drawerItemId) {
       generatedImageCachePendingIdsRef.current.delete(job.drawerItemId);
-      setItems(prev => prev.map(item => item.id === job.drawerItemId
+      updateDrawerItemsDeferred(prev => prev.map(item => item.id === job.drawerItemId
         ? { ...item, ...(thumbnail ? { thumbnail } : {}) }
         : item));
     }
@@ -14080,7 +14103,9 @@ function MainApp() {
     });
 
     if (normalizedCanvasId === activeCanvasIdRef.current && !isSwitchingCanvasRef.current) {
+      canvasItemsPatchCommitRef.current = true;
       updateCanvasItemsImmediate(updateItems);
+      scheduleCanvasChangedNodesPatchSave([nodeId]);
       return updatedNode;
     }
 
@@ -15979,7 +16004,10 @@ function MainApp() {
         setCanvasAiOutputs(nextOutputs, { status: 'working', error: undefined, generatedAt });
         generatedOutputs.push(output);
         if (!drawerUndoPushed) {
-          pushDrawerUndoSnapshot(mediaType === 'video' ? '保存 AI 视频' : '保存 AI 生图');
+          pushDrawerUndoSnapshot(
+            mediaType === 'video' ? '保存 AI 视频' : '保存 AI 生图',
+            { shareImmutableItems: true },
+          );
           drawerUndoPushed = true;
         }
         const latestTarget = options.getLatestTarget?.() || {
@@ -16018,7 +16046,7 @@ function MainApp() {
             ));
             (options.forceUpdateAi || options.updateAi)({ outputs: currentOutputs });
             if (drawerItem) {
-              setItems(prev => prev.map(item => item.id === drawerItem.id
+              updateDrawerItemsDeferred(prev => prev.map(item => item.id === drawerItem.id
                 ? {
                     ...item,
                     ...(patch.url ? { url: patch.url } : {}),
@@ -16752,7 +16780,13 @@ function MainApp() {
     const isCurrentRun = () => canvasAiRunTokensRef.current.get(runKey) === runToken;
     const updateAiIfCurrent = (patch: Partial<NonNullable<CanvasImageItem['ai']>>, content?: string) => {
       if (!isCurrentRun()) return;
-      updateCanvasAiGeneratorDataForCanvas(runCanvasId, targetId, patch, content);
+      const hasSettledOutput = patch.outputs?.some(output => output.status === 'success' || output.status === 'error');
+      const isCompletionPatch = patch.status === 'success'
+        || patch.status === 'error'
+        || hasSettledOutput;
+      const update = () => updateCanvasAiGeneratorDataForCanvas(runCanvasId, targetId, patch, content);
+      if (isCompletionPatch) startTransition(() => { update(); });
+      else update();
     };
     try {
       await runCanvasAiGeneratorTarget(target, {
@@ -38297,7 +38331,7 @@ useEffect(() => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Welcome Back</p>
-                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.19'}</h2>
+                      <h2 className="mt-1 text-lg font-black text-stone-900 dark:text-stone-50">灵感抽屉 v{appVersion || '6.0.20'}</h2>
                     </div>
                     <button onClick={(event) => finishLaunchIntro(event, false)} className="p-2 rounded-full text-stone-400 hover:text-red-500 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors" title="暂不同意免责声明">
                       <X className="w-4 h-4" />
@@ -38585,11 +38619,11 @@ useEffect(() => {
                 <button data-drawer-dialog-close="true" onClick={closeUpdateLog} className="text-stone-400 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
               <div className="space-y-2 text-xs leading-5 text-stone-600 dark:text-stone-300">
-                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.19</p>
-                <p>画布现在会按需读取抽屉文件夹中的图片和视频，继续向下浏览即可加载更多，并支持把视频加入画布。</p>
-                <p>图片、视频或文件拖入抽屉后会立即显示，文件复制、缓存和视频缩略图改为后台处理。</p>
-                <p>修复从画布切回抽屉后偶发只显示一列、滚动区域空白以及无法继续自动加载的问题。</p>
-                <p>素材卡片会根据抽屉实际宽度重新排版，并在接近底部时自动请求下一批素材。</p>
+                <p className="font-bold text-stone-800 dark:text-stone-100">v6.0.20</p>
+                <p>优化画布生成节点的模型、比例、清晰度、格式和数量切换，减少选择后的界面卡顿。</p>
+                <p>优化生成结果落地、缩略图回填和抽屉同步，生成完成后画布操作更加流畅。</p>
+                <p>钱包参考图改为直接上传 COS，并兼容不同渠道返回的参考图字段。</p>
+                <p>减少钱包余额的重复同步，同时保留最近一次可用余额缓存。</p>
                 <div className="rounded-[18px] border border-amber-200/80 bg-amber-50/80 p-3 text-amber-900 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-100">
                   <p className="font-bold">免责说明</p>
                   <p className="mt-1">本软件不提供生图服务，只是 API 接口工具。用户使用自己的 API 时，请遵守相关网站的用户协议。</p>

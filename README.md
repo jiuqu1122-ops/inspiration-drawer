@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前版本：**6.0.19**
+当前版本：**6.0.20**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.19/Inspiration.Drawer_6.0.19_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.19)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.20/Inspiration.Drawer_6.0.20_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.20)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.20 更新
+
+- 优化画布生成节点的模型、比例、清晰度、格式和数量切换，减少选择后的界面卡顿。
+- 优化生成结果落地、缩略图回填和抽屉同步，生成完成后画布操作更加流畅。
+- 钱包参考图改为直接上传 COS，并兼容不同渠道返回的参考图字段。
+- 减少钱包余额的重复同步，同时保留最近一次可用余额缓存。
 
 ## 6.0.19 更新
 

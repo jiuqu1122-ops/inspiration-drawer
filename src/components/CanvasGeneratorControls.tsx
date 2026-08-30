@@ -87,6 +87,7 @@ export function CanvasGeneratorControls({
       <RoundedSelect
         data-no-drag="true"
         data-canvas-edit-control="true"
+        deferChange
         value={modelValue}
         options={modelOptions}
         onChange={onModelChange}
@@ -102,6 +103,7 @@ export function CanvasGeneratorControls({
       />
       <RoundedSelect
         data-no-drag="true"
+        deferChange
         value={aspectRatioValue}
         options={aspectRatioOptions}
         onChange={onAspectRatioChange}
@@ -118,6 +120,7 @@ export function CanvasGeneratorControls({
       {supportsImageResolution && (
         <RoundedSelect
           data-no-drag="true"
+          deferChange
           value={imageResolutionValue}
           options={imageResolutionOptions}
           onChange={onImageResolutionChange}
@@ -135,6 +138,7 @@ export function CanvasGeneratorControls({
       {mediaType !== 'video' ? (
         <RoundedSelect
           data-no-drag="true"
+          deferChange
           value={outputFormatValue}
           options={outputFormatOptions}
           onChange={onOutputFormatChange}
@@ -152,6 +156,7 @@ export function CanvasGeneratorControls({
         <>
           <RoundedSelect
             data-no-drag="true"
+            deferChange
             value={videoResolutionValue}
             options={videoResolutionOptions}
             onChange={onVideoResolutionChange}
@@ -168,6 +173,7 @@ export function CanvasGeneratorControls({
           {videoSupportsFirstLastFrame && (
             <RoundedSelect
               data-no-drag="true"
+              deferChange
               value={videoInputMode}
               options={CANVAS_AI_VIDEO_INPUT_MODE_OPTIONS}
               onChange={onVideoInputModeChange}
@@ -184,6 +190,7 @@ export function CanvasGeneratorControls({
           )}
           <RoundedSelect
             data-no-drag="true"
+            deferChange
             value={String(videoDuration)}
             options={videoDurationOptions}
             onChange={onVideoDurationChange}
@@ -200,6 +207,7 @@ export function CanvasGeneratorControls({
           <RoundedSelect
             data-no-drag="true"
             data-canvas-edit-control="true"
+            deferChange
             value={videoCfrMode}
             options={CANVAS_VIDEO_CFR_MODE_OPTIONS}
             onChange={onVideoCfrModeChange}
@@ -217,6 +225,7 @@ export function CanvasGeneratorControls({
       )}
       <RoundedSelect
         data-no-drag="true"
+        deferChange
         value={String(count)}
         options={CANVAS_AI_COUNT_OPTIONS}
         onChange={onCountChange}
