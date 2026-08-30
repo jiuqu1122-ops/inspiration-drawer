@@ -1892,7 +1892,7 @@ export const shouldUsePortableWalletImageReferences = (
   cloudWallet: boolean,
   mediaType: 'image' | 'video',
   _provider?: string | null,
-) => cloudWallet && mediaType === 'image';
+) => cloudWallet && (mediaType === 'image' || mediaType === 'video');
 
 export const getCanvasAiReferencePublicationMaxUrlLength = (
   portableWalletReferences: boolean,

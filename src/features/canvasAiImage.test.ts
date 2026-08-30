@@ -378,12 +378,13 @@ describe('unified wallet image model families', () => {
     expect(images).toEqual(['xais-uploaded-reference.jpg']);
   });
 
-  it('uses portable OSS references for every wallet image request', () => {
+  it('uses portable storage references for every wallet image and video request', () => {
     expect(shouldUsePortableWalletImageReferences(true, 'image', 'xais-chat')).toBe(true);
     expect(shouldUsePortableWalletImageReferences(true, 'image', 'new-api')).toBe(true);
     expect(shouldUsePortableWalletImageReferences(true, 'image', 'openai-compatible')).toBe(true);
     expect(shouldUsePortableWalletImageReferences(false, 'image', 'xais-chat')).toBe(false);
-    expect(shouldUsePortableWalletImageReferences(true, 'video', 'xais-chat')).toBe(false);
+    expect(shouldUsePortableWalletImageReferences(true, 'video', 'xais-chat')).toBe(true);
+    expect(shouldUsePortableWalletImageReferences(false, 'video', 'xais-chat')).toBe(false);
   });
 
   it('relaxes the legacy XAIS URL length limit only for wallet-side attachment uploads', () => {

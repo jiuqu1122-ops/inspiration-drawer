@@ -309,28 +309,95 @@ pub struct CloudVideoGenerationResult {
     charged_credits: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CloudImageReference {
+    LocalPath(String),
+    HttpUrl(String),
+    DataUrl(String),
+    StorageObjectKey(String),
+}
+
+fn is_valid_reference_storage_object_key(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed != value
+        || trimmed.len() <= "reference-images/".len()
+        || !trimmed.starts_with("reference-images/")
+        || trimmed.len() > 1_024
+        || trimmed.starts_with('/')
+        || trimmed.contains('\\')
+        || trimmed.contains('?')
+        || trimmed.contains('#')
+        || trimmed.chars().any(|character| {
+            let code = character as u32;
+            code < 32 || code == 127
+        })
+    {
+        return false;
+    }
+    trimmed
+        .split('/')
+        .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+fn parse_cloud_image_reference(source: &str) -> Result<CloudImageReference, String> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Err("empty image source".to_string());
+    }
+    if is_valid_reference_storage_object_key(trimmed) {
+        return Ok(CloudImageReference::StorageObjectKey(trimmed.to_string()));
+    }
+    let normalized = crate::image_source_for_ai(trimmed)?;
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if normalized.starts_with("http://") || normalized.starts_with("https://") {
+            return Ok(CloudImageReference::HttpUrl(normalized));
+        }
+        if normalized.starts_with("data:image/") {
+            return Ok(CloudImageReference::LocalPath(normalized));
+        }
+        return Err("reference source is not a supported image reference".to_string());
+    }
+    if trimmed.starts_with("data:image/") && normalized.starts_with("data:image/") {
+        return Ok(CloudImageReference::DataUrl(normalized));
+    }
+    if normalized.starts_with("data:image/") {
+        return Ok(CloudImageReference::LocalPath(normalized));
+    }
+    if normalized.starts_with("http://") || normalized.starts_with("https://") {
+        return Ok(CloudImageReference::HttpUrl(normalized));
+    }
+    Err("reference source is not a supported image reference".to_string())
+}
+
+fn cloud_image_reference_value(reference: CloudImageReference) -> String {
+    match reference {
+        CloudImageReference::LocalPath(data_url)
+        | CloudImageReference::HttpUrl(data_url)
+        | CloudImageReference::DataUrl(data_url)
+        | CloudImageReference::StorageObjectKey(data_url) => data_url,
+    }
+}
+
 fn normalize_cloud_image_references(input_images: Vec<String>) -> Result<Vec<String>, String> {
     input_images
         .into_iter()
         .enumerate()
         .map(|(index, source)| {
-            let normalized = crate::image_source_for_ai(&source).map_err(|error| {
-                format!(
-                    "invalid_request: reference image {} could not be read: {}",
-                    index + 1,
-                    error
-                )
+            let reference = parse_cloud_image_reference(&source).map_err(|error| {
+                if error == "reference source is not a supported image reference" {
+                    format!(
+                        "invalid_request: reference image {} is not a readable local image, HTTP URL, or data URL",
+                        index + 1
+                    )
+                } else {
+                    format!(
+                        "invalid_request: reference image {} could not be read: {}",
+                        index + 1,
+                        error
+                    )
+                }
             })?;
-            if normalized.starts_with("data:image/")
-                || normalized.starts_with("http://")
-                || normalized.starts_with("https://")
-            {
-                return Ok(normalized);
-            }
-            Err(format!(
-                "invalid_request: reference image {} is not a readable local image, HTTP URL, or data URL",
-                index + 1
-            ))
+            Ok(cloud_image_reference_value(reference))
         })
         .collect()
 }
@@ -964,6 +1031,8 @@ pub async fn generate_cloud_videos(
         request.input_videos.clear();
         request.input_audios.clear();
     }
+    request.input_images =
+        normalize_cloud_image_references(std::mem::take(&mut request.input_images))?;
     if is_seedance20 || is_minimax_h3 {
         request.input_mode = Some(if is_first_last_frame {
             "FLF".to_string()
@@ -1109,7 +1178,8 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_cloud_image_references, validate_display_name, validate_email,
+        normalize_cloud_image_references, parse_cloud_image_reference, validate_display_name,
+        validate_email, CloudImageReference,
         CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
     };
     use base64::Engine as _;
@@ -1207,6 +1277,34 @@ mod tests {
             normalize_cloud_image_references(references.clone()).unwrap(),
             references
         );
+    }
+
+    #[test]
+    fn accepts_owned_reference_storage_object_keys_without_local_reads() {
+        let object_key = "reference-images/5d7d3f68-9d9e-4fd5-b7c4-8ef4d3a6c6d2.png";
+        assert_eq!(
+            parse_cloud_image_reference(object_key).unwrap(),
+            CloudImageReference::StorageObjectKey(object_key.to_string())
+        );
+        assert_eq!(
+            normalize_cloud_image_references(vec![object_key.to_string()]).unwrap(),
+            vec![object_key.to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_untrusted_or_malformed_storage_object_keys() {
+        for source in [
+            "generated-images/result.png",
+            "reference-images/../secret.png",
+            "reference-images\\secret.png",
+            "reference-images/secret.png?download=1",
+            "reference-images/",
+            "arbitrary-reference-value",
+        ] {
+            let error = normalize_cloud_image_references(vec![source.to_string()]).unwrap_err();
+            assert!(error.starts_with("invalid_request: reference image 1"), "{source}: {error}");
+        }
     }
 
     #[test]

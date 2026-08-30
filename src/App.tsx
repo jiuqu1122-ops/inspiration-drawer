@@ -11946,12 +11946,56 @@ function MainApp() {
     }
 
     if (localInputsForCloudflared.length > 0) {
-      const localSources = localInputsForCloudflared.map(item => item.source);
-      const assignPreparedSources = (sources: string[]) => {
-        localInputsForCloudflared.forEach((item, index) => {
+      const assignPreparedSourcesFor = (
+        items: typeof localInputsForCloudflared,
+        sources: string[],
+      ) => {
+        items.forEach((item, index) => {
           const source = sources[index]?.trim();
           if (source) resultByInputIndex.set(item.inputIndex, source);
         });
+      };
+
+      // Wallet reference tickets are image-only. Keep video/audio references on
+      // their existing temporary-publication path when a request mixes media.
+      if (portableWalletReferences) {
+        const legacyMediaItems = localInputsForCloudflared.filter(item => (
+          item.type === 'video'
+          || (item.type === 'file' && isCanvasAudioFileName(item.label))
+        ));
+        if (legacyMediaItems.length > 0) {
+          try {
+            const published = await publishLocalAiInputs(legacyMediaItems.map(item => item.source));
+            if (published.urls.length !== legacyMediaItems.length) {
+              await stopTemporaryReferenceShares(published.shareIds);
+              throw new Error(`Reference publication returned ${published.urls.length} URLs for ${legacyMediaItems.length} inputs.`);
+            }
+            assignPreparedSourcesFor(legacyMediaItems, published.urls);
+            temporaryShareIds.push(...published.shareIds);
+          } catch (error) {
+            preparationErrors.push(getCanvasAiErrorSummary(error instanceof Error ? error.message : String(error)));
+            legacyMediaItems.forEach(item => {
+              if (item.remoteFallback) {
+                resultByInputIndex.set(item.inputIndex, item.remoteFallback);
+              } else {
+                failedItems.push(item.label);
+                if (item.type === 'video') failedVideoItems.push(item.label);
+                if (item.type === 'file' && isCanvasAudioFileName(item.label)) failedAudioItems.push(item.label);
+              }
+            });
+          }
+          const legacyIndexes = new Set(legacyMediaItems.map(item => item.inputIndex));
+          for (let index = localInputsForCloudflared.length - 1; index >= 0; index -= 1) {
+            if (legacyIndexes.has(localInputsForCloudflared[index]!.inputIndex)) {
+              localInputsForCloudflared.splice(index, 1);
+            }
+          }
+        }
+      }
+
+      const localSources = localInputsForCloudflared.map(item => item.source);
+      const assignPreparedSources = (sources: string[]) => {
+        assignPreparedSourcesFor(localInputsForCloudflared, sources);
       };
       if (provider === 'openai-compatible') {
         assignPreparedSources(localSources);
