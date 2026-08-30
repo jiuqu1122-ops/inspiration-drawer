@@ -103,6 +103,12 @@ import {
   formatCreditUsageDate,
   selectRecentNonZeroCreditUsage,
 } from './features/cloudCreditUsage';
+import {
+  clearCachedCloudAccount,
+  createSingleFlight,
+  readCachedCloudAccount,
+  writeCachedCloudAccount,
+} from './features/cloudAccountSync';
 import type {
   ActiveShortcutScope,
   CanvasBrushCropRect,
@@ -2683,8 +2689,11 @@ function MainApp() {
   const [emailRegistrationError, setEmailRegistrationError] = useState('');
   const [isEmailCodeSending, setIsEmailCodeSending] = useState(false);
   const [isEmailVerifying, setIsEmailVerifying] = useState(false);
-  const [cloudAccount, setCloudAccount] = useState<CloudAccountSummary | null>(null);
+  const [cloudAccount, setCloudAccount] = useState<CloudAccountSummary | null>(() => readCachedCloudAccount());
   const [isCloudAccountLoading, setIsCloudAccountLoading] = useState(false);
+  const [cloudAccountSyncError, setCloudAccountSyncError] = useState<string | null>(null);
+  const cloudAccountRefreshFlightRef = useRef<(() => Promise<CloudAccountSummary>) | null>(null);
+  const cloudStartupSyncStartedRef = useRef(false);
   const [isCloudAccountLoggingOut, setIsCloudAccountLoggingOut] = useState(false);
   const [creditRedemptionCode, setCreditRedemptionCode] = useState('');
   const [creditRedemptionError, setCreditRedemptionError] = useState('');
@@ -2848,19 +2857,33 @@ function MainApp() {
   };
 
   const refreshCloudAccount = async (silent = false) => {
-    setIsCloudAccountLoading(true);
+    if (!cloudAccountRefreshFlightRef.current) {
+      cloudAccountRefreshFlightRef.current = createSingleFlight(async () => {
+        setIsCloudAccountLoading(true);
+        setCloudAccountSyncError(null);
+        try {
+          const account = await invoke<CloudAccountSummary>('get_cloud_account');
+          setCloudAccount(account);
+          writeCachedCloudAccount(account);
+          await refreshLicenseStatus(true);
+          return account;
+        } catch (err) {
+          const message = formatLicenseCommandError(err);
+          setCloudAccountSyncError(message);
+          console.error('读取云端账户失败，保留最近一次成功钱包数据:', err);
+          throw err;
+        } finally {
+          setIsCloudAccountLoading(false);
+        }
+      });
+    }
     try {
-      const account = await invoke<CloudAccountSummary>('get_cloud_account');
-      setCloudAccount(account);
-      await refreshLicenseStatus(true);
+      const account = await cloudAccountRefreshFlightRef.current();
       if (!silent) showToast('账户余额已刷新');
       return account;
     } catch (err) {
-      console.error('读取云端账户失败:', err);
       if (!silent) showToast(formatLicenseCommandError(err));
       throw err;
-    } finally {
-      setIsCloudAccountLoading(false);
     }
   };
 
@@ -2901,6 +2924,7 @@ function MainApp() {
               const nextStatus = await invoke<LicenseStatus>('remove_license');
               setLicenseStatus(nextStatus);
               setCloudAccount(null);
+              clearCachedCloudAccount();
               setCanvasAiCloudImageModels(null);
               setRegistrationEmail('');
               setRegistrationDisplayName('');
@@ -3897,11 +3921,14 @@ function MainApp() {
     invoke('get_mobile_pair_url').then((res: any) => setMobilePairUrl(String(res || ''))).catch(()=>{});
     invoke('set_topmost', { topmost: true }).catch(()=>{});
     void refreshLicenseStatus(true);
-    void refreshCloudAccount(true)
-      .catch((err) => {
-        console.warn('云端授权同步失败，将按当前本地授权状态继续:', err);
-        void refreshLicenseStatus(true);
-      });
+    if (!cloudStartupSyncStartedRef.current) {
+      cloudStartupSyncStartedRef.current = true;
+      void refreshCloudAccount(true)
+        .catch((err) => {
+          console.warn('云端授权同步失败，将按当前本地授权状态继续:', err);
+          void refreshLicenseStatus(true);
+        });
+    }
   }, []);
 
   const handleOpenTextInput = () => { setIsDrawerAgentOpen(false); setShowTextInput(true); setShowWebImageCollector(false); setIsSearchActive(false); setShowSettings(false); setShowFolderModal(false); };
@@ -31026,6 +31053,11 @@ useEffect(() => {
                                       <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">
                                         {cloudAccount?.displayName || licenseStatus?.customer || '邮箱账号钱包'}
                                       </div>
+                                      {cloudAccountSyncError && (
+                                        <div className="mt-0.5 truncate text-[9px] font-bold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>
+                                          同步失败，显示最近一次成功余额
+                                        </div>
+                                      )}
                                     </button>
                                     <button
                                       data-settings-choice="true"
@@ -31467,6 +31499,11 @@ useEffect(() => {
                                     </div>
                                     {cloudAccount?.email && (
                                       <div className="truncate text-[10px] text-blue-600/80 dark:text-blue-200/75">{cloudAccount.email}</div>
+                                    )}
+                                    {cloudAccountSyncError && (
+                                      <div className="truncate text-[9px] font-bold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>
+                                        同步失败，显示最近一次成功余额
+                                      </div>
                                     )}
                                     <button
                                       type="button"

@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+use tauri::async_runtime::Mutex as AsyncMutex;
+use tokio::sync::OnceCell;
 
 use crate::license::types::{LicenseFile, LicensePayload};
 use crate::license::{
@@ -17,6 +19,8 @@ const LICENSE_FILE_NAME: &str = "license.json";
 const CLOUD_API_BASE_URL: &str = "https://api.unmind.art";
 const WALLET_PROTOCOL_VERSION: &str = "1";
 const CLOUD_IMAGE_GENERATION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const EMAIL_SYNC_MAX_ATTEMPTS: usize = 4;
+const EMAIL_SYNC_BACKOFF_SECONDS: [u64; 4] = [5, 15, 30, 60];
 
 struct CachedCloudToken {
     value: String,
@@ -24,6 +28,12 @@ struct CachedCloudToken {
 }
 
 static CLOUD_TOKEN_CACHE: OnceLock<Mutex<Option<CachedCloudToken>>> = OnceLock::new();
+
+struct EmailSyncFlight {
+    result: OnceCell<Result<EmailVerificationResponse, String>>,
+}
+
+static EMAIL_SYNC_FLIGHT: OnceLock<AsyncMutex<Option<Arc<EmailSyncFlight>>>> = OnceLock::new();
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,7 +70,7 @@ struct CloudLicenseSyncRequest<'a> {
     machine_id: &'a str,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EmailVerificationResponse {
     license: String,
@@ -68,14 +78,14 @@ struct EmailVerificationResponse {
     account: CloudAccountResponse,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CloudAccountResponse {
     user: CloudUserResponse,
     wallet: Option<CloudWalletSummary>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CloudUserResponse {
     email: Option<String>,
@@ -530,6 +540,69 @@ async fn post_cloud<T: for<'de> Deserialize<'de>>(
         .map_err(|_| "cloud_invalid_response: 授权服务器返回格式无效".to_string())
 }
 
+async fn post_cloud_email_sync_once(
+    request_body: &CloudLicenseSyncRequest<'_>,
+) -> Result<EmailVerificationResponse, EmailSyncRequestError> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| EmailSyncRequestError {
+            status: None,
+            retry_after: None,
+            message: format!("cloud_unavailable: 无法初始化云端连接：{err}"),
+        })?;
+    let response = client
+        .post(format!("{CLOUD_API_BASE_URL}/v1/auth/email/sync"))
+        .header("x-client-version", env!("CARGO_PKG_VERSION"))
+        .header("x-wallet-protocol", WALLET_PROTOCOL_VERSION)
+        .json(request_body)
+        .send()
+        .await
+        .map_err(|err| EmailSyncRequestError {
+            status: None,
+            retry_after: None,
+            message: format!("cloud_unavailable: 无法连接授权服务器：{err}"),
+        })?;
+    let status = response.status();
+    let retry_after = parse_retry_after(
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+    );
+    let body = response
+        .text()
+        .await
+        .map_err(|err| EmailSyncRequestError {
+            status: Some(status.as_u16()),
+            retry_after,
+            message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
+        })?;
+    if !status.is_success() {
+        let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
+        let fallback = cloud_http_fallback(status, &body);
+        let code = parsed
+            .as_ref()
+            .and_then(|value| value.error.as_deref())
+            .unwrap_or("cloud_request_failed");
+        let message = parsed
+            .as_ref()
+            .and_then(|value| value.message.as_deref())
+            .unwrap_or(&fallback);
+        return Err(EmailSyncRequestError {
+            status: Some(status.as_u16()),
+            retry_after,
+            message: cloud_error(code, message),
+        });
+    }
+    serde_json::from_str::<EmailVerificationResponse>(&body).map_err(|_| EmailSyncRequestError {
+        status: Some(status.as_u16()),
+        retry_after,
+        message: "cloud_invalid_response: 授权服务器返回格式无效".to_string(),
+    })
+}
+
 async fn post_cloud_with_bearer<T: for<'de> Deserialize<'de>>(
     path: &str,
     access_token: &str,
@@ -634,7 +707,7 @@ fn summarize_cloud_account(
     })
 }
 
-async fn sync_cloud_account(
+async fn sync_cloud_account_uncached(
     app_handle: &tauri::AppHandle,
 ) -> Result<EmailVerificationResponse, String> {
     let current = read_license_content(app_handle)?
@@ -645,17 +718,85 @@ async fn sync_cloud_account(
         return Err("cloud_account_required: 请先完成邮箱注册或登录".to_string());
     }
     let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
-    let response = post_cloud::<EmailVerificationResponse>(
-        "/v1/auth/email/sync",
-        &CloudLicenseSyncRequest {
-            license: &current,
-            machine_id: &machine_id,
-        },
-    )
-    .await?;
+    let request = CloudLicenseSyncRequest {
+        license: &current,
+        machine_id: &machine_id,
+    };
+    let mut attempt = 0;
+    let response = loop {
+        match post_cloud_email_sync_once(&request).await {
+            Ok(response) => break response,
+            Err(error) => {
+                if attempt + 1 >= EMAIL_SYNC_MAX_ATTEMPTS || !is_retryable_email_sync_error(&error) {
+                    return Err(error.message);
+                }
+                let delay = email_sync_retry_delay(attempt, error.retry_after);
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+            }
+        }
+    };
     verify_and_save_cloud_license(app_handle, machine_id, response.license.clone())?;
     cache_cloud_access_token(&response.access_token);
     Ok(response)
+}
+
+async fn sync_cloud_account(
+    app_handle: &tauri::AppHandle,
+) -> Result<EmailVerificationResponse, String> {
+    let flight_store = EMAIL_SYNC_FLIGHT.get_or_init(|| AsyncMutex::new(None));
+    let flight = {
+        let mut guard = flight_store.lock().await;
+        if let Some(flight) = guard.as_ref() {
+            flight.clone()
+        } else {
+            let flight = Arc::new(EmailSyncFlight {
+                result: OnceCell::new(),
+            });
+            *guard = Some(flight.clone());
+            flight
+        }
+    };
+
+    let result = flight
+        .result
+        .get_or_init(|| async { sync_cloud_account_uncached(app_handle).await })
+        .await
+        .clone();
+
+    let mut guard = flight_store.lock().await;
+    if guard
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &flight))
+    {
+        *guard = None;
+    }
+    result
+}
+
+#[derive(Debug, Clone)]
+struct EmailSyncRequestError {
+    status: Option<u16>,
+    retry_after: Option<Duration>,
+    message: String,
+}
+
+fn email_sync_retry_delay(retry_index: usize, retry_after: Option<Duration>) -> Duration {
+    if let Some(delay) = retry_after {
+        return delay.max(Duration::from_secs(1)).min(Duration::from_secs(300));
+    }
+    Duration::from_secs(
+        EMAIL_SYNC_BACKOFF_SECONDS[retry_index.min(EMAIL_SYNC_BACKOFF_SECONDS.len() - 1)],
+    )
+}
+
+fn is_retryable_email_sync_error(error: &EmailSyncRequestError) -> bool {
+    matches!(error.status, None | Some(429 | 500 | 502 | 503 | 504))
+}
+
+fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
+    let seconds = value?.trim().parse::<u64>().ok()?;
+    Some(Duration::from_secs(seconds))
 }
 
 fn cache_cloud_access_token(access_token: &str) {
@@ -775,19 +916,9 @@ pub async fn sync_email_license(
         return Ok(None);
     }
 
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
-    let response = post_cloud::<EmailVerificationResponse>(
-        "/v1/auth/email/sync",
-        &CloudLicenseSyncRequest {
-            license: &current,
-            machine_id: &machine_id,
-        },
-    )
-    .await;
+    let response = sync_cloud_account(&app_handle).await;
     match response {
-        Ok(response) => {
-            verify_and_save_cloud_license(&app_handle, machine_id, response.license).map(Some)
-        }
+        Ok(_) => get_license_status(app_handle).map(Some),
         Err(error)
             if error.starts_with("account_disabled:")
                 || error.starts_with("license_expired:")
@@ -1178,8 +1309,9 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_cloud_image_references, parse_cloud_image_reference, validate_display_name,
-        validate_email, CloudImageReference,
+        email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
+        parse_cloud_image_reference, parse_retry_after, validate_display_name, validate_email,
+        CloudImageReference, EmailSyncRequestError,
         CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
     };
     use base64::Engine as _;
@@ -1305,6 +1437,37 @@ mod tests {
             let error = normalize_cloud_image_references(vec![source.to_string()]).unwrap_err();
             assert!(error.starts_with("invalid_request: reference image 1"), "{source}: {error}");
         }
+    }
+
+    #[test]
+    fn email_sync_retry_delay_is_bounded_and_not_immediate() {
+        assert_eq!(email_sync_retry_delay(0, None), std::time::Duration::from_secs(5));
+        assert_eq!(email_sync_retry_delay(1, None), std::time::Duration::from_secs(15));
+        assert_eq!(email_sync_retry_delay(99, None), std::time::Duration::from_secs(60));
+        assert_eq!(email_sync_retry_delay(0, Some(std::time::Duration::ZERO)), std::time::Duration::from_secs(1));
+        assert_eq!(email_sync_retry_delay(0, Some(std::time::Duration::from_secs(7))), std::time::Duration::from_secs(7));
+        assert_eq!(email_sync_retry_delay(0, Some(std::time::Duration::from_secs(999))), std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn email_sync_retries_only_transient_failures_and_reads_retry_after() {
+        assert_eq!(parse_retry_after(Some("12")), Some(std::time::Duration::from_secs(12)));
+        assert_eq!(parse_retry_after(Some("invalid")), None);
+        assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
+            status: Some(429),
+            retry_after: None,
+            message: String::new(),
+        }));
+        assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
+            status: Some(500),
+            retry_after: None,
+            message: String::new(),
+        }));
+        assert!(!is_retryable_email_sync_error(&EmailSyncRequestError {
+            status: Some(400),
+            retry_after: None,
+            message: String::new(),
+        }));
     }
 
     #[test]

@@ -2477,6 +2477,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "time",
+ "tokio",
  "url",
  "winapi",
  "zip",
