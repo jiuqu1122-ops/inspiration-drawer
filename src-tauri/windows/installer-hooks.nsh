@@ -13,3 +13,8 @@ Var ExistingInstallBeforeCopy
     FileClose $0
   ${EndIf}
 !macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  Delete "$APPDATA\com.inspirationdrawer.app\browser-extension.json"
+  RMDir /r "$APPDATA\com.inspirationdrawer.app\browser-extension"
+!macroend

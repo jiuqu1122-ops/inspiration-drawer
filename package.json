@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:browser-extension": "node scripts/build-browser-extension.mjs",
+    "prebuild": "npm run build:browser-extension",
     "build": "tsc && vite build",
     "updater:release": "node scripts/build-github-release.mjs",
     "updater:prepare": "node scripts/prepare-github-release.mjs",

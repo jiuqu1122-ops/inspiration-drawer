@@ -115,9 +115,10 @@
     "targets": [
       "nsis"
     ],
-    "resources": [
-      "../cloudflared.exe"
-    ],
+    "resources": {
+      "../cloudflared.exe": "cloudflared.exe",
+      "../browser-extension/build/": "browser-extension/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1302,9 +1302,9 @@ mod tests {
             }])
             .expect("requeue failed analysis rows");
         assert_eq!(requeued.len(), 2);
-        assert!(requeued.iter().all(|item| {
-            item.get("inspirationAnalysisFailure").is_none()
-        }));
+        assert!(requeued
+            .iter()
+            .all(|item| { item.get("inspirationAnalysisFailure").is_none() }));
         for status in ["retryable", "skipped"] {
             let rows = repo
                 .list_assets(AssetListOptions {

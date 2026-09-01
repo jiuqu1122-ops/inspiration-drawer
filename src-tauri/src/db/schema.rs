@@ -3,7 +3,7 @@ use rusqlite::Connection;
 pub const DEFAULT_LIBRARY_ID: &str = "default";
 pub const DEFAULT_PROJECT_ID: &str = "default";
 pub const DEFAULT_CANVAS_ID: &str = "default";
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 const INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID: &str =
     "inspiration-analysis-request-schema-recovery-v1";
 
@@ -137,6 +137,57 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             created_at INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS chat_conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            model TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_attachments (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            path TEXT NOT NULL,
+            thumbnail_path TEXT,
+            mime_type TEXT,
+            metadata_json TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_tool_calls (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT NOT NULL DEFAULT '{}',
+            result_json TEXT,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            FOREIGN KEY(message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            through_message_id TEXT,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS migrations (
             id TEXT PRIMARY KEY,
             version INTEGER,
@@ -184,6 +235,13 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_tags_library_id ON tags(library_id);
         CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+
+        CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at ON chat_conversations(archived, updated_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_conversations_title ON chat_conversations(title);
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created ON chat_messages(conversation_id, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_attachments_message_id ON chat_attachments(message_id, created_at ASC);
+        CREATE INDEX IF NOT EXISTS idx_chat_tool_calls_message_id ON chat_tool_calls(message_id, created_at ASC);
+        CREATE INDEX IF NOT EXISTS idx_chat_tool_calls_status ON chat_tool_calls(status, created_at DESC);
         "#,
     )
     .map_err(|err| err.to_string())?;

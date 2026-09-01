@@ -2,6 +2,7 @@
 dist/
 dist-generator/
 dist-updater/
+browser-extension/build/
 src-tauri/target/
 
 .env

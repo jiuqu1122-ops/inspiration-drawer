@@ -10,6 +10,8 @@ export type WebImageCollectorReference = {
   name: string;
   preview?: string;
   itemId?: string;
+  pageUrl?: string;
+  pageTitle?: string;
 };
 
 export type WebImageSearchDescription = {

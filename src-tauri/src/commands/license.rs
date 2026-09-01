@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 use tauri::async_runtime::Mutex as AsyncMutex;
+use tauri::Manager;
 use tokio::sync::OnceCell;
 
 use crate::license::types::{LicenseFile, LicensePayload};
@@ -571,14 +571,11 @@ async fn post_cloud_email_sync_once(
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok()),
     );
-    let body = response
-        .text()
-        .await
-        .map_err(|err| EmailSyncRequestError {
-            status: Some(status.as_u16()),
-            retry_after,
-            message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
-        })?;
+    let body = response.text().await.map_err(|err| EmailSyncRequestError {
+        status: Some(status.as_u16()),
+        retry_after,
+        message: format!("cloud_invalid_response: 无法读取授权服务器响应：{err}"),
+    })?;
     if !status.is_success() {
         let parsed = serde_json::from_str::<CloudApiError>(&body).ok();
         let fallback = cloud_http_fallback(status, &body);
@@ -727,7 +724,8 @@ async fn sync_cloud_account_uncached(
         match post_cloud_email_sync_once(&request).await {
             Ok(response) => break response,
             Err(error) => {
-                if attempt + 1 >= EMAIL_SYNC_MAX_ATTEMPTS || !is_retryable_email_sync_error(&error) {
+                if attempt + 1 >= EMAIL_SYNC_MAX_ATTEMPTS || !is_retryable_email_sync_error(&error)
+                {
                     return Err(error.message);
                 }
                 let delay = email_sync_retry_delay(attempt, error.retry_after);
@@ -783,7 +781,9 @@ struct EmailSyncRequestError {
 
 fn email_sync_retry_delay(retry_index: usize, retry_after: Option<Duration>) -> Duration {
     if let Some(delay) = retry_after {
-        return delay.max(Duration::from_secs(1)).min(Duration::from_secs(300));
+        return delay
+            .max(Duration::from_secs(1))
+            .min(Duration::from_secs(300));
     }
     Duration::from_secs(
         EMAIL_SYNC_BACKOFF_SECONDS[retry_index.min(EMAIL_SYNC_BACKOFF_SECONDS.len() - 1)],
@@ -1006,9 +1006,7 @@ pub async fn generate_cloud_images(
     } else {
         9
     };
-    if !(1..=4).contains(&request.count)
-        || request.input_images.len() > max_reference_images
-    {
+    if !(1..=4).contains(&request.count) || request.input_images.len() > max_reference_images {
         return Err("invalid_request: 生图数量或参考图数量无效".to_string());
     }
     request.input_images =
@@ -1123,9 +1121,7 @@ pub async fn generate_cloud_videos(
     if model.is_empty() || model.len() > 200 || prompt.is_empty() || prompt.len() > 50_000 {
         return Err("invalid_request: 视频模型或提示词无效".to_string());
     }
-    let model_token = model
-        .to_ascii_lowercase()
-        .replace([' ', '_', '-', '.'], "");
+    let model_token = model.to_ascii_lowercase().replace([' ', '_', '-', '.'], "");
     let is_seedance20 = matches!(
         model_token.as_str(),
         "seedance2"
@@ -1311,8 +1307,8 @@ mod tests {
     use super::{
         email_sync_retry_delay, is_retryable_email_sync_error, normalize_cloud_image_references,
         parse_cloud_image_reference, parse_retry_after, validate_display_name, validate_email,
-        CloudImageReference, EmailSyncRequestError,
         CloudCreditUsageResult, CloudImageGenerationRequest, CloudImageModelsResponse,
+        CloudImageReference, EmailSyncRequestError,
     };
     use base64::Engine as _;
     use std::fs;
@@ -1369,7 +1365,8 @@ mod tests {
                 "createdAt": "2026-08-27T10:00:00.000Z"
             }],
             "nextCursor": null
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].entry_type, "CHARGE");
         assert_eq!(result.items[0].amount, "16");
@@ -1435,23 +1432,47 @@ mod tests {
             "arbitrary-reference-value",
         ] {
             let error = normalize_cloud_image_references(vec![source.to_string()]).unwrap_err();
-            assert!(error.starts_with("invalid_request: reference image 1"), "{source}: {error}");
+            assert!(
+                error.starts_with("invalid_request: reference image 1"),
+                "{source}: {error}"
+            );
         }
     }
 
     #[test]
     fn email_sync_retry_delay_is_bounded_and_not_immediate() {
-        assert_eq!(email_sync_retry_delay(0, None), std::time::Duration::from_secs(5));
-        assert_eq!(email_sync_retry_delay(1, None), std::time::Duration::from_secs(15));
-        assert_eq!(email_sync_retry_delay(99, None), std::time::Duration::from_secs(60));
-        assert_eq!(email_sync_retry_delay(0, Some(std::time::Duration::ZERO)), std::time::Duration::from_secs(1));
-        assert_eq!(email_sync_retry_delay(0, Some(std::time::Duration::from_secs(7))), std::time::Duration::from_secs(7));
-        assert_eq!(email_sync_retry_delay(0, Some(std::time::Duration::from_secs(999))), std::time::Duration::from_secs(300));
+        assert_eq!(
+            email_sync_retry_delay(0, None),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            email_sync_retry_delay(1, None),
+            std::time::Duration::from_secs(15)
+        );
+        assert_eq!(
+            email_sync_retry_delay(99, None),
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            email_sync_retry_delay(0, Some(std::time::Duration::ZERO)),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            email_sync_retry_delay(0, Some(std::time::Duration::from_secs(7))),
+            std::time::Duration::from_secs(7)
+        );
+        assert_eq!(
+            email_sync_retry_delay(0, Some(std::time::Duration::from_secs(999))),
+            std::time::Duration::from_secs(300)
+        );
     }
 
     #[test]
     fn email_sync_retries_only_transient_failures_and_reads_retry_after() {
-        assert_eq!(parse_retry_after(Some("12")), Some(std::time::Duration::from_secs(12)));
+        assert_eq!(
+            parse_retry_after(Some("12")),
+            Some(std::time::Duration::from_secs(12))
+        );
         assert_eq!(parse_retry_after(Some("invalid")), None);
         assert!(is_retryable_email_sync_error(&EmailSyncRequestError {
             status: Some(429),

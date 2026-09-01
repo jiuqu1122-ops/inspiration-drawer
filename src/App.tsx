@@ -99,6 +99,7 @@ import type {
   LicenseStatus,
 } from './types/license';
 import {
+  formatCreditAmount,
   formatCreditUsageAmount,
   formatCreditUsageDate,
   selectRecentNonZeroCreditUsage,
@@ -338,8 +339,13 @@ import {
 } from './services/mediaThumbnail';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
-import { CanvasAgentSidebar } from './components/CanvasAgentSidebar';
-import { DrawerAgentPanel } from './components/DrawerAgentPanel';
+import { ChatView } from './features/chat/components/ChatView';
+import { useChatRuntime } from './features/chat/runtime/useChatRuntime';
+import type { ChatAttachment, ChatGeneratedMedia, ChatImageModelOption } from './features/chat/model/chatTypes';
+import { runChatMediaGeneration } from './features/chat/tools/chatGenerationBridge';
+import { createInspirationChatToolExecutor } from './features/chat/tools/inspirationChatToolExecutor';
+import { BrowserExtensionSetup } from './features/browserExtension/BrowserExtensionSetup';
+import { useBrowserExtensionDragCollector } from './features/browserExtension/useBrowserExtensionDragCollector';
 import { DoodleBrushCursor } from './components/DoodleBrushCursor';
 import { CanvasNavigator } from './components/CanvasNavigator';
 import { CanvasToolbar } from './components/CanvasToolbar';
@@ -424,7 +430,6 @@ import {
   isBuiltInAgentSystemPrompt,
   type AgentCanvasSelectionItem,
   type AgentCanvasVisualReference,
-  type AgentSendOptions,
   type WorkflowResultCardData,
   type WorkflowResultMedia,
   type WorkflowResultReference,
@@ -827,6 +832,10 @@ import {
   mergeCanvasAiRetryOutputSlot,
 } from './features/canvasWorkflowOutputRetry';
 
+const shouldShowLegacyAiSettings = (): boolean => false;
+const CHAT_IMAGE_MODEL_STORAGE_KEY = 'drawer_chat_image_model';
+const CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY = 'drawer_chat_image_aspect_ratio';
+const CHAT_IMAGE_RESOLUTION_STORAGE_KEY = 'drawer_chat_image_resolution';
 const LOCAL_VISION_MODEL_STORAGE_KEY = 'drawer_local_vision_model';
 const DEFAULT_LOCAL_VISION_MODEL = 'qwen2.5vl:3b';
 const LEGACY_LOCAL_VISION_MODEL = 'qwen2.5vl:7b';
@@ -1218,9 +1227,7 @@ function MainApp() {
   const [canvasGeneratedSelectedIds, setCanvasGeneratedSelectedIds] = useState<string[]>([]);
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [isInspirationSpaceOpen, setIsInspirationSpaceOpen] = useState(false);
-  const [canvasAgentInput, setCanvasAgentInput] = useState('');
   const [isDrawerAgentOpen, setIsDrawerAgentOpen] = useState(false);
-  const [drawerAgentInput, setDrawerAgentInput] = useState('');
   const [canvasTextAgentRunningIds, setCanvasTextAgentRunningIds] = useState<string[]>([]);
   const [canvasAgentSidebarWidth, setCanvasAgentSidebarWidth] = useState(readAgentSidebarWidth);
   const [canvasSelectedIds, setCanvasSelectedIds] = useState<string[]>([]);
@@ -2686,7 +2693,7 @@ function MainApp() {
   };
 
   const [showSettings, setShowSettings] = useState(false);
-  const [activeSettingCategory, setActiveSettingCategory] = useState<string>('ai-overview');
+  const [activeSettingCategory, setActiveSettingCategory] = useState<string>('license');
   const [showHelp, setShowHelp] = useState(false);
   const [showAboutSoftware, setShowAboutSoftware] = useState(false);
   const [showContact, setShowContact] = useState(false);
@@ -2994,7 +3001,7 @@ function MainApp() {
       const result = await invoke<CreditRedemptionResult>('redeem_credit_code', { code });
       setCloudAccount(result.account);
       setCreditRedemptionCode('');
-      showToast(`兑换成功，已增加 ${result.redeemedCredits} 额度`);
+      showToast(`兑换成功，已增加 ${formatCreditAmount(result.redeemedCredits)} 额度`);
     } catch (err) {
       console.error('兑换额度失败:', err);
       setCreditRedemptionError(formatLicenseCommandError(err));
@@ -3778,7 +3785,8 @@ function MainApp() {
   };
 
   useEffect(() => {
-    if (!isCanvasMode) {
+    const shouldRefreshModels = isCanvasMode || isAgentChatOpen || isDrawerAgentOpen;
+    if (!shouldRefreshModels) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
     }
@@ -3806,7 +3814,7 @@ function MainApp() {
       void refreshCanvasAiOpenAiModels(true);
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [isCanvasMode, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
+  }, [isAgentChatOpen, isCanvasMode, isDrawerAgentOpen, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
 
   useEffect(() => {
     if (!isCanvasMode || !canvasAiUsesCloudImageModels) return;
@@ -4075,6 +4083,16 @@ function MainApp() {
     openWebImageCollector(reference);
     showToast(toastMessage);
   };
+
+  useBrowserExtensionDragCollector(payload => {
+    openWebImageCollectorWithReference({
+      source: payload.imageUrl,
+      preview: payload.imageUrl,
+      name: payload.imageTitle || payload.alt || payload.pageTitle || '网页图片',
+      pageUrl: payload.pageUrl || undefined,
+      pageTitle: payload.pageTitle || undefined,
+    }, `已接收 ${payload.browser === 'edge' ? 'Edge' : 'Chrome'} 网页图片`);
+  });
 
   const closeWebImageCollector = () => {
     if (isCollectingWebImages || isGeneratingWebImageQuery) return;
@@ -4477,7 +4495,7 @@ function MainApp() {
       setShowTextInput(false);
       setIsSearchActive(false);
       setShowSettings(true);
-      setActiveSettingCategory('ai-overview');
+      setActiveSettingCategory('license');
       setShowFolderModal(false);
       setShowMoveFolderModal(false);
       setIsOpen(true);
@@ -25899,10 +25917,20 @@ useEffect(() => {
           if (!isCanvasModeRef.current) enterCanvasMode();
           setIsAgentChatOpen(true);
           let added = 0;
+          let existing = 0;
           for (const item of mediaTargets) {
+            const existingCanvasItem = canvasItemsRef.current.find(canvasItem => (
+              canvasItem.item.sourceItemId === item.id
+            ));
+            if (existingCanvasItem) {
+              existing += 1;
+              updateCanvasSelection([existingCanvasItem.id]);
+              scheduleCanvasFocusItemById(existingCanvasItem.id);
+              continue;
+            }
             if (await addDrawerMediaItemToCanvas(item.id)) added += 1;
           }
-          return { action, added };
+          return { action, added, existing };
         }
         if (action === 'update_item') {
           if (targets.length === 0) throw new Error('没有找到要修改的素材');
@@ -27730,6 +27758,178 @@ useEffect(() => {
     onNotice: showToast,
   });
   workflowResultPublisherRef.current = canvasAgent.appendWorkflowResult;
+
+  const chatImageModelOptions = useMemo<ChatImageModelOption[]>(() => (
+    canvasAiUnifiedImageModelOptions
+      .filter(option => !option.disabled)
+      .map(option => {
+        const choice = parseCanvasAiModelChoiceValue(option.value);
+        return {
+          value: option.label,
+          label: option.label,
+          hint: option.hint,
+          meta: choice?.source === 'local' ? '本地 API' : '账号额度',
+        };
+      })
+  ), [canvasAiUnifiedImageModelOptions]);
+  const [chatImageModel, setChatImageModel] = useState(() => (
+    localStorage.getItem(CHAT_IMAGE_MODEL_STORAGE_KEY) || ''
+  ));
+  const activeChatImageModel = chatImageModelOptions.some(option => option.value === chatImageModel)
+    ? chatImageModel
+    : chatImageModelOptions[0]?.value || '';
+  const activeChatImageModelChoice = canvasAiUnifiedImageModelOptions
+    .find(option => !option.disabled && option.label === activeChatImageModel);
+  const activeChatImageModelConfig = activeChatImageModelChoice
+    ? parseCanvasAiModelChoiceValue(activeChatImageModelChoice.value)
+    : null;
+  const activeChatImageModelCandidates = activeChatImageModelConfig?.providerCandidates || [];
+  const chatImageResolutionValues = activeChatImageModelCandidates.length > 0
+    ? getCanvasAiImageResolutionValuesForCandidates(activeChatImageModelCandidates)
+    : getCanvasAiImageResolutionValues(
+      activeChatImageModelConfig?.provider,
+      activeChatImageModelConfig?.model,
+    );
+  const chatImageResolutionOptions = useMemo<ChatImageModelOption[]>(() => (
+    chatImageResolutionValues.length > 0
+      ? chatImageResolutionValues.map(value => ({ value, label: value.toUpperCase() }))
+      : [{ value: '', label: '模型默认' }]
+  ), [chatImageResolutionValues.join('|')]);
+  const [chatImageResolution, setChatImageResolution] = useState(() => (
+    localStorage.getItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY) || CANVAS_AI_DEFAULT_IMAGE_RESOLUTION
+  ));
+  const activeChatImageResolution = chatImageResolutionOptions.some(option => option.value === chatImageResolution)
+    ? chatImageResolution
+    : chatImageResolutionOptions[0]?.value || '';
+  const chatImageAspectRatioOptions = useMemo<ChatImageModelOption[]>(() => (
+    getCanvasAiAspectRatioOptionsForModel(
+      activeChatImageModelConfig?.model,
+      activeChatImageResolution,
+    ).map(option => ({ value: option.value, label: option.label, hint: option.hint }))
+  ), [activeChatImageModelConfig?.model, activeChatImageResolution]);
+  const [chatImageAspectRatio, setChatImageAspectRatio] = useState(() => (
+    localStorage.getItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY) || CANVAS_AI_DEFAULT_ASPECT_RATIO
+  ));
+  const activeChatImageAspectRatio = normalizeCanvasAiAspectRatioForModel(
+    activeChatImageModelConfig?.model,
+    chatImageAspectRatio,
+    activeChatImageResolution,
+  );
+  useEffect(() => {
+    if (!activeChatImageModel || activeChatImageModel === chatImageModel) return;
+    setChatImageModel(activeChatImageModel);
+  }, [activeChatImageModel, chatImageModel]);
+  useEffect(() => {
+    if (activeChatImageModel) localStorage.setItem(CHAT_IMAGE_MODEL_STORAGE_KEY, activeChatImageModel);
+  }, [activeChatImageModel]);
+  useEffect(() => {
+    if (activeChatImageResolution !== chatImageResolution) setChatImageResolution(activeChatImageResolution);
+    if (activeChatImageResolution) localStorage.setItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY, activeChatImageResolution);
+    else localStorage.removeItem(CHAT_IMAGE_RESOLUTION_STORAGE_KEY);
+  }, [activeChatImageResolution, chatImageResolution]);
+  useEffect(() => {
+    if (activeChatImageAspectRatio !== chatImageAspectRatio) setChatImageAspectRatio(activeChatImageAspectRatio);
+    localStorage.setItem(CHAT_IMAGE_ASPECT_RATIO_STORAGE_KEY, activeChatImageAspectRatio);
+  }, [activeChatImageAspectRatio, chatImageAspectRatio]);
+
+  const generateChatMedia = (
+    toolName: 'generate_image' | 'edit_image' | 'generate_video',
+    args: Record<string, unknown>,
+  ) => runChatMediaGeneration({
+    toolName,
+    args,
+    sourceItems: () => canvasItemsRef.current,
+    buildGeneratorNode: (position, inputIds, mediaType) => (
+      buildCanvasAiGeneratorNode(position, undefined, inputIds, mediaType)
+    ),
+    runGenerator: (target, options) => runCanvasAiGeneratorTarget(target, options),
+  });
+
+  const executeChatTool = createInspirationChatToolExecutor({
+    executeExistingTool: (name, args, execution) => canvasAgent.executeExternalTool(name, args, execution),
+    generateMedia: generateChatMedia,
+    listWorkflowDescriptors: () => canvasWorkflowTemplates,
+    searchWeb: (query, limit) => invoke('chat_web_search', { query, limit }),
+    createFile: request => invoke('chat_create_file', { request }),
+  });
+
+  const addChatMediaToCanvas = async (
+    media: ChatGeneratedMedia,
+    options: { autoFocus?: boolean } = {},
+  ) => {
+    const assetId = media.assetId || media.id;
+    if (!assetId) return;
+    try {
+      const existing = canvasItemsRef.current.find(item => (
+        item.item.sourceItemId === assetId || item.item.id === assetId
+      ));
+      if (existing) {
+        if (!isCanvasModeRef.current) enterCanvasMode();
+        if (options.autoFocus) scheduleCanvasFocusItemById(existing.id);
+        return;
+      }
+
+      await canvasAgent.executeExternalTool('drawer_manage', {
+        action: 'add_items_to_canvas',
+        targetIds: [assetId],
+      }, { userRequest: options.autoFocus ? 'Chat 生成图片自动加入画布' : '用户点击发送到画布' });
+
+      if (options.autoFocus) {
+        const added = canvasItemsRef.current.find(item => (
+          item.item.sourceItemId === assetId || item.item.id === assetId
+        ));
+        if (added) scheduleCanvasFocusItemById(added.id);
+      }
+      if (!options.autoFocus) showToast('已发送到画布');
+    } catch (error) {
+      showToast(`${options.autoFocus ? '生成图片自动加入画布失败' : '发送到画布失败'}：${String(error)}`);
+    }
+  };
+
+  const chatRuntime = useChatRuntime({
+    model: canvasAgent.settings.apiModel,
+    imageModel: activeChatImageModelChoice?.value,
+    imageAspectRatio: activeChatImageAspectRatio,
+    imageResolution: activeChatImageResolution || undefined,
+    approvalMode: canvasAgent.settings.approvalMode,
+    prepareAttachment: async attachment => {
+      if (attachment.type !== 'image') return attachment;
+      const source = attachment.path.trim();
+      if (!source || !/^(?:https?:|data:|blob:|asset:)/i.test(source)) return attachment;
+      let localPath = '';
+      if (/^https?:\/\//i.test(source)) {
+        localPath = await invoke<string>('cache_web_image', {
+          url: source,
+          name: `chat-attachment-${Date.now()}`,
+        });
+      } else {
+        let dataUrl = source;
+        if (!source.startsWith('data:')) {
+          if (/^asset:/i.test(source)) dataUrl = await invoke<string>('read_local_image_data_url', { path: source });
+          else {
+            const response = await fetch(source);
+            if (!response.ok) throw new Error('读取图片附件失败');
+            dataUrl = await blobToDataUrl(await response.blob());
+          }
+        }
+        const encodedType = dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+)[;,]/)?.[1]?.toLowerCase();
+        const extension = encodedType === 'jpeg' ? 'jpg' : encodedType === 'svg+xml' ? 'svg' : encodedType || 'png';
+        localPath = await invoke<string>('save_dropped_file', {
+          fileName: `chat-attachment-${Date.now()}.${extension}`,
+          dataUrl,
+        });
+      }
+      return { ...attachment, path: localPath, thumbnailPath: localPath };
+    },
+    resolveAttachmentUrl: async (attachment: ChatAttachment) => {
+      const source = attachment.path.trim();
+      if (/^(?:https?:|data:)/i.test(source)) return source;
+      return invoke<string>('read_local_image_data_url', { path: source });
+    },
+    executeTool: executeChatTool,
+    onNotice: showToast,
+    onGeneratedMediaReady: media => addChatMediaToCanvas(media, { autoFocus: true }),
+  });
   const [agentModels, setAgentModels] = useState<string[]>([]);
   const [agentModelsLoading, setAgentModelsLoading] = useState(false);
   const [agentCustomProvider, setAgentCustomProvider] = useState('openai-compatible');
@@ -27739,18 +27939,18 @@ useEffect(() => {
   const agentModelsRequestedRef = useRef(false);
 
   useEffect(() => {
-    if (canvasAgent.settings.provider === 'codex') {
-      agentModelsRequestedRef.current = false;
-      return;
-    }
-    if (canvasAgent.settingsLoading || activeSettingCategory !== 'ai-overview' || agentModelsRequestedRef.current) return;
+    const isChatVisible = isAgentChatOpen || isDrawerAgentOpen;
+    if (canvasAgent.settingsLoading || !isChatVisible || agentModelsRequestedRef.current) return;
     agentModelsRequestedRef.current = true;
     setAgentModelsLoading(true);
     void canvasAgent.listOpenAiModels()
       .then(models => setAgentModels(Array.from(new Set((models || []).map(model => model.trim()).filter(Boolean)))))
-      .catch(error => console.warn('读取 Agent 模型列表失败:', error))
+      .catch(error => {
+        agentModelsRequestedRef.current = false;
+        console.warn('读取 Chat 模型列表失败:', error);
+      })
       .finally(() => setAgentModelsLoading(false));
-  }, [activeSettingCategory, canvasAgent.listOpenAiModels, canvasAgent.settingsLoading, canvasAgent.settings.provider]);
+  }, [canvasAgent.listOpenAiModels, canvasAgent.settingsLoading, isAgentChatOpen, isDrawerAgentOpen]);
 
   useEffect(() => {
     if (!isByokUnlocked) return;
@@ -28011,53 +28211,6 @@ useEffect(() => {
     } finally {
       setCanvasTextAgentRunning(targetId, false);
     }
-  };
-
-  const sendCanvasAgentMessage = async (content: string, options?: AgentSendOptions) => {
-    const text = content.trim();
-    if (!text) return;
-    setCanvasAgentInput('');
-    if (!await canvasAgent.sendMessage(text, options)) {
-      setCanvasAgentInput(current => current || content);
-    }
-  };
-
-  const sendDrawerAgentMessage = async (content: string, options?: AgentSendOptions) => {
-    const text = content.trim();
-    if (!text) return;
-    setDrawerAgentInput('');
-    if (!await canvasAgent.sendMessage(text, options)) {
-      setDrawerAgentInput(current => current || content);
-    }
-  };
-
-  const requestCanvasAgentCodexLogin = () => {
-    setConfirmDialog({
-      isOpen: true,
-      title: '登录 ChatGPT',
-      message: '已切换到 ChatGPT 登录模式。需要完成官方登录后才能使用 GPT 登录规划和 Agent 能力，是否现在打开官方登录页？',
-      onConfirm: () => {},
-      actions: [
-        {
-          label: '打开官方登录页',
-          onClick: async () => {
-            closeConfirmDialog();
-            await canvasAgent.startCodexLogin('chatgpt');
-          },
-          className: 'rounded-[16px] bg-blue-500 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-blue-600',
-        },
-      ],
-    });
-  };
-
-  const clearCanvasAgentChat = () => {
-    canvasAgent.clearConversation();
-    setCanvasAgentInput('');
-  };
-
-  const clearDrawerAgentChat = () => {
-    canvasAgent.clearConversation();
-    setDrawerAgentInput('');
   };
 
   useEffect(() => {
@@ -31062,6 +31215,12 @@ useEffect(() => {
                           </AnimatePresence>
                         </div>
 
+                        <BrowserExtensionSetup
+                          expanded={activeSettingCategory === 'browser-extension'}
+                          onToggle={() => setActiveSettingCategory(prev => prev === 'browser-extension' ? '' : 'browser-extension')}
+                        />
+
+                        {shouldShowLegacyAiSettings() && (
                         <div data-settings-section="true" data-active={activeSettingCategory === 'ai-overview' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
                           <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'ai-overview' ? '' : 'ai-overview')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
                             <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Sparkles className="w-4 h-4 text-blue-500"/> AI 与额度</span>
@@ -31082,7 +31241,7 @@ useEffect(() => {
                                     >
                                       <div className="text-[10px] font-black text-blue-700 dark:text-blue-200">授权钱包余额</div>
                                       <div className="mt-1 text-xl font-black tabular-nums text-stone-900 dark:text-white">
-                                        {isCloudAccountLoading ? '…' : cloudAccount?.wallet.availableCredits ?? '—'}
+                                        {isCloudAccountLoading ? '…' : cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}
                                       </div>
                                       <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">
                                         {cloudAccount?.displayName || licenseStatus?.customer || '邮箱账号钱包'}
@@ -31490,10 +31649,11 @@ useEffect(() => {
                             </>
                           )}
                         </div>
+                        )}
 
                         <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
                           <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
-                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><KeyRound className="w-4 h-4 text-stone-500"/> 账户授权</span>
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Wallet className="w-4 h-4 text-blue-500"/> 账号额度</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
@@ -31525,11 +31685,23 @@ useEffect(() => {
                                   <div className="grid gap-2 rounded-[16px] border border-blue-100 bg-blue-50/55 px-3 py-2.5 dark:border-blue-400/20 dark:bg-blue-400/10">
                                     <div className="flex items-center justify-between gap-3">
                                       <span className="flex items-center gap-1.5 text-[10px] font-black text-blue-800 dark:text-blue-100">
-                                        <Wallet className="h-3.5 w-3.5" /> 授权钱包余额
+                                        <Wallet className="h-3.5 w-3.5" /> 账号可用额度
                                       </span>
-                                      <span className="text-sm font-black tabular-nums text-blue-700 dark:text-blue-100">
-                                        {isCloudAccountLoading ? '读取中…' : cloudAccount?.wallet.availableCredits ?? '—'}
-                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="text-sm font-black tabular-nums text-blue-700 dark:text-blue-100">
+                                          {isCloudAccountLoading ? '读取中…' : cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => void refreshCloudAccount()}
+                                          disabled={isCloudAccountLoading}
+                                          className="grid h-7 w-7 place-items-center rounded-[8px] text-blue-500 transition-colors hover:bg-blue-100 disabled:cursor-wait disabled:opacity-45 dark:text-blue-200 dark:hover:bg-blue-400/15"
+                                          title="刷新账号额度"
+                                          aria-label="刷新账号额度"
+                                        >
+                                          <RefreshCw className={`h-3.5 w-3.5 ${isCloudAccountLoading ? 'animate-spin' : ''}`} />
+                                        </button>
+                                      </div>
                                     </div>
                                     {cloudAccount?.email && (
                                       <div className="truncate text-[10px] text-blue-600/80 dark:text-blue-200/75">{cloudAccount.email}</div>
@@ -36218,40 +36390,24 @@ useEffect(() => {
                     </button>
                   )}
                   {isCanvasMode && isAgentChatOpen && (
-                    <CanvasAgentSidebar
+                    <ChatView
+                      runtime={chatRuntime}
+                      variant="canvas"
                       width={canvasAgentSidebarWidth}
-                      messages={canvasAgent.activeConversation?.messages || []}
-                      inputValue={canvasAgentInput}
-                      busy={canvasAgent.busy}
-                      settings={canvasAgent.settings}
-                      codexStatus={canvasAgent.codexStatus}
-                      codexRateLimits={canvasAgent.codexRateLimits}
-                      codexRateLimitsLoading={canvasAgent.codexRateLimitsLoading}
-                      codexRateLimitsError={canvasAgent.codexRateLimitsError}
-                      codexModels={canvasAgent.codexModels}
-                      codexModelsLoading={canvasAgent.codexModelsLoading}
-                      codexModelsError={canvasAgent.codexModelsError}
-                      conversations={canvasAgent.conversations}
-                      activeConversationId={canvasAgent.activeConversationId}
-                      codexApprovals={canvasAgent.codexApprovals}
-                      selectedItems={canvasAgentSelectedItems}
                       onWidthChange={setCanvasAgentSidebarWidth}
                       onClose={() => setIsAgentChatOpen(false)}
-                      onFocusCanvasItem={id => centerCanvasItemInView(canvasItemsRef.current.find(item => item.id === id), { select: true })}
-                      onInputChange={setCanvasAgentInput}
-                      onSendMessage={(content, options) => void sendCanvasAgentMessage(content, options)}
-                      onCancel={() => void canvasAgent.cancelCurrent()}
-                      onRetry={() => void canvasAgent.retryLast()}
-                      onRefreshCodexRateLimits={canvasAgent.refreshCodexRateLimits}
-                      onRefreshCodexModels={canvasAgent.refreshCodexModels}
-                      onSaveSettings={canvasAgent.saveSettings}
-                      onRequestCodexLogin={requestCanvasAgentCodexLogin}
-                      onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
-                      onResolveCodexApproval={(approval, approved) => void canvasAgent.resolveCodexApproval(approval, approved)}
-                      onNewConversation={canvasAgent.newConversation}
-                      onSelectConversation={canvasAgent.selectConversation}
-                      onDeleteConversation={canvasAgent.deleteConversation}
-                      onClearConversation={clearCanvasAgentChat}
+                      selectedItems={canvasAgentSelectedItems}
+                      modelOptions={agentModels}
+                      imageModel={activeChatImageModel}
+                      imageModelOptions={chatImageModelOptions}
+                      onImageModelChange={setChatImageModel}
+                      imageAspectRatio={activeChatImageAspectRatio}
+                      imageAspectRatioOptions={chatImageAspectRatioOptions}
+                      onImageAspectRatioChange={setChatImageAspectRatio}
+                      imageResolution={activeChatImageResolution}
+                      imageResolutionOptions={chatImageResolutionOptions}
+                      onImageResolutionChange={setChatImageResolution}
+                      onAddGeneratedToCanvas={media => void addChatMediaToCanvas(media)}
                     />
                   )}
                   {activeTab === 'notes' && (
@@ -36733,30 +36889,22 @@ useEffect(() => {
                 </div>
 
                 {!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen && (
-                  <DrawerAgentPanel
-                    messages={canvasAgent.activeConversation?.messages || []}
-                    inputValue={drawerAgentInput}
-                    busy={canvasAgent.busy}
-                    settings={canvasAgent.settings}
-                    codexStatus={canvasAgent.codexStatus}
-                    conversations={canvasAgent.conversations}
-                    activeConversationId={canvasAgent.activeConversationId}
+                  <ChatView
+                    runtime={chatRuntime}
+                    variant="drawer"
                     selectedItems={drawerAgentSelectedItems}
-                    onInputChange={setDrawerAgentInput}
-                    onSendMessage={(content, options) => void sendDrawerAgentMessage(content, options)}
-                    onCancel={() => void canvasAgent.cancelCurrent()}
                     onClose={() => setIsDrawerAgentOpen(false)}
-                    onNewConversation={() => {
-                      canvasAgent.newConversation();
-                      setDrawerAgentInput('');
-                    }}
-                    onSelectConversation={id => {
-                      canvasAgent.selectConversation(id);
-                      setDrawerAgentInput('');
-                    }}
-                    onDeleteConversation={canvasAgent.deleteConversation}
-                    onClearConversation={clearDrawerAgentChat}
-                    onResolveToolCall={(id, approved) => void canvasAgent.resolveToolCall(id, approved)}
+                    modelOptions={agentModels}
+                    imageModel={activeChatImageModel}
+                    imageModelOptions={chatImageModelOptions}
+                    onImageModelChange={setChatImageModel}
+                    imageAspectRatio={activeChatImageAspectRatio}
+                    imageAspectRatioOptions={chatImageAspectRatioOptions}
+                    onImageAspectRatioChange={setChatImageAspectRatio}
+                    imageResolution={activeChatImageResolution}
+                    imageResolutionOptions={chatImageResolutionOptions}
+                    onImageResolutionChange={setChatImageResolution}
+                    onAddGeneratedToCanvas={media => void addChatMediaToCanvas(media)}
                   />
                 )}
 
@@ -36774,7 +36922,7 @@ useEffect(() => {
                       }}
                       data-drawer-fab="secondary"
                       className="absolute bottom-[84px] right-6 z-[120] flex h-12 w-12 items-center justify-center rounded-full border border-stone-200 bg-stone-900 text-white shadow-[0_6px_16px_rgba(24,24,27,0.14)] transition-[background-color,transform] hover:-translate-y-0.5 hover:bg-stone-800 active:translate-y-0 dark:border-stone-700 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
-                      title="软件 Agent"
+                      title="AI Chat"
                     >
                       <Bot className="h-5 w-5" />
                     </motion.button>
@@ -37245,7 +37393,7 @@ useEffect(() => {
                 <div className="flex items-center justify-between gap-4 rounded-[18px] border border-stone-200 bg-stone-50/75 px-3.5 py-3 dark:border-stone-800 dark:bg-stone-950/30">
                   <div>
                     <div className="text-[10px] font-bold text-stone-400 dark:text-stone-500">当前可用积分</div>
-                    <div className="mt-0.5 text-xl font-black tabular-nums text-stone-800 dark:text-stone-100">{cloudAccount?.wallet.availableCredits ?? '—'}</div>
+                    <div className="mt-0.5 text-xl font-black tabular-nums text-stone-800 dark:text-stone-100">{cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}</div>
                   </div>
                   <div className="text-right">
                     <div className="text-[10px] font-bold text-stone-400 dark:text-stone-500">本次显示</div>

@@ -73,8 +73,7 @@ export type AgentApiConnectionResult = {
 };
 
 const LEGACY_CANVAS_AGENT_SYSTEM_PROMPT = '你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。';
-
-export const DEFAULT_AGENT_SYSTEM_PROMPT = [
+const LEGACY_GLOBAL_AGENT_SYSTEM_PROMPT = [
   '你是「灵感抽屉」的全局软件 Agent，不是只会画布操作的聊天助手。',
   '你可以跨抽屉素材、文件夹、便签、日历日程、画布节点、生成工作流和设置界面完成任务。',
   '先理解目标并拆成最小可执行步骤；需要信息时读取软件上下文或可见控件；能用工具完成时就直接执行，不要只给操作说明。',
@@ -82,10 +81,18 @@ export const DEFAULT_AGENT_SYSTEM_PROMPT = [
   '高风险操作（删除、清空、运行可能产生费用的生成任务、未知界面复刻操作）要等待确认；完成后简短说明结果和下一步。',
 ].join('\n');
 
+export const DEFAULT_AGENT_SYSTEM_PROMPT = [
+  '你是灵感抽屉内置的通用 AI 助手。',
+  '首要职责是像普通通用 AI 助手一样自然交流，可以回答问题、写作、分析、推理、讨论创意和理解图片。',
+  '只有当用户明确要求操作素材库、画布、生成图片或视频、运行 Workflow，或者请求确实需要这些能力时，才调用灵感抽屉工具。',
+  '如果通过普通文字即可回答，就直接回答。不得为了更主动而读取画布、素材库或执行软件操作，也不要把每个请求都解释成操作命令。',
+].join('\n');
+
 export const isBuiltInAgentSystemPrompt = (value?: string | null) => {
   const prompt = String(value || '').trim();
   return !prompt
     || prompt === LEGACY_CANVAS_AGENT_SYSTEM_PROMPT
+    || prompt === LEGACY_GLOBAL_AGENT_SYSTEM_PROMPT
     || prompt === DEFAULT_AGENT_SYSTEM_PROMPT;
 };
 

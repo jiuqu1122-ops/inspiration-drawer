@@ -70,10 +70,7 @@ pub fn is_byok_unlocked(app_handle: &tauri::AppHandle) -> bool {
         .is_some_and(|stored| stored.trim().eq_ignore_ascii_case(machine_id.trim()))
 }
 
-pub fn activate_byok_unlock(
-    app_handle: &tauri::AppHandle,
-    code: &str,
-) -> Result<bool, String> {
+pub fn activate_byok_unlock(app_handle: &tauri::AppHandle, code: &str) -> Result<bool, String> {
     if !code.trim().eq_ignore_ascii_case("undesign") {
         return Ok(false);
     }

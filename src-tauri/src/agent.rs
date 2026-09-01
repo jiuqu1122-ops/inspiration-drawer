@@ -109,7 +109,7 @@ impl Default for AgentSettingsStored {
             codex_reasoning_effort: String::new(),
             codex_sandbox: "read-only".to_string(),
             codex_approval_policy: "on-request".to_string(),
-            system_prompt: "你是灵感抽屉的画布 Agent。理解用户目标，优先复用已有预设和工作流；需要修改画布时只输出可验证、最小化的画布操作。".to_string(),
+            system_prompt: "你是灵感抽屉内置的通用 AI 助手。首要职责是像普通通用 AI 助手一样自然交流。只有当用户明确要求操作素材库、画布、生成图片或视频、运行 Workflow，或者请求确实需要这些能力时，才调用工具；如果普通文字即可回答，就直接回答。".to_string(),
             approval_mode: "ask".to_string(),
             retain_history: true,
         }
@@ -734,10 +734,7 @@ pub fn get_byok_unlock_status(app_handle: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub fn activate_byok_unlock(
-    app_handle: tauri::AppHandle,
-    code: String,
-) -> Result<bool, String> {
+pub fn activate_byok_unlock(app_handle: tauri::AppHandle, code: String) -> Result<bool, String> {
     crate::ai_credentials::activate_byok_unlock(&app_handle, &code)
 }
 
@@ -821,6 +818,26 @@ pub struct AgentOpenAiChatRequest {
     tools: Vec<Value>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    stream: bool,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+}
+
+fn normalize_chat_reasoning_effort(value: Option<&str>) -> Option<String> {
+    match value
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "low" => Some("low".to_string()),
+        "medium" => Some("medium".to_string()),
+        "high" => Some("high".to_string()),
+        "xhigh" => Some("xhigh".to_string()),
+        "max" => Some("max".to_string()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -921,9 +938,7 @@ fn wallet_task_error(value: &Value, fallback: &str) -> String {
 }
 
 fn wallet_poll_backoff_seconds(consecutive_errors: u32) -> u64 {
-    2_u64
-        .saturating_pow(consecutive_errors.min(5))
-        .min(30)
+    2_u64.saturating_pow(consecutive_errors.min(5)).min(30)
 }
 
 fn wallet_task_is_terminal(status: &str) -> bool {
@@ -934,10 +949,7 @@ fn wallet_poll_status_is_retryable(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 429 | 502 | 503 | 504 | 524)
 }
 
-fn openai_request_cancelled(
-    cancellations: &Arc<Mutex<HashSet<String>>>,
-    request_id: &str,
-) -> bool {
+fn openai_request_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request_id: &str) -> bool {
     cancellations
         .lock()
         .map(|values| values.contains(request_id))
@@ -1096,7 +1108,9 @@ async fn poll_wallet_task(
         }
         match task.status.as_str() {
             "succeeded" => {
-                return task.result.ok_or_else(|| "后台任务完成但没有返回结果".to_string());
+                return task
+                    .result
+                    .ok_or_else(|| "后台任务完成但没有返回结果".to_string());
             }
             "failed" | "cancelled" => {
                 let error = task.error.unwrap_or(WalletTaskError {
@@ -1121,6 +1135,7 @@ pub struct AgentOpenAiChatResult {
     content: String,
     tool_calls: Vec<OpenAiToolCallResult>,
     finish_reason: Option<String>,
+    usage: Option<Value>,
 }
 
 #[tauri::command]
@@ -1207,9 +1222,13 @@ fn parse_openai_response_value(
     content: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
+    usage: &mut Option<Value>,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) {
+    if let Some(next_usage) = parsed.get("usage").filter(|value| !value.is_null()) {
+        *usage = Some(next_usage.clone());
+    }
     if let Some(choice) = parsed
         .get("choices")
         .and_then(Value::as_array)
@@ -1247,6 +1266,7 @@ fn parse_openai_sse_data(
     content: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
+    usage: &mut Option<Value>,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
@@ -1262,6 +1282,7 @@ fn parse_openai_sse_data(
         content,
         tool_calls,
         finish_reason,
+        usage,
         app_handle,
         request_id,
     );
@@ -1273,6 +1294,7 @@ fn parse_openai_buffered_text(
     content: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
+    usage: &mut Option<Value>,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
@@ -1293,6 +1315,7 @@ fn parse_openai_buffered_text(
                 content,
                 tool_calls,
                 finish_reason,
+                usage,
                 app_handle,
                 request_id,
             )?;
@@ -1312,6 +1335,7 @@ fn parse_openai_buffered_text(
         content,
         tool_calls,
         finish_reason,
+        usage,
         app_handle,
         request_id,
     );
@@ -1327,10 +1351,8 @@ pub async fn agent_openai_chat(
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
         let mut wallet_request = request;
-        wallet_request.model = resolve_wallet_agent_model(
-            wallet_request.model.as_deref(),
-            &settings.api_model,
-        );
+        wallet_request.model =
+            resolve_wallet_agent_model(wallet_request.model.as_deref(), &settings.api_model);
         return agent_wallet_chat(
             app_handle,
             wallet_request,
@@ -1346,7 +1368,12 @@ pub async fn agent_openai_chat(
         if api_profile.api_key.trim().is_empty() {
             return Err("请先在 Agent 设置中填写 API Key".to_string());
         }
-        let api_model = normalize_api_model(&api_profile.model);
+        let requested_model = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"));
+        let api_model = normalize_api_model(requested_model.unwrap_or(&api_profile.model));
         if api_model.trim().is_empty() {
             return Err("请先在 Agent 设置中填写模型".to_string());
         }
@@ -1359,11 +1386,14 @@ pub async fn agent_openai_chat(
             "messages": request.messages,
             // 画布 Agent 依赖 tool_calls。许多 OpenAI-compatible 中转在流式模式下
             // 不完整支持工具调用增量，非流式返回的兼容性更高。
-            "stream": false,
+            "stream": request.stream,
         });
         if !request.tools.is_empty() {
             body["tools"] = Value::Array(request.tools);
             body["tool_choice"] = Value::String("auto".to_string());
+        }
+        if let Some(effort) = normalize_chat_reasoning_effort(request.reasoning_effort.as_deref()) {
+            body["reasoning_effort"] = Value::String(effort);
         }
 
         let client = crate::build_http_client(Some(&app_handle), None, 600)?;
@@ -1401,6 +1431,7 @@ pub async fn agent_openai_chat(
         let mut content = String::new();
         let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
         let mut finish_reason = None;
+        let mut usage = None;
 
         if content_type.contains("text/event-stream") {
             let reader = BufReader::new(response);
@@ -1428,6 +1459,7 @@ pub async fn agent_openai_chat(
                     &mut content,
                     &mut tool_calls,
                     &mut finish_reason,
+                    &mut usage,
                     &app_handle,
                     &request.request_id,
                 )?;
@@ -1441,6 +1473,7 @@ pub async fn agent_openai_chat(
                 &mut content,
                 &mut tool_calls,
                 &mut finish_reason,
+                &mut usage,
                 &app_handle,
                 &request.request_id,
             )?;
@@ -1466,6 +1499,7 @@ pub async fn agent_openai_chat(
             content,
             tool_calls,
             finish_reason,
+            usage,
         };
         let _ = app_handle.emit(
             "agent-openai-stream",
@@ -1575,11 +1609,13 @@ async fn agent_wallet_chat(
     let mut content = String::new();
     let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
     let mut finish_reason = None;
+    let mut usage = None;
     parse_openai_response_value(
         &value,
         &mut content,
         &mut tool_calls,
         &mut finish_reason,
+        &mut usage,
         &app_handle,
         &request.request_id,
     );
@@ -1600,6 +1636,7 @@ async fn agent_wallet_chat(
         content,
         tool_calls,
         finish_reason,
+        usage,
     };
     let _ = app_handle.emit(
         "agent-openai-stream",
@@ -1635,7 +1672,8 @@ pub fn agent_cancel_openai(
         .and_then(|tasks| tasks.get(&request_id).cloned());
     if let Some(task_id) = task_id {
         tauri::async_runtime::spawn(async move {
-            if let Ok(access_token) = crate::commands::license::cloud_access_token(&app_handle).await
+            if let Ok(access_token) =
+                crate::commands::license::cloud_access_token(&app_handle).await
             {
                 let Ok(client) = reqwest::Client::builder()
                     .connect_timeout(Duration::from_secs(10))
@@ -1671,11 +1709,15 @@ pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Ve
             .await
             .map_err(|error| format!("钱包模型列表请求失败：{error}"))?;
         let status = response.status();
-        let value = response.json::<Value>().await.map_err(|error| format!("读取钱包模型列表失败：{error}"))?;
+        let value = response
+            .json::<Value>()
+            .await
+            .map_err(|error| format!("读取钱包模型列表失败：{error}"))?;
         if !status.is_success() {
             return Err(format!("钱包模型列表 HTTP {status}"));
         }
-        return Ok(value.get("models")
+        return Ok(value
+            .get("models")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
@@ -2596,11 +2638,21 @@ mod tests {
 
     #[test]
     fn wallet_task_polling_retries_only_transient_http_errors() {
-        assert!(wallet_poll_status_is_retryable(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(wallet_poll_status_is_retryable(reqwest::StatusCode::SERVICE_UNAVAILABLE));
-        assert!(wallet_poll_status_is_retryable(reqwest::StatusCode::GATEWAY_TIMEOUT));
-        assert!(!wallet_poll_status_is_retryable(reqwest::StatusCode::BAD_REQUEST));
-        assert!(!wallet_poll_status_is_retryable(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(wallet_poll_status_is_retryable(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(wallet_poll_status_is_retryable(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(wallet_poll_status_is_retryable(
+            reqwest::StatusCode::GATEWAY_TIMEOUT
+        ));
+        assert!(!wallet_poll_status_is_retryable(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+        assert!(!wallet_poll_status_is_retryable(
+            reqwest::StatusCode::UNAUTHORIZED
+        ));
     }
 
     #[test]
@@ -2625,5 +2677,19 @@ mod tests {
         assert_eq!(normalize_codex_reasoning_effort("xhigh"), "xhigh");
         assert_eq!(normalize_codex_reasoning_effort(" HIGH "), "high");
         assert_eq!(normalize_codex_reasoning_effort("default"), "");
+    }
+
+    #[test]
+    fn chat_reasoning_effort_accepts_gpt_5_6_levels() {
+        assert_eq!(
+            normalize_chat_reasoning_effort(Some(" xhigh ")).as_deref(),
+            Some("xhigh")
+        );
+        assert_eq!(
+            normalize_chat_reasoning_effort(Some("MAX")).as_deref(),
+            Some("max")
+        );
+        assert_eq!(normalize_chat_reasoning_effort(Some("ultra")), None);
+        assert_eq!(normalize_chat_reasoning_effort(None), None);
     }
 }

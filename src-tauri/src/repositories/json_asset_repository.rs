@@ -371,7 +371,10 @@ impl AssetRepository for JsonAssetRepository {
                 else {
                     continue;
                 };
-                let tag_id = format!("tag-{}", crate::stable_hash_hex(tag.trim_start_matches('#').trim()));
+                let tag_id = format!(
+                    "tag-{}",
+                    crate::stable_hash_hex(tag.trim_start_matches('#').trim())
+                );
                 if seen.insert(tag_id.clone()) {
                     *counts.entry(tag_id).or_default() += 1;
                 }
@@ -383,7 +386,10 @@ impl AssetRepository for JsonAssetRepository {
             .collect())
     }
 
-    fn get_inspiration_analysis_counts(&self, _library_id: Option<String>) -> Result<Value, String> {
+    fn get_inspiration_analysis_counts(
+        &self,
+        _library_id: Option<String>,
+    ) -> Result<Value, String> {
         let images = self
             .read_items()?
             .into_iter()
@@ -552,7 +558,12 @@ fn apply_json_filters(items: &mut Vec<Value>, options: &AssetListOptions) {
         items.retain(|item| item.get("rating").and_then(Value::as_i64).unwrap_or(0) == rating);
     }
     if let Some(quick_access) = options.quick_access {
-        items.retain(|item| item.get("isQuickAccess").and_then(Value::as_bool).unwrap_or(false) == quick_access);
+        items.retain(|item| {
+            item.get("isQuickAccess")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                == quick_access
+        });
     }
     if let Some(status) = options
         .inspiration_status

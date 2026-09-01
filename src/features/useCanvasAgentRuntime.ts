@@ -2734,6 +2734,10 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     setCodexApprovals(current => current.filter(item => String(item.id) !== String(approval.id)));
   }, [upsertThinkingStep]);
 
+  const executeExternalTool = useCallback<AgentCanvasToolExecutor>((name, args, execution) => (
+    optionsRef.current.executeTool(name, args, execution)
+  ), []);
+
   return {
     settings,
     settingsLoading,
@@ -2769,6 +2773,7 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     cancelCurrent,
     retryLast,
     resolveToolCall,
+    executeExternalTool,
     appendWorkflowResult,
     newConversation,
     selectConversation,

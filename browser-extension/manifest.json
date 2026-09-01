@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Inspiration Drawer Web Collector",
+  "description": "Send webpage image drags to Inspiration Drawer through an authenticated localhost bridge.",
+  "version": "1.0.0",
+  "permissions": [
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "src/background/serviceWorker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/dragDetector.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Inspiration Drawer Web Collector"
+  }
+}

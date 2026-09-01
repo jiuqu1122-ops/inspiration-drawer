@@ -59,7 +59,10 @@ pub fn delete_asset(app_handle: tauri::AppHandle, id: String) -> Result<bool, St
     repository(&app_handle)?.delete_asset(&id)
 }
 
-pub fn delete_assets_batch(app_handle: tauri::AppHandle, ids: Vec<String>) -> Result<usize, String> {
+pub fn delete_assets_batch(
+    app_handle: tauri::AppHandle,
+    ids: Vec<String>,
+) -> Result<usize, String> {
     repository(&app_handle)?.delete_assets_batch(ids)
 }
 
@@ -68,8 +71,7 @@ pub fn move_assets_from_folders(
     source_folder_ids: Vec<String>,
     destination_folder_id: Option<String>,
 ) -> Result<usize, String> {
-    repository(&app_handle)?
-        .move_assets_from_folders(source_folder_ids, destination_folder_id)
+    repository(&app_handle)?.move_assets_from_folders(source_folder_ids, destination_folder_id)
 }
 
 pub fn get_assets_by_ids(

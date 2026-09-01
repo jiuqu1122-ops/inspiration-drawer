@@ -3,7 +3,10 @@ import { normalizeWorkflowResultCardData } from './workflowResult';
 
 const AGENT_CONVERSATIONS_STORAGE_KEY = 'drawer_agent_conversations_v1';
 const AGENT_ACTIVE_CONVERSATION_STORAGE_KEY = 'drawer_agent_active_conversation_v1';
-const AGENT_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_agent_sidebar_width_v1';
+const AGENT_SIDEBAR_WIDTH_STORAGE_KEY = 'drawer_agent_sidebar_width_v2';
+const AGENT_SIDEBAR_MIN_WIDTH = 420;
+const AGENT_SIDEBAR_MAX_WIDTH = 640;
+const AGENT_SIDEBAR_DEFAULT_WIDTH = 480;
 const MAX_AGENT_CONVERSATIONS = 30;
 
 const normalizeAgentMessage = (value: unknown): AgentChatMessage => {
@@ -79,12 +82,14 @@ export const writeActiveAgentConversationId = (id: string) => {
 
 export const readAgentSidebarWidth = () => {
   const value = Number(localStorage.getItem(AGENT_SIDEBAR_WIDTH_STORAGE_KEY));
-  return Number.isFinite(value) ? Math.min(620, Math.max(340, value)) : 440;
+  return Number.isFinite(value)
+    ? Math.min(AGENT_SIDEBAR_MAX_WIDTH, Math.max(AGENT_SIDEBAR_MIN_WIDTH, value))
+    : AGENT_SIDEBAR_DEFAULT_WIDTH;
 };
 
 export const writeAgentSidebarWidth = (width: number) => {
   localStorage.setItem(
     AGENT_SIDEBAR_WIDTH_STORAGE_KEY,
-    String(Math.round(Math.min(620, Math.max(340, width)))),
+    String(Math.round(Math.min(AGENT_SIDEBAR_MAX_WIDTH, Math.max(AGENT_SIDEBAR_MIN_WIDTH, width)))),
   );
 };

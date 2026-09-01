@@ -1,8 +1,8 @@
 use serde_json::Value;
 
 use crate::repositories::asset_repository::{
-    AssetBatchUpdate, AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions, MoveFoldersOptions,
-    ViewportOptions,
+    AssetBatchUpdate, AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions,
+    MoveFoldersOptions, ViewportOptions,
 };
 
 #[tauri::command]

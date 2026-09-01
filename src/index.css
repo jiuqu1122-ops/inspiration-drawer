@@ -1742,6 +1742,19 @@ body:has(.drawer-theme.dark) [data-canvas-context-menu="true"] .h-px {
   outline-offset: 2px !important;
 }
 
+.drawer-theme textarea[data-chat-composer-input="true"],
+.drawer-theme [data-canvas-ui-root="true"] textarea[data-chat-composer-input="true"],
+.drawer-theme textarea[data-chat-composer-input="true"]:focus,
+.drawer-theme [data-canvas-ui-root="true"] textarea[data-chat-composer-input="true"]:focus,
+.drawer-theme textarea[data-chat-composer-input="true"]:focus-visible,
+.drawer-theme [data-canvas-ui-root="true"] textarea[data-chat-composer-input="true"]:focus-visible {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
 .drawer-theme [data-canvas-ui-root="true"] :is([data-canvas-soft-panel="true"], [data-canvas-template-panel="true"]) {
   color: var(--canvas-ink) !important;
   background: var(--canvas-surface) !important;

@@ -4,6 +4,7 @@
 mod agent;
 mod ai_credentials;
 mod ai_gateway;
+mod browser_extension;
 mod commands;
 mod db;
 mod license;
@@ -11,6 +12,7 @@ mod native_drag;
 mod native_drop;
 mod repositories;
 mod services;
+mod update_cache;
 mod virtual_drop;
 
 use hmac::{Hmac, Mac};
@@ -394,9 +396,10 @@ fn set_startup_close_lock(ms: u64) {
 }
 
 fn take_post_install_launch_marker() -> bool {
-    let marker = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.join(POST_INSTALL_LAUNCH_MARKER)));
+    let marker = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()
+            .map(|parent| parent.join(POST_INSTALL_LAUNCH_MARKER))
+    });
     let Some(marker) = marker else {
         return false;
     };
@@ -738,7 +741,9 @@ fn should_prefer_direct_generated_image_download(url: &str) -> bool {
 fn is_wallet_ai_image_result_url(value: &str) -> bool {
     Url::parse(value).ok().is_some_and(|url| {
         url.scheme() == "https"
-            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
+            && url
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
             && url.path().starts_with("/v1/ai/image-results/")
     })
 }
@@ -746,7 +751,9 @@ fn is_wallet_ai_image_result_url(value: &str) -> bool {
 fn is_wallet_ai_video_result_url(value: &str) -> bool {
     Url::parse(value).ok().is_some_and(|url| {
         url.scheme() == "https"
-            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
+            && url
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("api.unmind.art"))
             && url.path().starts_with("/v1/ai/video-results/")
     })
 }
@@ -755,18 +762,16 @@ fn generated_oss_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
     if url.scheme() != "https"
         || !url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case(
-                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
-            )
+            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
         })
     {
         return None;
     }
     let key = url.path().strip_prefix("/generated-images/")?;
     let valid = key.len() <= 80
-        && key
-            .chars()
-            .all(|value| value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_');
+        && key.chars().all(|value| {
+            value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_'
+        });
     valid.then(|| key.to_string())
 }
 
@@ -774,18 +779,16 @@ fn generated_oss_video_result_key(value: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
     if url.scheme() != "https"
         || !url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case(
-                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
-            )
+            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
         })
     {
         return None;
     }
     let key = url.path().strip_prefix("/generated-videos/")?;
     let valid = key.len() <= 80
-        && key
-            .chars()
-            .all(|value| value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_');
+        && key.chars().all(|value| {
+            value.is_ascii_alphanumeric() || value == '.' || value == '-' || value == '_'
+        });
     valid.then(|| key.to_string())
 }
 
@@ -800,9 +803,7 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
     let url = Url::parse(value).map_err(|_| "OSS 签名地址格式无效".to_string())?;
     let allowed = url.scheme() == "https"
         && url.host_str().is_some_and(|host| {
-            host.eq_ignore_ascii_case(
-                "inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com",
-            )
+            host.eq_ignore_ascii_case("inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com")
         })
         && (url.path().starts_with("/generated-images/")
             || url.path().starts_with("/generated-videos/"));
@@ -817,15 +818,11 @@ fn validate_generated_image_oss_url(value: &str) -> Result<String, String> {
 
 fn image_result_json_url(value: &str) -> Result<Url, String> {
     let mut url = if let Some(key) = generated_oss_video_result_key(value) {
-        Url::parse(&format!(
-            "https://api.unmind.art/v1/ai/video-results/{key}"
-        ))
-        .map_err(|error| error.to_string())?
+        Url::parse(&format!("https://api.unmind.art/v1/ai/video-results/{key}"))
+            .map_err(|error| error.to_string())?
     } else if let Some(key) = generated_oss_result_key(value) {
-        Url::parse(&format!(
-            "https://api.unmind.art/v1/ai/image-results/{key}"
-        ))
-        .map_err(|_| "AI 图片结果地址格式无效".to_string())?
+        Url::parse(&format!("https://api.unmind.art/v1/ai/image-results/{key}"))
+            .map_err(|_| "AI 图片结果地址格式无效".to_string())?
     } else {
         Url::parse(value).map_err(|_| "AI 图片结果地址格式无效".to_string())?
     };
@@ -924,12 +921,11 @@ async fn resolve_ai_image_result_url(
 #[cfg(test)]
 mod ai_image_result_url_tests {
     use super::{
-        download_url_to_file_with_client, generated_oss_result_key,
-        generated_oss_video_result_key, image_result_json_url, is_wallet_ai_image_result_source,
-        is_wallet_ai_image_result_url, is_wallet_ai_video_result_url,
-        media_download_redirect_policy, should_prefer_direct_generated_image_download,
-        validate_generated_image_oss_url, DownloadContentExpectation, DownloadOptions,
-        MEDIA_DOWNLOAD_MAX_REDIRECTS,
+        download_url_to_file_with_client, generated_oss_result_key, generated_oss_video_result_key,
+        image_result_json_url, is_wallet_ai_image_result_source, is_wallet_ai_image_result_url,
+        is_wallet_ai_video_result_url, media_download_redirect_policy,
+        should_prefer_direct_generated_image_download, validate_generated_image_oss_url,
+        DownloadContentExpectation, DownloadOptions, MEDIA_DOWNLOAD_MAX_REDIRECTS,
     };
     use rcgen::generate_simple_self_signed;
     use reqwest::blocking::Client;
@@ -986,8 +982,8 @@ mod ai_image_result_url_tests {
             .set_nonblocking(true)
             .expect("nonblocking HTTPS listener");
         let responses = responses(address);
-        let certified = generate_simple_self_signed(vec!["localhost".to_string()])
-            .expect("test certificate");
+        let certified =
+            generate_simple_self_signed(vec!["localhost".to_string()]).expect("test certificate");
         let certificate = certified.cert.der().clone();
         let private_key = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
         let config = Arc::new(
@@ -1003,7 +999,10 @@ mod ai_image_result_url_tests {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "timed out waiting for HTTPS request");
+                            assert!(
+                                Instant::now() < deadline,
+                                "timed out waiting for HTTPS request"
+                            );
                             thread::sleep(Duration::from_millis(5));
                         }
                         Err(error) => panic!("HTTPS accept failed: {error}"),
@@ -1067,13 +1066,15 @@ mod ai_image_result_url_tests {
         let resolved = image_result_json_url(source).expect("json endpoint");
         assert_eq!(resolved.host_str(), Some("api.unmind.art"));
         assert_eq!(
-            resolved.query_pairs()
+            resolved
+                .query_pairs()
                 .find(|(key, _)| key == "foo")
                 .map(|(_, value)| value.into_owned()),
             Some("a+b".to_string())
         );
         assert_eq!(
-            resolved.query_pairs()
+            resolved
+                .query_pairs()
                 .find(|(key, _)| key == "redirect")
                 .map(|(_, value)| value.into_owned()),
             Some("0".to_string())
@@ -1089,7 +1090,8 @@ mod ai_image_result_url_tests {
         assert_eq!(endpoint.host_str(), Some("api.unmind.art"));
         assert_eq!(endpoint.path(), "/v1/ai/image-results/abc.png");
         assert_eq!(
-            endpoint.query_pairs()
+            endpoint
+                .query_pairs()
                 .find(|(key, _)| key == "redirect")
                 .map(|(_, value)| value.into_owned()),
             Some("0".to_string())
@@ -1103,12 +1105,16 @@ mod ai_image_result_url_tests {
         assert!(is_wallet_ai_image_result_source(stable));
 
         let signed = "https://inspiration-drawer-prod.oss-cn-hongkong.aliyuncs.com/generated-videos/abc.mp4?token=expired";
-        assert_eq!(generated_oss_video_result_key(signed).as_deref(), Some("abc.mp4"));
+        assert_eq!(
+            generated_oss_video_result_key(signed).as_deref(),
+            Some("abc.mp4")
+        );
         assert!(is_wallet_ai_image_result_source(signed));
         let endpoint = image_result_json_url(signed).expect("stable video API endpoint");
         assert_eq!(endpoint.path(), "/v1/ai/video-results/abc.mp4");
         assert_eq!(
-            endpoint.query_pairs()
+            endpoint
+                .query_pairs()
                 .find(|(key, _)| key == "redirect")
                 .map(|(_, value)| value.into_owned()),
             Some("0".to_string())
@@ -1170,7 +1176,10 @@ mod ai_image_result_url_tests {
         .expect("direct image download");
 
         assert_eq!(content_type.as_deref(), Some("image/png"));
-        assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            fs::read(&output).expect("cached image"),
+            b"\x89PNG\r\n\x1a\n"
+        );
         assert!(!output.with_extension("download.tmp").exists());
         let _ = fs::remove_file(output);
         server.join().expect("HTTPS server");
@@ -1206,7 +1215,10 @@ mod ai_image_result_url_tests {
         .expect("redirected image download");
 
         assert_eq!(content_type.as_deref(), Some("image/png; charset=binary"));
-        assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            fs::read(&output).expect("cached image"),
+            b"\x89PNG\r\n\x1a\n"
+        );
         let _ = fs::remove_file(output);
         server.join().expect("HTTPS server");
     }
@@ -1245,12 +1257,7 @@ mod ai_image_result_url_tests {
                     Some(format!("{base}/signed.png?q-signature=temporary")),
                     b"",
                 ),
-                test_response(
-                    "200 OK",
-                    Some("image/png"),
-                    None,
-                    b"\x89PNG\r\n\x1a\n",
-                ),
+                test_response("200 OK", Some("image/png"), None, b"\x89PNG\r\n\x1a\n"),
             ]
         });
         let output = temporary_output("multi-redirect-test");
@@ -1262,7 +1269,10 @@ mod ai_image_result_url_tests {
         )
         .expect("multi-hop image download");
 
-        assert_eq!(fs::read(&output).expect("cached image"), b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            fs::read(&output).expect("cached image"),
+            b"\x89PNG\r\n\x1a\n"
+        );
         let _ = fs::remove_file(output);
         server.join().expect("HTTPS server");
     }
@@ -1467,8 +1477,8 @@ fn download_url_to_file_with_timeout(
     options: DownloadOptions,
 ) -> Result<Option<String>, String> {
     let has_configured_proxy = effective_proxy(Some(app_handle), explicit_proxy).is_some();
-    let allow_direct_first = has_configured_proxy
-        && should_prefer_direct_generated_image_download(url);
+    let allow_direct_first =
+        has_configured_proxy && should_prefer_direct_generated_image_download(url);
     if allow_direct_first {
         let direct_result = build_direct_media_download_http_client(timeout_secs)
             .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options));
@@ -1477,20 +1487,27 @@ fn download_url_to_file_with_timeout(
             Err(direct_err) => {
                 let _ = fs::remove_file(out_path);
                 let _ = fs::remove_file(out_path.with_extension("download.tmp"));
-                return build_media_download_http_client(Some(app_handle), explicit_proxy, timeout_secs)
-                    .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options))
-                    .map_err(|proxy_err| {
-                        format!(
-                            "直连下载失败：{}；代理下载也失败：{}",
-                            direct_err, proxy_err
-                        )
-                    });
+                return build_media_download_http_client(
+                    Some(app_handle),
+                    explicit_proxy,
+                    timeout_secs,
+                )
+                .and_then(|client| {
+                    download_url_to_file_with_client(&client, url, out_path, options)
+                })
+                .map_err(|proxy_err| {
+                    format!(
+                        "直连下载失败：{}；代理下载也失败：{}",
+                        direct_err, proxy_err
+                    )
+                });
             }
         }
     }
 
-    let first_result = build_media_download_http_client(Some(app_handle), explicit_proxy, timeout_secs)
-        .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options));
+    let first_result =
+        build_media_download_http_client(Some(app_handle), explicit_proxy, timeout_secs)
+            .and_then(|client| download_url_to_file_with_client(&client, url, out_path, options));
     match first_result {
         Ok(content_type) => Ok(content_type),
         Err(first_err) => {
@@ -1505,9 +1522,9 @@ fn download_url_to_file_with_timeout(
             let _ = fs::remove_file(out_path);
             let _ = fs::remove_file(out_path.with_extension("download.tmp"));
             let direct_client = build_direct_media_download_http_client(timeout_secs)?;
-            download_url_to_file_with_client(&direct_client, url, out_path, options).map_err(|second_err| {
-                format!("{}；无代理直连重试也失败：{}", first_err, second_err)
-            })
+            download_url_to_file_with_client(&direct_client, url, out_path, options).map_err(
+                |second_err| format!("{}；无代理直连重试也失败：{}", first_err, second_err),
+            )
         }
     }
 }
@@ -1570,12 +1587,14 @@ fn download_url_to_file_with_client(
 
 const RIFE_ENGINE_VERSION: &str = "20221029";
 const RIFE_ENGINE_DIR_NAME: &str = "rife-ncnn-vulkan-20221029-windows";
-const RIFE_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
+const RIFE_ENGINE_ASSET_URL: &str =
+    "https://api.unmind.art/v1/ai/client-assets/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/rife-ncnn-vulkan-20221029-windows-lite.zip";
 const RIFE_ENGINE_SHA256: &str = "A4DA55EC5629DBD5E9C6594D96225308325FC39A3DF67CD8E77010207525CE77";
 const RIFE_ENGINE_ZIP_SIZE: u64 = 123_750_542;
 const FFMPEG_TOOLS_DIR_NAME: &str = "ffmpeg-tools-n8.1-win64-gpl";
-const FFMPEG_TOOLS_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
+const FFMPEG_TOOLS_ASSET_URL: &str =
+    "https://api.unmind.art/v1/ai/client-assets/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-rife-20221029/ffmpeg-tools-n8.1-win64-gpl.zip";
 const FFMPEG_TOOLS_SHA256: &str =
     "D4B1D805749E6FA174E4BE158E844AD93BACBF23C2C68EDD473EEBE96B09CA63";
@@ -1588,7 +1607,8 @@ const REALESRGAN_SAFE_INTERMEDIATE_MAX_PIXELS: u64 = 48_000_000;
 const REALESRGAN_SAFE_FINAL_MAX_EDGE: u32 = 4_096;
 const REALESRGAN_SAFE_FINAL_MAX_PIXELS: u64 = 16_000_000;
 const REALESRGAN_ENGINE_DIR_NAME: &str = "realesrgan-ncnn-vulkan-20220424-windows";
-const REALESRGAN_ENGINE_ASSET_URL: &str = "https://api.unmind.art/v1/ai/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
+const REALESRGAN_ENGINE_ASSET_URL: &str =
+    "https://api.unmind.art/v1/ai/client-assets/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_ASSET_FALLBACK_URL: &str = "https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/engine-realesrgan-20220424/realesrgan-ncnn-vulkan-20220424-windows.zip";
 const REALESRGAN_ENGINE_SHA256: &str =
     "ABC02804E17982A3BE33675E4D471E91EA374E65B70167ABC09E31ACB412802D";
@@ -2973,6 +2993,43 @@ async fn check_and_install_app_update_mirrors(
         None,
     );
 
+    let mut update_cache_manager = match update_cache::manager_for_app(&app_handle) {
+        Ok(mut manager) => {
+            if let Err(error) = manager.clear_active_package() {
+                eprintln!(
+                    "[update-cache] clear stale active package before download failed: {error}"
+                );
+            }
+            if let Err(error) = manager.clear_active_installer_dir() {
+                eprintln!(
+                    "[update-cache] clear stale installer directory before download failed: {error}"
+                );
+            }
+            manager.cleanup_update_cache(None);
+            Some(manager)
+        }
+        Err(error) => {
+            eprintln!("[update-cache] initialization before download failed: {error}");
+            None
+        }
+    };
+    let update_package_path = update_cache_manager.as_mut().and_then(|manager| {
+        let package_path = manager.package_path(&version);
+        match manager.register_downloaded_package(&package_path) {
+            Ok(()) => {
+                eprintln!(
+                    "[update-cache] reserved managed update package {}",
+                    package_path.display()
+                );
+                Some(package_path)
+            }
+            Err(error) => {
+                eprintln!("[update-cache] register active update package failed: {error}");
+                None
+            }
+        }
+    });
+
     let mut failures = Vec::new();
     for (index, source) in sources.iter().enumerate() {
         emit_app_update_progress_detail(
@@ -3017,6 +3074,16 @@ async fn check_and_install_app_update_mirrors(
         .await
         {
             Ok((source_update, bytes)) => {
+                if let (Some(manager), Some(package_path)) =
+                    (update_cache_manager.as_ref(), update_package_path.as_ref())
+                {
+                    if let Err(error) = manager.store_downloaded_package(package_path, &bytes) {
+                        eprintln!(
+                            "[update-cache] store downloaded update package failed; continuing with verified in-memory package: {error}"
+                        );
+                    }
+                }
+
                 if let Some(expected_size) = expected_size {
                     if bytes.len() as u64 != expected_size {
                         let message = format!(
@@ -3114,6 +3181,44 @@ async fn check_and_install_app_update_mirrors(
                     "[app-update] installing update {version} from {}",
                     source.name
                 );
+                let installer_temp_dir = if let (Some(manager), Some(package_path)) =
+                    (update_cache_manager.as_mut(), update_package_path.as_ref())
+                {
+                    // Tauri's Windows updater exits this process after starting the installer,
+                    // so persist cleanup intent before calling install.
+                    if let Err(error) =
+                        manager.mark_package_for_cleanup(package_path, Some(&version))
+                    {
+                        eprintln!(
+                            "[update-cache] mark install-ready package for cleanup failed: {error}"
+                        );
+                    }
+                    match manager.prepare_installer_temp_dir(&version) {
+                        Ok(path) => Some(path),
+                        Err(error) => {
+                            eprintln!(
+                                "[update-cache] prepare managed installer directory failed; continuing with Tauri default temp directory: {error}"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                let _installer_temp_guard = installer_temp_dir.as_deref().and_then(|path| {
+                    let Some(manager) = update_cache_manager.as_mut() else {
+                        return None;
+                    };
+                    match manager.record_installer_temp_environment() {
+                        Ok(()) => Some(update_cache::override_installer_temp_dir(path)),
+                        Err(error) => {
+                            eprintln!(
+                                "[update-cache] record installer temp environment failed; continuing without temp redirect: {error}"
+                            );
+                            None
+                        }
+                    }
+                });
                 if let Err(err) = source_update.install(bytes) {
                     let message = format!("安装更新失败: {err}");
                     eprintln!("[app-update] {message}");
@@ -3134,7 +3239,41 @@ async fn check_and_install_app_update_mirrors(
                         Some(source.url.as_str()),
                         Some(&err.to_string()),
                     );
+                    if let Some(manager) = update_cache_manager.as_mut() {
+                        if let Err(error) = manager.clear_active_package() {
+                            eprintln!(
+                                "[update-cache] clear failed install active package failed: {error}"
+                            );
+                        }
+                        if let Err(error) = manager.clear_active_installer_dir() {
+                            eprintln!(
+                                "[update-cache] clear failed installer directory failed: {error}"
+                            );
+                        }
+                        if let Err(error) = manager.clear_installer_temp_environment_record() {
+                            eprintln!(
+                                "[update-cache] clear failed installer environment record failed: {error}"
+                            );
+                        }
+                        manager.cleanup_update_cache(None);
+                    }
                     return Err(message);
+                }
+
+                if let Some(manager) = update_cache_manager.as_mut() {
+                    if let Err(error) = manager.clear_active_package() {
+                        eprintln!("[update-cache] clear installed active package failed: {error}");
+                    }
+                    if let Err(error) = manager.clear_active_installer_dir() {
+                        eprintln!(
+                            "[update-cache] clear installed active installer directory failed: {error}"
+                        );
+                    }
+                    if let Err(error) = manager.clear_installer_temp_environment_record() {
+                        eprintln!(
+                            "[update-cache] clear installed environment record failed: {error}"
+                        );
+                    }
                 }
 
                 return Ok(AppUpdateInstallResult {
@@ -3166,6 +3305,13 @@ async fn check_and_install_app_update_mirrors(
                 failures.push(message);
             }
         }
+    }
+
+    if let Some(manager) = update_cache_manager.as_mut() {
+        if let Err(error) = manager.clear_active_package() {
+            eprintln!("[update-cache] clear abandoned active package failed: {error}");
+        }
+        manager.cleanup_update_cache(None);
     }
 
     Err(format!(
@@ -3253,8 +3399,7 @@ fn download_engine_archive_from_sources(
     expected_sha256: &str,
 ) -> Result<(), String> {
     if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {display_name} 下载目录失败：{e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("创建 {display_name} 下载目录失败：{e}"))?;
     }
 
     let temporary_path = archive_path.with_extension("download.tmp");
@@ -6832,10 +6977,8 @@ fn encode_ai_reference_jpeg(
 ) -> Result<Vec<u8>, String> {
     let rgb = flatten_dynamic_image_to_white_rgb(image);
     let mut bytes = Vec::new();
-    let encoder = screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(
-        &mut bytes,
-        quality,
-    );
+    let encoder =
+        screenshots::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
     screenshots::image::ImageEncoder::write_image(
         encoder,
         rgb.as_raw(),
@@ -6923,9 +7066,8 @@ mod ai_reference_image_preparation_tests {
         )
         .expect("encode bmp fixture");
 
-        let (prepared, mime) =
-            normalize_ai_reference_image_bytes(bmp, "image/bmp".to_string())
-                .expect("normalize bmp");
+        let (prepared, mime) = normalize_ai_reference_image_bytes(bmp, "image/bmp".to_string())
+            .expect("normalize bmp");
 
         assert_eq!(mime, "image/jpeg");
         assert_eq!(&prepared[..2], &[0xff, 0xd8]);
@@ -6973,9 +7115,8 @@ mod ai_reference_image_preparation_tests {
         .expect("encode oversized png fixture");
         assert!(png.len() > AI_REFERENCE_IMAGE_TARGET_BYTES);
 
-        let (prepared, mime) =
-            normalize_ai_reference_image_bytes(png, "image/png".to_string())
-                .expect("compress oversized png");
+        let (prepared, mime) = normalize_ai_reference_image_bytes(png, "image/png".to_string())
+            .expect("compress oversized png");
 
         assert_eq!(mime, "image/jpeg");
         assert!(prepared.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES);
@@ -8200,11 +8341,9 @@ async fn read_canvas_template_json(
     app_handle: tauri::AppHandle,
     path: String,
 ) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        read_canvas_template_json_impl(&app_handle, path)
-    })
-    .await
-    .map_err(|error| format!("读取画布模板任务失败：{}", error))?
+    tauri::async_runtime::spawn_blocking(move || read_canvas_template_json_impl(&app_handle, path))
+        .await
+        .map_err(|error| format!("读取画布模板任务失败：{}", error))?
 }
 
 fn read_canvas_template_json_impl(
@@ -8336,10 +8475,9 @@ mod canvas_template_import_tests {
         });
         assert!(serde_json::to_vec(&value).unwrap().len() > 4 * 1024 * 1024);
 
-        let restored = materialize_canvas_template_embedded_images(
-            &mut value,
-            &mut |_, _| Ok(r"C:\cache\large-master.png".to_string()),
-        )
+        let restored = materialize_canvas_template_embedded_images(&mut value, &mut |_, _| {
+            Ok(r"C:\cache\large-master.png".to_string())
+        })
         .unwrap();
 
         assert_eq!(restored, 1);
@@ -9501,7 +9639,8 @@ fn write_text_file_atomically(path: &Path, content: &str) -> Result<(), String> 
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    let temporary_path = path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    let temporary_path =
+        path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
 
     fs::write(&temporary_path, content).map_err(|error| error.to_string())?;
     if let Err(error) = fs::rename(&temporary_path, path) {
@@ -10239,9 +10378,7 @@ impl BackgroundImageThreadPriorityGuard {
         use winapi::um::processthreadsapi::{
             GetCurrentThread, GetThreadPriority, SetThreadPriority,
         };
-        use winapi::um::winbase::{
-            THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_ERROR_RETURN,
-        };
+        use winapi::um::winbase::{THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_ERROR_RETURN};
 
         unsafe {
             let thread = GetCurrentThread();
@@ -11856,7 +11993,9 @@ async fn upload_wallet_reference_images(
             let extension = object.ext.trim().trim_start_matches('.');
             let filename = format!("reference-{}.{}", index + 1, extension);
             let ticket_response = ticket_client
-                .post(format!("{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"))
+                .post(format!(
+                    "{INSPIRATION_SPACE_API_BASE_URL}/v1/ai/reference-images/upload-ticket"
+                ))
                 .bearer_auth(&access_token)
                 .header("x-client-version", env!("CARGO_PKG_VERSION"))
                 .header("x-wallet-protocol", "1")
@@ -11872,7 +12011,11 @@ async fn upload_wallet_reference_images(
                 .text()
                 .map_err(|error| format!("读取参考图上传授权响应失败：{error}"))?;
             if !ticket_status.is_success() {
-                return Err(format!("参考图上传授权失败（HTTP {}）：{}", ticket_status.as_u16(), ticket_body));
+                return Err(format!(
+                    "参考图上传授权失败（HTTP {}）：{}",
+                    ticket_status.as_u16(),
+                    ticket_body
+                ));
             }
             let ticket: ReferenceUploadTicket = serde_json::from_str(&ticket_body)
                 .map_err(|error| format!("参考图上传授权响应无效：{error}"))?;
@@ -11918,18 +12061,25 @@ async fn create_oss_public_image_urls(
     }
     let images = tauri::async_runtime::spawn_blocking(move || {
         use base64::{engine::general_purpose, Engine as _};
-        sources.iter().take(13).enumerate().map(|(index, source)| {
-            let object = source_to_r2_object(source)?;
-            if !object.content_type.starts_with("image/") {
-                return Err("OSS 参考图桥接仅支持图片".to_string());
-            }
-            Ok(OssReferenceImageUpload {
-                filename: format!("reference-{}.{}", index, object.ext),
-                mime: object.content_type,
-                data: general_purpose::STANDARD.encode(object.bytes),
+        sources
+            .iter()
+            .take(13)
+            .enumerate()
+            .map(|(index, source)| {
+                let object = source_to_r2_object(source)?;
+                if !object.content_type.starts_with("image/") {
+                    return Err("OSS 参考图桥接仅支持图片".to_string());
+                }
+                Ok(OssReferenceImageUpload {
+                    filename: format!("reference-{}.{}", index, object.ext),
+                    mime: object.content_type,
+                    data: general_purpose::STANDARD.encode(object.bytes),
+                })
             })
-        }).collect::<Result<Vec<_>, String>>()
-    }).await.map_err(|error| error.to_string())??;
+            .collect::<Result<Vec<_>, String>>()
+    })
+    .await
+    .map_err(|error| error.to_string())??;
 
     let access_token = commands::license::cloud_access_token(&app_handle).await?;
     let client = reqwest::Client::builder()
@@ -11943,12 +12093,17 @@ async fn create_oss_public_image_urls(
         .header("x-client-version", env!("CARGO_PKG_VERSION"))
         .header("x-wallet-protocol", "1")
         .json(&serde_json::json!({ "images": images }))
-        .send().await
+        .send()
+        .await
         .map_err(|error| format!("OSS 参考图上传失败：{error}"))?;
     let status = response.status();
     let body = response.text().await.map_err(|error| error.to_string())?;
     if !status.is_success() {
-        return Err(format!("OSS 参考图上传失败（{}）：{}", status.as_u16(), body));
+        return Err(format!(
+            "OSS 参考图上传失败（{}）：{}",
+            status.as_u16(),
+            body
+        ));
     }
     serde_json::from_str(&body).map_err(|error| format!("OSS 参考图响应无效：{error}"))
 }
@@ -11958,24 +12113,34 @@ async fn delete_oss_public_image_urls(
     app_handle: tauri::AppHandle,
     share_id: String,
 ) -> Result<(), String> {
-    if !share_id.chars().all(|value| value.is_ascii_alphanumeric() || value == '-') {
+    if !share_id
+        .chars()
+        .all(|value| value.is_ascii_alphanumeric() || value == '-')
+    {
         return Err("OSS 临时分享 ID 无效".to_string());
     }
     let access_token = commands::license::cloud_access_token(&app_handle).await?;
     let response = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(30))
-        .build().map_err(|error| error.to_string())?
-        .delete(format!("https://api.unmind.art/v1/ai/reference-images/{share_id}"))
+        .build()
+        .map_err(|error| error.to_string())?
+        .delete(format!(
+            "https://api.unmind.art/v1/ai/reference-images/{share_id}"
+        ))
         .bearer_auth(access_token)
         .header("x-client-version", env!("CARGO_PKG_VERSION"))
         .header("x-wallet-protocol", "1")
-        .send().await
+        .send()
+        .await
         .map_err(|error| format!("OSS 临时参考图清理失败：{error}"))?;
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(format!("OSS 临时参考图清理失败（{}）", response.status().as_u16()))
+        Err(format!(
+            "OSS 临时参考图清理失败（{}）",
+            response.status().as_u16()
+        ))
     }
 }
 
@@ -17773,7 +17938,10 @@ async fn inspiration_space_list(
 ) -> Result<serde_json::Value, String> {
     let normalized_kind = kind.unwrap_or_default().trim().to_uppercase();
     if !normalized_kind.is_empty()
-        && !matches!(normalized_kind.as_str(), "NODE_PRESET" | "WORKFLOW" | "PROMPT")
+        && !matches!(
+            normalized_kind.as_str(),
+            "NODE_PRESET" | "WORKFLOW" | "PROMPT"
+        )
     {
         return Err("灵感空间资源类型无效".to_string());
     }
@@ -17920,6 +18088,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(agent::AgentRuntimeState::default())
+        .manage(browser_extension::BrowserExtensionManagerState::default())
         .manage(SnipState {
             pre_snip_bounds: std::sync::Mutex::new(None),
         })
@@ -17968,6 +18137,26 @@ fn main() {
             commands::canvas::get_canvas_nodes_in_viewport,
             commands::canvas::update_canvas_nodes,
             commands::canvas::patch_canvas_nodes,
+            commands::chat::chat_conversation_count,
+            commands::chat::chat_list_conversations,
+            commands::chat::chat_upsert_conversation,
+            commands::chat::chat_delete_conversation,
+            commands::chat::chat_list_messages,
+            commands::chat::chat_upsert_message,
+            commands::chat::chat_upsert_attachment,
+            commands::chat::chat_upsert_tool_call,
+            commands::chat::chat_get_summary,
+            commands::chat::chat_upsert_summary,
+            commands::chat::chat_migrate_legacy,
+            commands::chat::chat_web_search,
+            commands::chat_files::chat_create_file,
+            commands::chat_files::chat_copy_generated_file,
+            browser_extension::browser_extension_get_status,
+            browser_extension::browser_extension_begin_install,
+            browser_extension::browser_extension_retry_pairing,
+            browser_extension::browser_extension_open_extension_page,
+            browser_extension::browser_extension_open_prepared_folder,
+            browser_extension::browser_extension_dismiss_setup_prompt,
             commands::migration::migrate_json_to_sqlite,
             commands::migration::ensure_sqlite_asset_library,
             commands::migration::get_migration_status,
@@ -18141,8 +18330,16 @@ fn main() {
             inspiration_space_submit,
         ])
         .setup(|app| {
+            update_cache::cleanup_update_cache_on_startup(app.handle());
             POST_INSTALL_LAUNCH_PENDING.store(take_post_install_launch_marker(), Ordering::Release);
             set_startup_close_lock(16_000);
+
+            if let Err(error) = app
+                .state::<browser_extension::BrowserExtensionManagerState>()
+                .start(app.handle().clone())
+            {
+                eprintln!("browser extension bridge init failed: {error}");
+            }
 
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_shadow(false);
