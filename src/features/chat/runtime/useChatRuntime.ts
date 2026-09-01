@@ -7,7 +7,6 @@ import {
   type ChatConversation,
   type ChatGeneratedMedia,
   type ChatMessage,
-  type ChatReasoningEffort,
   type ChatSummary,
   type ChatToolCall,
   type ChatToolExecutor,
@@ -33,9 +32,15 @@ import { getChatToolDefinitions, shouldDirectGenerateImage, shouldExposeWebSearc
 import { routeChatToolCall } from '../tools/chatToolRouter';
 import { serializeChatToolResult } from '../tools/chatToolResult';
 import { applyChatImageGenerationSettings } from './chatImageGenerationSettings';
+import {
+  createKeyedSerialTaskQueue,
+  normalizeChatModelSelection,
+  resolveChatRequestModel,
+  type KeyedSerialTaskQueue,
+} from './chatModelSelection';
 import { cancelChatCompletion, requestChatCompletion, type ChatProviderResult } from './chatStream';
 
-type UseChatRuntimeOptions = {
+export type UseChatRuntimeOptions = {
   model: string;
   imageModel?: string;
   imageAspectRatio?: string;
@@ -52,6 +57,7 @@ type PendingApprovalRun = {
   conversationId: string;
   assistantMessageId: string;
   userText: string;
+  requestModel: string;
   providerMessages: Array<Record<string, unknown>>;
   calls: ChatToolCall[];
   index: number;
@@ -65,24 +71,8 @@ const SUMMARY_TRIGGER_TOKENS = 18_000;
 const SUMMARY_TRIGGER_MESSAGES = 36;
 const SUMMARY_KEEP_RECENT = 28;
 const LEGACY_PROVIDER_MODELS = new Set(['codex', 'openai-compatible', 'default']);
-const CHAT_REASONING_EFFORT_STORAGE_KEY = 'drawer_chat_reasoning_effort';
-const LEGACY_CHAT_REASONING_ENABLED_STORAGE_KEY = 'drawer_chat_reasoning_enabled';
 const CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY = 'drawer_chat_web_search_enabled';
-
-const CHAT_REASONING_EFFORTS = new Set<ChatReasoningEffort>(['', 'low', 'medium', 'high', 'xhigh', 'max']);
-const CHAT_REASONING_INSTRUCTIONS: Record<Exclude<ChatReasoningEffort, ''>, string> = {
-  low: '使用轻度推理，优先快速、直接地完成任务。',
-  medium: '使用中等推理深度，在速度与严谨性之间保持平衡。',
-  high: '使用高推理深度，充分检查关键假设与结论。',
-  xhigh: '使用极高推理深度，进行更充分的探索、验证与复核。',
-  max: '使用最高（Ultra）推理深度，优先质量并进行最充分的探索与验证。',
-};
-
-const readStoredReasoningEffort = (): ChatReasoningEffort => {
-  const stored = localStorage.getItem(CHAT_REASONING_EFFORT_STORAGE_KEY) as ChatReasoningEffort | null;
-  if (stored !== null && CHAT_REASONING_EFFORTS.has(stored)) return stored;
-  return localStorage.getItem(LEGACY_CHAT_REASONING_ENABLED_STORAGE_KEY) === 'true' ? 'medium' : '';
-};
+const STREAM_RENDER_INTERVAL_MS = 64;
 
 const normalizeUsage = (value?: Record<string, unknown>) => {
   if (!value) return undefined;
@@ -245,7 +235,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const [nextBeforeCreatedAt, setNextBeforeCreatedAt] = useState<number | undefined>();
   const [searchQuery, setSearchQuery] = useState('');
   const [usage, setUsage] = useState<ReturnType<typeof normalizeUsage>>();
-  const [reasoningEffort, setReasoningEffort] = useState<ChatReasoningEffort>(readStoredReasoningEffort);
   const [webSearchEnabled, setWebSearchEnabled] = useState(() => (
     localStorage.getItem(CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY) === 'true'
   ));
@@ -253,21 +242,82 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   const conversationsRef = useRef(conversations);
   const messagesRef = useRef(messages);
   const summaryRef = useRef(summary);
+  const busyRef = useRef(busy);
   const activeConversationIdRef = useRef(activeConversationId);
   const activeRequestRef = useRef<{ requestId: string; conversationId: string; messageId: string; streamed: boolean } | null>(null);
   const pendingApprovalRef = useRef<PendingApprovalRun | null>(null);
   const persistTimersRef = useRef(new Map<string, number>());
+  const streamBuffersRef = useRef(new Map<string, string>());
+  const streamFlushTimersRef = useRef(new Map<string, number>());
+  const conversationPersistQueueRef = useRef<KeyedSerialTaskQueue | null>(null);
+  const modelUpdateVersionsRef = useRef(new Map<string, number>());
+  if (!conversationPersistQueueRef.current) {
+    conversationPersistQueueRef.current = createKeyedSerialTaskQueue();
+  }
 
   useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { summaryRef.current = summary; }, [summary]);
   useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => {
-    localStorage.setItem(CHAT_REASONING_EFFORT_STORAGE_KEY, reasoningEffort);
-  }, [reasoningEffort]);
-  useEffect(() => {
     localStorage.setItem(CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY, String(webSearchEnabled));
   }, [webSearchEnabled]);
+
+  const updateBusy = useCallback((value: boolean) => {
+    busyRef.current = value;
+    setBusy(value);
+  }, []);
+
+  const enqueueConversationPersist = useCallback((conversation: ChatConversation) => (
+    conversationPersistQueueRef.current!(
+      conversation.id,
+      () => upsertChatConversation(conversation),
+    )
+  ), []);
+
+  const applyConversationModel = useCallback(async (
+    conversation: ChatConversation,
+    model: string,
+  ) => {
+    const normalizedModel = normalizeChatModelSelection(model);
+    if (!normalizedModel) return false;
+    if (conversation.model === normalizedModel) return true;
+
+    const version = (modelUpdateVersionsRef.current.get(conversation.id) || 0) + 1;
+    modelUpdateVersionsRef.current.set(conversation.id, version);
+    const next = { ...conversation, model: normalizedModel, updatedAt: Date.now() };
+    conversationsRef.current = conversationsRef.current.map(item => (
+      item.id === next.id ? next : item
+    ));
+    setConversations(conversationsRef.current);
+
+    try {
+      await enqueueConversationPersist(next);
+      return true;
+    } catch (error) {
+      const currentVersion = modelUpdateVersionsRef.current.get(conversation.id);
+      const current = conversationsRef.current.find(item => item.id === conversation.id);
+      if (currentVersion === version && current?.model === normalizedModel) {
+        const rollback = { ...current, model: conversation.model, updatedAt: Date.now() };
+        conversationsRef.current = conversationsRef.current.map(item => (
+          item.id === rollback.id ? rollback : item
+        ));
+        setConversations(conversationsRef.current);
+        optionsRef.current.onNotice?.(`保存 Chat 模型选择失败：${String(error)}`);
+      }
+      return false;
+    }
+  }, [enqueueConversationPersist]);
+
+  const setConversationModel = useCallback((model: string) => {
+    const conversation = conversationsRef.current.find(
+      item => item.id === activeConversationIdRef.current,
+    );
+    if (!conversation || busyRef.current || pendingApprovalRef.current) {
+      return Promise.resolve(false);
+    }
+    return applyConversationModel(conversation, model);
+  }, [applyConversationModel]);
 
   const persistMessageSoon = useCallback((message: ChatMessage, immediate = false) => {
     const existing = persistTimersRef.current.get(message.id);
@@ -293,6 +343,27 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       return next;
     });
   }, [persistMessageSoon]);
+
+  const flushStreamDelta = useCallback((messageId: string) => {
+    const timer = streamFlushTimersRef.current.get(messageId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    streamFlushTimersRef.current.delete(messageId);
+    const delta = streamBuffersRef.current.get(messageId) || '';
+    streamBuffersRef.current.delete(messageId);
+    if (!delta) return;
+    patchMessage(messageId, message => ({
+      ...message,
+      content: `${message.content}${delta}`,
+      status: 'streaming',
+    }));
+  }, [patchMessage]);
+
+  const queueStreamDelta = useCallback((messageId: string, delta: string) => {
+    streamBuffersRef.current.set(messageId, `${streamBuffersRef.current.get(messageId) || ''}${delta}`);
+    if (streamFlushTimersRef.current.has(messageId)) return;
+    const timer = window.setTimeout(() => flushStreamDelta(messageId), STREAM_RENDER_INTERVAL_MS);
+    streamFlushTimersRef.current.set(messageId, timer);
+  }, [flushStreamDelta]);
 
   const refreshConversations = useCallback(async (query = searchQuery) => {
     const next = await listChatConversations(query, 120, 0);
@@ -391,17 +462,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const delta = String(event.payload?.delta || '');
       if (!delta) return;
       active.streamed = true;
-      patchMessage(active.messageId, message => ({
-        ...message,
-        content: `${message.content}${delta}`,
-        status: 'streaming',
-      }));
+      queueStreamDelta(active.messageId, delta);
     });
     return () => { void unlisten.then(dispose => dispose()); };
-  }, [patchMessage]);
+  }, [queueStreamDelta]);
 
   useEffect(() => () => {
     persistTimersRef.current.forEach(timer => window.clearTimeout(timer));
+    streamFlushTimersRef.current.forEach(timer => window.clearTimeout(timer));
+    streamFlushTimersRef.current.clear();
+    streamBuffersRef.current.clear();
   }, []);
 
   const loadOlderMessages = useCallback(async () => {
@@ -466,6 +536,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     conversationId: string,
     assistantMessageId: string,
     userText: string,
+    requestModel: string,
     providerMessages: Array<Record<string, unknown>>,
     depth: number,
   ) => Promise<void>>(async () => {});
@@ -522,7 +593,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           await upsertChatToolCall(call);
           patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }), true);
           pendingApprovalRef.current = { ...run, calls: [...run.calls], index, toolMessages };
-          setBusy(false);
+          updateBusy(false);
           return;
         }
         const resultJson = serializeChatToolResult(routed.result);
@@ -556,15 +627,17 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       run.conversationId,
       run.assistantMessageId,
       run.userText,
+      run.requestModel,
       [...run.providerMessages, ...toolMessages],
       run.depth + 1,
     );
-  }, [patchMessage]);
+  }, [patchMessage, updateBusy]);
 
   const runModelLoop = useCallback(async (
     conversationId: string,
     assistantMessageId: string,
     userText: string,
+    requestModel: string,
     providerMessages: Array<Record<string, unknown>>,
     depth: number,
   ) => {
@@ -580,12 +653,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       ? []
       : getChatToolDefinitions(userText, hasRecentMedia, webSearchAvailable, webSearchCount >= 2);
     const requestInstructions: Array<Record<string, unknown>> = [];
-    if (reasoningEffort) {
-      requestInstructions.push({
-        role: 'system',
-        content: CHAT_REASONING_INSTRUCTIONS[reasoningEffort],
-      });
-    }
     if (webSearchRequested) {
       const remainingSearches = Math.max(0, 2 - webSearchCount);
       requestInstructions.push({
@@ -615,7 +682,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       : normalizedProviderMessages;
     activeRequestRef.current = { requestId, conversationId, messageId: assistantMessageId, streamed: false };
     setStoppable(true);
-    const requestModel = conversationsRef.current.find(item => item.id === conversationId)?.model || optionsRef.current.model;
     let result: ChatProviderResult;
     try {
       result = await requestChatCompletion({
@@ -624,7 +690,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         tools,
         model: requestModel,
         stream: true,
-        reasoningEffort: reasoningEffort || undefined,
       });
     } catch (error) {
       const active = activeRequestRef.current;
@@ -650,12 +715,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         tools: [],
         model: requestModel,
         stream: true,
-        reasoningEffort: reasoningEffort || undefined,
       });
     }
     const active = activeRequestRef.current;
     activeRequestRef.current = null;
     setStoppable(false);
+    flushStreamDelta(assistantMessageId);
     setUsage(normalizeUsage(result.usage));
     if (!active?.streamed && result.content) {
       patchMessage(assistantMessageId, message => ({ ...message, content: `${message.content}${result.content}` }));
@@ -710,6 +775,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         conversationId,
         assistantMessageId,
         userText,
+        requestModel,
         providerMessages: [...providerMessages, fallbackAssistantToolMessage],
         calls: [fallbackCall],
         index: 0,
@@ -724,7 +790,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         content: message.content.trim() || '已完成。',
         status: 'completed',
       }), true);
-      setBusy(false);
+      updateBusy(false);
       void maybeSummarize(conversationId);
       return;
     }
@@ -751,29 +817,54 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       conversationId,
       assistantMessageId,
       userText,
+      requestModel,
       providerMessages: [...providerMessages, assistantToolMessage],
       calls,
       index: 0,
       toolMessages: [],
       depth,
     });
-  }, [continueToolCalls, maybeSummarize, patchMessage, reasoningEffort, webSearchEnabled]);
+  }, [continueToolCalls, flushStreamDelta, maybeSummarize, patchMessage, updateBusy, webSearchEnabled]);
   runModelLoopRef.current = runModelLoop;
 
-  const sendMessage = useCallback(async (content: string, pendingAttachments: PendingChatAttachment[] = []) => {
+  const sendMessage = useCallback(async (
+    content: string,
+    pendingAttachments: PendingChatAttachment[] = [],
+    selectedModel?: string,
+  ) => {
     const text = content.trim();
-    if ((!text && pendingAttachments.length === 0) || busy || pendingApprovalRef.current) return false;
+    if ((!text && pendingAttachments.length === 0) || busyRef.current || pendingApprovalRef.current) return false;
+    let conversation = conversationsRef.current.find(item => item.id === activeConversationIdRef.current);
+    const requestModel = resolveChatRequestModel(
+      selectedModel,
+      conversation?.model,
+      optionsRef.current.model,
+    );
+    if (conversation && normalizeChatModelSelection(selectedModel) && conversation.model !== requestModel) {
+      void applyConversationModel(conversation, requestModel);
+      conversation = conversationsRef.current.find(item => item.id === conversation!.id) || conversation;
+    }
+    updateBusy(true);
+
     let preparedAttachments = pendingAttachments;
     if (optionsRef.current.prepareAttachment && pendingAttachments.length > 0) {
       try {
         preparedAttachments = await Promise.all(pendingAttachments.map(optionsRef.current.prepareAttachment));
       } catch (error) {
+        updateBusy(false);
         optionsRef.current.onNotice?.(`保存 Chat 附件失败：${String(error)}`);
         return false;
       }
     }
-    let conversation = conversationsRef.current.find(item => item.id === activeConversationIdRef.current);
-    if (!conversation) conversation = await createConversation();
+    if (!conversation) {
+      try {
+        conversation = await createConversation(requestModel);
+      } catch (error) {
+        updateBusy(false);
+        optionsRef.current.onNotice?.(`创建 Chat 会话失败：${String(error)}`);
+        return false;
+      }
+    }
     const now = Date.now();
     const userMessageId = createChatId('chat-user');
     const attachments: ChatAttachment[] = preparedAttachments.map((attachment, index) => ({
@@ -806,15 +897,23 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const nextMessages = [...existingMessages, userMessage, assistantMessage];
     messagesRef.current = nextMessages;
     setMessages(nextMessages);
-    setBusy(true);
     try {
       await upsertChatMessage(userMessage);
       await Promise.all(attachments.map(upsertChatAttachment));
       await upsertChatMessage(assistantMessage);
       if (conversation.title === '新对话') {
-        conversation = { ...conversation, title: trimConversationTitle(text || '图片对话'), updatedAt: now };
-        await upsertChatConversation(conversation);
-        setConversations(current => current.map(item => item.id === conversation!.id ? conversation! : item));
+        const latestConversation = conversationsRef.current.find(item => item.id === conversation!.id)
+          || conversation;
+        conversation = {
+          ...latestConversation,
+          title: trimConversationTitle(text || '图片对话'),
+          updatedAt: now,
+        };
+        conversationsRef.current = conversationsRef.current.map(item => (
+          item.id === conversation!.id ? conversation! : item
+        ));
+        setConversations(conversationsRef.current);
+        await enqueueConversationPersist(conversation);
       }
       const providerMessages = await buildChatContext({
         messages: nextMessages,
@@ -822,7 +921,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         summary: summaryRef.current,
         resolveAttachmentUrl: optionsRef.current.resolveAttachmentUrl,
       });
-      await runModelLoop(conversation.id, assistantMessage.id, userMessage.content, providerMessages, 0);
+      await runModelLoop(
+        conversation.id,
+        assistantMessage.id,
+        userMessage.content,
+        requestModel,
+        providerMessages,
+        0,
+      );
       return true;
     } catch (error) {
       const cancelled = /取消|cancel/i.test(String(error));
@@ -833,11 +939,18 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }), true);
       activeRequestRef.current = null;
       setStoppable(false);
-      setBusy(false);
+      updateBusy(false);
       if (!cancelled) optionsRef.current.onNotice?.(`Chat 请求失败：${String(error)}`);
       return cancelled;
     }
-  }, [busy, createConversation, patchMessage, runModelLoop]);
+  }, [
+    applyConversationModel,
+    createConversation,
+    enqueueConversationPersist,
+    patchMessage,
+    runModelLoop,
+    updateBusy,
+  ]);
 
   const stop = useCallback(async () => {
     const active = activeRequestRef.current;
@@ -850,15 +963,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     }), true);
     activeRequestRef.current = null;
     setStoppable(false);
-    setBusy(false);
-  }, [patchMessage]);
+    updateBusy(false);
+  }, [patchMessage, updateBusy]);
 
   const resolveToolApproval = useCallback(async (callId: string, approved: boolean) => {
     const pending = pendingApprovalRef.current;
     if (!pending) return;
     const call = pending.calls.find(value => value.id === callId);
     if (!call || call.status !== 'awaiting-approval') return;
-    setBusy(true);
+    updateBusy(true);
     try {
       if (!approved) {
         call.status = 'declined';
@@ -881,7 +994,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       pendingApprovalRef.current = null;
       activeRequestRef.current = null;
       setStoppable(false);
-      setBusy(false);
+      updateBusy(false);
       patchMessage(pending.assistantMessageId, message => ({
         ...message,
         content: message.content.trim() || '确认后的请求没有完成。',
@@ -889,7 +1002,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }), true);
       optionsRef.current.onNotice?.(`Chat 请求失败：${String(error)}`);
     }
-  }, [continueToolCalls, patchMessage]);
+  }, [continueToolCalls, patchMessage, updateBusy]);
 
   const retryLast = useCallback(async () => {
     const lastUser = [...messagesRef.current].reverse().find(message => message.role === 'user');
@@ -912,15 +1025,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     if (next[0]) await loadConversation(next[0].id);
     else await createConversation();
   }, [busy, createConversation, loadConversation]);
-
-  const setConversationModel = useCallback(async (model: string) => {
-    const conversation = conversationsRef.current.find(item => item.id === activeConversationIdRef.current);
-    if (!conversation || !model.trim() || busy || pendingApprovalRef.current) return;
-    const next = { ...conversation, model: model.trim(), updatedAt: Date.now() };
-    conversationsRef.current = conversationsRef.current.map(item => item.id === next.id ? next : item);
-    setConversations(conversationsRef.current);
-    await upsertChatConversation(next);
-  }, [busy]);
 
   const startNewConversation = useCallback(() => {
     if (busy || pendingApprovalRef.current) return Promise.resolve(undefined);
@@ -950,7 +1054,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     hasMoreMessages,
     searchQuery,
     usage,
-    reasoningEffort,
     webSearchEnabled,
     sendMessage,
     stop,
@@ -962,7 +1065,6 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     loadOlderMessages,
     setConversationModel,
     searchConversations,
-    setReasoningEffort,
     setWebSearchEnabled,
   };
 }

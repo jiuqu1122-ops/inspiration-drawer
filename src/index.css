@@ -36,13 +36,39 @@ body,
 }
 
 /* Keep high-frequency canvas transforms on a single inexpensive compositor layer. */
-[data-canvas-node-moving="true"] [data-canvas-connection-handle-id],
 [data-canvas-zooming="true"] [data-canvas-connection-handle-id] {
   visibility: hidden !important;
 }
 
 [data-canvas-selection-pending="true"] [data-canvas-selection-frame="true"] {
   visibility: hidden !important;
+}
+
+[data-canvas-surface][data-canvas-space-pressed="true"] {
+  cursor: grab;
+  touch-action: none !important;
+}
+
+[data-canvas-surface][data-canvas-space-pressed="true"]:active {
+  cursor: grabbing;
+}
+
+[data-canvas-item-id][data-canvas-selected-state="true"]::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  z-index: 100000;
+  border: 2px solid rgba(59, 130, 246, 0.68);
+  border-radius: 14px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.72);
+  pointer-events: none;
+}
+
+/* Keep each canvas node as an independent layout scope. Canvas nodes use
+   translucent fills, so descendant backdrop filters add substantial first-
+   interaction raster work without a meaningful visual difference. */
+[data-canvas-item-id] * {
+  backdrop-filter: none !important;
 }
 
 [data-canvas-zooming="true"] [data-canvas-item-id],
@@ -53,31 +79,12 @@ body,
   filter: none !important;
 }
 
-[data-canvas-interacting="true"] [data-canvas-item-id],
-[data-canvas-interacting="true"] [data-canvas-item-id] * {
-  transition: none !important;
-}
-
-[data-canvas-interacting="true"] [data-canvas-item-id] {
-  will-change: auto;
-}
-
-[data-canvas-interacting="true"] [data-canvas-content-layer="true"] {
-  will-change: transform;
-}
-
 [data-canvas-item-id][data-canvas-dragging="true"] {
   will-change: transform;
 }
 
 [data-canvas-item-id][data-canvas-resizing="true"] {
   will-change: left, top, width, height;
-}
-
-[data-canvas-interacting="true"] [data-canvas-item-id] * {
-  box-shadow: none !important;
-  filter: none !important;
-  backdrop-filter: none !important;
 }
 
 /*

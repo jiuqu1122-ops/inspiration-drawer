@@ -3,7 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import type { ChatGeneratedMedia } from '../model/chatTypes';
 
 const displaySource = (media: ChatGeneratedMedia) => {
-  const source = media.path || media.url || '';
+  const source = media.thumbnail || media.path || media.url || '';
   if (!source || /^(?:https?:|data:|blob:|asset:)/i.test(source)) return source;
   try { return convertFileSrc(source); } catch (_) { return source; }
 };
@@ -25,7 +25,14 @@ export function ChatGeneratedImageCard({
       {media.type === 'video' ? (
         <video src={source} controls preload="metadata" className="chat-generated-media__asset" />
       ) : (
-        <img src={source} alt={media.name || media.prompt || 'AI 生成图片'} className="chat-generated-media__asset" />
+        <img
+          src={source}
+          alt={media.name || media.prompt || 'AI 生成图片'}
+          className="chat-generated-media__asset"
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+        />
       )}
       <figcaption className="chat-generated-media__actions">
         {media.assetId && <span className="chat-generated-media__saved"><FolderCheck size={12} />已保存到素材库</span>}

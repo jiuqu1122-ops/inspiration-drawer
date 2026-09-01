@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CloudCreditUsageEntry } from '../types/license';
 import {
   formatCreditAmount,
+  formatCreditUsageDescription,
   formatCreditUsageAmount,
   selectRecentNonZeroCreditUsage,
 } from './cloudCreditUsage';
@@ -31,5 +32,22 @@ describe('cloud credit usage helpers', () => {
     expect(formatCreditAmount('1.284735')).toBe('1.28');
     expect(formatCreditAmount('1.285000')).toBe('1.29');
     expect(formatCreditAmount('1234567.000000')).toBe('1,234,567.00');
+  });
+
+  it('splits a chat charge into a readable title, model and token details', () => {
+    expect(formatCreditUsageDescription(
+      'Chat Token 结算 · gpt-5.6-terra · 输入 18516 · 缓存读 7432 · 缓存写 0 · 输出 928',
+    )).toEqual({
+      title: 'Chat Token 结算',
+      model: 'gpt-5.6-terra',
+      details: ['输入 18516', '缓存读 7432', '缓存写 0', '输出 928'],
+    });
+  });
+
+  it('keeps other settlement descriptions intact', () => {
+    expect(formatCreditUsageDescription('生图结算 1 张')).toEqual({
+      title: '生图结算 1 张',
+      details: [],
+    });
   });
 });

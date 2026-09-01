@@ -1,4 +1,5 @@
 import type React from 'react';
+import { memo, useCallback, useMemo, useRef } from 'react';
 import { Compass, LayoutGrid, Maximize2, Minimize2, X } from 'lucide-react';
 import type { CanvasImageItem, CanvasItemBox } from '../features/canvasModel';
 import { getCanvasAiMediaType, isCanvasAiGeneratorType } from '../features/canvasAiRuntime';
@@ -37,6 +38,67 @@ type CanvasNavigatorProps = {
   onLocatePrimary: () => void;
 };
 
+const CanvasNavigatorNode = memo(function CanvasNavigatorNode({
+  item,
+  left,
+  top,
+  width,
+  height,
+  selected,
+  source,
+  label,
+  onSelectItem,
+}: {
+  item: CanvasImageItem;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  selected: boolean;
+  source: string;
+  label: string;
+  onSelectItem: (item: CanvasImageItem) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`absolute overflow-hidden rounded-[6px] border bg-white shadow-sm transition-transform hover:scale-110 dark:bg-stone-800 ${
+        selected
+          ? 'border-stone-900 ring-2 ring-stone-400/35 dark:border-stone-100'
+          : 'border-white/85 dark:border-stone-600/80'
+      }`}
+      style={{ left, top, width, height }}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelectItem(item);
+      }}
+      title={item.item.name || item.item.content || label}
+    >
+      {source ? (
+        <img
+          src={source}
+          alt={item.item.name || '导航缩略图'}
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover"
+          draggable={false}
+        />
+      ) : (
+        <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
+          item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
+            ? 'bg-stone-200 text-stone-600 dark:bg-stone-800 dark:text-stone-300'
+            : item.item.type === 'image'
+              ? 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'
+              : 'bg-white/70 text-stone-500 dark:bg-stone-800 dark:text-stone-300'
+        }`}>
+          <span className="truncate">{item.item.type === 'video' ? '视频' : label}</span>
+        </div>
+      )}
+    </button>
+  );
+});
+
 export function CanvasNavigator({
   visible,
   panelRef,
@@ -54,18 +116,44 @@ export function CanvasNavigator({
   onZoomIn,
   onLocatePrimary,
 }: CanvasNavigatorProps) {
-  const bounds = items.length > 0 ? {
-    left: Math.min(...items.map(entry => entry.box.x)),
-    top: Math.min(...items.map(entry => entry.box.y)),
-    right: Math.max(...items.map(entry => entry.box.x + entry.box.width)),
-    bottom: Math.max(...items.map(entry => entry.box.y + entry.box.height)),
-  } : null;
-  const scale = bounds
-    ? Math.min(
-      (CANVAS_NAV_WIDTH - 18) / Math.max(1, bounds.right - bounds.left),
-      (CANVAS_NAV_HEIGHT - 18) / Math.max(1, bounds.bottom - bounds.top)
-    )
-    : 1;
+  const { bounds, scale } = useMemo(() => {
+    const nextBounds = items.length > 0 ? {
+      left: Math.min(...items.map(entry => entry.box.x)),
+      top: Math.min(...items.map(entry => entry.box.y)),
+      right: Math.max(...items.map(entry => entry.box.x + entry.box.width)),
+      bottom: Math.max(...items.map(entry => entry.box.y + entry.box.height)),
+    } : null;
+    return {
+      bounds: nextBounds,
+      scale: nextBounds
+        ? Math.min(
+          (CANVAS_NAV_WIDTH - 18) / Math.max(1, nextBounds.right - nextBounds.left),
+          (CANVAS_NAV_HEIGHT - 18) / Math.max(1, nextBounds.bottom - nextBounds.top),
+        )
+        : 1,
+    };
+  }, [items]);
+  const onSelectItemRef = useRef(onSelectItem);
+  onSelectItemRef.current = onSelectItem;
+  const selectItem = useCallback((item: CanvasImageItem) => {
+    onSelectItemRef.current(item);
+  }, []);
+  const renderItems = useMemo(() => items.map(({ item, box }) => {
+    const preview = getPreview(item);
+    const label = item.ai?.type === 'workflow'
+      ? item.ai?.presetLabel || '工作流'
+      : isCanvasAiGeneratorType(item.ai?.type)
+        ? item.ai?.presetLabel || (getCanvasAiMediaType(item.ai) === 'video' ? '视频' : '生图')
+        : item.item.type === 'text'
+          ? '文字'
+          : item.item.name || item.item.type || '节点';
+    return {
+      item,
+      box,
+      source: getThumbnailSource(item, preview),
+      label,
+    };
+  }), [getPreview, getThumbnailSource, items]);
 
   return (
     <>
@@ -119,59 +207,25 @@ export function CanvasNavigator({
               <div className="flex h-full items-center justify-center text-[10px] font-bold text-stone-400 dark:text-stone-500">
                 暂无节点
               </div>
-            ) : bounds && items.map(({ item, box }) => {
+            ) : bounds && renderItems.map(({ item, box, source, label }) => {
               const left = 9 + (box.x - bounds.left) * scale;
               const top = 9 + (box.y - bounds.top) * scale;
               const width = Math.max(10, box.width * scale);
               const height = Math.max(10, box.height * scale);
               const selected = selectedIds.has(item.id);
-              const preview = getPreview(item);
-              const source = getThumbnailSource(item, preview);
-              const label = item.ai?.type === 'workflow'
-                ? item.ai?.presetLabel || '工作流'
-                : isCanvasAiGeneratorType(item.ai?.type)
-                  ? item.ai?.presetLabel || (getCanvasAiMediaType(item.ai) === 'video' ? '视频' : '生图')
-                  : item.item.type === 'text'
-                    ? '文字'
-                    : item.item.name || item.item.type || '节点';
               return (
-                <button
+                <CanvasNavigatorNode
                   key={item.id}
-                  type="button"
-                  className={`absolute overflow-hidden rounded-[6px] border bg-white shadow-sm transition-transform hover:scale-110 dark:bg-stone-800 ${
-                    selected
-                      ? 'border-stone-900 ring-2 ring-stone-400/35 dark:border-stone-100'
-                      : 'border-white/85 dark:border-stone-600/80'
-                  }`}
-                  style={{ left, top, width, height }}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    onSelectItem(item);
-                  }}
-                  title={item.item.name || item.item.content || label}
-                >
-                  {source ? (
-                    <img
-                      src={source}
-                      alt={item.item.name || '导航缩略图'}
-                      loading="lazy"
-                      decoding="async"
-                      className="h-full w-full object-cover"
-                      draggable={false}
-                    />
-                  ) : (
-                    <div className={`flex h-full w-full items-center justify-center px-1 text-[7px] font-black leading-none ${
-                      item.item.type === 'video' || getCanvasAiMediaType(item.ai) === 'video'
-                        ? 'bg-stone-200 text-stone-600 dark:bg-stone-800 dark:text-stone-300'
-                        : item.item.type === 'image'
-                          ? 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'
-                          : 'bg-white/70 text-stone-500 dark:bg-stone-800 dark:text-stone-300'
-                    }`}>
-                      <span className="truncate">{item.item.type === 'video' ? '视频' : label}</span>
-                    </div>
-                  )}
-                </button>
+                  item={item}
+                  left={left}
+                  top={top}
+                  width={width}
+                  height={height}
+                  selected={selected}
+                  source={source}
+                  label={label}
+                  onSelectItem={selectItem}
+                />
               );
             })}
           </div>

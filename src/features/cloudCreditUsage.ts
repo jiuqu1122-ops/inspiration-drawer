@@ -37,3 +37,26 @@ export const formatCreditUsageDate = (value: string) => {
     hour12: false,
   }).format(parsed);
 };
+
+export type CreditUsageDescription = {
+  title: string;
+  model?: string;
+  details: string[];
+};
+
+export const formatCreditUsageDescription = (
+  description?: string | null,
+): CreditUsageDescription => {
+  const text = description?.trim() || 'AI 积分结算';
+  const segments = text.split(/\s*·\s*/).filter(Boolean);
+
+  if (segments[0] !== 'Chat Token 结算' || segments.length < 2) {
+    return { title: text, details: [] };
+  }
+
+  return {
+    title: segments[0],
+    model: segments[1],
+    details: segments.slice(2),
+  };
+};

@@ -1,6 +1,6 @@
 import { Check, Copy, RotateCcw } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatGeneratedImageCard } from './ChatGeneratedImageCard';
 import { ChatGeneratedFileCard } from './ChatGeneratedFileCard';
@@ -39,7 +39,7 @@ function ChatMessageText({ content }: { content: string }) {
   );
 }
 
-export function ChatMessage({
+export const ChatMessage = memo(function ChatMessage({
   message,
   onResolveTool,
   onRetry,
@@ -94,4 +94,4 @@ export function ChatMessage({
       </div>
     </article>
   );
-}
+});

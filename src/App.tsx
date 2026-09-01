@@ -100,6 +100,7 @@ import type {
 } from './types/license';
 import {
   formatCreditAmount,
+  formatCreditUsageDescription,
   formatCreditUsageAmount,
   formatCreditUsageDate,
   selectRecentNonZeroCreditUsage,
@@ -339,16 +340,23 @@ import {
 } from './services/mediaThumbnail';
 import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
-import { ChatView } from './features/chat/components/ChatView';
-import { useChatRuntime } from './features/chat/runtime/useChatRuntime';
-import type { ChatAttachment, ChatGeneratedMedia, ChatImageModelOption } from './features/chat/model/chatTypes';
+import { ChatHost } from './features/chat/components/ChatHost';
+import type { ChatGeneratedMedia, ChatImageModelOption } from './features/chat/model/chatTypes';
+import {
+  getCanvasChatOffsetRight,
+  getCanvasChatVisibility,
+  setCanvasChatVisibility,
+  subscribeCanvasChatVisibility,
+} from './features/chat/runtime/canvasChatVisibility';
 import { runChatMediaGeneration } from './features/chat/tools/chatGenerationBridge';
 import { createInspirationChatToolExecutor } from './features/chat/tools/inspirationChatToolExecutor';
 import { BrowserExtensionSetup } from './features/browserExtension/BrowserExtensionSetup';
 import { useBrowserExtensionDragCollector } from './features/browserExtension/useBrowserExtensionDragCollector';
 import { DoodleBrushCursor } from './components/DoodleBrushCursor';
 import { CanvasNavigator } from './components/CanvasNavigator';
+import { CanvasNodeRenderGate } from './components/CanvasNodeRenderGate';
 import { CanvasToolbar } from './components/CanvasToolbar';
+import { AppToastHost, showAppToast } from './components/AppToastHost';
 import {
   isPromptSharePayload,
   type InspirationSpaceDrawerImageOption,
@@ -994,6 +1002,7 @@ const CANVAS_IMAGE_SOURCE_DOWNGRADE_SCALE = 0.65;
 const CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD = 480;
 const CANVAS_IMAGE_SOURCE_UPGRADE_MAX_ACTIVE_PREVIEWS = 3;
 const CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED = true;
+const CANVAS_INTERACTION_BACKGROUND_SETTLE_MS = 900;
 const CANVAS_INTERACTION_DEBUG = false;
 const DATA_THUMBNAIL_RECOMPRESS_MIN_CHARS = 64 * 1024;
 const BLANK_NOTE_CREATE_LOCK_STORAGE_KEY = 'drawer_blank_note_create_lock';
@@ -1219,13 +1228,11 @@ function MainApp() {
   const [canvasWorkingTimerTick, setCanvasWorkingTimerTick] = useState(() => Date.now());
   const [canvasScale, setCanvasScale] = useState(1);
   const [canvasSize, setCanvasSize] = useState({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
-  const [isCanvasSpacePressed, setIsCanvasSpacePressed] = useState(false);
   const [isCanvasChromeHidden, setIsCanvasChromeHidden] = useState(false);
   const [isCanvasNavigatorVisible, setIsCanvasNavigatorVisible] = useState(() => localStorage.getItem('drawer_canvas_navigator_visible') !== 'false');
   const [isCanvasGeneratedListVisible, setIsCanvasGeneratedListVisible] = useState(() => localStorage.getItem('drawer_canvas_generated_list_visible') !== 'false');
   const [isCanvasGeneratedMultiSelect, setIsCanvasGeneratedMultiSelect] = useState(false);
   const [canvasGeneratedSelectedIds, setCanvasGeneratedSelectedIds] = useState<string[]>([]);
-  const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [isInspirationSpaceOpen, setIsInspirationSpaceOpen] = useState(false);
   const [isDrawerAgentOpen, setIsDrawerAgentOpen] = useState(false);
   const [canvasTextAgentRunningIds, setCanvasTextAgentRunningIds] = useState<string[]>([]);
@@ -1389,6 +1396,8 @@ function MainApp() {
   const canvasSelectedIdsRef = useRef<string[]>([]);
   const workflowResultPublisherRef = useRef<(result: WorkflowResultCardData) => void>(() => {});
   const canvasWorkflowSingleEditGroupIdsRef = useRef<Set<string>>(new Set());
+  const isAgentChatOpenRef = useRef(getCanvasChatVisibility());
+  const canvasAgentSidebarWidthRef = useRef(readAgentSidebarWidth());
   const canvasScaleRef = useRef(1);
   const canvasSizeRef = useRef({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
   const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1399,6 +1408,7 @@ function MainApp() {
   const canvasNavigatorPanelRef = useRef<HTMLDivElement | null>(null);
   const canvasViewportRef = useRef<CanvasViewportRect | null>(null);
   const canvasViewportFrameRef = useRef<number | null>(null);
+  const canvasChatViewportTimerRef = useRef<number | null>(null);
   const canvasInteractionFrameRef = useRef<number | null>(null);
   const canvasInteractionPayloadRef = useRef<null | {
     kind: 'move';
@@ -1413,6 +1423,7 @@ function MainApp() {
     rect: CanvasItemBox;
   }>(null);
   const canvasSelectionOverlayRef = useRef<HTMLDivElement | null>(null);
+  const canvasPendingSelectionDomIdsRef = useRef<Set<string>>(new Set());
   const canvasInteractionChangedNodeIdsRef = useRef<Set<string>>(new Set());
   const canvasItemsPatchCommitRef = useRef(false);
   const canvasPatchSaveTimerRef = useRef<number | null>(null);
@@ -1503,6 +1514,7 @@ function MainApp() {
     currentY: number;
     additive: boolean;
     baseSelectedIds: string[];
+    hasMoved: boolean;
   } | null>(null);
   const canvasConnectionDragRef = useRef<{
     fromId: string;
@@ -1567,10 +1579,17 @@ function MainApp() {
   const canvasLastSyncedNodesSignatureRef = useRef('');
   const canvasStateSaveDeferredDuringZoomRef = useRef(false);
   const pendingCanvasFocusItemIdRef = useRef<string | null>(null);
+  const setCanvasSpacePressed = (pressed: boolean) => {
+    isCanvasSpacePressedRef.current = pressed;
+    const surface = canvasSurfaceRef.current;
+    if (!surface) return;
+    if (pressed) surface.setAttribute('data-canvas-space-pressed', 'true');
+    else surface.removeAttribute('data-canvas-space-pressed');
+  };
   const setCanvasInteractionActive = (
     active: boolean,
     releaseDelay = 120,
-    options: { preserveImageSources?: boolean } = {},
+    _options: { preserveImageSources?: boolean } = {},
   ) => {
     if (canvasInteractionTimerRef.current !== null) {
       window.clearTimeout(canvasInteractionTimerRef.current);
@@ -1579,10 +1598,7 @@ function MainApp() {
 
     if (active) {
       cancelCanvasImageSourceUpgradeQueue();
-      if (!options.preserveImageSources) downgradeCanvasPreviewSources();
       isCanvasInteractingRef.current = true;
-      canvasInteractionSurfaceRectRef.current = canvasSurfaceRef.current?.getBoundingClientRect() || null;
-      canvasSurfaceRef.current?.setAttribute('data-canvas-interacting', 'true');
       return;
     }
 
@@ -1590,8 +1606,6 @@ function MainApp() {
       canvasInteractionTimerRef.current = null;
       if (!isCanvasInteractingRef.current) return;
       isCanvasInteractingRef.current = false;
-      canvasInteractionSurfaceRectRef.current = null;
-      canvasSurfaceRef.current?.removeAttribute('data-canvas-interacting');
       if (canvasSizeCommitDeferredRef.current) {
         canvasSizeCommitDeferredRef.current = false;
         setCanvasSize(canvasSizeRef.current);
@@ -1622,7 +1636,7 @@ function MainApp() {
         canvasUndoStackRef.current = [];
         canvasUndoRestoringRef.current = false;
       }
-      setIsCanvasSpacePressed(false);
+      setCanvasSpacePressed(false);
       canvasSelectedIdsRef.current = [];
       setCanvasSelectedIds([]);
       canvasViewportRef.current = null;
@@ -1680,6 +1694,18 @@ function MainApp() {
     };
   }, [isCanvasMode]);
   useEffect(() => { canvasItemsRef.current = canvasItems; }, [canvasItems]);
+  useLayoutEffect(() => {
+    if (canvasPendingSelectionDomIdsRef.current.size === 0) return;
+    canvasPendingSelectionDomIdsRef.current.clear();
+    const activeDrag = canvasDragRef.current;
+    if (activeDrag?.hasMoved) {
+      canvasContentRef.current
+        ?.querySelectorAll<HTMLElement>('[data-canvas-selection-frame="true"]')
+        .forEach((frame) => { frame.style.willChange = 'transform'; });
+      paintCanvasDragChrome(activeDrag.ids, activeDrag.latestDelta.dx, activeDrag.latestDelta.dy);
+    }
+    canvasSurfaceRef.current?.removeAttribute('data-canvas-selection-pending');
+  }, [canvasSelectedIds]);
   useEffect(() => {
     const hasWorkingCanvasAi = canvasItems.some(item => (
       item.ai?.status === 'working'
@@ -1703,6 +1729,19 @@ function MainApp() {
     canvasScaleRef.current = canvasScale;
   }, [canvasScale]);
   useEffect(() => { canvasSizeRef.current = canvasSize; }, [canvasSize]);
+  useEffect(() => { canvasAgentSidebarWidthRef.current = canvasAgentSidebarWidth; }, [canvasAgentSidebarWidth]);
+  useEffect(() => subscribeCanvasChatVisibility(() => {
+    isAgentChatOpenRef.current = getCanvasChatVisibility();
+    if (canvasChatViewportTimerRef.current !== null) {
+      window.clearTimeout(canvasChatViewportTimerRef.current);
+    }
+    if (isAgentChatOpenRef.current) return;
+    canvasChatViewportTimerRef.current = window.setTimeout(() => {
+      canvasChatViewportTimerRef.current = null;
+      if (!isCanvasModeRef.current) return;
+      React.startTransition(() => updateCanvasViewportNow());
+    }, 0);
+  }), []);
   useEffect(() => { canvasContextMenuRef.current = canvasContextMenu; }, [canvasContextMenu]);
   useEffect(() => {
     if (!isCanvasMode) return;
@@ -1731,11 +1770,10 @@ function MainApp() {
     };
   }, [isCanvasMode]);
   useEffect(() => { canvasInputPickTargetIdRef.current = canvasInputPickTargetId; }, [canvasInputPickTargetId]);
-  useEffect(() => { isCanvasSpacePressedRef.current = isCanvasSpacePressed; }, [isCanvasSpacePressed]);
   useEffect(() => { localStorage.setItem('drawer_canvas_navigator_visible', isCanvasNavigatorVisible ? 'true' : 'false'); }, [isCanvasNavigatorVisible]);
   useEffect(() => { localStorage.setItem('drawer_canvas_generated_list_visible', isCanvasGeneratedListVisible ? 'true' : 'false'); }, [isCanvasGeneratedListVisible]);
   useEffect(() => {
-    if (!isCanvasMode) setIsAgentChatOpen(false);
+    if (!isCanvasMode) setCanvasChatVisibility(false);
     else setIsDrawerAgentOpen(false);
   }, [isCanvasMode]);
   useEffect(() => {
@@ -1815,6 +1853,10 @@ function MainApp() {
     };
   }, [isCanvasMode]);
   useEffect(() => () => {
+    if (canvasChatViewportTimerRef.current !== null) {
+      window.clearTimeout(canvasChatViewportTimerRef.current);
+      canvasChatViewportTimerRef.current = null;
+    }
     if (canvasViewportFrameRef.current !== null) {
       window.cancelAnimationFrame(canvasViewportFrameRef.current);
       canvasViewportFrameRef.current = null;
@@ -2247,13 +2289,7 @@ function MainApp() {
     closeUpdateLog();
   };
 
-  const [toast, setToast] = useState({ show: false, msg: '' });
-  const toastTimerRef = useRef<any | null>(null);
-  const showToast = (msg: string) => {
-    setToast({ show: true, msg });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast({ show: false, msg: '' }), 2500);
-  };
+  const showToast = showAppToast;
   const [virtualDropJobs, setVirtualDropJobs] = useState<VirtualDropUiJob[]>([]);
   const {
     appVersion,
@@ -3785,7 +3821,7 @@ function MainApp() {
   };
 
   useEffect(() => {
-    const shouldRefreshModels = isCanvasMode || isAgentChatOpen || isDrawerAgentOpen;
+    const shouldRefreshModels = isCanvasMode || isDrawerAgentOpen;
     if (!shouldRefreshModels) {
       canvasAiModelRefreshSignatureRef.current = '';
       return;
@@ -3814,7 +3850,7 @@ function MainApp() {
       void refreshCanvasAiOpenAiModels(true);
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [isAgentChatOpen, isCanvasMode, isDrawerAgentOpen, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
+  }, [isCanvasMode, isDrawerAgentOpen, effectiveCanvasAiProvider, effectiveCanvasAiGatewayKind, effectiveCanvasAiApiProvider, effectiveCanvasAiEndpoint, effectiveCanvasAiModel, canvasAiApiKey, canvasAiNewApiVideoKey, canvasAiEndpoint, canvasAiHeadersText, isCanvasAiLicenseManaged, canvasAiUsesCloudImageModels]);
 
   useEffect(() => {
     if (!isCanvasMode || !canvasAiUsesCloudImageModels) return;
@@ -7810,7 +7846,6 @@ function MainApp() {
   const cancelCanvasImageSourceUpgradeQueue = () => {
     canvasImageUpgradeTokenRef.current += 1;
     canvasImageUpgradeQueueRef.current = [];
-    canvasImageUpgradeInFlightRef.current.clear();
     if (canvasImageUpgradeTimerRef.current !== null) {
       window.clearTimeout(canvasImageUpgradeTimerRef.current);
       canvasImageUpgradeTimerRef.current = null;
@@ -7921,11 +7956,8 @@ function MainApp() {
     ) {
       return false;
     }
-    const hasDirectAttention = canvasSelectedIdsRef.current.includes(canvasItem.id)
-      || canvasHoveredItemIdRef.current === canvasItem.id;
     const renderedPixels = Math.max(canvasItem.width, canvasItem.height) * scale;
-    return hasDirectAttention
-      || scale > CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE
+    return scale > CANVAS_IMAGE_SOURCE_UPGRADE_MIN_SCALE
       && renderedPixels > CANVAS_IMAGE_SOURCE_UPGRADE_PIXEL_THRESHOLD;
   };
 
@@ -7984,7 +8016,22 @@ function MainApp() {
         })
         .finally(() => {
           canvasImageUpgradeInFlightRef.current.delete(id);
-          if (token !== canvasImageUpgradeTokenRef.current) return;
+          if (token !== canvasImageUpgradeTokenRef.current) {
+            if (
+              canvasImageUpgradeQueueRef.current.length > 0
+              && !isCanvasInteractingRef.current
+              && !isCanvasZoomingRef.current
+              && !canvasPanRef.current
+              && canvasImageUpgradeTimerRef.current === null
+            ) {
+              const currentToken = canvasImageUpgradeTokenRef.current;
+              canvasImageUpgradeTimerRef.current = window.setTimeout(() => {
+                canvasImageUpgradeTimerRef.current = null;
+                runCanvasImageSourceUpgradeQueue(currentToken);
+              }, CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS);
+            }
+            return;
+          }
           if (canvasImageUpgradeQueueRef.current.length === 0 && canvasImageUpgradeInFlightRef.current.size === 0) return;
           if (canvasImageUpgradeTimerRef.current !== null) return;
           canvasImageUpgradeTimerRef.current = window.setTimeout(() => {
@@ -7993,25 +8040,6 @@ function MainApp() {
           }, CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS);
         });
     }
-  };
-
-  const scheduleCanvasSelectedImageSourceUpgrades = (selectedIds: string[]) => {
-    if (!CANVAS_IMAGE_PREVIEW_UPGRADE_ENABLED || selectedIds.length === 0) return;
-    if (!isCanvasModeRef.current || isCanvasZoomingRef.current || isCanvasInteractingRef.current || canvasPanRef.current) return;
-    cancelCanvasImageSourceUpgradeQueue();
-    const token = canvasImageUpgradeTokenRef.current;
-    const requestedIds = selectedIds.slice(0, CANVAS_IMAGE_SOURCE_UPGRADE_BATCH_SIZE);
-    canvasImageUpgradeTimerRef.current = window.setTimeout(() => {
-      canvasImageUpgradeTimerRef.current = null;
-      if (token !== canvasImageUpgradeTokenRef.current) return;
-      const scale = canvasScaleRef.current || 1;
-      canvasImageUpgradeQueueRef.current = requestedIds.filter(id => {
-        const item = canvasItemsRef.current.find(candidate => candidate.id === id);
-        return !!item && shouldUpgradeCanvasImageSource(item, scale);
-      });
-      if (canvasImageUpgradeQueueRef.current.length === 0) return;
-      runCanvasImageSourceUpgradeQueue(token);
-    }, CANVAS_IMAGE_SOURCE_UPGRADE_DELAY_MS);
   };
 
   const scheduleCanvasVisibleImageSourceUpgrades = () => {
@@ -8215,26 +8243,44 @@ function MainApp() {
     sourceItems: CanvasImageItem[] = canvasItemsRef.current
   ) => expandCanvasSelectionIdsWithWorkflowGroups([id], sourceItems);
 
-  const setCanvasSelectionWithoutWorkflowExpansion = (ids: string[]) => {
-    const unique = Array.from(new Set(ids.filter(Boolean)));
+  const applyCanvasSelectionDomFeedback = (currentIds: string[], nextIds: string[]) => {
+    const currentSet = new Set(currentIds);
+    const nextSet = new Set(nextIds);
+    const changedIds = new Set([...currentIds, ...nextIds]);
+    changedIds.forEach((id) => {
+      if (currentSet.has(id) === nextSet.has(id)) return;
+      canvasPendingSelectionDomIdsRef.current.add(id);
+      const element = getCanvasItemElement(id);
+      if (!element) return;
+      if (nextSet.has(id)) {
+        element.setAttribute('data-canvas-selected-state', 'true');
+        element.style.zIndex = '2';
+      } else {
+        element.removeAttribute('data-canvas-selected-state');
+        element.style.zIndex = '0';
+      }
+    });
+    if (canvasPendingSelectionDomIdsRef.current.size > 0) {
+      canvasSurfaceRef.current?.setAttribute('data-canvas-selection-pending', 'true');
+    }
+  };
+
+  const commitCanvasSelection = (unique: string[]) => {
     const current = canvasSelectedIdsRef.current;
     if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
+    applyCanvasSelectionDomFeedback(current, unique);
     canvasSelectedIdsRef.current = unique;
-    startTransition(() => {
-      setCanvasSelectedIds(unique);
-    });
-    scheduleCanvasSelectedImageSourceUpgrades(unique);
+    startTransition(() => setCanvasSelectedIds(unique));
+  };
+
+  const setCanvasSelectionWithoutWorkflowExpansion = (ids: string[]) => {
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    commitCanvasSelection(unique);
   };
 
   const updateCanvasSelection = (ids: string[]) => {
     const unique = Array.from(new Set(expandCanvasSelectionIdsWithWorkflowGroups(ids)));
-    const current = canvasSelectedIdsRef.current;
-    if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
-    canvasSelectedIdsRef.current = unique;
-    startTransition(() => {
-      setCanvasSelectedIds(unique);
-    });
-    scheduleCanvasSelectedImageSourceUpgrades(unique);
+    commitCanvasSelection(unique);
   };
 
   const enableCanvasWorkflowSingleEditForItem = (id: string) => {
@@ -8266,6 +8312,17 @@ function MainApp() {
         dy: activeDrag.latestDelta.dy,
       });
     }
+    return next;
+  };
+
+  const updateCanvasItemsDeferred = (updater: (prev: CanvasImageItem[]) => CanvasImageItem[]) => {
+    const next = updater(canvasItemsRef.current);
+    if (next === canvasItemsRef.current) return next;
+    canvasItemsRef.current = next;
+    canvasSessionItemsRef.current.set(activeCanvasIdRef.current || DEFAULT_CANVAS_ID, next);
+    startTransition(() => {
+      setCanvasItems(() => canvasItemsRef.current);
+    });
     return next;
   };
 
@@ -8411,12 +8468,42 @@ function MainApp() {
     });
   };
 
+  const syncCanvasSelectionFrameStyles = () => {
+    const content = canvasContentRef.current;
+    if (!content) return;
+    const selectedIdSet = new Set(canvasSelectedIdsRef.current);
+    const selectedItems = canvasItemsRef.current.filter(item => selectedIdSet.has(item.id));
+    if (selectedItems.length === 0) return;
+    const boxes = selectedItems.map(getCanvasItemRenderedBox);
+    const frameBox = selectedItems.length === 1
+      ? {
+          x: boxes[0].x - 12,
+          y: boxes[0].y - 12,
+          width: boxes[0].width + 24,
+          height: boxes[0].height + 24,
+        }
+      : {
+          x: Math.min(...boxes.map(box => box.x)),
+          y: Math.min(...boxes.map(box => box.y)),
+          width: Math.max(...boxes.map(box => box.x + box.width)) - Math.min(...boxes.map(box => box.x)),
+          height: Math.max(...boxes.map(box => box.y + box.height)) - Math.min(...boxes.map(box => box.y)),
+        };
+    content.querySelectorAll<HTMLElement>('[data-canvas-selection-frame="true"]').forEach((element) => {
+      element.style.left = `${frameBox.x}px`;
+      element.style.top = `${frameBox.y}px`;
+      element.style.width = `${frameBox.width}px`;
+      element.style.height = `${frameBox.height}px`;
+    });
+  };
+
   const resetCanvasDragChrome = () => {
     const content = canvasContentRef.current;
     if (!content) return;
     content.querySelectorAll<HTMLElement>('[data-canvas-selection-frame="true"], [data-canvas-connection-handle-id]').forEach((element) => {
       element.style.transform = '';
+      if (element.dataset.canvasSelectionFrame === 'true') element.style.willChange = '';
     });
+    syncCanvasSelectionFrameStyles();
 
     const itemsById = new Map(canvasItemsRef.current.map(item => [item.id, item]));
     content.querySelectorAll<SVGGElement>('[data-canvas-connection-source-id][data-canvas-connection-target-id]').forEach((group) => {
@@ -8445,19 +8532,29 @@ function MainApp() {
     });
   };
 
-  const refreshCanvasConnectionHandleOcclusion = () => {
+  const refreshCanvasConnectionHandleOcclusion = (options: {
+    renderedItems?: CanvasImageItem[];
+    affectedItemIds?: ReadonlySet<string>;
+  } = {}) => {
     const content = canvasContentRef.current;
     if (!content) return;
-    const renderedIds = new Set(
-      Array.from(content.querySelectorAll<HTMLElement>('[data-canvas-item-id]'))
-        .map(element => element.dataset.canvasItemId || '')
-        .filter(Boolean),
-    );
-    const items = canvasItemsRef.current.filter(item => renderedIds.has(item.id));
+    const items = options.renderedItems || (() => {
+      const renderedIds = new Set(
+        Array.from(content.querySelectorAll<HTMLElement>('[data-canvas-item-id]'))
+          .map(element => element.dataset.canvasItemId || '')
+          .filter(Boolean),
+      );
+      return canvasItemsRef.current.filter(item => renderedIds.has(item.id));
+    })();
     const itemsById = new Map(items.map(item => [item.id, item]));
     const itemOrder = new Map(items.map((item, index) => [item.id, index]));
     const selectedIds = new Set(canvasSelectedIdsRef.current);
     const liveBoxes = new Map(items.map(item => [item.id, getCanvasItemRenderedBox(item)] as const));
+    const affectedBoxes = options.affectedItemIds
+      ? Array.from(options.affectedItemIds)
+        .map(id => liveBoxes.get(id))
+        .filter((box): box is CanvasItemBox => !!box)
+      : null;
     const isAbove = (candidate: CanvasImageItem, owner: CanvasImageItem) => {
       const candidateSelected = selectedIds.has(candidate.id);
       const ownerSelected = selectedIds.has(owner.id);
@@ -8478,6 +8575,16 @@ function MainApp() {
         ? ownerBox.x + ownerBox.width + CANVAS_CONNECTION_HANDLE_OUTSET
         : ownerBox.x - CANVAS_CONNECTION_HANDLE_OUTSET;
       const centerY = ownerBox.y + ownerBox.height / 2;
+      if (
+        options.affectedItemIds
+        && !options.affectedItemIds.has(owner.id)
+        && !affectedBoxes?.some(box => (
+          centerX >= box.x
+          && centerX <= box.x + box.width
+          && centerY >= box.y
+          && centerY <= box.y + box.height
+        ))
+      ) return;
       const isCovered = items.some((candidate) => {
         if (candidate.id === owner.id || !isAbove(candidate, owner)) return false;
         const candidateBox = liveBoxes.get(candidate.id);
@@ -8492,13 +8599,19 @@ function MainApp() {
   };
 
   const setCanvasItemDraggingFlag = (ids: string[], active: boolean) => {
-    if (active) canvasSurfaceRef.current?.setAttribute('data-canvas-node-moving', 'true');
-    else canvasSurfaceRef.current?.removeAttribute('data-canvas-node-moving');
+    const content = canvasContentRef.current;
     ids.forEach((id) => {
       const element = getCanvasItemElement(id);
-      if (!element) return;
-      if (active) element.setAttribute('data-canvas-dragging', 'true');
-      else element.removeAttribute('data-canvas-dragging');
+      if (element) {
+        if (active) element.setAttribute('data-canvas-dragging', 'true');
+        else element.removeAttribute('data-canvas-dragging');
+      }
+      if (!content) return;
+      const selectorId = typeof CSS !== 'undefined' && CSS.escape
+        ? CSS.escape(id)
+        : id.replace(/["\\]/g, '\\$&');
+      content.querySelectorAll<HTMLElement>(`[data-canvas-connection-handle-id="${selectorId}"]`)
+        .forEach((handle) => { handle.style.visibility = active ? 'hidden' : ''; });
     });
   };
 
@@ -8511,9 +8624,11 @@ function MainApp() {
     });
   };
 
-  const clearCanvasItemInteractionStyles = (ids: string[]) => {
+  const clearCanvasItemInteractionStyles = (ids: string[], refreshOcclusion = true) => {
     canvasSurfaceRef.current?.removeAttribute('data-canvas-node-moving');
-    canvasSurfaceRef.current?.removeAttribute('data-canvas-selection-pending');
+    if (canvasPendingSelectionDomIdsRef.current.size === 0) {
+      canvasSurfaceRef.current?.removeAttribute('data-canvas-selection-pending');
+    }
     ids.forEach((id) => {
       const element = getCanvasItemElement(id);
       if (!element) return;
@@ -8522,7 +8637,12 @@ function MainApp() {
       element.removeAttribute('data-canvas-resizing');
     });
     resetCanvasDragChrome();
-    refreshCanvasConnectionHandleOcclusion();
+    if (refreshOcclusion) {
+      refreshCanvasConnectionHandleOcclusion({
+        renderedItems: canvasItemsRef.current,
+        affectedItemIds: new Set(ids),
+      });
+    }
   };
 
   const restoreCanvasItemBoxStyles = (ids: string[]) => {
@@ -9171,10 +9291,13 @@ function MainApp() {
   function readCanvasViewportRect(surface = canvasSurfaceRef.current): CanvasViewportRect | null {
     if (!surface) return null;
     const scale = clamp(canvasScaleRef.current || 1, CANVAS_MIN_SCALE, CANVAS_MAX_SCALE);
+    const chatOccludedWidth = isAgentChatOpenRef.current
+      ? Math.min(Math.max(0, surface.clientWidth - 1), canvasAgentSidebarWidthRef.current)
+      : 0;
     return {
       x: surface.scrollLeft / scale,
       y: surface.scrollTop / scale,
-      width: surface.clientWidth / scale,
+      width: Math.max(1, surface.clientWidth - chatOccludedWidth) / scale,
       height: surface.clientHeight / scale,
     };
   }
@@ -9314,14 +9437,16 @@ function MainApp() {
 
   const takeCanvasUndoSnapshot = (
     label: string,
-    options: { layoutOnly?: boolean } = {},
+    options: { layoutOnly?: boolean; shareImmutableItems?: boolean } = {},
   ): CanvasUndoSnapshot => {
     const surface = canvasSurfaceRef.current;
     const fallbackScroll = canvasScrollLockRef.current || canvasReturnScrollRef.current || { left: 0, top: 0 };
     return {
       items: options.layoutOnly
         ? canvasItemsRef.current.map(item => ({ ...item }))
-        : cloneDrawerValue(canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)),
+        : options.shareImmutableItems
+          ? canvasItemsRef.current.slice()
+          : cloneDrawerValue(canvasItemsRef.current.map(stripCanvasItemDataImageProvenance)),
       selectedIds: cloneDrawerValue(canvasSelectedIdsRef.current),
       size: cloneDrawerValue(canvasSizeRef.current),
       scroll: {
@@ -9335,7 +9460,7 @@ function MainApp() {
 
   const pushCanvasUndoSnapshot = (
     label: string,
-    options: { layoutOnly?: boolean } = {},
+    options: { layoutOnly?: boolean; shareImmutableItems?: boolean } = {},
   ) => {
     if (canvasUndoRestoringRef.current || !isCanvasModeRef.current) return;
     canvasUndoStackRef.current = [
@@ -9386,7 +9511,7 @@ function MainApp() {
     if (!isCanvasModeRef.current) return 0;
     const clean = nextItems.filter(Boolean);
     if (clean.length === 0) return 0;
-    pushCanvasUndoSnapshot(label);
+    pushCanvasUndoSnapshot(label, { shareImmutableItems: true });
     growCanvasToFit(
       Math.max(...clean.map(item => item.x + item.width)),
       Math.max(...clean.map(item => item.y + item.height))
@@ -9399,7 +9524,9 @@ function MainApp() {
         });
       }
     });
-    updateCanvasItemsImmediate(prev => [...prev, ...clean]);
+    canvasItemsPatchCommitRef.current = true;
+    updateCanvasItemsDeferred(prev => [...prev, ...clean]);
+    scheduleCanvasChangedNodesPatchSave(clean.map(item => item.id));
     if (select) {
       updateCanvasSelection(clean.map(item => item.id));
       scheduleCanvasFocusItemById(clean[0].id);
@@ -9506,7 +9633,7 @@ function MainApp() {
     }
     if (uniqueIds.length === 0) return 0;
     const idSet = new Set(uniqueIds);
-    pushCanvasUndoSnapshot(label);
+    pushCanvasUndoSnapshot(label, { shareImmutableItems: true });
     uniqueIds.forEach(id => {
       canvasImageSourceCacheRef.current.delete(id);
       canvasPreviewSourceIdsRef.current.delete(id);
@@ -9514,7 +9641,19 @@ function MainApp() {
       canvasImageUpgradeInFlightRef.current.delete(id);
     });
     canvasImageUpgradeQueueRef.current = canvasImageUpgradeQueueRef.current.filter(id => !idSet.has(id));
-    updateCanvasItemsImmediate(prev => prev
+    uniqueIds.forEach((id) => {
+      const element = getCanvasItemElement(id);
+      if (element) element.style.visibility = 'hidden';
+      const content = canvasContentRef.current;
+      if (!content) return;
+      const selectorId = typeof CSS !== 'undefined' && CSS.escape
+        ? CSS.escape(id)
+        : id.replace(/["\\]/g, '\\$&');
+      content.querySelectorAll<SVGGElement>(
+        `[data-canvas-connection-source-id="${selectorId}"], [data-canvas-connection-target-id="${selectorId}"]`,
+      ).forEach((connection) => { connection.style.visibility = 'hidden'; });
+    });
+    updateCanvasItemsDeferred(prev => prev
       .filter(item => !idSet.has(item.id))
       .map(item => item.inputs?.some(inputId => idSet.has(inputId))
         ? { ...item, inputs: item.inputs.filter(inputId => !idSet.has(inputId)) }
@@ -17308,7 +17447,7 @@ function MainApp() {
       showToast('这个工作流正在运行，请等待完成后再重试');
       return true;
     }
-    setIsAgentChatOpen(true);
+    setCanvasChatVisibility(true);
     markCanvasRunNodeActive(runCanvasId, moduleId);
     pushCanvasUndoSnapshot('重试工作流单张输出');
 
@@ -17502,7 +17641,7 @@ function MainApp() {
       return;
     }
 
-    setIsAgentChatOpen(true);
+    setCanvasChatVisibility(true);
     const workflowUserInput = normalizeCanvasWorkflowUserInput(workflow.userInput);
     const workflowUserRequest = String(moduleNode.item.content || '').trim().slice(0, 6_000);
     const missingInternalSlots = getMissingCanvasWorkflowInternalSlots({
@@ -19034,9 +19173,9 @@ function MainApp() {
     }
     e.preventDefault();
     e.stopPropagation();
+    cancelCanvasImageSourceUpgradeQueue();
     const pointerCaptureTarget = e.currentTarget as HTMLElement;
     pointerCaptureTarget.setPointerCapture?.(e.pointerId);
-    setCanvasInteractionActive(true, 120, { preserveImageSources: true });
     const currentSelected = canvasSelectedIdsRef.current;
     const isAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
     const itemSelectionIds = getCanvasWorkflowSelectionIdsForItem(id);
@@ -19053,8 +19192,8 @@ function MainApp() {
     const selectionChanged = currentSelected.length !== nextSelected.length
       || currentSelected.some((value, index) => value !== nextSelected[index]);
     if (selectionChanged) {
+      applyCanvasSelectionDomFeedback(currentSelected, nextSelected);
       canvasSelectedIdsRef.current = nextSelected;
-      canvasSurfaceRef.current?.setAttribute('data-canvas-selection-pending', 'true');
     }
     const dragIds = nextSelected.includes(id) ? nextSelected : [id];
     const dragIdSet = new Set(dragIds);
@@ -19080,6 +19219,12 @@ function MainApp() {
       pointerMoveCount: 0,
       lastNodeCount: canvasItemsRef.current.length,
     };
+    dragIds.forEach((dragId) => {
+      getCanvasItemElement(dragId)?.setAttribute('data-canvas-dragging', 'true');
+    });
+    canvasContentRef.current
+      ?.querySelectorAll<HTMLElement>('[data-canvas-selection-frame="true"]')
+      .forEach((frame) => { frame.style.willChange = 'transform'; });
     if (CANVAS_INTERACTION_DEBUG) {
       console.debug('[canvas-drag] start', {
         ids: dragIds,
@@ -19087,8 +19232,6 @@ function MainApp() {
         nodeCount: canvasItemsRef.current.length,
       });
     }
-    setCanvasItemDraggingFlag(dragIds, true);
-
     const onMove = (event: PointerEvent) => {
       const drag = canvasDragRef.current;
       if (!drag || !drag.ids.includes(id)) return;
@@ -19115,8 +19258,11 @@ function MainApp() {
       const scrollDy = surface ? (surface.scrollTop - drag.startScrollTop) / scale : 0;
       const dx = (event.clientX - drag.startClientX) / scale + scrollDx;
       const dy = (event.clientY - drag.startClientY) / scale + scrollDy;
-      if (!drag.hasMoved && Math.hypot(dx, dy) > 1.5) {
-        pushCanvasUndoSnapshot('移动画布元素', { layoutOnly: true });
+      if (!drag.hasMoved && Math.hypot(dx, dy) <= 1.5) return;
+      if (!drag.hasMoved) {
+        setCanvasInteractionActive(true, 120, { preserveImageSources: true });
+        setCanvasItemDraggingFlag(drag.ids, true);
+        pushCanvasUndoSnapshot('移动画布元素', { shareImmutableItems: true });
         drag.hasMoved = true;
       }
       drag.latestDelta = { dx, dy };
@@ -19159,27 +19305,23 @@ function MainApp() {
           if (changedIds.length > 0) {
             canvasItemsPatchCommitRef.current = true;
             const changedSet = new Set(changedIds);
-            flushSync(() => {
-              updateCanvasItemsImmediate(prev => prev.map(item => {
-                if (!changedSet.has(item.id)) return item;
-                const start = drag.startItems[item.id];
-                return start ? {
-                  ...item,
-                  x: Math.max(0, start.x + dx),
-                  y: Math.max(0, start.y + dy),
-                } : item;
-              }));
-            });
+            updateCanvasItemsDeferred(prev => prev.map(item => {
+              if (!changedSet.has(item.id)) return item;
+              const start = drag.startItems[item.id];
+              return start ? {
+                ...item,
+                x: Math.max(0, start.x + dx),
+                y: Math.max(0, start.y + dy),
+              } : item;
+            }));
+            restoreCanvasItemBoxStyles(changedIds);
             markCanvasNodesChanged(changedIds);
           }
         }
-        clearCanvasItemInteractionStyles(drag.ids);
+        clearCanvasItemInteractionStyles(drag.ids, drag.hasMoved);
         if (drag.pendingSelectionIds) {
           const pendingSelectionIds = drag.pendingSelectionIds;
-          startTransition(() => {
-            setCanvasSelectedIds(pendingSelectionIds);
-          });
-          scheduleCanvasSelectedImageSourceUpgrades(pendingSelectionIds);
+          startTransition(() => setCanvasSelectedIds(pendingSelectionIds));
         }
         const endNodeCount = canvasItemsRef.current.length;
         if (CANVAS_INTERACTION_DEBUG) {
@@ -19193,7 +19335,7 @@ function MainApp() {
           });
         }
       }
-      setCanvasInteractionActive(false, 0);
+      if (drag?.hasMoved) setCanvasInteractionActive(false, CANVAS_INTERACTION_BACKGROUND_SETTLE_MS);
       pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
       removeDragListeners();
     };
@@ -19240,7 +19382,7 @@ function MainApp() {
       const dx = (event.clientX - resize.startClientX) / scale;
       const dy = (event.clientY - resize.startClientY) / scale;
       if (!resize.hasResized && Math.hypot(dx, dy) > 1.5) {
-        pushCanvasUndoSnapshot('缩放画布元素', { layoutOnly: true });
+        pushCanvasUndoSnapshot('缩放画布元素', { shareImmutableItems: true });
         resize.hasResized = true;
       }
       const isWest = resize.corner.includes('w');
@@ -19280,20 +19422,18 @@ function MainApp() {
       if (resize?.hasResized && resize.latestBox) {
         const nextBox = resize.latestBox;
         canvasItemsPatchCommitRef.current = true;
-        flushSync(() => {
-          updateCanvasItemsImmediate(prev => prev.map(item => item.id === id ? {
-            ...item,
-            x: nextBox.x,
-            y: nextBox.y,
-            width: nextBox.width,
-            height: nextBox.height,
-          } : item));
-        });
+        updateCanvasItemsDeferred(prev => prev.map(item => item.id === id ? {
+          ...item,
+          x: nextBox.x,
+          y: nextBox.y,
+          width: nextBox.width,
+          height: nextBox.height,
+        } : item));
         markCanvasNodesChanged([id]);
       }
       clearCanvasItemInteractionStyles([id]);
       restoreCanvasItemBoxStyles([id]);
-      setCanvasInteractionActive(false, 0);
+      setCanvasInteractionActive(false, CANVAS_INTERACTION_BACKGROUND_SETTLE_MS);
       pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
       removeResizeListeners();
     };
@@ -19344,7 +19484,7 @@ function MainApp() {
       const dx = (event.clientX - resize.startClientX) / scale;
       const dy = (event.clientY - resize.startClientY) / scale;
       if (!resize.hasResized && Math.hypot(dx, dy) > 1.5) {
-        pushCanvasUndoSnapshot('缩放画布元素', { layoutOnly: true });
+        pushCanvasUndoSnapshot('缩放画布元素', { shareImmutableItems: true });
         resize.hasResized = true;
       }
       const isWest = resize.corner.includes('w');
@@ -19395,24 +19535,22 @@ function MainApp() {
       if (resize?.hasResized && resize.latestBoxes) {
         const latestBoxes = resize.latestBoxes;
         canvasItemsPatchCommitRef.current = true;
-        flushSync(() => {
-          updateCanvasItemsImmediate(prev => prev.map(item => {
-            const next = latestBoxes[item.id];
-            if (!next) return item;
-            return {
-              ...item,
-              x: next.x,
-              y: next.y,
-              width: next.width,
-              height: next.height,
-            };
-          }));
-        });
+        updateCanvasItemsDeferred(prev => prev.map(item => {
+          const next = latestBoxes[item.id];
+          if (!next) return item;
+          return {
+            ...item,
+            x: next.x,
+            y: next.y,
+            width: next.width,
+            height: next.height,
+          };
+        }));
         markCanvasNodesChanged(Object.keys(latestBoxes));
       }
       clearCanvasItemInteractionStyles(changedIds);
       restoreCanvasItemBoxStyles(changedIds);
-      setCanvasInteractionActive(false, 0);
+      setCanvasInteractionActive(false, CANVAS_INTERACTION_BACKGROUND_SETTLE_MS);
       pointerCaptureTarget.releasePointerCapture?.(e.pointerId);
       removeGroupResizeListeners();
     };
@@ -19429,9 +19567,9 @@ function MainApp() {
     if (target?.closest('[data-canvas-item-id], [data-no-drag="true"], textarea, input, button, select, [contenteditable="true"]')) return;
     e.preventDefault();
     e.stopPropagation();
+    cancelCanvasImageSourceUpgradeQueue();
     const start = getCanvasPointFromClient(e.clientX, e.clientY);
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
-    setCanvasInteractionActive(true);
     canvasSelectionDragRef.current = {
       pointerId: e.pointerId,
       startX: start.x,
@@ -19440,6 +19578,7 @@ function MainApp() {
       currentY: start.y,
       additive,
       baseSelectedIds: canvasSelectedIdsRef.current,
+      hasMoved: false,
     };
     hideCanvasSelectionOverlay();
 
@@ -19458,6 +19597,11 @@ function MainApp() {
         currentX: selection.currentX,
         currentY: selection.currentY,
       });
+      if (!selection.hasMoved && rect.width < 4 && rect.height < 4) return;
+      if (!selection.hasMoved) {
+        selection.hasMoved = true;
+        setCanvasInteractionActive(true);
+      }
       scheduleCanvasInteractionPaint({ kind: 'selection', rect });
     };
     const onUp = (event: PointerEvent) => {
@@ -19481,7 +19625,7 @@ function MainApp() {
       canvasSelectionDragRef.current = null;
       cancelCanvasInteractionPaint();
       hideCanvasSelectionOverlay();
-      setCanvasInteractionActive(false, 0);
+      if (selection?.hasMoved) setCanvasInteractionActive(false, CANVAS_INTERACTION_BACKGROUND_SETTLE_MS);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -19721,7 +19865,7 @@ function MainApp() {
       }
       scheduleCanvasViewportUpdate();
       scheduleCanvasStateSave();
-      setCanvasInteractionActive(false, 0);
+      setCanvasInteractionActive(false, CANVAS_INTERACTION_BACKGROUND_SETTLE_MS);
       document.removeEventListener('pointermove', onMove, true);
       document.removeEventListener('pointerup', onUp, true);
       document.removeEventListener('pointercancel', onUp, true);
@@ -19995,7 +20139,7 @@ function MainApp() {
     keepCanvasSessionOnLeaveRef.current = true;
     isCanvasModeRef.current = false;
     setIsCanvasMode(false);
-    setIsCanvasSpacePressed(false);
+    setCanvasSpacePressed(false);
     updateCanvasSelection([]);
     setIsPinned(false);
     isPinnedRef.current = false;
@@ -20141,7 +20285,7 @@ function MainApp() {
               top: surface.scrollTop,
             };
           }
-          setIsCanvasSpacePressed(true);
+          setCanvasSpacePressed(true);
         }
         return;
       }
@@ -20194,7 +20338,7 @@ function MainApp() {
           event.stopImmediatePropagation();
         }
         canvasSpaceKeyCapturedRef.current = false;
-        setIsCanvasSpacePressed(false);
+        setCanvasSpacePressed(false);
         if (canvasPanRef.current?.button === 0) canvasPanCleanupRef.current?.();
         const surface = canvasSurfaceRef.current;
         if (surface) {
@@ -20207,7 +20351,7 @@ function MainApp() {
     };
     const handleCanvasKeyBlur = () => {
       preferCanvasClipboardRef.current = false;
-      setIsCanvasSpacePressed(false);
+      setCanvasSpacePressed(false);
       canvasSpaceKeyCapturedRef.current = false;
       canvasPanCleanupRef.current?.();
       cancelCanvasItemDragVisuals();
@@ -24446,10 +24590,7 @@ useEffect(() => {
     }, []);
   };
 
-  const canvasAgentSelectedItems = useMemo(
-    () => (isAgentChatOpen ? buildCanvasAgentSelectedItems(canvasItems, canvasSelectedIds) : []),
-    [canvasItems, canvasSelectedIds, isAgentChatOpen],
-  );
+  const canvasAgentSelectedItems = useMemo<AgentCanvasSelectionItem[]>(() => [], []);
 
   const drawerAgentSelectedItems = useMemo<AgentCanvasSelectionItem[]>(() => {
     const selectedSet = new Set(selectedIds);
@@ -25484,7 +25625,7 @@ useEffect(() => {
           handleTogglePin();
         } else if (action === 'enter_canvas') {
           if (!isCanvasModeRef.current) enterCanvasMode();
-          setIsAgentChatOpen(true);
+          setCanvasChatVisibility(true);
         } else if (action === 'exit_canvas') {
           if (isCanvasModeRef.current) leaveCanvasToDrawer();
           setIsDrawerAgentOpen(true);
@@ -25915,7 +26056,7 @@ useEffect(() => {
           const mediaTargets = targets.filter(isCanvasDrawerMediaItem);
           if (mediaTargets.length === 0) throw new Error('请选择要加入画布的图片或视频素材');
           if (!isCanvasModeRef.current) enterCanvasMode();
-          setIsAgentChatOpen(true);
+          setCanvasChatVisibility(true);
           let added = 0;
           let existing = 0;
           for (const item of mediaTargets) {
@@ -26104,7 +26245,7 @@ useEffect(() => {
       if (name === 'canvas_manage') {
         const action = String(args.action || '');
         if (!isCanvasModeRef.current) enterCanvasMode();
-        setIsAgentChatOpen(true);
+        setCanvasChatVisibility(true);
         const requestedIds = Array.isArray(args.targetIds) ? args.targetIds.map(String) : [];
         const fallbackCanvasIds = hasSelectionSnapshot && snapshotSurface === 'canvas'
           ? snapshotSelectedIds
@@ -26251,7 +26392,7 @@ useEffect(() => {
         const request = String(args.request || executionUserRequest || '').trim();
         if (!request) throw new Error('产品设计链路需要明确的设计需求');
         if (!isCanvasModeRef.current) enterCanvasMode();
-        setIsAgentChatOpen(true);
+        setCanvasChatVisibility(true);
 
         const referenceCount = 5;
         const projectBrief = args.projectBrief && typeof args.projectBrief === 'object'
@@ -27886,50 +28027,6 @@ useEffect(() => {
     }
   };
 
-  const chatRuntime = useChatRuntime({
-    model: canvasAgent.settings.apiModel,
-    imageModel: activeChatImageModelChoice?.value,
-    imageAspectRatio: activeChatImageAspectRatio,
-    imageResolution: activeChatImageResolution || undefined,
-    approvalMode: canvasAgent.settings.approvalMode,
-    prepareAttachment: async attachment => {
-      if (attachment.type !== 'image') return attachment;
-      const source = attachment.path.trim();
-      if (!source || !/^(?:https?:|data:|blob:|asset:)/i.test(source)) return attachment;
-      let localPath = '';
-      if (/^https?:\/\//i.test(source)) {
-        localPath = await invoke<string>('cache_web_image', {
-          url: source,
-          name: `chat-attachment-${Date.now()}`,
-        });
-      } else {
-        let dataUrl = source;
-        if (!source.startsWith('data:')) {
-          if (/^asset:/i.test(source)) dataUrl = await invoke<string>('read_local_image_data_url', { path: source });
-          else {
-            const response = await fetch(source);
-            if (!response.ok) throw new Error('读取图片附件失败');
-            dataUrl = await blobToDataUrl(await response.blob());
-          }
-        }
-        const encodedType = dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+)[;,]/)?.[1]?.toLowerCase();
-        const extension = encodedType === 'jpeg' ? 'jpg' : encodedType === 'svg+xml' ? 'svg' : encodedType || 'png';
-        localPath = await invoke<string>('save_dropped_file', {
-          fileName: `chat-attachment-${Date.now()}.${extension}`,
-          dataUrl,
-        });
-      }
-      return { ...attachment, path: localPath, thumbnailPath: localPath };
-    },
-    resolveAttachmentUrl: async (attachment: ChatAttachment) => {
-      const source = attachment.path.trim();
-      if (/^(?:https?:|data:)/i.test(source)) return source;
-      return invoke<string>('read_local_image_data_url', { path: source });
-    },
-    executeTool: executeChatTool,
-    onNotice: showToast,
-    onGeneratedMediaReady: media => addChatMediaToCanvas(media, { autoFocus: true }),
-  });
   const [agentModels, setAgentModels] = useState<string[]>([]);
   const [agentModelsLoading, setAgentModelsLoading] = useState(false);
   const [agentCustomProvider, setAgentCustomProvider] = useState('openai-compatible');
@@ -27939,7 +28036,7 @@ useEffect(() => {
   const agentModelsRequestedRef = useRef(false);
 
   useEffect(() => {
-    const isChatVisible = isAgentChatOpen || isDrawerAgentOpen;
+    const isChatVisible = isCanvasMode || isDrawerAgentOpen;
     if (canvasAgent.settingsLoading || !isChatVisible || agentModelsRequestedRef.current) return;
     agentModelsRequestedRef.current = true;
     setAgentModelsLoading(true);
@@ -27950,7 +28047,7 @@ useEffect(() => {
         console.warn('读取 Chat 模型列表失败:', error);
       })
       .finally(() => setAgentModelsLoading(false));
-  }, [canvasAgent.listOpenAiModels, canvasAgent.settingsLoading, isAgentChatOpen, isDrawerAgentOpen]);
+  }, [canvasAgent.listOpenAiModels, canvasAgent.settingsLoading, isCanvasMode, isDrawerAgentOpen]);
 
   useEffect(() => {
     if (!isByokUnlocked) return;
@@ -28240,7 +28337,7 @@ useEffect(() => {
     if (!isCanvasMode) return;
     const frame = window.requestAnimationFrame(() => updateCanvasViewportNow());
     return () => window.cancelAnimationFrame(frame);
-  }, [canvasAgentSidebarWidth, isAgentChatOpen, isCanvasMode]);
+  }, [canvasAgentSidebarWidth, isCanvasMode]);
 
   const isCalendarCompactScale = drawerWidth <= CALENDAR_COMPACT_DRAWER_WIDTH;
   const calendarAvailableWidth = Math.max(1, drawerWidth - DRAWER_SIDE_RAIL_WIDTH - DRAWER_CONTENT_X_PADDING);
@@ -28758,7 +28855,7 @@ useEffect(() => {
     const staleTimer = window.setTimeout(reconcilePendingOutputs, staleDelay);
     return () => window.clearTimeout(staleTimer);
   }, [isCanvasMode, canvasRenderableItems]);
-  const getCanvasItemNavPreview = (canvasItem: CanvasImageItem): CanvasNavPreview | null => {
+  const getCanvasItemNavPreview = useCallback((canvasItem: CanvasImageItem): CanvasNavPreview | null => {
     const directPreview = getCanvasBufferItemNavPreview(canvasItem.item);
     if (directPreview) return directPreview;
 
@@ -28779,7 +28876,7 @@ useEffect(() => {
     }
 
     return null;
-  };
+  }, [canvasItemsById]);
   const getCanvasNavSignaturePart = (value?: string | number | null) => {
     const rawValue = String(value || '');
     if (rawValue.length <= 260) return rawValue;
@@ -28822,7 +28919,7 @@ useEffect(() => {
       output.height || '',
     ].join(':')).join('|'),
   ].join('::');
-  const getCachedCanvasNavThumbnailSource = (
+  const getCachedCanvasNavThumbnailSource = useCallback((
     canvasItem: CanvasImageItem,
     preview?: CanvasNavPreview | null,
   ) => {
@@ -28830,7 +28927,7 @@ useEffect(() => {
     const cached = canvasNavThumbnailCacheRef.current.get(canvasItem.id);
     if (!cached || cached.signature !== signature || cached.status !== 'ready') return '';
     return cached.thumbnail;
-  };
+  }, [canvasNavThumbnailRevision]);
   useEffect(() => {
     if (!isCanvasMode) return;
     const activeIds = new Set(canvasNavItems.map(({ item }) => item.id));
@@ -28945,9 +29042,38 @@ useEffect(() => {
   const canvasConnectedTargetIds = useMemo(() => (
     new Set(canvasConnections.map(connection => connection.target.id))
   ), [canvasConnections]);
-  useLayoutEffect(() => {
-    if (!isCanvasMode) return;
-    const frame = window.requestAnimationFrame(() => refreshCanvasConnectionHandleOcclusion());
+  const canvasHandleOcclusionInputsRef = useRef<{
+    renderedItems: CanvasImageItem[];
+    connections: unknown;
+    renderScale: number;
+    selectedIds: string[];
+  } | null>(null);
+  useEffect(() => {
+    if (!isCanvasMode) {
+      canvasHandleOcclusionInputsRef.current = null;
+      return;
+    }
+    const previous = canvasHandleOcclusionInputsRef.current;
+    const selectionOnlyUpdate = !!previous
+      && previous.renderedItems === canvasRenderableItems
+      && previous.connections === canvasConnections
+      && previous.renderScale === canvasRenderScale;
+    const affectedItemIds = selectionOnlyUpdate
+      ? new Set([
+        ...previous.selectedIds.filter(id => !canvasSelectedIds.includes(id)),
+        ...canvasSelectedIds.filter(id => !previous.selectedIds.includes(id)),
+      ])
+      : undefined;
+    canvasHandleOcclusionInputsRef.current = {
+      renderedItems: canvasRenderableItems,
+      connections: canvasConnections,
+      renderScale: canvasRenderScale,
+      selectedIds: canvasSelectedIds,
+    };
+    const frame = window.requestAnimationFrame(() => refreshCanvasConnectionHandleOcclusion({
+      renderedItems: canvasRenderableItems,
+      affectedItemIds,
+    }));
     return () => window.cancelAnimationFrame(frame);
   }, [
     isCanvasMode,
@@ -29442,11 +29568,7 @@ useEffect(() => {
         className={`${isDark ? 'dark' : ''} drawer-theme w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
         // 把全局拖拽接管挂在最外层
     >
-      <AnimatePresence>
-        {toast.show && (
-          <motion.div initial={{ opacity: 0, y: -20, scale: 0.9 }} animate={{ opacity: 1, y: 16, scale: 1 }} exit={{ opacity: 0, y: -20, scale: 0.9 }} className="absolute top-0 right-1/2 translate-x-1/2 z-[999999] bg-stone-800/90 dark:bg-white/90 backdrop-blur-md text-white dark:text-stone-800 px-4 py-2 rounded-full shadow-2xl border border-white/10 dark:border-stone-800/10 text-[11px] font-bold flex items-center gap-2 pointer-events-none will-change-transform">{toast.msg}</motion.div>
-        )}
-      </AnimatePresence>
+      <AppToastHost />
 
       <AnimatePresence>
         {isInspirationSpaceOpen && (
@@ -30882,6 +31004,7 @@ useEffect(() => {
                               title={`进入生图画布 (${canvasShortcut})`}
                             >
                               <LayoutGrid className="w-3.5 h-3.5" />
+                              <span>生图</span>
                             </button>
                             <button
                               onClick={() => { setIsSelectMode(true); setSelectedIds([]); lastSelectedDrawerItemIdRef.current = null; setShowSettings(false); setIsSearchActive(false); }}
@@ -31651,63 +31774,68 @@ useEffect(() => {
                         </div>
                         )}
 
-                        <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="bg-white/75 dark:bg-stone-800/75 rounded-[22px] border border-white/60 dark:border-stone-700/60 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-xl">
-                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="w-full flex items-center justify-between p-3 hover:bg-stone-50 dark:hover:bg-stone-700/50 transition-colors">
-                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Wallet className="w-4 h-4 text-blue-500"/> 账号额度</span>
+                        <div data-settings-section="true" data-active={activeSettingCategory === 'license' ? 'true' : 'false'} className="overflow-hidden rounded-[18px] border border-stone-200/80 bg-white dark:border-stone-700/70 dark:bg-stone-800">
+                          <button data-settings-section-trigger="true" onClick={() => setActiveSettingCategory(prev => prev === 'license' ? '' : 'license')} className="flex w-full items-center justify-between px-4 py-3.5 transition-colors hover:bg-stone-50 dark:hover:bg-stone-700/50">
+                            <span className="flex items-center gap-2 text-xs font-bold text-stone-700 dark:text-stone-200"><Wallet className="h-4 w-4 text-stone-500 dark:text-stone-400"/> 账号额度</span>
                             <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform ${activeSettingCategory === 'license' ? 'rotate-180' : ''}`} />
                           </button>
                           <AnimatePresence>
                             {activeSettingCategory === 'license' && (
                               <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.15, ease: "easeOut" }} className="overflow-hidden will-change-transform">
-                                <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
-                                  <div className="flex items-center justify-between gap-2 pt-1">
-                                    <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">授权状态</span>
-                                    <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-black text-stone-700 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200">
-                                      {isLicenseLoading ? '读取中' : LICENSE_STATE_LABELS[licenseStatus?.state || 'unlicensed']}
-                                    </span>
-                                  </div>
-
-                                  <div className="grid grid-cols-1 gap-1.5 text-[11px]">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <span className="text-stone-500 dark:text-stone-400">用户名</span>
-                                      <span className="min-w-0 truncate font-bold text-stone-700 dark:text-stone-200">{cloudAccount?.displayName || licenseStatus?.customer || '-'}</span>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-3">
-                                      <span className="text-stone-500 dark:text-stone-400">版本</span>
-                                      <span className="font-bold text-stone-700 dark:text-stone-200">{licenseStatus?.edition ? LICENSE_EDITION_LABELS[licenseStatus.edition] : '-'}</span>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-3">
-                                      <span className="text-stone-500 dark:text-stone-400">到期</span>
-                                      <span className="font-bold text-stone-700 dark:text-stone-200">{licenseStatus?.expire_at || '-'}</span>
-                                    </div>
-                                  </div>
-
-                                  <div className="grid gap-2 rounded-[16px] border border-blue-100 bg-blue-50/55 px-3 py-2.5 dark:border-blue-400/20 dark:bg-blue-400/10">
-                                    <div className="flex items-center justify-between gap-3">
-                                      <span className="flex items-center gap-1.5 text-[10px] font-black text-blue-800 dark:text-blue-100">
-                                        <Wallet className="h-3.5 w-3.5" /> 账号可用额度
+                                <div data-settings-section-content="true" className="flex flex-col gap-3 border-t border-stone-100 bg-stone-50/35 p-3 dark:border-stone-700/50 dark:bg-stone-900/15">
+                                  <div className="rounded-[14px] bg-white px-3.5 py-3 dark:bg-stone-900/45">
+                                    <div className="flex items-start justify-between gap-4">
+                                      <div className="min-w-0">
+                                        <div className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">当前账号</div>
+                                        <div className="mt-1 truncate text-[12px] font-bold text-stone-800 dark:text-stone-100">
+                                          {cloudAccount?.displayName || licenseStatus?.customer || '-'}
+                                        </div>
+                                        {cloudAccount?.email && (
+                                          <div className="mt-0.5 truncate text-[10px] text-stone-400 dark:text-stone-500">{cloudAccount.email}</div>
+                                        )}
+                                      </div>
+                                      <span className="shrink-0 rounded-[8px] bg-stone-100 px-2.5 py-1 text-[9px] font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+                                        {isLicenseLoading ? '读取中' : LICENSE_STATE_LABELS[licenseStatus?.state || 'unlicensed']}
                                       </span>
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="text-sm font-black tabular-nums text-blue-700 dark:text-blue-100">
-                                          {isCloudAccountLoading ? '读取中…' : cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          onClick={() => void refreshCloudAccount()}
-                                          disabled={isCloudAccountLoading}
-                                          className="grid h-7 w-7 place-items-center rounded-[8px] text-blue-500 transition-colors hover:bg-blue-100 disabled:cursor-wait disabled:opacity-45 dark:text-blue-200 dark:hover:bg-blue-400/15"
-                                          title="刷新账号额度"
-                                          aria-label="刷新账号额度"
-                                        >
-                                          <RefreshCw className={`h-3.5 w-3.5 ${isCloudAccountLoading ? 'animate-spin' : ''}`} />
-                                        </button>
+                                    </div>
+                                    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-stone-100 pt-2.5 text-[10px] dark:border-stone-800">
+                                      <div>
+                                        <div className="text-stone-400 dark:text-stone-500">版本</div>
+                                        <div className="mt-0.5 font-semibold text-stone-700 dark:text-stone-200">{licenseStatus?.edition ? LICENSE_EDITION_LABELS[licenseStatus.edition] : '-'}</div>
+                                      </div>
+                                      <div>
+                                        <div className="text-stone-400 dark:text-stone-500">到期时间</div>
+                                        <div className="mt-0.5 font-semibold tabular-nums text-stone-700 dark:text-stone-200">{licenseStatus?.expire_at || '-'}</div>
                                       </div>
                                     </div>
-                                    {cloudAccount?.email && (
-                                      <div className="truncate text-[10px] text-blue-600/80 dark:text-blue-200/75">{cloudAccount.email}</div>
-                                    )}
+                                  </div>
+
+                                  <div className="rounded-[14px] border border-stone-200/80 bg-white p-3.5 dark:border-stone-700/70 dark:bg-stone-900/45">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="flex items-center gap-1.5 text-[10px] font-semibold text-stone-500 dark:text-stone-400">
+                                        <Wallet className="h-3.5 w-3.5" /> 可用积分
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => void refreshCloudAccount()}
+                                        disabled={isCloudAccountLoading}
+                                        className="grid h-7 w-7 place-items-center rounded-[8px] text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:cursor-wait disabled:opacity-45 dark:hover:bg-stone-800 dark:hover:text-stone-200"
+                                        title="刷新账号额度"
+                                        aria-label="刷新账号额度"
+                                      >
+                                        <RefreshCw className={`h-3.5 w-3.5 ${isCloudAccountLoading ? 'animate-spin' : ''}`} />
+                                      </button>
+                                    </div>
+                                    <div className="mt-1 flex items-baseline gap-1.5">
+                                      <span className="text-[22px] font-black leading-none tracking-[-0.03em] tabular-nums text-stone-900 dark:text-stone-50">
+                                        {isCloudAccountLoading ? '读取中…' : cloudAccount ? formatCreditAmount(cloudAccount.wallet.availableCredits) : '—'}
+                                      </span>
+                                      {!isCloudAccountLoading && cloudAccount && (
+                                        <span className="text-[9px] font-semibold text-stone-400 dark:text-stone-500">积分</span>
+                                      )}
+                                    </div>
                                     {cloudAccountSyncError && (
-                                      <div className="truncate text-[9px] font-bold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>
+                                      <div className="mt-2 truncate text-[9px] font-semibold text-amber-600 dark:text-amber-300" title={cloudAccountSyncError}>
                                         同步失败，显示最近一次成功余额
                                       </div>
                                     )}
@@ -31715,18 +31843,19 @@ useEffect(() => {
                                       type="button"
                                       onClick={openCloudCreditUsage}
                                       disabled={!cloudAccount || isCloudAccountLoading}
-                                      className="group flex min-h-9 w-full items-center justify-between gap-2 rounded-[12px] border border-blue-100/90 bg-white/70 px-2.5 py-2 text-left transition-colors hover:border-blue-200 hover:bg-white disabled:cursor-not-allowed disabled:opacity-45 dark:border-blue-300/15 dark:bg-stone-950/20 dark:hover:border-blue-300/25 dark:hover:bg-stone-950/35"
+                                      className="group mt-3 flex min-h-9 w-full items-center justify-between gap-2 rounded-[10px] bg-stone-50 px-2.5 py-2 text-left transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-800/70 dark:hover:bg-stone-800"
                                     >
-                                      <span className="flex min-w-0 items-center gap-2 text-[10px] font-black text-blue-800 dark:text-blue-100">
-                                        <History className="h-3.5 w-3.5 shrink-0 text-blue-500 dark:text-blue-300" />
+                                      <span className="flex min-w-0 items-center gap-2 text-[10px] font-semibold text-stone-700 dark:text-stone-200">
+                                        <History className="h-3.5 w-3.5 shrink-0 text-stone-400" />
                                         积分使用明细
                                       </span>
-                                      <span className="flex shrink-0 items-center gap-0.5 text-[9px] font-bold text-blue-500/75 transition-colors group-hover:text-blue-600 dark:text-blue-200/60 dark:group-hover:text-blue-100">
+                                      <span className="flex shrink-0 items-center gap-0.5 text-[9px] font-medium text-stone-400 transition-colors group-hover:text-stone-600 dark:group-hover:text-stone-300">
                                         最近 50 条
                                         <ChevronRight className="h-3 w-3" />
                                       </span>
                                     </button>
-                                    <div className="flex gap-1.5">
+                                    <div className="mt-3 text-[9px] font-semibold text-stone-400 dark:text-stone-500">兑换额度</div>
+                                    <div className="mt-1.5 flex gap-1.5">
                                       <input
                                         value={creditRedemptionCode}
                                         onChange={event => {
@@ -31737,13 +31866,13 @@ useEffect(() => {
                                           if (event.key === 'Enter' && !isRedeemingCredits) void redeemCloudCredits();
                                         }}
                                         placeholder="输入额度兑换码"
-                                        className="min-w-0 flex-1 rounded-[12px] border border-blue-100 bg-white/80 px-3 py-1.5 text-[11px] font-semibold text-stone-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-200/55 dark:border-blue-400/20 dark:bg-stone-950/35 dark:text-stone-100"
+                                        className="min-w-0 flex-1 rounded-[10px] border border-stone-200 bg-transparent px-3 py-1.5 text-[11px] font-medium text-stone-700 outline-none transition focus:border-stone-400 focus:ring-2 focus:ring-stone-200/70 dark:border-stone-700 dark:text-stone-100 dark:focus:border-stone-500 dark:focus:ring-stone-700/60"
                                       />
                                       <button
                                         type="button"
                                         onClick={() => void redeemCloudCredits()}
                                         disabled={isRedeemingCredits || (creditRedemptionCode.trim().length < 10 && creditRedemptionCode.trim().toLowerCase() !== 'undesign')}
-                                        className="shrink-0 rounded-[12px] bg-blue-600 px-3 py-1.5 text-[10px] font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
+                                        className="shrink-0 rounded-[10px] bg-stone-900 px-3 py-1.5 text-[10px] font-bold text-white transition-colors hover:bg-stone-700 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45 dark:bg-stone-100 dark:text-stone-900 dark:hover:bg-white"
                                       >
                                         {isRedeemingCredits ? '兑换中' : '兑换'}
                                       </button>
@@ -31767,7 +31896,7 @@ useEffect(() => {
                                       type="button"
                                       onClick={confirmCloudAccountLogout}
                                       disabled={isCloudAccountLoggingOut}
-                                      className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-[14px] border border-red-200 bg-red-50/70 px-3 py-2 text-[11px] font-black text-red-600 transition-colors hover:border-red-300 hover:bg-red-100 disabled:cursor-wait disabled:opacity-55 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200 dark:hover:bg-red-400/15"
+                                      className="inline-flex min-h-8 self-end items-center justify-center gap-1.5 rounded-[9px] px-2.5 py-1.5 text-[10px] font-semibold text-stone-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-wait disabled:opacity-55 dark:text-stone-500 dark:hover:bg-red-400/10 dark:hover:text-red-300"
                                     >
                                       <LogOut className={`h-3.5 w-3.5 ${isCloudAccountLoggingOut ? 'animate-pulse' : ''}`} />
                                       {isCloudAccountLoggingOut ? '正在退出…' : '退出登录'}
@@ -32048,14 +32177,20 @@ useEffect(() => {
                       ref={canvasSurfaceRef}
                       data-canvas-surface="true"
                       tabIndex={-1}
-                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(113,113,122,0.16)_1px,transparent_0)] bg-[length:26px_26px] bg-stone-50 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[18px] border border-stone-200 dark:border-stone-800'} ${isCanvasSpacePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
-                      style={{ touchAction: isCanvasSpacePressed ? 'none' : 'auto', overflowAnchor: 'none' }}
-                      onPointerEnter={() => {
+                      className={`relative min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-[radial-gradient(circle_at_1px_1px,rgba(113,113,122,0.16)_1px,transparent_0)] bg-[length:26px_26px] bg-stone-50 outline-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden dark:bg-stone-950 ${isCanvasChromeHidden ? 'rounded-none border-0' : 'rounded-[18px] border border-stone-200 dark:border-stone-800'}`}
+                      style={{
+                        touchAction: 'auto',
+                        overflowAnchor: 'none',
+                        contain: 'layout paint style',
+                        willChange: 'scroll-position',
+                      }}
+                      onPointerEnter={(event) => {
                         isCanvasPointerInsideRef.current = true;
+                        canvasInteractionSurfaceRectRef.current = event.currentTarget.getBoundingClientRect();
                       }}
                       onPointerLeave={() => {
                         isCanvasPointerInsideRef.current = false;
-                        if (!canvasPanRef.current) setIsCanvasSpacePressed(false);
+                        if (!canvasPanRef.current) setCanvasSpacePressed(false);
                       }}
                       onPointerDown={(e) => {
                         setCanvasContextMenu(null);
@@ -32182,6 +32317,13 @@ useEffect(() => {
                           </div>
                         )}
                         {canvasConnectionsForRender.length > 0 && (
+                          <CanvasNodeRenderGate
+                            dependencies={[
+                              canvasSize.width,
+                              canvasSize.height,
+                              ...canvasConnectionsForRender.flatMap(({ source, target }) => [source, target]),
+                            ]}
+                            render={() => (
                           <svg
                             className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible"
                             width={canvasSize.width}
@@ -32233,6 +32375,8 @@ useEffect(() => {
                               );
                             })}
                           </svg>
+                            )}
+                          />
                         )}
                         {canvasConnectionDraft && (
                           <svg
@@ -32280,7 +32424,36 @@ useEffect(() => {
                             <circle cx={canvasInputActionDraft.toX} cy={canvasInputActionDraft.toY} r="5" fill="#22d3ee" />
                           </svg>
                         )}
-                        {canvasRenderableItems.map(canvasItem => {
+                        {canvasRenderableItems.map(canvasItem => (
+                          <CanvasNodeRenderGate
+                            key={canvasItem.id}
+                            dependencies={[
+                              canvasItem,
+                              canvasItem.item.type === 'video'
+                                || getCanvasAiMediaType(canvasItem.ai) === 'video'
+                                || canvasItem.ai?.outputs?.some(output => output.mediaType === 'video')
+                                ? canvasSelectedIdsSet.has(canvasItem.id)
+                                : null,
+                              canvasTextAgentRunningIds.includes(canvasItem.id),
+                              canvasAiPromptEditingId === canvasItem.id,
+                              canvasPromptOptimizingId === canvasItem.id,
+                              canvasInputMenuForId === canvasItem.id,
+                              canvasInputPickTargetId === canvasItem.id,
+                              Boolean(canvasConnectionDraft),
+                              canvasAiExpandedOutputNodeIds.has(canvasItem.id),
+                              canvasRenderScale,
+                              canvasScaledNodeRadius,
+                              canvasAiProvider,
+                              canvasAiCredentialSource,
+                              canvasAiCloudImageModels,
+                              canvasAiUnifiedImageModelOptions,
+                              canvasAgent.settings,
+                              canvasWorkflowTemplates,
+                              canvasWorkflowSingleEditGroupIds,
+                              canvasItem.ai?.status === 'working' ? canvasWorkingTimerTick : null,
+                              ...(canvasItem.inputs || []).map(inputId => canvasItemsById.get(inputId)),
+                            ]}
+                            render={() => {
                           const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isTextCanvasItem = canvasItem.item.type === 'text';
                           const isCanvasTextAgentRunning = isTextCanvasItem && canvasTextAgentRunningIds.includes(canvasItem.id);
@@ -32771,6 +32944,7 @@ useEffect(() => {
                             <div
                             key={canvasItem.id}
                             data-canvas-item-id={canvasItem.id}
+                            data-canvas-selected-state={isSelected ? 'true' : undefined}
                             data-canvas-ai-input-id={isCanvasAiNodeItem && canvasConnectionDraft ? canvasItem.id : undefined}
                             className="group/canvas-item absolute isolate overflow-visible"
                             style={{
@@ -32784,9 +32958,6 @@ useEffect(() => {
                             onPointerDown={(e) => startCanvasItemDrag(e, canvasItem.id)}
                             onPointerEnter={() => {
                               canvasHoveredItemIdRef.current = canvasItem.id;
-                              if (!isCanvasInteractingRef.current && !isCanvasZoomingRef.current && !canvasPanRef.current) {
-                                scheduleCanvasVisibleImageSourceUpgrades();
-                              }
                             }}
                             onPointerLeave={() => {
                               if (canvasHoveredItemIdRef.current === canvasItem.id) {
@@ -32823,7 +32994,7 @@ useEffect(() => {
                                 >
                                   <div
                                     className={`flex flex-col overflow-hidden border bg-gradient-to-br from-white/88 via-white/76 to-stone-100/72 text-stone-800 shadow-[0_8px_22px_rgba(15,23,42,0.08)] backdrop-blur-2xl transition-[box-shadow,border-color] hover:shadow-[0_12px_30px_rgba(15,23,42,0.10)] dark:from-[#272727]/96 dark:via-[#222222]/96 dark:to-[#1d1d1d]/96 dark:text-white dark:shadow-[0_10px_26px_rgba(0,0,0,0.20)] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.24)] ${
-                                      isSelected ? 'border-stone-300/62 ring-2 ring-stone-900/[0.05] dark:border-white/20 dark:ring-white/10' : 'border-white/80 dark:border-white/[0.08]'
+                                      'border-white/80 dark:border-white/[0.08]'
                                     }`}
                                     style={{
                                       width: canvasAiNodeDesignSize?.width || canvasItem.width,
@@ -34076,7 +34247,7 @@ useEffect(() => {
                                 isCanvasTextPlainMode ? (
                                   <div
                                     className={`flex h-full flex-col overflow-hidden border bg-gradient-to-br from-white/88 via-white/76 to-stone-100/72 text-stone-800 backdrop-blur-2xl transition-[border-color] dark:from-[#272727]/96 dark:via-[#222222]/96 dark:to-[#1d1d1d]/96 dark:text-white ${
-                                      isSelected ? 'border-stone-300/62 ring-2 ring-stone-900/[0.05] dark:border-white/20 dark:ring-white/10' : 'border-white/80 dark:border-white/[0.08]'
+                                      'border-white/80 dark:border-white/[0.08]'
                                     }`}
                                     style={{ borderRadius: canvasScaledNodeRadius }}
                                   >
@@ -34138,7 +34309,7 @@ useEffect(() => {
                                 ) : (
                                 <div
                                   className={`flex h-full flex-col overflow-hidden border bg-gradient-to-br from-white/88 via-white/76 to-stone-100/72 text-stone-800 backdrop-blur-2xl transition-[border-color] dark:from-[#272727]/96 dark:via-[#222222]/96 dark:to-[#1d1d1d]/96 dark:text-white ${
-                                    isSelected ? 'border-stone-300/62 ring-2 ring-stone-900/[0.05] dark:border-white/20 dark:ring-white/10' : 'border-white/80 dark:border-white/[0.08]'
+                                    'border-white/80 dark:border-white/[0.08]'
                                   }`}
                                   style={{ borderRadius: canvasScaledNodeRadius }}
                                 >
@@ -34680,7 +34851,9 @@ useEffect(() => {
                             </button>}
                             </div>
                           );
-                        })}
+                            }}
+                          />
+                        ))}
                         {canvasRenderableItems.map(canvasItem => {
                           const isSelected = canvasSelectedIdsSet.has(canvasItem.id);
                           const isConnectedSource = canvasConnectedSourceIds.has(canvasItem.id);
@@ -35048,8 +35221,9 @@ useEffect(() => {
                       exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
                       style={{
                         top: canvasToolbarTop,
-                        right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
+                        right: getCanvasChatOffsetRight(100),
                       }}
+                      data-canvas-chat-offset-base="100"
                       className="absolute z-[100070] w-[500px] rounded-[16px] border border-stone-200/85 bg-white/96 p-3 text-stone-700 shadow-[0_18px_48px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-stone-700/80 dark:bg-stone-950/96 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
@@ -35249,8 +35423,9 @@ useEffect(() => {
                       exit={{ opacity: 0, x: 8, y: '-50%', scale: 0.98 }}
                       style={{
                         top: canvasToolbarTop,
-                        right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
+                        right: getCanvasChatOffsetRight(100),
                       }}
+                      data-canvas-chat-offset-base="100"
                       className="absolute z-[100070] w-[520px] rounded-[16px] border border-stone-200/85 bg-white/96 p-3 text-stone-700 shadow-[0_18px_48px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-stone-700/80 dark:bg-stone-950/96 dark:text-stone-200"
                       onPointerDown={(event) => event.stopPropagation()}
                       onMouseDown={(event) => event.stopPropagation()}
@@ -35996,7 +36171,7 @@ useEffect(() => {
                     <CanvasToolbar
                       toolbarRef={canvasToolbarRef}
                       top={canvasToolbarTop}
-                      right={isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16}
+                      right={16}
                       navigator={(
                         <CanvasNavigator
                           visible={isCanvasNavigatorVisible}
@@ -36048,8 +36223,6 @@ useEffect(() => {
                       workflowValue={CANVAS_WORKFLOW_SELECT_PLACEHOLDER}
                       workflowOptions={canvasWorkflowSelectOptions}
                       hasWorkflow={canvasItems.some(item => item.ai?.type === 'workflow')}
-                      isAgentChatOpen={isAgentChatOpen}
-                      onToggleAgentChat={() => setIsAgentChatOpen(value => !value)}
                       onAddImage={() => addCanvasAiGeneratorNode()}
                       onAddFusion={() => addCanvasImageFusionNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
@@ -36383,32 +36556,12 @@ useEffect(() => {
                         });
                       }}
                       className="absolute bottom-4 z-[100050] flex h-10 w-10 items-center justify-center rounded-[10px] border border-stone-700 bg-stone-900 text-white shadow-[0_6px_18px_rgba(24,24,27,0.16)] transition-colors hover:bg-stone-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-400/50 dark:border-stone-600 dark:bg-stone-100 dark:text-stone-950 dark:hover:bg-white"
-                      style={{ right: isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16 }}
+                      style={{ right: getCanvasChatOffsetRight(16) }}
+                      data-canvas-chat-offset-base="16"
                       title={isCanvasChromeHidden ? '显示菜单栏 (Tab)' : '隐藏菜单栏，画布全屏 (Tab)'}
                     >
                       {isCanvasChromeHidden ? <Minimize2 className="h-[18px] w-[18px]" /> : <Maximize2 className="h-[18px] w-[18px]" />}
                     </button>
-                  )}
-                  {isCanvasMode && isAgentChatOpen && (
-                    <ChatView
-                      runtime={chatRuntime}
-                      variant="canvas"
-                      width={canvasAgentSidebarWidth}
-                      onWidthChange={setCanvasAgentSidebarWidth}
-                      onClose={() => setIsAgentChatOpen(false)}
-                      selectedItems={canvasAgentSelectedItems}
-                      modelOptions={agentModels}
-                      imageModel={activeChatImageModel}
-                      imageModelOptions={chatImageModelOptions}
-                      onImageModelChange={setChatImageModel}
-                      imageAspectRatio={activeChatImageAspectRatio}
-                      imageAspectRatioOptions={chatImageAspectRatioOptions}
-                      onImageAspectRatioChange={setChatImageAspectRatio}
-                      imageResolution={activeChatImageResolution}
-                      imageResolutionOptions={chatImageResolutionOptions}
-                      onImageResolutionChange={setChatImageResolution}
-                      onAddGeneratedToCanvas={media => void addChatMediaToCanvas(media)}
-                    />
                   )}
                   {activeTab === 'notes' && (
                     <div className="flex-1 flex flex-col gap-3">
@@ -36888,25 +37041,35 @@ useEffect(() => {
                   )}
                 </div>
 
-                {!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen && (
-                  <ChatView
-                    runtime={chatRuntime}
-                    variant="drawer"
-                    selectedItems={drawerAgentSelectedItems}
-                    onClose={() => setIsDrawerAgentOpen(false)}
-                    modelOptions={agentModels}
-                    imageModel={activeChatImageModel}
-                    imageModelOptions={chatImageModelOptions}
-                    onImageModelChange={setChatImageModel}
-                    imageAspectRatio={activeChatImageAspectRatio}
-                    imageAspectRatioOptions={chatImageAspectRatioOptions}
-                    onImageAspectRatioChange={setChatImageAspectRatio}
-                    imageResolution={activeChatImageResolution}
-                    imageResolutionOptions={chatImageResolutionOptions}
-                    onImageResolutionChange={setChatImageResolution}
-                    onAddGeneratedToCanvas={media => void addChatMediaToCanvas(media)}
-                  />
-                )}
+                <ChatHost
+                  visible={!isCanvasMode && !showTextInput && !showWebImageCollector && isDrawerAgentOpen}
+                  model={canvasAgent.settings.apiModel}
+                  runtimeImageModel={activeChatImageModelChoice?.value}
+                  approvalMode={canvasAgent.settings.approvalMode}
+                  executeTool={executeChatTool}
+                  onNotice={showToast}
+                  onGeneratedMediaReady={media => addChatMediaToCanvas(media, { autoFocus: true })}
+                  variant={isCanvasMode ? 'canvas' : 'drawer'}
+                  width={isCanvasMode ? canvasAgentSidebarWidth : undefined}
+                  topOffset={isCanvasMode && !isCanvasChromeHidden ? 64 : 0}
+                  onWidthChange={isCanvasMode ? setCanvasAgentSidebarWidth : undefined}
+                  onClose={() => {
+                    setIsDrawerAgentOpen(false);
+                  }}
+                  selectedItems={isCanvasMode ? canvasAgentSelectedItems : drawerAgentSelectedItems}
+                  resolveSelectedItems={isCanvasMode ? () => buildCanvasAgentSelectedItems() : undefined}
+                  modelOptions={agentModels}
+                  imageModel={activeChatImageModel}
+                  imageModelOptions={chatImageModelOptions}
+                  onImageModelChange={setChatImageModel}
+                  imageAspectRatio={activeChatImageAspectRatio}
+                  imageAspectRatioOptions={chatImageAspectRatioOptions}
+                  onImageAspectRatioChange={setChatImageAspectRatio}
+                  imageResolution={activeChatImageResolution}
+                  imageResolutionOptions={chatImageResolutionOptions}
+                  onImageResolutionChange={setChatImageResolution}
+                  onAddGeneratedToCanvas={media => void addChatMediaToCanvas(media)}
+                />
 
                 <AnimatePresence>
                   {!isCanvasMode && !showTextInput && !showWebImageCollector && !isDrawerAgentOpen && (
@@ -37427,27 +37590,37 @@ useEffect(() => {
                   </div>
                 ) : (
                   <div className="grid gap-1.5">
-                    {creditUsageItems.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="flex items-center justify-between gap-3 rounded-[16px] border border-stone-100 bg-stone-50/65 px-3 py-2.5 transition-colors hover:border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:bg-stone-950/25 dark:hover:border-stone-700 dark:hover:bg-stone-950/40"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[11px] font-black text-stone-700 dark:text-stone-200" title={entry.description || 'AI 积分结算'}>
-                            {entry.description || 'AI 积分结算'}
+                    {creditUsageItems.map((entry) => {
+                      const description = formatCreditUsageDescription(entry.description);
+                      return (
+                        <div
+                          key={entry.id}
+                          className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 rounded-[16px] border border-stone-100 bg-stone-50/65 px-3 py-2.5 transition-colors hover:border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:bg-stone-950/25 dark:hover:border-stone-700 dark:hover:bg-stone-950/40"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-black leading-4 text-stone-700 dark:text-stone-200">
+                              <span className="font-black">{description.title}</span>
+                            </div>
+                            {description.details.length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[9px] font-medium leading-4 text-stone-500 dark:text-stone-400">
+                                {description.details.map((detail) => (
+                                  <span key={detail} className="whitespace-nowrap tabular-nums">{detail}</span>
+                                ))}
+                              </div>
+                            )}
+                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[9px] font-medium text-stone-400 dark:text-stone-500">
+                              <span>{formatCreditUsageDate(entry.createdAt)}</span>
+                              <span className="h-0.5 w-0.5 rounded-full bg-stone-300 dark:bg-stone-600" />
+                              <span className="tabular-nums">余额 {formatCreditAmount(entry.balanceAfter)}</span>
+                            </div>
                           </div>
-                          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[9px] font-medium text-stone-400 dark:text-stone-500">
-                            <span className="shrink-0">{formatCreditUsageDate(entry.createdAt)}</span>
-                            <span className="h-0.5 w-0.5 shrink-0 rounded-full bg-stone-300 dark:bg-stone-600" />
-                            <span className="truncate">余额 {entry.balanceAfter}</span>
+                          <div className="shrink-0 text-right">
+                            <div className="text-sm font-black tabular-nums text-stone-800 dark:text-stone-100">{formatCreditUsageAmount(entry.amount)}</div>
+                            <div className="mt-0.5 text-[9px] font-bold text-stone-400 dark:text-stone-500">积分</div>
                           </div>
                         </div>
-                        <div className="shrink-0 text-right">
-                          <div className="text-sm font-black tabular-nums text-stone-800 dark:text-stone-100">{formatCreditUsageAmount(entry.amount)}</div>
-                          <div className="mt-0.5 text-[9px] font-bold text-stone-400 dark:text-stone-500">积分</div>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -38110,8 +38283,9 @@ useEffect(() => {
               style={{
                 position: 'absolute',
                 top: canvasToolbarTop,
-                right: (isAgentChatOpen ? canvasAgentSidebarWidth + 16 : 16) + 84,
+                right: getCanvasChatOffsetRight(100),
               }}
+              data-canvas-chat-offset-base="100"
               className="max-h-[calc(100vh-80px)] w-[520px] overflow-y-auto rounded-[16px] border border-stone-200 bg-white p-4 shadow-[0_18px_48px_rgba(15,23,42,0.16)] dark:border-stone-700 dark:bg-stone-900"
               onMouseDown={(event) => event.stopPropagation()}
               onSubmit={(event) => {

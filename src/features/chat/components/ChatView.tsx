@@ -1,7 +1,9 @@
 import { Bot, MessageSquarePlus, PanelLeft, Trash2, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentCanvasSelectionItem } from '../../agentModel';
 import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
+import { setCanvasChatSidebarWidth } from '../runtime/canvasChatVisibility';
+import { normalizeSupportedChatModel, resolveAvailableChatModels } from '../runtime/chatModelSelection';
 import type { useChatRuntime } from '../runtime/useChatRuntime';
 import { ChatComposer } from './ChatComposer';
 import { ChatMessageList } from './ChatMessageList';
@@ -9,44 +11,12 @@ import './chat.css';
 
 type ChatRuntime = ReturnType<typeof useChatRuntime>;
 
-const GPT_56_MODEL_PATTERN = /^gpt-5\.6(?:-|$)/i;
-const GPT_56_MODEL_ORDER = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6'];
-
-const selectionToAttachments = (items: AgentCanvasSelectionItem[]): PendingChatAttachment[] => items
-  .flatMap(item => item.references || [])
-  .filter(reference => reference.mediaType === 'image' && Boolean(reference.path || reference.source))
-  .slice(0, 6)
-  .map(reference => ({
-    id: `selection-${reference.id}`,
-    type: 'image',
-    path: reference.path || reference.source || '',
-    thumbnailPath: reference.thumbnail,
-    mimeType: 'image/jpeg',
-    metadataJson: JSON.stringify({ nodeId: reference.nodeId, sourceItemId: reference.sourceItemId }),
-  }));
-
-export function ChatView({
-  runtime,
-  variant,
-  width,
-  onWidthChange,
-  onClose,
-  selectedItems,
-  modelOptions = [],
-  imageModel,
-  imageModelOptions = [],
-  onImageModelChange,
-  imageAspectRatio,
-  imageAspectRatioOptions = [],
-  onImageAspectRatioChange,
-  imageResolution,
-  imageResolutionOptions = [],
-  onImageResolutionChange,
-  onAddGeneratedToCanvas,
-}: {
+export type ChatViewProps = {
   runtime: ChatRuntime;
   variant: 'canvas' | 'drawer';
+  visible?: boolean;
   width?: number;
+  topOffset?: number;
   onWidthChange?: (width: number) => void;
   onClose: () => void;
   selectedItems: AgentCanvasSelectionItem[];
@@ -61,24 +31,53 @@ export function ChatView({
   imageResolutionOptions?: ChatImageModelOption[];
   onImageResolutionChange: (resolution: string) => void;
   onAddGeneratedToCanvas?: (media: ChatGeneratedMedia) => void;
-}) {
+};
+
+const CANVAS_CHAT_HISTORY_WIDTH = 116;
+const CANVAS_CHAT_EDGE_GAP = 8;
+
+const selectionToAttachments = (items: AgentCanvasSelectionItem[]): PendingChatAttachment[] => items
+  .flatMap(item => item.references || [])
+  .filter(reference => reference.mediaType === 'image' && Boolean(reference.path || reference.source))
+  .slice(0, 6)
+  .map(reference => ({
+    id: `selection-${reference.id}`,
+    type: 'image',
+    path: reference.path || reference.source || '',
+    thumbnailPath: reference.thumbnail,
+    mimeType: 'image/jpeg',
+    metadataJson: JSON.stringify({ nodeId: reference.nodeId, sourceItemId: reference.sourceItemId }),
+  }));
+
+export const ChatView = memo(function ChatView({
+  runtime,
+  variant,
+  visible = true,
+  width,
+  topOffset = 0,
+  onWidthChange,
+  onClose,
+  selectedItems,
+  modelOptions = [],
+  imageModel,
+  imageModelOptions = [],
+  onImageModelChange,
+  imageAspectRatio,
+  imageAspectRatioOptions = [],
+  onImageAspectRatioChange,
+  imageResolution,
+  imageResolutionOptions = [],
+  onImageResolutionChange,
+  onAddGeneratedToCanvas,
+}: ChatViewProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<PendingChatAttachment[]>([]);
   const [ignoredSelectionAttachmentIds, setIgnoredSelectionAttachmentIds] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const model = runtime.activeConversation?.model || '';
-  const chatModelOptions = useMemo(() => {
-    const available = Array.from(new Set(modelOptions.filter(option => GPT_56_MODEL_PATTERN.test(option.trim()))));
-    if (available.length === 0) return ['gpt-5.6-sol'];
-    return available.sort((left, right) => {
-      const leftIndex = GPT_56_MODEL_ORDER.indexOf(left.toLowerCase());
-      const rightIndex = GPT_56_MODEL_ORDER.indexOf(right.toLowerCase());
-      return (leftIndex < 0 ? GPT_56_MODEL_ORDER.length : leftIndex)
-        - (rightIndex < 0 ? GPT_56_MODEL_ORDER.length : rightIndex);
-    });
-  }, [modelOptions]);
-  const effectiveModel = GPT_56_MODEL_PATTERN.test(model) ? model : chatModelOptions[0];
+  const chatModelOptions = useMemo(() => resolveAvailableChatModels(modelOptions), [modelOptions]);
+  const effectiveModel = normalizeSupportedChatModel(model) || chatModelOptions[0];
   const selectionAttachments = useMemo(() => selectionToAttachments(selectedItems), [selectedItems]);
   const selectionAttachmentIds = useMemo(
     () => new Set(selectionAttachments.map(item => item.id)),
@@ -100,9 +99,9 @@ export function ChatView({
     });
   }, [selectionAttachmentKey]);
   useEffect(() => {
-    if (!model || GPT_56_MODEL_PATTERN.test(model)) return;
-    void runtime.setConversationModel(chatModelOptions[0]);
-  }, [chatModelOptions, model, runtime.setConversationModel]);
+    if (!runtime.activeConversation || model === effectiveModel) return;
+    void runtime.setConversationModel(effectiveModel);
+  }, [effectiveModel, model, runtime.activeConversation, runtime.setConversationModel]);
   useEffect(() => {
     const move = (event: PointerEvent) => {
       if (!resizeRef.current || !onWidthChange) return;
@@ -113,12 +112,18 @@ export function ChatView({
     window.addEventListener('pointerup', up);
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
   }, [onWidthChange]);
+  const canvasMainWidth = width || 480;
+  const canvasRenderedWidth = canvasMainWidth + (historyOpen ? CANVAS_CHAT_HISTORY_WIDTH : 0);
+  useEffect(() => {
+    if (variant !== 'canvas') return;
+    setCanvasChatSidebarWidth(canvasRenderedWidth + CANVAS_CHAT_EDGE_GAP);
+  }, [canvasRenderedWidth, variant]);
   const send = async () => {
     const pendingInput = input;
     const pendingAttachments = composerAttachments;
     setInput('');
     setAttachments([]);
-    const sent = await runtime.sendMessage(pendingInput, pendingAttachments);
+    const sent = await runtime.sendMessage(pendingInput, pendingAttachments, effectiveModel);
     if (!sent) {
       setInput(current => current || pendingInput);
       setAttachments(current => current.length > 0
@@ -126,9 +131,37 @@ export function ChatView({
         : pendingAttachments.filter(item => !selectionAttachmentIds.has(item.id)));
     }
   };
-  const shellStyle = variant === 'canvas' ? { width: width || 480 } : undefined;
+  const loadOlderMessages = useCallback(() => {
+    void runtime.loadOlderMessages();
+  }, [runtime.loadOlderMessages]);
+  const resolveToolApproval = useCallback((id: string, approved: boolean) => {
+    void runtime.resolveToolApproval(id, approved);
+  }, [runtime.resolveToolApproval]);
+  const retryLastMessage = useCallback(() => {
+    void runtime.retryLast();
+  }, [runtime.retryLast]);
+  const regenerateMedia = useCallback((media: ChatGeneratedMedia) => {
+    void runtime.sendMessage(`请重新生成上一张图片。保持主题不变。原提示：${media.prompt || ''}`);
+  }, [runtime.sendMessage]);
+  const editMedia = useCallback((media: ChatGeneratedMedia) => {
+    setInput('继续编辑这张图：');
+    if (media.path || media.url) {
+      setAttachments([{
+        id: `edit-${media.id}`,
+        type: 'image',
+        path: media.path || media.url || '',
+        thumbnailPath: media.thumbnail,
+      }]);
+    }
+  }, []);
+  const shellStyle = variant === 'canvas' ? { width: canvasRenderedWidth, top: topOffset } : undefined;
   return (
-    <section className={`chat-shell chat-shell--${variant} ${historyOpen ? 'is-history-open' : 'is-history-closed'}`} style={shellStyle} data-chat-view="true">
+    <section
+      className={`chat-shell chat-shell--${variant} ${historyOpen ? 'is-history-open' : 'is-history-closed'}`}
+      style={{ ...shellStyle, ...(visible ? {} : { visibility: 'hidden', pointerEvents: 'none' }) }}
+      data-chat-view="true"
+      aria-hidden={!visible}
+    >
       {variant === 'canvas' && onWidthChange && (
         <div className="chat-resize" onPointerDown={event => { resizeRef.current = { startX: event.clientX, startWidth: width || 480 }; }} />
       )}
@@ -167,18 +200,16 @@ export function ChatView({
         </header>
         <ChatMessageList
           messages={runtime.messages}
+          visible={visible}
           loading={runtime.loading}
           loadingOlder={runtime.loadingOlder}
           hasMore={runtime.hasMoreMessages}
-          onLoadOlder={() => void runtime.loadOlderMessages()}
-          onResolveTool={(id, approved) => void runtime.resolveToolApproval(id, approved)}
-          onRetry={() => void runtime.retryLast()}
+          onLoadOlder={loadOlderMessages}
+          onResolveTool={resolveToolApproval}
+          onRetry={retryLastMessage}
           onAddToCanvas={onAddGeneratedToCanvas}
-          onRegenerateMedia={media => void runtime.sendMessage(`请重新生成上一张图片。保持主题不变。原提示：${media.prompt || ''}`)}
-          onEditMedia={media => {
-            setInput(`继续编辑这张图：`);
-            if (media.path || media.url) setAttachments([{ id: `edit-${media.id}`, type: 'image', path: media.path || media.url || '', thumbnailPath: media.thumbnail }]);
-          }}
+          onRegenerateMedia={regenerateMedia}
+          onEditMedia={editMedia}
         />
         <div className="chat-composer-wrap">
           <ChatComposer
@@ -208,8 +239,6 @@ export function ChatView({
             imageResolution={imageResolution}
             imageResolutionOptions={imageResolutionOptions}
             onImageResolutionChange={onImageResolutionChange}
-            reasoningEffort={runtime.reasoningEffort}
-            onReasoningEffortChange={runtime.setReasoningEffort}
             webSearchEnabled={runtime.webSearchEnabled}
             onWebSearchEnabledChange={runtime.setWebSearchEnabled}
           />
@@ -217,4 +246,4 @@ export function ChatView({
       </div>
     </section>
   );
-}
+}, (previous, next) => previous.visible === false && next.visible === false);

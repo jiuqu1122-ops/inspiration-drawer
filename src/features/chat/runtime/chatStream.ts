@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ChatReasoningEffort } from '../model/chatTypes';
 
 export type ChatProviderToolCall = { id: string; name: string; arguments: string };
 export type ChatProviderResult = {
@@ -16,7 +15,6 @@ export const requestChatCompletion = (input: {
   tools: Array<Record<string, unknown>>;
   model?: string;
   stream?: boolean;
-  reasoningEffort?: Exclude<ChatReasoningEffort, ''>;
 }) => invoke<ChatProviderResult>('agent_openai_chat', {
   request: {
     requestId: input.requestId,
@@ -24,7 +22,6 @@ export const requestChatCompletion = (input: {
     tools: input.tools,
     model: input.model,
     stream: input.stream !== false,
-    reasoningEffort: input.reasoningEffort,
   },
 });
 

@@ -11,6 +11,11 @@ import {
   Type,
   Bot,
 } from 'lucide-react';
+import {
+  getCanvasChatOffsetRight,
+  toggleCanvasChatVisibility,
+  useCanvasChatVisibility,
+} from '../features/chat/runtime/canvasChatVisibility';
 import { RoundedSelect, type RoundedSelectOption } from './RoundedSelect';
 
 const CANVAS_SIDE_TOOL_CLASS = 'flex h-9 w-[72px] shrink-0 items-center justify-start gap-1.5 overflow-hidden rounded-[10px] border border-stone-200 bg-white px-2.5 text-[10px] font-semibold text-stone-700 shadow-[0_2px_8px_rgba(24,24,27,0.06)] transition-[background-color,border-color,color] duration-150 hover:border-stone-300 hover:bg-stone-100 hover:text-stone-950 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:border-stone-600 dark:hover:bg-stone-800 dark:hover:text-white';
@@ -29,8 +34,6 @@ type CanvasToolbarProps = {
   workflowValue: string;
   workflowOptions: RoundedSelectOption[];
   hasWorkflow: boolean;
-  isAgentChatOpen: boolean;
-  onToggleAgentChat: () => void;
   onAddImage: () => void;
   onAddFusion: () => void;
   onAddVideo: () => void;
@@ -53,8 +56,6 @@ export function CanvasToolbar({
   workflowValue,
   workflowOptions,
   hasWorkflow,
-  isAgentChatOpen,
-  onToggleAgentChat,
   onAddImage,
   onAddFusion,
   onAddVideo,
@@ -66,13 +67,15 @@ export function CanvasToolbar({
   onAddText,
   onOpenInspirationSpace,
 }: CanvasToolbarProps) {
+  const isAgentChatOpen = useCanvasChatVisibility();
   return (
     <div
       ref={toolbarRef}
       data-no-drag="true"
       data-canvas-toolbar="true"
       className="absolute z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent transition-[top,right] duration-200"
-      style={{ top, right }}
+      data-canvas-chat-offset-base={right}
+      style={{ top, right: getCanvasChatOffsetRight(right) }}
       onPointerDown={event => event.stopPropagation()}
       onMouseDown={event => event.stopPropagation()}
     >
@@ -194,16 +197,16 @@ export function CanvasToolbar({
       </button>
       <button
         type="button"
-        onClick={onToggleAgentChat}
+        onClick={toggleCanvasChatVisibility}
         className={`${CANVAS_SIDE_TOOL_CLASS} ${
           isAgentChatOpen
             ? '!border-stone-900 !bg-stone-900 !text-white dark:!border-stone-100 dark:!bg-stone-100 dark:!text-stone-950'
             : ''
         }`}
-        title={isAgentChatOpen ? '关闭 Agent 聊天' : '打开 Agent 聊天'}
+        title={isAgentChatOpen ? '关闭 Chat' : '打开 Chat'}
       >
         <Bot className={`h-3.5 w-3.5 shrink-0 ${isAgentChatOpen ? 'text-current' : 'text-stone-500 dark:text-stone-400'}`} />
-        <span className="min-w-0 flex-1 truncate text-left">Agent</span>
+        <span className="min-w-0 flex-1 truncate text-left">Chat</span>
       </button>
       <button
         type="button"

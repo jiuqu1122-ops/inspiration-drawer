@@ -1,10 +1,11 @@
 import { ArrowDown, MessageCircleMore } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import type { ChatGeneratedMedia, ChatMessage as ChatMessageType } from '../model/chatTypes';
 import { ChatMessage } from './ChatMessage';
 
 export function ChatMessageList({
   messages,
+  visible,
   loading,
   loadingOlder,
   hasMore,
@@ -16,6 +17,7 @@ export function ChatMessageList({
   onEditMedia,
 }: {
   messages: ChatMessageType[];
+  visible: boolean;
   loading: boolean;
   loadingOlder: boolean;
   hasMore: boolean;
@@ -26,14 +28,24 @@ export function ChatMessageList({
   onRegenerateMedia?: (media: ChatGeneratedMedia) => void;
   onEditMedia?: (media: ChatGeneratedMedia) => void;
 }) {
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const previousLastId = useRef('');
-  useEffect(() => {
+  const wasVisibleRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!visible) {
+      wasVisibleRef.current = false;
+      return;
+    }
     const lastId = messages[messages.length - 1]?.id || '';
-    if (!lastId || lastId === previousLastId.current) return;
+    const firstVisibleFrame = !wasVisibleRef.current;
+    wasVisibleRef.current = true;
+    if (!lastId || (!firstVisibleFrame && lastId === previousLastId.current)) return;
     previousLastId.current = lastId;
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const list = listRef.current;
+    if (!list) return;
+    if (firstVisibleFrame) list.scrollTop = list.scrollHeight;
+    else list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+  }, [messages, visible]);
   if (loading) return <div className="chat-empty"><div className="chat-skeleton" /><div className="chat-skeleton chat-skeleton--short" /></div>;
   if (messages.length === 0) {
     return (
@@ -45,7 +57,7 @@ export function ChatMessageList({
     );
   }
   return (
-    <div className="chat-message-list">
+    <div className="chat-message-list" ref={listRef}>
       {hasMore && (
         <button type="button" className="chat-load-older" onClick={onLoadOlder} disabled={loadingOlder}>
           <ArrowDown size={12} className="rotate-180" />{loadingOlder ? '正在加载' : '加载更早消息'}
@@ -62,7 +74,6 @@ export function ChatMessageList({
           onEditMedia={onEditMedia}
         />
       ))}
-      <div ref={endRef} />
     </div>
   );
 }

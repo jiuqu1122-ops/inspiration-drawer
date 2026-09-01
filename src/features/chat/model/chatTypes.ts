@@ -1,7 +1,6 @@
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 export type ChatMessageStatus = 'streaming' | 'completed' | 'error' | 'cancelled';
 export type ChatToolCallStatus = 'pending' | 'awaiting-approval' | 'running' | 'completed' | 'declined' | 'error';
-export type ChatReasoningEffort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ChatAttachment = {
   id: string;

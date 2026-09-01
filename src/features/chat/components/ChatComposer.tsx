@@ -1,27 +1,11 @@
-import { ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Globe2, LoaderCircle, Paperclip, SlidersHorizontal, Square, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, Globe2, LoaderCircle, Paperclip, SlidersHorizontal, Square, X } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ChatImageModelOption, ChatReasoningEffort, PendingChatAttachment } from '../model/chatTypes';
+import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { createChatId } from '../model/chatTypes';
+import { resolveAvailableChatModels } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatImageSettings } from './ChatImageSettings';
-
-const REASONING_OPTIONS: Array<{ value: ChatReasoningEffort; label: string }> = [
-  { value: '', label: '自动' },
-  { value: 'low', label: '轻度' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-  { value: 'xhigh', label: '极高' },
-];
-
-const REASONING_LABELS: Record<ChatReasoningEffort, string> = {
-  '': '自动',
-  low: '轻度',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: 'Ultra',
-};
 
 const compactModelLabel = (value: string) => value
   .replace(/^gpt-/i, '')
@@ -30,8 +14,6 @@ const compactModelLabel = (value: string) => value
   .replace(/-sol$/i, ' Sol')
   .replace(/-terra$/i, ' Terra')
   .replace(/-luna$/i, ' Luna');
-
-const isGpt56Model = (value: string) => /^gpt-5\.6(?:-|$)/i.test(value.trim());
 
 export function ChatComposer({
   value,
@@ -54,8 +36,6 @@ export function ChatComposer({
   imageResolution,
   imageResolutionOptions,
   onImageResolutionChange,
-  reasoningEffort,
-  onReasoningEffortChange,
   webSearchEnabled,
   onWebSearchEnabledChange,
 }: {
@@ -79,8 +59,6 @@ export function ChatComposer({
   imageResolution: string;
   imageResolutionOptions: ChatImageModelOption[];
   onImageResolutionChange: (value: string) => void;
-  reasoningEffort: ChatReasoningEffort;
-  onReasoningEffortChange: (value: ChatReasoningEffort) => void;
   webSearchEnabled: boolean;
   onWebSearchEnabledChange: (value: boolean) => void;
 }) {
@@ -88,15 +66,8 @@ export function ChatComposer({
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [modelMenuView, setModelMenuView] = useState<'reasoning' | 'models'>('reasoning');
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
-  const availableModels = useMemo(
-    () => {
-      const filtered = modelOptions.filter(isGpt56Model);
-      return Array.from(new Set(filtered.length > 0 ? filtered : ['gpt-5.6-sol']));
-    },
-    [modelOptions],
-  );
+  const availableModels = useMemo(() => resolveAvailableChatModels(modelOptions), [modelOptions]);
   useEffect(() => {
     if (!modelOpen) return;
     const close = (event: PointerEvent) => {
@@ -113,12 +84,6 @@ export function ChatComposer({
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [modelOpen]);
-  const reasoningOptions = useMemo(
-    () => /(?:^|-)gpt-5\.6(?:-|$)/i.test(model)
-      ? [...REASONING_OPTIONS, { value: 'max' as const, label: 'Ultra' }]
-      : REASONING_OPTIONS,
-    [model],
-  );
   const addPaths = (paths: string[]) => {
     const known = new Set(attachments.map(item => item.path));
     const added = paths.filter(path => path && !known.has(path)).slice(0, 6 - attachments.length).map(path => ({
@@ -214,73 +179,32 @@ export function ChatComposer({
               type="button"
               className="chat-model-trigger"
               disabled={busy}
-              onClick={() => {
-                setModelOpen(value => {
-                  if (!value) setModelMenuView('reasoning');
-                  return !value;
-                });
-              }}
+              onClick={() => setModelOpen(value => !value)}
               aria-haspopup="menu"
               aria-expanded={modelOpen}
-              title={`模型：${model || '默认模型'}；推理：${REASONING_LABELS[reasoningEffort]}`}
+              title={`模型：${model || '默认模型'}`}
             >
-              <span>{compactModelLabel(model || '默认模型')} · {REASONING_LABELS[reasoningEffort]}</span>
+              <span>{compactModelLabel(model || '默认模型')}</span>
               <ChevronDown size={12} className={modelOpen ? 'is-open' : ''} />
             </button>
             {modelOpen && (
-              <div className="chat-model-menu chat-model-reasoning-menu" role="menu" aria-label="模型与推理设置">
-                {modelMenuView === 'reasoning' ? (
-                  <>
-                    <div className="chat-model-menu__title">推理</div>
-                    {reasoningOptions.map(option => (
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={option.value === reasoningEffort}
-                        className={option.value === reasoningEffort ? 'is-selected' : ''}
-                        key={option.value || 'auto'}
-                        onClick={() => {
-                          onReasoningEffortChange(option.value);
-                          setModelOpen(false);
-                        }}
-                      >
-                        <span>{option.label}</span>
-                        {option.value === reasoningEffort && <Check size={12} />}
-                      </button>
-                    ))}
-                    <div className="chat-model-menu__divider" />
-                    <button type="button" className="chat-model-menu__nav" onClick={() => setModelMenuView('models')}>
-                      <span>模型</span>
-                      <span className="chat-model-menu__nav-value">{compactModelLabel(model || '默认')}<ChevronRight size={12} /></span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button type="button" className="chat-model-menu__back" onClick={() => setModelMenuView('reasoning')}>
-                      <ChevronLeft size={12} /><span>模型</span>
-                    </button>
-                    <div className="chat-model-menu__divider" />
-                    {availableModels.map(option => (
-                      <button
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={option === model}
-                        className={option === model ? 'is-selected' : ''}
-                        key={option}
-                        onClick={() => {
-                          onModelChange(option);
-                          if (reasoningEffort === 'max' && !/(?:^|-)gpt-5\.6(?:-|$)/i.test(option)) {
-                            onReasoningEffortChange('xhigh');
-                          }
-                          setModelOpen(false);
-                        }}
-                      >
-                        <span>{option || '默认模型'}</span>
-                        {option === model && <Check size={12} />}
-                      </button>
-                    ))}
-                  </>
-                )}
+              <div className="chat-model-menu" role="menu" aria-label="选择模型">
+                {availableModels.map(option => (
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={option === model}
+                    className={option === model ? 'is-selected' : ''}
+                    key={option}
+                    onClick={() => {
+                      onModelChange(option);
+                      setModelOpen(false);
+                    }}
+                  >
+                    <span>{option || '默认模型'}</span>
+                    {option === model && <Check size={12} />}
+                  </button>
+                ))}
               </div>
             )}
           </div>

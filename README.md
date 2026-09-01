@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**6.0.20**
+当前版本：**6.0.21**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.20/Inspiration.Drawer_6.0.20_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.20)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.21/Inspiration.Drawer_6.0.21_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.21)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.21 更新
+
+- Chat 模型精简为 GPT-5.6 Sol、Terra 和 Luna，旧会话中的 GPT-5.6 自动切换为 Sol。
+- 优化 Chat 窗口与无限画布的交互性能，减少首次选择、拖动、新建和删除节点时的卡顿。
+- 修复节点拖动时选择框闪烁，以及 Chat 窗口边缘被挤压、遮挡顶部菜单的问题。
 
 ## 6.0.20 更新
 
