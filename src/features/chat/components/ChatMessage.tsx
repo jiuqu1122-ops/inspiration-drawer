@@ -66,17 +66,19 @@ export const ChatMessage = memo(function ChatMessage({
   };
   return (
     <article className={`chat-message chat-message--${message.role}`}>
-      <div className="chat-message__body">
+      <div className={`chat-message__body ${message.attachments.length > 0 ? 'has-attachments' : ''}`}>
         <ChatAttachmentList attachments={message.attachments} compact />
         {message.content && (
           message.role === 'assistant'
             ? <ChatMarkdown content={message.content} />
             : <ChatMessageText content={message.content} />
         )}
-        {message.role === 'assistant' && message.status === 'streaming' && !message.content && (
+        {message.role === 'assistant' && message.status === 'streaming' && !message.content && message.toolCalls.length === 0 && (
           <div className="chat-thinking" aria-label="正在生成"><i /><i /><i /></div>
         )}
-        {message.toolCalls.map(call => <ChatToolCallCard key={call.id} call={call} onResolve={onResolveTool} />)}
+        {message.toolCalls
+          .filter(call => call.toolName !== 'batch_image_operation' || (call.status !== 'awaiting-approval' && call.status !== 'declined'))
+          .map(call => <ChatToolCallCard key={call.id} call={call} onResolve={onResolveTool} />)}
         {generated.map(media => (
           <ChatGeneratedImageCard
             key={media.id}

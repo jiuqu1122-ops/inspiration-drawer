@@ -31,6 +31,7 @@ export type ChatViewProps = {
   imageResolutionOptions?: ChatImageModelOption[];
   onImageResolutionChange: (resolution: string) => void;
   onAddGeneratedToCanvas?: (media: ChatGeneratedMedia) => void;
+  onClearSelectedItems?: () => void;
   workflowResult?: WorkflowResultCardData;
 };
 
@@ -70,6 +71,7 @@ export const ChatView = memo(function ChatView({
   imageResolutionOptions = [],
   onImageResolutionChange,
   onAddGeneratedToCanvas,
+  onClearSelectedItems,
   workflowResult,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
@@ -77,6 +79,8 @@ export const ChatView = memo(function ChatView({
   const [ignoredSelectionAttachmentIds, setIgnoredSelectionAttachmentIds] = useState<string[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const activeConversationIdRef = useRef(runtime.activeConversationId);
+  activeConversationIdRef.current = runtime.activeConversationId;
   const model = runtime.activeConversation?.model || '';
   const chatModelOptions = useMemo(() => resolveAvailableChatModels(modelOptions), [modelOptions]);
   const effectiveModel = normalizeSupportedChatModel(model) || chatModelOptions[0];
@@ -121,12 +125,28 @@ export const ChatView = memo(function ChatView({
     setCanvasChatSidebarWidth(canvasRenderedWidth + CANVAS_CHAT_EDGE_GAP);
   }, [canvasRenderedWidth, variant]);
   const send = async () => {
+    const sourceConversationId = runtime.activeConversationId;
     const pendingInput = input;
     const pendingAttachments = composerAttachments;
+    const sentSelectionAttachmentIds = pendingAttachments
+      .filter(attachment => selectionAttachmentIds.has(attachment.id))
+      .map(attachment => attachment.id);
     setInput('');
     setAttachments([]);
-    const sent = await runtime.sendMessage(pendingInput, pendingAttachments, effectiveModel);
-    if (!sent) {
+    const sent = await runtime.sendMessage(
+      pendingInput,
+      pendingAttachments,
+      effectiveModel,
+      () => {
+        if (sentSelectionAttachmentIds.length === 0) return;
+        setIgnoredSelectionAttachmentIds(current => Array.from(new Set([
+          ...current,
+          ...sentSelectionAttachmentIds,
+        ])));
+        onClearSelectedItems?.();
+      },
+    );
+    if (!sent && activeConversationIdRef.current === sourceConversationId) {
       setInput(current => current || pendingInput);
       setAttachments(current => current.length > 0
         ? current
@@ -169,7 +189,7 @@ export const ChatView = memo(function ChatView({
       )}
       <aside className={`chat-history ${historyOpen ? 'is-open' : ''}`}>
         <div className="chat-history__head">
-          <button type="button" className="chat-new" disabled={runtime.busy} onClick={() => void runtime.newConversation()}><MessageSquarePlus size={14} />新对话</button>
+          <button type="button" className="chat-new" onClick={() => void runtime.newConversation()}><MessageSquarePlus size={14} />新对话</button>
           {variant === 'drawer' && <button type="button" className="chat-icon-button" onClick={() => setHistoryOpen(false)}><X size={14} /></button>}
         </div>
         <div className="chat-history__list">

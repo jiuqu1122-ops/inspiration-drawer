@@ -8,9 +8,12 @@ export const applyChatImageGenerationSettings = (
   args: Record<string, unknown>,
   settings: ChatImageGenerationSettings,
 ) => {
-  const model = settings.imageModel?.trim();
-  const aspectRatio = settings.imageAspectRatio?.trim();
-  const resolution = settings.imageResolution?.trim();
+  const requestedModel = String(args.model || '').trim();
+  const requestedAspectRatio = String(args.aspectRatio || '').trim();
+  const requestedResolution = String(args.resolution || '').trim();
+  const model = requestedModel || settings.imageModel?.trim();
+  const aspectRatio = requestedAspectRatio || settings.imageAspectRatio?.trim();
+  const resolution = requestedResolution || settings.imageResolution?.trim();
   return {
     ...args,
     ...(model ? { model } : {}),

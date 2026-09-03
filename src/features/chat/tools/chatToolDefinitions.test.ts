@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, shouldDirectGenerateImage, shouldExposeChatTools, shouldExposeWebSearch } from './chatToolDefinitions';
+import { CHAT_TOOL_DEFINITIONS, getChatToolDefinitions, shouldDirectGenerateImage, shouldExposeBatchImageOperation, shouldExposeChatTools, shouldExposeWebSearch } from './chatToolDefinitions';
 
 describe('Chat tool exposure', () => {
   it('registers only the supported Chat tools', () => {
@@ -10,6 +10,7 @@ describe('Chat tool exposure', () => {
       'search_assets',
       'generate_image',
       'edit_image',
+      'batch_image_operation',
       'generate_video',
       'add_to_canvas',
       'create_canvas_generator',
@@ -52,6 +53,74 @@ describe('Chat tool exposure', () => {
   it('allows an image-edit follow-up only when generated media exists', () => {
     expect(shouldExposeChatTools('把这张图调暖一点', false)).toBe(false);
     expect(shouldExposeChatTools('把这张图调暖一点', true)).toBe(true);
+  });
+
+  it('lets the model choose among relevant image tools for a multi-image task', () => {
+    expect(shouldExposeBatchImageOperation('把每张都换成白色背景', 3)).toBe(true);
+    expect(shouldExposeBatchImageOperation('帮我把这几张图都排一下版', 6)).toBe(true);
+    expect(shouldExposeBatchImageOperation('帮我给这几张产品图排一下版，要有简单的英文说明', 6)).toBe(true);
+    expect(shouldExposeBatchImageOperation('把水印去掉', 6)).toBe(true);
+    expect(shouldExposeBatchImageOperation('把每张都换成白色背景', 1)).toBe(false);
+    const tools = getChatToolDefinitions('把每张都换成白色背景', false, false, false, 3)
+      .map(tool => tool.function.name);
+    expect(tools).toContain('batch_image_operation');
+    expect(tools).toContain('generate_image');
+    expect(tools).toContain('edit_image');
+  });
+
+  it('requires a concrete conversational plan before a batch image tool can run', () => {
+    const definition = CHAT_TOOL_DEFINITIONS.find(tool => (
+      tool.function.name === 'batch_image_operation'
+    ));
+    const parameters = definition?.function.parameters as {
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+
+    expect(parameters.required).toEqual(expect.arrayContaining([
+      'taskUnderstanding',
+      'sourceAssessment',
+      'executionPlan',
+      'specificChanges',
+      'perImageInstructions',
+      'preservationRules',
+      'deliveryPlan',
+      'instruction',
+    ]));
+    expect(parameters.properties).toHaveProperty('analysisSummary');
+  });
+
+  it('keeps combined-reference requests on ordinary image generation tools', () => {
+    expect(shouldExposeBatchImageOperation('参考这几张图做一个新的设计', 3)).toBe(false);
+    const tools = getChatToolDefinitions('参考这几张图做一个新的设计', false, false, false, 3)
+      .map(tool => tool.function.name);
+    expect(tools).toContain('generate_image');
+    expect(tools).not.toContain('batch_image_operation');
+  });
+
+  it('lets a later explicit per-image correction override an earlier combined request', () => {
+    const text = [
+      '参考这几张图做一个新的设计',
+      '不要整合，每一张图都要单独排版',
+      '开始制作吧',
+    ].join('\n');
+    expect(shouldExposeBatchImageOperation(text, 3)).toBe(true);
+    const tools = getChatToolDefinitions(text, false, false, false, 3)
+      .map(tool => tool.function.name);
+    expect(tools).toContain('batch_image_operation');
+    expect(tools).toContain('generate_image');
+  });
+
+  it('keeps both routes available when historical multi-image intent is ambiguous', () => {
+    const tools = getChatToolDefinitions(
+      '整理成一份产品设计作品集，帮我排版并添加英文说明\n开始做吧',
+      false,
+      false,
+      false,
+      6,
+    ).map(tool => tool.function.name);
+    expect(tools).toContain('generate_image');
+    expect(tools).toContain('batch_image_operation');
   });
 
   it('exposes web search for explicit current-information requests or when enabled', () => {

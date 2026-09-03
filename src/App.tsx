@@ -342,6 +342,15 @@ import { SystemQuickAccessIcon } from './components/QuickIcons';
 import BufferItemCard from './components/BufferItemCard';
 import { ChatHost } from './features/chat/components/ChatHost';
 import type { ChatGeneratedMedia, ChatImageModelOption } from './features/chat/model/chatTypes';
+import type {
+  ChatBatchCompletedPayload,
+  ChatBatchMediaReadyPayload,
+  ChatBatchStartedPayload,
+} from './features/chat/runtime/useChatRuntime';
+import {
+  createChatBatchCanvasLayout,
+  getChatBatchCanvasSlotSize,
+} from './features/chat/runtime/chatBatchCanvasLayout';
 import {
   getCanvasChatOffsetRight,
   getCanvasChatVisibility,
@@ -28502,6 +28511,181 @@ useEffect(() => {
     }
   };
 
+  const createChatBatchCanvasGroup = async (payload: ChatBatchStartedPayload) => {
+    if (payload.total <= 0) return;
+    if (!isCanvasModeRef.current) enterCanvasMode();
+    const existingSlots = canvasItemsRef.current.filter(item => item.chatBatchSlot?.batchId === payload.batchId);
+    if (existingSlots.length > 0) return;
+
+    const slotSize = getChatBatchCanvasSlotSize(payload.aspectRatio);
+    const slotWidth = slotSize.width;
+    const slotHeight = slotSize.height;
+    const gap = 28;
+    const base = getCanvasDropPosition(0);
+    let layout = createChatBatchCanvasLayout({
+      total: payload.total,
+      originX: base.x,
+      originY: base.y,
+      slotWidth,
+      slotHeight,
+      gap,
+    });
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const column = attempt % 3;
+      const row = Math.floor(attempt / 3);
+      const candidate = createChatBatchCanvasLayout({
+        total: payload.total,
+        originX: base.x + column * (layout.width + 72),
+        originY: base.y + row * (layout.height + 72),
+        slotWidth,
+        slotHeight,
+        gap,
+      });
+      const overlaps = candidate.slots.some(slot => canvasItemsRef.current.some(item => (
+        canvasRectsIntersect(slot, item)
+      )));
+      layout = candidate;
+      if (!overlaps) break;
+    }
+
+    const now = Date.now();
+    const group = {
+      id: `canvas_group_${payload.batchId}`,
+      name: payload.name.trim().slice(0, 48) || 'Chat 批量处理',
+    };
+    const slots: CanvasImageItem[] = layout.slots.map(slot => ({
+      id: `canvas_chat_batch_${payload.batchId}_${slot.index}`,
+      item: {
+        id: createAssetId(),
+        type: 'image',
+        content: `等待生成第 ${slot.index + 1} 张图片`,
+        name: `生成中 ${slot.index + 1}/${payload.total}`,
+        createdAt: now + slot.index,
+        isQuickAccess: false,
+      },
+      x: slot.x,
+      y: slot.y,
+      width: slot.width,
+      height: slot.height,
+      canvasGroup: group,
+      chatBatchSlot: {
+        batchId: payload.batchId,
+        sourceIndex: Math.floor(slot.index / payload.outputCountPerImage),
+        outputIndex: slot.index % payload.outputCountPerImage,
+        status: 'pending',
+      },
+      ai: {
+        type: 'generated-image',
+        status: 'working',
+        generatedAt: now,
+        ...(payload.aspectRatio ? { aspectRatio: payload.aspectRatio } : {}),
+      },
+    }));
+    if (appendCanvasItems(slots, '创建 Chat 批量处理编组', false) <= 0) return;
+    updateCanvasSelection(slots.map(slot => slot.id));
+    window.setTimeout(() => {
+      fitCanvasViewToItems(slots.map(slot => slot.id));
+    }, 80);
+  };
+
+  const fillChatBatchCanvasSlot = async (payload: ChatBatchMediaReadyPayload) => {
+    const slot = canvasItemsRef.current.find(item => (
+      item.chatBatchSlot?.batchId === payload.batchId
+      && item.chatBatchSlot.sourceIndex === payload.sourceIndex
+      && item.chatBatchSlot.outputIndex === payload.outputIndex
+    ));
+    const batchSlot = slot?.chatBatchSlot;
+    if (!slot || !batchSlot || batchSlot.status === 'completed') return;
+    const media = payload.media;
+    const assetId = media.assetId || media.id;
+    const drawerSource = itemsRef.current.find(item => item.id === assetId && item.type === 'image');
+    const itemId = createAssetId();
+    const item: BufferItem = drawerSource ? {
+      ...drawerSource,
+      id: itemId,
+      sourceItemId: drawerSource.id,
+      name: drawerSource.name || media.name || `批量结果 ${payload.slotIndex + 1}`,
+      content: drawerSource.content || media.prompt || `批量结果 ${payload.slotIndex + 1}`,
+      createdAt: Date.now(),
+      isQuickAccess: false,
+    } : {
+      id: itemId,
+      type: 'image',
+      content: media.prompt || media.name || `批量结果 ${payload.slotIndex + 1}`,
+      name: media.name || `批量结果 ${payload.slotIndex + 1}`,
+      path: media.path,
+      url: media.path ? undefined : media.url,
+      sourceUrl: media.url,
+      thumbnail: media.thumbnail,
+      sourceItemId: assetId || undefined,
+      createdAt: Date.now(),
+      isQuickAccess: false,
+    };
+    const nextSlot: CanvasImageItem = {
+      ...slot,
+      item,
+      chatBatchSlot: { ...batchSlot, status: 'completed' },
+      ai: {
+        type: 'generated-image',
+        status: 'success',
+        generatedAt: Date.now(),
+        outputs: [{
+          id: media.id,
+          mediaType: 'image',
+          path: media.path,
+          url: media.url,
+          thumbnail: media.thumbnail,
+          name: media.name,
+          prompt: media.prompt,
+          status: 'success',
+          generatedAt: Date.now(),
+        }],
+      },
+    };
+    canvasImageSourceCacheRef.current.delete(slot.id);
+    const imageSource = getCanvasOriginalImageSource(item) || getCanvasInitialImageSource(item);
+    if (imageSource) {
+      canvasImageSourceCacheRef.current.set(slot.id, {
+        src: imageSource,
+        quality: 'original',
+      });
+    }
+    canvasItemsPatchCommitRef.current = true;
+    updateCanvasItemsImmediate(items => items.map(candidate => candidate.id === slot.id ? nextSlot : candidate));
+    markCanvasNodesChanged([slot.id]);
+    scheduleCanvasChangedNodesPatchSave([slot.id]);
+    scheduleCanvasStateSave({ syncNodes: false });
+  };
+
+  const completeChatBatchCanvasGroup = async (payload: ChatBatchCompletedPayload) => {
+    const failedSourceIndexes = new Set(payload.failedSourceIndexes);
+    const pendingSlots = canvasItemsRef.current.filter(item => (
+      item.chatBatchSlot?.batchId === payload.batchId
+      && item.chatBatchSlot.status === 'pending'
+    ));
+    if (pendingSlots.length > 0) {
+      const changedIds = pendingSlots.map(item => item.id);
+      canvasItemsPatchCommitRef.current = true;
+      updateCanvasItemsImmediate(items => items.map(item => {
+        if (item.chatBatchSlot?.batchId !== payload.batchId || item.chatBatchSlot.status !== 'pending') return item;
+        const cancelled = payload.cancelled;
+        const knownFailure = failedSourceIndexes.has(item.chatBatchSlot.sourceIndex);
+        const error = cancelled ? '批量任务已停止' : knownFailure ? '这张图片生成失败' : '没有返回可用图片';
+        return {
+          ...item,
+          item: { ...item.item, content: error, name: error },
+          chatBatchSlot: { ...item.chatBatchSlot, status: cancelled ? 'cancelled' : 'error' },
+          ai: { ...item.ai, type: 'generated-image', status: 'error', error },
+        };
+      }));
+      markCanvasNodesChanged(changedIds);
+      scheduleCanvasChangedNodesPatchSave(changedIds);
+      scheduleCanvasStateSave({ syncNodes: false });
+    }
+    if (payload.cancelled) showToast(`批量任务已停止，已保留 ${payload.completedSlots} 张结果`);
+    else showToast(`批量处理完成，${payload.completedSlots} 张图片已自动编组`);
+  };
+
   const [agentModels, setAgentModels] = useState<string[]>([]);
   const [agentModelsLoading, setAgentModelsLoading] = useState(false);
   const [agentCustomProvider, setAgentCustomProvider] = useState('openai-compatible');
@@ -35156,7 +35340,11 @@ useEffect(() => {
                                   </div>
                                 </div>
                               ) : (
-                                <div className="relative h-full w-full overflow-visible bg-white/86 shadow-[0_10px_26px_rgba(15,23,42,0.10)] transition-[box-shadow] hover:shadow-[0_14px_32px_rgba(15,23,42,0.12)] dark:bg-stone-900/88 dark:shadow-[0_12px_30px_rgba(0,0,0,0.24)]">
+                                <div className={`relative h-full w-full overflow-visible transition-[box-shadow] ${
+                                  isGeneratedMediaItem
+                                    ? 'bg-transparent shadow-none'
+                                    : 'bg-white/86 shadow-[0_10px_26px_rgba(15,23,42,0.10)] hover:shadow-[0_14px_32px_rgba(15,23,42,0.12)] dark:bg-stone-900/88 dark:shadow-[0_12px_30px_rgba(0,0,0,0.24)]'
+                                }`}>
                                   {isGeneratedMediaPending || isGeneratedMediaError ? (
                                     <div className={`flex h-full w-full flex-col items-center justify-center gap-2 px-4 text-center ${
                                       isGeneratedMediaError ? 'bg-red-950/28 text-red-100' : 'bg-stone-950/74 text-white'
@@ -37616,6 +37804,9 @@ useEffect(() => {
                   executeTool={executeChatTool}
                   onNotice={showToast}
                   onGeneratedMediaReady={media => addChatMediaToCanvas(media, { autoFocus: true })}
+                  onBatchStarted={createChatBatchCanvasGroup}
+                  onBatchMediaReady={fillChatBatchCanvasSlot}
+                  onBatchCompleted={completeChatBatchCanvasGroup}
                   variant={isCanvasMode ? 'canvas' : 'drawer'}
                   width={isCanvasMode ? canvasAgentSidebarWidth : undefined}
                   topOffset={isCanvasMode && !isCanvasChromeHidden ? 64 : 0}
@@ -37625,6 +37816,14 @@ useEffect(() => {
                   }}
                   selectedItems={isCanvasMode ? canvasAgentSelectedItems : drawerAgentSelectedItems}
                   resolveSelectedItems={isCanvasMode ? () => buildCanvasAgentSelectedItems() : undefined}
+                  onClearSelectedItems={() => {
+                    if (isCanvasMode) {
+                      updateCanvasSelection([]);
+                      return;
+                    }
+                    setSelectedIds([]);
+                    lastSelectedDrawerItemIdRef.current = null;
+                  }}
                   modelOptions={agentModels}
                   imageModel={activeChatImageModel}
                   imageModelOptions={chatImageModelOptions}

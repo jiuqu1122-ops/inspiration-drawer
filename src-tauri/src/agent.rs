@@ -817,11 +817,120 @@ pub struct AgentOpenAiChatRequest {
     #[serde(default)]
     tools: Vec<Value>,
     #[serde(default)]
+    tool_choice: Option<Value>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     stream: bool,
     #[serde(default)]
     reasoning_effort: Option<String>,
+}
+
+const MAX_INLINE_VISION_BYTES: usize = 128 * 1024;
+const CHAT_REQUEST_WARN_BYTES: usize = 1024 * 1024;
+const CHAT_REQUEST_HARD_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ChatRequestSizeStats {
+    request_bytes: usize,
+    message_count: usize,
+    vision_image_count: usize,
+    inline_image_bytes: usize,
+}
+
+fn approximate_data_url_bytes(value: &str) -> usize {
+    let Some((header, payload)) = value.split_once(',') else {
+        return value.len();
+    };
+    if !header.to_ascii_lowercase().contains(";base64") {
+        return payload.len();
+    }
+    let payload = payload.trim();
+    let padding = if payload.ends_with("==") {
+        2
+    } else if payload.ends_with('=') {
+        1
+    } else {
+        0
+    };
+    (payload.len().saturating_mul(3) / 4usize).saturating_sub(padding)
+}
+
+fn inspect_chat_vision_value(
+    value: &Value,
+    stats: &mut ChatRequestSizeStats,
+) -> Result<(), String> {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                inspect_chat_vision_value(value, stats)?;
+            }
+        }
+        Value::Object(record) => {
+            if record.get("type").and_then(Value::as_str) == Some("image_url") {
+                if let Some(url) = record
+                    .get("image_url")
+                    .and_then(Value::as_object)
+                    .and_then(|image| image.get("url"))
+                    .and_then(Value::as_str)
+                {
+                    stats.vision_image_count += 1;
+                    if url.starts_with("data:image/") {
+                        let bytes = approximate_data_url_bytes(url);
+                        stats.inline_image_bytes = stats.inline_image_bytes.saturating_add(bytes);
+                        if bytes > MAX_INLINE_VISION_BYTES {
+                            return Err("发送内容过大，请减少附件数量或稍后重试。".to_string());
+                        }
+                    }
+                }
+            }
+            for value in record.values() {
+                inspect_chat_vision_value(value, stats)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_chat_request_size(
+    request: &AgentOpenAiChatRequest,
+) -> Result<ChatRequestSizeStats, String> {
+    let request_bytes = serde_json::to_vec(&json!({
+        "messages": &request.messages,
+        "tools": &request.tools,
+        "model": &request.model,
+    }))
+    .map_err(|error| format!("Chat 请求体序列化失败：{error}"))?
+    .len();
+    let mut stats = ChatRequestSizeStats {
+        request_bytes,
+        message_count: request.messages.len(),
+        ..ChatRequestSizeStats::default()
+    };
+    for message in &request.messages {
+        inspect_chat_vision_value(message, &mut stats)?;
+    }
+    if stats.request_bytes > CHAT_REQUEST_HARD_BYTES {
+        eprintln!(
+            "Chat request blocked: requestBytes={} messageCount={} visionImageCount={} inlineImageBytes={}",
+            stats.request_bytes,
+            stats.message_count,
+            stats.vision_image_count,
+            stats.inline_image_bytes,
+        );
+        return Err("发送内容过大，请减少附件数量或稍后重试。".to_string());
+    }
+    if stats.request_bytes > CHAT_REQUEST_WARN_BYTES {
+        eprintln!(
+            "Chat request size warning: requestBytes={} messageCount={} visionImageCount={} inlineImageBytes={}",
+            stats.request_bytes,
+            stats.message_count,
+            stats.vision_image_count,
+            stats.inline_image_bytes,
+        );
+    }
+    Ok(stats)
 }
 
 fn normalize_chat_reasoning_effort(value: Option<&str>) -> Option<String> {
@@ -1023,6 +1132,10 @@ async fn submit_wallet_task(
         .await
         .map_err(|error| format!("读取后台任务提交响应失败：{error}"))?;
     if status != reqwest::StatusCode::ACCEPTED {
+        if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+            eprintln!("Wallet task submission rejected with HTTP 413 (taskType={task_type})");
+            return Err("发送内容过大，请减少附件数量或稍后重试。".to_string());
+        }
         return Err(format!(
             "提交后台任务 HTTP {status}：{}",
             wallet_task_error(&value, "服务暂不可用")
@@ -1430,6 +1543,7 @@ pub async fn agent_openai_chat(
     state: State<'_, AgentRuntimeState>,
     request: AgentOpenAiChatRequest,
 ) -> Result<AgentOpenAiChatResult, String> {
+    validate_chat_request_size(&request)?;
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
         let mut wallet_request = request;
@@ -1472,7 +1586,9 @@ pub async fn agent_openai_chat(
         });
         if !request.tools.is_empty() {
             body["tools"] = Value::Array(request.tools);
-            body["tool_choice"] = Value::String("auto".to_string());
+            body["tool_choice"] = request
+                .tool_choice
+                .unwrap_or_else(|| Value::String("auto".to_string()));
         }
         if let Some(effort) = normalize_chat_reasoning_effort(request.reasoning_effort.as_deref()) {
             body["reasoning_effort"] = Value::String(effort);
@@ -1494,6 +1610,10 @@ pub async fn agent_openai_chat(
         let status = response.status();
         if !status.is_success() {
             let text = response.text().unwrap_or_default();
+            if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+                eprintln!("Agent provider rejected request with HTTP 413");
+                return Err("发送内容过大，请减少附件数量或稍后重试。".to_string());
+            }
             return Err(format!(
                 "Agent API HTTP {}：{}",
                 status,
@@ -1644,6 +1764,9 @@ async fn agent_wallet_chat(
             "messages": request.messages,
             "tools": request.tools,
         });
+        if let Some(tool_choice) = request.tool_choice {
+            payload["toolChoice"] = tool_choice;
+        }
         if let Some(model) = request.model {
             payload["model"] = Value::String(model);
         }
@@ -2537,6 +2660,65 @@ pub fn agent_codex_stop(state: State<'_, AgentRuntimeState>) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chat_request_with_content(content: Value) -> AgentOpenAiChatRequest {
+        AgentOpenAiChatRequest {
+            request_id: "request-1".to_string(),
+            messages: vec![json!({ "role": "user", "content": content })],
+            tools: Vec::new(),
+            tool_choice: None,
+            model: Some("gpt-5.6-terra".to_string()),
+            stream: true,
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn six_high_resolution_vision_attachments_remain_a_small_url_only_request() {
+        let content = (0..6)
+            .flat_map(|index| {
+                vec![
+                    json!({ "type": "text", "text": format!("图片附件 {}", index + 1) }),
+                    json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("https://vision.example.test/temporary/image-{index}.jpg"),
+                            "detail": "low",
+                        }
+                    }),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let stats = validate_chat_request_size(&chat_request_with_content(Value::Array(content)))
+            .expect("URL-only vision request should pass");
+        assert_eq!(stats.vision_image_count, 6);
+        assert_eq!(stats.inline_image_bytes, 0);
+        assert!(stats.request_bytes < 16 * 1024);
+    }
+
+    #[test]
+    fn oversized_inline_vision_image_is_rejected_before_provider_submission() {
+        let encoded = "A".repeat((MAX_INLINE_VISION_BYTES + 1) * 4 / 3 + 8);
+        let request = chat_request_with_content(json!([{
+            "type": "image_url",
+            "image_url": { "url": format!("data:image/jpeg;base64,{encoded}") }
+        }]));
+        assert_eq!(
+            validate_chat_request_size(&request).unwrap_err(),
+            "发送内容过大，请减少附件数量或稍后重试。"
+        );
+    }
+
+    #[test]
+    fn tiny_inline_vision_fallback_remains_available() {
+        let request = chat_request_with_content(json!([{
+            "type": "image_url",
+            "image_url": { "url": "data:image/png;base64,QUJD" }
+        }]));
+        let stats = validate_chat_request_size(&request).expect("tiny inline image should pass");
+        assert_eq!(stats.vision_image_count, 1);
+        assert_eq!(stats.inline_image_bytes, 3);
+    }
 
     #[test]
     fn inspiration_analysis_payload_keeps_the_server_contract_exact() {

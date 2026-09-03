@@ -1,6 +1,6 @@
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 export type ChatMessageStatus = 'streaming' | 'completed' | 'error' | 'cancelled';
-export type ChatToolCallStatus = 'pending' | 'awaiting-approval' | 'running' | 'completed' | 'declined' | 'error';
+export type ChatToolCallStatus = 'pending' | 'awaiting-approval' | 'running' | 'completed' | 'cancelled' | 'declined' | 'error';
 
 export type ChatAttachment = {
   id: string;
@@ -101,6 +101,9 @@ export type ChatToolExecutionContext = {
   conversationId: string;
   messageId: string;
   recentMessages: ChatMessage[];
+  currentUserAttachments?: ChatAttachment[];
+  signal?: AbortSignal;
+  onProgress?: (value: unknown) => void | Promise<void>;
 };
 
 export type ChatToolExecutor = (
@@ -122,7 +125,18 @@ export const getGeneratedMediaFromToolCall = (call: ChatToolCall): ChatGenerated
   const parsed = parseChatToolResult(call.resultJson);
   if (!parsed || typeof parsed !== 'object') return [];
   const record = parsed as Record<string, unknown>;
-  const media = Array.isArray(record.media) ? record.media : Array.isArray(record.outputs) ? record.outputs : [];
+  const nestedMedia = Array.isArray(record.results)
+    ? record.results.flatMap(result => {
+      if (!result || typeof result !== 'object') return [];
+      const resultRecord = result as Record<string, unknown>;
+      return Array.isArray(resultRecord.media) ? resultRecord.media : [];
+    })
+    : [];
+  const media = Array.isArray(record.media)
+    ? record.media
+    : Array.isArray(record.outputs)
+      ? record.outputs
+      : nestedMedia;
   return media.flatMap(value => {
     if (!value || typeof value !== 'object') return [];
     const item = value as Record<string, unknown>;

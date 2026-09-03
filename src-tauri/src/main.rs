@@ -350,6 +350,16 @@ struct OssReferenceImageUpload {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ChatVisionPreparedImage {
+    path: String,
+    mime_type: String,
+    byte_length: usize,
+    width: u32,
+    height: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CollectedWebImage {
     title: String,
     image_url: String,
@@ -7310,11 +7320,204 @@ fn normalize_ai_reference_image_bytes(
         .ok_or_else(|| "参考图压缩没有生成可用文件".to_string())
 }
 
+const CHAT_VISION_MAX_EDGE: u32 = 1600;
+const CHAT_VISION_DIRECT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const CHAT_VISION_TARGET_BYTES: usize = 1536 * 1024;
+const CHAT_VISION_HARD_MAX_BYTES: usize = 3 * 1024 * 1024;
+
+fn chat_vision_has_meaningful_alpha(image: &screenshots::image::DynamicImage) -> bool {
+    image.to_rgba8().pixels().any(|pixel| pixel[3] < 250)
+}
+
+fn encode_chat_vision_png(image: &screenshots::image::DynamicImage) -> Result<Vec<u8>, String> {
+    let rgba = image.to_rgba8();
+    let mut bytes = Vec::new();
+    let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+        &mut bytes,
+        screenshots::image::codecs::png::CompressionType::Best,
+        screenshots::image::codecs::png::FilterType::Adaptive,
+    );
+    screenshots::image::ImageEncoder::write_image(
+        encoder,
+        rgba.as_raw(),
+        rgba.width(),
+        rgba.height(),
+        screenshots::image::ColorType::Rgba8,
+    )
+    .map_err(|error| format!("Chat Vision PNG 压缩失败：{error}"))?;
+    Ok(bytes)
+}
+
+fn prepare_chat_vision_image_bytes(
+    bytes: Vec<u8>,
+    mime: String,
+) -> Result<(Vec<u8>, String, u32, u32), String> {
+    let image = screenshots::image::load_from_memory(&bytes)
+        .map_err(|error| format!("Chat Vision 图片读取失败：{error}"))?;
+    let width = image.width();
+    let height = image.height();
+    let compatible = matches!(
+        mime.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/jpg" | "image/webp"
+    );
+    if width.max(height) <= CHAT_VISION_MAX_EDGE
+        && bytes.len() <= CHAT_VISION_DIRECT_MAX_BYTES
+        && compatible
+    {
+        return Ok((bytes, mime, width, height));
+    }
+
+    let preserve_alpha = chat_vision_has_meaningful_alpha(&image);
+    let max_edges = [1600_u32, 1400, 1200, 1024, 800, 640];
+    let jpeg_qualities = [85_u8, 78, 70, 62, 54];
+    let mut smallest: Option<(Vec<u8>, String, u32, u32)> = None;
+    let mut last_dimensions: Option<(u32, u32)> = None;
+
+    for max_edge in max_edges {
+        let prepared = if image.width().max(image.height()) > max_edge {
+            image.resize(
+                max_edge,
+                max_edge,
+                screenshots::image::imageops::FilterType::Lanczos3,
+            )
+        } else {
+            image.clone()
+        };
+        let dimensions = (prepared.width(), prepared.height());
+        if last_dimensions == Some(dimensions) {
+            continue;
+        }
+        last_dimensions = Some(dimensions);
+
+        if preserve_alpha {
+            let candidate = encode_chat_vision_png(&prepared)?;
+            if candidate.len() <= CHAT_VISION_TARGET_BYTES {
+                return Ok((
+                    candidate,
+                    "image/png".to_string(),
+                    dimensions.0,
+                    dimensions.1,
+                ));
+            }
+            if smallest
+                .as_ref()
+                .map(|value| candidate.len() < value.0.len())
+                .unwrap_or(true)
+            {
+                smallest = Some((
+                    candidate,
+                    "image/png".to_string(),
+                    dimensions.0,
+                    dimensions.1,
+                ));
+            }
+            continue;
+        }
+
+        for quality in jpeg_qualities {
+            let candidate = encode_ai_reference_jpeg(&prepared, quality)?;
+            if candidate.len() <= CHAT_VISION_TARGET_BYTES {
+                return Ok((
+                    candidate,
+                    "image/jpeg".to_string(),
+                    dimensions.0,
+                    dimensions.1,
+                ));
+            }
+            if smallest
+                .as_ref()
+                .map(|value| candidate.len() < value.0.len())
+                .unwrap_or(true)
+            {
+                smallest = Some((
+                    candidate,
+                    "image/jpeg".to_string(),
+                    dimensions.0,
+                    dimensions.1,
+                ));
+            }
+        }
+    }
+
+    smallest
+        .filter(|value| value.0.len() <= CHAT_VISION_HARD_MAX_BYTES)
+        .ok_or_else(|| "Chat Vision 图片压缩后仍超过 3 MB，已停止加入模型请求".to_string())
+}
+
+fn clean_old_chat_vision_cache_files(cache_dir: &Path) {
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
+    let max_age = Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let is_old = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if is_old {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+#[tauri::command]
+async fn prepare_chat_vision_image(
+    app_handle: tauri::AppHandle,
+    source: String,
+) -> Result<ChatVisionPreparedImage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = source.trim();
+        if source.is_empty() {
+            return Err("Chat Vision 图片路径为空".to_string());
+        }
+        let (bytes, mime) = if source.starts_with("data:image/") {
+            decode_data_image(source)?
+        } else {
+            let path = local_path_from_url_like(source).unwrap_or_else(|| PathBuf::from(source));
+            if !path.is_file() {
+                return Err("Chat Vision 本地图片不存在".to_string());
+            }
+            (
+                fs::read(&path).map_err(|error| format!("读取 Chat Vision 图片失败：{error}"))?,
+                guess_mime_from_path(&path).to_string(),
+            )
+        };
+        let (prepared, mime_type, width, height) = prepare_chat_vision_image_bytes(bytes, mime)?;
+        let cache_dir = get_user_data_dir(&app_handle).join("chat-vision-cache");
+        fs::create_dir_all(&cache_dir)
+            .map_err(|error| format!("创建 Chat Vision 缓存失败：{error}"))?;
+        clean_old_chat_vision_cache_files(&cache_dir);
+        let digest = hex::encode(Sha256::digest(&prepared));
+        let extension = image_mime_extension(&mime_type);
+        let path = cache_dir.join(format!("vision-{}.{}", &digest[..24], extension));
+        if !path.is_file() {
+            fs::write(&path, &prepared)
+                .map_err(|error| format!("写入 Chat Vision 缓存失败：{error}"))?;
+        }
+        Ok(ChatVisionPreparedImage {
+            path: path.to_string_lossy().to_string(),
+            mime_type,
+            byte_length: prepared.len(),
+            width,
+            height,
+        })
+    })
+    .await
+    .map_err(|error| format!("Chat Vision 图片准备任务失败：{error}"))?
+}
+
 #[cfg(test)]
 mod ai_reference_image_preparation_tests {
     use super::{
-        normalize_ai_reference_image_bytes, should_normalize_ai_reference_image,
-        AI_REFERENCE_IMAGE_TARGET_BYTES,
+        normalize_ai_reference_image_bytes, prepare_chat_vision_image_bytes,
+        should_normalize_ai_reference_image, AI_REFERENCE_IMAGE_TARGET_BYTES,
+        CHAT_VISION_HARD_MAX_BYTES, CHAT_VISION_MAX_EDGE,
     };
 
     #[test]
@@ -7389,6 +7592,63 @@ mod ai_reference_image_preparation_tests {
 
         assert_eq!(mime, "image/jpeg");
         assert!(prepared.len() <= AI_REFERENCE_IMAGE_TARGET_BYTES);
+    }
+
+    #[test]
+    fn chat_vision_proxy_limits_large_images_without_touching_the_source_file() {
+        let mut seed = 0x5a17_2026_u32;
+        let image = screenshots::image::RgbImage::from_fn(3840, 2160, |_x, _y| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let red = (seed >> 24) as u8;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let green = (seed >> 24) as u8;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            screenshots::image::Rgb([red, green, (seed >> 24) as u8])
+        });
+        let mut source = Vec::new();
+        let encoder = screenshots::image::codecs::png::PngEncoder::new(&mut source);
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgb8,
+        )
+        .expect("encode source image");
+        assert!(source.len() > 10 * 1024 * 1024);
+
+        let (prepared, mime, width, height) =
+            prepare_chat_vision_image_bytes(source, "image/png".to_string())
+                .expect("prepare vision proxy");
+        assert_eq!(mime, "image/jpeg");
+        assert!(width.max(height) <= CHAT_VISION_MAX_EDGE);
+        assert!(prepared.len() <= CHAT_VISION_HARD_MAX_BYTES);
+    }
+
+    #[test]
+    fn chat_vision_proxy_preserves_meaningful_transparency() {
+        let image = screenshots::image::RgbaImage::from_pixel(
+            1800,
+            1200,
+            screenshots::image::Rgba([30, 90, 160, 96]),
+        );
+        let mut source = Vec::new();
+        let encoder = screenshots::image::codecs::png::PngEncoder::new(&mut source);
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgba8,
+        )
+        .expect("encode transparent source image");
+
+        let (prepared, mime, width, height) =
+            prepare_chat_vision_image_bytes(source, "image/png".to_string())
+                .expect("prepare transparent vision proxy");
+        assert_eq!(mime, "image/png");
+        assert!(width.max(height) <= CHAT_VISION_MAX_EDGE);
+        assert!(prepared.len() <= CHAT_VISION_HARD_MAX_BYTES);
     }
 }
 
@@ -18500,6 +18760,7 @@ fn main() {
             delete_r2_public_image_urls,
             create_oss_public_image_urls,
             delete_oss_public_image_urls,
+            prepare_chat_vision_image,
             resolve_ai_image_result_url,
             read_local_image_data_url,
             collect_web_images,

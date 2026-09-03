@@ -69,6 +69,39 @@ describe('inspiration Chat tool executor', () => {
     expect(generateMedia).toHaveBeenCalledWith('generate_image', { prompt: '未来主义建筑' });
   });
 
+  it('runs batch image jobs through the existing media generator one image at a time', async () => {
+    const generateMedia = vi.fn(async (_name, args: Record<string, unknown>) => ({
+      media: [{ id: String((args.referenceImages as string[])[0]), path: 'C:\\generated.png' }],
+    }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool: vi.fn(),
+      generateMedia,
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+    });
+    const result = await executor('batch_image_operation', {
+      instruction: '逐张改善构图',
+      mode: 'one_per_image',
+    }, {
+      ...context,
+      currentUserAttachments: [1, 2, 3].map(index => ({
+        id: `attachment-${index}`,
+        messageId: 'user-message',
+        type: 'image',
+        path: `C:\\source-${index}.png`,
+        createdAt: index,
+      })),
+    }) as { succeeded: number };
+    expect(result.succeeded).toBe(3);
+    expect(generateMedia).toHaveBeenCalledTimes(3);
+    expect(generateMedia.mock.calls.map(call => call[1].referenceImages)).toEqual([
+      ['C:\\source-1.png'],
+      ['C:\\source-2.png'],
+      ['C:\\source-3.png'],
+    ]);
+  });
+
   it('applies and then runs an existing workflow', async () => {
     const executeExistingTool = vi.fn(async (name: string) => (
       name === 'canvas_apply_workflow' ? { nodeId: 'workflow-node-1' } : { completed: true }

@@ -33,6 +33,13 @@ export type CanvasGroup = {
   name: string;
 };
 
+export type CanvasChatBatchSlot = {
+  batchId: string;
+  sourceIndex: number;
+  outputIndex: number;
+  status: 'pending' | 'completed' | 'error' | 'cancelled';
+};
+
 export type CanvasImageItem = {
   id: string;
   item: BufferItem;
@@ -50,6 +57,8 @@ export type CanvasImageItem = {
   ai?: CanvasAiItemData;
   /** User-created canvas group. Kept separate from expanded workflow groups. */
   canvasGroup?: CanvasGroup;
+  /** Stable slot used while a Chat batch progressively fills a canvas group. */
+  chatBatchSlot?: CanvasChatBatchSlot;
   workflowGroup?: unknown;
   /**
    * Runtime-only ordered assets for an expanded internal slot node. The

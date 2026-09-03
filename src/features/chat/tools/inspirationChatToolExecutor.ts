@@ -1,4 +1,5 @@
 import type { ChatToolExecutor } from '../model/chatTypes';
+import { executeBatchImageOperation } from './batchImageOperation';
 
 type WorkflowDescriptor = { id: string; label: string; hint?: string };
 
@@ -41,6 +42,15 @@ export const createInspirationChatToolExecutor = (input: {
   }
   if (name === 'generate_image' || name === 'edit_image' || name === 'generate_video') {
     return input.generateMedia(name, args);
+  }
+  if (name === 'batch_image_operation') {
+    return executeBatchImageOperation({
+      args,
+      attachments: context.currentUserAttachments || [],
+      signal: context.signal,
+      onProgress: context.onProgress,
+      generate: generationArgs => input.generateMedia('generate_image', generationArgs),
+    });
   }
   if (name === 'add_to_canvas') {
     const assetId = String(args.assetId || args.mediaId || '').trim();

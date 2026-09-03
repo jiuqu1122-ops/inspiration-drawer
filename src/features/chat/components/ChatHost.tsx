@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { blobToDataUrl } from '../../../utils/canvasImageData';
 import type { AgentCanvasSelectionItem } from '../../agentModel';
-import type { ChatAttachment, PendingChatAttachment } from '../model/chatTypes';
+import type { PendingChatAttachment } from '../model/chatTypes';
+import { createChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
 import {
   setCanvasChatVisibility,
   useCanvasChatVisibility,
@@ -22,6 +23,9 @@ export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   executeTool: UseChatRuntimeOptions['executeTool'];
   onNotice?: UseChatRuntimeOptions['onNotice'];
   onGeneratedMediaReady?: UseChatRuntimeOptions['onGeneratedMediaReady'];
+  onBatchStarted?: UseChatRuntimeOptions['onBatchStarted'];
+  onBatchMediaReady?: UseChatRuntimeOptions['onBatchMediaReady'];
+  onBatchCompleted?: UseChatRuntimeOptions['onBatchCompleted'];
   resolveSelectedItems?: () => AgentCanvasSelectionItem[];
 };
 
@@ -56,12 +60,6 @@ const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
   return { ...attachment, path: localPath, thumbnailPath: localPath };
 };
 
-const resolveChatAttachmentUrl = async (attachment: ChatAttachment) => {
-  const source = attachment.path.trim();
-  if (/^(?:https?:|data:)/i.test(source)) return source;
-  return invoke<string>('read_local_image_data_url', { path: source });
-};
-
 export function ChatHost({
   visible,
   model,
@@ -70,6 +68,9 @@ export function ChatHost({
   executeTool,
   onNotice,
   onGeneratedMediaReady,
+  onBatchStarted,
+  onBatchMediaReady,
+  onBatchCompleted,
   resolveSelectedItems,
   imageModel,
   imageAspectRatio,
@@ -89,8 +90,11 @@ export function ChatHost({
     executeTool,
     onNotice,
     onGeneratedMediaReady,
+    onBatchStarted,
+    onBatchMediaReady,
+    onBatchCompleted,
     prepareAttachment: prepareChatAttachment,
-    resolveAttachmentUrl: resolveChatAttachmentUrl,
+    createVisionAttachmentResolver: createChatVisionAttachmentResolver,
   });
   const [viewMounted, setViewMounted] = useState(resolvedVisible);
   const [workflowConversationId, setWorkflowConversationId] = useState('');
@@ -101,7 +105,6 @@ export function ChatHost({
       viewProps.variant !== 'canvas'
       || !workflowConversationRequest
       || workflowConversationRequest.id === handledWorkflowConversationRequestRef.current
-      || runtime.busy
     ) return;
     handledWorkflowConversationRequestRef.current = workflowConversationRequest.id;
     setWorkflowConversationId('');
@@ -113,7 +116,7 @@ export function ChatHost({
         handledWorkflowConversationRequestRef.current = '';
         onNotice?.(`创建工作流会话失败：${String(error)}`);
       });
-  }, [onNotice, runtime.busy, runtime.newConversation, viewProps.variant, workflowConversationRequest]);
+  }, [onNotice, runtime.newConversation, viewProps.variant, workflowConversationRequest]);
 
   useEffect(() => {
     if (resolvedVisible) {

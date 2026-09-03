@@ -28,10 +28,27 @@ import {
 } from '../storage/chatStorage';
 import { buildChatContext, buildSummaryRequestMessages } from '../context/chatContextBuilder';
 import { estimateChatTokens } from '../context/chatContextBudget';
-import { getChatToolDefinitions, shouldDirectGenerateImage, shouldExposeWebSearch } from '../tools/chatToolDefinitions';
+import type { ChatVisionAttachmentResolver } from '../attachments/chatVisionAttachmentResolver';
+import {
+  getChatToolDefinitions,
+  shouldDirectGenerateImage,
+  shouldExposeBatchImageOperation,
+  shouldExposeWebSearch,
+} from '../tools/chatToolDefinitions';
 import { routeChatToolCall } from '../tools/chatToolRouter';
-import { serializeChatToolResult } from '../tools/chatToolResult';
+import { compactChatToolResult, compactChatToolResultForProvider, serializeChatToolResult } from '../tools/chatToolResult';
+import { selectBatchImageAttachments } from '../tools/batchImageOperation';
 import { applyChatImageGenerationSettings } from './chatImageGenerationSettings';
+import { summarizeCompletedBatchCall } from './chatBatchCompletion';
+import { extractChatBatchImagePlan } from './chatBatchImagePlan';
+import {
+  fallbackBatchPlanDecision,
+  parseBatchPlanDecision,
+  type BatchPlanDecision,
+} from './chatBatchPlanReply';
+import { isHistoricalImageContinuation, selectChatImageAttachments } from './chatHistoricalAttachments';
+import { resolveChatReferenceArguments } from './chatReferenceArguments';
+import { normalizeVisibleChatText } from './chatVisibleText';
 import {
   createKeyedSerialTaskQueue,
   normalizeChatModelSelection,
@@ -39,6 +56,34 @@ import {
   type KeyedSerialTaskQueue,
 } from './chatModelSelection';
 import { cancelChatCompletion, requestChatCompletion, type ChatProviderResult } from './chatStream';
+
+export type ChatBatchStartedPayload = {
+  batchId: string;
+  name: string;
+  instruction: string;
+  attachmentIds: string[];
+  total: number;
+  outputCountPerImage: number;
+  aspectRatio?: string;
+};
+
+export type ChatBatchMediaReadyPayload = {
+  batchId: string;
+  media: ChatGeneratedMedia;
+  attachmentId: string;
+  sourceIndex: number;
+  outputIndex: number;
+  slotIndex: number;
+  total: number;
+};
+
+export type ChatBatchCompletedPayload = {
+  batchId: string;
+  total: number;
+  completedSlots: number;
+  failedSourceIndexes: number[];
+  cancelled: boolean;
+};
 
 export type UseChatRuntimeOptions = {
   model: string;
@@ -48,9 +93,13 @@ export type UseChatRuntimeOptions = {
   approvalMode?: 'ask' | 'auto';
   executeTool: ChatToolExecutor;
   resolveAttachmentUrl?: (attachment: ChatAttachment) => Promise<string>;
+  createVisionAttachmentResolver?: () => ChatVisionAttachmentResolver;
   prepareAttachment?: (attachment: PendingChatAttachment) => Promise<PendingChatAttachment>;
   onNotice?: (message: string) => void;
   onGeneratedMediaReady?: (media: ChatGeneratedMedia) => void | Promise<void>;
+  onBatchStarted?: (payload: ChatBatchStartedPayload) => void | Promise<void>;
+  onBatchMediaReady?: (payload: ChatBatchMediaReadyPayload) => void | Promise<void>;
+  onBatchCompleted?: (payload: ChatBatchCompletedPayload) => void | Promise<void>;
 };
 
 type PendingApprovalRun = {
@@ -65,6 +114,19 @@ type PendingApprovalRun = {
   depth: number;
 };
 
+type ActiveChatRequest = {
+  requestId: string;
+  conversationId: string;
+  messageId: string;
+  streamed: boolean;
+};
+
+type ActiveBatchRun = {
+  callId: string;
+  messageId: string;
+  controller: AbortController;
+};
+
 const PAGE_SIZE = 50;
 const MAX_TOOL_ROUNDS = 6;
 const SUMMARY_TRIGGER_TOKENS = 18_000;
@@ -73,6 +135,102 @@ const SUMMARY_KEEP_RECENT = 28;
 const LEGACY_PROVIDER_MODELS = new Set(['codex', 'openai-compatible', 'default']);
 const CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY = 'drawer_chat_web_search_enabled';
 const STREAM_RENDER_INTERVAL_MS = 64;
+
+const classifyBatchPlanReply = async (input: {
+  model: string;
+  analysisSummary: string;
+  userReply: string;
+  hasNewAttachments: boolean;
+}): Promise<BatchPlanDecision> => {
+  const requestId = createChatId('chat-batch-plan-decision');
+  try {
+    const result = await requestChatCompletion({
+      requestId,
+      model: input.model,
+      stream: false,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你负责判断用户对图片批处理执行方案的自然语言回复。',
+            'confirm：用户认可方案、表示继续、让你开始做或开始生图，即使没有使用固定口令。',
+            'revise：用户提出任何新增要求、否定项、修改意见，或带来了新的附件。',
+            'cancel：用户明确表示取消、停止或暂时不做。',
+            '不要回答用户，不要解释，只调用 decide_batch_plan_reply 一次。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            `当前方案：\n${input.analysisSummary.slice(0, 6_000)}`,
+            `用户回复：\n${input.userReply.slice(0, 2_000)}`,
+            `用户是否新增附件：${input.hasNewAttachments ? '是' : '否'}`,
+          ].join('\n\n'),
+        },
+      ],
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'decide_batch_plan_reply',
+          description: '判断用户是在确认执行、修改方案还是取消任务。',
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              action: { type: 'string', enum: ['confirm', 'revise', 'cancel'] },
+            },
+            required: ['action'],
+          },
+        },
+      }],
+      toolChoice: {
+        type: 'function',
+        function: { name: 'decide_batch_plan_reply' },
+      },
+    });
+    const toolDecision = result.toolCalls
+      .find(call => call.name === 'decide_batch_plan_reply')?.arguments;
+    return parseBatchPlanDecision(toolDecision)
+      || parseBatchPlanDecision(result.content)
+      || fallbackBatchPlanDecision(input.userReply);
+  } catch (error) {
+    console.warn('LLM 判断批处理方案回复失败，使用本地兜底:', error);
+    return fallbackBatchPlanDecision(input.userReply);
+  }
+};
+
+const createBatchGroupName = (instruction: string) => {
+  const subject = instruction
+    .replace(/\s+/g, ' ')
+    .replace(/[。！？!?].*$/, '')
+    .trim()
+    .slice(0, 18);
+  return subject ? `批量处理 ${subject}` : 'Chat 批量处理';
+};
+
+const createFallbackBatchImagePlan = (
+  imageCount: number,
+  instruction: string,
+) => ({
+  analysisSummary: [
+    `我理解这次需要对 ${imageCount} 张图片分别执行同一个任务：${normalizeVisibleChatText(instruction) || '按当前要求处理每张图片'}。`,
+    '',
+    '### 执行安排',
+    '',
+    '- 每张原图作为独立输入并发处理，不把多张图片合并成一张。',
+    '- 对每张图执行相同目标，同时根据各自的主体、构图和已有细节自适应调整具体参数。',
+    '',
+    '### 改动边界',
+    '',
+    '- 只修改用户本次明确提出的内容；没有要求排版或加字时，不擅自增加标题、文案、标签、页码或装饰元素。',
+    '- 保留未要求修改的主体身份、造型、关键细节和画面信息，避免不同图片之间串图。',
+    '',
+    '### 结果组织',
+    '',
+    '- 每张图片独立处理，完成后按原图顺序排列并自动编组；模型、比例和清晰度直接使用输入框里的“图片设置”。',
+  ].join('\n'),
+  instruction: normalizeVisibleChatText(instruction) || '按用户当前要求分别处理每张图片。',
+});
 
 const normalizeUsage = (value?: Record<string, unknown>) => {
   if (!value) return undefined;
@@ -112,15 +270,6 @@ const latestGeneratedMedia = (messages: ChatMessage[]) => {
     }
   }
   return undefined;
-};
-
-const latestUserImageSources = (messages: ChatMessage[]) => {
-  const latestUser = [...messages].reverse().find(message => message.role === 'user');
-  if (!latestUser) return [];
-  return latestUser.attachments
-    .filter(attachment => attachment.type === 'image' && attachment.path.trim())
-    .map(attachment => attachment.path.trim())
-    .slice(0, 9);
 };
 
 const providerToolCallQueries = (
@@ -241,31 +390,71 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
 
   const conversationsRef = useRef(conversations);
   const messagesRef = useRef(messages);
+  const messageCacheRef = useRef(new Map<string, ChatMessage>());
   const summaryRef = useRef(summary);
-  const busyRef = useRef(busy);
   const activeConversationIdRef = useRef(activeConversationId);
-  const activeRequestRef = useRef<{ requestId: string; conversationId: string; messageId: string; streamed: boolean } | null>(null);
-  const pendingApprovalRef = useRef<PendingApprovalRun | null>(null);
+  const busyConversationIdsRef = useRef(new Set<string>());
+  const activeRequestsRef = useRef(new Map<string, ActiveChatRequest>());
+  const activeBatchRunsRef = useRef(new Map<string, ActiveBatchRun>());
+  const pendingApprovalsRef = useRef(new Map<string, PendingApprovalRun>());
   const persistTimersRef = useRef(new Map<string, number>());
   const streamBuffersRef = useRef(new Map<string, string>());
   const streamFlushTimersRef = useRef(new Map<string, number>());
   const conversationPersistQueueRef = useRef<KeyedSerialTaskQueue | null>(null);
   const modelUpdateVersionsRef = useRef(new Map<string, number>());
+  const conversationLoadVersionRef = useRef(0);
   if (!conversationPersistQueueRef.current) {
     conversationPersistQueueRef.current = createKeyedSerialTaskQueue();
   }
 
   useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => {
+    messagesRef.current = messages;
+    messages.forEach(message => messageCacheRef.current.set(message.id, message));
+  }, [messages]);
   useEffect(() => { summaryRef.current = summary; }, [summary]);
-  useEffect(() => { activeConversationIdRef.current = activeConversationId; }, [activeConversationId]);
   useEffect(() => {
     localStorage.setItem(CHAT_WEB_SEARCH_ENABLED_STORAGE_KEY, String(webSearchEnabled));
   }, [webSearchEnabled]);
 
-  const updateBusy = useCallback((value: boolean) => {
-    busyRef.current = value;
-    setBusy(value);
+  const syncActiveConversationActivity = useCallback((conversationId = activeConversationIdRef.current) => {
+    const pendingApproval = pendingApprovalsRef.current.get(conversationId);
+    const waitsForBatchPlanReply = pendingApproval?.calls.some(call => (
+      call.toolName === 'batch_image_operation' && call.status === 'awaiting-approval'
+    )) === true;
+    const locked = Boolean(conversationId) && (
+      busyConversationIdsRef.current.has(conversationId)
+      || (Boolean(pendingApproval) && !waitsForBatchPlanReply)
+    );
+    setBusy(locked);
+    setStoppable(Boolean(
+      activeRequestsRef.current.has(conversationId)
+      || activeBatchRunsRef.current.has(conversationId)
+    ));
+  }, []);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+    syncActiveConversationActivity(activeConversationId);
+  }, [activeConversationId, syncActiveConversationActivity]);
+
+  const updateConversationBusy = useCallback((conversationId: string, value: boolean) => {
+    if (!conversationId) return;
+    if (value) busyConversationIdsRef.current.add(conversationId);
+    else busyConversationIdsRef.current.delete(conversationId);
+    if (activeConversationIdRef.current === conversationId) {
+      syncActiveConversationActivity(conversationId);
+    }
+  }, [syncActiveConversationActivity]);
+
+  const getConversationMessages = useCallback((conversationId: string) => (
+    [...messageCacheRef.current.values()]
+      .filter(message => message.conversationId === conversationId)
+      .sort((left, right) => left.createdAt - right.createdAt)
+  ), []);
+
+  const cacheMessages = useCallback((values: ChatMessage[]) => {
+    values.forEach(message => messageCacheRef.current.set(message.id, message));
   }, []);
 
   const enqueueConversationPersist = useCallback((conversation: ChatConversation) => (
@@ -313,7 +502,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const conversation = conversationsRef.current.find(
       item => item.id === activeConversationIdRef.current,
     );
-    if (!conversation || busyRef.current || pendingApprovalRef.current) {
+    if (!conversation
+      || busyConversationIdsRef.current.has(conversation.id)
+      || pendingApprovalsRef.current.has(conversation.id)) {
       return Promise.resolve(false);
     }
     return applyConversationModel(conversation, model);
@@ -331,15 +522,17 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   }, []);
 
   const patchMessage = useCallback((messageId: string, updater: (message: ChatMessage) => ChatMessage, immediate = false) => {
+    const currentMessage = messageCacheRef.current.get(messageId)
+      || messagesRef.current.find(message => message.id === messageId);
+    if (!currentMessage) return;
+    const patched = updater(currentMessage);
+    messageCacheRef.current.set(messageId, patched);
+    persistMessageSoon(patched, immediate);
+    if (patched.conversationId !== activeConversationIdRef.current) return;
     setMessages(current => {
-      let patched: ChatMessage | undefined;
-      const next = current.map(message => {
-        if (message.id !== messageId) return message;
-        patched = updater(message);
-        return patched;
-      });
+      if (!current.some(message => message.id === messageId)) return current;
+      const next = current.map(message => message.id === messageId ? patched : message);
       messagesRef.current = next;
-      if (patched) persistMessageSoon(patched, immediate);
       return next;
     });
   }, [persistMessageSoon]);
@@ -374,30 +567,40 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
 
   const loadConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
+    const loadVersion = conversationLoadVersionRef.current + 1;
+    conversationLoadVersionRef.current = loadVersion;
     setLoading(true);
     try {
       const [page, nextSummary] = await Promise.all([
         listChatMessages(conversationId, { limit: PAGE_SIZE }),
         getChatSummary(conversationId),
       ]);
+      if (conversationLoadVersionRef.current !== loadVersion) return;
+      const resolvedMessages = page.messages.map(message => (
+        messageCacheRef.current.get(message.id) || message
+      ));
+      cacheMessages(resolvedMessages);
       activeConversationIdRef.current = conversationId;
       setActiveConversationId(conversationId);
       writeActiveChatConversationId(conversationId);
-      messagesRef.current = page.messages;
-      setMessages(page.messages);
+      messagesRef.current = resolvedMessages;
+      setMessages(resolvedMessages);
       setHasMoreMessages(page.hasMore);
       setNextBeforeCreatedAt(page.nextBeforeCreatedAt || undefined);
       summaryRef.current = nextSummary;
       setSummary(nextSummary);
+      syncActiveConversationActivity(conversationId);
     } finally {
-      setLoading(false);
+      if (conversationLoadVersionRef.current === loadVersion) setLoading(false);
     }
-  }, []);
+  }, [cacheMessages, syncActiveConversationActivity]);
 
   const createConversation = useCallback(async (
     model = optionsRef.current.model,
     title = '新对话',
   ) => {
+    conversationLoadVersionRef.current += 1;
+    setLoading(false);
     const now = Date.now();
     const conversation: ChatConversation = {
       id: createChatId('chat-conversation'),
@@ -422,8 +625,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     setSummary(null);
     setHasMoreMessages(false);
     setNextBeforeCreatedAt(undefined);
+    syncActiveConversationActivity(conversation.id);
     return conversation;
-  }, []);
+  }, [syncActiveConversationActivity]);
 
   useEffect(() => {
     let disposed = false;
@@ -459,9 +663,10 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
 
   useEffect(() => {
     const unlisten = listen<Record<string, unknown>>('agent-openai-stream', event => {
-      const active = activeRequestRef.current;
       const requestId = String(event.payload?.requestId || '');
-      if (!active || requestId !== active.requestId || event.payload?.kind !== 'delta') return;
+      const active = [...activeRequestsRef.current.values()]
+        .find(request => request.requestId === requestId);
+      if (!active || event.payload?.kind !== 'delta') return;
       const delta = String(event.payload?.delta || '');
       if (!delta) return;
       active.streamed = true;
@@ -478,13 +683,16 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   }, []);
 
   const loadOlderMessages = useCallback(async () => {
-    if (!activeConversationIdRef.current || !hasMoreMessages || !nextBeforeCreatedAt || loadingOlder) return;
+    const conversationId = activeConversationIdRef.current;
+    if (!conversationId || !hasMoreMessages || !nextBeforeCreatedAt || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const page = await listChatMessages(activeConversationIdRef.current, {
+      const page = await listChatMessages(conversationId, {
         beforeCreatedAt: nextBeforeCreatedAt,
         limit: PAGE_SIZE,
       });
+      cacheMessages(page.messages);
+      if (activeConversationIdRef.current !== conversationId) return;
       setMessages(current => {
         const known = new Set(current.map(message => message.id));
         const next = [...page.messages.filter(message => !known.has(message.id)), ...current];
@@ -496,16 +704,20 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     } finally {
       setLoadingOlder(false);
     }
-  }, [hasMoreMessages, loadingOlder, nextBeforeCreatedAt]);
+  }, [cacheMessages, hasMoreMessages, loadingOlder, nextBeforeCreatedAt]);
 
   const maybeSummarize = useCallback(async (conversationId: string) => {
-    const current = messagesRef.current.filter(message => message.status === 'completed');
+    const current = getConversationMessages(conversationId)
+      .filter(message => message.status === 'completed');
     if (current.length <= SUMMARY_KEEP_RECENT) return;
     const older = current.slice(0, -SUMMARY_KEEP_RECENT);
     const through = older[older.length - 1];
-    if (!through || summaryRef.current?.throughMessageId === through.id) return;
-    const previousBoundary = summaryRef.current?.throughMessageId
-      ? older.findIndex(message => message.id === summaryRef.current?.throughMessageId)
+    const currentSummary = summaryRef.current?.conversationId === conversationId
+      ? summaryRef.current
+      : await getChatSummary(conversationId);
+    if (!through || currentSummary?.throughMessageId === through.id) return;
+    const previousBoundary = currentSummary?.throughMessageId
+      ? older.findIndex(message => message.id === currentSummary.throughMessageId)
       : -1;
     const unsummarized = previousBoundary >= 0 ? older.slice(previousBoundary + 1) : older;
     if (unsummarized.length === 0) return;
@@ -515,7 +727,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const requestId = createChatId('chat-summary');
       const result = await requestChatCompletion({
         requestId,
-        messages: buildSummaryRequestMessages(summaryRef.current, unsummarized),
+        messages: buildSummaryRequestMessages(currentSummary, unsummarized),
         tools: [],
         model: conversationsRef.current.find(item => item.id === conversationId)?.model || optionsRef.current.model,
         stream: false,
@@ -528,12 +740,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         updatedAt: Date.now(),
       };
       await upsertChatSummary(next);
-      summaryRef.current = next;
-      setSummary(next);
+      if (activeConversationIdRef.current === conversationId) {
+        summaryRef.current = next;
+        setSummary(next);
+      }
     } catch (error) {
       console.warn('Chat 摘要生成失败，保留完整最近消息:', error);
     }
-  }, []);
+  }, [getConversationMessages]);
 
   const runModelLoopRef = useRef<(
     conversationId: string,
@@ -549,29 +763,148 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const toolMessages = [...run.toolMessages];
     for (; index < run.calls.length; index += 1) {
       const call = run.calls[index];
+      const batchController = call.toolName === 'batch_image_operation' ? new AbortController() : null;
+      const notifiedMediaIds = new Set<string>();
+      let batchAttachments: ChatAttachment[] = [];
+      let batchOutputCount = 1;
+      let batchStarted = false;
+      let progressQueue = Promise.resolve();
+      const notifyGeneratedMedia = async () => {
+        if (call.toolName === 'batch_image_operation' && batchAttachments.length > 0) {
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+          } catch (_) {
+            return;
+          }
+          const attachmentIndexById = new Map(batchAttachments.map((attachment, sourceIndex) => (
+            [attachment.id, sourceIndex] as const
+          )));
+          const results = Array.isArray(parsed.results) ? parsed.results : [];
+          for (const value of results) {
+            if (!value || typeof value !== 'object') continue;
+            const result = value as Record<string, unknown>;
+            const attachmentId = String(result.attachmentId || '').trim();
+            const sourceIndex = attachmentIndexById.get(attachmentId);
+            if (sourceIndex === undefined || !Array.isArray(result.media)) continue;
+            const generatedMedia = getGeneratedMediaFromToolCall({
+              ...call,
+              resultJson: serializeChatToolResult({ media: result.media }),
+            }).filter(media => media.type === 'image');
+            for (let outputIndex = 0; outputIndex < generatedMedia.length; outputIndex += 1) {
+              const media = generatedMedia[outputIndex];
+              const notificationId = `${attachmentId}:${media.id}`;
+              if (notifiedMediaIds.has(notificationId)) continue;
+              notifiedMediaIds.add(notificationId);
+              try {
+                if (optionsRef.current.onBatchMediaReady) {
+                  await optionsRef.current.onBatchMediaReady({
+                    batchId: call.id,
+                    media,
+                    attachmentId,
+                    sourceIndex,
+                    outputIndex,
+                    slotIndex: sourceIndex * batchOutputCount + outputIndex,
+                    total: batchAttachments.length * batchOutputCount,
+                  });
+                } else {
+                  await optionsRef.current.onGeneratedMediaReady?.(media);
+                }
+              } catch (error) {
+                console.warn('Chat 批量生成结果加入画布失败:', error);
+              }
+            }
+          }
+          return;
+        }
+        const generatedMedia = getGeneratedMediaFromToolCall(call).filter(media => media.type === 'image');
+        for (const media of generatedMedia) {
+          if (notifiedMediaIds.has(media.id)) continue;
+          notifiedMediaIds.add(media.id);
+          try {
+            await optionsRef.current.onGeneratedMediaReady?.(media);
+          } catch (error) {
+            console.warn('Chat 生成结果自动加入画布失败:', error);
+          }
+        }
+      };
+      const notifyBatchCompleted = async (cancelled: boolean) => {
+        if (call.toolName !== 'batch_image_operation' || !batchStarted) return;
+        let results: Array<Record<string, unknown>> = [];
+        try {
+          const parsed = JSON.parse(call.resultJson || '{}') as Record<string, unknown>;
+          results = (Array.isArray(parsed.results) ? parsed.results : [])
+            .filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object'));
+        } catch (_) {
+          results = [];
+        }
+        const attachmentIndexById = new Map(batchAttachments.map((attachment, sourceIndex) => (
+          [attachment.id, sourceIndex] as const
+        )));
+        const failedSourceIndexes = results.flatMap(result => {
+          if (result.status !== 'error' && result.status !== 'cancelled') return [];
+          const sourceIndex = attachmentIndexById.get(String(result.attachmentId || '').trim());
+          return sourceIndex === undefined ? [] : [sourceIndex];
+        });
+        const completedSlots = results.reduce((total, result) => (
+          total + (Array.isArray(result.media) ? result.media.length : 0)
+        ), 0);
+        try {
+          await optionsRef.current.onBatchCompleted?.({
+            batchId: call.id,
+            total: batchAttachments.length * batchOutputCount,
+            completedSlots,
+            failedSourceIndexes,
+            cancelled,
+          });
+        } catch (error) {
+          console.warn('Chat 批量画布编组收尾失败:', error);
+        }
+      };
       let args: Record<string, unknown>;
       try {
         args = parseArguments(call.argumentsJson);
-        const generated = latestGeneratedMedia(messagesRef.current);
-        const currentImageSources = latestUserImageSources(messagesRef.current);
-        if ((call.toolName === 'generate_image' || call.toolName === 'edit_image')
-          && currentImageSources.length > 0) {
-          args.referenceImages = currentImageSources;
-        }
-        if (call.toolName === 'edit_image' && generated) {
-          if (!args.sourceImageId) args.sourceImageId = generated.id;
-          if (!Array.isArray(args.referenceImages) || args.referenceImages.length === 0) {
-            args.referenceImages = [generated.path || generated.url].filter(Boolean);
-          }
-        }
+        const conversationMessages = getConversationMessages(run.conversationId);
+        const generated = latestGeneratedMedia(conversationMessages);
+        const currentImageAttachments = selectChatImageAttachments(
+          conversationMessages,
+          run.userText,
+        ).attachments;
+        args = resolveChatReferenceArguments({
+          toolName: call.toolName,
+          args,
+          currentImageAttachments,
+          latestGenerated: generated,
+        });
         if (call.toolName === 'add_to_canvas' && generated) {
           if (!args.mediaId) args.mediaId = generated.id;
           if (!args.assetId && generated.assetId) args.assetId = generated.assetId;
         }
-        if (call.toolName === 'generate_image' || call.toolName === 'edit_image') {
+        if (call.toolName === 'generate_image' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
           args = applyChatImageGenerationSettings(args, optionsRef.current);
         }
         call.argumentsJson = JSON.stringify(args);
+        if (call.toolName === 'batch_image_operation') {
+          batchAttachments = selectBatchImageAttachments(
+            currentImageAttachments,
+            Array.isArray(args.attachmentIds) ? args.attachmentIds.map(String) : undefined,
+          );
+          batchOutputCount = Math.min(4, Math.max(1, Math.round(Number(args.outputCountPerImage) || 1)));
+          batchStarted = true;
+          try {
+            await optionsRef.current.onBatchStarted?.({
+              batchId: call.id,
+              name: createBatchGroupName(String(args.instruction || run.userText)),
+              instruction: String(args.instruction || run.userText).trim(),
+              attachmentIds: batchAttachments.map(attachment => attachment.id),
+              total: batchAttachments.length * batchOutputCount,
+              outputCountPerImage: batchOutputCount,
+              aspectRatio: String(args.aspectRatio || '').trim() || undefined,
+            });
+          } catch (error) {
+            console.warn('Chat 批量画布占位编组创建失败:', error);
+          }
+        }
         const approved = approvedCallId === call.id;
         const routed = await routeChatToolCall({
           name: call.toolName,
@@ -580,13 +913,34 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             userText: run.userText,
             conversationId: run.conversationId,
             messageId: run.assistantMessageId,
-            recentMessages: messagesRef.current,
+            recentMessages: conversationMessages,
+            currentUserAttachments: currentImageAttachments,
+            signal: batchController?.signal,
+            onProgress: value => {
+              progressQueue = progressQueue.then(async () => {
+                call.resultJson = serializeChatToolResult(compactChatToolResult(call.toolName, value));
+                await upsertChatToolCall(call);
+                patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }));
+                await notifyGeneratedMedia();
+              });
+              return progressQueue;
+            },
           },
           executor: optionsRef.current.executeTool,
           approvalMode: optionsRef.current.approvalMode,
           approved,
           onExecuting: async () => {
             call.status = 'running';
+            if (batchController) {
+              activeBatchRunsRef.current.set(run.conversationId, {
+                callId: call.id,
+                messageId: run.assistantMessageId,
+                controller: batchController,
+              });
+              if (activeConversationIdRef.current === run.conversationId) {
+                syncActiveConversationActivity(run.conversationId);
+              }
+            }
             await upsertChatToolCall(call);
             patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }));
           },
@@ -595,37 +949,75 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           call.status = 'awaiting-approval';
           await upsertChatToolCall(call);
           patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }), true);
-          pendingApprovalRef.current = { ...run, calls: [...run.calls], index, toolMessages };
-          updateBusy(false);
+          pendingApprovalsRef.current.set(run.conversationId, {
+            ...run,
+            calls: [...run.calls],
+            index,
+            toolMessages,
+          });
+          updateConversationBusy(run.conversationId, false);
           return;
         }
+        await progressQueue;
         const resultJson = serializeChatToolResult(routed.result);
         call.resultJson = resultJson;
-        call.status = 'completed';
+        const resultRecord = routed.result && typeof routed.result === 'object'
+          ? routed.result as Record<string, unknown>
+          : {};
+        call.status = resultRecord.cancelled === true ? 'cancelled' : 'completed';
         call.completedAt = Date.now();
         await upsertChatToolCall(call);
-        toolMessages.push({ role: 'tool', tool_call_id: call.id, content: resultJson });
-        if (call.toolName === 'generate_image' || call.toolName === 'edit_image') {
-          const generatedMedia = getGeneratedMediaFromToolCall(call)
-            .filter(media => media.type === 'image');
-          for (const media of generatedMedia) {
-            try {
-              await optionsRef.current.onGeneratedMediaReady?.(media);
-            } catch (error) {
-              console.warn('Chat 生成结果自动加入画布失败:', error);
-            }
-          }
+        toolMessages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: serializeChatToolResult(compactChatToolResultForProvider(call.toolName, routed.result)),
+        });
+        if (call.toolName === 'generate_image' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
+          await notifyGeneratedMedia();
         }
+        await notifyBatchCompleted(call.status === 'cancelled');
       } catch (error) {
-        call.status = 'error';
-        call.resultJson = serializeChatToolResult({ error: String(error) });
+        call.status = batchController?.signal.aborted ? 'cancelled' : 'error';
+        call.resultJson = serializeChatToolResult(batchController?.signal.aborted
+          ? { cancelled: true, error: '批量图片任务已停止' }
+          : { error: String(error) });
         call.completedAt = Date.now();
         await upsertChatToolCall(call).catch(() => {});
         toolMessages.push({ role: 'tool', tool_call_id: call.id, content: call.resultJson });
+        await notifyBatchCompleted(call.status === 'cancelled');
+      }
+      if (activeBatchRunsRef.current.get(run.conversationId)?.callId === call.id) {
+        activeBatchRunsRef.current.delete(run.conversationId);
+        if (activeConversationIdRef.current === run.conversationId) {
+          syncActiveConversationActivity(run.conversationId);
+        }
       }
       patchMessage(run.assistantMessageId, message => ({ ...message, toolCalls: [...run.calls] }), true);
     }
-    pendingApprovalRef.current = null;
+    pendingApprovalsRef.current.delete(run.conversationId);
+    if (run.calls.some(call => call.status === 'cancelled')) {
+      patchMessage(run.assistantMessageId, message => ({
+        ...message,
+        content: message.content.trim() || '已停止批量处理，已完成的图片结果已保留。',
+        status: 'cancelled',
+      }), true);
+      updateConversationBusy(run.conversationId, false);
+      return;
+    }
+    const completedBatchCall = run.calls.find(call => call.toolName === 'batch_image_operation');
+    if (completedBatchCall) {
+      const summary = summarizeCompletedBatchCall(completedBatchCall);
+      patchMessage(run.assistantMessageId, message => ({
+        ...message,
+        content: [normalizeVisibleChatText(message.content), summary.content]
+          .filter(Boolean)
+          .join('\n\n'),
+        status: summary.status,
+      }), true);
+      updateConversationBusy(run.conversationId, false);
+      void maybeSummarize(run.conversationId);
+      return;
+    }
     await runModelLoopRef.current(
       run.conversationId,
       run.assistantMessageId,
@@ -634,7 +1026,13 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       [...run.providerMessages, ...toolMessages],
       run.depth + 1,
     );
-  }, [patchMessage, updateBusy]);
+  }, [
+    getConversationMessages,
+    maybeSummarize,
+    patchMessage,
+    syncActiveConversationActivity,
+    updateConversationBusy,
+  ]);
 
   const runModelLoop = useCallback(async (
     conversationId: string,
@@ -646,16 +1044,63 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   ) => {
     if (depth >= MAX_TOOL_ROUNDS) throw new Error('连续工具调用过多，已停止');
     const requestId = createChatId('chat-request');
-    const hasRecentMedia = Boolean(latestGeneratedMedia(messagesRef.current));
-    const previousWebSearchQueries = new Set(providerToolCallQueries(providerMessages, 'web_search'));
-    const previousFileCreateCount = providerToolCallCount(providerMessages, 'create_file');
+    const conversationMessages = getConversationMessages(conversationId);
+    const imageSelection = selectChatImageAttachments(conversationMessages, userText);
+    const hasRecentMedia = Boolean(latestGeneratedMedia(conversationMessages));
+    const currentImageAttachmentCount = imageSelection.attachments.length;
+    const toolIntentText = imageSelection.toolIntentText;
+    const batchImageOperationRequested = shouldExposeBatchImageOperation(
+      toolIntentText,
+      currentImageAttachmentCount,
+    );
+    // Tool calls in older conversation history must not block a new user turn.
+    const previousWebSearchQueries = new Set(
+      depth === 0 ? [] : providerToolCallQueries(providerMessages, 'web_search'),
+    );
+    const previousFileCreateCount = depth === 0
+      ? 0
+      : providerToolCallCount(providerMessages, 'create_file');
+    const previousBatchImageOperationCount = depth === 0
+      ? 0
+      : providerToolCallCount(providerMessages, 'batch_image_operation');
     const webSearchCount = previousWebSearchQueries.size;
     const webSearchRequested = webSearchEnabled || shouldExposeWebSearch(userText);
     const webSearchAvailable = webSearchRequested && webSearchCount < 2;
+    const batchImageOperationAvailable = batchImageOperationRequested
+      && previousBatchImageOperationCount === 0;
     const tools = previousFileCreateCount > 0
       ? []
-      : getChatToolDefinitions(userText, hasRecentMedia, webSearchAvailable, webSearchCount >= 2);
+      : getChatToolDefinitions(
+        toolIntentText,
+        hasRecentMedia,
+        webSearchAvailable,
+        webSearchCount >= 2,
+        currentImageAttachmentCount,
+      ).filter(tool => (
+        previousBatchImageOperationCount === 0
+        || tool.function.name !== 'batch_image_operation'
+      ));
     const requestInstructions: Array<Record<string, unknown>> = [];
+    if (batchImageOperationAvailable) {
+      requestInstructions.push({
+        role: 'system',
+        content: [
+          `当前对话可使用 batch_image_operation 处理这 ${currentImageAttachmentCount} 张图片。`,
+          '你首先仍是正常的 Chat 助手：结合上下文和图片理解用户真正想做什么，自主判断此刻是继续讨论，还是已经适合提出可执行方案。不要因为检测到多张图片就机械调用工具。',
+          '只有当用户确实希望对多张图片分别执行同一项图像任务时，才调用一次 batch_image_operation；任务可能是排版、换背景、移除或增加元素、修复增强、风格转换、改色、扩图或其他编辑，不要预设为排版。',
+          '如果用户要把多张图片合并为共同参考并只生成一组新结果，应选择普通 generate_image 或 edit_image；只有每张图需要相互隔离、各自输出时才选择 batch_image_operation。由你根据对话语义判断，不依赖固定口令。',
+          `该调用只会把方案展示给用户并进入对话式确认，此时不会立即执行。调用时必须逐张查看图片并填写全部方案字段，同时给出恰好 ${currentImageAttachmentCount} 条 perImageInstructions；所有内容都要根据用户实际目标动态制定。`,
+          '如果是排版任务，说明版式、图文内容和视觉系统；如果是换背景或改色，说明目标背景/颜色、光影适配和边缘处理；如果是修图、移除元素或增强，说明具体区域、保留内容和质量标准；其他任务按其真实需求给出对应步骤。不要写与任务无关的排版术语。',
+          '不要分析、推荐或规划生图模型、宽高比、分辨率、清晰度等图片设置，这些默认由输入框中的“图片设置”提供。只有用户在对话里明确指定了不同设置时，才把对应值写入 model、aspectRatio 或 resolution 参数以覆盖当前设置；不要把这些参数写进展示方案正文。',
+          '禁止只复述用户原话，禁止输出“处理对象、执行内容、输出方式”式泛化摘要，禁止把多张原图合并为一张。',
+        ].join('\n'),
+      });
+    } else if (batchImageOperationRequested) {
+      requestInstructions.push({
+        role: 'system',
+        content: '本轮批量图片工具已经执行过。禁止再次调用图片处理工具；请以“**生成结果**”开头，根据已有工具结果简洁汇总完成数量和失败情况。',
+      });
+    }
     if (webSearchRequested) {
       const remainingSearches = Math.max(0, 2 - webSearchCount);
       requestInstructions.push({
@@ -683,8 +1128,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     const requestMessages = requestInstructions.length > 0
       ? [...requestInstructions, ...normalizedProviderMessages]
       : normalizedProviderMessages;
-    activeRequestRef.current = { requestId, conversationId, messageId: assistantMessageId, streamed: false };
-    setStoppable(true);
+    activeRequestsRef.current.set(conversationId, {
+      requestId,
+      conversationId,
+      messageId: assistantMessageId,
+      streamed: false,
+    });
+    if (activeConversationIdRef.current === conversationId) {
+      syncActiveConversationActivity(conversationId);
+    }
     let result: ChatProviderResult;
     try {
       result = await requestChatCompletion({
@@ -695,15 +1147,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         stream: true,
       });
     } catch (error) {
-      const active = activeRequestRef.current;
-      if (webSearchCount === 0 || active?.streamed) throw error;
+      const active = activeRequestsRef.current.get(conversationId);
+      if (!active || active.requestId !== requestId || webSearchCount === 0 || active.streamed) throw error;
       const fallbackRequestId = createChatId('chat-search-synthesis');
-      activeRequestRef.current = {
+      activeRequestsRef.current.set(conversationId, {
         requestId: fallbackRequestId,
         conversationId,
         messageId: assistantMessageId,
         streamed: false,
-      };
+      });
       const fallbackMessages = [
         ...requestInstructions,
         ...flattenWebSearchContext(providerMessages, 4_000),
@@ -720,21 +1172,32 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         stream: true,
       });
     }
-    const active = activeRequestRef.current;
-    activeRequestRef.current = null;
-    setStoppable(false);
+    const active = activeRequestsRef.current.get(conversationId);
+    if (!active) throw new Error('Chat 请求已取消');
+    activeRequestsRef.current.delete(conversationId);
+    if (activeConversationIdRef.current === conversationId) {
+      syncActiveConversationActivity(conversationId);
+    }
     flushStreamDelta(assistantMessageId);
-    setUsage(normalizeUsage(result.usage));
-    if (!active?.streamed && result.content) {
+    if (activeConversationIdRef.current === conversationId) {
+      setUsage(normalizeUsage(result.usage));
+    }
+    if (!active.streamed && result.content) {
       patchMessage(assistantMessageId, message => ({ ...message, content: `${message.content}${result.content}` }));
     }
     const acceptedWebSearchQueries = new Set(previousWebSearchQueries);
     let acceptedWebSearchInResponse = false;
     let acceptedFileCreateInResponse = false;
+    let acceptedBatchImageOperationInResponse = previousBatchImageOperationCount > 0;
     const toolCalls = (result.toolCalls || []).filter(call => {
       if (call.name === 'create_file') {
         if (previousFileCreateCount > 0 || acceptedFileCreateInResponse) return false;
         acceptedFileCreateInResponse = true;
+        return true;
+      }
+      if (call.name === 'batch_image_operation') {
+        if (acceptedBatchImageOperationInResponse) return false;
+        acceptedBatchImageOperationInResponse = true;
         return true;
       }
       if (call.name !== 'web_search') return true;
@@ -754,12 +1217,17 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       acceptedWebSearchQueries.add(query);
       return true;
     });
-    if (depth === 0 && toolCalls.length === 0 && shouldDirectGenerateImage(userText)) {
+    if (
+      depth === 0
+      && toolCalls.length === 0
+      && !batchImageOperationRequested
+      && shouldDirectGenerateImage(toolIntentText)
+    ) {
       const fallbackCall: ChatToolCall = {
         id: createChatId('chat-tool'),
         messageId: assistantMessageId,
         toolName: 'generate_image',
-        argumentsJson: JSON.stringify(applyChatImageGenerationSettings({ prompt: userText }, optionsRef.current)),
+        argumentsJson: JSON.stringify(applyChatImageGenerationSettings({ prompt: toolIntentText }, optionsRef.current)),
         status: 'pending',
         createdAt: Date.now(),
       };
@@ -793,7 +1261,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         content: message.content.trim() || '已完成。',
         status: 'completed',
       }), true);
-      updateBusy(false);
+      updateConversationBusy(conversationId, false);
       void maybeSummarize(conversationId);
       return;
     }
@@ -805,6 +1273,65 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       status: 'pending',
       createdAt: Date.now(),
     }));
+    const proposedBatchCall = calls.find(call => call.toolName === 'batch_image_operation');
+    if (proposedBatchCall) {
+      const batchPlan = extractChatBatchImagePlan(
+        { ...result, toolCalls },
+        createFallbackBatchImagePlan(currentImageAttachmentCount, toolIntentText),
+      );
+      let proposedArguments: Record<string, unknown> = {};
+      try {
+        proposedArguments = parseArguments(proposedBatchCall.argumentsJson);
+      } catch (error) {
+        console.warn('批量图片方案参数无效，使用可见兜底方案:', error);
+      }
+      proposedBatchCall.argumentsJson = JSON.stringify({
+        ...proposedArguments,
+        analysisSummary: batchPlan.analysisSummary,
+        instruction: batchPlan.instruction,
+        mode: 'one_per_image',
+        outputCountPerImage: Number(proposedArguments.outputCountPerImage) || 1,
+      });
+      proposedBatchCall.status = 'awaiting-approval';
+      await upsertChatToolCall(proposedBatchCall);
+      const conversationalLead = normalizeVisibleChatText(result.content);
+      const analysisMessageContent = [
+        conversationalLead,
+        batchPlan.analysisSummary,
+        '这是我准备执行的方案。你可以直接告诉我哪里要改；如果没问题，也可以用你习惯的说法让我继续。',
+      ].filter(Boolean).join('\n\n');
+      patchMessage(assistantMessageId, message => ({
+        ...message,
+        content: analysisMessageContent,
+        status: 'completed',
+        toolCalls: [proposedBatchCall],
+      }), true);
+      const assistantToolMessage = {
+        role: 'assistant',
+        content: conversationalLead || batchPlan.analysisSummary,
+        tool_calls: [{
+          id: proposedBatchCall.id,
+          type: 'function',
+          function: {
+            name: proposedBatchCall.toolName,
+            arguments: proposedBatchCall.argumentsJson,
+          },
+        }],
+      };
+      pendingApprovalsRef.current.set(conversationId, {
+        conversationId,
+        assistantMessageId,
+        userText,
+        requestModel,
+        providerMessages: [...providerMessages, assistantToolMessage],
+        calls: [proposedBatchCall],
+        index: 0,
+        toolMessages: [],
+        depth,
+      });
+      updateConversationBusy(conversationId, false);
+      return;
+    }
     await Promise.all(calls.map(call => upsertChatToolCall(call)));
     patchMessage(assistantMessageId, message => ({ ...message, toolCalls: calls }), true);
     const assistantToolMessage = {
@@ -827,17 +1354,173 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       toolMessages: [],
       depth,
     });
-  }, [continueToolCalls, flushStreamDelta, maybeSummarize, patchMessage, updateBusy, webSearchEnabled]);
+  }, [
+    continueToolCalls,
+    flushStreamDelta,
+    getConversationMessages,
+    maybeSummarize,
+    patchMessage,
+    syncActiveConversationActivity,
+    updateConversationBusy,
+    webSearchEnabled,
+  ]);
   runModelLoopRef.current = runModelLoop;
 
   const sendMessage = useCallback(async (
     content: string,
     pendingAttachments: PendingChatAttachment[] = [],
     selectedModel?: string,
+    onAccepted?: () => void,
   ) => {
     const text = content.trim();
-    if ((!text && pendingAttachments.length === 0) || busyRef.current || pendingApprovalRef.current) return false;
+    if (!text && pendingAttachments.length === 0) return false;
     let conversation = conversationsRef.current.find(item => item.id === activeConversationIdRef.current);
+    const pendingPlan = conversation
+      ? pendingApprovalsRef.current.get(conversation.id)
+      : undefined;
+    const pendingBatchCall = pendingPlan?.calls.find(call => (
+      call.toolName === 'batch_image_operation' && call.status === 'awaiting-approval'
+    ));
+    if (conversation && pendingPlan && pendingBatchCall) {
+      const planArguments = parseArguments(pendingBatchCall.argumentsJson);
+      const analysisSummary = normalizeVisibleChatText(planArguments.analysisSummary);
+      updateConversationBusy(conversation.id, true);
+      const planDecision = await classifyBatchPlanReply({
+        model: pendingPlan.requestModel,
+        analysisSummary,
+        userReply: text || '我补充了新的图片附件。',
+        hasNewAttachments: pendingAttachments.length > 0,
+      });
+      const confirmsPlan = planDecision === 'confirm' && pendingAttachments.length === 0;
+      pendingApprovalsRef.current.delete(conversation.id);
+      if (!confirmsPlan) {
+        pendingBatchCall.status = 'declined';
+        pendingBatchCall.resultJson = serializeChatToolResult({
+          declined: true,
+          revisionRequested: planDecision === 'revise',
+          cancelledByUser: planDecision === 'cancel',
+        });
+        pendingBatchCall.completedAt = Date.now();
+        await upsertChatToolCall(pendingBatchCall).catch(() => {});
+        patchMessage(pendingPlan.assistantMessageId, message => ({
+          ...message,
+          status: 'completed',
+          toolCalls: [...pendingPlan.calls],
+        }), true);
+        updateConversationBusy(conversation.id, false);
+      } else {
+        const conversationId = conversation.id;
+        const now = Date.now();
+        const confirmationMessage: ChatMessage = {
+          id: createChatId('chat-user'),
+          conversationId,
+          role: 'user',
+          content: text,
+          status: 'completed',
+          createdAt: now,
+          attachments: [],
+          toolCalls: [],
+        };
+        const executionMessageId = createChatId('chat-assistant');
+        const executionCall: ChatToolCall = {
+          ...pendingBatchCall,
+          id: createChatId('chat-tool'),
+          messageId: executionMessageId,
+          status: 'pending',
+          resultJson: null,
+          createdAt: now + 1,
+          completedAt: null,
+        };
+        const executionMessage: ChatMessage = {
+          id: executionMessageId,
+          conversationId,
+          role: 'assistant',
+          content: '',
+          status: 'streaming',
+          createdAt: now + 2,
+          attachments: [],
+          toolCalls: [executionCall],
+        };
+        pendingBatchCall.status = 'declined';
+        pendingBatchCall.resultJson = serializeChatToolResult({ declined: true, planApproved: true });
+        pendingBatchCall.completedAt = now;
+        const nextMessages = [
+          ...getConversationMessages(conversationId),
+          confirmationMessage,
+          executionMessage,
+        ];
+        cacheMessages([confirmationMessage, executionMessage]);
+        if (activeConversationIdRef.current === conversationId) {
+          messagesRef.current = nextMessages;
+          setMessages(nextMessages);
+        }
+        updateConversationBusy(conversationId, true);
+        try {
+          await Promise.all([
+            upsertChatToolCall(pendingBatchCall),
+            upsertChatMessage(confirmationMessage),
+            upsertChatMessage(executionMessage),
+          ]);
+          await upsertChatToolCall(executionCall);
+          patchMessage(pendingPlan.assistantMessageId, message => ({
+            ...message,
+            status: 'completed',
+            toolCalls: [...pendingPlan.calls],
+          }), true);
+          try {
+            onAccepted?.();
+          } catch (error) {
+            console.warn('Chat 消息发送后的界面清理失败:', error);
+          }
+          const providerBeforePlannedCall = pendingPlan.providerMessages.filter(message => (
+            !Array.isArray(message.tool_calls)
+            || !message.tool_calls.some(value => (
+              Boolean(value && typeof value === 'object')
+              && String((value as Record<string, unknown>).id || '') === pendingBatchCall.id
+            ))
+          ));
+          const executionAssistantMessage = {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: executionCall.id,
+              type: 'function',
+              function: { name: executionCall.toolName, arguments: executionCall.argumentsJson },
+            }],
+          };
+          await continueToolCalls({
+            ...pendingPlan,
+            assistantMessageId: executionMessageId,
+            userText: text,
+            providerMessages: [
+              ...providerBeforePlannedCall,
+              ...(analysisSummary ? [{ role: 'assistant', content: analysisSummary }] : []),
+              { role: 'user', content: text },
+              executionAssistantMessage,
+            ],
+            calls: [executionCall],
+            index: 0,
+            toolMessages: [],
+          }, executionCall.id);
+          return true;
+        } catch (error) {
+          activeRequestsRef.current.delete(conversationId);
+          activeBatchRunsRef.current.delete(conversationId);
+          updateConversationBusy(conversationId, false);
+          patchMessage(executionMessageId, message => ({
+            ...message,
+            content: normalizeVisibleChatText(message.content) || '确认后的批量任务没有完成。',
+            status: 'error',
+          }), true);
+          optionsRef.current.onNotice?.(`Chat 请求失败：${String(error)}`);
+          return false;
+        }
+      }
+    }
+    if (conversation && (
+      busyConversationIdsRef.current.has(conversation.id)
+      || pendingApprovalsRef.current.has(conversation.id)
+    )) return false;
     const requestModel = resolveChatRequestModel(
       selectedModel,
       conversation?.model,
@@ -847,24 +1530,27 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       void applyConversationModel(conversation, requestModel);
       conversation = conversationsRef.current.find(item => item.id === conversation!.id) || conversation;
     }
-    updateBusy(true);
+    if (!conversation) {
+      try {
+        conversation = await createConversation(requestModel);
+      } catch (error) {
+        optionsRef.current.onNotice?.(`创建 Chat 会话失败：${String(error)}`);
+        return false;
+      }
+    }
+    const conversationId = conversation.id;
+    const requestSummary = summaryRef.current?.conversationId === conversationId
+      ? summaryRef.current
+      : null;
+    updateConversationBusy(conversationId, true);
 
     let preparedAttachments = pendingAttachments;
     if (optionsRef.current.prepareAttachment && pendingAttachments.length > 0) {
       try {
         preparedAttachments = await Promise.all(pendingAttachments.map(optionsRef.current.prepareAttachment));
       } catch (error) {
-        updateBusy(false);
+        updateConversationBusy(conversationId, false);
         optionsRef.current.onNotice?.(`保存 Chat 附件失败：${String(error)}`);
-        return false;
-      }
-    }
-    if (!conversation) {
-      try {
-        conversation = await createConversation(requestModel);
-      } catch (error) {
-        updateBusy(false);
-        optionsRef.current.onNotice?.(`创建 Chat 会话失败：${String(error)}`);
         return false;
       }
     }
@@ -896,14 +1582,48 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       attachments: [],
       toolCalls: [],
     };
-    const existingMessages = messagesRef.current;
+    let existingMessages = getConversationMessages(conversationId);
+    if (attachments.length === 0 && isHistoricalImageContinuation(userMessage.content)) {
+      try {
+        const persistedPage = await listChatMessages(conversationId, { limit: PAGE_SIZE });
+        const hydratedMessages = persistedPage.messages.map(persistedMessage => {
+          const cachedMessage = messageCacheRef.current.get(persistedMessage.id);
+          if (!cachedMessage) return persistedMessage;
+          return {
+            ...cachedMessage,
+            attachments: persistedMessage.attachments.length > cachedMessage.attachments.length
+              ? persistedMessage.attachments
+              : cachedMessage.attachments,
+            toolCalls: cachedMessage.toolCalls.length > 0
+              ? cachedMessage.toolCalls
+              : persistedMessage.toolCalls,
+          };
+        });
+        cacheMessages(hydratedMessages);
+        existingMessages = getConversationMessages(conversationId);
+      } catch (error) {
+        console.warn('刷新 Chat 历史图片附件失败，将继续使用内存会话:', error);
+      }
+    }
     const nextMessages = [...existingMessages, userMessage, assistantMessage];
-    messagesRef.current = nextMessages;
-    setMessages(nextMessages);
+    const imageSelection = selectChatImageAttachments(nextMessages, userMessage.content);
+    cacheMessages([userMessage, assistantMessage]);
+    if (activeConversationIdRef.current === conversationId) {
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
+    }
+    const visionResolver = imageSelection.attachments.length > 0
+      ? optionsRef.current.createVisionAttachmentResolver?.()
+      : undefined;
     try {
       await upsertChatMessage(userMessage);
       await Promise.all(attachments.map(upsertChatAttachment));
       await upsertChatMessage(assistantMessage);
+      try {
+        onAccepted?.();
+      } catch (error) {
+        console.warn('Chat 消息发送后的界面清理失败:', error);
+      }
       if (conversation.title === '新对话') {
         const latestConversation = conversationsRef.current.find(item => item.id === conversation!.id)
           || conversation;
@@ -921,9 +1641,17 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       const providerMessages = await buildChatContext({
         messages: nextMessages,
         latestUserMessage: userMessage,
-        summary: summaryRef.current,
-        resolveAttachmentUrl: optionsRef.current.resolveAttachmentUrl,
+        summary: requestSummary,
+        resolveAttachmentUrl: visionResolver?.resolve || optionsRef.current.resolveAttachmentUrl,
+        visionAttachments: imageSelection.attachments,
+        reusedVisionAttachments: imageSelection.reusedFromHistory,
       });
+      const visionFailures = visionResolver?.failures() || [];
+      if (visionFailures.length > 0) {
+        optionsRef.current.onNotice?.(
+          `${visionFailures.length} 张图片暂时无法上传，已跳过这些图片以避免发送过大的内容。`,
+        );
+      }
       await runModelLoop(
         conversation.id,
         assistantMessage.id,
@@ -940,23 +1668,41 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         content: message.content.trim() || (cancelled ? '已停止生成。' : '这次请求没有完成。'),
         status: cancelled ? 'cancelled' : 'error',
       }), true);
-      activeRequestRef.current = null;
-      setStoppable(false);
-      updateBusy(false);
+      if (activeRequestsRef.current.get(conversationId)?.messageId === assistantMessage.id) {
+        activeRequestsRef.current.delete(conversationId);
+      }
+      activeBatchRunsRef.current.delete(conversationId);
+      updateConversationBusy(conversationId, false);
       if (!cancelled) optionsRef.current.onNotice?.(`Chat 请求失败：${String(error)}`);
       return cancelled;
+    } finally {
+      await visionResolver?.dispose().catch(error => {
+        console.warn('清理 Chat Vision 临时图片失败:', error);
+      });
     }
   }, [
     applyConversationModel,
+    cacheMessages,
     createConversation,
     enqueueConversationPersist,
+    getConversationMessages,
     patchMessage,
     runModelLoop,
-    updateBusy,
+    updateConversationBusy,
   ]);
 
   const stop = useCallback(async () => {
-    const active = activeRequestRef.current;
+    const conversationId = activeConversationIdRef.current;
+    const activeBatch = activeBatchRunsRef.current.get(conversationId);
+    if (activeBatch) {
+      activeBatch.controller.abort();
+      activeBatchRunsRef.current.delete(conversationId);
+      if (activeConversationIdRef.current === conversationId) {
+        syncActiveConversationActivity(conversationId);
+      }
+      return;
+    }
+    const active = activeRequestsRef.current.get(conversationId);
     if (!active) return;
     await cancelChatCompletion(active.requestId).catch(() => {});
     patchMessage(active.messageId, message => ({
@@ -964,23 +1710,40 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       content: message.content.trim() || '已停止生成。',
       status: 'cancelled',
     }), true);
-    activeRequestRef.current = null;
-    setStoppable(false);
-    updateBusy(false);
-  }, [patchMessage, updateBusy]);
+    activeRequestsRef.current.delete(conversationId);
+    if (activeConversationIdRef.current === conversationId) {
+      syncActiveConversationActivity(conversationId);
+    }
+  }, [patchMessage, syncActiveConversationActivity]);
 
   const resolveToolApproval = useCallback(async (callId: string, approved: boolean) => {
-    const pending = pendingApprovalRef.current;
-    if (!pending) return;
+    const pendingEntry = [...pendingApprovalsRef.current.entries()]
+      .find(([, run]) => run.calls.some(call => call.id === callId));
+    if (!pendingEntry) return;
+    const [conversationId, pending] = pendingEntry;
     const call = pending.calls.find(value => value.id === callId);
     if (!call || call.status !== 'awaiting-approval') return;
-    updateBusy(true);
+    pendingApprovalsRef.current.delete(conversationId);
+    updateConversationBusy(conversationId, true);
     try {
       if (!approved) {
         call.status = 'declined';
-        call.resultJson = serializeChatToolResult({ declined: true });
+        const isBatchRevision = call.toolName === 'batch_image_operation';
+        call.resultJson = serializeChatToolResult({
+          declined: true,
+          ...(isBatchRevision ? { revisionRequested: true } : {}),
+        });
         call.completedAt = Date.now();
         await upsertChatToolCall(call);
+        if (isBatchRevision) {
+          patchMessage(pending.assistantMessageId, message => ({
+            ...message,
+            status: 'completed',
+            toolCalls: [...pending.calls],
+          }), true);
+          updateConversationBusy(conversationId, false);
+          return;
+        }
         const nextRun = {
           ...pending,
           calls: [...pending.calls],
@@ -992,12 +1755,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         return;
       }
       call.status = 'pending';
+      call.resultJson = null;
+      call.completedAt = null;
       await continueToolCalls({ ...pending, calls: [...pending.calls] }, callId);
     } catch (error) {
-      pendingApprovalRef.current = null;
-      activeRequestRef.current = null;
-      setStoppable(false);
-      updateBusy(false);
+      pendingApprovalsRef.current.delete(conversationId);
+      activeRequestsRef.current.delete(conversationId);
+      activeBatchRunsRef.current.delete(conversationId);
+      updateConversationBusy(conversationId, false);
       patchMessage(pending.assistantMessageId, message => ({
         ...message,
         content: message.content.trim() || '确认后的请求没有完成。',
@@ -1005,7 +1770,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       }), true);
       optionsRef.current.onNotice?.(`Chat 请求失败：${String(error)}`);
     }
-  }, [continueToolCalls, patchMessage, updateBusy]);
+  }, [continueToolCalls, patchMessage, updateConversationBusy]);
 
   const retryLast = useCallback(async () => {
     const lastUser = [...messagesRef.current].reverse().find(message => message.role === 'user');
@@ -1014,25 +1779,30 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
   }, [sendMessage]);
 
   const selectConversation = useCallback((id: string) => {
-    if (id === activeConversationIdRef.current || busy || pendingApprovalRef.current) return;
+    if (id === activeConversationIdRef.current) return;
     void loadConversation(id);
-  }, [busy, loadConversation]);
+  }, [loadConversation]);
 
   const removeConversation = useCallback(async (id: string) => {
-    if (busy || pendingApprovalRef.current) return;
+    if (busyConversationIdsRef.current.has(id) || pendingApprovalsRef.current.has(id)) {
+      optionsRef.current.onNotice?.('该对话仍有任务在运行，请等待完成或先停止任务。');
+      return;
+    }
     await deleteChatConversation(id);
+    for (const [messageId, message] of messageCacheRef.current) {
+      if (message.conversationId === id) messageCacheRef.current.delete(messageId);
+    }
     const next = conversationsRef.current.filter(item => item.id !== id);
     conversationsRef.current = next;
     setConversations(next);
     if (id !== activeConversationIdRef.current) return;
     if (next[0]) await loadConversation(next[0].id);
     else await createConversation();
-  }, [busy, createConversation, loadConversation]);
+  }, [createConversation, loadConversation]);
 
   const startNewConversation = useCallback((title?: string) => {
-    if (busy || pendingApprovalRef.current) return Promise.resolve(undefined);
     return createConversation(optionsRef.current.model, title);
-  }, [busy, createConversation]);
+  }, [createConversation]);
 
   const searchConversations = useCallback((query: string) => {
     setSearchQuery(query);
