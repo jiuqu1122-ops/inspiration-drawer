@@ -53,13 +53,18 @@ pub struct BrowserExtensionInstallResult {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserExtensionDragPayload {
+    pub drag_id: String,
     pub browser: BrowserKind,
     pub extension_id: String,
-    pub image_url: String,
+    pub kind: String,
+    pub image_url: Option<String>,
+    pub data_url: Option<String>,
+    pub local_path: Option<String>,
     pub page_url: Option<String>,
     pub page_title: Option<String>,
     pub image_title: Option<String>,
     pub alt: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub source_type: String,
 }

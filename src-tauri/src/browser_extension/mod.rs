@@ -56,3 +56,11 @@ pub fn browser_extension_dismiss_setup_prompt(
 ) -> Result<(), String> {
     state.dismiss_setup_prompt()
 }
+
+#[tauri::command]
+pub fn browser_extension_accept_current_web_drag(
+    app: AppHandle,
+    state: State<'_, BrowserExtensionManagerState>,
+) -> Result<bool, String> {
+    state.accept_current_web_drag(&app)
+}

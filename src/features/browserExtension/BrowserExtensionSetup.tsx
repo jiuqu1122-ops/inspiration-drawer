@@ -194,7 +194,7 @@ export function BrowserExtensionSetup({
                     }}
                     className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-cyan-700 hover:text-cyan-800 dark:text-cyan-300"
                   >
-                    <FolderOpen className="h-3 w-3" /> 打开扩展目录
+                    <FolderOpen className="h-3 w-3" /> 定位 manifest.json
                   </button>
                 )}
               </div>

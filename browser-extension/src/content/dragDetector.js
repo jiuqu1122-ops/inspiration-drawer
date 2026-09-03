@@ -1,21 +1,28 @@
-const resolveDraggedImage = (target) => {
-  const element = target instanceof Element ? target.closest('img') : null;
-  if (!(element instanceof HTMLImageElement)) return null;
-  const imageUrl = String(element.currentSrc || element.src || '').trim();
-  if (!/^https?:\/\//i.test(imageUrl)) return null;
-  return {
-    imageUrl,
-    pageUrl: location.href,
-    pageTitle: document.title,
-    imageTitle: element.title || element.alt || '',
-    alt: element.alt || '',
-    width: element.naturalWidth || element.width || 0,
-    height: element.naturalHeight || element.height || 0,
-  };
+let activeDragId = '';
+
+const createDragId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `drag_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
 document.addEventListener('dragstart', (event) => {
-  const image = resolveDraggedImage(event.target);
+  const resolver = globalThis.InspirationImageResolver;
+  const image = resolver?.resolveImageFromElement(event.target);
   if (!image) return;
-  chrome.runtime.sendMessage({ type: 'web_image_drag_started', payload: image }).catch(() => {});
+  const dragId = createDragId();
+  activeDragId = dragId;
+  void resolver.prepareImageForTransfer(image).then(prepared => {
+    if (!prepared || activeDragId !== dragId) return;
+    return chrome.runtime.sendMessage({
+      type: 'web_image_drag_started',
+      payload: { dragId, image: prepared },
+    });
+  }).catch(() => {});
+}, true);
+
+document.addEventListener('dragend', () => {
+  const dragId = activeDragId;
+  activeDragId = '';
+  if (!dragId) return;
+  chrome.runtime.sendMessage({ type: 'web_image_drag_ended', payload: { dragId } }).catch(() => {});
 }, true);

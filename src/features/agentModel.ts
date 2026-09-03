@@ -253,6 +253,11 @@ export type WorkflowResultCardData = AgentWorkflowResult & {
   generationResults: WorkflowResultMedia[];
   nextSteps: string[];
   error?: string;
+  tasks?: Array<{
+    id: string;
+    label: string;
+    status: 'idle' | 'waiting' | 'ready' | 'running' | 'success' | 'failed' | 'skipped';
+  }>;
 };
 
 export type AgentChatMessage = {

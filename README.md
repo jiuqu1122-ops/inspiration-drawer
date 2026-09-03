@@ -4,12 +4,19 @@
 
 ## 下载
 
-当前版本：**6.0.21**
+当前版本：**6.0.22**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.21/Inspiration.Drawer_6.0.21_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.21)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.22/Inspiration.Drawer_6.0.22_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.22)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.22 更新
+
+- 完善通用 AI Chat：支持 Markdown 回复、联网搜索、文件生成，以及独立显示工作流任务进度。
+- 无限画布新增框选编组、编组命名与整体移动，并统一图片和节点的复制粘贴交互。
+- 优化浏览器图片采集与拖放稳定性，修复极少数图片拖动导致客户端退出的问题。
+- 提升少数特殊网络环境下的 AI 与自动更新兼容性，并自动清理历史更新安装包，仅保留最新一份。
 
 ## 6.0.21 更新
 

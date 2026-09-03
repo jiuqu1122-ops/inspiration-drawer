@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { blobToDataUrl } from '../../../utils/canvasImageData';
 import type { AgentCanvasSelectionItem } from '../../agentModel';
 import type { ChatAttachment, PendingChatAttachment } from '../model/chatTypes';
@@ -7,6 +7,10 @@ import {
   setCanvasChatVisibility,
   useCanvasChatVisibility,
 } from '../runtime/canvasChatVisibility';
+import {
+  useCanvasWorkflowConversationRequest,
+  useCanvasWorkflowProgress,
+} from '../runtime/canvasWorkflowProgress';
 import { useChatRuntime, type UseChatRuntimeOptions } from '../runtime/useChatRuntime';
 import { ChatView, type ChatViewProps } from './ChatView';
 
@@ -73,6 +77,8 @@ export function ChatHost({
   ...viewProps
 }: ChatHostProps) {
   const canvasChatVisible = useCanvasChatVisibility();
+  const canvasWorkflowResult = useCanvasWorkflowProgress();
+  const workflowConversationRequest = useCanvasWorkflowConversationRequest();
   const resolvedVisible = viewProps.variant === 'canvas' ? canvasChatVisible : visible;
   const runtime = useChatRuntime({
     model,
@@ -87,6 +93,27 @@ export function ChatHost({
     resolveAttachmentUrl: resolveChatAttachmentUrl,
   });
   const [viewMounted, setViewMounted] = useState(resolvedVisible);
+  const [workflowConversationId, setWorkflowConversationId] = useState('');
+  const handledWorkflowConversationRequestRef = useRef('');
+
+  useEffect(() => {
+    if (
+      viewProps.variant !== 'canvas'
+      || !workflowConversationRequest
+      || workflowConversationRequest.id === handledWorkflowConversationRequestRef.current
+      || runtime.busy
+    ) return;
+    handledWorkflowConversationRequestRef.current = workflowConversationRequest.id;
+    setWorkflowConversationId('');
+    void runtime.newConversation(workflowConversationRequest.title)
+      .then(conversation => {
+        if (conversation) setWorkflowConversationId(conversation.id);
+      })
+      .catch(error => {
+        handledWorkflowConversationRequestRef.current = '';
+        onNotice?.(`创建工作流会话失败：${String(error)}`);
+      });
+  }, [onNotice, runtime.busy, runtime.newConversation, viewProps.variant, workflowConversationRequest]);
 
   useEffect(() => {
     if (resolvedVisible) {
@@ -127,6 +154,11 @@ export function ChatHost({
       imageModel={imageModel}
       imageAspectRatio={imageAspectRatio}
       imageResolution={imageResolution}
+      workflowResult={viewProps.variant === 'canvas'
+        ? workflowConversationId === runtime.activeConversationId
+          ? canvasWorkflowResult
+          : undefined
+        : viewProps.workflowResult}
     />
   );
 }

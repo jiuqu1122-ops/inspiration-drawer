@@ -394,11 +394,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     }
   }, []);
 
-  const createConversation = useCallback(async (model = optionsRef.current.model) => {
+  const createConversation = useCallback(async (
+    model = optionsRef.current.model,
+    title = '新对话',
+  ) => {
     const now = Date.now();
     const conversation: ChatConversation = {
       id: createChatId('chat-conversation'),
-      title: '新对话',
+      title: title.trim().slice(0, 80) || '新对话',
       model: model || 'default',
       createdAt: now,
       updatedAt: now,
@@ -1026,9 +1029,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     else await createConversation();
   }, [busy, createConversation, loadConversation]);
 
-  const startNewConversation = useCallback(() => {
+  const startNewConversation = useCallback((title?: string) => {
     if (busy || pendingApprovalRef.current) return Promise.resolve(undefined);
-    return createConversation();
+    return createConversation(optionsRef.current.model, title);
   }, [busy, createConversation]);
 
   const searchConversations = useCallback((query: string) => {

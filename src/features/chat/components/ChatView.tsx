@@ -1,6 +1,6 @@
 import { Bot, MessageSquarePlus, PanelLeft, Trash2, X } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentCanvasSelectionItem } from '../../agentModel';
+import type { AgentCanvasSelectionItem, WorkflowResultCardData } from '../../agentModel';
 import type { ChatGeneratedMedia, ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { setCanvasChatSidebarWidth } from '../runtime/canvasChatVisibility';
 import { normalizeSupportedChatModel, resolveAvailableChatModels } from '../runtime/chatModelSelection';
@@ -31,6 +31,7 @@ export type ChatViewProps = {
   imageResolutionOptions?: ChatImageModelOption[];
   onImageResolutionChange: (resolution: string) => void;
   onAddGeneratedToCanvas?: (media: ChatGeneratedMedia) => void;
+  workflowResult?: WorkflowResultCardData;
 };
 
 const CANVAS_CHAT_HISTORY_WIDTH = 116;
@@ -69,6 +70,7 @@ export const ChatView = memo(function ChatView({
   imageResolutionOptions = [],
   onImageResolutionChange,
   onAddGeneratedToCanvas,
+  workflowResult,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<PendingChatAttachment[]>([]);
@@ -210,6 +212,7 @@ export const ChatView = memo(function ChatView({
           onAddToCanvas={onAddGeneratedToCanvas}
           onRegenerateMedia={regenerateMedia}
           onEditMedia={editMedia}
+          workflowResult={workflowResult}
         />
         <div className="chat-composer-wrap">
           <ChatComposer

@@ -1,7 +1,10 @@
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const BRIDGE_PORTS = Array.from({ length: 9 }, (_, index) => 43951 + index);
 const STORAGE_KEY = 'inspiration_drawer_pairing';
-const REQUEST_TIMEOUT_MS = 1600;
+const REQUEST_TIMEOUT_MS = 4000;
+const DIRECT_DATA_URL_CHARS = 256 * 1024;
+const DATA_CHUNK_CHARS = 384 * 1024;
+const MAX_DATA_URL_CHARS = 16 * 1024 * 1024;
 
 let activeConnection = null;
 
@@ -107,7 +110,35 @@ const authenticatedRequest = async (path, message) => {
 
 export const sendHeartbeat = () => authenticatedRequest('/v1/heartbeat', { type: 'heartbeat' });
 
-export const sendImageDragStarted = payload => authenticatedRequest('/v1/image-drag-started', {
-  type: 'image_drag_started',
-  payload,
+const uploadDataUrl = async (dragId, dataUrl) => {
+  if (dataUrl.length > MAX_DATA_URL_CHARS) throw new Error('image_payload_too_large');
+  const uploadId = `upload_${dragId}`;
+  const totalChunks = Math.ceil(dataUrl.length / DATA_CHUNK_CHARS);
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+    const dataChunk = dataUrl.slice(chunkIndex * DATA_CHUNK_CHARS, (chunkIndex + 1) * DATA_CHUNK_CHARS);
+    await authenticatedRequest('/v1/image-drag-chunk', {
+      type: 'image_drag_chunk',
+      payload: { dragId, uploadId, chunkIndex, totalChunks, dataChunk },
+    });
+  }
+  return uploadId;
+};
+
+export const sendImageDragStarted = async ({ dragId, image }) => {
+  if (!dragId || !image) throw new Error('image_payload_required');
+  const payload = { dragId, ...image };
+  const dataUrl = String(payload.dataUrl || '');
+  if (dataUrl.length > DIRECT_DATA_URL_CHARS) {
+    payload.uploadId = await uploadDataUrl(dragId, dataUrl);
+    delete payload.dataUrl;
+  }
+  return authenticatedRequest('/v1/image-drag-started', {
+    type: 'image_drag_started',
+    payload,
+  });
+};
+
+export const sendImageDragCancelled = dragId => authenticatedRequest('/v1/image-drag-cancelled', {
+  type: 'image_drag_cancelled',
+  payload: { dragId },
 });

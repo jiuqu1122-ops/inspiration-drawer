@@ -1,5 +1,7 @@
 import { ArrowDown, MessageCircleMore } from 'lucide-react';
 import { useLayoutEffect, useRef } from 'react';
+import type { WorkflowResultCardData } from '../../agentModel';
+import { WorkflowResultCard } from '../../../components/WorkflowResultCard';
 import type { ChatGeneratedMedia, ChatMessage as ChatMessageType } from '../model/chatTypes';
 import { ChatMessage } from './ChatMessage';
 
@@ -15,6 +17,7 @@ export function ChatMessageList({
   onAddToCanvas,
   onRegenerateMedia,
   onEditMedia,
+  workflowResult,
 }: {
   messages: ChatMessageType[];
   visible: boolean;
@@ -27,6 +30,7 @@ export function ChatMessageList({
   onAddToCanvas?: (media: ChatGeneratedMedia) => void;
   onRegenerateMedia?: (media: ChatGeneratedMedia) => void;
   onEditMedia?: (media: ChatGeneratedMedia) => void;
+  workflowResult?: WorkflowResultCardData;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const previousLastId = useRef('');
@@ -36,7 +40,10 @@ export function ChatMessageList({
       wasVisibleRef.current = false;
       return;
     }
-    const lastId = messages[messages.length - 1]?.id || '';
+    const workflowProgressId = workflowResult
+      ? `${workflowResult.workflowNodeId}:${workflowResult.status}:${workflowResult.completedSteps}:${workflowResult.completedAt}`
+      : '';
+    const lastId = workflowProgressId || messages[messages.length - 1]?.id || '';
     const firstVisibleFrame = !wasVisibleRef.current;
     wasVisibleRef.current = true;
     if (!lastId || (!firstVisibleFrame && lastId === previousLastId.current)) return;
@@ -45,9 +52,9 @@ export function ChatMessageList({
     if (!list) return;
     if (firstVisibleFrame) list.scrollTop = list.scrollHeight;
     else list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
-  }, [messages, visible]);
-  if (loading) return <div className="chat-empty"><div className="chat-skeleton" /><div className="chat-skeleton chat-skeleton--short" /></div>;
-  if (messages.length === 0) {
+  }, [messages, visible, workflowResult]);
+  if (loading && !workflowResult) return <div className="chat-empty"><div className="chat-skeleton" /><div className="chat-skeleton chat-skeleton--short" /></div>;
+  if (messages.length === 0 && !workflowResult) {
     return (
       <div className="chat-empty">
         <span className="chat-empty__mark"><MessageCircleMore size={22} /></span>
@@ -74,6 +81,11 @@ export function ChatMessageList({
           onEditMedia={onEditMedia}
         />
       ))}
+      {workflowResult && (
+        <section className="chat-workflow-message" aria-live="polite">
+          <WorkflowResultCard result={workflowResult} compact />
+        </section>
+      )}
     </div>
   );
 }

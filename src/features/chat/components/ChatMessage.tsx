@@ -5,6 +5,7 @@ import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatGeneratedImageCard } from './ChatGeneratedImageCard';
 import { ChatGeneratedFileCard } from './ChatGeneratedFileCard';
 import { ChatToolCallCard } from './ChatToolCallCard';
+import { ChatMarkdown } from './ChatMarkdown';
 import { getGeneratedFilesFromToolCall, getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatMessage as ChatMessageType } from '../model/chatTypes';
 
 const LINK_PATTERN = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s]+)/g;
@@ -67,7 +68,11 @@ export const ChatMessage = memo(function ChatMessage({
     <article className={`chat-message chat-message--${message.role}`}>
       <div className="chat-message__body">
         <ChatAttachmentList attachments={message.attachments} compact />
-        {message.content && <ChatMessageText content={message.content} />}
+        {message.content && (
+          message.role === 'assistant'
+            ? <ChatMarkdown content={message.content} />
+            : <ChatMessageText content={message.content} />
+        )}
         {message.role === 'assistant' && message.status === 'streaming' && !message.content && (
           <div className="chat-thinking" aria-label="正在生成"><i /><i /><i /></div>
         )}

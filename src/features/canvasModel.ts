@@ -28,6 +28,11 @@ export type CanvasWorkflowRuntime = {
   [key: string]: unknown;
 };
 
+export type CanvasGroup = {
+  id: string;
+  name: string;
+};
+
 export type CanvasImageItem = {
   id: string;
   item: BufferItem;
@@ -43,6 +48,8 @@ export type CanvasImageItem = {
   workflowTemplateNodeId?: string;
   designAgentConfig?: DesignAgentConfig;
   ai?: CanvasAiItemData;
+  /** User-created canvas group. Kept separate from expanded workflow groups. */
+  canvasGroup?: CanvasGroup;
   workflowGroup?: unknown;
   /**
    * Runtime-only ordered assets for an expanded internal slot node. The

@@ -1,7 +1,7 @@
 {
   "name": "inspiration-drawer",
   "private": true,
-  "version": "6.0.21",
+  "version": "6.0.22",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
+    "test:browser-extension": "node --test browser-extension/tests/*.test.mjs",
     "test:smoke": "vitest run src/features/appAgent/appAgentSmoke.test.ts"
   },
   "dependencies": {
@@ -30,7 +31,10 @@
     "lucide-react": "^0.577.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-qr-code": "^2.0.18"
+    "react-markdown": "^10.1.0",
+    "react-qr-code": "^2.0.18",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.1",

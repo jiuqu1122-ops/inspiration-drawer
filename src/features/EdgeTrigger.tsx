@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Lightbulb } from 'lucide-react';
+import { Check, Image as ImageIcon, Lightbulb, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { LogicalPosition } from '@tauri-apps/api/dpi';
@@ -55,7 +55,56 @@ export function EdgeTrigger() {
   const edgeHoverOpenTimerRef = useRef<number | null>(null);
   const edgeStripDragRef = useRef({ active: false, moved: false, lastY: 0 });
   const leftButtonDownRef = useRef(false);
+  const activeBrowserDragIdRef = useRef('');
+  const browserDragResetTimerRef = useRef<number | null>(null);
+  const [browserDragState, setBrowserDragState] = useState<'idle' | 'ready' | 'saving' | 'success' | 'error'>('idle');
   useEffect(() => { antiTouchRef.current = isAntiTouchMode; }, [isAntiTouchMode]);
+
+  useEffect(() => {
+    const resetSoon = (delay: number) => {
+      if (browserDragResetTimerRef.current !== null) window.clearTimeout(browserDragResetTimerRef.current);
+      browserDragResetTimerRef.current = window.setTimeout(() => {
+        browserDragResetTimerRef.current = null;
+        activeBrowserDragIdRef.current = '';
+        setBrowserDragState('idle');
+      }, delay);
+    };
+    const unlisteners = [
+      listen<{ dragId?: string }>('browser-extension-image-drag-started', event => {
+        const dragId = String(event.payload?.dragId || '');
+        if (!dragId) return;
+        activeBrowserDragIdRef.current = dragId;
+        setBrowserDragState('ready');
+      }),
+      listen<{ dragId?: string }>('browser-extension-image-drag-cancelled', event => {
+        const dragId = String(event.payload?.dragId || '');
+        if (dragId && activeBrowserDragIdRef.current && dragId !== activeBrowserDragIdRef.current) return;
+        activeBrowserDragIdRef.current = '';
+        setBrowserDragState('idle');
+      }),
+      listen<{ dragId?: string }>('browser-extension-image-drop-committed', event => {
+        const dragId = String(event.payload?.dragId || '');
+        if (dragId) activeBrowserDragIdRef.current = dragId;
+        setBrowserDragState('saving');
+      }),
+      listen<{ dragId?: string }>('browser-extension-image-save-succeeded', event => {
+        const dragId = String(event.payload?.dragId || '');
+        if (dragId && activeBrowserDragIdRef.current && dragId !== activeBrowserDragIdRef.current) return;
+        setBrowserDragState('success');
+        resetSoon(1100);
+      }),
+      listen<{ dragId?: string }>('browser-extension-image-save-failed', event => {
+        const dragId = String(event.payload?.dragId || '');
+        if (dragId && activeBrowserDragIdRef.current && dragId !== activeBrowserDragIdRef.current) return;
+        setBrowserDragState('error');
+        resetSoon(1400);
+      }),
+    ];
+    return () => {
+      unlisteners.forEach(unlisten => { void unlisten.then(dispose => dispose()); });
+      if (browserDragResetTimerRef.current !== null) window.clearTimeout(browserDragResetTimerRef.current);
+    };
+  }, []);
 
   const clearFloatHoverOpenTimer = () => {
     if (floatHoverOpenTimerRef.current !== null) {
@@ -622,6 +671,29 @@ export function EdgeTrigger() {
 
     const isDrop = e.type === 'drop';
     const isWebImageOnly = hasWebImageDragData(e.dataTransfer);
+    const hasPluginWebDrag = Boolean(activeBrowserDragIdRef.current);
+
+    if (hasPluginWebDrag && isDrop) {
+      clearFloatHoverOpenTimer();
+      setBrowserDragState('saving');
+      void invoke<boolean>('browser_extension_accept_current_web_drag')
+        .then(accepted => {
+          if (!accepted) {
+            setBrowserDragState('error');
+            void emitTo('edge', 'browser-extension-image-save-failed', { dragId: activeBrowserDragIdRef.current });
+            return;
+          }
+          startDragOpenBurst();
+        })
+        .catch(error => {
+          console.warn('browser extension web drag accept failed:', error);
+          setBrowserDragState('error');
+          void emitTo('edge', 'browser-extension-image-save-failed', { dragId: activeBrowserDragIdRef.current });
+        });
+      return;
+    }
+
+    if (hasPluginWebDrag) return;
 
     if (triggerModeRef.current === 'float' && !isDrop) {
       scheduleFloatHoverOpen(300, true);
@@ -807,6 +879,20 @@ export function EdgeTrigger() {
   };
 
   if (triggerMode === 'float') {
+    const browserDragVisualClass = browserDragState === 'ready'
+      ? 'bg-amber-500 border-amber-300 dark:bg-amber-400 dark:border-amber-300/55'
+      : browserDragState === 'success'
+      ? 'bg-emerald-500 border-emerald-300 dark:bg-emerald-400 dark:border-emerald-300/55'
+      : browserDragState === 'error'
+      ? 'bg-red-500 border-red-300 dark:bg-red-400 dark:border-red-300/55'
+      : 'bg-blue-500 border-blue-300/80 dark:bg-blue-400 dark:border-blue-300/55';
+    const BrowserDragIcon = browserDragState === 'success'
+      ? Check
+      : browserDragState === 'error'
+      ? X
+      : browserDragState === 'ready' || browserDragState === 'saving'
+      ? ImageIcon
+      : Lightbulb;
     return (
       <div
         className={`${isDark ? 'dark' : ''} w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none pointer-events-auto ${isFloatDragOverlay ? '' : 'rounded-[22px]'}`}
@@ -822,9 +908,9 @@ export function EdgeTrigger() {
         onDrop={handleEdgeFileDrag}
       >
         <button
-          className={`absolute rounded-[22px] overflow-hidden isolate bg-blue-500 text-white dark:bg-blue-400 dark:text-stone-950 backdrop-blur-xl border border-blue-300/80 dark:border-blue-300/55 shadow-xl shadow-blue-400/28 dark:shadow-black/24 flex items-center justify-center cursor-pointer opacity-100 transition-transform ${isFloatDragOverlay ? 'shadow-2xl' : 'hover:scale-[1.03] active:scale-95'}`}
+          className={`absolute rounded-[22px] overflow-hidden isolate ${browserDragVisualClass} text-white dark:text-stone-950 backdrop-blur-xl border shadow-xl shadow-black/18 flex items-center justify-center cursor-pointer opacity-100 transition-[transform,background-color,border-color] ${isFloatDragOverlay ? 'shadow-2xl' : 'hover:scale-[1.03] active:scale-95'}`}
           style={isFloatDragOverlay ? { left: floatVisualPos.x - floatOverlayOrigin.x, top: floatVisualPos.y - floatOverlayOrigin.y, width: FLOAT_TRIGGER_SIZE, height: FLOAT_TRIGGER_SIZE } : { left: 0, top: 0, width: FLOAT_TRIGGER_SIZE, height: FLOAT_TRIGGER_SIZE }}
-          title="左键单击打开抽屉，按住左键拖动悬浮方块，拖入文件也可打开"
+          title={browserDragState === 'ready' ? '松开即可收取当前网页图片' : browserDragState === 'saving' ? '正在保存网页图片' : browserDragState === 'success' ? '网页图片已保存' : browserDragState === 'error' ? '网页图片保存失败' : '左键单击打开抽屉，按住左键拖动悬浮方块，拖入文件也可打开'}
           onClick={(e) => {
             // 左键单击打开已在 pointerup/mouseup 中处理，这里只阻止冒泡，避免重复打开。
             e.preventDefault();
@@ -843,12 +929,20 @@ export function EdgeTrigger() {
           onDragLeave={handleFloatHoverLeave}
           onDrop={handleEdgeFileDrag}
         >
-          <Lightbulb className="w-5 h-5 text-white dark:text-stone-950 pointer-events-none" />
+          <BrowserDragIcon className={`w-5 h-5 text-white dark:text-stone-950 pointer-events-none ${browserDragState === 'saving' ? 'animate-pulse' : ''}`} />
           <span className="absolute right-2 bottom-2 w-2 h-2 rounded-full bg-cyan-200 dark:bg-cyan-100 shadow-[0_0_8px_rgba(34,211,238,0.7)] pointer-events-none" />
         </button>
       </div>
     );
   }
+
+  const browserStripVisualClass = browserDragState === 'ready'
+    ? 'bg-amber-500/95 dark:bg-amber-400/95 border-amber-300/75 dark:border-amber-300/55'
+    : browserDragState === 'success'
+    ? 'bg-emerald-500/95 dark:bg-emerald-400/95 border-emerald-300/75 dark:border-emerald-300/55'
+    : browserDragState === 'error'
+    ? 'bg-red-500/95 dark:bg-red-400/95 border-red-300/75 dark:border-red-300/55'
+    : 'bg-blue-500/95 dark:bg-blue-400/95 border-blue-300/75 dark:border-blue-300/55';
 
   return (
     <div
@@ -873,7 +967,7 @@ export function EdgeTrigger() {
         onDragOver={handleEdgeFileDrag}
         onDrop={handleEdgeFileDrag}
       >
-        <div className="w-full h-24 bg-blue-500/95 dark:bg-blue-400/95 backdrop-blur-2xl rounded-l-[24px] shadow-sm shadow-blue-400/25 dark:shadow-black/24 border border-r-0 border-blue-300/75 dark:border-blue-300/55 flex items-center justify-center cursor-pointer transition-colors hover:bg-blue-500 dark:hover:bg-blue-400">
+        <div className={`w-full h-24 ${browserStripVisualClass} backdrop-blur-2xl rounded-l-[24px] shadow-sm shadow-black/18 border border-r-0 flex items-center justify-center cursor-pointer transition-colors`}>
           <div className="w-1.5 h-10 bg-white/90 dark:bg-stone-950/85 rounded-full shadow-inner shadow-blue-200/50" />
         </div>
       </div>

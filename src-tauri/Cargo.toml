@@ -1,6 +1,6 @@
 [package]
 name = "inspiration-drawer"
-version = "6.0.21"
+version = "6.0.22"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -12,7 +12,7 @@ default-run = "inspiration-drawer"
 tauri-build = { version = "2.0.0", features = [] }
 
 [dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "socks", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "socks", "rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
 tauri = { version = "2.0.0", features = ["protocol-asset", "tray-icon"] }
 tokio = { version = "1", features = ["sync", "time"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -40,7 +40,7 @@ tauri-plugin-global-shortcut = "2.3.1"
 tauri-plugin-single-instance = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-process = "2.3.1"
-tauri-plugin-updater = "2.10.1"
+tauri-plugin-updater = { version = "2.10.1", default-features = false, features = ["native-tls", "zip"] }
 
 [dev-dependencies]
 rcgen = "0.13"

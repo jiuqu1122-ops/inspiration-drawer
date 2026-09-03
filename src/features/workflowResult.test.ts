@@ -14,6 +14,10 @@ describe('Workflow Result Card data', () => {
       status: 'running',
       completedSteps: 0,
       totalSteps: 3,
+      tasks: [
+        { id: 'brief', label: '需求分析', status: 'running' },
+        { id: 'render', label: '生成图片', status: 'waiting' },
+      ],
     });
 
     expect(result.status).toBe('running');
@@ -21,6 +25,10 @@ describe('Workflow Result Card data', () => {
     expect(result.summary).toContain('分析中 0/3 个步骤');
     expect(result.analysisResults).toEqual([]);
     expect(result.generationResults).toEqual([]);
+    expect(result.tasks).toEqual([
+      { id: 'brief', label: '需求分析', status: 'running' },
+      { id: 'render', label: '生成图片', status: 'waiting' },
+    ]);
   });
 
   it('updates the existing workflow result message as nodes complete', () => {

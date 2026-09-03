@@ -38,6 +38,148 @@ pub struct UpdateCacheManager {
     state: UpdateCacheState,
 }
 
+pub fn cleanup_legacy_tauri_updater_dirs(temp_root: &Path) -> CleanupReport {
+    let mut report = CleanupReport::default();
+    let root_metadata = match fs::symlink_metadata(temp_root) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            report.failed += 1;
+            eprintln!(
+                "[update-cache] inspect system temp directory {} failed: {error}",
+                temp_root.display()
+            );
+            return report;
+        }
+    };
+    if is_link_like(&root_metadata) || !root_metadata.is_dir() {
+        report.skipped += 1;
+        eprintln!(
+            "[update-cache] skipped unsafe system temp directory {}",
+            temp_root.display()
+        );
+        return report;
+    }
+    let root = match fs::canonicalize(temp_root) {
+        Ok(root) => root,
+        Err(error) => {
+            report.failed += 1;
+            eprintln!(
+                "[update-cache] resolve system temp directory {} failed: {error}",
+                temp_root.display()
+            );
+            return report;
+        }
+    };
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report.failed += 1;
+            eprintln!(
+                "[update-cache] read system temp directory {} failed: {error}",
+                root.display()
+            );
+            return report;
+        }
+    };
+
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let directory_name = entry.file_name().to_string_lossy().to_string();
+        let Some(version) = legacy_tauri_updater_version(&directory_name) else {
+            continue;
+        };
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() && !is_link_like(&metadata) => metadata,
+            _ => continue,
+        };
+        if !legacy_tauri_updater_dir_has_installer(&path, version) {
+            continue;
+        }
+        candidates.push((
+            metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            directory_name,
+            path,
+        ));
+    }
+
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    if !candidates.is_empty() {
+        report.skipped += 1;
+    }
+
+    for (_, _, path) in candidates.into_iter().skip(1) {
+        match delete_managed_directory(&root, &path) {
+            Ok(DeleteResult::Removed | DeleteResult::Missing) => report.removed += 1,
+            Err(error) => {
+                report.failed += 1;
+                eprintln!(
+                    "[update-cache] legacy updater directory cleanup failed for {}: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    eprintln!(
+        "[update-cache] legacy updater cleanup: removed {} directories, kept latest {}, failed {} directories",
+        report.removed,
+        usize::from(report.skipped > 0),
+        report.failed
+    );
+    report
+}
+
+fn legacy_tauri_updater_version(directory_name: &str) -> Option<&str> {
+    let remainder = directory_name.strip_prefix("Inspiration Drawer-")?;
+    let (version, suffix) = remainder.rsplit_once("-updater-")?;
+    if version.is_empty()
+        || version.len() > 64
+        || !version
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '-' | '_' | '+'))
+        || !(6..=32).contains(&suffix.len())
+        || !suffix.chars().all(|value| value.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(version)
+}
+
+fn legacy_tauri_updater_dir_has_installer(directory: &Path, version: &str) -> bool {
+    let version = version.to_ascii_lowercase();
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+    let mut installer_count = 0_usize;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return false,
+        };
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => return false,
+        };
+        if is_link_like(&metadata) || !metadata.is_file() {
+            return false;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        let supported_installer = file_name.ends_with(".exe") || file_name.ends_with(".msi");
+        let owned_installer = supported_installer
+            && (file_name.starts_with("inspiration drawer-")
+                || file_name.starts_with("inspiration drawer_"))
+            && file_name.contains(&version);
+        if !owned_installer {
+            return false;
+        }
+        installer_count += 1;
+    }
+    installer_count == 1
+}
+
 impl UpdateCacheManager {
     pub fn new(root: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&root)
@@ -872,6 +1014,52 @@ mod tests {
             .store_downloaded_package(&path, b"signed updater bytes")
             .expect("store package");
         path
+    }
+
+    fn create_legacy_updater_dir(root: &Path, version: &str, suffix: &str) -> PathBuf {
+        let directory = root.join(format!("Inspiration Drawer-{version}-updater-{suffix}"));
+        fs::create_dir(&directory).unwrap();
+        fs::write(
+            directory.join(format!("Inspiration Drawer-{version}-installer.exe")),
+            b"installer",
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn legacy_updater_cleanup_keeps_only_the_latest_installer_directory() {
+        let directory = TestDirectory::new("legacy-updater-history");
+        let old = create_legacy_updater_dir(directory.path(), "6.0.20", "ABC123");
+        std::thread::sleep(Duration::from_millis(20));
+        let latest = create_legacy_updater_dir(directory.path(), "6.0.21", "XYZ789");
+
+        let report = cleanup_legacy_tauri_updater_dirs(directory.path());
+
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.skipped, 1);
+        assert!(!old.exists());
+        assert!(latest.exists());
+    }
+
+    #[test]
+    fn legacy_updater_cleanup_ignores_unproven_lookalike_directories() {
+        let directory = TestDirectory::new("legacy-updater-lookalike");
+        let valid = create_legacy_updater_dir(directory.path(), "6.0.21", "ABC123");
+        let lookalike = directory
+            .path()
+            .join("Inspiration Drawer-6.0.20-updater-XYZ789");
+        fs::create_dir(&lookalike).unwrap();
+        fs::write(lookalike.join("notes.txt"), b"user data").unwrap();
+        let mixed = create_legacy_updater_dir(directory.path(), "6.0.19", "MIX123");
+        fs::write(mixed.join("notes.txt"), b"user data").unwrap();
+
+        let report = cleanup_legacy_tauri_updater_dirs(directory.path());
+
+        assert_eq!(report.removed, 0);
+        assert!(valid.exists());
+        assert!(lookalike.exists());
+        assert!(mixed.exists());
     }
 
     #[test]

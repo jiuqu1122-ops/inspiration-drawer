@@ -34,7 +34,6 @@ const APP_NAVIGATION_ACTIONS = [
   'clear_search',
   'open_settings',
   'open_text_capture',
-  'open_web_collector',
   'open_notes',
   'open_calendar',
   'undo',

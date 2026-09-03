@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Read, Write};
@@ -23,13 +23,18 @@ use super::extension_status::{
 };
 use super::pairing::PairingConfig;
 
-const PROTOCOL_VERSION: u32 = 1;
-const MIN_EXTENSION_VERSION: &str = "1.0.0";
+const PROTOCOL_VERSION: u32 = 2;
+const MIN_EXTENSION_VERSION: &str = "1.1.0";
 const BRIDGE_PORT_START: u16 = 43951;
 const BRIDGE_PORT_END: u16 = 43959;
 const PAIRING_WINDOW_SECONDS: u64 = 10 * 60;
 const HEARTBEAT_STALE_SECONDS: u64 = 95;
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_BYTES: usize = 512 * 1024;
+const MAX_IMAGE_DATA_URL_BYTES: usize = 16 * 1024 * 1024;
+const MAX_IMAGE_CHUNKS: usize = 64;
+const MAX_IMAGE_CHUNK_BYTES: usize = 400 * 1024;
+const ACTIVE_DRAG_TTL_SECONDS: u64 = 30;
+const RECENT_DRAG_TTL_SECONDS: u64 = 120;
 const HEARTBEAT_SECONDS: u64 = 60;
 
 #[cfg(target_os = "windows")]
@@ -55,6 +60,22 @@ struct RuntimeState {
     bridge_error: Option<String>,
     connections: BTreeMap<BrowserKind, ConnectionRecord>,
     install_attempts: BTreeMap<BrowserKind, InstallAttempt>,
+    active_drag: Option<ActiveBrowserDrag>,
+    pending_uploads: HashMap<String, PendingImageUpload>,
+    committed_drag_ids: HashMap<String, u64>,
+}
+
+#[derive(Clone)]
+struct ActiveBrowserDrag {
+    payload: BrowserExtensionDragPayload,
+    started_at: u64,
+}
+
+struct PendingImageUpload {
+    drag_id: String,
+    chunks: Vec<Option<String>>,
+    total_bytes: usize,
+    created_at: u64,
 }
 
 struct BridgeHandle {
@@ -102,13 +123,21 @@ struct BridgeMessage {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImageDragMessage {
-    image_url: String,
+    drag_id: Option<String>,
+    kind: Option<String>,
+    image_url: Option<String>,
+    data_url: Option<String>,
+    upload_id: Option<String>,
     page_url: Option<String>,
     page_title: Option<String>,
     image_title: Option<String>,
     alt: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    source_type: Option<String>,
+    chunk_index: Option<usize>,
+    total_chunks: Option<usize>,
+    data_chunk: Option<String>,
 }
 
 struct HttpRequest {
@@ -317,10 +346,11 @@ impl BrowserExtensionManagerState {
             )
         } else {
             launch_browser(executable, browser.extensions_url())?;
+            reveal_prepared_extension(&prepared)?;
             (
                 "development".to_string(),
                 browser.extensions_url().to_string(),
-                "开发测试：开启开发者模式，点击“加载已解压的扩展”，再用下方按钮打开扩展目录。"
+                "开发测试：开启开发者模式，点击“加载已解压的扩展”，选择已打开的文件夹本身（里面直接包含 manifest.json）。如果已经出现“无法加载扩展”，直接点击“重试”即可。"
                     .to_string(),
             )
         };
@@ -359,7 +389,7 @@ impl BrowserExtensionManagerState {
 
     pub fn open_prepared_folder(&self, app: &AppHandle) -> Result<String, String> {
         let path = self.prepare_extension(app)?;
-        open::that(&path).map_err(|error| error.to_string())?;
+        reveal_prepared_extension(&path)?;
         Ok(path.to_string_lossy().to_string())
     }
 
@@ -383,18 +413,56 @@ impl BrowserExtensionManagerState {
         config.save(&path)
     }
 
+    pub fn accept_current_web_drag(&self, app: &AppHandle) -> Result<bool, String> {
+        let mut payload = {
+            let mut runtime = self
+                .inner
+                .runtime
+                .lock()
+                .map_err(|error| error.to_string())?;
+            cleanup_drag_runtime(&mut runtime);
+            let Some(active) = runtime.active_drag.take() else {
+                return Ok(false);
+            };
+            if runtime
+                .committed_drag_ids
+                .contains_key(&active.payload.drag_id)
+            {
+                return Ok(false);
+            }
+            runtime
+                .committed_drag_ids
+                .insert(active.payload.drag_id.clone(), unix_time());
+            active.payload
+        };
+        materialize_browser_drag_data(app, &mut payload)?;
+        let drag_id = payload.drag_id.clone();
+        let _ = app.emit_to(
+            "edge",
+            "browser-extension-image-drop-committed",
+            json!({ "dragId": drag_id }),
+        );
+        app.emit_to("main", "browser-extension-image-drop-committed", payload)
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
     fn prepare_extension(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let source = locate_bundled_extension(app)?;
-        let target = app
+        let development_root = app
             .path()
             .app_data_dir()
             .map_err(|error| error.to_string())?
             .join("browser-extension")
             .join("development");
-        if target.exists() {
-            fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
+        // Keep the historical `development/src` install path valid. Some users
+        // already selected it in Chromium, so repopulating that exact path lets
+        // the browser's existing “Retry” button recover without removing it.
+        let target = development_root.join("src");
+        if development_root.exists() {
+            fs::remove_dir_all(&development_root).map_err(|error| error.to_string())?;
         }
-        copy_directory(&source, &target)?;
+        copy_extension_bundle(&source, &target)?;
         if !target.join("manifest.json").is_file() {
             return Err("扩展资源缺少 manifest.json".to_string());
         }
@@ -548,7 +616,9 @@ fn route_bridge_request(
         "/v1/pair" => "pair_request",
         "/v1/hello" => "extension_hello",
         "/v1/heartbeat" => "heartbeat",
+        "/v1/image-drag-chunk" => "image_drag_chunk",
         "/v1/image-drag-started" => "image_drag_started",
+        "/v1/image-drag-cancelled" => "image_drag_cancelled",
         _ => return (404, json!({ "error": "unknown_endpoint" })),
     };
     if message.message_type != expected_type {
@@ -622,37 +692,217 @@ fn route_bridge_request(
     }
     let outdated = message.protocol_version != PROTOCOL_VERSION
         || version_is_older(&message.extension_version, MIN_EXTENSION_VERSION);
-    record_connection(&inner, &app, &message, outdated);
+    if path != "/v1/image-drag-chunk" {
+        record_connection(&inner, &app, &message, outdated);
+    }
     if outdated {
         return (
             426,
             json!({ "error": "extension_outdated", "protocolVersion": PROTOCOL_VERSION }),
         );
     }
+    if path == "/v1/image-drag-chunk" {
+        let Some(payload) = message.payload else {
+            return (400, json!({ "error": "image_chunk_required" }));
+        };
+        let Some(drag_id) = valid_drag_id(payload.drag_id.as_deref()) else {
+            return (400, json!({ "error": "invalid_drag_id" }));
+        };
+        let Some(upload_id) = valid_drag_id(payload.upload_id.as_deref()) else {
+            return (400, json!({ "error": "invalid_upload_id" }));
+        };
+        let Some(chunk_index) = payload.chunk_index else {
+            return (400, json!({ "error": "chunk_index_required" }));
+        };
+        let Some(total_chunks) = payload.total_chunks else {
+            return (400, json!({ "error": "total_chunks_required" }));
+        };
+        let Some(data_chunk) = payload.data_chunk else {
+            return (400, json!({ "error": "data_chunk_required" }));
+        };
+        if total_chunks == 0
+            || total_chunks > MAX_IMAGE_CHUNKS
+            || chunk_index >= total_chunks
+            || data_chunk.len() > MAX_IMAGE_CHUNK_BYTES
+        {
+            return (400, json!({ "error": "invalid_image_chunk" }));
+        }
+        let mut runtime = match inner.runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(_) => return (500, json!({ "error": "runtime_unavailable" })),
+        };
+        cleanup_drag_runtime(&mut runtime);
+        runtime
+            .pending_uploads
+            .retain(|_, upload| upload.drag_id == drag_id);
+        let upload = runtime
+            .pending_uploads
+            .entry(upload_id.to_string())
+            .or_insert_with(|| PendingImageUpload {
+                drag_id: drag_id.to_string(),
+                chunks: vec![None; total_chunks],
+                total_bytes: 0,
+                created_at: unix_time(),
+            });
+        if upload.drag_id != drag_id || upload.chunks.len() != total_chunks {
+            return (400, json!({ "error": "image_chunk_mismatch" }));
+        }
+        let previous_bytes = upload.chunks[chunk_index]
+            .as_ref()
+            .map(String::len)
+            .unwrap_or(0);
+        let next_total = upload
+            .total_bytes
+            .saturating_sub(previous_bytes)
+            .saturating_add(data_chunk.len());
+        if next_total > MAX_IMAGE_DATA_URL_BYTES {
+            return (400, json!({ "error": "image_payload_too_large" }));
+        }
+        upload.total_bytes = next_total;
+        upload.chunks[chunk_index] = Some(data_chunk);
+        return (
+            200,
+            json!({ "ok": true, "dragId": drag_id, "chunkIndex": chunk_index }),
+        );
+    }
+    if path == "/v1/image-drag-cancelled" {
+        let Some(payload) = message.payload else {
+            return (400, json!({ "error": "drag_id_required" }));
+        };
+        let Some(drag_id) = valid_drag_id(payload.drag_id.as_deref()) else {
+            return (400, json!({ "error": "invalid_drag_id" }));
+        };
+        let cancelled = if let Ok(mut runtime) = inner.runtime.lock() {
+            cleanup_drag_runtime(&mut runtime);
+            runtime
+                .pending_uploads
+                .retain(|_, upload| upload.drag_id != drag_id);
+            if runtime
+                .active_drag
+                .as_ref()
+                .is_some_and(|active| active.payload.drag_id == drag_id)
+            {
+                runtime.active_drag = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if cancelled {
+            let _ = app.emit(
+                "browser-extension-image-drag-cancelled",
+                json!({ "dragId": drag_id }),
+            );
+        }
+        return (200, json!({ "ok": true, "dragId": drag_id }));
+    }
     if path == "/v1/image-drag-started" {
         let Some(payload) = message.payload else {
             return (400, json!({ "error": "image_payload_required" }));
         };
-        if !valid_web_url(&payload.image_url)
-            || payload
-                .page_url
-                .as_deref()
-                .is_some_and(|value| !valid_web_url(value))
+        let Some(drag_id) = valid_drag_id(payload.drag_id.as_deref()).map(str::to_string) else {
+            return (400, json!({ "error": "invalid_drag_id" }));
+        };
+        if payload
+            .page_url
+            .as_deref()
+            .is_some_and(|value| !valid_web_url(value))
         {
+            return (400, json!({ "error": "invalid_page_url" }));
+        }
+        let kind = payload
+            .kind
+            .as_deref()
+            .unwrap_or("url")
+            .to_ascii_lowercase();
+        if !matches!(kind.as_str(), "url" | "blob" | "data") {
+            return (400, json!({ "error": "invalid_image_kind" }));
+        }
+        let source_type = payload
+            .source_type
+            .as_deref()
+            .unwrap_or("img")
+            .to_ascii_lowercase();
+        if !valid_image_source_type(&source_type) {
+            return (400, json!({ "error": "invalid_image_source_type" }));
+        }
+        let image_url = payload.image_url.filter(|value| valid_web_url(value));
+        let data_url = if let Some(upload_id) = payload.upload_id.as_deref() {
+            let Some(upload_id) = valid_drag_id(Some(upload_id)) else {
+                return (400, json!({ "error": "invalid_upload_id" }));
+            };
+            let upload = if let Ok(mut runtime) = inner.runtime.lock() {
+                cleanup_drag_runtime(&mut runtime);
+                runtime.pending_uploads.remove(upload_id)
+            } else {
+                None
+            };
+            let Some(upload) = upload else {
+                return (400, json!({ "error": "image_upload_not_found" }));
+            };
+            if upload.drag_id != drag_id || upload.chunks.iter().any(Option::is_none) {
+                return (400, json!({ "error": "image_upload_incomplete" }));
+            }
+            Some(upload.chunks.into_iter().flatten().collect::<String>())
+        } else {
+            payload.data_url
+        };
+        if kind == "url" && image_url.is_none() {
             return (400, json!({ "error": "http_image_url_required" }));
         }
+        if matches!(kind.as_str(), "blob" | "data")
+            && !data_url.as_deref().is_some_and(valid_image_data_url)
+        {
+            return (400, json!({ "error": "image_data_url_required" }));
+        }
         let event = BrowserExtensionDragPayload {
+            drag_id: drag_id.clone(),
             browser: message.browser,
             extension_id: message.extension_id,
-            image_url: truncate(payload.image_url, 8192),
+            kind,
+            image_url: image_url.map(|value| truncate(value, 8192)),
+            data_url,
+            local_path: None,
             page_url: payload.page_url.map(|value| truncate(value, 8192)),
             page_title: payload.page_title.map(|value| truncate(value, 512)),
             image_title: payload.image_title.map(|value| truncate(value, 512)),
             alt: payload.alt.map(|value| truncate(value, 512)),
             width: payload.width,
             height: payload.height,
+            source_type,
         };
-        let _ = app.emit("browser-extension-image-drag-started", event);
+        let replaced_drag_id = if let Ok(mut runtime) = inner.runtime.lock() {
+            cleanup_drag_runtime(&mut runtime);
+            if runtime.committed_drag_ids.contains_key(&drag_id) {
+                return (
+                    200,
+                    json!({ "ok": true, "duplicate": true, "dragId": drag_id }),
+                );
+            }
+            runtime
+                .active_drag
+                .replace(ActiveBrowserDrag {
+                    payload: event,
+                    started_at: unix_time(),
+                })
+                .map(|active| active.payload.drag_id)
+        } else {
+            return (500, json!({ "error": "runtime_unavailable" }));
+        };
+        if let Some(replaced_drag_id) = replaced_drag_id.filter(|value| value != &drag_id) {
+            emit_drag_lifecycle_event(
+                &app,
+                "browser-extension-image-drag-cancelled",
+                &replaced_drag_id,
+            );
+        }
+        if let Some(edge_window) = app.get_webview_window("edge") {
+            let _ = edge_window.show();
+        }
+        emit_drag_lifecycle_event(&app, "browser-extension-image-drag-started", &drag_id);
+        return (200, json!({ "ok": true, "dragId": drag_id }));
     }
     (
         200,
@@ -860,6 +1110,120 @@ fn copy_directory(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn emit_drag_lifecycle_event(app: &AppHandle, event: &str, drag_id: &str) {
+    let payload = json!({ "dragId": drag_id });
+    let _ = app.emit_to("main", event, payload.clone());
+    let _ = app.emit_to("edge", event, payload);
+}
+
+fn materialize_browser_drag_data(
+    app: &AppHandle,
+    payload: &mut BrowserExtensionDragPayload,
+) -> Result<(), String> {
+    let Some(data_url) = payload.data_url.take() else {
+        return Ok(());
+    };
+    let extension = data_image_extension(&data_url);
+    let file_name = format!("browser-image-{}.{}", payload.drag_id, extension);
+    match crate::save_dropped_data_url_impl(app, &file_name, &data_url) {
+        Ok(path) => {
+            payload.local_path = Some(path);
+            Ok(())
+        }
+        Err(error) => {
+            payload.data_url = Some(data_url);
+            Err(format!("保存浏览器图片失败：{error}"))
+        }
+    }
+}
+
+fn data_image_extension(data_url: &str) -> &'static str {
+    let mime = data_url
+        .split_once(',')
+        .map(|(metadata, _)| metadata.to_ascii_lowercase())
+        .unwrap_or_default();
+    if mime.contains("image/jpeg") {
+        "jpg"
+    } else if mime.contains("image/webp") {
+        "webp"
+    } else if mime.contains("image/gif") {
+        "gif"
+    } else if mime.contains("image/bmp") {
+        "bmp"
+    } else if mime.contains("image/svg+xml") {
+        "svg"
+    } else if mime.contains("image/avif") {
+        "avif"
+    } else {
+        "png"
+    }
+}
+
+fn copy_extension_bundle(source: &Path, target: &Path) -> Result<(), String> {
+    copy_directory(source, target)?;
+
+    // Releases before 1.1.0 contained `manifest.json` next to a `src` folder.
+    // Flatten those already-bundled resources at prepare time as well so an app
+    // upgrade fixes the install directory without requiring a separate download.
+    let legacy_source = target.join("src");
+    if legacy_source.is_dir() {
+        copy_directory(&legacy_source, target)?;
+        fs::remove_dir_all(&legacy_source).map_err(|error| error.to_string())?;
+        rewrite_extension_manifest_paths(&target.join("manifest.json"))?;
+    }
+    Ok(())
+}
+
+fn rewrite_extension_manifest_paths(manifest_path: &Path) -> Result<(), String> {
+    let content = fs::read_to_string(manifest_path).map_err(|error| error.to_string())?;
+    let mut manifest: Value = serde_json::from_str(&content).map_err(|error| error.to_string())?;
+    strip_extension_source_prefix(&mut manifest);
+    let content = serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?;
+    fs::write(manifest_path, format!("{content}\n")).map_err(|error| error.to_string())
+}
+
+fn strip_extension_source_prefix(value: &mut Value) {
+    match value {
+        Value::String(path) => {
+            if let Some(flattened) = path.strip_prefix("src/") {
+                *path = flattened.to_string();
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                strip_extension_source_prefix(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                strip_extension_source_prefix(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reveal_prepared_extension(path: &Path) -> Result<(), String> {
+    let manifest = path.join("manifest.json");
+    if !manifest.is_file() {
+        return Err("扩展目录缺少 manifest.json，请重新准备扩展文件".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("explorer.exe");
+        command.arg(format!("/select,{}", manifest.to_string_lossy()));
+        command.creation_flags(CREATE_NO_WINDOW);
+        return command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    open::that(path).map_err(|error| error.to_string())
+}
+
 fn launch_browser(executable: &str, target: &str) -> Result<(), String> {
     let mut command = Command::new(executable);
     command.arg(target);
@@ -900,6 +1264,48 @@ fn valid_web_url(value: &str) -> bool {
     Url::parse(value)
         .ok()
         .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
+fn valid_drag_id(value: Option<&str>) -> Option<&str> {
+    let value = value?.trim();
+    (value.len() >= 8
+        && value.len() <= 160
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+    .then_some(value)
+}
+
+fn valid_image_source_type(value: &str) -> bool {
+    matches!(
+        value,
+        "img" | "picture" | "srcset" | "background" | "lazy" | "blob" | "data"
+    )
+}
+
+fn valid_image_data_url(value: &str) -> bool {
+    value.len() <= MAX_IMAGE_DATA_URL_BYTES
+        && value
+            .get(..11)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/"))
+        && value.contains(',')
+}
+
+fn cleanup_drag_runtime(runtime: &mut RuntimeState) {
+    let now = unix_time();
+    if runtime
+        .active_drag
+        .as_ref()
+        .is_some_and(|active| now.saturating_sub(active.started_at) > ACTIVE_DRAG_TTL_SECONDS)
+    {
+        runtime.active_drag = None;
+    }
+    runtime
+        .pending_uploads
+        .retain(|_, upload| now.saturating_sub(upload.created_at) <= ACTIVE_DRAG_TTL_SECONDS);
+    runtime
+        .committed_drag_ids
+        .retain(|_, committed_at| now.saturating_sub(*committed_at) <= RECENT_DRAG_TTL_SECONDS);
 }
 
 fn version_is_older(current: &str, minimum: &str) -> bool {
@@ -1012,5 +1418,63 @@ mod tests {
         assert!(valid_web_url("https://example.com/image.png"));
         assert!(!valid_web_url("file:///C:/secret.png"));
         assert!(!valid_web_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn browser_image_data_urls_are_bounded_and_typed() {
+        assert!(valid_image_data_url("data:image/png;base64,aGVsbG8="));
+        assert!(!valid_image_data_url(
+            "data:text/html;base64,PGgxPk5vPC9oMT4="
+        ));
+        assert!(!valid_image_data_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn drag_ids_and_source_types_are_strictly_validated() {
+        assert_eq!(valid_drag_id(Some("drag_123456")), Some("drag_123456"));
+        assert!(valid_drag_id(Some("../bad drag")).is_none());
+        assert!(valid_image_source_type("background"));
+        assert!(valid_image_source_type("blob"));
+        assert!(!valid_image_source_type("screenshot"));
+    }
+
+    #[test]
+    fn legacy_extension_manifest_paths_are_flattened() {
+        let mut manifest = json!({
+            "background": { "service_worker": "src/background/serviceWorker.js" },
+            "content_scripts": [{
+                "js": ["src/content/imageResolver.js", "src/content/dragDetector.js"]
+            }],
+            "description": "src is only changed when it is a path prefix"
+        });
+        strip_extension_source_prefix(&mut manifest);
+        assert_eq!(
+            manifest["background"]["service_worker"],
+            "background/serviceWorker.js"
+        );
+        assert_eq!(
+            manifest["content_scripts"][0]["js"][0],
+            "content/imageResolver.js"
+        );
+        assert_eq!(
+            manifest["description"],
+            "src is only changed when it is a path prefix"
+        );
+    }
+
+    #[test]
+    fn browser_data_image_extensions_are_bounded_to_known_media_types() {
+        assert_eq!(
+            data_image_extension("data:image/jpeg;base64,ZmFrZQ=="),
+            "jpg"
+        );
+        assert_eq!(
+            data_image_extension("data:image/webp;base64,ZmFrZQ=="),
+            "webp"
+        );
+        assert_eq!(
+            data_image_extension("data:image/unknown;base64,ZmFrZQ=="),
+            "png"
+        );
     }
 }

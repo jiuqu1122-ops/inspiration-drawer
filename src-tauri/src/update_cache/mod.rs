@@ -97,6 +97,12 @@ pub fn cleanup_update_cache_on_startup(app_handle: &tauri::AppHandle) {
         eprintln!("[update-cache] clear stale active installer directory failed: {error}");
     }
     manager.cleanup_update_cache(None);
+
+    // Older updater releases extracted their installer directly into the system
+    // temp directory and left it behind after launching the new application.
+    // The newest directory may still contain the running installer, so retain it
+    // and remove only older, strictly validated Inspiration Drawer updater dirs.
+    manager::cleanup_legacy_tauri_updater_dirs(&std::env::temp_dir());
 }
 
 #[cfg(all(test, target_os = "windows"))]

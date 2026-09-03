@@ -587,6 +587,132 @@ fn env_proxy() -> Option<String> {
         .and_then(|value| normalize_proxy_endpoint(&value))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxySource {
+    RequestExplicit,
+    AppConfigured,
+    WindowsSystem,
+    Environment,
+}
+
+impl ProxySource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RequestExplicit => "请求指定代理",
+            Self::AppConfigured => "应用手动代理",
+            Self::WindowsSystem => "Windows 系统代理",
+            Self::Environment => "环境变量代理",
+        }
+    }
+
+    fn allows_direct_fallback(self) -> bool {
+        matches!(self, Self::WindowsSystem | Self::Environment)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EffectiveProxy {
+    endpoint: String,
+    source: ProxySource,
+}
+
+fn effective_proxy_route(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+) -> Option<EffectiveProxy> {
+    if let Some(endpoint) = explicit_proxy.and_then(normalize_proxy_endpoint) {
+        return Some(EffectiveProxy {
+            endpoint,
+            source: ProxySource::RequestExplicit,
+        });
+    }
+
+    if let Some(endpoint) = app_handle
+        .map(read_network_proxy)
+        .and_then(|value| normalize_proxy_endpoint(&value))
+    {
+        return Some(EffectiveProxy {
+            endpoint,
+            source: ProxySource::AppConfigured,
+        });
+    }
+
+    if let Some(endpoint) = windows_system_proxy() {
+        return Some(EffectiveProxy {
+            endpoint,
+            source: ProxySource::WindowsSystem,
+        });
+    }
+
+    env_proxy().map(|endpoint| EffectiveProxy {
+        endpoint,
+        source: ProxySource::Environment,
+    })
+}
+
+fn proxy_route_label(route: Option<&EffectiveProxy>) -> &'static str {
+    route.map(|value| value.source.label()).unwrap_or("直连")
+}
+
+fn should_retry_without_proxy(source: Option<ProxySource>, is_connect_error: bool) -> bool {
+    is_connect_error && source.is_some_and(ProxySource::allows_direct_fallback)
+}
+
+fn redact_network_error_detail(value: &str) -> String {
+    let mut sanitized = value
+        .split_whitespace()
+        .map(|part| {
+            let lowercase = part.to_ascii_lowercase();
+            if lowercase.contains("http://") || lowercase.contains("https://") {
+                "[请求地址已隐藏]"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    sanitized.retain(|character| !character.is_control());
+    if sanitized.chars().count() > 240 {
+        sanitized = sanitized.chars().take(240).collect::<String>();
+        sanitized.push('…');
+    }
+    sanitized
+}
+
+pub(crate) fn describe_reqwest_error(error: &reqwest::Error) -> String {
+    let category = if error.is_timeout() {
+        "超时"
+    } else if error.is_connect() {
+        "连接/DNS/TLS/代理"
+    } else if error.is_request() {
+        "构造请求"
+    } else if error.is_body() {
+        "传输响应体"
+    } else if error.is_decode() {
+        "解析响应"
+    } else {
+        "网络"
+    };
+    let mut details = Vec::new();
+    let mut source = std::error::Error::source(error);
+    while let Some(current) = source {
+        let detail = redact_network_error_detail(&current.to_string());
+        if !detail.is_empty() && details.last() != Some(&detail) {
+            details.push(detail);
+        }
+        if details.len() >= 4 {
+            break;
+        }
+        source = current.source();
+    }
+
+    if details.is_empty() {
+        format!("{category}错误（请求地址、凭证和请求内容已隐藏）")
+    } else {
+        format!("{category}错误：{}", details.join("；"))
+    }
+}
+
 fn network_proxy_config_path(app_handle: &tauri::AppHandle) -> PathBuf {
     get_user_data_dir(app_handle).join("network_proxy.txt")
 }
@@ -622,17 +748,7 @@ fn effective_proxy(
     app_handle: Option<&tauri::AppHandle>,
     explicit_proxy: Option<&str>,
 ) -> Option<String> {
-    // 优先级：请求显式代理 > App 内保存代理 > Windows 系统代理 > 环境变量
-    // 这样既保留自动代理，又允许用户在特殊网络环境里手动覆盖。
-    explicit_proxy
-        .and_then(normalize_proxy_endpoint)
-        .or_else(|| {
-            app_handle
-                .map(read_network_proxy)
-                .and_then(|value| normalize_proxy_endpoint(&value))
-        })
-        .or_else(windows_system_proxy)
-        .or_else(env_proxy)
+    effective_proxy_route(app_handle, explicit_proxy).map(|value| value.endpoint)
 }
 
 pub(crate) fn build_http_client(
@@ -656,6 +772,45 @@ pub(crate) fn build_http_client(
         .map_err(|e| format!("初始化网络客户端失败：{}", e))
 }
 
+pub(crate) fn build_async_http_client(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(Policy::limited(10))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(timeout_secs));
+
+    if let Some(proxy) = effective_proxy(app_handle, explicit_proxy) {
+        let proxy = reqwest::Proxy::all(&proxy).map_err(|e| format!("代理配置无效：{e}"))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("初始化异步网络客户端失败：{e}"))
+}
+
+pub(crate) fn build_async_http_clients_with_direct_fallback(
+    app_handle: Option<&tauri::AppHandle>,
+    explicit_proxy: Option<&str>,
+    timeout_secs: u64,
+) -> Result<(reqwest::Client, Option<reqwest::Client>), String> {
+    let route = effective_proxy_route(app_handle, explicit_proxy);
+    let client = build_async_http_client(app_handle, explicit_proxy, timeout_secs)?;
+    let direct_client = if route
+        .as_ref()
+        .is_some_and(|value| value.source.allows_direct_fallback())
+    {
+        build_direct_async_http_client(timeout_secs).ok()
+    } else {
+        None
+    };
+    Ok((client, direct_client))
+}
+
 fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
     Client::builder()
         .user_agent(APP_USER_AGENT)
@@ -665,6 +820,59 @@ fn build_direct_http_client(timeout_secs: u64) -> Result<Client, String> {
         .no_proxy()
         .build()
         .map_err(|e| format!("初始化直连网络客户端失败：{}", e))
+}
+
+fn build_direct_async_http_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(Policy::limited(10))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(timeout_secs))
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("初始化异步直连网络客户端失败：{e}"))
+}
+
+#[cfg(test)]
+mod network_compatibility_tests {
+    use super::{redact_network_error_detail, should_retry_without_proxy, ProxySource};
+
+    #[test]
+    fn only_automatic_proxy_connect_errors_allow_direct_fallback() {
+        assert!(should_retry_without_proxy(
+            Some(ProxySource::WindowsSystem),
+            true
+        ));
+        assert!(should_retry_without_proxy(
+            Some(ProxySource::Environment),
+            true
+        ));
+        assert!(!should_retry_without_proxy(
+            Some(ProxySource::RequestExplicit),
+            true
+        ));
+        assert!(!should_retry_without_proxy(
+            Some(ProxySource::AppConfigured),
+            true
+        ));
+        assert!(!should_retry_without_proxy(
+            Some(ProxySource::WindowsSystem),
+            false
+        ));
+        assert!(!should_retry_without_proxy(None, true));
+    }
+
+    #[test]
+    fn network_diagnostics_hide_urls_and_limit_details() {
+        let value = format!(
+            "proxy failed for https://example.com/update?token=secret {}",
+            "x".repeat(400)
+        );
+        let sanitized = redact_network_error_detail(&value);
+        assert!(!sanitized.contains("example.com"));
+        assert!(!sanitized.contains("secret"));
+        assert!(sanitized.chars().count() <= 241);
+    }
 }
 
 fn validate_media_redirect_target(url: &Url, previous_count: usize) -> Result<(), &'static str> {
@@ -2332,6 +2540,55 @@ fn emit_app_update_progress_detail(
     let _ = app_handle.emit("app-update-progress", payload);
 }
 
+fn send_app_update_manifest_request(
+    client: &Client,
+    route: Option<&EffectiveProxy>,
+    timeout_secs: u64,
+    endpoint: &Url,
+) -> Result<reqwest::blocking::Response, String> {
+    match client.get(endpoint.clone()).send() {
+        Ok(response) => Ok(response),
+        Err(primary_error) => {
+            let primary_detail = describe_reqwest_error(&primary_error);
+            if !should_retry_without_proxy(
+                route.map(|value| value.source),
+                primary_error.is_connect(),
+            ) {
+                return Err(format!(
+                    "线路={}；{}",
+                    proxy_route_label(route),
+                    primary_detail
+                ));
+            }
+
+            eprintln!(
+                "[app-update] manifest connection failed via {}; retrying direct: {}",
+                proxy_route_label(route),
+                primary_detail
+            );
+            let direct_client = build_direct_http_client(timeout_secs).map_err(|error| {
+                format!(
+                    "线路={}；{}；直连客户端初始化失败：{}",
+                    proxy_route_label(route),
+                    primary_detail,
+                    error
+                )
+            })?;
+            direct_client
+                .get(endpoint.clone())
+                .send()
+                .map_err(|direct_error| {
+                    format!(
+                        "线路={}；{}；直连重试失败：{}",
+                        proxy_route_label(route),
+                        primary_detail,
+                        describe_reqwest_error(&direct_error)
+                    )
+                })
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn fetch_app_update_manifest_probe(
     app_handle: &tauri::AppHandle,
@@ -2340,6 +2597,7 @@ fn fetch_app_update_manifest_probe(
 ) -> Result<AppUpdateManifestProbe, String> {
     let endpoints = app_update_manifest_endpoints_from_config()?;
     let timeout_secs = timeout.as_secs().max(1);
+    let route = effective_proxy_route(Some(app_handle), None);
     let client = build_http_client(Some(app_handle), None, timeout_secs)?;
     let mut failures = Vec::new();
 
@@ -2364,10 +2622,15 @@ fn fetch_app_update_manifest_probe(
         );
         eprintln!("[app-update] updater=自定义多源 updater manifest endpoint={endpoint_text}");
 
-        let response = match client.get(endpoint.clone()).send() {
+        let response = match send_app_update_manifest_request(
+            &client,
+            route.as_ref(),
+            timeout_secs,
+            &endpoint,
+        ) {
             Ok(response) => response,
-            Err(err) => {
-                let message = format!("manifest 请求失败：{endpoint_text}；原始错误: {err}");
+            Err(network_error) => {
+                let message = format!("manifest 请求失败：{endpoint_text}；{network_error}");
                 eprintln!("[app-update] {message}");
                 emit_app_update_progress_detail(
                     app_handle,
@@ -2384,7 +2647,7 @@ fn fetch_app_update_manifest_probe(
                     None,
                     None,
                     None,
-                    Some(&err.to_string()),
+                    Some(&network_error),
                 );
                 failures.push(message);
                 continue;
@@ -2538,6 +2801,7 @@ fn fetch_app_update_manifest_probe_for_current_version(
 ) -> Result<AppUpdateManifestProbe, String> {
     let endpoints = app_update_manifest_endpoints_from_config()?;
     let timeout_secs = timeout.as_secs().max(1);
+    let route = effective_proxy_route(Some(app_handle), None);
     let client = build_http_client(Some(app_handle), None, timeout_secs)?;
     let mut failures = Vec::new();
     let mut best_probe: Option<(AppUpdateManifestProbe, String)> = None;
@@ -2563,10 +2827,15 @@ fn fetch_app_update_manifest_probe_for_current_version(
         );
         eprintln!("[app-update] updater=自定义多源 updater manifest endpoint={endpoint_text}");
 
-        let response = match client.get(endpoint.clone()).send() {
+        let response = match send_app_update_manifest_request(
+            &client,
+            route.as_ref(),
+            timeout_secs,
+            &endpoint,
+        ) {
             Ok(response) => response,
-            Err(err) => {
-                let message = format!("manifest 请求失败：{endpoint_text}；原始错误: {err}");
+            Err(network_error) => {
+                let message = format!("manifest 请求失败：{endpoint_text}；{network_error}");
                 eprintln!("[app-update] {message}");
                 failures.push(message);
                 continue;
@@ -18157,6 +18426,7 @@ fn main() {
             browser_extension::browser_extension_open_extension_page,
             browser_extension::browser_extension_open_prepared_folder,
             browser_extension::browser_extension_dismiss_setup_prompt,
+            browser_extension::browser_extension_accept_current_web_drag,
             commands::migration::migrate_json_to_sqlite,
             commands::migration::ensure_sqlite_asset_library,
             commands::migration::get_migration_status,

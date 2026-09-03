@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Tag, Star, FolderMinus, FolderOpen, Download, Copy,
-  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, StickyNote, Search
+  Check, X, ShieldCheck, Film, Play, File as FileIcon, Link, StickyNote
 } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -277,7 +277,7 @@ function BufferItemCard({
   onRemove, onRemoveFromFolder, onTogglePin,
   onImageClick, onVideoClick, isSelectMode,
   isSelected, onToggleSelect, onUpdateRemark, onUpdateText, showToast,
-  onCollectSimilarImages, onEnsureThumbnail, onCreateFloatingNote,
+  onEnsureThumbnail, onCreateFloatingNote,
   onMediaDimensionsResolved,
   onTextEditStart, onTextEditEnd, preferFullImageSource = false,
   optimizeLargeList = false
@@ -628,7 +628,6 @@ function BufferItemCard({
   const paletteGap = scaleSize(6, 4);
   const btnClass = `${isSmallCard ? 'p-1 rounded-[7px]' : 'p-1.5 rounded-[8px]'} border border-white/55 bg-white/88 dark:border-stone-600/70 dark:bg-stone-800/90 backdrop-blur-xl text-stone-500 dark:text-stone-300 hover:text-stone-950 hover:bg-white dark:hover:bg-stone-700 dark:hover:text-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] transition-all pointer-events-auto`;
   const iconClass = isSmallCard ? 'w-3 h-3' : 'w-3.5 h-3.5';
-  const canCollectSimilarImages = item.type === 'image' && typeof onCollectSimilarImages === 'function' && !isSelectMode;
   const hasCompactAiTerms = item.type === 'image'
     && (imageAnalysisTerms.length > 0 || imageAnalysisPalette.length > 0);
   const imageCardSource = getImageListSource(item, { allowOriginalFallback: !!preferFullImageSource });
@@ -717,12 +716,6 @@ function BufferItemCard({
     const timer = window.setTimeout(() => onEnsureThumbnail?.(item), optimizeLargeList ? 120 : 0);
     return () => window.clearTimeout(timer);
   }, [imageCardSource, item?.id, item?.thumbnail, item?.type, optimizeLargeList, onEnsureThumbnail]);
-
-  const handleCollectSimilarImagesClick = (e: React.MouseEvent | any) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (typeof onCollectSimilarImages === 'function') onCollectSimilarImages(item);
-  };
 
   const saveTextContent = () => {
     if (skipTextEditSaveRef.current) {
@@ -827,17 +820,6 @@ return (
               title="固定为桌面便签"
               className={`${btnClass} hover:text-amber-600`}
             ><StickyNote className={iconClass} /></button>
-          )}
-
-          {canCollectSimilarImages && (
-            <button
-              type="button"
-              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onClick={handleCollectSimilarImagesClick}
-              title="作为参考图收图"
-              className={`${btnClass} hover:text-sky-600`}
-            ><Search className={iconClass} /></button>
           )}
 
           {item.folderId && (

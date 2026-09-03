@@ -38,6 +38,13 @@ export type BufferItem = {
   sourceUrl?: string;
   pageUrl?: string;
   originalUrl?: string;
+  sourceSite?: string;
+  pageTitle?: string;
+  imageAlt?: string;
+  originalWidth?: number;
+  originalHeight?: number;
+  captureSource?: 'browser-extension' | string;
+  captureSourceType?: 'img' | 'picture' | 'srcset' | 'background' | 'lazy' | 'blob' | 'data' | string;
   inspirationProfile?: InspirationProfile;
   inspirationAnalysisFailure?: {
     attemptedAt: number;

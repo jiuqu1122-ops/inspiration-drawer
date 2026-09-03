@@ -870,14 +870,12 @@ pub async fn agent_analyze_inspiration(
 ) -> Result<Value, String> {
     let request_id = format!("inspiration-{}", uuid_like_id());
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("无法初始化灵感自动分析连接：{error}"))?;
+    let (client, direct_client) =
+        crate::build_async_http_clients_with_direct_fallback(Some(&app_handle), None, 30)?;
     let payload = build_inspiration_analysis_payload(&request);
-    let submission = submit_wallet_task(
+    let (submission, use_direct) = submit_wallet_task(
         &client,
+        direct_client.as_ref(),
         &access_token,
         &request_id,
         "inspiration_analysis",
@@ -887,6 +885,8 @@ pub async fn agent_analyze_inspiration(
     let value = poll_wallet_task(
         &app_handle,
         &client,
+        direct_client.as_ref(),
+        use_direct,
         &access_token,
         &request_id,
         submission,
@@ -949,6 +949,14 @@ fn wallet_poll_status_is_retryable(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 429 | 502 | 503 | 504 | 524)
 }
 
+fn wallet_submission_allows_direct_retry(
+    has_direct_client: bool,
+    is_connect_error: bool,
+    is_timeout: bool,
+) -> bool {
+    has_direct_client && is_connect_error && !is_timeout
+}
+
 fn openai_request_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request_id: &str) -> bool {
     cancellations
         .lock()
@@ -958,23 +966,57 @@ fn openai_request_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request
 
 async fn submit_wallet_task(
     client: &reqwest::Client,
+    direct_client: Option<&reqwest::Client>,
     access_token: &str,
     request_id: &str,
     task_type: &str,
     payload: Value,
-) -> Result<WalletTaskSubmission, String> {
+) -> Result<(WalletTaskSubmission, bool), String> {
+    let body = json!({
+        "type": task_type,
+        "requestId": request_id,
+        "payload": payload,
+    });
     let response = client
         .post("https://api.unmind.art/v1/ai/tasks")
         .timeout(Duration::from_secs(30))
         .bearer_auth(access_token)
-        .json(&json!({
-            "type": task_type,
-            "requestId": request_id,
-            "payload": payload,
-        }))
+        .json(&body)
         .send()
-        .await
-        .map_err(|error| format!("提交后台任务失败：{error}"))?;
+        .await;
+    let (response, used_direct) = match response {
+        Ok(response) => (response, false),
+        Err(primary_error)
+            if wallet_submission_allows_direct_retry(
+                direct_client.is_some(),
+                primary_error.is_connect(),
+                primary_error.is_timeout(),
+            ) =>
+        {
+            let primary_detail = crate::describe_reqwest_error(&primary_error);
+            let direct_client = direct_client.expect("direct client checked above");
+            let response = direct_client
+                .post("https://api.unmind.art/v1/ai/tasks")
+                .timeout(Duration::from_secs(30))
+                .bearer_auth(access_token)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|direct_error| {
+                    format!(
+                        "提交后台任务失败：自动代理线路 {primary_detail}；直连重试 {}",
+                        crate::describe_reqwest_error(&direct_error)
+                    )
+                })?;
+            (response, true)
+        }
+        Err(error) => {
+            return Err(format!(
+                "提交后台任务失败：{}",
+                crate::describe_reqwest_error(&error)
+            ));
+        }
+    };
     let status = response.status();
     let value = response
         .json::<Value>()
@@ -986,12 +1028,16 @@ async fn submit_wallet_task(
             wallet_task_error(&value, "服务暂不可用")
         ));
     }
-    serde_json::from_value(value).map_err(|error| format!("后台任务提交响应格式无效：{error}"))
+    serde_json::from_value(value)
+        .map(|submission| (submission, used_direct))
+        .map_err(|error| format!("后台任务提交响应格式无效：{error}"))
 }
 
 async fn poll_wallet_task(
     app_handle: &tauri::AppHandle,
     client: &reqwest::Client,
+    direct_client: Option<&reqwest::Client>,
+    mut use_direct: bool,
     access_token: &str,
     request_id: &str,
     submission: WalletTaskSubmission,
@@ -1015,7 +1061,12 @@ async fn poll_wallet_task(
 
     loop {
         if openai_request_cancelled(cancellations, request_id) {
-            let _ = client
+            let active_client = if use_direct {
+                direct_client.unwrap_or(client)
+            } else {
+                client
+            };
+            let _ = active_client
                 .delete(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
                 .timeout(Duration::from_secs(15))
                 .bearer_auth(access_token)
@@ -1029,15 +1080,46 @@ async fn poll_wallet_task(
 
         tokio_sleep(Duration::from_secs(2)).await;
         poll_count += 1;
-        let response = client
+        let active_client = if use_direct {
+            direct_client.unwrap_or(client)
+        } else {
+            client
+        };
+        let response = active_client
             .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
             .timeout(Duration::from_secs(15))
             .bearer_auth(access_token)
             .send()
             .await;
         let response = match response {
+            Ok(value) => Ok(value),
+            Err(primary_error)
+                if !use_direct && primary_error.is_connect() && direct_client.is_some() =>
+            {
+                let primary_detail = crate::describe_reqwest_error(&primary_error);
+                let direct_client = direct_client.expect("direct client checked above");
+                match direct_client
+                    .get(format!("https://api.unmind.art/v1/ai/tasks/{task_id}"))
+                    .timeout(Duration::from_secs(15))
+                    .bearer_auth(access_token)
+                    .send()
+                    .await
+                {
+                    Ok(value) => {
+                        use_direct = true;
+                        Ok(value)
+                    }
+                    Err(direct_error) => Err(format!(
+                        "自动代理线路 {primary_detail}；直连重试 {}",
+                        crate::describe_reqwest_error(&direct_error)
+                    )),
+                }
+            }
+            Err(error) => Err(crate::describe_reqwest_error(&error)),
+        };
+        let response = match response {
             Ok(value) => value,
-            Err(error) => {
+            Err(error_detail) => {
                 consecutive_errors += 1;
                 let delay = wallet_poll_backoff_seconds(consecutive_errors);
                 let _ = app_handle.emit(
@@ -1053,7 +1135,7 @@ async fn poll_wallet_task(
                     }),
                 );
                 if started_at.elapsed() > Duration::from_secs(12 * 60) {
-                    return Err(format!("后台任务查询持续失败：{error}"));
+                    return Err(format!("后台任务查询持续失败：{error_detail}"));
                 }
                 tokio_sleep(Duration::from_secs(delay)).await;
                 continue;
@@ -1535,11 +1617,8 @@ async fn agent_wallet_chat(
     wallet_pollers: Arc<Mutex<HashSet<String>>>,
 ) -> Result<AgentOpenAiChatResult, String> {
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("无法初始化钱包 Agent 连接：{error}"))?;
+    let (client, direct_client) =
+        crate::build_async_http_clients_with_direct_fallback(Some(&app_handle), None, 30)?;
     if let Ok(mut tasks) = wallet_tasks.lock() {
         if tasks.is_empty() {
             tasks.extend(read_pending_wallet_tasks(&app_handle));
@@ -1552,11 +1631,14 @@ async fn agent_wallet_chat(
         .lock()
         .ok()
         .and_then(|tasks| tasks.get(&request.request_id).cloned());
-    let submission = if let Some(task_id) = persisted_task_id {
-        WalletTaskSubmission {
-            task_id,
-            status: "running".to_string(),
-        }
+    let (submission, use_direct) = if let Some(task_id) = persisted_task_id {
+        (
+            WalletTaskSubmission {
+                task_id,
+                status: "running".to_string(),
+            },
+            false,
+        )
     } else {
         let mut payload = json!({
             "messages": request.messages,
@@ -1567,6 +1649,7 @@ async fn agent_wallet_chat(
         }
         submit_wallet_task(
             &client,
+            direct_client.as_ref(),
             &access_token,
             &request.request_id,
             "agent_chat",
@@ -1588,6 +1671,8 @@ async fn agent_wallet_chat(
     let value = poll_wallet_task(
         &app_handle,
         &client,
+        direct_client.as_ref(),
+        use_direct,
         &access_token,
         &request.request_id,
         submission,
@@ -1675,11 +1760,7 @@ pub fn agent_cancel_openai(
             if let Ok(access_token) =
                 crate::commands::license::cloud_access_token(&app_handle).await
             {
-                let Ok(client) = reqwest::Client::builder()
-                    .connect_timeout(Duration::from_secs(10))
-                    .timeout(Duration::from_secs(15))
-                    .build()
-                else {
+                let Ok(client) = crate::build_async_http_client(Some(&app_handle), None, 15) else {
                     return;
                 };
                 let _ = client
@@ -1698,16 +1779,38 @@ pub async fn agent_list_openai_models(app_handle: tauri::AppHandle) -> Result<Ve
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
         let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(90))
-            .build()
-            .map_err(|error| format!("无法初始化钱包模型连接：{error}"))?;
+        let (client, direct_client) =
+            crate::build_async_http_clients_with_direct_fallback(Some(&app_handle), None, 90)?;
         let response = client
             .get("https://api.unmind.art/v1/ai/models")
-            .bearer_auth(access_token)
+            .bearer_auth(&access_token)
             .send()
-            .await
-            .map_err(|error| format!("钱包模型列表请求失败：{error}"))?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(primary_error) if primary_error.is_connect() && direct_client.is_some() => {
+                let primary_detail = crate::describe_reqwest_error(&primary_error);
+                direct_client
+                    .as_ref()
+                    .expect("direct client checked above")
+                    .get("https://api.unmind.art/v1/ai/models")
+                    .bearer_auth(&access_token)
+                    .send()
+                    .await
+                    .map_err(|direct_error| {
+                        format!(
+                            "钱包模型列表请求失败：自动代理线路 {primary_detail}；直连重试 {}",
+                            crate::describe_reqwest_error(&direct_error)
+                        )
+                    })?
+            }
+            Err(error) => {
+                return Err(format!(
+                    "钱包模型列表请求失败：{}",
+                    crate::describe_reqwest_error(&error)
+                ));
+            }
+        };
         let status = response.status();
         let value = response
             .json::<Value>()
@@ -2653,6 +2756,14 @@ mod tests {
         assert!(!wallet_poll_status_is_retryable(
             reqwest::StatusCode::UNAUTHORIZED
         ));
+    }
+
+    #[test]
+    fn wallet_submission_only_retries_an_unsent_connect_failure() {
+        assert!(wallet_submission_allows_direct_retry(true, true, false));
+        assert!(!wallet_submission_allows_direct_retry(true, true, true));
+        assert!(!wallet_submission_allows_direct_retry(true, false, false));
+        assert!(!wallet_submission_allows_direct_retry(false, true, false));
     }
 
     #[test]

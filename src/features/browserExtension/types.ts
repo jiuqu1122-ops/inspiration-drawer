@@ -48,13 +48,25 @@ export type BrowserExtensionInstallResult = {
 };
 
 export type BrowserExtensionDragPayload = {
+  dragId: string;
   browser: BrowserKind;
   extensionId: string;
-  imageUrl: string;
+  kind: 'url' | 'blob' | 'data';
+  imageUrl?: string | null;
+  dataUrl?: string | null;
+  localPath?: string | null;
   pageUrl?: string | null;
   pageTitle?: string | null;
   imageTitle?: string | null;
   alt?: string | null;
   width?: number | null;
   height?: number | null;
+  sourceType: 'img' | 'picture' | 'srcset' | 'background' | 'lazy' | 'blob' | 'data';
+};
+
+export type BrowserExtensionDropContext = {
+  target: 'drawer' | 'canvas';
+  clientX?: number;
+  clientY?: number;
+  folderId?: string;
 };

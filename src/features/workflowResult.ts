@@ -69,6 +69,7 @@ export type BuildWorkflowResultCardInput = {
   inspirationReferences?: WorkflowResultReference[];
   generationResults?: WorkflowResultMedia[];
   error?: string;
+  tasks?: NonNullable<WorkflowResultCardData['tasks']>;
 };
 
 const cleanText = (value: unknown, maxChars = MAX_TEXT_CHARS) => (
@@ -271,6 +272,21 @@ const normalizeStoredTextAsset = (value: unknown, index: number): WorkflowResult
   };
 };
 
+const normalizeWorkflowResultTasks = (value: unknown): NonNullable<WorkflowResultCardData['tasks']> => {
+  if (!Array.isArray(value)) return [];
+  const validStatuses = new Set(['idle', 'waiting', 'ready', 'running', 'success', 'failed', 'skipped']);
+  return value.flatMap((candidate, index) => {
+    const record = asRecord(candidate);
+    if (!record) return [];
+    const status = String(record.status || 'waiting');
+    return [{
+      id: cleanText(record.id, 180) || `workflow-task-${index}`,
+      label: cleanText(record.label, 160) || `任务 ${index + 1}`,
+      status: (validStatuses.has(status) ? status : 'waiting') as NonNullable<WorkflowResultCardData['tasks']>[number]['status'],
+    }];
+  }).slice(0, 80);
+};
+
 const STAGE_AGENT_META: Record<WorkflowResultStage['stage'], Pick<WorkflowResultTextAsset, 'agentRole' | 'artifactType'>> = {
   requirement: { agentRole: 'requirement_analyzer', artifactType: 'DesignBrief' },
   research: { agentRole: 'inspiration_analyzer', artifactType: 'ResearchReport' },
@@ -402,6 +418,7 @@ export const normalizeWorkflowResultCardData = (value: unknown): WorkflowResultC
       : buildFallbackNextSteps(status, textAssets, generationResults),
     error: cleanText(record.error, 1_000) || undefined,
     stages: providedStages,
+    tasks: normalizeWorkflowResultTasks(record.tasks),
   });
 };
 
@@ -492,5 +509,6 @@ export const buildWorkflowResultCardData = (
     generationResults,
     nextSteps,
     error: cleanText(input.error, 1_000) || undefined,
+    tasks: normalizeWorkflowResultTasks(input.tasks),
   });
 };
