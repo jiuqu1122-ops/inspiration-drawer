@@ -2,12 +2,16 @@ Inspiration Drawer macOS Preview
 
 当前版本为未公证测试版。
 
-首次运行：
-1. 解压整个 Preview ZIP
-2. 请不要单独移动 Inspiration Drawer.app 或 First Launch.command
-3. 双击 First Launch.command
-4. 如果 macOS 第一次阻止打开，请右键 First Launch.command → 打开
-5. App 成功启动后，以后可直接双击 Inspiration Drawer.app
+安装步骤
+
+1. 在 Mac 上解压 ZIP
+2. 打开 First Launch.command
+3. 如果被拦截：
+   系统设置 → 隐私与安全性 → 仍要打开
+4. App 会自动启动
+5. 以后直接双击 Inspiration Drawer应用图标
+
+请保持 Inspiration Drawer.app 和 First Launch.command 在同一文件夹。
 
 说明：
 - 本版本使用 ad-hoc signing
