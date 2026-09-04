@@ -11160,40 +11160,7 @@ function MainApp() {
 
   const imageSourceToModelDataUrl = async (source: string) => {
     const dataUrl = await imageSourceToDataUrl(source, true);
-    if (!dataUrl) return '';
-
-    return await new Promise<string>((resolve) => {
-      const image = new window.Image();
-      image.onload = () => {
-        try {
-          const width = image.naturalWidth || image.width;
-          const height = image.naturalHeight || image.height;
-          if (!width || !height) {
-            resolve(dataUrl);
-            return;
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            resolve(dataUrl);
-            return;
-          }
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(image, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.9));
-          canvas.width = 0;
-          canvas.height = 0;
-        } catch (_) {
-          resolve(dataUrl);
-        }
-      };
-      image.onerror = () => resolve(dataUrl);
-      image.decoding = 'async';
-      image.src = dataUrl;
-    });
+    return dataUrl || '';
   };
 
   const copyImageDataUrlToSystemClipboard = async (dataUrl: string) => {
@@ -40121,7 +40088,7 @@ useEffect(() => {
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
                       disabled={isCheckingAppUpdate || !autoUpdaterSupported}
-                      title={!autoUpdaterSupported ? 'macOS Preview 暂不支持自动更新' : undefined}
+                      title={!autoUpdaterSupported ? '当前平台暂不支持自动更新' : undefined}
                       className="flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-200 dark:hover:bg-emerald-400/15"
                     >
                       <RefreshCw className={`h-3.5 w-3.5 ${isCheckingAppUpdate ? 'animate-spin' : ''}`} />

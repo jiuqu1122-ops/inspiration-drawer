@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatAttachment } from '../model/chatTypes';
+import { MAX_INLINE_VISION_BYTES } from '../context/chatRequestSize';
 import { createChatVisionAttachmentResolver } from './chatVisionAttachmentResolver';
 
 const attachment = (id: string): ChatAttachment => ({
@@ -36,7 +37,13 @@ describe('Chat Vision attachment resolver', () => {
   it('does not fall back to Base64 when a large proxy upload fails', async () => {
     const invokeCommand = vi.fn(async (command: string) => {
       if (command === 'prepare_chat_vision_image') {
-        return { path: 'C:\\cache\\vision.jpg', mimeType: 'image/jpeg', byteLength: 400_000, width: 1600, height: 900 };
+        return {
+          path: 'C:\\cache\\vision.jpg',
+          mimeType: 'image/jpeg',
+          byteLength: MAX_INLINE_VISION_BYTES + 1,
+          width: 1600,
+          height: 900,
+        };
       }
       if (command === 'upload_wallet_reference_images') throw new Error('upload failed');
       throw new Error(`unexpected command: ${command}`);

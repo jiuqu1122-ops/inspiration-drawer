@@ -13,6 +13,8 @@ import {
 import { useEffect, useState } from 'react';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import type { WorkflowResultCardData, WorkflowResultStage } from '../features/agentModel';
+import { ChatMarkdown } from '../features/chat/components/ChatMarkdown';
+import { formatCanvasTextResultMarkdown } from '../utils/canvasTextContextRouting';
 
 type WorkflowResultCardProps = {
   result: WorkflowResultCardData;
@@ -51,6 +53,7 @@ const STAGE_LABELS: Record<WorkflowResultStage['stage'], string> = {
 
 const TextAsset = ({ title, content }: { title: string; content: string }) => {
   const [copied, setCopied] = useState(false);
+  const markdownContent = formatCanvasTextResultMarkdown(content);
 
   useEffect(() => {
     if (!copied) return undefined;
@@ -62,7 +65,7 @@ const TextAsset = ({ title, content }: { title: string; content: string }) => {
     event.preventDefault();
     event.stopPropagation();
     try {
-      await writeText(content);
+      await writeText(markdownContent);
       setCopied(true);
     } catch (error) {
       console.warn('复制工作流分析结果失败:', error);
@@ -93,12 +96,12 @@ const TextAsset = ({ title, content }: { title: string; content: string }) => {
       </summary>
       <div
         data-no-drag="true"
-        className="mt-2 max-h-52 cursor-text select-text overflow-y-auto whitespace-pre-wrap text-[9px] leading-4.5 text-stone-500 [scrollbar-width:thin] dark:text-stone-400"
+        className="mt-2 max-h-52 cursor-text select-text overflow-y-auto text-[9px] leading-4.5 text-stone-500 [--chat-border:#e7e5e4] [--chat-border-strong:#d6d3d1] [--chat-raised:#fff] [--chat-sidebar:#fafaf9] [--chat-soft:#f5f5f4] [--chat-text:#44403c] [--chat-text-soft:#78716c] [--chat-muted:#a8a29e] [scrollbar-width:thin] dark:text-stone-400 dark:[--chat-border:rgba(255,255,255,0.08)] dark:[--chat-border-strong:rgba(255,255,255,0.12)] dark:[--chat-raised:#20201f] dark:[--chat-sidebar:#292927] dark:[--chat-soft:rgba(255,255,255,0.06)] dark:[--chat-text:rgba(255,255,255,0.88)] dark:[--chat-text-soft:rgba(255,255,255,0.62)] dark:[--chat-muted:rgba(255,255,255,0.38)]"
         onPointerDown={(event) => event.stopPropagation()}
         onMouseDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
       >
-        {content}
+        <ChatMarkdown content={markdownContent} />
       </div>
     </details>
   );
