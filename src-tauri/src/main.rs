@@ -17985,15 +17985,15 @@ fn build_hidden_note_window(
         .fullscreen(false);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.transparent(true);
-    builder
+    let builder = builder
         .decorations(false)
         .always_on_top(false)
         .skip_taskbar(true)
         .visible(false)
-        .shadow(false)
-        .drag_and_drop(false)
-        .build()
-        .map_err(|e| e.to_string())
+        .shadow(false);
+    #[cfg(target_os = "windows")]
+    let builder = builder.drag_and_drop(false);
+    builder.build().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
