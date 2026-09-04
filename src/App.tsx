@@ -30643,6 +30643,9 @@ useEffect(() => {
 
   return (
       <div
+        data-platform={platformCapabilities?.platform === 'macos' || platformCapabilities?.platform === 'windows'
+          ? platformCapabilities.platform
+          : undefined}
         data-drawer-theme="true"
         className={`${isDark ? 'dark' : ''} drawer-theme w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none flex items-center justify-start pointer-events-none`}
         // 把全局拖拽接管挂在最外层
@@ -31054,6 +31057,7 @@ useEffect(() => {
       {/* 🌟 抽屉主体窗口：主窗口里不再包含小条，关闭时直接隐藏整个 main 窗口 */}
       <div
         data-drawer-shell="true"
+        data-canvas-chrome-hidden={isCanvasMode && isCanvasChromeHidden ? 'true' : 'false'}
         className={drawerShellClassName}
         style={{
           opacity: isLicenseGateActive ? 0.42 : snipMode.active ? 0 : 1,
@@ -31417,7 +31421,7 @@ useEffect(() => {
                             onClick={createBlankFloatingNote}
                             disabled={isCreatingBlankNote}
                             className="flex h-9 w-full shrink-0 items-center gap-2 rounded-[10px] border border-stone-200 bg-white px-2 text-left text-[12px] font-bold text-stone-700 shadow-none transition-all hover:bg-stone-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
-                            title={`新增便签（${noteShortcut}）`}
+                            title={`新增便签（${platformShortcutLabel(noteShortcut)}）`}
                           >
                             <Plus className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
                             <span className="min-w-0 flex-1 truncate">新增便签</span>
@@ -31731,7 +31735,7 @@ useEffect(() => {
                         type="button"
                         onClick={createBlankFloatingNote}
                         disabled={isCreatingBlankNote}
-                        title={`新增便签（${noteShortcut}）`}
+                        title={`新增便签（${platformShortcutLabel(noteShortcut)}）`}
                         className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] border border-stone-200 bg-white text-blue-600 shadow-none transition-all hover:scale-105 hover:bg-stone-100 disabled:scale-100 disabled:opacity-55 dark:border-stone-700 dark:bg-stone-900 dark:text-blue-400 dark:hover:bg-stone-800"
                       >
                         <Plus className="h-4 w-4" />
@@ -31895,7 +31899,7 @@ useEffect(() => {
                   {/* 右侧按钮组：按钮本身不拖动，按钮之间的空白仍可拖动 */}
                   <div data-drawer-tools="true" data-canvas-header-tools={isCanvasMode ? 'true' : undefined} className="z-[100] flex flex-nowrap items-center justify-end gap-2 flex-1 min-w-[180px] max-w-full">
 
-                    {isDrawerWorkbenchActive && (
+                    {isDrawerWorkbenchActive && !isMacDesktopWindow && (
                       <div
                         data-no-drag="true"
                         data-drawer-window-controls="true"
@@ -31977,7 +31981,7 @@ useEffect(() => {
                       <>
                         {isCanvasMode && (
                           <>
-                          {isCanvasWorkbenchActive && (
+                          {isCanvasWorkbenchActive && !isMacDesktopWindow && (
                             <div
                               data-no-drag="true"
                               data-canvas-window-controls="true"
@@ -32041,7 +32045,7 @@ useEffect(() => {
                             <button
                               onClick={enterCanvasMode}
                               className={`flex items-center gap-1 text-xs font-medium ${DRAWER_TOOL_BUTTON_BASE_CLASS} hover:bg-cyan-50 hover:text-cyan-600 dark:hover:bg-cyan-400/12 dark:hover:text-cyan-200`}
-                              title={`进入生图画布 (${canvasShortcut})`}
+                              title={`进入生图画布 (${platformShortcutLabel(canvasShortcut)})`}
                             >
                               <LayoutGrid className="w-3.5 h-3.5" />
                               <span>生图</span>
@@ -32346,31 +32350,31 @@ useEffect(() => {
                                 <div data-settings-section-content="true" className="px-3 pb-3 pt-1 flex flex-col gap-2.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <div className="flex items-center justify-between pt-1">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">防误触模式</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : shortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecording ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecording(true); setIsRecordingSnip(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecording) handleRecordShortcut(e, (s: string) => { setShortcut(s); setIsRecording(false); }, 'update-shortcut'); }} onBlur={() => setIsRecording(false)}>{isRecording ? '请按键...' : platformShortcutLabel(shortcut)}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">极速截图</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSnip ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSnip(true); setIsRecording(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSnip) handleRecordShortcut(e, (s: string) => { setSnipShortcut(s); setIsRecordingSnip(false); }, 'update-snip-shortcut'); }} onBlur={() => setIsRecordingSnip(false)}>{isRecordingSnip ? '请按键...' : snipShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSnip ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSnip(true); setIsRecording(false); setIsRecordingText(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSnip) handleRecordShortcut(e, (s: string) => { setSnipShortcut(s); setIsRecordingSnip(false); }, 'update-snip-shortcut'); }} onBlur={() => setIsRecordingSnip(false)}>{isRecordingSnip ? '请按键...' : platformShortcutLabel(snipShortcut)}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">快速记录灵感</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingText ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingText(true); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingText) handleRecordShortcut(e, (s: string) => { setTextShortcut(s); setIsRecordingText(false); }, 'update-text-shortcut'); }} onBlur={() => setIsRecordingText(false)}>{isRecordingText ? '请按键...' : textShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingText ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingText(true); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingSearch(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingText) handleRecordShortcut(e, (s: string) => { setTextShortcut(s); setIsRecordingText(false); }, 'update-text-shortcut'); }} onBlur={() => setIsRecordingText(false)}>{isRecordingText ? '请按键...' : platformShortcutLabel(textShortcut)}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">全局搜索唤出</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSearch ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSearch(true); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSearch) handleRecordShortcut(e, (s: string) => { setSearchShortcut(s); setIsRecordingSearch(false); }, 'update-search-shortcut'); }} onBlur={() => setIsRecordingSearch(false)}>{isRecordingSearch ? '请按键...' : searchShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingSearch ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingSearch(true); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingTrigger(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingSearch) handleRecordShortcut(e, (s: string) => { setSearchShortcut(s); setIsRecordingSearch(false); }, 'update-search-shortcut'); }} onBlur={() => setIsRecordingSearch(false)}>{isRecordingSearch ? '请按键...' : platformShortcutLabel(searchShortcut)}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">切换触发入口</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingTrigger ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingTrigger(true); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingTrigger) handleRecordShortcut(e, (s: string) => { setTriggerShortcut(s); setIsRecordingTrigger(false); }, 'update-trigger-shortcut'); }} onBlur={() => setIsRecordingTrigger(false)}>{isRecordingTrigger ? '请按键...' : triggerShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingTrigger ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingTrigger(true); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingNote(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingTrigger) handleRecordShortcut(e, (s: string) => { setTriggerShortcut(s); setIsRecordingTrigger(false); }, 'update-trigger-shortcut'); }} onBlur={() => setIsRecordingTrigger(false)}>{isRecordingTrigger ? '请按键...' : platformShortcutLabel(triggerShortcut)}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">新增便签</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingNote ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingNote(true); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingNote) handleRecordShortcut(e, (s: string) => { setNoteShortcut(s); setIsRecordingNote(false); }, 'update-note-shortcut'); }} onBlur={() => setIsRecordingNote(false)}>{isRecordingNote ? '请按键...' : noteShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingNote ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingNote(true); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); setIsRecordingCanvas(false); }} onKeyDown={(e) => { if (isRecordingNote) handleRecordShortcut(e, (s: string) => { setNoteShortcut(s); setIsRecordingNote(false); }, 'update-note-shortcut'); }} onBlur={() => setIsRecordingNote(false)}>{isRecordingNote ? '请按键...' : platformShortcutLabel(noteShortcut)}</button>
                                   </div>
                                   <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-medium text-stone-600 dark:text-stone-300">切换无限画布</span>
-                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingCanvas ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingCanvas(true); setIsRecordingNote(false); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); }} onKeyDown={(e) => { if (isRecordingCanvas) handleRecordShortcut(e, (s: string) => { setCanvasShortcut(s); setIsRecordingCanvas(false); }, 'update-canvas-shortcut'); }} onBlur={() => setIsRecordingCanvas(false)}>{isRecordingCanvas ? '请按键...' : canvasShortcut}</button>
+                                    <button className={`px-2 py-1 rounded border text-[10px] font-mono tracking-wider transition-colors outline-none cursor-pointer ${isRecordingCanvas ? 'border-blue-500 bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' : 'border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-700 text-stone-600 dark:text-stone-300 hover:border-blue-400'}`} onClick={() => { setIsRecordingCanvas(true); setIsRecordingNote(false); setIsRecordingTrigger(false); setIsRecordingSearch(false); setIsRecordingText(false); setIsRecording(false); setIsRecordingSnip(false); }} onKeyDown={(e) => { if (isRecordingCanvas) handleRecordShortcut(e, (s: string) => { setCanvasShortcut(s); setIsRecordingCanvas(false); }, 'update-canvas-shortcut'); }} onBlur={() => setIsRecordingCanvas(false)}>{isRecordingCanvas ? '请按键...' : platformShortcutLabel(canvasShortcut)}</button>
                                   </div>
                                 </div>
                               </motion.div>
@@ -36826,7 +36830,7 @@ useEffect(() => {
                                         ? <Edit3 className="h-3.5 w-3.5 text-violet-300" />
                                         : <Layers className="h-3.5 w-3.5 text-violet-300" />}
                                       <span>{selectedGroup ? '重命名编组' : selectionHasGroup ? '重新编组' : '编组'}</span>
-                                      <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">Ctrl G</span>
+                                      <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">{platformShortcutLabel('Ctrl+G')}</span>
                                     </button>
                                     {selectionHasGroup && (
                                       <button
@@ -36994,7 +36998,7 @@ useEffect(() => {
                                   >
                                     <Layers className="h-3.5 w-3.5 text-violet-300" />
                                     <span>{hasCanvasGroup ? '重新编组' : '编组'}</span>
-                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400 transition-colors group-hover/menu-action:text-violet-300">Ctrl G</span>
+                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400 transition-colors group-hover/menu-action:text-violet-300">{platformShortcutLabel('Ctrl+G')}</span>
                                   </button>
                                 )}
                                 {commonCanvasGroup && (
@@ -37021,7 +37025,7 @@ useEffect(() => {
                                   >
                                     <Unplug className="h-3.5 w-3.5 text-stone-400" />
                                     <span>取消编组</span>
-                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">Ctrl ⇧ G</span>
+                                    <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">{platformShortcutLabel('Ctrl+Shift+G')}</span>
                                   </button>
                                 )}
                                 {target?.item.type !== 'three-scene' && (
@@ -37843,7 +37847,7 @@ useEffect(() => {
                               onClick={createBlankFloatingNote}
                               disabled={isCreatingBlankNote}
                               className="inline-flex items-center gap-1.5 rounded-[16px] bg-amber-100 px-3 py-2 text-[11px] font-bold text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/35 dark:text-amber-300 dark:hover:bg-amber-900/55"
-                              title={`快捷键：${noteShortcut}`}
+                              title={`快捷键：${platformShortcutLabel(noteShortcut)}`}
                             >
                               <Plus className="h-3.5 w-3.5" />
                               新增
@@ -38149,13 +38153,13 @@ useEffect(() => {
                       <Download className="w-7 h-7 opacity-70" />
                       <div className="space-y-2 text-center">
                         <p className="text-xs font-bold text-stone-500 dark:text-stone-400">把灵感先丢进抽屉</p>
-                        <p className="text-[11px] leading-5">拖入文件/图片/网页图 · {snipShortcut} 截图 · {textShortcut} 快速记录 · {searchShortcut} 搜索</p>
+                        <p className="text-[11px] leading-5">拖入文件/图片/网页图 · {platformShortcutLabel(snipShortcut)} 截图 · {platformShortcutLabel(textShortcut)} 快速记录 · {platformShortcutLabel(searchShortcut)} 搜索</p>
                         <p className="text-[11px] leading-5">
-                          <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span>
+                          <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{platformShortcutLabel(canvasShortcut)}</span>
                           <span className="ml-1.5">进入画布</span>
                         </p>
-                        <p className="text-[11px] leading-5">侧边小条：悬停展开，按住左键经过不触发，Ctrl + 左键可移动位置。</p>
-                        <p className="text-[11px] leading-5">悬浮方块：默认右下角，悬停 0.8s 展开，左键拖动位置，{triggerShortcut} 切换入口。</p>
+                        <p className="text-[11px] leading-5">侧边小条：悬停展开，按住左键经过不触发，{platformShortcutLabel('Ctrl + 左键')}可移动位置。</p>
+                        <p className="text-[11px] leading-5">悬浮方块：默认右下角，悬停 0.8s 展开，左键拖动位置，{platformShortcutLabel(triggerShortcut)} 切换入口。</p>
                       </div>
                     </div>
                   )}
@@ -38174,7 +38178,7 @@ useEffect(() => {
                             : '试试切到“全部”、清空搜索，或把素材拖到当前文件夹。'}
                         </p>
                         <p className="text-[11px] leading-5">
-                          也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{canvasShortcut}</span> 进入画布整理参考。
+                          也可以按 <span className="rounded-full bg-amber-100/70 px-2 py-0.5 font-mono font-black text-amber-700 dark:bg-amber-400/12 dark:text-amber-200">{platformShortcutLabel(canvasShortcut)}</span> 进入画布整理参考。
                         </p>
                         <p className="text-[11px] leading-5">常用：右上角星标固定、备注便于搜索，多选可批量导出/移动/删除。</p>
                       </div>
@@ -38297,7 +38301,7 @@ useEffect(() => {
                   )}
                   {!isUtilityActiveTab && displayItems.length > 0 && (
                     <div className="mt-4 mb-1 rounded-[22px] bg-stone-50/70 dark:bg-stone-900/30 border border-stone-200/60 dark:border-stone-700/60 px-3 py-2 text-[11px] leading-5 text-stone-500 dark:text-stone-400">
-                      提示：拖入文件/图片/网页图添加素材；{canvasShortcut} 进入画布；{triggerShortcut} 切换触发入口。
+                      提示：拖入文件/图片/网页图添加素材；{platformShortcutLabel(canvasShortcut)} 进入画布；{platformShortcutLabel(triggerShortcut)} 切换触发入口。
                     </div>
                   )}
                 </div>
@@ -40188,8 +40192,8 @@ useEffect(() => {
 
                 <section className="space-y-1.5">
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">抽屉与触发入口</h3>
-                  <p>抽屉支持“侧边小条”和“悬浮方块”两种入口，可在设置里切换，也可用 <span className="font-semibold">{triggerShortcut}</span> 快速切换。</p>
-                  <p>侧边小条默认在右侧中间：悬停展开；按住左键经过不会误触发；<span className="font-semibold">Ctrl + 鼠标左键拖动</span> 可上下移动小条。</p>
+                  <p>抽屉支持“侧边小条”和“悬浮方块”两种入口，可在设置里切换，也可用 <span className="font-semibold">{platformShortcutLabel(triggerShortcut)}</span> 快速切换。</p>
+                  <p>侧边小条默认在右侧中间：悬停展开；按住左键经过不会误触发；<span className="font-semibold">{platformShortcutLabel('Ctrl + 鼠标左键拖动')}</span> 可上下移动小条。</p>
                   <p>悬浮方块默认在右下角：悬停 0.8 秒展开；按住左键可拖动位置；拖入文件/网页图会自动展开抽屉。</p>
                   <p>拖动抽屉标题栏可以移动抽屉位置，移动后会自动进入钉住状态；点击右上角收回按钮后，抽屉会回到触发边并恢复自动缩回。</p>
                   <p>左边缘、底边和左下角可以拖动调整抽屉宽高；鼠标离开抽屉后，如果没有钉住或预览内容，抽屉会自动缩回。</p>
@@ -40199,7 +40203,7 @@ useEffect(() => {
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">分类与整理</h3>
                   <p>左侧栏可以创建收纳夹，把卡片拖到收纳夹上即可归类。双击收纳夹名称可重命名，鼠标悬停可删除收纳夹。</p>
                   <p>进入多选模式后，可以批量导出到本地、移动到已有/新建分类文件夹，或批量删除。</p>
-                  <p>文本卡片双击正文即可编辑；鼠标悬停任意卡片后按 <span className="font-semibold">Ctrl + C</span> 可直接复制该卡片内容。</p>
+                  <p>文本卡片双击正文即可编辑；鼠标悬停任意卡片后按 <span className="font-semibold">{platformShortcutLabel('Ctrl + C')}</span> 可直接复制该卡片内容。</p>
                   <p>搜索会同时匹配文件名、路径、文本内容和备注，适合快速找回临时素材。</p>
                 </section>
 
@@ -40219,14 +40223,14 @@ useEffect(() => {
 
                 <section className="space-y-1.5">
                   <h3 className="text-[12px] font-bold text-stone-800 dark:text-stone-100">快捷键</h3>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + G</span>：切换防误触模式。开启后抽屉会锁定，避免鼠标靠边误触。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(shortcut)}</span>：切换防误触模式。开启后抽屉会锁定，避免鼠标靠边误触。</p>
                   <p><span className="font-semibold text-stone-800 dark:text-stone-100">F1</span>：快速截图。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + T</span>：打开快速文字记录。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + E</span>：新增桌面便签。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{canvasShortcut}</span>：切换无限画布 / 普通抽屉。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + S</span>：打开搜索栏。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Alt + Q</span>：切换侧边小条 / 悬浮方块。</p>
-                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">Ctrl + C</span>：鼠标悬停卡片时复制该卡片内容。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(textShortcut)}</span>：打开快速文字记录。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(noteShortcut)}</span>：新增桌面便签。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(canvasShortcut)}</span>：切换无限画布 / 普通抽屉。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(searchShortcut)}</span>：打开搜索栏。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel(triggerShortcut)}</span>：切换侧边小条 / 悬浮方块。</p>
+                  <p><span className="font-semibold text-stone-800 dark:text-stone-100">{platformShortcutLabel('Ctrl + C')}</span>：鼠标悬停卡片时复制该卡片内容。</p>
                   <p>以上全局快捷键都可以在设置里重新录制和修改。</p>
                 </section>
               </div>

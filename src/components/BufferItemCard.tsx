@@ -18,6 +18,7 @@ import {
   getReliableInspirationAiTags,
 } from '../features/appAgent/inspirationMemory/inspirationAnalysis';
 import type { InspirationProfile } from '../features/appAgent/inspirationMemory/types';
+import { platformShortcutLabel } from '../platform/capabilities';
 import {
   getItemMediaDimensions,
   getMediaAspectRatio,
@@ -832,7 +833,7 @@ return (
 
           {canShowInFolder && <button onClick={handleShowInFolder} title="在文件夹中显示（原文件优先，丢失则定位缓存）" className={`${btnClass} hover:text-blue-600`}><FolderOpen className={iconClass} /></button>}
           <button onClick={handleSaveFile} title="另存为文件" className={`${btnClass} hover:text-blue-500`}><Download className={iconClass} /></button>
-          <button type="button" data-no-drag="true" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={handleCopy} title="复制 (Ctrl+C)" className={`${btnClass} hover:text-emerald-600`}>{copied ? <Check className={`${iconClass} text-emerald-500`} /> : <Copy className={iconClass} />}</button>
+          <button type="button" data-no-drag="true" onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }} onClick={handleCopy} title={platformShortcutLabel('复制 (Ctrl+C)')} className={`${btnClass} hover:text-emerald-600`}>{copied ? <Check className={`${iconClass} text-emerald-500`} /> : <Copy className={iconClass} />}</button>
           <button
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(); }}
             title={item.isQuickAccess ? "该项目已锁定保护" : "删除"}
@@ -981,7 +982,7 @@ return (
                   placeholder="编辑文本内容..."
                   className="min-h-[96px] w-full resize-y rounded-[14px] border border-stone-200 bg-stone-50/80 p-2.5 text-xs leading-5 text-stone-700 outline-none transition-colors placeholder:text-stone-500 focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-500/10 dark:border-stone-700 dark:bg-stone-900/45 dark:text-stone-200 dark:placeholder:text-stone-400 dark:focus:border-blue-500/55 dark:focus:bg-stone-900"
                 />
-                <div className="text-[10px] text-stone-400 dark:text-stone-500">Ctrl + Enter 保存，Esc 取消；失焦自动保存</div>
+                <div className="text-[10px] text-stone-400 dark:text-stone-500">{platformShortcutLabel('Ctrl + Enter')} 保存，Esc 取消；失焦自动保存</div>
               </div>
             ) : isUrlText ? (
               <button

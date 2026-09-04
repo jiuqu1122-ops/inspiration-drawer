@@ -17991,8 +17991,11 @@ fn build_hidden_note_window(
         .decorations(false)
         .always_on_top(false)
         .skip_taskbar(true)
-        .visible(false)
-        .shadow(false);
+        .visible(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.shadow(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.shadow(false);
     #[cfg(target_os = "windows")]
     let builder = builder.drag_and_drop(false);
     builder.build().map_err(|e| e.to_string())

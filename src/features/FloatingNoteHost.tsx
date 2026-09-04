@@ -14,6 +14,8 @@ import { RoundedSelect } from '../components/RoundedSelect';
 import { shouldShowImageUnavailable } from '../utils/localImageSource';
 import { clamp } from './common';
 import { getDrawerFolderPathName } from './folderModel';
+import { platformShortcutLabel } from '../platform/capabilities';
+import { usePlatformCapabilities } from '../platform/usePlatformCapabilities';
 import {
   SCHEDULE_PRIORITY_OPTIONS,
   addLocalDays,
@@ -62,6 +64,10 @@ type FloatingNoteHostProps = {
 };
 
 export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: FloatingNoteHostProps) {
+  const platformCapabilities = usePlatformCapabilities();
+  const platform = platformCapabilities?.platform === 'macos' || platformCapabilities?.platform === 'windows'
+    ? platformCapabilities.platform
+    : undefined;
   const noteLabel = ((appWindow as any).label || 'note_1') as string;
   const noteStorageKey = floatingNoteStorageKey(noteLabel);
   const initialNote = readFloatingNoteSnapshot(noteLabel);
@@ -1261,7 +1267,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const displayName = note?.name || note?.content || '桌面便签';
   const zoomTitle = note?.type === 'image'
     ? '滚轮缩放便签'
-    : `Alt + 滚轮缩放：${Math.round(zoom * 100)}%`;
+    : platformShortcutLabel(`Alt + 滚轮缩放：${Math.round(zoom * 100)}%`);
   const isTextNoteMedium = note?.type === 'text' && textNoteSizeMode === 'medium';
   const textNoteTitle = note?.name || text || '文字便签';
   const isScheduleMode = note?.type === 'text' && note.noteMode === 'schedule';
@@ -1389,6 +1395,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
 
   return (
     <div
+      data-platform={platform}
+      data-floating-note-root="true"
       className={`${isDark && note?.type !== 'text' ? 'dark ' : ''}w-screen h-screen overflow-hidden ${noteCornerClass} bg-white/96 text-stone-800 dark:bg-stone-950/96 dark:text-stone-100 font-sans select-none ${
         isSnipImageNote
           ? 'border-2 border-emerald-400/90 dark:border-emerald-300/85'
@@ -1431,6 +1439,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                     <motion.div
                       data-no-drag="true"
                       data-note-color-transient="true"
+                      data-note-popover="true"
                       initial={{ opacity: 0, scale: 0.96, y: -2 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.96, y: -2 }}
@@ -1856,6 +1865,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
               />
               <motion.div
                 data-no-drag="true"
+                data-note-popover="true"
                 initial={{ opacity: 0, scale: 0.96, y: -4 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: -4 }}
@@ -1962,6 +1972,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
           {contextMenu && (
             <motion.div
               data-no-drag="true"
+              data-note-context-menu="true"
               initial={{ opacity: 0, scale: 0.96, y: -2 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: -2 }}

@@ -10,6 +10,23 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the unsi
 - [ ] Confirm standard Edit actions use Command+C, Command+V, Command+A, Command+Z, and Command+Shift+Z.
 - [ ] Quit and relaunch; confirm the same local database and machine ID are used.
 
+## macOS window chrome and visual adaptation
+
+- [ ] Confirm the native red/yellow/green traffic lights are visible and all Windows-style custom minimize/maximize/close buttons are absent.
+- [ ] Confirm the 80 x 44px top-left safe area keeps the traffic lights clear of sidebar rows, titles, toolbar actions, and immersive Canvas content.
+- [ ] Confirm the titlebar remains draggable and native close, minimize, zoom/full-screen, Command+Q, and reopen behavior work.
+- [ ] Confirm the main toolbar is 52px high, uses light icon controls, and remains readable in both light and dark appearance.
+- [ ] Confirm sidebar selection uses a soft translucent highlight rather than a solid black block; resizing and every folder action still work.
+- [ ] Confirm ordinary buttons are compact, secondary/icon buttons remain subtle, and destructive/primary actions remain distinguishable.
+- [ ] Confirm search, settings, and dialog inputs use the soft focus ring and accept text without layout shifts.
+- [ ] Confirm folder and Canvas context menus have compact rows, aligned shortcut labels, thin separators, and soft shadows.
+- [ ] Confirm dialogs, popovers, date pickers, and color pickers remain fully clickable and are not clipped.
+- [ ] Confirm asset cards retain their thumbnail crop/aspect behavior and use only a subtle hover shadow/scale change.
+- [ ] Confirm the Canvas floating toolbar remains compact, its active Chat state is visible, and node coordinates/sizes do not change.
+- [ ] Confirm displayed shortcuts use macOS glyphs (`⌘`, `⌥`, `⇧`, `⌫`) while the configured global shortcuts still trigger.
+- [ ] Confirm scrollbars remain unobtrusive and trackpad scrolling, inertial scrolling, and pinch zoom feel unchanged.
+- [ ] Switch between light and dark appearance and confirm toolbar, sidebar, menus, inputs, cards, and floating notes remain legible.
+
 ## Local data and imports
 
 - [ ] Import images with the system file picker, including names containing spaces, Chinese text, `#`, `%`, and Unicode characters.
@@ -38,7 +55,7 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the unsi
 - [ ] Confirm the edge window/float trigger keeps its intended rounded shape.
 - [ ] Confirm the snip window remains a correctly aligned full-screen selection overlay.
 - [ ] Confirm transparent areas around frameless floating-window surfaces reveal the desktop instead of a white or black rectangle.
-- [ ] Confirm the existing floating-window shadow behavior is unchanged and no square shadow/background appears outside rounded corners.
+- [ ] Confirm floating notes have a soft native shadow and no square background appears outside rounded corners.
 
 ## Canvas
 

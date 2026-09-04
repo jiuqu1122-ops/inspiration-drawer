@@ -9,7 +9,8 @@ import { listen, emitTo } from '@tauri-apps/api/event';
 import { clamp } from './common';
 import { clearLegacyStartupFlags } from './startup';
 import { getStoredDrawerSize } from './drawerPrefs';
-import { isPrimaryModifier } from '../platform/capabilities';
+import { isPrimaryModifier, platformShortcutLabel } from '../platform/capabilities';
+import { usePlatformCapabilities } from '../platform/usePlatformCapabilities';
 import {
   getImageFileFromDataTransfer,
   getWebImageFromDataTransfer,
@@ -34,6 +35,7 @@ const appWindow = getCurrentWindow();
 const appWebview = getCurrentWebview();
 
 export function EdgeTrigger() {
+  const platformCapabilities = usePlatformCapabilities();
   const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark');
   const [triggerMode, setTriggerMode] = useState<TriggerMode>(() => getStoredTriggerMode());
   const triggerModeRef = useRef<TriggerMode>(triggerMode);
@@ -947,13 +949,16 @@ export function EdgeTrigger() {
 
   return (
     <div
+      data-platform={platformCapabilities?.platform === 'macos' || platformCapabilities?.platform === 'windows'
+        ? platformCapabilities.platform
+        : undefined}
       className={`${isDark ? 'dark' : ''} w-screen h-screen bg-transparent relative overflow-hidden font-sans select-none pointer-events-none`}
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* 侧边小条窗口本身只有可见高度；Ctrl + 左键按住可沿屏幕右侧上下移动。 */}
       <div
         className={`absolute left-0 top-1/2 -translate-y-1/2 w-full h-24 flex flex-col justify-center cursor-ns-resize ${isAntiTouchMode ? 'pointer-events-none' : 'pointer-events-auto'}`}
-        title="悬停打开抽屉；Ctrl + 左键按住可上下移动小条"
+        title={platformShortcutLabel('悬停打开抽屉；Ctrl + 左键按住可上下移动小条')}
         onMouseEnter={handleEdgeMouseTouch}
         onMouseOver={handleEdgeMouseTouch}
         onPointerEnter={handleEdgeMouseTouch}

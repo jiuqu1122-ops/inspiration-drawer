@@ -69,11 +69,15 @@ export const isPrimaryModifier = (event: ModifierEvent) => {
   return event.ctrlKey || event.metaKey;
 };
 
-export const platformShortcutLabel = (shortcut: string) => (
-  cachedCapabilities?.platform === 'macos'
-    ? shortcut.replace(/\bCtrl\b/g, 'Command')
-    : shortcut
-);
+export const platformShortcutLabel = (shortcut: string) => {
+  if (cachedCapabilities?.platform !== 'macos') return shortcut;
+
+  return shortcut
+    .replace(/\b(?:Ctrl|Control|Command|Cmd)\b\s*\+\s*/gi, '⌘')
+    .replace(/\b(?:Alt|Option)\b\s*\+\s*/gi, '⌥')
+    .replace(/\bShift\b\s*\+\s*/gi, '⇧')
+    .replace(/\b(?:Backspace|Delete)\b/gi, '⌫');
+};
 
 export const unsupportedPlatformMessage = (feature: string) => {
   const platform = cachedCapabilities?.platform;

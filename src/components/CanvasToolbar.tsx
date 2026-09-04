@@ -215,6 +215,7 @@ export function CanvasToolbar({
       <button
         type="button"
         onClick={toggleCanvasChatVisibility}
+        data-active={isAgentChatOpen ? 'true' : 'false'}
         className={`${CANVAS_SIDE_TOOL_CLASS} ${
           isAgentChatOpen
             ? '!border-[#262626] !bg-[#262626] !text-white dark:!border-[#e5e5e5] dark:!bg-[#e5e5e5] dark:!text-[#202020]'

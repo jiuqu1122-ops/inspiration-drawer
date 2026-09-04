@@ -31,7 +31,13 @@
         "resizable": true,
         "fullscreen": false,
         "transparent": false,
-        "decorations": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 14
+        },
         "alwaysOnTop": false,
         "skipTaskbar": false,
         "visible": true,
@@ -70,7 +76,7 @@
         "alwaysOnTop": false,
         "skipTaskbar": true,
         "visible": false,
-        "shadow": false,
+        "shadow": true,
         "dragDropEnabled": false
       },
       {
@@ -88,7 +94,7 @@
         "alwaysOnTop": false,
         "skipTaskbar": true,
         "visible": false,
-        "shadow": false,
+        "shadow": true,
         "dragDropEnabled": false
       }
     ]
