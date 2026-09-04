@@ -1,8 +1,41 @@
+use rand::{rngs::OsRng, RngCore};
 use sha2::{Digest, Sha256};
-use std::process::Command;
+use std::fs;
+use std::path::Path;
+use tauri::Manager;
 
-pub trait MachineFingerprintProvider {
-    fn collect_parts(&self) -> Vec<String>;
+#[cfg(target_os = "macos")]
+#[path = "../platform/macos/machine_id.rs"]
+mod os_machine_id;
+#[cfg(target_os = "windows")]
+#[path = "../platform/windows/machine_id.rs"]
+mod os_machine_id;
+
+const MACHINE_FINGERPRINT_CACHE_FILE: &str = "machine-fingerprint-v1";
+const MACHINE_FALLBACK_UUID_FILE: &str = "machine-fallback-uuid-v1";
+
+pub fn current_machine_id(app_handle: &tauri::AppHandle) -> Result<String, String> {
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve application data directory failed: {error}"))?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("create application data directory failed: {error}"))?;
+
+    let cache_path = data_dir.join(MACHINE_FINGERPRINT_CACHE_FILE);
+    if let Some(cached) = read_valid_fingerprint(&cache_path) {
+        return Ok(cached);
+    }
+
+    let mut parts = platform_machine_parts();
+    if parts.is_empty() {
+        let fallback = read_or_create_fallback_uuid(&data_dir)?;
+        parts.push(format!("persisted_uuid={fallback}"));
+    }
+
+    let fingerprint = hash_machine_parts(&parts)?;
+    persist_private_value(&cache_path, &fingerprint)?;
+    Ok(fingerprint)
 }
 
 pub fn hash_machine_parts(parts: &[String]) -> Result<String, String> {
@@ -16,7 +49,9 @@ pub fn hash_machine_parts(parts: &[String]) -> Result<String, String> {
     normalized.dedup();
 
     if normalized.is_empty() {
-        return Err("无法获取机器码：未读取到可用的设备信息".to_string());
+        return Err(
+            "unable to create machine fingerprint: no stable device identifiers".to_string(),
+        );
     }
 
     let mut hasher = Sha256::new();
@@ -28,78 +63,77 @@ pub fn hash_machine_parts(parts: &[String]) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub fn current_machine_id() -> Result<String, String> {
-    let provider = default_provider();
-    hash_machine_parts(&provider.collect_parts())
-}
+fn platform_machine_parts() -> Vec<String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    return os_machine_id::collect_parts();
 
-fn default_provider() -> Box<dyn MachineFingerprintProvider> {
-    #[cfg(target_os = "windows")]
+    #[allow(unreachable_code)]
     {
-        Box::new(WindowsMachineFingerprintProvider)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Box::new(PortableMachineFingerprintProvider)
-    }
-}
-
-#[cfg(target_os = "windows")]
-struct WindowsMachineFingerprintProvider;
-
-#[cfg(target_os = "windows")]
-impl MachineFingerprintProvider for WindowsMachineFingerprintProvider {
-    fn collect_parts(&self) -> Vec<String> {
         let mut parts = Vec::new();
-        if let Some(value) =
-            query_windows_registry_value(r"HKLM\SOFTWARE\Microsoft\Cryptography", "MachineGuid")
-        {
-            parts.push(format!("machine_guid={value}"));
-        }
-        if let Some(value) = query_wmic_single_value("csproduct", "uuid") {
-            parts.push(format!("board_uuid={value}"));
-        }
-        if let Some(value) = query_wmic_single_value("bios", "serialnumber") {
-            parts.push(format!("bios_serial={value}"));
+        for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+            if let Ok(value) = fs::read_to_string(path) {
+                parts.push(format!("machine_id={}", value.trim()));
+                break;
+            }
         }
         parts
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-struct PortableMachineFingerprintProvider;
-
-#[cfg(not(target_os = "windows"))]
-impl MachineFingerprintProvider for PortableMachineFingerprintProvider {
-    fn collect_parts(&self) -> Vec<String> {
-        let mut parts = Vec::new();
-        if let Ok(value) = std::env::var("HOSTNAME") {
-            parts.push(format!("hostname={value}"));
+fn read_or_create_fallback_uuid(data_dir: &Path) -> Result<String, String> {
+    let path = data_dir.join(MACHINE_FALLBACK_UUID_FILE);
+    if let Ok(value) = fs::read_to_string(&path) {
+        let value = value.trim();
+        if is_uuid_like(value) {
+            return Ok(value.to_ascii_lowercase());
         }
-        parts
     }
+
+    let mut bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let value = format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    );
+    persist_private_value(&path, &value)?;
+    Ok(value)
 }
 
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+fn persist_private_value(path: &Path, value: &str) -> Result<(), String> {
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temp, format!("{value}\n"))
+        .map_err(|error| format!("write machine identifier failed: {error}"))?;
+    fs::rename(&temp, path)
+        .or_else(|rename_error| {
+            if path.is_file() {
+                let _ = fs::remove_file(&temp);
+                Ok(())
+            } else {
+                Err(rename_error)
+            }
+        })
+        .map_err(|error| format!("persist machine identifier failed: {error}"))
+}
 
-#[cfg(target_os = "windows")]
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    let output = Command::new(program)
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        None
-    } else {
-        Some(stdout)
-    }
+fn read_valid_fingerprint(path: &Path) -> Option<String> {
+    let value = fs::read_to_string(path).ok()?;
+    let value = value.trim();
+    (value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    value.len() == 36
+        && value
+            .chars()
+            .enumerate()
+            .all(|(index, character)| match index {
+                8 | 13 | 18 | 23 => character == '-',
+                _ => character.is_ascii_hexdigit(),
+            })
 }
 
 fn normalize_machine_part(value: &str) -> String {
@@ -111,11 +145,15 @@ fn normalize_machine_part(value: &str) -> String {
         .join(" ")
 }
 
-fn is_placeholder_machine_value(value: &str) -> bool {
-    let lower = normalize_machine_part(value);
-    lower.is_empty()
+fn is_placeholder_machine_part(part: &str) -> bool {
+    let value = part
+        .rsplit_once('=')
+        .map(|(_, value)| value)
+        .unwrap_or(part);
+    let value = normalize_machine_part(value);
+    value.is_empty()
         || matches!(
-            lower.as_str(),
+            value.as_str(),
             "to be filled by o.e.m."
                 | "to be filled by oem"
                 | "default string"
@@ -129,45 +167,6 @@ fn is_placeholder_machine_value(value: &str) -> bool {
                 | "00000000-0000-0000-0000-000000000000"
                 | "ffffffff-ffff-ffff-ffff-ffffffffffff"
         )
-}
-
-fn is_placeholder_machine_part(part: &str) -> bool {
-    let value = part
-        .rsplit_once('=')
-        .map(|(_, value)| value)
-        .unwrap_or(part);
-    is_placeholder_machine_value(value)
-}
-
-#[cfg(target_os = "windows")]
-fn query_windows_registry_value(key: &str, name: &str) -> Option<String> {
-    let output = command_output("reg", &["query", key, "/v", name])?;
-    output.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if !trimmed
-            .to_ascii_lowercase()
-            .starts_with(&name.to_ascii_lowercase())
-        {
-            return None;
-        }
-        trimmed
-            .split_whitespace()
-            .last()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !is_placeholder_machine_value(value))
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn query_wmic_single_value(alias: &str, field: &str) -> Option<String> {
-    let output = command_output("wmic", &[alias, "get", field])?;
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter(|line| !line.eq_ignore_ascii_case(field))
-        .find(|line| !is_placeholder_machine_value(line))
-        .map(|line| line.to_string())
 }
 
 #[cfg(test)]
@@ -194,11 +193,16 @@ mod tests {
 
     #[test]
     fn rejects_placeholder_only_parts() {
-        let err = hash_machine_parts(&[
+        assert!(hash_machine_parts(&[
             "bios_serial=unknown".to_string(),
             "board_uuid=00000000-0000-0000-0000-000000000000".to_string(),
         ])
-        .unwrap_err();
-        assert!(err.contains("无法获取机器码"));
+        .is_err());
+    }
+
+    #[test]
+    fn validates_fallback_uuid_shape() {
+        assert!(is_uuid_like("123e4567-e89b-42d3-a456-426614174000"));
+        assert!(!is_uuid_like("not-a-uuid"));
     }
 }

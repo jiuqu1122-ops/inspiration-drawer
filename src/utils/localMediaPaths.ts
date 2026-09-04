@@ -1,4 +1,5 @@
 import type { BufferItem } from '../types';
+import { getCachedPlatformCapabilities } from '../platform/capabilities';
 
 export const isCanvasImageFileName = (value?: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(value || '');
 export const isCanvasVideoFileName = (value?: string) => /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value || '');
@@ -13,8 +14,17 @@ export const fileUrlToLocalPath = (value: string) => {
     const url = new URL(value.trim());
     if (url.protocol !== 'file:') return '';
     const rawPath = decodeURIComponent(url.pathname || '');
+    const platform = getCachedPlatformCapabilities()?.platform || 'unknown';
+    const looksLikeWindowsDrive = /^\/[a-zA-Z]:\//.test(rawPath);
+    const useWindowsPath = platform === 'windows'
+      || (platform === 'unknown' && (looksLikeWindowsDrive || !!url.hostname));
+    if (!useWindowsPath) {
+      if (url.hostname && url.hostname !== 'localhost') return `//${url.hostname}${rawPath}`;
+      return rawPath;
+    }
+
     const normalized = rawPath.replace(/\//g, '\\');
-    if (url.hostname) return `\\\\${url.hostname}${normalized}`;
+    if (url.hostname && url.hostname !== 'localhost') return `\\\\${url.hostname}${normalized}`;
     const withoutLeadingSlash = /^\\[a-zA-Z]:\\/.test(normalized) ? normalized.slice(1) : normalized;
     return withoutLeadingSlash
       .replace(/^\\\?\\(?=[a-zA-Z]:\\)/, '')

@@ -7,6 +7,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 
 import type { AppUpdateInstallResult, AppUpdateProgress } from '../types/appUpdate';
 import { getLocalDateKey } from '../features/calendarModel';
+import { loadPlatformCapabilities, unsupportedPlatformMessage } from '../platform/capabilities';
 
 const APP_UPDATE_PROMPT_SHOWN_DATE_STORAGE_KEY = 'drawer_app_update_prompt_shown_date';
 const APP_UPDATE_LAST_AUTOMATIC_CHECK_STORAGE_KEY = 'drawer_app_update_last_automatic_check';
@@ -82,9 +83,24 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
   };
 
   const [appVersion, setAppVersion] = useState('');
+  const [autoUpdaterSupported, setAutoUpdaterSupported] = useState(false);
   const [isCheckingAppUpdate, setIsCheckingAppUpdate] = useState(false);
   const isCheckingAppUpdateRef = useRef(false);
-  const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(shouldShowDailyAppUpdatePrompt);
+  const [showAppUpdatePromptArrow, setShowAppUpdatePromptArrow] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    void loadPlatformCapabilities().then(capabilities => {
+      if (disposed) return;
+      setAutoUpdaterSupported(capabilities.autoUpdater);
+      if (capabilities.autoUpdater && shouldShowDailyAppUpdatePrompt()) {
+        setShowAppUpdatePromptArrow(true);
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [isMainDrawerWindow]);
 
   useEffect(() => {
     if (!isMainDrawerWindow) return;
@@ -98,6 +114,10 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
 
   const checkAndInstallAppUpdate = async (options: { silent?: boolean; hidePromptWhenUpToDate?: boolean } = {}) => {
     if (!isMainDrawerWindow) return;
+    if (!autoUpdaterSupported) {
+      if (!options.silent) showToast(unsupportedPlatformMessage('自动更新'));
+      return;
+    }
     if (isCheckingAppUpdateRef.current) {
       if (!options.silent) showToast('正在检查更新...');
       return;
@@ -232,7 +252,7 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
   };
 
   useEffect(() => {
-    if (!isMainDrawerWindow) return;
+    if (!isMainDrawerWindow || !autoUpdaterSupported) return;
     let disposed = false;
     let timer: number | null = null;
 
@@ -258,7 +278,7 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
       disposed = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, []);
+  }, [autoUpdaterSupported, isMainDrawerWindow]);
 
   const handleAppUpdatePromptClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -276,6 +296,7 @@ export const useAppUpdate = ({ isMainDrawerWindow, showToast }: UseAppUpdateOpti
 
   return {
     appVersion,
+    autoUpdaterSupported,
     checkAndInstallAppUpdate,
     handleAppUpdatePromptClick,
     isCheckingAppUpdate,

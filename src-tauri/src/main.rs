@@ -10,6 +10,7 @@ mod db;
 mod license;
 mod native_drag;
 mod native_drop;
+mod platform;
 mod repositories;
 mod services;
 mod update_cache;
@@ -435,13 +436,24 @@ fn is_main_workbench_active() -> bool {
 }
 
 fn apply_main_workbench_mode(main: &WebviewWindow) {
-    let active = is_main_workbench_active();
-    if !active {
-        let _ = main.unmaximize();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = main.set_resizable(true);
+        let _ = main.set_skip_taskbar(false);
+        let _ = main.set_always_on_top(false);
+        return;
     }
-    let _ = main.set_resizable(active);
-    let _ = main.set_skip_taskbar(!active);
-    let _ = main.set_always_on_top(!active);
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let active = is_main_workbench_active();
+        if !active {
+            let _ = main.unmaximize();
+        }
+        let _ = main.set_resizable(active);
+        let _ = main.set_skip_taskbar(!active);
+        let _ = main.set_always_on_top(!active);
+    }
 }
 
 #[tauri::command]
@@ -3053,6 +3065,9 @@ async fn check_and_install_app_update_mirrors(
     check_timeout_ms: Option<u64>,
     download_timeout_ms: Option<u64>,
 ) -> Result<AppUpdateInstallResult, String> {
+    if !platform::capabilities().auto_updater {
+        return Err(platform::unsupported_error("desktop_updater"));
+    }
     let progress_id = if progress_id.trim().is_empty() {
         "app-update".to_string()
     } else {
@@ -3964,6 +3979,9 @@ fn ensure_media_tools_available(
     app_handle: &tauri::AppHandle,
     progress_id: Option<&str>,
 ) -> Result<(PathBuf, PathBuf), String> {
+    if !platform::capabilities().local_media_engines {
+        return Err(platform::unsupported_error("local_media_engines"));
+    }
     if let Some(paths) = resolve_system_media_tools() {
         return Ok(paths);
     }
@@ -3981,6 +3999,9 @@ fn ensure_rife_engine_installed(
     app_handle: &tauri::AppHandle,
     progress_id: Option<&str>,
 ) -> Result<RifeEngineStatus, String> {
+    if !platform::capabilities().local_media_engines {
+        return Err(platform::unsupported_error("rife_engine"));
+    }
     let status = build_rife_engine_status()?;
     if status.installed {
         return Ok(status);
@@ -4054,6 +4075,9 @@ fn ensure_realesrgan_engine_installed(
     app_handle: &tauri::AppHandle,
     progress_id: Option<&str>,
 ) -> Result<RealEsrganEngineStatus, String> {
+    if !platform::capabilities().local_media_engines {
+        return Err(platform::unsupported_error("realesrgan_engine"));
+    }
     let status = build_realesrgan_engine_status()?;
     if status.installed {
         return Ok(status);
@@ -12303,6 +12327,9 @@ async fn create_cloudflared_public_image_urls(
     dir: Option<String>,
     max_url_length: Option<usize>,
 ) -> Result<CloudflaredPublicImageUrls, String> {
+    if !platform::capabilities().cloudflared_tunnel {
+        return Err(platform::unsupported_error("cloudflared_tunnel"));
+    }
     tauri::async_runtime::spawn_blocking(move || {
         if sources.is_empty() {
             return Err("没有需要公开的本地参考图".to_string());
@@ -15748,12 +15775,12 @@ fn update_shortcut(
 
 #[tauri::command]
 fn refresh_edge_drop_targets(app_handle: tauri::AppHandle) -> Result<(), String> {
-    native_drop::refresh_edge_native_drop(&app_handle)
+    platform::refresh_native_drop(&app_handle)
 }
 
 #[tauri::command]
 fn cancel_virtual_drop(job_id: String) -> Result<(), String> {
-    native_drop::cancel_virtual_drop(&job_id)
+    platform::cancel_virtual_drop(&job_id)
 }
 
 const AUTO_START_REG_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -16008,7 +16035,7 @@ fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
 #[cfg(not(target_os = "windows"))]
 fn set_auto_start_impl(auto_start: bool) -> Result<(), String> {
     let _ = auto_start;
-    Err("autostart currently only supports Windows".to_string())
+    Err(platform::unsupported_error("auto_start"))
 }
 
 #[tauri::command]
@@ -16037,6 +16064,14 @@ fn percent_decode_lossy(input: &str) -> String {
 
 fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
     let trimmed = input.trim();
+
+    if trimmed.starts_with("file:") {
+        if let Ok(url) = Url::parse(trimmed) {
+            if let Ok(path) = url.to_file_path() {
+                return Some(path);
+            }
+        }
+    }
 
     if trimmed.starts_with("file:///") {
         let mut path = percent_decode_lossy(trimmed.trim_start_matches("file:///"));
@@ -16085,6 +16120,10 @@ fn local_path_from_url_like(input: &str) -> Option<PathBuf> {
                 {
                     decoded = decoded.trim_start_matches('\\').to_string();
                 }
+            }
+            #[cfg(not(target_os = "windows"))]
+            if !decoded.starts_with('/') {
+                decoded.insert(0, '/');
             }
             return Some(PathBuf::from(decoded));
         }
@@ -16493,12 +16532,12 @@ fn start_file_drag(app_handle: tauri::AppHandle, paths: Vec<String>) -> Result<(
             bottom: pos.y.saturating_add(size.height as i32),
         })
     });
-    native_drag::start_file_drag(paths, cancel_rect)
+    platform::start_file_drag(paths, cancel_rect)
 }
 
 #[tauri::command]
 fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
-    native_drag::copy_files_to_clipboard(paths)
+    platform::copy_files_to_clipboard(paths)
 }
 
 #[tauri::command]
@@ -17299,6 +17338,15 @@ fn show_edge(
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(edge) = app_handle.get_webview_window("edge") {
+            let _ = edge.hide();
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
     position_edge(app_handle, height, mode, x, y)
 }
 
@@ -17634,6 +17682,15 @@ fn close_drawer(app_handle: tauri::AppHandle, mode: Option<String>) -> Result<()
     let main = app_handle
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = mode;
+        apply_main_workbench_mode(&main);
+        main.show().map_err(|e| e.to_string())?;
+        let _ = main.emit("drawer-opened", ());
+        return Ok(());
+    }
 
     let height = if let Ok(size) = main.outer_size() {
         let factor = main.scale_factor().unwrap_or(1.0);
@@ -18627,6 +18684,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            platform::get_platform_capabilities,
             load_items,
             commands::assets::list_assets,
             commands::assets::get_asset_by_id,
@@ -18861,7 +18919,15 @@ fn main() {
             inspiration_space_submit,
         ])
         .setup(|app| {
-            update_cache::cleanup_update_cache_on_startup(app.handle());
+            #[cfg(target_os = "macos")]
+            {
+                let menu = Menu::default(app.handle())?;
+                app.set_menu(menu)?;
+            }
+
+            if platform::capabilities().auto_updater {
+                update_cache::cleanup_update_cache_on_startup(app.handle());
+            }
             POST_INSTALL_LAUNCH_PENDING.store(take_post_install_launch_marker(), Ordering::Release);
             set_startup_close_lock(16_000);
 
@@ -18881,13 +18947,22 @@ fn main() {
                 )));
             }
 
-            if let Some(edge) = app.get_webview_window("edge") {
-                let _ = edge.set_shadow(false);
-                let _ = edge.set_always_on_top(true);
-                let _ = edge.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
-                let _ = position_edge(app.handle().clone(), 800.0, None, None, None);
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(edge) = app.get_webview_window("edge") {
+                    let _ = edge.set_shadow(false);
+                    let _ = edge.set_always_on_top(true);
+                    let _ = edge.set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)));
+                    let _ = position_edge(app.handle().clone(), 800.0, None, None, None);
+                }
+                schedule_startup_edge_rescue(app.handle().clone());
             }
-            schedule_startup_edge_rescue(app.handle().clone());
+
+            #[cfg(target_os = "macos")]
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.show();
+                let _ = main.set_focus();
+            }
 
             if let Some(snip) = app.get_webview_window("snip") {
                 let _ = snip.set_shadow(false);
@@ -18896,7 +18971,7 @@ fn main() {
                 let _ = snip.hide();
             }
 
-            if let Err(err) = native_drop::init_native_drop(app) {
+            if let Err(err) = platform::init_native_drop(app) {
                 eprintln!("native drop init failed: {err}");
             }
 

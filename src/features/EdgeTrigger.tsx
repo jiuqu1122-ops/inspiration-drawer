@@ -9,6 +9,7 @@ import { listen, emitTo } from '@tauri-apps/api/event';
 import { clamp } from './common';
 import { clearLegacyStartupFlags } from './startup';
 import { getStoredDrawerSize } from './drawerPrefs';
+import { isPrimaryModifier } from '../platform/capabilities';
 import {
   getImageFileFromDataTransfer,
   getWebImageFromDataTransfer,
@@ -519,7 +520,7 @@ export function EdgeTrigger() {
 
   const handleEdgeMouseTouch = (e: React.MouseEvent | React.PointerEvent) => {
     if (antiTouchRef.current || edgeStripDragRef.current.active) return;
-    if (e.ctrlKey) {
+    if (isPrimaryModifier(e)) {
       // 按住 Ctrl 时进入“移动小条准备态”，不触发展开抽屉。
       clearEdgeHoverOpenTimer();
       return;
@@ -539,7 +540,7 @@ export function EdgeTrigger() {
 
   useEffect(() => {
     const handleCtrlKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Control' || event.ctrlKey) clearEdgeHoverOpenTimer();
+      if (event.key === 'Control' || event.key === 'Meta' || isPrimaryModifier(event)) clearEdgeHoverOpenTimer();
     };
     window.addEventListener('keydown', handleCtrlKeyDown, true);
     document.addEventListener('keydown', handleCtrlKeyDown, true);
@@ -550,7 +551,7 @@ export function EdgeTrigger() {
   }, []);
 
   const startEdgeStripDrag = (e: React.PointerEvent | React.MouseEvent) => {
-    if (antiTouchRef.current || triggerModeRef.current !== 'edge' || e.button !== 0 || !e.ctrlKey) return;
+    if (antiTouchRef.current || triggerModeRef.current !== 'edge' || e.button !== 0 || !isPrimaryModifier(e)) return;
     clearEdgeHoverOpenTimer();
     e.preventDefault();
     e.stopPropagation();

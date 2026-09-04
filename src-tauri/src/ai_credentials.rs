@@ -61,7 +61,7 @@ fn byok_unlock_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn is_byok_unlocked(app_handle: &tauri::AppHandle) -> bool {
-    let Ok(machine_id) = current_machine_id() else {
+    let Ok(machine_id) = current_machine_id(app_handle) else {
         return false;
     };
     byok_unlock_path(app_handle)
@@ -74,7 +74,7 @@ pub fn activate_byok_unlock(app_handle: &tauri::AppHandle, code: &str) -> Result
     if !code.trim().eq_ignore_ascii_case("undesign") {
         return Ok(false);
     }
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = current_machine_id(app_handle).map_err(|err| format!("io_error: {err}"))?;
     let path = byok_unlock_path(app_handle)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -254,7 +254,7 @@ pub fn resolve_effective_api_profile(
     if is_byok_unlocked(app_handle) {
         return Ok(user_settings_to_effective(settings));
     }
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = current_machine_id(app_handle).map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
     resolve_effective_api_profile_from_content(content.as_deref(), &machine_id, settings)
 }
@@ -263,7 +263,7 @@ pub fn resolve_effective_canvas_api_profile(
     app_handle: &tauri::AppHandle,
     settings: StoredApiSettings,
 ) -> Result<EffectiveApiProfile, String> {
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = current_machine_id(app_handle).map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
     resolve_effective_api_profile_from_content_with_date(
         content.as_deref(),

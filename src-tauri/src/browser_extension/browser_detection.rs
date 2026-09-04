@@ -80,36 +80,9 @@ pub fn detect_browser(browser: BrowserKind) -> BrowserDetection {
 }
 
 fn browser_candidates(browser: BrowserKind) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
+    let mut candidates = crate::platform::browser_candidates(browser.as_str());
     #[cfg(target_os = "windows")]
     {
-        let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
-        let program_files_x86 = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from);
-        match browser {
-            BrowserKind::Chrome => {
-                if let Some(root) = local {
-                    candidates.push(root.join("Google/Chrome/Application/chrome.exe"));
-                }
-                if let Some(root) = program_files.as_ref() {
-                    candidates.push(root.join("Google/Chrome/Application/chrome.exe"));
-                }
-                if let Some(root) = program_files_x86.as_ref() {
-                    candidates.push(root.join("Google/Chrome/Application/chrome.exe"));
-                }
-            }
-            BrowserKind::Edge => {
-                if let Some(root) = program_files.as_ref() {
-                    candidates.push(root.join("Microsoft/Edge/Application/msedge.exe"));
-                }
-                if let Some(root) = program_files_x86.as_ref() {
-                    candidates.push(root.join("Microsoft/Edge/Application/msedge.exe"));
-                }
-                if let Some(root) = local {
-                    candidates.push(root.join("Microsoft/Edge/Application/msedge.exe"));
-                }
-            }
-        }
         candidates.extend(registry_app_paths(browser.executable_name()));
     }
     dedupe_paths(candidates)

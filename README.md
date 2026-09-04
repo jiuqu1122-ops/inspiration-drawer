@@ -1,6 +1,26 @@
 # Inspiration Drawer / 灵感抽屉
 
-灵感抽屉是一款面向设计与创意工作的 Windows 桌面工具，将素材收集、AI 自动标签、无限画布、生成式工作流和桌面便签整合在一个本地工作台中。
+灵感抽屉是一款面向设计与创意工作的桌面工具，将素材收集、AI 自动标签、无限画布、生成式工作流和桌面便签整合在一个本地工作台中。Windows 为稳定版平台，macOS 当前为 Experimental / Preview。
+
+## macOS Preview 开发
+
+第一阶段优先支持 Apple Silicon（M1/M2/M3/M4，`aarch64-apple-darwin`），最低系统版本为 macOS 12。当前目标是稳定运行 Canvas、Chat、AI、SQLite 素材库和 Finder 文件导入，不承诺与 Windows 原生功能 100% 一致。
+
+开发环境需要 Node.js 22、Rust stable、Xcode Command Line Tools，以及 Tauri 2 的 macOS 前置依赖：
+
+```bash
+xcode-select --install
+rustup target add aarch64-apple-darwin
+npm ci
+npm test
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg --no-sign
+```
+
+macOS 平台配置位于 `src-tauri/tauri.macos.conf.json`，Tauri 会自动与主配置合并。Preview CI 仅生成未签名 `.app` / `.dmg`；Developer ID 签名、notarization 和自动发布留到实体 Mac 验证完成后接入。手工验证项见 `docs/macos-test-checklist.md`。
+
+Preview 暂不支持从 App 原生拖出到 Finder、Virtual Drop、浏览器扩展自动安装、managed Codex、自动更新和内置 cloudflared。浏览器 localhost bridge 与手动加载扩展的流程继续共用。
 
 ## 下载
 

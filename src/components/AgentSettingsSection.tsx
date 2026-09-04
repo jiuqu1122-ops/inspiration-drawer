@@ -557,7 +557,9 @@ export function AgentSettingsSection({
                   <div className="text-[9px] leading-4 text-stone-500 dark:text-stone-400">
                     {codexStatus?.installed
                       ? `${codexStatus.version || 'Codex CLI'} · ${codexStatus.managed ? '应用管理' : '系统安装'} · ${codexStatus.authDetail || statusLabel}`
-                      : `尚未安装 Codex 运行时。点击登录时会自动下载官方 v${codexStatus?.managedVersion || '0.142.5'}。`}
+                      : codexStatus?.installAvailable
+                        ? `尚未安装 Codex 运行时。点击登录时会自动下载官方 v${codexStatus.managedVersion || '0.142.5'}。`
+                        : '未检测到系统 Codex CLI；当前平台不提供托管安装，请先安装 Codex 或配置可执行文件路径。'}
                   </div>
                   {codexInstallProgress && ['downloading', 'verifying', 'extracting'].includes(codexInstallProgress.stage) && (
                     <div className="rounded-[12px] border border-violet-200/70 bg-white/72 px-2 py-1.5 dark:border-violet-400/20 dark:bg-stone-900/40">

@@ -1994,7 +1994,12 @@ fn managed_codex_dir(app_handle: &tauri::AppHandle) -> PathBuf {
 }
 
 fn managed_codex_executable(app_handle: &tauri::AppHandle) -> PathBuf {
-    managed_codex_dir(app_handle).join("codex.exe")
+    let executable_name = if cfg!(target_os = "windows") {
+        "codex.exe"
+    } else {
+        "codex"
+    };
+    managed_codex_dir(app_handle).join(executable_name)
 }
 
 fn is_default_codex_executable(value: &str) -> bool {
@@ -2068,7 +2073,7 @@ fn install_managed_codex(app_handle: &tauri::AppHandle) -> Result<String, String
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
         let _ = app_handle;
-        return Err("当前版本只支持在 Windows x64 自动安装 Codex".to_string());
+        return Err(crate::platform::unsupported_error("managed_codex"));
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]

@@ -11,8 +11,8 @@ use tokio::sync::OnceCell;
 
 use crate::license::types::{LicenseFile, LicensePayload};
 use crate::license::{
-    check_feature_from_status, current_machine_id, require_feature_from_content,
-    status_from_content, FeatureCheckResult, LicenseError, LicenseStatus,
+    check_feature_from_status, require_feature_from_content, status_from_content,
+    FeatureCheckResult, LicenseError, LicenseStatus,
 };
 
 const LICENSE_FILE_NAME: &str = "license.json";
@@ -714,7 +714,8 @@ async fn sync_cloud_account_uncached(
     if payload.license_id.is_none() {
         return Err("cloud_account_required: 请先完成邮箱注册或登录".to_string());
     }
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = crate::platform::machine_fingerprint(app_handle)
+        .map_err(|err| format!("io_error: {err}"))?;
     let request = CloudLicenseSyncRequest {
         license: &current,
         machine_id: &machine_id,
@@ -841,13 +842,14 @@ fn format_license_error(err: LicenseError) -> String {
 }
 
 #[tauri::command]
-pub fn get_machine_id() -> Result<String, String> {
-    current_machine_id().map_err(|err| format!("io_error: {err}"))
+pub fn get_machine_id(app_handle: tauri::AppHandle) -> Result<String, String> {
+    crate::platform::machine_fingerprint(&app_handle).map_err(|err| format!("io_error: {err}"))
 }
 
 #[tauri::command]
 pub fn get_license_status(app_handle: tauri::AppHandle) -> Result<LicenseStatus, String> {
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = crate::platform::machine_fingerprint(&app_handle)
+        .map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(&app_handle)?;
     Ok(status_from_content(content.as_deref(), machine_id))
 }
@@ -879,7 +881,8 @@ pub async fn verify_email_registration(
     if code.len() != 6 || !code.chars().all(|character| character.is_ascii_digit()) {
         return Err("invalid_email_code: 请输入 6 位数字验证码".to_string());
     }
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = crate::platform::machine_fingerprint(&app_handle)
+        .map_err(|err| format!("io_error: {err}"))?;
     let current = read_license_content(&app_handle)?;
     let legacy_license = current.as_deref().filter(|content| {
         decode_license_payload_unverified(content).is_some_and(|payload| {
@@ -1255,7 +1258,8 @@ pub fn import_license(
         }
     };
 
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = crate::platform::machine_fingerprint(&app_handle)
+        .map_err(|err| format!("io_error: {err}"))?;
     let payload = crate::license::verifier::verify_license_content(&license_content, &machine_id)
         .map_err(format_license_error)?;
 
@@ -1277,7 +1281,8 @@ pub fn remove_license(app_handle: tauri::AppHandle) -> Result<LicenseStatus, Str
             *guard = None;
         }
     }
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = crate::platform::machine_fingerprint(&app_handle)
+        .map_err(|err| format!("io_error: {err}"))?;
     Ok(LicenseStatus::unlicensed(machine_id))
 }
 
@@ -1296,7 +1301,8 @@ pub fn require_feature(app_handle: &tauri::AppHandle, feature: &str) -> Result<(
         return Ok(());
     }
 
-    let machine_id = current_machine_id().map_err(|err| format!("io_error: {err}"))?;
+    let machine_id = crate::platform::machine_fingerprint(app_handle)
+        .map_err(|err| format!("io_error: {err}"))?;
     let content = read_license_content(app_handle)?;
     require_feature_from_content(content.as_deref(), machine_id, feature)
         .map_err(format_license_error)

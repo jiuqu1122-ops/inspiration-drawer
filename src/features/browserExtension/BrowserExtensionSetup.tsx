@@ -27,6 +27,7 @@ import type {
   BrowserExtensionStatusSnapshot,
   BrowserKind,
 } from './types';
+import { usePlatformCapabilities } from '../../platform/usePlatformCapabilities';
 
 const BROWSERS: Array<{ browser: BrowserKind; label: string }> = [
   { browser: 'chrome', label: 'Chrome' },
@@ -44,6 +45,7 @@ export function BrowserExtensionSetup({
   const [installResult, setInstallResult] = useState<BrowserExtensionInstallResult | null>(null);
   const [busyBrowser, setBusyBrowser] = useState<BrowserKind | null>(null);
   const [error, setError] = useState('');
+  const capabilities = usePlatformCapabilities();
 
   const refresh = useCallback(async () => {
     try {
@@ -123,6 +125,11 @@ export function BrowserExtensionSetup({
 
       {expanded && (
         <div data-settings-section-content="true" className="border-t border-stone-100 px-3 pb-3 pt-2 dark:border-stone-700/60">
+          {capabilities && !capabilities.browserExtensionAutoInstall && (
+            <div className="mb-2 rounded-[6px] bg-cyan-50 px-2.5 py-2 text-[10px] leading-4 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-100">
+              macOS Preview 保留 localhost bridge；扩展需手动加载，暂不自动安装或修改浏览器配置。
+            </div>
+          )}
           <div className="divide-y divide-stone-100 dark:divide-stone-700/60">
             {BROWSERS.map(({ browser, label }) => {
               const detection = detectionByBrowser.get(browser);

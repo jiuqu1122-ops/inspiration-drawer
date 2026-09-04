@@ -147,4 +147,9 @@ describe('local media paths', () => {
     ]);
     expect(getCanvasLocalPathsFromDataTransfer(null)).toEqual([]);
   });
+
+  it('preserves POSIX roots and decodes special characters in macOS file URLs', () => {
+    expect(fileUrlToLocalPath('file:///Users/%E5%B0%8F%E6%98%8E/My%20Images/design%20%23100%25.png'))
+      .toBe('/Users/小明/My Images/design #100%.png');
+  });
 });

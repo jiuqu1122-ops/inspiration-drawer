@@ -132,6 +132,12 @@ import type {
 } from './types/canvasWorkflow';
 import { useAppUpdate } from './hooks/useAppUpdate';
 import {
+  isPrimaryModifier,
+  platformShortcutLabel,
+  unsupportedPlatformMessage,
+} from './platform/capabilities';
+import { usePlatformCapabilities } from './platform/usePlatformCapabilities';
+import {
   getVisibleAgentUiSnapshot,
   isAgentUiElementVisible,
   setAgentUiElementValue,
@@ -1151,6 +1157,8 @@ const insertDrawerFolderAtTop = (currentFolders: Folder[], folder: Folder) => {
 
 function MainApp() {
   const isMainDrawerWindow = (appWindow as any).label !== 'edge';
+  const platformCapabilities = usePlatformCapabilities();
+  const isMacDesktopWindow = platformCapabilities?.platform === 'macos' && isMainDrawerWindow;
   const shouldShowInitialLaunchIntro = () => isMainDrawerWindow && !isLaunchIntroDoneThisPage();
 
   const [assetStorageMode, setAssetStorageMode] = useState<'initializing' | 'sqlite' | 'json'>('initializing');
@@ -1249,7 +1257,7 @@ function MainApp() {
   const [isDrawerWorkbenchMode, setIsDrawerWorkbenchMode] = useState(() => localStorage.getItem(DRAWER_WORKBENCH_MODE_STORAGE_KEY) === 'true');
   const isCanvasWorkbenchActive = isCanvasMode && isCanvasWorkbenchMode;
   const isDrawerWorkbenchActive = !isCanvasMode && isDrawerWorkbenchMode;
-  const isMainWorkbenchActive = isCanvasWorkbenchActive || isDrawerWorkbenchActive;
+  const isMainWorkbenchActive = isMacDesktopWindow || isCanvasWorkbenchActive || isDrawerWorkbenchActive;
   const isCanvasWorkbenchActiveRef = useRef(false);
   const isMainWorkbenchActiveRef = useRef(false);
   useEffect(() => {
@@ -2357,6 +2365,7 @@ function MainApp() {
   const [virtualDropJobs, setVirtualDropJobs] = useState<VirtualDropUiJob[]>([]);
   const {
     appVersion,
+    autoUpdaterSupported,
     checkAndInstallAppUpdate,
     handleAppUpdatePromptClick,
     isCheckingAppUpdate,
@@ -4751,6 +4760,10 @@ function MainApp() {
   };
 
   const toggleAutoStartSetting = async () => {
+    if (platformCapabilities && !platformCapabilities.autoStart) {
+      showToast(unsupportedPlatformMessage('开机自动启动'));
+      return;
+    }
     if (isAutoStartChanging) return;
     const previous = isAutoStart;
     const next = !isAutoStart;
@@ -11869,7 +11882,7 @@ function MainApp() {
 
   const handleDoodleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const key = event.key.toLowerCase();
-    const isMod = event.ctrlKey || event.metaKey;
+    const isMod = isPrimaryModifier(event);
     const isUndo = isMod && !event.shiftKey && !event.altKey && key === 'z';
     const isRedo = (
       (isMod && event.shiftKey && !event.altKey && key === 'z') ||
@@ -19767,7 +19780,7 @@ function MainApp() {
     const pointerCaptureTarget = e.currentTarget as HTMLElement;
     pointerCaptureTarget.setPointerCapture?.(e.pointerId);
     const currentSelected = canvasSelectedIdsRef.current;
-    const isAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
+    const isAdditive = e.shiftKey || isPrimaryModifier(e);
     const itemSelectionIds = getCanvasSelectionIdsForItem(id);
     const isItemSelectionSelected = itemSelectionIds.every(selectionId => currentSelected.includes(selectionId));
     let nextSelected = isItemSelectionSelected ? currentSelected : itemSelectionIds;
@@ -20160,7 +20173,7 @@ function MainApp() {
     e.stopPropagation();
     cancelCanvasImageSourceUpgradeQueue();
     const start = getCanvasPointFromClient(e.clientX, e.clientY);
-    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    const additive = e.shiftKey || isPrimaryModifier(e);
     canvasSelectionDragRef.current = {
       pointerId: e.pointerId,
       startX: start.x,
@@ -20761,6 +20774,10 @@ function MainApp() {
       });
       return;
     }
+    if (isMacDesktopWindow) {
+      appWindow.close().catch(err => console.warn('close macOS canvas window failed:', err));
+      return;
+    }
     requestExitCanvasMode();
   };
 
@@ -20777,6 +20794,11 @@ function MainApp() {
         console.warn('maximize drawer workbench failed:', err);
         showToast('最大化失败');
       });
+      return;
+    }
+
+    if (isMacDesktopWindow) {
+      appWindow.close().catch(err => console.warn('close macOS drawer window failed:', err));
       return;
     }
 
@@ -20808,7 +20830,7 @@ function MainApp() {
       if (shouldRouteShortcutToDoodle(event)) return;
       if (isCanvasModeRef.current && !isTextEntryActive()) {
         const key = event.key.toLowerCase();
-        const isMod = event.ctrlKey || event.metaKey;
+        const isMod = isPrimaryModifier(event);
         if (isMod && !event.altKey && key === 'a') {
           event.preventDefault();
           event.stopPropagation();
@@ -22665,6 +22687,10 @@ function MainApp() {
   };
 
   const startNativeDrawerItemDrag = async (itemId: string) => {
+    if (platformCapabilities && !platformCapabilities.nativeFileDrag) {
+      showToast(unsupportedPlatformMessage('从应用拖出文件'));
+      return false;
+    }
     const resolved = await Promise.all(getExternalDragItemsForItem(itemId).map(resolveExternalDragLocalPath));
     const paths = Array.from(new Set(resolved.map(result => result.path).filter(Boolean)));
     if (paths.length === 0) {
@@ -22991,6 +23017,7 @@ function MainApp() {
     (!!selectedImage || !!selectedVideo);
 
   const isDrawerActive =
+    isMacDesktopWindow ||
     isOpen ||
     isPinned ||
     isStartupOverlayActive ||
@@ -24395,7 +24422,7 @@ useEffect(() => {
     const handleDrawerUndoKeyDown = (event: KeyboardEvent) => {
       if (shouldRouteShortcutToDoodle(event)) return;
       if (event.repeat || event.shiftKey || event.altKey) return;
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
+      if (!isPrimaryModifier(event) || event.key.toLowerCase() !== 'z') return;
       if (!isDrawerActive || isTextEntryActive()) return;
 
       event.preventDefault();
@@ -32033,7 +32060,7 @@ useEffect(() => {
                           data-drawer-search-trigger="true"
                           data-canvas-header-search={isCanvasMode ? 'true' : undefined}
                           className="group/search relative inline-flex h-9 w-[184px] items-center rounded-[9px] border border-stone-200 bg-white text-[12px] transition-[background-color,border-color] duration-200 hover:border-stone-300 dark:border-stone-700 dark:bg-stone-900 dark:hover:border-stone-600"
-                          title={isCanvasMode ? '搜索图片 (Ctrl+F)' : '搜索 (Ctrl+F)'}
+                          title={platformShortcutLabel(isCanvasMode ? '搜索图片 (Ctrl+F)' : '搜索 (Ctrl+F)')}
                         >
                           <Search className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-stone-400" />
                           <input
@@ -32934,10 +32961,10 @@ useEffect(() => {
                                 <div data-settings-section-content="true" className="px-2.5 pb-3 pt-1.5 flex flex-col gap-1.5 border-t border-stone-100 dark:border-stone-700/50">
                                   <button
                                     type="button"
-                                    disabled={isAutoStartChanging}
+                                    disabled={isAutoStartChanging || platformCapabilities?.autoStart === false}
                                     onClick={() => void toggleAutoStartSetting()}
                                     className="group flex min-h-[42px] w-full items-center justify-between gap-3 rounded-[16px] border border-transparent px-2.5 py-2 text-left transition-all hover:border-stone-200/80 hover:bg-stone-50/85 active:scale-[0.995] disabled:cursor-wait disabled:opacity-70 dark:hover:border-stone-600/70 dark:hover:bg-stone-700/50"
-                                    title="点击切换开机自动启动"
+                                    title={platformCapabilities?.autoStart === false ? 'macOS Preview 暂不支持开机自动启动' : '点击切换开机自动启动'}
                                   >
                                     <span className="flex items-center gap-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-300">
                                       <Power className="w-3.5 h-3.5 text-purple-500" /> 开机自动启动
@@ -40084,7 +40111,8 @@ useEffect(() => {
                     <button
                       type="button"
                       onClick={() => void checkAndInstallAppUpdate({ silent: false })}
-                      disabled={isCheckingAppUpdate}
+                      disabled={isCheckingAppUpdate || !autoUpdaterSupported}
+                      title={!autoUpdaterSupported ? 'macOS Preview 暂不支持自动更新' : undefined}
                       className="flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-200 dark:hover:bg-emerald-400/15"
                     >
                       <RefreshCw className={`h-3.5 w-3.5 ${isCheckingAppUpdate ? 'animate-spin' : ''}`} />
