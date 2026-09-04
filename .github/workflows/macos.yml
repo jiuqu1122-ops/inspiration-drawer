@@ -51,65 +51,132 @@ jobs:
       - name: Build app and DMG without Developer ID signing
         run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg --no-sign --ci
 
-      - name: Ad-hoc sign and verify app bundle
+      - name: Create, sign, and verify Preview ZIP
         shell: bash
         run: |
           set -euo pipefail
+          umask 022
 
-          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Inspiration Drawer.app"
-          MAIN_EXECUTABLE="$APP_PATH/Contents/MacOS/inspiration-drawer"
+          APP_SOURCE="$GITHUB_WORKSPACE/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Inspiration Drawer.app"
+          STAGING_ROOT="$RUNNER_TEMP/inspiration-drawer-preview-staging"
+          PREVIEW_DIR="$STAGING_ROOT/Inspiration-Drawer-macOS-Preview"
+          ZIP_PATH="$GITHUB_WORKSPACE/Inspiration-Drawer-macOS-Preview.zip"
+          VERIFY_ROOT="$RUNNER_TEMP/inspiration-drawer-preview-verify"
+          STAGED_APP="$PREVIEW_DIR/Inspiration Drawer.app"
+          STAGED_EXECUTABLE="$STAGED_APP/Contents/MacOS/inspiration-drawer"
 
-          test -d "$APP_PATH"
-          test -f "$MAIN_EXECUTABLE"
-          chmod +x "$MAIN_EXECUTABLE"
+          test "$(id -un)" != "root"
+          test -d "$APP_SOURCE"
+          bash -n "$GITHUB_WORKSPACE/scripts/macos/First Launch.command"
+          rm -rf "$STAGING_ROOT" "$VERIFY_ROOT"
+          rm -f "$ZIP_PATH"
+          mkdir -p "$PREVIEW_DIR" "$VERIFY_ROOT"
 
-          codesign --force --deep --sign - "$APP_PATH"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          ditto "$APP_SOURCE" "$STAGED_APP"
+          install -m 0755 "$GITHUB_WORKSPACE/scripts/macos/First Launch.command" "$PREVIEW_DIR/First Launch.command"
+          install -m 0644 "$GITHUB_WORKSPACE/scripts/macos/README.txt" "$PREVIEW_DIR/README.txt"
+          chmod 755 "$PREVIEW_DIR/First Launch.command"
+          chmod 755 "$STAGED_EXECUTABLE"
 
-          SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+          test -d "$STAGED_APP"
+          test -x "$PREVIEW_DIR/First Launch.command"
+          test -x "$STAGED_EXECUTABLE"
+          test -r "$PREVIEW_DIR/README.txt"
+          test "$(stat -f '%Sp' "$PREVIEW_DIR/First Launch.command")" = "-rwxr-xr-x"
+          test "$(stat -f '%Sp' "$STAGED_EXECUTABLE")" = "-rwxr-xr-x"
+          test "$(stat -f '%Sp' "$PREVIEW_DIR/README.txt")" = "-rw-r--r--"
+
+          codesign --force --deep --sign - "$STAGED_APP"
+          codesign --verify --deep --strict --verbose=2 "$STAGED_APP"
+
+          SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$STAGED_APP" 2>&1)"
           printf '%s\n' "$SIGNATURE_DETAILS"
           grep -F "Signature=adhoc" <<< "$SIGNATURE_DETAILS"
 
-      - name: Create and verify Preview ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
+          ls -la "$PREVIEW_DIR"
+          ls -la "$STAGED_APP/Contents/MacOS"
+          stat -f "%Sp %Su:%Sg %N" \
+            "$PREVIEW_DIR" \
+            "$STAGED_APP" \
+            "$STAGED_EXECUTABLE" \
+            "$PREVIEW_DIR/First Launch.command" \
+            "$PREVIEW_DIR/README.txt"
 
-          APP_PATH="$GITHUB_WORKSPACE/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Inspiration Drawer.app"
-          PREVIEW_DIR="$RUNNER_TEMP/Inspiration-Drawer-macOS-Preview"
-          ZIP_PATH="$GITHUB_WORKSPACE/Inspiration-Drawer-macOS-Preview.zip"
-          VERIFY_DIR="$RUNNER_TEMP/inspiration-drawer-preview-verify"
-
-          mkdir -p "$PREVIEW_DIR" "$VERIFY_DIR"
-          ditto "$APP_PATH" "$PREVIEW_DIR/Inspiration Drawer.app"
-          install -m 0755 "$GITHUB_WORKSPACE/scripts/macos/第一次打开.command" "$PREVIEW_DIR/第一次打开.command"
-          install -m 0644 "$GITHUB_WORKSPACE/scripts/macos/安装说明.txt" "$PREVIEW_DIR/安装说明.txt"
-
-          test -d "$PREVIEW_DIR/Inspiration Drawer.app"
-          test -x "$PREVIEW_DIR/Inspiration Drawer.app/Contents/MacOS/inspiration-drawer"
-          codesign --verify --deep --strict --verbose=2 "$PREVIEW_DIR/Inspiration Drawer.app"
-          test -x "$PREVIEW_DIR/第一次打开.command"
-          test -f "$PREVIEW_DIR/安装说明.txt"
+          for STAGED_PATH in \
+            "$PREVIEW_DIR" \
+            "$STAGED_APP" \
+            "$STAGED_EXECUTABLE" \
+            "$PREVIEW_DIR/First Launch.command" \
+            "$PREVIEW_DIR/README.txt"
+          do
+            test "$(stat -f '%Su' "$STAGED_PATH")" != "root"
+          done
+          if find "$PREVIEW_DIR" -user root -print -quit | grep -q .; then
+            echo "Preview staging contains root-owned content" >&2
+            exit 1
+          fi
 
           ditto -c -k --sequesterRsrc --keepParent "$PREVIEW_DIR" "$ZIP_PATH"
-          ditto -x -k "$ZIP_PATH" "$VERIFY_DIR"
+          ditto -x -k "$ZIP_PATH" "$VERIFY_ROOT"
 
-          EXTRACTED_PREVIEW="$VERIFY_DIR/Inspiration-Drawer-macOS-Preview"
-          test -d "$EXTRACTED_PREVIEW/Inspiration Drawer.app"
-          test -x "$EXTRACTED_PREVIEW/Inspiration Drawer.app/Contents/MacOS/inspiration-drawer"
-          codesign --verify --deep --strict --verbose=2 "$EXTRACTED_PREVIEW/Inspiration Drawer.app"
-          test -x "$EXTRACTED_PREVIEW/第一次打开.command"
-          test -f "$EXTRACTED_PREVIEW/安装说明.txt"
+          EXTRACTED_PREVIEW="$VERIFY_ROOT/Inspiration-Drawer-macOS-Preview"
+          EXTRACTED_APP="$EXTRACTED_PREVIEW/Inspiration Drawer.app"
+          EXTRACTED_EXECUTABLE="$EXTRACTED_APP/Contents/MacOS/inspiration-drawer"
+
+          test -d "$EXTRACTED_APP"
+          test -x "$EXTRACTED_PREVIEW/First Launch.command"
+          test -x "$EXTRACTED_EXECUTABLE"
+          test -r "$EXTRACTED_PREVIEW/README.txt"
+          test "$(stat -f '%Sp' "$EXTRACTED_PREVIEW/First Launch.command")" = "-rwxr-xr-x"
+          test "$(stat -f '%Sp' "$EXTRACTED_EXECUTABLE")" = "-rwxr-xr-x"
+          test "$(stat -f '%Sp' "$EXTRACTED_PREVIEW/README.txt")" = "-rw-r--r--"
+          test ! -e "$EXTRACTED_PREVIEW/Inspiration-Drawer-macOS-Preview"
+          test "$(find "$EXTRACTED_PREVIEW" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" = "3"
+
+          codesign --verify --deep --strict --verbose=2 "$EXTRACTED_APP"
+          EXTRACTED_SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$EXTRACTED_APP" 2>&1)"
+          printf '%s\n' "$EXTRACTED_SIGNATURE_DETAILS"
+          grep -F "Signature=adhoc" <<< "$EXTRACTED_SIGNATURE_DETAILS"
+
+          ls -la "$EXTRACTED_PREVIEW"
+          ls -la "$EXTRACTED_APP/Contents/MacOS"
+          stat -f "%Sp %Su:%Sg %N" \
+            "$EXTRACTED_PREVIEW" \
+            "$EXTRACTED_APP" \
+            "$EXTRACTED_EXECUTABLE" \
+            "$EXTRACTED_PREVIEW/First Launch.command" \
+            "$EXTRACTED_PREVIEW/README.txt"
+
+          for EXTRACTED_PATH in \
+            "$EXTRACTED_PREVIEW" \
+            "$EXTRACTED_APP" \
+            "$EXTRACTED_EXECUTABLE" \
+            "$EXTRACTED_PREVIEW/First Launch.command" \
+            "$EXTRACTED_PREVIEW/README.txt"
+          do
+            test "$(stat -f '%Su' "$EXTRACTED_PATH")" != "root"
+          done
+          if find "$EXTRACTED_PREVIEW" -user root -print -quit | grep -q .; then
+            echo "Extracted Preview contains root-owned content" >&2
+            exit 1
+          fi
 
           find "$EXTRACTED_PREVIEW" -maxdepth 2 -print
 
-      - name: Upload macOS ARM64 Preview artifacts
+      - name: Upload macOS ARM64 Preview
         uses: actions/upload-artifact@v4
         with:
           name: inspiration-drawer-macos-arm64-preview
           if-no-files-found: error
           retention-days: 14
+          path: Inspiration-Drawer-macOS-Preview.zip
+
+      - name: Upload macOS ARM64 debug artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspiration-drawer-macos-arm64-debug-artifacts
+          if-no-files-found: error
+          retention-days: 14
           path: |
-            Inspiration-Drawer-macOS-Preview.zip
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg

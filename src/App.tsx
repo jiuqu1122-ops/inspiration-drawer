@@ -31204,8 +31204,9 @@ useEffect(() => {
 
                   <div className="my-2 h-px w-full shrink-0 bg-stone-300/75 dark:bg-stone-700/80" />
 
-                  <div className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
+                  <div data-folder-rail-viewport="true" className="relative w-full shrink-0 overflow-hidden" style={{ height: folderRailHeight }}>
                     <div
+                      data-folder-rail-scroll="true"
                       className="flex h-full w-full flex-col gap-1 overflow-y-auto overflow-x-hidden pr-0.5 [&::-webkit-scrollbar]:hidden"
                       style={{
                         WebkitMaskImage: visibleFolderRailEntryCount > 7

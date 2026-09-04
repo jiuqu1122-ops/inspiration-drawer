@@ -5,9 +5,9 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-h
 ## Install and launch
 
 - [ ] Download the `inspiration-drawer-macos-arm64-preview` GitHub Actions artifact.
-- [ ] Extract `Inspiration-Drawer-macOS-Preview.zip` and confirm it contains only the Preview folder with the app, `第一次打开.command`, and `安装说明.txt`.
-- [ ] Keep the three files together and double-click `第一次打开.command`; if macOS blocks it, Control-click/right-click it and choose Open.
-- [ ] Confirm the command removes quarantine only from the adjacent app, launches the app without `sudo`, and reports a clear Chinese success or error message.
+- [ ] Extract `Inspiration-Drawer-macOS-Preview.zip` and confirm it contains only the Preview folder with the app, `First Launch.command`, and `README.txt`.
+- [ ] Keep the three files together and double-click `First Launch.command`; if macOS blocks it, Control-click/right-click it and choose Open.
+- [ ] Confirm the command removes quarantine only from the adjacent app, launches it without administrator access, and reports a clear Chinese success or error message.
 - [ ] Quit, then launch `Inspiration Drawer.app` directly without running the command again.
 - [ ] Restart the Mac and confirm the app still launches directly from the extracted folder.
 - [ ] Optionally mount the separately supplied DMG and verify it remains usable; the Preview ZIP is the primary distribution path.
@@ -26,14 +26,24 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-h
 - [ ] Confirm search, settings, and dialog inputs use the soft focus ring and accept text without layout shifts.
 - [ ] On a Retina display in dark appearance, inspect the main window's top-left native corner and confirm there is no gray/white halo.
 - [ ] Inspect search, sidebar selection, toolbar buttons, the Canvas side toolbar, popovers, context menus, image cards, text notes, and image notes; each rounded edge should remain crisp before and after hover.
+- [ ] Confirm all four search edges are complete, every Canvas side button keeps its left edge, and the New Folder/sidebar rows have no clipped corners or missing outlines.
 - [ ] Repeat the corner inspection in light appearance at 100% display scale and at a scaled display setting when available.
 - [ ] Confirm folder and Canvas context menus have compact rows, aligned shortcut labels, thin separators, and soft shadows.
 - [ ] Confirm dialogs, popovers, date pickers, and color pickers remain fully clickable and are not clipped.
+
 - [ ] Confirm asset cards retain their thumbnail crop/aspect behavior and use only a subtle hover shadow on macOS, without hover scaling.
 - [ ] Confirm the Canvas floating toolbar remains compact, its active Chat state is visible, and node coordinates/sizes do not change.
 - [ ] Confirm displayed shortcuts use macOS glyphs (`⌘`, `⌥`, `⇧`, `⌫`) while the configured global shortcuts still trigger.
 - [ ] Confirm scrollbars remain unobtrusive and trackpad scrolling, inertial scrolling, and pinch zoom feel unchanged.
 - [ ] Switch between light and dark appearance and confirm toolbar, sidebar, menus, inputs, cards, and floating notes remain legible.
+
+## Preview distribution
+
+- [ ] Download `inspiration-drawer-macos-arm64-preview` and confirm the artifact contains only `Inspiration-Drawer-macOS-Preview.zip`.
+- [ ] Extract the ZIP once and confirm there is one `Inspiration-Drawer-macOS-Preview` directory containing exactly `Inspiration Drawer.app`, `First Launch.command`, and `README.txt`.
+- [ ] Confirm the extracted files are owned by the current user rather than `root`, and `First Launch.command` plus the app's main executable are executable.
+- [ ] Double-click `First Launch.command`; confirm it opens the adjacent app without administrator access and only closes its own Terminal window when that window has a single tab.
+- [ ] Run the first-launch command from a Terminal window with multiple tabs; confirm the app opens and the Terminal window remains open.
 
 ## Local data and imports
 
@@ -78,6 +88,7 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-h
 
 - [ ] Launch Chat and AI features from the Preview ZIP build; confirm the packaging/signing changes did not alter their behavior.
 - [ ] Open Chat, create a conversation, attach an image, and receive a streamed response.
+- [ ] Open every image-generation model, aspect-ratio, and resolution picker; confirm the complete menu paints above the message area without being clipped.
 - [ ] Run image generation with an API/BYOK or wallet configuration.
 - [ ] Restart and verify conversations, messages, attachments, and generated files persist.
 - [ ] If a system Codex CLI is installed, verify the custom executable path; confirm managed Codex installation is not offered.

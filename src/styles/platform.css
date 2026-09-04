@@ -11,12 +11,12 @@
   --sidebar-width: 250px;
   --traffic-light-safe-width: 80px;
   --traffic-light-safe-height: 44px;
-  --macos-border-subtle: rgba(60, 60, 67, 0.16);
-  --macos-border-strong: rgba(60, 60, 67, 0.24);
-  --macos-surface-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 18px 48px rgba(15, 23, 42, 0.11);
-  --macos-control-shadow: inset 0 0 0 0.5px var(--macos-border-subtle);
+  --macos-border-subtle: rgba(60, 60, 67, 0.12);
+  --macos-border-strong: rgba(60, 60, 67, 0.2);
+  --macos-surface-shadow: inset 0 0 0 1px var(--macos-border-subtle), 0 18px 48px rgba(15, 23, 42, 0.11);
+  --macos-control-shadow: inset 0 0 0 1px var(--macos-border-subtle);
   --panel-shadow: var(--macos-surface-shadow);
-  --popover-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 14px 38px rgba(15, 23, 42, 0.14);
+  --popover-shadow: inset 0 0 0 1px var(--macos-border-subtle), 0 14px 38px rgba(15, 23, 42, 0.14);
   --control-border: var(--macos-border-subtle);
   --hover-bg: rgba(60, 60, 67, 0.07);
   --selected-bg: rgba(0, 122, 255, 0.12);
@@ -31,12 +31,12 @@
 
 [data-platform="macos"].dark,
 [data-platform="macos"] .dark {
-  --macos-border-subtle: rgba(255, 255, 255, 0.08);
-  --macos-border-strong: rgba(255, 255, 255, 0.1);
-  --macos-surface-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 20px 52px rgba(0, 0, 0, 0.3);
-  --macos-control-shadow: inset 0 0 0 0.5px var(--macos-border-subtle);
+  --macos-border-subtle: rgba(255, 255, 255, 0.06);
+  --macos-border-strong: rgba(255, 255, 255, 0.09);
+  --macos-surface-shadow: inset 0 0 0 1px var(--macos-border-subtle), 0 20px 52px rgba(0, 0, 0, 0.3);
+  --macos-control-shadow: inset 0 0 0 1px var(--macos-border-subtle);
   --panel-shadow: var(--macos-surface-shadow);
-  --popover-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 16px 42px rgba(0, 0, 0, 0.36);
+  --popover-shadow: inset 0 0 0 1px var(--macos-border-subtle), 0 16px 42px rgba(0, 0, 0, 0.36);
   --control-border: var(--macos-border-subtle);
   --hover-bg: rgba(235, 235, 245, 0.08);
   --selected-bg: rgba(10, 132, 255, 0.2);
@@ -68,12 +68,13 @@
   background: var(--sidebar-bg) !important;
   border-color: var(--divider-color) !important;
   box-shadow: none !important;
+  overflow: visible !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 
 [data-platform="macos"].drawer-theme [data-drawer-sidebar="true"] > div.flex.h-full {
-  padding-inline: 12px !important;
+  padding-inline: 14px !important;
 }
 
 [data-platform="macos"].drawer-theme [data-drawer-header="true"] {
@@ -82,6 +83,7 @@
   gap: 12px !important;
   background: var(--toolbar-bg) !important;
   border-color: var(--divider-color) !important;
+  overflow: visible !important;
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
   backdrop-filter: blur(18px) saturate(1.08);
 }
@@ -101,6 +103,7 @@
 [data-platform="macos"].drawer-theme [data-drawer-tools="true"],
 [data-platform="macos"].drawer-theme [data-canvas-header-tools="true"] {
   gap: 6px !important;
+  overflow: visible !important;
 }
 
 [data-platform="macos"].drawer-theme :is([data-drawer-tools="true"], [data-canvas-header-tools="true"]) > button {
@@ -112,6 +115,7 @@
   border: 0 !important;
   border-radius: var(--icon-control-radius) !important;
   box-shadow: none !important;
+  overflow: visible !important;
   font-size: 12px !important;
   font-weight: 500 !important;
   transition-duration: var(--motion-fast) !important;
@@ -136,7 +140,7 @@
   border: 0 !important;
   border-radius: var(--control-radius) !important;
   box-shadow: var(--macos-control-shadow) !important;
-  overflow: hidden;
+  overflow: visible !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
@@ -145,7 +149,7 @@
   [data-drawer-search-trigger="true"],
   [data-canvas-header-search="true"]
 ):focus-within {
-  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--macos-border-strong), 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 14%, transparent) !important;
 }
 
 [data-platform="macos"].drawer-theme :is(
@@ -162,7 +166,7 @@
 ) > input:focus-visible {
   background: transparent !important;
   border: 0 !important;
-  border-radius: inherit !important;
+  border-radius: 0 !important;
   box-shadow: none !important;
   outline: none !important;
   -webkit-backdrop-filter: none !important;
@@ -181,12 +185,28 @@
   border-radius: var(--control-radius) !important;
   font-size: 13px !important;
   font-weight: 500 !important;
+  overflow: visible !important;
 }
 
 [data-platform="macos"].drawer-theme [data-folder-row="true"] > button:first-of-type {
   min-height: 32px !important;
   border-radius: var(--control-radius) !important;
   font-weight: 500 !important;
+  overflow: visible !important;
+}
+
+/* Keep ordinary folder controls away from the vertical scroll clip. */
+[data-platform="macos"].drawer-theme [data-folder-rail-viewport="true"] {
+  box-sizing: border-box;
+  overflow: visible !important;
+  padding-inline: 2px;
+}
+
+[data-platform="macos"].drawer-theme [data-folder-rail-scroll="true"] {
+  box-sizing: border-box;
+  /* Vertical scrolling needs a real clip; keep controls inside it with breathing room. */
+  overflow-x: hidden !important;
+  padding-inline: 3px;
 }
 
 [data-platform="macos"].drawer-theme [data-new-folder="true"] {
@@ -196,6 +216,8 @@
   border-radius: var(--control-radius) !important;
   box-shadow: var(--macos-control-shadow) !important;
   font-weight: 500 !important;
+  overflow: visible !important;
+  transform: none !important;
 }
 
 [data-platform="macos"].drawer-theme :is(
@@ -272,7 +294,7 @@
   [data-settings-section-content="true"] select
 ):focus {
   outline: none !important;
-  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 13%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--macos-border-strong), 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 13%, transparent) !important;
 }
 
 [data-platform="macos"].drawer-theme :is([data-folder-context-menu="true"], [data-canvas-context-menu="true"]) {
@@ -317,11 +339,11 @@
 }
 
 [data-platform="macos"].drawer-theme [data-asset-card="true"]:hover {
-  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 8px 24px rgba(15, 23, 42, 0.075) !important;
+  box-shadow: inset 0 0 0 1px var(--macos-border-strong), 0 8px 24px rgba(15, 23, 42, 0.075) !important;
 }
 
 [data-platform="macos"].drawer-theme.dark [data-asset-card="true"]:hover {
-  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 9px 26px rgba(0, 0, 0, 0.2) !important;
+  box-shadow: inset 0 0 0 1px var(--macos-border-strong), 0 9px 26px rgba(0, 0, 0, 0.2) !important;
 }
 
 [data-platform="macos"].drawer-theme [data-asset-card="true"]:hover [data-asset-media="true"] img {
@@ -338,8 +360,15 @@
   border: 0 !important;
   border-radius: var(--icon-control-radius) !important;
   box-shadow: var(--macos-control-shadow) !important;
+  overflow: visible !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+
+[data-platform="macos"].drawer-theme [data-canvas-toolbar="true"] {
+  box-sizing: border-box;
+  overflow: visible !important;
+  padding-inline: 3px;
 }
 
 [data-platform="macos"].drawer-theme [data-canvas-toolbar="true"] > button {
@@ -350,6 +379,7 @@
   border-radius: var(--control-radius) !important;
   box-shadow: var(--macos-control-shadow) !important;
   font-weight: 500 !important;
+  overflow: visible !important;
   transition-duration: var(--motion-fast) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
@@ -363,7 +393,7 @@
 [data-platform="macos"].drawer-theme [data-canvas-toolbar="true"] > button[data-active="true"] {
   color: var(--drawer-text) !important;
   background: var(--selected-bg) !important;
-  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong) !important;
+  box-shadow: inset 0 0 0 1px var(--macos-border-strong) !important;
 }
 
 /* Floating notes keep their existing outer radius; their child no longer reclips it. */
