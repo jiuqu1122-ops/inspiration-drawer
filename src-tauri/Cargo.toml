@@ -74,6 +74,11 @@ winapi = { version = "0.3.9", features = [
   "winver"
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Tauri gates transparent frameless NSWindow/WKWebView support behind this
+# official feature; no project-owned Objective-C hooks are used.
+tauri = { version = "2.0.0", features = ["protocol-asset", "tray-icon", "macos-private-api"] }
+
 [profile.release]
 strip = true
 lto = "thin"

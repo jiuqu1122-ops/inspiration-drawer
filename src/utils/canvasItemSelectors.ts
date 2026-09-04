@@ -23,6 +23,7 @@ import { isRemoteHttpImageSource } from './canvasImageData';
 import { isDataMediaSourceValue } from './canvasSerialization';
 import { CANVAS_BUILT_IN_WORKFLOWS } from './canvasWorkflowDefinitions';
 import { isCanvasAudioFileName } from './localMediaPaths';
+import { resolveLocalImageSource } from './localImageSource';
 
 export const CANVAS_IMAGE_SOURCE_UPGRADE_PREVIEW_SIZE = 1024;
 
@@ -46,11 +47,7 @@ export const getCanvasInitialImageSource = (item: BufferItem) => (
 export const getCanvasOriginalImageSource = (item: BufferItem) => {
   if (item.type !== 'image') return '';
   const path = String(item.path || '').trim();
-  if (path) {
-    if (/^(?:asset:|file:|blob:|data:|https?:)/i.test(path)) return path;
-    return convertFileSrc(path);
-  }
-  return String(item.url || item.sourceUrl || item.originalUrl || '').trim();
+  return resolveLocalImageSource(path || item.url || item.sourceUrl || item.originalUrl);
 };
 
 export const getCanvasImageUpgradeLocalPath = (canvasItem: CanvasImageItem) => {

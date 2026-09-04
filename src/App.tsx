@@ -727,6 +727,7 @@ import {
   fitImageFloatingNoteSize,
   floatingNoteStorageKey,
   forgetOpenFloatingNoteLabel,
+  getStableFloatingNoteImageFields,
   getFolderTagIds,
   makeFloatingNoteSnapshot,
   readFloatingNoteSnapshot,
@@ -23566,9 +23567,7 @@ useEffect(() => {
         ...latestSnapshot,
         name: item.name,
         content: item.content,
-        path: item.path,
-        url: item.url,
-        thumbnail: item.thumbnail,
+        ...getStableFloatingNoteImageFields(item),
         updatedAt: Date.now(),
       };
       snipNoteTarget = { ...target, snapshot: next };

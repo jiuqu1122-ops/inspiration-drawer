@@ -7,11 +7,11 @@ import {
 } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, emitTo } from '@tauri-apps/api/event';
 
-import { Folder, FloatingNoteSnapshot, FloatingNoteScheduleItem } from '../types';
+import { BufferItem, Folder, FloatingNoteSnapshot, FloatingNoteScheduleItem } from '../types';
 import { RoundedSelect } from '../components/RoundedSelect';
+import { shouldShowImageUnavailable } from '../utils/localImageSource';
 import { clamp } from './common';
 import { getDrawerFolderPathName } from './folderModel';
 import {
@@ -39,6 +39,7 @@ import {
   TEXT_FLOATING_NOTE_SIZE_ORDER,
   deleteFloatingNoteSnapshot,
   floatingNoteStorageKey,
+  getFloatingNoteImageSourceDetails,
   getFolderTagIds,
   getTextFloatingNoteColor,
   readCachedFolders,
@@ -76,6 +77,8 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   const [isNoteHovered, setIsNoteHovered] = useState(false);
   const [isEditingNoteText, setIsEditingNoteText] = useState(false);
   const [isEditingNoteTitle, setIsEditingNoteTitle] = useState(false);
+  const [imageAsset, setImageAsset] = useState<BufferItem | null>(null);
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
   const [noteTitleDraft, setNoteTitleDraft] = useState(() => initialNote?.name || '');
   const [scheduleDraft, setScheduleDraft] = useState('');
   const [scheduleDateDraft, setScheduleDateDraft] = useState(getTodayInputValue);
@@ -119,6 +122,28 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
   useEffect(() => {
     noteRef.current = note;
   }, [note]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageAsset(null);
+    if (note?.type !== 'image' || !note.itemId) return () => { cancelled = true; };
+
+    void invoke<BufferItem | null>('get_asset_by_id', { id: note.itemId })
+      .then((asset) => {
+        if (!cancelled) setImageAsset(asset);
+      })
+      .catch((error) => {
+        if (import.meta.env.DEV) {
+          console.debug('[FloatingNoteImage] asset lookup unavailable; using snapshot source', {
+            noteId: note.id,
+            assetId: note.itemId,
+            error,
+          });
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [note?.itemId, note?.type]);
 
   useEffect(() => {
     noteTitleDraftRef.current = noteTitleDraft;
@@ -1205,7 +1230,34 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     if (usePointerEvents) window.addEventListener('pointercancel', handleUp, true);
   };
 
-  const imageSrc = note?.url || (note?.path ? convertFileSrc(note.path) : '');
+  const imageSourceDetails = getFloatingNoteImageSourceDetails(note, imageAsset);
+  const imageSrc = imageSourceDetails.resolvedSource;
+  const showImageUnavailable = shouldShowImageUnavailable(imageSrc, imageLoadFailed);
+
+  useEffect(() => {
+    setImageLoadFailed(false);
+  }, [imageSrc]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || note?.type !== 'image') return;
+    console.debug('[FloatingNoteImage] resolved source', imageSourceDetails);
+  }, [
+    imageSourceDetails.assetId,
+    imageSourceDetails.noteId,
+    imageSourceDetails.originalSource,
+    imageSourceDetails.resolvedSource,
+    imageSourceDetails.storedPath,
+    imageSourceDetails.storedSource,
+    imageSourceDetails.storedUrl,
+    note?.type,
+  ]);
+
+  const handleImageLoadError = () => {
+    setImageLoadFailed(true);
+    if (import.meta.env.DEV) {
+      console.warn('[FloatingNoteImage] image unavailable', imageSourceDetails);
+    }
+  };
   const displayName = note?.name || note?.content || '桌面便签';
   const zoomTitle = note?.type === 'image'
     ? '滚轮缩放便签'
@@ -1469,7 +1521,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
           </div>
         ) : note.type === 'image' ? (
           <div className="flex h-full w-full items-center justify-center overflow-hidden bg-stone-950">
-            {imageSrc ? (
+            {!showImageUnavailable ? (
               <img
                 src={imageSrc}
                 loading="lazy"
@@ -1477,9 +1529,18 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
                 className="h-full w-full object-contain pointer-events-none select-none"
                 draggable={false}
                 alt={displayName}
+                onLoad={() => setImageLoadFailed(false)}
+                onError={handleImageLoadError}
               />
             ) : (
-              <ImageIcon className="h-10 w-10 text-stone-600" />
+              <div
+                data-image-note-unavailable="true"
+                className="flex h-full w-full flex-col items-center justify-center gap-2 bg-stone-100 px-6 text-center text-stone-500 dark:bg-stone-900 dark:text-stone-400"
+              >
+                <ImageIcon className="h-9 w-9 opacity-60" />
+                <span className="text-xs font-bold">图片不可用</span>
+                <span className="text-[10px] leading-4 opacity-75">原文件可能已被移动或删除</span>
+              </div>
             )}
           </div>
         ) : note.type === 'text' ? (

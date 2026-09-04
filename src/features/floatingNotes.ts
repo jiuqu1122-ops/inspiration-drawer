@@ -1,6 +1,10 @@
-import { convertFileSrc } from '@tauri-apps/api/core';
-
 import { BufferItem, Folder, FloatingNoteSnapshot } from '../types';
+import { fileUrlToLocalPath } from '../utils/localMediaPaths';
+import {
+  isTemporaryImageSource,
+  localPathFromAssetUrl,
+  resolveLocalImageSource,
+} from '../utils/localImageSource';
 import { clamp } from './common';
 
 const MAX_FLOATING_NOTE_COUNT = 8;
@@ -156,15 +160,53 @@ const getFolderTagIds = (folderId?: string, tagIds?: string[]) => {
   return folderId ? [folderId] : [];
 };
 
+const normalizeStableImagePath = (value?: unknown) => {
+  const raw = String(value || '').trim();
+  if (!raw || isTemporaryImageSource(raw)) return '';
+  return localPathFromAssetUrl(raw)
+    || (/^file:/i.test(raw) ? fileUrlToLocalPath(raw) : '')
+    || raw;
+};
+
+const getLocalPathFromDisplaySource = (value?: unknown) => {
+  const raw = String(value || '').trim();
+  if (!raw || isTemporaryImageSource(raw)) return '';
+  const assetPath = localPathFromAssetUrl(raw);
+  if (assetPath) return assetPath;
+  if (/^file:/i.test(raw)) return fileUrlToLocalPath(raw);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^[a-zA-Z]:[\\/]/.test(raw)) return '';
+  return raw;
+};
+
+const getStableFloatingNoteImageFields = (
+  item: Pick<BufferItem, 'path' | 'url' | 'thumbnail'>,
+) => {
+  const rawUrl = String(item.url || '').trim();
+  const rawThumbnail = String(item.thumbnail || '').trim();
+  const urlLocalPath = getLocalPathFromDisplaySource(rawUrl);
+  const thumbnailLocalPath = getLocalPathFromDisplaySource(rawThumbnail);
+  const storedPath = normalizeStableImagePath(item.path)
+    || urlLocalPath
+    || thumbnailLocalPath;
+
+  return {
+    path: storedPath || undefined,
+    url: rawUrl && !urlLocalPath && !isTemporaryImageSource(rawUrl) ? rawUrl : undefined,
+    thumbnail: rawThumbnail && !thumbnailLocalPath && !isTemporaryImageSource(rawThumbnail)
+      ? rawThumbnail
+      : undefined,
+  };
+};
+
 const makeFloatingNoteSnapshot = (item: BufferItem): FloatingNoteSnapshot => ({
   id: `note_${item.id}`,
   itemId: item.id,
   type: item.type,
   name: item.type === 'text' ? (item.remark || item.name || item.content) : item.name,
   content: item.content,
-  path: item.path,
-  url: item.url,
-  thumbnail: item.thumbnail,
+  ...(item.type === 'image'
+    ? getStableFloatingNoteImageFields(item)
+    : { path: item.path, url: item.url, thumbnail: item.thumbnail }),
   folderId: item.folderId,
   tagIds: getFolderTagIds(item.folderId),
   ...readFloatingNoteViewState(item.id),
@@ -173,8 +215,43 @@ const makeFloatingNoteSnapshot = (item: BufferItem): FloatingNoteSnapshot => ({
 } as FloatingNoteSnapshot);
 
 const getImageNoteSource = (item: Pick<BufferItem, 'url' | 'thumbnail' | 'path'>) => (
-  item.url || item.thumbnail || (item.path ? convertFileSrc(item.path) : '')
+  resolveLocalImageSource(item.path || item.url || item.thumbnail)
 );
+
+const getFloatingNoteImageSourceDetails = (
+  note?: FloatingNoteSnapshot | null,
+  asset?: Partial<BufferItem> | null,
+) => {
+  const originalSource = String(
+    asset?.sourceUrl
+    || asset?.originalUrl
+    || asset?.path
+    || note?.path
+    || asset?.url
+    || note?.url
+    || '',
+  ).trim();
+  const storedSource = String(note?.path || note?.url || note?.thumbnail || '').trim();
+  const selectedSource = String(
+    asset?.path
+    || note?.path
+    || asset?.url
+    || note?.url
+    || asset?.thumbnail
+    || note?.thumbnail
+    || '',
+  ).trim();
+
+  return {
+    noteId: note?.id || '',
+    assetId: note?.itemId || '',
+    originalSource,
+    storedSource,
+    storedPath: note?.path || '',
+    storedUrl: note?.url || '',
+    resolvedSource: resolveLocalImageSource(selectedSource),
+  };
+};
 
 const fitImageFloatingNoteSize = (aspect: number) => {
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
@@ -254,8 +331,10 @@ export {
   deleteFloatingNoteSnapshot,
   readCachedFolders,
   getFolderTagIds,
+  getStableFloatingNoteImageFields,
   makeFloatingNoteSnapshot,
   getImageNoteSource,
+  getFloatingNoteImageSourceDetails,
   fitImageFloatingNoteSize,
   readImageAspect,
   readFloatingNoteSnapshot,

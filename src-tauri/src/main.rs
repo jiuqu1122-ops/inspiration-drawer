@@ -17983,6 +17983,8 @@ fn build_hidden_note_window(
         .min_inner_size(48.0, 48.0)
         .resizable(true)
         .fullscreen(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.transparent(true);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.transparent(true);
     let builder = builder

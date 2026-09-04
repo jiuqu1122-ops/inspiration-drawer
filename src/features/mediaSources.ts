@@ -1,5 +1,5 @@
-import { convertFileSrc } from '@tauri-apps/api/core';
 import type { BufferItem } from '../types';
+import { resolveLocalImageSource } from '../utils/localImageSource';
 
 export type ImageSourceOptions = {
   allowOriginalFallback?: boolean;
@@ -15,13 +15,12 @@ export const isHttpImageSource = (value?: unknown) => (
 
 export const getOriginalMediaSource = (item?: Partial<BufferItem> | null) => {
   if (!item) return '';
-  return (
-    (item.path ? convertFileSrc(item.path) : '')
+  return resolveLocalImageSource(
+    item.path
     || item.url
     || item.thumbnail
-    || item.content
-    || ''
-  ).trim();
+    || item.content,
+  );
 };
 
 export const getThumbnailSource = (item?: Partial<BufferItem> | null) => (
