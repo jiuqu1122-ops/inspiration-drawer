@@ -17977,13 +17977,15 @@ fn build_hidden_note_window(
     app_handle: &tauri::AppHandle,
     label: String,
 ) -> Result<WebviewWindow, String> {
-    WebviewWindowBuilder::new(app_handle, label, WebviewUrl::App("note.html".into()))
+    let builder = WebviewWindowBuilder::new(app_handle, label, WebviewUrl::App("note.html".into()))
         .title("Desktop note")
         .inner_size(360.0, 320.0)
         .min_inner_size(48.0, 48.0)
         .resizable(true)
-        .fullscreen(false)
-        .transparent(true)
+        .fullscreen(false);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.transparent(true);
+    builder
         .decorations(false)
         .always_on_top(false)
         .skip_taskbar(true)
