@@ -11145,40 +11145,7 @@ function MainApp() {
 
   const imageSourceToModelDataUrl = async (source: string) => {
     const dataUrl = await imageSourceToDataUrl(source, true);
-    if (!dataUrl) return '';
-
-    return await new Promise<string>((resolve) => {
-      const image = new window.Image();
-      image.onload = () => {
-        try {
-          const width = image.naturalWidth || image.width;
-          const height = image.naturalHeight || image.height;
-          if (!width || !height) {
-            resolve(dataUrl);
-            return;
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            resolve(dataUrl);
-            return;
-          }
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(image, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.9));
-          canvas.width = 0;
-          canvas.height = 0;
-        } catch (_) {
-          resolve(dataUrl);
-        }
-      };
-      image.onerror = () => resolve(dataUrl);
-      image.decoding = 'async';
-      image.src = dataUrl;
-    });
+    return dataUrl || '';
   };
 
   const copyImageDataUrlToSystemClipboard = async (dataUrl: string) => {

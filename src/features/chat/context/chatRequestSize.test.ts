@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  CHAT_REQUEST_HARD_BYTES,
+  CHAT_REQUEST_WARN_BYTES,
   MAX_INLINE_VISION_BYTES,
   estimateDataUrlBytes,
   protectChatProviderRequest,
@@ -44,12 +44,15 @@ describe('Chat provider request size protection', () => {
     expect(result.stats.requestBytes).toBeLessThan(4_096);
   });
 
-  it('blocks an oversized non-image request locally', () => {
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    expect(() => protectChatProviderRequest({
-      messages: [{ role: 'user', content: 'x'.repeat(CHAT_REQUEST_HARD_BYTES + 1) }],
+  it('does not impose a hard limit on the complete request', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = protectChatProviderRequest({
+      messages: [{ role: 'user', content: 'x'.repeat(CHAT_REQUEST_WARN_BYTES * 5) }],
       tools: [],
-    })).toThrow('发送内容过大');
-    error.mockRestore();
+    });
+    expect(result.stats.requestBytes).toBeGreaterThan(CHAT_REQUEST_WARN_BYTES * 4);
+    expect(result.messages).toHaveLength(1);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyCanvasTextContextRouting,
   buildCanvasContextRoutingInstruction,
+  formatCanvasTextResultMarkdown,
 } from './canvasTextContextRouting';
 
 describe('canvas text context routing', () => {
@@ -61,5 +62,29 @@ describe('canvas text context routing', () => {
     expect(instruction).toContain('生成第二张图');
     expect(instruction).not.toContain('hero');
     expect(instruction).not.toContain('detail');
+  });
+
+  it('formats the internal routing envelope as user-facing Markdown', () => {
+    const output = JSON.stringify({
+      global: '## 产品分析\\n\\n- 保留核心造型',
+      targets: {
+        'internal-node-a': '### 主图策略\\n\\n使用正面视角。',
+        'internal-node-b': '### 细节策略\\n\\n突出材质纹理。',
+      },
+    });
+
+    const markdown = formatCanvasTextResultMarkdown(output);
+
+    expect(markdown).toContain('## 产品分析\n\n- 保留核心造型');
+    expect(markdown).not.toContain('使用正面视角。');
+    expect(markdown).not.toContain('突出材质纹理。');
+    expect(markdown).not.toContain('"global"');
+    expect(markdown).not.toContain('internal-node');
+    expect(markdown).not.toContain('\\n');
+  });
+
+  it('keeps an ordinary Markdown response unchanged', () => {
+    const markdown = '## 设计策略\n\n- 简洁\n- 克制';
+    expect(formatCanvasTextResultMarkdown(markdown)).toBe(markdown);
   });
 });

@@ -63,6 +63,31 @@ const parseContextObject = (text: string): Record<string, unknown> | null => {
   return null;
 };
 
+const normalizeMarkdownString = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed || /[\r\n]/.test(trimmed)) return trimmed;
+  return trimmed
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '  ');
+};
+
+const contextValueToMarkdown = (value: unknown): string => {
+  if (typeof value === 'string') return normalizeMarkdownString(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    return value.flatMap(item => {
+      const content = contextValueToMarkdown(item);
+      return content ? [`- ${content.replace(/\n/g, '\n  ')}`] : [];
+    }).join('\n');
+  }
+  if (!isRecord(value)) return '';
+  return Object.entries(value).flatMap(([key, item]) => {
+    const content = contextValueToMarkdown(item);
+    return content ? [`- **${key}**：${content.replace(/\n/g, '\n  ')}`] : [];
+  }).join('\n');
+};
+
 const getOwnPathValue = (source: Record<string, unknown>, path: string) => {
   const segments = path.split('.').map(segment => segment.trim()).filter(Boolean);
   if (segments.length === 0) return { found: false, value: undefined as unknown };
@@ -99,6 +124,7 @@ export const buildCanvasContextRoutingInstruction = (rawTargets: CanvasContextRo
     '上下文自动路由协议：',
     '只输出一个可被 JSON.parse 直接解析的 JSON 对象，不要输出 Markdown 代码块、标题或 JSON 之外的文字。',
     '`global` 写所有下游节点共享且不可缺少的信息；`targets` 必须使用下面给出的稳定节点 ID，并分别写只与该节点任务有关的信息。',
+    '`global` 和每个 `targets` 字段的值都必须是 Markdown 正文字符串，换行由 JSON 正确转义。',
     '不要在每个 targets 字段里重复 global。所有列出的目标 ID 都必须存在。',
     '输出结构：',
     JSON.stringify({ global: '所有目标共享的上下文', targets: targetShape }, null, 2),
@@ -109,6 +135,30 @@ export const buildCanvasContextRoutingInstruction = (rawTargets: CanvasContextRo
       target.task ? `  任务: ${target.task}` : '',
     ].filter(Boolean).join('\n')),
   ].join('\n');
+};
+
+/**
+ * Keeps the routing envelope available to downstream nodes while presenting
+ * its Markdown values as clean user-facing workflow output.
+ */
+export const formatCanvasTextResultMarkdown = (text: string) => {
+  const originalText = String(text || '').trim();
+  if (!originalText) return originalText;
+  const parsed = parseContextObject(originalText);
+  if (!parsed || !Object.prototype.hasOwnProperty.call(parsed, 'global')) return originalText;
+
+  const sections: string[] = [];
+  const globalContent = contextValueToMarkdown(parsed.global);
+  if (globalContent) return globalContent;
+
+  if (isRecord(parsed.targets)) {
+    Object.values(parsed.targets).forEach(value => {
+      const content = contextValueToMarkdown(value);
+      if (content) sections.push(content);
+    });
+  }
+
+  return sections.join('\n\n---\n\n').trim() || originalText;
 };
 
 export const applyCanvasTextContextRouting = (

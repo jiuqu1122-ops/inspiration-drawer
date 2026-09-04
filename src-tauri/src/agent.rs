@@ -826,9 +826,8 @@ pub struct AgentOpenAiChatRequest {
     reasoning_effort: Option<String>,
 }
 
-const MAX_INLINE_VISION_BYTES: usize = 128 * 1024;
+const MAX_INLINE_VISION_BYTES: usize = 5 * 1024 * 1024 / 2;
 const CHAT_REQUEST_WARN_BYTES: usize = 1024 * 1024;
-const CHAT_REQUEST_HARD_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ChatRequestSizeStats {
@@ -879,7 +878,7 @@ fn inspect_chat_vision_value(
                         let bytes = approximate_data_url_bytes(url);
                         stats.inline_image_bytes = stats.inline_image_bytes.saturating_add(bytes);
                         if bytes > MAX_INLINE_VISION_BYTES {
-                            return Err("发送内容过大，请减少附件数量或稍后重试。".to_string());
+                            return Err("单张图片附件超过 2.5 MB，请压缩后重试。".to_string());
                         }
                     }
                 }
@@ -910,16 +909,6 @@ fn validate_chat_request_size(
     };
     for message in &request.messages {
         inspect_chat_vision_value(message, &mut stats)?;
-    }
-    if stats.request_bytes > CHAT_REQUEST_HARD_BYTES {
-        eprintln!(
-            "Chat request blocked: requestBytes={} messageCount={} visionImageCount={} inlineImageBytes={}",
-            stats.request_bytes,
-            stats.message_count,
-            stats.vision_image_count,
-            stats.inline_image_bytes,
-        );
-        return Err("发送内容过大，请减少附件数量或稍后重试。".to_string());
     }
     if stats.request_bytes > CHAT_REQUEST_WARN_BYTES {
         eprintln!(
@@ -2705,8 +2694,16 @@ mod tests {
         }]));
         assert_eq!(
             validate_chat_request_size(&request).unwrap_err(),
-            "发送内容过大，请减少附件数量或稍后重试。"
+            "单张图片附件超过 2.5 MB，请压缩后重试。"
         );
+    }
+
+    #[test]
+    fn complete_chat_request_size_is_not_capped_locally() {
+        let content = "x".repeat(5 * 1024 * 1024);
+        let stats = validate_chat_request_size(&chat_request_with_content(Value::String(content)))
+            .expect("large text-only requests should not be blocked locally");
+        assert!(stats.request_bytes > 4 * 1024 * 1024);
     }
 
     #[test]

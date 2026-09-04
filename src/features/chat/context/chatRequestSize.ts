@@ -1,6 +1,5 @@
-export const MAX_INLINE_VISION_BYTES = 128 * 1024;
+export const MAX_INLINE_VISION_BYTES = 2.5 * 1024 * 1024;
 export const CHAT_REQUEST_WARN_BYTES = 1024 * 1024;
-export const CHAT_REQUEST_HARD_BYTES = 4 * 1024 * 1024;
 
 export type ChatRequestSizeStats = {
   requestBytes: number;
@@ -67,10 +66,6 @@ export const protectChatProviderRequest = (input: {
     inlineImageBytes,
     removedInlineImages,
   };
-  if (requestBytes > CHAT_REQUEST_HARD_BYTES) {
-    console.error('Chat request blocked by size guard', stats);
-    throw new Error('发送内容过大，请减少附件数量或稍后重试。');
-  }
   if (requestBytes > CHAT_REQUEST_WARN_BYTES || removedInlineImages > 0) {
     console.warn('Chat request size warning', stats);
   }

@@ -111,6 +111,31 @@ describe('Workflow Result Card data', () => {
     expect(result.summary).toContain('2 份文本成果');
   });
 
+  it('stores routed text-node output as clean Markdown without its JSON envelope', () => {
+    const result = buildWorkflowResultCardData({
+      workflowId: 'workflow',
+      workflowNodeId: 'workflow-node',
+      workflowName: '设计工作流',
+      status: 'success',
+      completedSteps: 1,
+      totalSteps: 1,
+      textAssets: [{
+        nodeId: 'strategy',
+        title: '设计策略',
+        content: JSON.stringify({
+          global: '## 产品分析\n\n- 保留核心造型',
+          targets: { 'internal-render-node': '使用低视角产品渲染。' },
+        }),
+        designAgentConfig: { agentRole: 'design_strategist', outputArtifactType: 'DesignStrategy' },
+      }],
+    });
+
+    expect(result.designStrategy?.content).toContain('## 产品分析\n\n- 保留核心造型');
+    expect(result.designStrategy?.content).not.toContain('使用低视角产品渲染。');
+    expect(result.designStrategy?.content).not.toContain('"global"');
+    expect(result.designStrategy?.content).not.toContain('internal-render-node');
+  });
+
   it('deduplicates and caps references and removes oversized data URLs', () => {
     const references = Array.from({ length: 10 }, (_, index) => ({
       id: `reference-${index}`,

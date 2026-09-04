@@ -8,6 +8,7 @@ import type {
   WorkflowResultTextAsset,
 } from './agentModel';
 import type { DesignAgentConfig } from './canvasModel';
+import { formatCanvasTextResultMarkdown } from '../utils/canvasTextContextRouting';
 
 const MAX_TEXT_ASSETS = 6;
 const MAX_TEXT_CHARS = 6_000;
@@ -76,6 +77,12 @@ const cleanText = (value: unknown, maxChars = MAX_TEXT_CHARS) => (
   typeof value === 'string' ? value.trim().slice(0, maxChars) : ''
 );
 
+const cleanResultMarkdown = (value: unknown, maxChars = MAX_TEXT_CHARS) => (
+  typeof value === 'string'
+    ? formatCanvasTextResultMarkdown(value).slice(0, maxChars)
+    : ''
+);
+
 const asRecord = (value: unknown): Record<string, unknown> | null => (
   value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -103,7 +110,7 @@ const dedupeBy = <T>(values: T[], getKey: (value: T) => string, limit: number) =
 };
 
 const toTextAsset = (node: WorkflowResultTextNodeInput): WorkflowResultTextAsset | null => {
-  const content = cleanText(node.content);
+  const content = cleanResultMarkdown(node.content);
   if (!content) return null;
   return {
     nodeId: cleanText(node.nodeId, 160),
@@ -171,7 +178,7 @@ const normalizeProvidedStages = (stages: WorkflowResultStage[] | undefined) => {
   const validStages = new Set(WORKFLOW_STAGE_ORDER);
   return dedupeBy(stages.flatMap(stage => {
     if (!stage || !validStages.has(stage.stage)) return [];
-    const summary = cleanText(stage.summary);
+    const summary = cleanResultMarkdown(stage.summary);
     if (!summary) return [];
     return [{
       stage: stage.stage,
@@ -261,7 +268,7 @@ export const attachWorkflowResultConversationSummary = (
 const normalizeStoredTextAsset = (value: unknown, index: number): WorkflowResultTextAsset | null => {
   const record = asRecord(value);
   if (!record) return null;
-  const content = cleanText(record.content);
+  const content = cleanResultMarkdown(record.content);
   if (!content) return null;
   return {
     nodeId: cleanText(record.nodeId, 180) || `stage-${index}`,
