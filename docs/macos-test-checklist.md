@@ -1,11 +1,16 @@
 # macOS Preview manual test checklist
 
-Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the unsigned CI artifact before adding signing or notarization.
+Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-hoc-signed, non-notarized Preview artifact produced by CI.
 
 ## Install and launch
 
-- [ ] Mount the DMG and copy Inspiration Drawer to `/Applications`.
-- [ ] Launch the app with Gatekeeper's explicit Open action for the unsigned Preview build.
+- [ ] Download the `inspiration-drawer-macos-arm64-preview` GitHub Actions artifact.
+- [ ] Extract `Inspiration-Drawer-macOS-Preview.zip` and confirm it contains only the Preview folder with the app, `第一次打开.command`, and `安装说明.txt`.
+- [ ] Keep the three files together and double-click `第一次打开.command`; if macOS blocks it, Control-click/right-click it and choose Open.
+- [ ] Confirm the command removes quarantine only from the adjacent app, launches the app without `sudo`, and reports a clear Chinese success or error message.
+- [ ] Quit, then launch `Inspiration Drawer.app` directly without running the command again.
+- [ ] Restart the Mac and confirm the app still launches directly from the extracted folder.
+- [ ] Optionally mount the separately supplied DMG and verify it remains usable; the Preview ZIP is the primary distribution path.
 - [ ] Confirm the main window appears, is focusable, resizes, minimizes, and quits with Command+Q.
 - [ ] Confirm standard Edit actions use Command+C, Command+V, Command+A, Command+Z, and Command+Shift+Z.
 - [ ] Quit and relaunch; confirm the same local database and machine ID are used.
@@ -19,9 +24,12 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the unsi
 - [ ] Confirm sidebar selection uses a soft translucent highlight rather than a solid black block; resizing and every folder action still work.
 - [ ] Confirm ordinary buttons are compact, secondary/icon buttons remain subtle, and destructive/primary actions remain distinguishable.
 - [ ] Confirm search, settings, and dialog inputs use the soft focus ring and accept text without layout shifts.
+- [ ] On a Retina display in dark appearance, inspect the main window's top-left native corner and confirm there is no gray/white halo.
+- [ ] Inspect search, sidebar selection, toolbar buttons, the Canvas side toolbar, popovers, context menus, image cards, text notes, and image notes; each rounded edge should remain crisp before and after hover.
+- [ ] Repeat the corner inspection in light appearance at 100% display scale and at a scaled display setting when available.
 - [ ] Confirm folder and Canvas context menus have compact rows, aligned shortcut labels, thin separators, and soft shadows.
 - [ ] Confirm dialogs, popovers, date pickers, and color pickers remain fully clickable and are not clipped.
-- [ ] Confirm asset cards retain their thumbnail crop/aspect behavior and use only a subtle hover shadow/scale change.
+- [ ] Confirm asset cards retain their thumbnail crop/aspect behavior and use only a subtle hover shadow on macOS, without hover scaling.
 - [ ] Confirm the Canvas floating toolbar remains compact, its active Chat state is visible, and node coordinates/sizes do not change.
 - [ ] Confirm displayed shortcuts use macOS glyphs (`⌘`, `⌥`, `⇧`, `⌫`) while the configured global shortcuts still trigger.
 - [ ] Confirm scrollbars remain unobtrusive and trackpad scrolling, inertial scrolling, and pinch zoom feel unchanged.
@@ -59,6 +67,7 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the unsi
 
 ## Canvas
 
+- [ ] Launch Canvas from the Preview ZIP build and confirm the pixel-aligned right-side toolbar remains in its expected position.
 - [ ] Create, select, box-select, move, connect, copy, paste, undo, and redo nodes.
 - [ ] Pan with a two-finger trackpad gesture and a mouse wheel.
 - [ ] Zoom with trackpad pinch and verify zoom is neither excessively sensitive nor inverted.
@@ -67,6 +76,7 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the unsi
 
 ## Chat and AI
 
+- [ ] Launch Chat and AI features from the Preview ZIP build; confirm the packaging/signing changes did not alter their behavior.
 - [ ] Open Chat, create a conversation, attach an image, and receive a streamed response.
 - [ ] Run image generation with an API/BYOK or wallet configuration.
 - [ ] Restart and verify conversations, messages, attachments, and generated files persist.

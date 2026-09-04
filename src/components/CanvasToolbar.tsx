@@ -29,6 +29,7 @@ const CANVAS_SIDE_PRESET_MENU_WIDTH = 360;
 type CanvasToolbarProps = {
   toolbarRef: React.RefObject<HTMLDivElement | null>;
   top: string;
+  centerVertically?: boolean;
   right?: number;
   navigator: React.ReactNode;
   promptValue: string;
@@ -53,6 +54,7 @@ type CanvasToolbarProps = {
 export function CanvasToolbar({
   toolbarRef,
   top,
+  centerVertically = true,
   right = 16,
   navigator,
   promptValue,
@@ -79,7 +81,7 @@ export function CanvasToolbar({
       ref={toolbarRef}
       data-no-drag="true"
       data-canvas-toolbar="true"
-      className="absolute z-[100055] flex -translate-y-1/2 flex-col items-end gap-1.5 bg-transparent transition-[top,right] duration-200"
+      className={`absolute z-[100055] flex flex-col items-end gap-1.5 bg-transparent transition-[top,right] duration-200 ${centerVertically ? '-translate-y-1/2' : ''}`}
       data-canvas-chat-offset-base={right}
       style={{ top, right: getCanvasChatOffsetRight(right) }}
       onPointerDown={event => event.stopPropagation()}

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-macos-arm64:
-    name: Build unsigned macOS ARM64
+    name: Build ad-hoc-signed macOS ARM64 Preview
     runs-on: macos-14
     timeout-minutes: 90
     env:
@@ -48,15 +48,68 @@ jobs:
       - name: Check Rust for Apple Silicon
         run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
 
-      - name: Build unsigned app and DMG
+      - name: Build app and DMG without Developer ID signing
         run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg --no-sign --ci
 
-      - name: Upload unsigned macOS ARM64 artifacts
+      - name: Ad-hoc sign and verify app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Inspiration Drawer.app"
+          MAIN_EXECUTABLE="$APP_PATH/Contents/MacOS/inspiration-drawer"
+
+          test -d "$APP_PATH"
+          test -f "$MAIN_EXECUTABLE"
+          chmod +x "$MAIN_EXECUTABLE"
+
+          codesign --force --deep --sign - "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+          printf '%s\n' "$SIGNATURE_DETAILS"
+          grep -F "Signature=adhoc" <<< "$SIGNATURE_DETAILS"
+
+      - name: Create and verify Preview ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$GITHUB_WORKSPACE/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Inspiration Drawer.app"
+          PREVIEW_DIR="$RUNNER_TEMP/Inspiration-Drawer-macOS-Preview"
+          ZIP_PATH="$GITHUB_WORKSPACE/Inspiration-Drawer-macOS-Preview.zip"
+          VERIFY_DIR="$RUNNER_TEMP/inspiration-drawer-preview-verify"
+
+          mkdir -p "$PREVIEW_DIR" "$VERIFY_DIR"
+          ditto "$APP_PATH" "$PREVIEW_DIR/Inspiration Drawer.app"
+          install -m 0755 "$GITHUB_WORKSPACE/scripts/macos/第一次打开.command" "$PREVIEW_DIR/第一次打开.command"
+          install -m 0644 "$GITHUB_WORKSPACE/scripts/macos/安装说明.txt" "$PREVIEW_DIR/安装说明.txt"
+
+          test -d "$PREVIEW_DIR/Inspiration Drawer.app"
+          test -x "$PREVIEW_DIR/Inspiration Drawer.app/Contents/MacOS/inspiration-drawer"
+          codesign --verify --deep --strict --verbose=2 "$PREVIEW_DIR/Inspiration Drawer.app"
+          test -x "$PREVIEW_DIR/第一次打开.command"
+          test -f "$PREVIEW_DIR/安装说明.txt"
+
+          ditto -c -k --sequesterRsrc --keepParent "$PREVIEW_DIR" "$ZIP_PATH"
+          ditto -x -k "$ZIP_PATH" "$VERIFY_DIR"
+
+          EXTRACTED_PREVIEW="$VERIFY_DIR/Inspiration-Drawer-macOS-Preview"
+          test -d "$EXTRACTED_PREVIEW/Inspiration Drawer.app"
+          test -x "$EXTRACTED_PREVIEW/Inspiration Drawer.app/Contents/MacOS/inspiration-drawer"
+          codesign --verify --deep --strict --verbose=2 "$EXTRACTED_PREVIEW/Inspiration Drawer.app"
+          test -x "$EXTRACTED_PREVIEW/第一次打开.command"
+          test -f "$EXTRACTED_PREVIEW/安装说明.txt"
+
+          find "$EXTRACTED_PREVIEW" -maxdepth 2 -print
+
+      - name: Upload macOS ARM64 Preview artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: inspiration-drawer-macos-arm64-unsigned
+          name: inspiration-drawer-macos-arm64-preview
           if-no-files-found: error
           retention-days: 14
           path: |
+            Inspiration-Drawer-macOS-Preview.zip
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg

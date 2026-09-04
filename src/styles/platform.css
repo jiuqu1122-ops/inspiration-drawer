@@ -11,9 +11,13 @@
   --sidebar-width: 250px;
   --traffic-light-safe-width: 80px;
   --traffic-light-safe-height: 44px;
-  --panel-shadow: 0 18px 48px rgba(15, 23, 42, 0.11);
-  --popover-shadow: 0 14px 38px rgba(15, 23, 42, 0.14);
-  --control-border: rgba(60, 60, 67, 0.18);
+  --macos-border-subtle: rgba(60, 60, 67, 0.16);
+  --macos-border-strong: rgba(60, 60, 67, 0.24);
+  --macos-surface-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 18px 48px rgba(15, 23, 42, 0.11);
+  --macos-control-shadow: inset 0 0 0 0.5px var(--macos-border-subtle);
+  --panel-shadow: var(--macos-surface-shadow);
+  --popover-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 14px 38px rgba(15, 23, 42, 0.14);
+  --control-border: var(--macos-border-subtle);
   --hover-bg: rgba(60, 60, 67, 0.07);
   --selected-bg: rgba(0, 122, 255, 0.12);
   --sidebar-bg: rgba(246, 246, 247, 0.94);
@@ -27,25 +31,35 @@
 
 [data-platform="macos"].dark,
 [data-platform="macos"] .dark {
-  --panel-shadow: 0 20px 52px rgba(0, 0, 0, 0.3);
-  --popover-shadow: 0 16px 42px rgba(0, 0, 0, 0.36);
-  --control-border: rgba(235, 235, 245, 0.16);
+  --macos-border-subtle: rgba(255, 255, 255, 0.08);
+  --macos-border-strong: rgba(255, 255, 255, 0.1);
+  --macos-surface-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 20px 52px rgba(0, 0, 0, 0.3);
+  --macos-control-shadow: inset 0 0 0 0.5px var(--macos-border-subtle);
+  --panel-shadow: var(--macos-surface-shadow);
+  --popover-shadow: inset 0 0 0 0.5px var(--macos-border-subtle), 0 16px 42px rgba(0, 0, 0, 0.36);
+  --control-border: var(--macos-border-subtle);
   --hover-bg: rgba(235, 235, 245, 0.08);
   --selected-bg: rgba(10, 132, 255, 0.2);
   --sidebar-bg: rgba(35, 35, 37, 0.94);
   --toolbar-bg: rgba(31, 31, 33, 0.84);
-  --divider-color: rgba(235, 235, 245, 0.12);
+  --divider-color: rgba(255, 255, 255, 0.08);
 }
 
 [data-platform="macos"] :is(button, input, textarea, select) {
   font-family: inherit;
 }
 
-/* Main window and titlebar overlay. The native traffic lights occupy 80 x 44px. */
+/*
+ * The decorated NSWindow owns the main window's outer radius and shadow.
+ * Keeping the HTML shell rectangular avoids a second antialiased edge inside
+ * the native corner. The native traffic lights occupy 80 x 44px.
+ */
 [data-platform="macos"].drawer-theme [data-drawer-shell="true"] {
-  border-color: var(--divider-color) !important;
-  border-radius: var(--window-radius) !important;
-  box-shadow: var(--panel-shadow) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  clip-path: none !important;
+  contain: layout style !important;
 }
 
 [data-platform="macos"].drawer-theme [data-drawer-sidebar="true"] {
@@ -54,8 +68,8 @@
   background: var(--sidebar-bg) !important;
   border-color: var(--divider-color) !important;
   box-shadow: none !important;
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 [data-platform="macos"].drawer-theme [data-drawer-sidebar="true"] > div.flex.h-full {
@@ -95,7 +109,7 @@
   padding-inline: 8px !important;
   color: var(--drawer-muted) !important;
   background: transparent !important;
-  border-color: transparent !important;
+  border: 0 !important;
   border-radius: var(--icon-control-radius) !important;
   box-shadow: none !important;
   font-size: 12px !important;
@@ -113,16 +127,46 @@
   display: none !important;
 }
 
-[data-platform="macos"].drawer-theme [data-canvas-header-search="true"] {
+[data-platform="macos"].drawer-theme :is(
+  [data-drawer-search-trigger="true"],
+  [data-canvas-header-search="true"]
+) {
   height: var(--control-height) !important;
   background: color-mix(in srgb, var(--toolbar-bg) 62%, transparent) !important;
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--control-radius) !important;
+  box-shadow: var(--macos-control-shadow) !important;
+  overflow: hidden;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
-[data-platform="macos"].drawer-theme [data-canvas-header-search="true"]:focus-within {
-  border-color: color-mix(in srgb, var(--drawer-accent) 48%, var(--control-border)) !important;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 14%, transparent) !important;
+[data-platform="macos"].drawer-theme :is(
+  [data-drawer-search-trigger="true"],
+  [data-canvas-header-search="true"]
+):focus-within {
+  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 14%, transparent) !important;
+}
+
+[data-platform="macos"].drawer-theme :is(
+  [data-drawer-search-trigger="true"],
+  [data-canvas-header-search="true"]
+) > input,
+[data-platform="macos"].drawer-theme :is(
+  [data-drawer-search-trigger="true"],
+  [data-canvas-header-search="true"]
+) > input:focus,
+[data-platform="macos"].drawer-theme :is(
+  [data-drawer-search-trigger="true"],
+  [data-canvas-header-search="true"]
+) > input:focus-visible {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: inherit !important;
+  box-shadow: none !important;
+  outline: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 /* In immersive canvas mode the chrome is hidden, so reserve the titlebar row. */
@@ -148,8 +192,9 @@
 [data-platform="macos"].drawer-theme [data-new-folder="true"] {
   height: 32px !important;
   background: transparent !important;
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--control-radius) !important;
+  box-shadow: var(--macos-control-shadow) !important;
   font-weight: 500 !important;
 }
 
@@ -186,9 +231,9 @@
 
 /* Buttons, fields, dialogs and menus keep the existing semantics with Mac geometry. */
 [data-platform="macos"].drawer-theme [data-drawer-dialog="true"] {
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--panel-radius) !important;
-  box-shadow: var(--panel-shadow) !important;
+  box-shadow: var(--macos-surface-shadow) !important;
 }
 
 [data-platform="macos"].drawer-theme :is(
@@ -196,9 +241,16 @@
   [data-drawer-dialog-secondary="true"]
 ) {
   min-height: var(--control-height) !important;
+  border: 0 !important;
   border-radius: var(--control-radius) !important;
   box-shadow: none !important;
   font-weight: 500 !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+[data-platform="macos"].drawer-theme [data-drawer-dialog-secondary="true"] {
+  box-shadow: var(--macos-control-shadow) !important;
 }
 
 [data-platform="macos"].drawer-theme :is(
@@ -207,9 +259,11 @@
   [data-settings-section-content="true"] select
 ) {
   min-height: var(--control-height) !important;
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--control-radius) !important;
-  box-shadow: none !important;
+  box-shadow: var(--macos-control-shadow) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 [data-platform="macos"].drawer-theme :is(
@@ -217,13 +271,12 @@
   [data-settings-section-content="true"] input,
   [data-settings-section-content="true"] select
 ):focus {
-  border-color: color-mix(in srgb, var(--drawer-accent) 48%, var(--control-border)) !important;
   outline: none !important;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 13%, transparent) !important;
+  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 0 0 3px color-mix(in srgb, var(--drawer-accent) 13%, transparent) !important;
 }
 
 [data-platform="macos"].drawer-theme :is([data-folder-context-menu="true"], [data-canvas-context-menu="true"]) {
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--panel-radius) !important;
   box-shadow: var(--popover-shadow) !important;
   -webkit-backdrop-filter: blur(20px) saturate(1.08) !important;
@@ -257,39 +310,49 @@
 
 /* Material cards and canvas floating controls: softer borders, shadows and motion. */
 [data-platform="macos"].drawer-theme [data-asset-card="true"] {
-  border-color: var(--control-border) !important;
-  box-shadow: 0 3px 14px rgba(15, 23, 42, 0.045) !important;
+  border: 0 !important;
+  box-shadow: var(--macos-control-shadow), 0 3px 14px rgba(15, 23, 42, 0.045) !important;
   transition-duration: var(--motion-fast) !important;
+  will-change: auto !important;
 }
 
 [data-platform="macos"].drawer-theme [data-asset-card="true"]:hover {
-  border-color: color-mix(in srgb, var(--control-border) 72%, var(--drawer-muted)) !important;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.075) !important;
+  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 8px 24px rgba(15, 23, 42, 0.075) !important;
 }
 
 [data-platform="macos"].drawer-theme.dark [data-asset-card="true"]:hover {
-  box-shadow: 0 9px 26px rgba(0, 0, 0, 0.2) !important;
+  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong), 0 9px 26px rgba(0, 0, 0, 0.2) !important;
 }
 
 [data-platform="macos"].drawer-theme [data-asset-card="true"]:hover [data-asset-media="true"] img {
-  transform: scale(1.008) !important;
+  transform: none !important;
+}
+
+/* The card clips its media; children do not draw a second rounded edge. */
+[data-platform="macos"].drawer-theme [data-asset-card="true"] [data-asset-media="true"],
+[data-platform="macos"].drawer-theme [data-asset-card="true"] [data-asset-media="true"] > * {
+  border-radius: 0 !important;
 }
 
 [data-platform="macos"].drawer-theme [data-card-action-toolbar="true"] button {
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--icon-control-radius) !important;
-  box-shadow: none !important;
+  box-shadow: var(--macos-control-shadow) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 [data-platform="macos"].drawer-theme [data-canvas-toolbar="true"] > button {
   min-height: 32px !important;
   color: var(--drawer-muted) !important;
   background: color-mix(in srgb, var(--toolbar-bg) 88%, transparent) !important;
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--control-radius) !important;
-  box-shadow: none !important;
+  box-shadow: var(--macos-control-shadow) !important;
   font-weight: 500 !important;
   transition-duration: var(--motion-fast) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 [data-platform="macos"].drawer-theme [data-canvas-toolbar="true"] > button:hover {
@@ -300,24 +363,31 @@
 [data-platform="macos"].drawer-theme [data-canvas-toolbar="true"] > button[data-active="true"] {
   color: var(--drawer-text) !important;
   background: var(--selected-bg) !important;
-  border-color: color-mix(in srgb, var(--drawer-accent) 24%, var(--control-border)) !important;
+  box-shadow: inset 0 0 0 0.5px var(--macos-border-strong) !important;
 }
 
-/* Floating notes stay frameless but use one utility-window radius and softer chrome. */
-[data-platform="macos"][data-floating-note-root="true"],
+/* Floating notes keep their existing outer radius; their child no longer reclips it. */
 [data-platform="macos"][data-floating-note-root="true"] > div {
-  border-radius: var(--panel-radius) !important;
+  border-radius: 0 !important;
 }
 
-[data-platform="macos"][data-floating-note-root="true"] {
-  border-color: var(--control-border) !important;
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, currentColor 8%, transparent) !important;
+[data-platform="macos"][data-floating-note-root="true"][data-note-snipping="false"] {
+  border: 0 !important;
+  box-shadow: var(--macos-control-shadow) !important;
+}
+
+[data-platform="macos"][data-floating-note-root="true"] button[class*="backdrop-blur"] {
+  border: 0 !important;
+  box-shadow: var(--macos-control-shadow) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 [data-platform="macos"] :is([data-note-popover="true"], [data-note-context-menu="true"]) {
-  border-color: var(--control-border) !important;
+  border: 0 !important;
   border-radius: var(--panel-radius) !important;
   box-shadow: var(--popover-shadow) !important;
+  overflow: hidden;
 }
 
 [data-platform="macos"] [data-note-context-menu="true"] button {

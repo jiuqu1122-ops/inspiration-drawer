@@ -1397,6 +1397,7 @@ export function FloatingNoteHost({ getStoredDrawerSize, getStoredTriggerMode }: 
     <div
       data-platform={platform}
       data-floating-note-root="true"
+      data-note-snipping={isSnipImageNote ? 'true' : 'false'}
       className={`${isDark && note?.type !== 'text' ? 'dark ' : ''}w-screen h-screen overflow-hidden ${noteCornerClass} bg-white/96 text-stone-800 dark:bg-stone-950/96 dark:text-stone-100 font-sans select-none ${
         isSnipImageNote
           ? 'border-2 border-emerald-400/90 dark:border-emerald-300/85'

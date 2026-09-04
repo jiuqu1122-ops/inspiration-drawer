@@ -1522,6 +1522,7 @@ function MainApp() {
   const canvasWheelZoomPayloadRef = useRef<{ clientX: number; clientY: number; deltaY: number } | null>(null);
   const canvasInteractionSurfaceRectRef = useRef<DOMRect | null>(null);
   const [canvasToolbarTop, setCanvasToolbarTop] = useState('max(50%, 444px)');
+  const [canvasToolbarStartTop, setCanvasToolbarStartTop] = useState<string | null>(null);
   const isCanvasInteractingRef = useRef(false);
   const isCanvasPointerInsideRef = useRef(false);
   const lastCanvasDragClientRef = useRef<{ x: number; y: number } | null>(null);
@@ -30069,19 +30070,22 @@ useEffect(() => {
   useLayoutEffect(() => {
     if (!isCanvasMode) {
       setCanvasToolbarTop('50%');
-      return;
-    }
-    if (!isCanvasNavigatorVisible) {
-      setCanvasToolbarTop('50%');
+      setCanvasToolbarStartTop(null);
       return;
     }
 
     const updateCanvasToolbarTop = () => {
       const toolbarHeight = canvasToolbarRef.current?.getBoundingClientRect().height || 40;
-      const panelHeight = canvasNavigatorPanelRef.current?.getBoundingClientRect().height || 0;
-      const minTop = CANVAS_NAV_PANEL_TOP_MARGIN + panelHeight + (toolbarHeight / 2) + 8;
-      const nextTop = Math.max(window.innerHeight * 0.5, minTop);
-      setCanvasToolbarTop(`${Math.round(nextTop)}px`);
+      const panelHeight = isCanvasNavigatorVisible
+        ? canvasNavigatorPanelRef.current?.getBoundingClientRect().height || 0
+        : 0;
+      const minTop = isCanvasNavigatorVisible
+        ? CANVAS_NAV_PANEL_TOP_MARGIN + panelHeight + (toolbarHeight / 2) + 8
+        : 0;
+      const nextCenterTop = Math.max(window.innerHeight * 0.5, minTop);
+      const roundedCenterTop = Math.round(nextCenterTop);
+      setCanvasToolbarTop(`${roundedCenterTop}px`);
+      setCanvasToolbarStartTop(`${Math.round(roundedCenterTop - toolbarHeight / 2)}px`);
     };
 
     updateCanvasToolbarTop();
@@ -37434,7 +37438,8 @@ useEffect(() => {
                   {isCanvasMode && (
                     <CanvasToolbar
                       toolbarRef={canvasToolbarRef}
-                      top={canvasToolbarTop}
+                      top={isMacDesktopWindow && canvasToolbarStartTop ? canvasToolbarStartTop : canvasToolbarTop}
+                      centerVertically={!isMacDesktopWindow || !canvasToolbarStartTop}
                       right={16}
                       navigator={(
                         <CanvasNavigator
