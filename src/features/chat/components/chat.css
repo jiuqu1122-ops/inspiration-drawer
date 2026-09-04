@@ -853,7 +853,7 @@
 .chat-composer-wrap {
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
   padding: 8px 11px 11px;
   box-sizing: border-box;
 }
