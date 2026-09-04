@@ -34,6 +34,8 @@ const walk = (directory) => {
   });
 };
 
+const isFile = file => fs.existsSync(file) && fs.statSync(file).isFile();
+
 const updaterArchives = walk(bundleRoot)
   .filter(file => file.endsWith('.app.tar.gz'))
   .sort((left, right) => left.localeCompare(right));
@@ -43,10 +45,10 @@ if (updaterArchives.length !== 1) {
 
 const sourceArchive = updaterArchives[0];
 const sourceSignature = `${sourceArchive}.sig`;
-if (!fs.isFileSync(sourceSignature)) {
+if (!isFile(sourceSignature)) {
   throw new Error(`Updater signature is missing: ${sourceSignature}`);
 }
-if (!fs.isFileSync(previewZipPath)) {
+if (!isFile(previewZipPath)) {
   throw new Error(`Preview ZIP is missing: ${previewZipPath}`);
 }
 if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {

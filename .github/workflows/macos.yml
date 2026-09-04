@@ -188,6 +188,26 @@ jobs:
 
           find "$EXTRACTED_PREVIEW" -maxdepth 2 -print
 
+      - name: Upload macOS ARM64 Preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspiration-drawer-macos-arm64-preview
+          if-no-files-found: error
+          retention-days: 14
+          path: Inspiration-Drawer-macOS-Preview.zip
+
+      - name: Upload macOS ARM64 debug artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspiration-drawer-macos-arm64-debug-artifacts
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
       - name: Publish Preview and updater to COS
         if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-support'
         id: publish-cos
@@ -227,22 +247,3 @@ jobs:
           printf '%s\n' "$SIGNATURE_DETAILS"
           grep -F "Signature=adhoc" <<< "$SIGNATURE_DETAILS"
 
-      - name: Upload macOS ARM64 Preview
-        uses: actions/upload-artifact@v4
-        with:
-          name: inspiration-drawer-macos-arm64-preview
-          if-no-files-found: error
-          retention-days: 14
-          path: Inspiration-Drawer-macOS-Preview.zip
-
-      - name: Upload macOS ARM64 debug artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: inspiration-drawer-macos-arm64-debug-artifacts
-          if-no-files-found: error
-          retention-days: 14
-          path: |
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
