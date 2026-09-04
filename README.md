@@ -4,12 +4,18 @@
 
 ## 下载
 
-当前版本：**6.0.22**
+当前版本：**6.0.23**
 
-- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.22/Inspiration.Drawer_6.0.22_x64-setup.exe)
-- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.22)
+- [GitHub 下载 Windows x64 安装包](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/download/v6.0.23/Inspiration.Drawer_6.0.23_x64-setup.exe)
+- [GitHub Release](https://github.com/jiuqu1122-ops/inspiration-drawer/releases/tag/v6.0.23)
 
 应用支持签名自动更新。Windows 可能在首次运行时显示 SmartScreen 提示，请确认下载来源后继续。
+
+## 6.0.23 更新
+
+- Chat 批量图片任务支持先在对话中分析方案，再并发执行，并逐步展示处理进度与结果。
+- 优化多张参考图片在同一会话中的复用、发送后选择清理以及批量结果自动编组。
+- 暂时隐藏仍在打磨中的实验性 3D 场景入口，同时保留已有画布数据的读取兼容。
 
 ## 6.0.22 更新
 

@@ -36,7 +36,7 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
   StickyNote, CalendarDays, Clock, Tag, Maximize2, Minimize2, Copy, Clipboard, Unplug, Upload,
   Brush, Crop, Eraser, Square, Minus, Circle, Wallet, RefreshCw, KeyRound, Info, Bot, Layers, ArchiveRestore, ArrowUp, MessageCircle, History,
-  LogOut, Music
+  LogOut, Music, Box
 } from 'lucide-react';
 import QRCode from 'react-qr-code';
 
@@ -371,6 +371,26 @@ import { CanvasNodeRenderGate } from './components/CanvasNodeRenderGate';
 import { CanvasHorizontalRail } from './components/CanvasHorizontalRail';
 import { CanvasToolbar } from './components/CanvasToolbar';
 import { AppToastHost, showAppToast } from './components/AppToastHost';
+import { ThreeSceneNode } from './features/three/components/ThreeSceneNode';
+import {
+  analyzeImagesToThreeSceneResult,
+  ThreeSceneAnalysisError,
+} from './features/three/ai/analyzeImageToThreeScene';
+import {
+  createThreeSceneCaptureCanvasNode,
+  createThreeSceneGeneratorCanvasNode,
+} from './features/three/canvas/threeSceneCanvasNode';
+import { saveThreeSceneCapture } from './features/three/capture/captureThreeScene';
+import {
+  shouldExitThreeSceneInteraction,
+  shouldMountThreeSceneRenderer,
+} from './features/three/model/threeSceneInteraction';
+import { createThreeScenePreview } from './features/three/preview/threeScenePreview';
+import type { SceneSpecV1, ThreeSceneCameraState } from './features/three/model/threeSceneTypes';
+import type { SceneAnalysisV1 } from './features/three/model/threeSceneAnalysisTypes';
+
+const ENABLE_THREE_SCENE_CREATION = false;
+
 import {
   isPromptSharePayload,
   type InspirationSpaceDrawerImageOption,
@@ -1248,6 +1268,11 @@ function MainApp() {
     });
   }, [isMainWorkbenchActive]);
   const [canvasItems, setCanvasItems] = useState<CanvasImageItem[]>([]);
+  const [activeThreeSceneId, setActiveThreeSceneId] = useState<string | null>(null);
+  const [threeSceneAnalyzingIds, setThreeSceneAnalyzingIds] = useState<string[]>([]);
+  const activeThreeSceneIdRef = useRef<string | null>(null);
+  const threeSceneAnalyzingIdsRef = useRef<Set<string>>(new Set());
+  const threeSceneHistoryGestureRef = useRef<string | null>(null);
   const [canvasWorkingTimerTick, setCanvasWorkingTimerTick] = useState(() => Date.now());
   const [canvasScale, setCanvasScale] = useState(1);
   const [canvasSize, setCanvasSize] = useState({ width: CANVAS_BASE_WIDTH, height: CANVAS_BASE_HEIGHT });
@@ -1655,6 +1680,9 @@ function MainApp() {
   useEffect(() => {
     isCanvasModeRef.current = isCanvasMode;
     if (!isCanvasMode) {
+      activeThreeSceneIdRef.current = null;
+      threeSceneHistoryGestureRef.current = null;
+      setActiveThreeSceneId(null);
       const keepCanvasSession = keepCanvasSessionOnLeaveRef.current;
       isCanvasPointerInsideRef.current = false;
       if (!keepCanvasSession) {
@@ -1723,6 +1751,11 @@ function MainApp() {
       surface.removeEventListener('auxclick', preventNativeMiddleMouse, true);
     };
   }, [isCanvasMode]);
+  useEffect(() => {
+    activeThreeSceneIdRef.current = null;
+    threeSceneHistoryGestureRef.current = null;
+    setActiveThreeSceneId(null);
+  }, [activeCanvasId]);
   useEffect(() => { canvasItemsRef.current = canvasItems; }, [canvasItems]);
   useLayoutEffect(() => {
     if (canvasPendingSelectionDomIdsRef.current.size === 0) return;
@@ -8273,6 +8306,19 @@ function MainApp() {
     if (current.length === unique.length && current.every((value, index) => value === unique[index])) return;
     applyCanvasSelectionDomFeedback(current, unique);
     canvasSelectedIdsRef.current = unique;
+    const selectedThreeSceneId = unique.length === 1
+      ? canvasItemsRef.current.find(item => (
+        item.id === unique[0]
+        && item.item.type === 'three-scene'
+        && !!item.threeScene
+        && (!item.threeScene.status || item.threeScene.status === 'success')
+      ))?.id || null
+      : null;
+    if (activeThreeSceneIdRef.current !== selectedThreeSceneId) {
+      activeThreeSceneIdRef.current = selectedThreeSceneId;
+      threeSceneHistoryGestureRef.current = null;
+      setActiveThreeSceneId(selectedThreeSceneId);
+    }
     scheduleCanvasSelectionImageSources([...current, ...unique]);
     startTransition(() => setCanvasSelectedIds(unique));
   };
@@ -9639,6 +9685,302 @@ function MainApp() {
     return addedCount > 0;
   };
 
+  const setThreeSceneAnalyzing = (id: string, analyzing: boolean) => {
+    const next = new Set(threeSceneAnalyzingIdsRef.current);
+    if (analyzing) next.add(id);
+    else next.delete(id);
+    threeSceneAnalyzingIdsRef.current = next;
+    setThreeSceneAnalyzingIds(Array.from(next));
+  };
+
+  const activateThreeSceneInteraction = (nodeId: string) => {
+    activeThreeSceneIdRef.current = nodeId;
+    setActiveThreeSceneId(nodeId);
+    updateCanvasSelection([nodeId]);
+  };
+
+  const exitThreeSceneInteraction = () => {
+    activeThreeSceneIdRef.current = null;
+    threeSceneHistoryGestureRef.current = null;
+    setActiveThreeSceneId(null);
+  };
+
+  const beginThreeSceneInteraction = (nodeId: string, label: string) => {
+    if (threeSceneHistoryGestureRef.current === nodeId) return;
+    threeSceneHistoryGestureRef.current = nodeId;
+    pushCanvasUndoSnapshot(label, { shareImmutableItems: true });
+  };
+
+  const endThreeSceneInteraction = (nodeId: string) => {
+    if (threeSceneHistoryGestureRef.current === nodeId) {
+      threeSceneHistoryGestureRef.current = null;
+    }
+  };
+
+  const updateThreeSceneSpec = (
+    nodeId: string,
+    sceneSpec: SceneSpecV1,
+    options: {
+      resetAnalysisCamera?: boolean;
+      sourceImageIds?: string[];
+      sourceImagePaths?: string[];
+      sceneAnalysis?: SceneAnalysisV1;
+    } = {},
+  ) => {
+    const generatedPreview = options.resetAnalysisCamera ? createThreeScenePreview(sceneSpec) : undefined;
+    const now = Date.now();
+    let changed = false;
+    canvasItemsPatchCommitRef.current = true;
+    updateCanvasItemsImmediate(items => items.map((item) => {
+      if (item.id !== nodeId || item.item.type !== 'three-scene' || !item.threeScene) return item;
+      changed = true;
+      const preview = generatedPreview || item.threeScene.preview || createThreeScenePreview(sceneSpec);
+      const analysisCamera: ThreeSceneCameraState | undefined = options.resetAnalysisCamera
+        ? {
+          position: [...sceneSpec.camera.position],
+          target: [...sceneSpec.camera.target],
+          fov: sceneSpec.camera.fov,
+        }
+        : item.threeScene.analysisCamera;
+      return {
+        ...item,
+        item: {
+          ...item.item,
+          thumbnail: preview,
+          updatedAt: now,
+        },
+        threeScene: {
+          ...item.threeScene,
+          sceneSpec,
+          preview,
+          analysisCamera,
+          sceneAnalysis: options.sceneAnalysis || item.threeScene.sceneAnalysis,
+          status: 'success',
+          error: undefined,
+          ...(options.sourceImageIds ? {
+            sourceImageId: options.sourceImageIds[0] || '',
+            sourceImageIds: options.sourceImageIds,
+          } : {}),
+          ...(options.sourceImagePaths ? {
+            sourceImagePath: options.sourceImagePaths[0],
+            sourceImagePaths: options.sourceImagePaths,
+          } : {}),
+          updatedAt: now,
+        },
+      };
+    }));
+    if (!changed) return false;
+    markCanvasNodesChanged([nodeId]);
+    scheduleCanvasChangedNodesPatchSave([nodeId]);
+    scheduleCanvasStateSave({ syncNodes: false });
+    return true;
+  };
+
+  const updateThreeScenePreview = (nodeId: string, preview: string) => {
+    if (!/^data:image\/(?:png|webp);base64,/i.test(preview)) return false;
+    let changed = false;
+    updateCanvasItemsImmediate(items => items.map((item) => {
+      if (item.id !== nodeId || item.item.type !== 'three-scene' || !item.threeScene) return item;
+      if (item.threeScene.preview === preview) return item;
+      changed = true;
+      return {
+        ...item,
+        item: { ...item.item, thumbnail: preview, updatedAt: Date.now() },
+        threeScene: { ...item.threeScene, preview, updatedAt: Date.now() },
+      };
+    }));
+    if (!changed) return false;
+    markCanvasNodesChanged([nodeId]);
+    scheduleCanvasChangedNodesPatchSave([nodeId]);
+    scheduleCanvasStateSave({ syncNodes: false });
+    return true;
+  };
+
+  const updateThreeSceneReferenceOverlay = (
+    nodeId: string,
+    patch: Partial<{ visible: boolean; opacity: number; guides: boolean }>,
+  ) => {
+    let changed = false;
+    canvasItemsPatchCommitRef.current = true;
+    updateCanvasItemsImmediate(items => items.map((item) => {
+      if (item.id !== nodeId || item.item.type !== 'three-scene' || !item.threeScene) return item;
+      const current = item.threeScene.referenceOverlay || { visible: true, opacity: 0.4, guides: false };
+      const next = {
+        visible: patch.visible ?? current.visible,
+        opacity: clamp(Number(patch.opacity ?? current.opacity), 0, 1),
+        guides: patch.guides ?? current.guides,
+      };
+      if (
+        current.visible === next.visible
+        && current.opacity === next.opacity
+        && current.guides === next.guides
+      ) return item;
+      changed = true;
+      return {
+        ...item,
+        threeScene: { ...item.threeScene, referenceOverlay: next, updatedAt: Date.now() },
+      };
+    }));
+    if (!changed) return false;
+    markCanvasNodesChanged([nodeId]);
+    scheduleCanvasChangedNodesPatchSave([nodeId]);
+    scheduleCanvasStateSave({ syncNodes: false });
+    return true;
+  };
+
+  const setThreeSceneRunState = (
+    nodeId: string,
+    status: 'idle' | 'working' | 'success' | 'error',
+    error?: string,
+  ) => {
+    canvasItemsPatchCommitRef.current = true;
+    updateCanvasItemsImmediate(items => items.map(item => (
+      item.id === nodeId && item.threeScene
+        ? {
+          ...item,
+          threeScene: {
+            ...item.threeScene,
+            status,
+            error,
+            updatedAt: Date.now(),
+          },
+        }
+        : item
+    )));
+    markCanvasNodesChanged([nodeId]);
+    scheduleCanvasChangedNodesPatchSave([nodeId]);
+    scheduleCanvasStateSave({ syncNodes: false });
+  };
+
+  const getThreeSceneAnalysisImages = (node: CanvasImageItem) => {
+    const connected = getCanvasImageInputBufferItemsForNode(node, canvasItemsRef.current)
+      .filter(item => item.type === 'image')
+      .map((item, index) => ({
+        id: item.id || `${node.id}-reference-${index}`,
+        source: getCanvasOriginalImageSource(item) || getCanvasItemDisplaySource(item),
+        name: item.name || item.content || `参考图 ${index + 1}`,
+      }))
+      .filter(image => !!image.source);
+    if (connected.length > 0) return connected.slice(0, 8);
+    if (node.threeScene?.status === 'idle' || node.threeScene?.status === 'error') return [];
+    return (node.threeScene?.sourceImagePaths || [node.threeScene?.sourceImagePath])
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+      .slice(0, 8)
+      .map((source, index) => ({
+        id: `${node.id}-saved-reference-${index}`,
+        source,
+        name: `已保存参考图 ${index + 1}`,
+      }));
+  };
+
+  const analyzeCanvasThreeSceneNode = async (nodeId: string) => {
+    if (threeSceneAnalyzingIdsRef.current.has(nodeId)) return;
+    const node = canvasItemsRef.current.find(item => (
+      item.id === nodeId && item.item.type === 'three-scene' && item.threeScene
+    ));
+    if (!node?.threeScene) return;
+    const images = getThreeSceneAnalysisImages(node);
+    if (images.length === 0) {
+      setThreeSceneRunState(nodeId, 'error', '请先添加至少一张参考图片');
+      showToast('请先给 3D 场景节点添加参考图片');
+      return;
+    }
+
+    setThreeSceneAnalyzing(nodeId, true);
+    setThreeSceneRunState(nodeId, 'working');
+    showToast(images.length > 1 ? `正在综合分析 ${images.length} 个参考视角…` : '正在分析参考图片…');
+    try {
+      const selectedModel = agentModelRef.current.trim();
+      const model = /^(?:unmind-agent|auto|default|recommended)$/i.test(selectedModel)
+        ? undefined
+        : selectedModel || undefined;
+      const { analysis, sceneSpec } = await analyzeImagesToThreeSceneResult({ images, model });
+      const latest = canvasItemsRef.current.find(item => item.id === nodeId);
+      if (!latest?.threeScene) return;
+      const sourceImageIds = (latest.inputs || []).slice(0, 8);
+      const sourceImagePaths = images
+        .map(image => image.source)
+        .filter(source => !/^data:/i.test(source));
+      pushCanvasUndoSnapshot('生成 3D 场景', { shareImmutableItems: true });
+      updateThreeSceneSpec(nodeId, sceneSpec, {
+        resetAnalysisCamera: true,
+        sourceImageIds,
+        sourceImagePaths,
+        sceneAnalysis: analysis,
+      });
+      activateThreeSceneInteraction(nodeId);
+      showToast(`3D 场景已生成${images.length > 1 ? `，已综合 ${images.length} 个视角` : ''}`);
+    } catch (error) {
+      console.error('generate three scene failed:', error);
+      const message = error instanceof ThreeSceneAnalysisError
+        ? error.message
+        : '3D 场景生成失败，请重试';
+      setThreeSceneRunState(nodeId, 'error', message);
+      showToast(message);
+    } finally {
+      setThreeSceneAnalyzing(nodeId, false);
+    }
+  };
+
+  const addCanvasThreeSceneGeneratorNode = (
+    client?: { x: number; y: number },
+    requestedSourceIds?: string[],
+  ) => {
+    const selectedSourceIds = requestedSourceIds || canvasSelectedIdsRef.current;
+    const sources = selectedSourceIds
+      .map(id => canvasItemsRef.current.find(item => item.id === id))
+      .filter((item): item is CanvasImageItem => !!item && canUseCanvasItemAsImageEnhancementInput(item))
+      .slice(0, 8);
+    const inputBounds = sources.length > 0 ? getCanvasItemsBounds(sources.map(item => item.id)) : null;
+    const position = inputBounds && !client
+      ? { x: inputBounds.x + inputBounds.width + 72, y: inputBounds.y }
+      : getCanvasDropPosition(0, client);
+    const bufferId = createAssetId();
+    const node = createThreeSceneGeneratorCanvasNode({
+      id: makeCanvasNodeId(bufferId, 'three'),
+      bufferId,
+      sources,
+      position,
+    });
+    if (appendCanvasItems([node], '新增 3D 场景节点') > 0) {
+      updateCanvasSelection([node.id]);
+      showToast(sources.length > 0
+        ? `已新建 3D 场景节点，并连接 ${sources.length} 张参考图`
+        : '已新建 3D 场景节点');
+    }
+  };
+
+  const captureThreeSceneView = async (nodeId: string, dataUrl: string) => {
+    const sourceNode = canvasItemsRef.current.find(item => item.id === nodeId && item.threeScene);
+    if (!sourceNode) return;
+    try {
+      const createdAt = Date.now();
+      const fileName = `three-scene-view-${createdAt}.png`;
+      const savedPath = await saveThreeSceneCapture(dataUrl, fileName);
+      const displayUrl = convertFileSrc(savedPath);
+      const size = await readImageDisplaySize(displayUrl);
+      const position = getCanvasAiOutputCopyPosition(sourceNode, size, 0);
+      const bufferId = createAssetId();
+      const canvasItem = createThreeSceneCaptureCanvasNode({
+        id: makeCanvasNodeId(bufferId, 'image'),
+        bufferId,
+        path: savedPath,
+        url: displayUrl,
+        fileName,
+        position,
+        size,
+        createdAt,
+      });
+      if (appendCanvasItems([canvasItem], '生成 3D 当前视角') > 0) {
+        showToast('当前视角已保存为普通图片节点');
+      }
+    } catch (error) {
+      console.error('capture three scene failed:', error);
+      showToast('当前视角保存失败，请重试');
+    }
+  };
+
   const removeCanvasItemsByIds = (ids: string[], label = '从画布移除节点') => {
     if (!isCanvasModeRef.current) return 0;
     const requestedIds = Array.from(new Set(ids.filter(Boolean)));
@@ -9654,6 +9996,9 @@ function MainApp() {
     }
     if (uniqueIds.length === 0) return 0;
     const idSet = new Set(uniqueIds);
+    if (activeThreeSceneIdRef.current && idSet.has(activeThreeSceneIdRef.current)) {
+      exitThreeSceneInteraction();
+    }
     pushCanvasUndoSnapshot(label, { shareImmutableItems: true });
     uniqueIds.forEach(id => {
       canvasImageSourceCacheRef.current.delete(id);
@@ -10164,6 +10509,15 @@ function MainApp() {
       inputs: (item.inputs || [])
         .map(inputId => idMap.get(inputId))
         .filter((inputId): inputId is string => !!inputId),
+      threeScene: item.threeScene
+        ? {
+          ...item.threeScene,
+          sourceImageId: idMap.get(item.threeScene.sourceImageId) || item.threeScene.sourceImageId,
+          sourceImageIds: (item.threeScene.sourceImageIds || [item.threeScene.sourceImageId])
+            .map(sourceId => idMap.get(sourceId) || sourceId)
+            .filter(Boolean),
+        }
+        : undefined,
     }));
 
     const addedCount = appendCanvasItems(remappedItems, label);
@@ -14715,6 +15069,7 @@ function MainApp() {
       return false;
     }
     const isSingleMediaInputTarget = target.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target.ai?.type);
+    const isThreeSceneTarget = target.item.type === 'three-scene';
     const fusionPreferredRole = getCanvasImageFusionPreferredRole(targetId);
     if (!isCanvasImageFusionAi(target.ai) && (target.inputs || []).includes(sourceId)) {
       updateCanvasSelection([targetId]);
@@ -14726,7 +15081,10 @@ function MainApp() {
       if (isCanvasImageFusionAi(item.ai)) {
         return applyCanvasImageFusionConnectionPatch(item, [sourceId], fusionPreferredRole);
       }
-      return { ...item, inputs: isSingleMediaInputTarget ? [sourceId] : Array.from(new Set([...(item.inputs || []), sourceId])) };
+      const inputs = isSingleMediaInputTarget
+        ? [sourceId]
+        : Array.from(new Set([...(item.inputs || []), sourceId]));
+      return { ...item, inputs: isThreeSceneTarget ? inputs.slice(0, 8) : inputs };
     }));
     pendingCanvasFusionRoleRef.current = null;
     updateCanvasSelection([targetId]);
@@ -14755,9 +15113,12 @@ function MainApp() {
     const fusionPatch = isCanvasImageFusionAi(target.ai)
       ? applyCanvasImageFusionConnectionPatch(target, validSourceIds.slice(0, 2), fusionPreferredRole)
       : null;
+    const mergedInputs = Array.from(new Set([...previousInputs, ...validSourceIds]));
     const nextInputs = fusionPatch?.inputs || (isSingleMediaInputTarget
       ? validSourceIds.slice(0, 1)
-      : Array.from(new Set([...previousInputs, ...validSourceIds])));
+      : target.item.type === 'three-scene'
+        ? mergedInputs.slice(0, 8)
+        : mergedInputs);
     const inputsChanged = previousInputs.length !== nextInputs.length
       || previousInputs.some((inputId, index) => inputId !== nextInputs[index]);
     const addedCount = nextInputs.length - previousInputs.length;
@@ -15203,7 +15564,13 @@ function MainApp() {
 
     const selectedImageFiles = isCanvasImageFusionAi(target.ai)
       ? imageFiles.slice(0, fusionUploadRole?.targetId === targetId ? 1 : 2)
-      : imageFiles;
+      : target.item.type === 'three-scene'
+        ? imageFiles.slice(0, Math.max(0, 8 - (target.inputs || []).length))
+        : imageFiles;
+    if (selectedImageFiles.length === 0) {
+      showToast('3D 场景节点最多添加 8 张参考图');
+      return;
+    }
     const created = await Promise.all(selectedImageFiles.map((file, index) => createCanvasImageItemFromFile(file, index)));
     const images = created.filter((item): item is CanvasImageItem => !!item).map((item, index) => ({
       ...item,
@@ -20218,6 +20585,10 @@ function MainApp() {
     if (!surface) return;
 
     const handleCanvasWheel = (event: WheelEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      // The surface listener runs in capture phase. Let OrbitControls receive the wheel
+      // before applying the infinite-canvas zoom, otherwise both cameras zoom together.
+      if (target?.closest('[data-three-scene-interactive="true"]')) return;
       const deltaY = normalizeCanvasWheelDelta(event);
       if (getCanvasNestedWheelScroller(surface, event.target, deltaY)) return;
       event.preventDefault();
@@ -20533,6 +20904,14 @@ function MainApp() {
         return;
       }
       if (isCanvasModeRef.current && event.key === 'Escape') {
+        if (activeThreeSceneIdRef.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          exitThreeSceneInteraction();
+          updateCanvasSelection([]);
+          return;
+        }
         if (
           canvasDragRef.current
           || canvasResizeRef.current
@@ -29124,6 +29503,7 @@ useEffect(() => {
   ]);
   const canvasAlwaysRenderedIds = useMemo(() => {
     const ids = new Set<string>();
+    if (activeThreeSceneId) ids.add(activeThreeSceneId);
     if (canvasInputMenuForId) ids.add(canvasInputMenuForId);
     if (canvasAiPromptEditingId) ids.add(canvasAiPromptEditingId);
     if (canvasPromptOptimizingId) ids.add(canvasPromptOptimizingId);
@@ -29167,6 +29547,7 @@ useEffect(() => {
       ? [...canvasViewportRenderableItems, ...supplementalSelectedItems]
       : canvasViewportRenderableItems;
   }, [
+    activeThreeSceneId,
     canvasAiPromptEditingId,
     canvasAlwaysRenderedIds,
     canvasItemsById,
@@ -32828,6 +33209,13 @@ useEffect(() => {
                       onPointerDown={(e) => {
                         setCanvasContextMenu(null);
                         setCanvasInputMenuForId(null);
+                        const pointerTarget = e.target as HTMLElement | null;
+                        if (shouldExitThreeSceneInteraction(
+                          activeThreeSceneIdRef.current,
+                          Boolean(pointerTarget?.closest('[data-three-scene-interactive="true"]')),
+                        )) {
+                          exitThreeSceneInteraction();
+                        }
                         if (e.button === 2 && e.altKey) {
                           startPreviewWindowDrag(e);
                           return;
@@ -33149,6 +33537,8 @@ useEffect(() => {
                                 ? canvasSelectedIdsSet.has(canvasItem.id)
                                 : null,
                               canvasTextAgentRunningIds.includes(canvasItem.id),
+                              shouldMountThreeSceneRenderer(canvasItem.id, activeThreeSceneId),
+                              threeSceneAnalyzingIds.includes(canvasItem.id),
                               canvasAiPromptEditingId === canvasItem.id,
                               canvasPromptOptimizingId === canvasItem.id,
                               canvasInputMenuForId === canvasItem.id,
@@ -33183,6 +33573,27 @@ useEffect(() => {
                           const isCanvasWorkflowItem = canvasItem.ai?.type === 'workflow';
                           const isCanvasReferenceBridgeItem = isCanvasWorkflowReferenceBridge(canvasItem);
                           const isCanvasAiNodeItem = isCanvasAiGeneratorItem || isCanvasWorkflowItem;
+                          const isCanvasThreeSceneItem = canvasItem.item.type === 'three-scene' && !!canvasItem.threeScene;
+                          const canvasThreeSceneReferences = isCanvasThreeSceneItem
+                            ? (canvasItem.inputs || []).map((inputId) => {
+                              const inputNode = canvasItemsById.get(inputId);
+                              if (!inputNode) return null;
+                              if (inputNode.item.type === 'image') {
+                                return {
+                                  id: inputId,
+                                  name: inputNode.item.name || inputNode.item.content,
+                                  source: getCanvasOriginalImageSource(inputNode.item) || getCanvasItemDisplaySource(inputNode.item),
+                                };
+                              }
+                              const output = getCanvasAiSuccessfulOutputs(inputNode)
+                                .find(candidate => (candidate.mediaType || getCanvasAiMediaType(inputNode.ai)) === 'image');
+                              return output ? {
+                                id: inputId,
+                                name: output.name || inputNode.item.name,
+                                source: getCanvasAiOutputDisplaySource(output),
+                              } : null;
+                            }).filter((reference): reference is { id: string; name: string | undefined; source: string } => !!reference)
+                            : [];
                           const canvasAiMediaType = getCanvasAiMediaType(canvasItem.ai);
                           const canvasAiItemProvider = normalizeCanvasAiProvider(
                             canvasItem.ai?.provider || (canvasAiMediaType === 'video' ? 'xais-chat' : canvasAiProvider)
@@ -33665,7 +34076,7 @@ useEffect(() => {
                             key={canvasItem.id}
                             data-canvas-item-id={canvasItem.id}
                             data-canvas-selected-state={isSelected ? 'true' : undefined}
-                            data-canvas-ai-input-id={isCanvasAiNodeItem && canvasConnectionDraft ? canvasItem.id : undefined}
+                            data-canvas-ai-input-id={(isCanvasAiNodeItem || isCanvasThreeSceneItem) && canvasConnectionDraft ? canvasItem.id : undefined}
                             className="group/canvas-item absolute isolate overflow-visible"
                             style={{
                               left: canvasItem.x,
@@ -33675,7 +34086,12 @@ useEffect(() => {
                               zIndex: isSelected ? 2 : 0,
                               touchAction: 'none',
                             }}
-                            onPointerDown={(e) => startCanvasItemDrag(e, canvasItem.id)}
+                            onPointerDown={(e) => {
+                              if (activeThreeSceneIdRef.current && activeThreeSceneIdRef.current !== canvasItem.id) {
+                                exitThreeSceneInteraction();
+                              }
+                              startCanvasItemDrag(e, canvasItem.id);
+                            }}
                             onPointerEnter={() => {
                               canvasHoveredItemIdRef.current = canvasItem.id;
                             }}
@@ -35322,6 +35738,25 @@ useEffect(() => {
                                     )}
                                   </div>
                                 </div>
+                              ) : canvasItem.item.type === 'three-scene' && canvasItem.threeScene ? (
+                                <ThreeSceneNode
+                                  data={canvasItem.threeScene}
+                                  references={canvasThreeSceneReferences}
+                                  active={shouldMountThreeSceneRenderer(canvasItem.id, activeThreeSceneId)}
+                                  analyzing={threeSceneAnalyzingIds.includes(canvasItem.id)}
+                                  onOpenReferences={() => setCanvasInputMenuForId(previous => (
+                                    previous === canvasItem.id ? null : canvasItem.id
+                                  ))}
+                                  onRemoveReference={(inputId) => disconnectCanvasInput(canvasItem.id, inputId)}
+                                  onGenerate={() => analyzeCanvasThreeSceneNode(canvasItem.id)}
+                                  onInteractionStart={(label) => beginThreeSceneInteraction(canvasItem.id, label)}
+                                  onInteractionEnd={() => endThreeSceneInteraction(canvasItem.id)}
+                                  onSceneSpecChange={(sceneSpec) => updateThreeSceneSpec(canvasItem.id, sceneSpec)}
+                                  onPreviewChange={(preview) => updateThreeScenePreview(canvasItem.id, preview)}
+                                  onOverlayChange={(patch) => updateThreeSceneReferenceOverlay(canvasItem.id, patch)}
+                                  onCapture={(dataUrl) => captureThreeSceneView(canvasItem.id, dataUrl)}
+                                  onReanalyze={() => analyzeCanvasThreeSceneNode(canvasItem.id)}
+                                />
                               ) : canvasItem.item.type === 'file' ? (
                                 <div className="flex h-full w-full flex-col overflow-hidden rounded-[18px] border border-violet-200/70 bg-white/92 text-stone-700 shadow-[0_10px_26px_rgba(15,23,42,0.10)] dark:border-violet-300/16 dark:bg-stone-900/92 dark:text-white/78">
                                   <div className="flex items-center gap-2 border-b border-stone-950/[0.045] bg-violet-50/72 px-3 py-2 dark:border-white/[0.06] dark:bg-violet-300/[0.08]">
@@ -35389,6 +35824,12 @@ useEffect(() => {
                                     <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-stone-100/75 px-4 text-center text-stone-400 dark:bg-stone-900/78 dark:text-white/36">
                                       <ImageIcon className="h-6 w-6" />
                                       <span className="text-[11px] font-bold">{hasCanvasImageBackingSource ? '正在准备缩略图' : '图片源丢失'}</span>
+                                    </div>
+                                  )}
+                                  {canvasItem.item.type === 'image' && threeSceneAnalyzingIds.includes(canvasItem.id) && (
+                                    <div className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-2 bg-stone-950/52 text-white backdrop-blur-[2px]">
+                                      <RefreshCw className="h-5 w-5 animate-spin" />
+                                      <span className="text-[11px] font-bold">正在分析图片构图…</span>
                                     </div>
                                   )}
                                   {!isGeneratedMediaItem && (
@@ -35623,7 +36064,9 @@ useEffect(() => {
                         {canvasInputMenuForId && (() => {
                           const canvasItem = canvasItemsById.get(canvasInputMenuForId);
                           if (!canvasItem || !canUseCanvasItemAsAiTarget(canvasItem)) return null;
-                          const canvasAiNodeDesignSize = getCanvasAiNodeDesignSizeForItem(canvasItem);
+                          const canvasAiNodeDesignSize = canvasItem.item.type === 'three-scene'
+                            ? { width: canvasItem.width, height: canvasItem.height }
+                            : getCanvasAiNodeDesignSizeForItem(canvasItem);
                           const nodeScale = Math.min(canvasItem.width / canvasAiNodeDesignSize.width, canvasItem.height / canvasAiNodeDesignSize.height) || 1;
                           const referenceLeft = canvasItem.x + 16 * nodeScale;
                           const referenceTop = canvasItem.y + 16 * nodeScale;
@@ -36555,17 +36998,32 @@ useEffect(() => {
                                     <span className="ml-auto font-mono text-[9px] font-medium tracking-normal text-stone-400">Ctrl ⇧ G</span>
                                   </button>
                                 )}
-                                <button
-                                  type="button"
-                                  className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
-                                  onClick={() => {
-                                    void downloadCanvasItemsByIds(actionIds);
-                                    setCanvasContextMenu(null);
-                                  }}
-                                >
-                                  <Download className="h-3.5 w-3.5 text-sky-300" />
-                                  下载
-                                </button>
+                                {target?.item.type !== 'three-scene' && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                    onClick={() => {
+                                      void downloadCanvasItemsByIds(actionIds);
+                                      setCanvasContextMenu(null);
+                                    }}
+                                  >
+                                    <Download className="h-3.5 w-3.5 text-sky-300" />
+                                    下载
+                                  </button>
+                                )}
+                                {ENABLE_THREE_SCENE_CREATION && target?.item.type === 'image' && actionIds.length === 1 && (
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                    onClick={() => {
+                                      setCanvasContextMenu(null);
+                                      addCanvasThreeSceneGeneratorNode(undefined, [target.id]);
+                                    }}
+                                  >
+                                    <Box className="h-3.5 w-3.5 text-stone-300" />
+                                    新建 3D 场景节点
+                                  </button>
+                                )}
                                 {isCanvasAgentTextTarget(target) && (
                                   <button
                                     type="button"
@@ -36646,7 +37104,7 @@ useEffect(() => {
                                     折叠工作流
                                   </button>
                                 )}
-                                {target?.ai?.type !== 'workflow' && (
+                                {target?.ai?.type !== 'workflow' && target?.item.type !== 'three-scene' && (
                                   <button
                                     type="button"
                                     className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
@@ -36770,6 +37228,22 @@ useEffect(() => {
                               <Film className="h-3.5 w-3.5 text-emerald-300" />
                               新建 AI 视频节点
                             </button>
+                            {ENABLE_THREE_SCENE_CREATION && sourceIds.some(sourceId => canUseCanvasItemAsImageEnhancementInput(canvasItemsById.get(sourceId))) && (
+                              <button
+                                type="button"
+                                className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-white/10"
+                                onClick={() => {
+                                  addCanvasThreeSceneGeneratorNode(
+                                    { x: canvasContextMenu.worldX, y: canvasContextMenu.worldY },
+                                    sourceIds,
+                                  );
+                                  setCanvasContextMenu(null);
+                                }}
+                              >
+                                <Box className="h-3.5 w-3.5 text-stone-300" />
+                                新建 3D 场景节点
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="flex w-full items-center gap-2 rounded-[10px] px-3 py-2 text-left text-xs font-bold text-stone-100 transition-colors hover:bg-cyan-500/18 hover:text-cyan-200"
@@ -36818,6 +37292,8 @@ useEffect(() => {
                                   >
                                     {isCanvasAgentTextTarget(target)
                                       ? <Type className="h-3.5 w-3.5 text-amber-300" />
+                                      : target.item.type === 'three-scene'
+                                        ? <Box className="h-3.5 w-3.5 text-stone-300" />
                                       : target.ai?.type === 'workflow'
                                         ? <Link className="h-3.5 w-3.5 text-emerald-300" />
                                         : getCanvasAiMediaType(target.ai) === 'video'
@@ -36838,7 +37314,9 @@ useEffect(() => {
                           || target?.ai?.type === 'video-enhancement'
                           || (target?.ai?.type === 'video-generator' && target.ai.videoInputMode !== 'FLF')
                         );
-                        const isMediaToolInput = target?.ai?.type === 'frame-interpolation' || isCanvasAiEnhancementType(target?.ai?.type);
+                        const isMediaToolInput = target?.item.type === 'three-scene'
+                          || target?.ai?.type === 'frame-interpolation'
+                          || isCanvasAiEnhancementType(target?.ai?.type);
                         const isVideoOnlyInput = target?.ai?.type === 'frame-interpolation' || target?.ai?.type === 'video-enhancement';
                         const workflowUserInput = target?.ai?.type === 'workflow'
                           ? normalizeCanvasWorkflowUserInput(getCanvasWorkflowTemplateFromNode(target)?.userInput)
@@ -36980,6 +37458,8 @@ useEffect(() => {
                       workflowOptions={canvasWorkflowSelectOptions}
                       hasWorkflow={canvasItems.some(item => item.ai?.type === 'workflow')}
                       onAddImage={() => addCanvasAiGeneratorNode()}
+                      showThreeScene={ENABLE_THREE_SCENE_CREATION}
+                      onCreateThreeScene={() => addCanvasThreeSceneGeneratorNode()}
                       onAddFusion={() => addCanvasImageFusionNode()}
                       onAddVideo={() => addCanvasAiVideoGeneratorNode()}
                       onAddFrameInterpolation={() => addCanvasFrameInterpolationNode()}

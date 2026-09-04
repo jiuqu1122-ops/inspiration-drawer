@@ -1,6 +1,6 @@
 [package]
 name = "inspiration-drawer"
-version = "6.0.22"
+version = "6.0.23"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

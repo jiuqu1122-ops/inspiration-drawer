@@ -1,5 +1,6 @@
 ﻿import type React from 'react';
 import {
+  Box,
   Film,
   Image as ImageIcon,
   Lightbulb,
@@ -36,6 +37,8 @@ type CanvasToolbarProps = {
   workflowOptions: RoundedSelectOption[];
   hasWorkflow: boolean;
   onAddImage: () => void;
+  showThreeScene?: boolean;
+  onCreateThreeScene: () => void;
   onAddFusion: () => void;
   onAddVideo: () => void;
   onAddFrameInterpolation: () => void;
@@ -58,6 +61,8 @@ export function CanvasToolbar({
   workflowOptions,
   hasWorkflow,
   onAddImage,
+  showThreeScene = false,
+  onCreateThreeScene,
   onAddFusion,
   onAddVideo,
   onAddFrameInterpolation,
@@ -90,6 +95,17 @@ export function CanvasToolbar({
         <ImageIcon className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-left">图片</span>
       </button>
+      {showThreeScene && (
+        <button
+          type="button"
+          onClick={onCreateThreeScene}
+          className={CANVAS_SIDE_TOOL_CLASS}
+          title="新增 3D 场景节点"
+        >
+          <Box className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-left">3D</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={onAddFusion}

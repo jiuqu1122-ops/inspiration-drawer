@@ -9,6 +9,9 @@ import {
   type CanvasAiGeneratedOutput,
   type CanvasImageItem,
 } from '../features/canvasModel';
+import { normalizeThreeSceneSpec } from '../features/three/model/normalizeThreeSceneSpec';
+import { createThreeScenePreview } from '../features/three/preview/threeScenePreview';
+import { normalizeSceneAnalysis } from '../features/three/model/threeSceneAnalysisSchema';
 
 const DATA_THUMBNAIL_KEEP_MAX_CHARS = 96 * 1024;
 
@@ -136,7 +139,55 @@ const normalizeInterruptedCanvasAiRun = (
   item: CanvasImageItem,
   activeRunNodeIds?: ReadonlySet<string>,
 ): CanvasImageItem => {
-  const cleanItem = stripCanvasItemDataImageProvenance(item);
+  let cleanItem = stripCanvasItemDataImageProvenance(item);
+  if (cleanItem.item.type === 'three-scene' && cleanItem.threeScene) {
+    const sceneSpec = normalizeThreeSceneSpec(cleanItem.threeScene.sceneSpec);
+    const persistedStatus = cleanItem.threeScene.status;
+    const status = persistedStatus === 'working' ? 'error' : persistedStatus || 'success';
+    const analysisCamera = cleanItem.threeScene.analysisCamera
+      ? normalizeThreeSceneSpec({ ...sceneSpec, camera: cleanItem.threeScene.analysisCamera }).camera
+      : status === 'success' ? sceneSpec.camera : undefined;
+    const preview = cleanItem.threeScene.preview || createThreeScenePreview(sceneSpec);
+    const sourceImageIds = Array.from(new Set([
+      ...(Array.isArray(cleanItem.threeScene.sourceImageIds) ? cleanItem.threeScene.sourceImageIds : []),
+      cleanItem.threeScene.sourceImageId,
+    ].map(value => String(value || '').trim()).filter(Boolean))).slice(0, 8);
+    const sourceImagePaths = Array.from(new Set([
+      ...(Array.isArray(cleanItem.threeScene.sourceImagePaths) ? cleanItem.threeScene.sourceImagePaths : []),
+      cleanItem.threeScene.sourceImagePath,
+    ].map(value => String(value || '').trim()).filter(Boolean))).slice(0, 8);
+    const sceneAnalysis = cleanItem.threeScene.sceneAnalysis
+      ? normalizeSceneAnalysis(cleanItem.threeScene.sceneAnalysis)
+      : undefined;
+    const rawOverlay = cleanItem.threeScene.referenceOverlay;
+    const referenceOverlay = {
+      visible: typeof rawOverlay?.visible === 'boolean' ? rawOverlay.visible : true,
+      opacity: clamp(Number(rawOverlay?.opacity), 0, 1),
+      guides: typeof rawOverlay?.guides === 'boolean' ? rawOverlay.guides : false,
+    };
+    if (!Number.isFinite(Number(rawOverlay?.opacity))) referenceOverlay.opacity = 0.4;
+    cleanItem = {
+      ...cleanItem,
+      item: { ...cleanItem.item, thumbnail: preview },
+      threeScene: {
+        ...cleanItem.threeScene,
+        type: 'three-scene',
+        sceneSpec,
+        analysisCamera,
+        sourceImageId: sourceImageIds[0] || '',
+        sourceImageIds,
+        ...(sourceImagePaths[0] ? { sourceImagePath: sourceImagePaths[0] } : {}),
+        sourceImagePaths,
+        preview,
+        sceneAnalysis,
+        referenceOverlay,
+        status,
+        error: persistedStatus === 'working'
+          ? cleanItem.threeScene.error || '上次生成已中断，请重新生成'
+          : cleanItem.threeScene.error,
+      },
+    };
+  }
   if (cleanItem.ai?.type === 'video-generator') {
     const invalidVideoError = '接口返回了无效的视频结果，请重新生成';
     let hasInvalidVideoOutput = false;

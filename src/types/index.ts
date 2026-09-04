@@ -11,7 +11,7 @@ export type Folder = {
 
 export type BufferItem = { 
   id: string; 
-  type: 'text' | 'image' | 'file' | 'video'; 
+  type: 'text' | 'image' | 'file' | 'video' | 'three-scene';
   content: string; 
   name?: string; 
   path?: string; 

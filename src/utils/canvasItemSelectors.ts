@@ -82,7 +82,7 @@ export const getCanvasAiSuccessfulOutputs = (canvasItem?: CanvasImageItem | null
 );
 
 export const canUseCanvasItemAsAiInput = (canvasItem?: CanvasImageItem | null) => (
-  !!canvasItem
+  !!canvasItem && canvasItem.item.type !== 'three-scene'
 );
 
 export const canUseCanvasItemAsFrameInterpolationVideoInput = (canvasItem?: CanvasImageItem | null) => {
@@ -134,6 +134,9 @@ export const canUseCanvasItemAsInputForTarget = (
   source?: CanvasImageItem | null,
   target?: CanvasImageItem | null,
 ) => {
+  if (target?.item.type === 'three-scene') {
+    return canUseCanvasItemAsImageEnhancementInput(source);
+  }
   if (target?.ai?.type === 'workflow') {
     if (!canUseCanvasItemAsWorkflowMaterial(source, getCanvasWorkflowTemplateFromNode(target)?.userInput)) return false;
   }
@@ -155,12 +158,15 @@ export const isCanvasAgentTextTarget = (canvasItem?: CanvasImageItem | null) => 
 export const canUseCanvasItemAsAiTarget = (canvasItem?: CanvasImageItem | null) => (
   isCanvasAiGeneratorType(canvasItem?.ai?.type)
   || canvasItem?.ai?.type === 'workflow'
+  || canvasItem?.item.type === 'three-scene'
   || isCanvasAgentTextTarget(canvasItem)
   || isCanvasWorkflowReferenceBridge(canvasItem)
 );
 
 export const getCanvasInputTargetLabel = (canvasItem?: CanvasImageItem | null) => (
-  isCanvasWorkflowReferenceBridge(canvasItem)
+  canvasItem?.item.type === 'three-scene'
+    ? '3D 场景节点'
+    : isCanvasWorkflowReferenceBridge(canvasItem)
     ? canvasItem?.workflowBridge?.label || canvasItem?.item.name || '参考图桥接'
     : isCanvasAgentTextTarget(canvasItem)
     ? `Design Agent · ${DESIGN_AGENT_ROLE_LABELS[normalizeDesignAgentConfig(canvasItem?.designAgentConfig).agentRole]}`
@@ -210,6 +216,9 @@ export const getCanvasItemNavSource = (item: BufferItem) => (
 
 export const getCanvasBufferItemNavPreview = (item?: BufferItem | null): CanvasNavPreview | null => {
   if (!item) return null;
+  if (item.type === 'three-scene') {
+    return item.thumbnail ? { source: item.thumbnail, mediaType: 'image' } : null;
+  }
   if (item.type === 'image') {
     const source = getCanvasItemNavSource(item);
     return source ? { source, mediaType: 'image' } : null;

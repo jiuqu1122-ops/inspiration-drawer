@@ -1,5 +1,6 @@
 import { BufferItem } from '../types';
 import type { ImagePolicy } from './appAgent/imageQuality/imageRuleCapsules';
+import type { CanvasThreeSceneData } from './three/model/threeSceneTypes';
 
 export type CanvasWorkflowSlotAsset = {
   sourceItemId?: string;
@@ -55,6 +56,8 @@ export type CanvasImageItem = {
   workflowTemplateNodeId?: string;
   designAgentConfig?: DesignAgentConfig;
   ai?: CanvasAiItemData;
+  /** Serializable source relation and SceneSpec for a Three.js composition node. */
+  threeScene?: CanvasThreeSceneData;
   /** User-created canvas group. Kept separate from expanded workflow groups. */
   canvasGroup?: CanvasGroup;
   /** Stable slot used while a Chat batch progressively fills a canvas group. */

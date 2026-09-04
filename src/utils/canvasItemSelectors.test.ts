@@ -152,6 +152,15 @@ describe('canvas item selectors', () => {
     const textAgent = createCanvasItem({ item: { type: 'text' }, textMode: 'agent' });
     expect(canUseCanvasItemAsAiTarget(textAgent)).toBe(true);
     expect(getCanvasInputTargetLabel(bridgeTarget)).toBe('Reference');
+
+    const threeSceneTarget = createCanvasItem({
+      id: 'three-scene-target',
+      item: { id: 'three-scene-item', type: 'three-scene' },
+    });
+    expect(canUseCanvasItemAsAiTarget(threeSceneTarget)).toBe(true);
+    expect(canUseCanvasItemAsInputForTarget(image, threeSceneTarget)).toBe(true);
+    expect(canUseCanvasItemAsInputForTarget(file, threeSceneTarget)).toBe(false);
+    expect(getCanvasInputTargetLabel(threeSceneTarget)).toBe('3D 场景节点');
   });
 
   it('keeps generated drawer item and navigator preview mappings', () => {
