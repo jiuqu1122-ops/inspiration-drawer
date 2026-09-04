@@ -44,6 +44,9 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-h
 - [ ] Confirm the extracted files are owned by the current user rather than `root`, and `First Launch.command` plus the app's main executable are executable.
 - [ ] Double-click `First Launch.command`; confirm it opens the adjacent app without administrator access and only closes its own Terminal window when that window has a single tab.
 - [ ] Run the first-launch command from a Terminal window with multiple tabs; confirm the app opens and the Terminal window remains open.
+- [ ] Confirm CI also produces one `.app.tar.gz` updater archive and its non-empty `.sig`, and that extracting the archive yields an ad-hoc-signed App accepted by `codesign --verify --deep --strict`.
+- [ ] Confirm COS returns HTTP 200 for the fixed Preview ZIP, `latest.json`, the versioned updater archive, and its `.sig`.
+- [ ] Confirm `latest.json` contains only the `darwin-aarch64` platform entry and its URL, signature, SHA256, and byte size match the uploaded archive.
 
 ## Local data and imports
 
@@ -100,7 +103,9 @@ Target: Apple Silicon (`aarch64-apple-darwin`), macOS 12 or newer. Test the ad-h
 - [ ] Send a web image from the extension to the macOS app.
 - [ ] Confirm automatic browser-extension installation is not offered.
 - [ ] Confirm app-to-Finder native drag and Virtual Drop are shown as unavailable and never produce a Rust panic.
-- [ ] Confirm automatic updater installation and `cloudflared.exe` execution are not attempted.
+- [ ] Starting from an older updater-enabled Preview, publish a higher version and confirm the automatic check downloads the `darwin-aarch64` COS package, verifies it, installs it, relaunches, and preserves local data.
+- [ ] Confirm a tampered updater archive is rejected by SHA256/signature verification.
+- [ ] Confirm updater code never selects a Windows platform URL on macOS; confirm `cloudflared.exe` execution is not attempted.
 - [ ] Confirm tray/menu-bar initialization does not block the main window.
 
 ## Deferred validation

@@ -16,6 +16,8 @@ Inspiration Drawer macOS Preview
 说明：
 - 本版本使用 ad-hoc signing
 - 未经过 Apple notarization
+- 首次手动安装这个新版后，后续 Preview 可在 App 内自动更新
+- 自动更新包会校验 Tauri 签名与 SHA256
 - 不会关闭 Gatekeeper
 - 不会修改系统安全设置
 - 不需要管理员权限

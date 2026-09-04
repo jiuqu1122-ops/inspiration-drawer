@@ -18,9 +18,11 @@ cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
 npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg --no-sign
 ```
 
-macOS 平台配置位于 `src-tauri/tauri.macos.conf.json`，Tauri 会自动与主配置合并。Preview CI 仅生成未签名 `.app` / `.dmg`；Developer ID 签名、notarization 和自动发布留到实体 Mac 验证完成后接入。手工验证项见 `docs/macos-test-checklist.md`。
+macOS 平台配置位于 `src-tauri/tauri.macos.conf.json`，Tauri 会自动与主配置合并。Preview CI 生成 ad-hoc signed `.app`、`.dmg`、Tauri updater archive 和签名，将 Preview ZIP 与 `darwin-aarch64` 更新清单发布到腾讯云 COS。Developer ID signing 和 notarization 仍留到正式发行阶段。手工验证项见 `docs/macos-test-checklist.md`。
 
-Preview 暂不支持从 App 原生拖出到 Finder、Virtual Drop、浏览器扩展自动安装、managed Codex、自动更新和内置 cloudflared。浏览器 localhost bridge 与手动加载扩展的流程继续共用。
+Preview 暂不支持从 App 原生拖出到 Finder、Virtual Drop、浏览器扩展自动安装、managed Codex 和内置 cloudflared。自动更新仅支持 Apple Silicon，并从 COS 获取 minisign + SHA256 双重校验的 ad-hoc signed App 更新包。旧 Preview 因为未内置更新能力，需要手动安装一次支持更新的新版；后续版本可在 App 内自动更新。
+
+CI 发布需要仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY`、`TENCENTCLOUD_SECRET_ID`、`TENCENTCLOUD_SECRET_KEY`，以及 Variables `COS_BUCKET`、`COS_REGION`。私钥密码如非空，再配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
 
 ## 下载
 

@@ -2166,8 +2166,16 @@ fn sha256_bytes_upper(bytes: &[u8]) -> String {
 }
 
 fn app_update_manifest_endpoints_from_config() -> Result<Vec<Url>, String> {
-    let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
-        .map_err(|e| format!("manifest 格式不符合预期：读取 tauri.conf.json 失败: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let (config_name, config_source) = (
+        "tauri.macos.conf.json",
+        include_str!("../tauri.macos.conf.json"),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (config_name, config_source) = ("tauri.conf.json", include_str!("../tauri.conf.json"));
+
+    let config: serde_json::Value = serde_json::from_str(config_source)
+        .map_err(|e| format!("manifest 格式不符合预期：读取 {config_name} 失败: {e}"))?;
     let endpoints = config
         .get("plugins")
         .and_then(|plugins| plugins.get("updater"))
@@ -2318,24 +2326,48 @@ fn push_app_update_sources_from_urls_value(
 }
 
 fn preferred_app_update_platform_keys(raw_json: &serde_json::Value) -> Vec<String> {
-    let mut keys = vec![
-        "windows-x86_64-nsis".to_string(),
-        "windows-x86_64".to_string(),
-        "windows-x86_64-msi".to_string(),
-    ];
+    let mut keys = if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            vec![
+                "darwin-aarch64".to_string(),
+                "darwin-arm64".to_string(),
+                "macos-aarch64".to_string(),
+            ]
+        } else {
+            vec![
+                "darwin-x86_64".to_string(),
+                "macos-x86_64".to_string(),
+            ]
+        }
+    } else {
+        vec![
+            "windows-x86_64-nsis".to_string(),
+            "windows-x86_64".to_string(),
+            "windows-x86_64-msi".to_string(),
+        ]
+    };
     if let Some(platforms) = raw_json
         .get("platforms")
         .and_then(serde_json::Value::as_object)
     {
         for key in platforms.keys() {
             let lower = key.to_ascii_lowercase();
-            if lower.contains("windows") && !keys.iter().any(|existing| existing == key) {
+            let matches_current_platform = if cfg!(target_os = "macos") {
+                lower.contains("darwin") || lower.contains("macos")
+            } else {
+                lower.contains("windows")
+            };
+            if matches_current_platform && !keys.iter().any(|existing| existing == key) {
                 keys.push(key.clone());
             }
         }
-        for key in platforms.keys() {
-            if !keys.iter().any(|existing| existing == key) {
-                keys.push(key.clone());
+        // Preserve the legacy Windows fallback ordering for existing manifests.
+        // macOS must never fall through to and install a Windows package.
+        if cfg!(target_os = "windows") {
+            for key in platforms.keys() {
+                if !keys.iter().any(|existing| existing == key) {
+                    keys.push(key.clone());
+                }
             }
         }
     }
@@ -3235,7 +3267,7 @@ async fn check_and_install_app_update_mirrors(
     let sources = collect_app_update_sources(&raw_json, None);
 
     if sources.is_empty() {
-        let message = "manifest 格式不符合预期：更新配置没有可用下载地址 urls / platforms.windows-x86_64.url / url".to_string();
+        let message = "manifest 格式不符合预期：更新配置没有当前平台可用的下载地址 urls / platforms.<current-platform>.url / url".to_string();
         emit_app_update_progress_detail(
             &app_handle,
             &progress_id,

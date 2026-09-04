@@ -104,12 +104,20 @@
       "app",
       "dmg"
     ],
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "resources": [
       "../browser-extension/build/"
     ],
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://inspirationdrawer-1475663212.cos.ap-singapore.myqcloud.com/downloads/macos/preview/latest.json"
+      ]
     }
   }
 }

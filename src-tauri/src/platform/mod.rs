@@ -53,7 +53,7 @@ pub fn capabilities() -> PlatformCapabilities {
             browser_extension_bridge: true,
             global_shortcut: true,
             auto_start: false,
-            auto_updater: false,
+            auto_updater: true,
             managed_codex: false,
             cloudflared_tunnel: false,
             local_media_engines: false,

@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 90
     env:
       MACOSX_DEPLOYMENT_TARGET: "12.0"
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -48,8 +50,31 @@ jobs:
       - name: Check Rust for Apple Silicon
         run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
 
-      - name: Build app and DMG without Developer ID signing
-        run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg --no-sign --ci
+      - name: Build ad-hoc-signed app, DMG, and updater archive
+        run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg --ci
+
+      - name: Verify updater archive and signature
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUNDLE_ROOT="$GITHUB_WORKSPACE/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          VERIFY_ROOT="$RUNNER_TEMP/inspiration-drawer-updater-verify"
+          test "$(find "$BUNDLE_ROOT" -maxdepth 1 -type f -name '*.app.tar.gz' -print | wc -l | tr -d ' ')" = "1"
+          UPDATER_ARCHIVE="$(find "$BUNDLE_ROOT" -maxdepth 1 -type f -name '*.app.tar.gz' -print -quit)"
+          test -n "$UPDATER_ARCHIVE"
+          test -s "$UPDATER_ARCHIVE"
+          test -s "$UPDATER_ARCHIVE.sig"
+
+          rm -rf "$VERIFY_ROOT"
+          mkdir -p "$VERIFY_ROOT"
+          tar -xzf "$UPDATER_ARCHIVE" -C "$VERIFY_ROOT"
+          EXTRACTED_APP="$(find "$VERIFY_ROOT" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$EXTRACTED_APP"
+          codesign --verify --deep --strict --verbose=2 "$EXTRACTED_APP"
+          SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$EXTRACTED_APP" 2>&1)"
+          printf '%s\n' "$SIGNATURE_DETAILS"
+          grep -F "Signature=adhoc" <<< "$SIGNATURE_DETAILS"
 
       - name: Create, sign, and verify Preview ZIP
         shell: bash
@@ -163,6 +188,45 @@ jobs:
 
           find "$EXTRACTED_PREVIEW" -maxdepth 2 -print
 
+      - name: Publish Preview and updater to COS
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-support'
+        id: publish-cos
+        run: node scripts/macos/publish-updater.mjs
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET }}
+          COS_REGION: ${{ vars.COS_REGION }}
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+
+      - name: Verify published COS updater payload
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/macos-support'
+        shell: bash
+        env:
+          ARCHIVE_URL: ${{ steps.publish-cos.outputs.archive_url }}
+          MANIFEST_URL: ${{ steps.publish-cos.outputs.manifest_url }}
+          SIGNATURE_URL: ${{ steps.publish-cos.outputs.signature_url }}
+        run: |
+          set -euo pipefail
+
+          VERIFY_ROOT="$RUNNER_TEMP/inspiration-drawer-cos-updater-verify"
+          rm -rf "$VERIFY_ROOT"
+          mkdir -p "$VERIFY_ROOT"
+
+          curl --fail --silent --show-error --location "$MANIFEST_URL?run=$GITHUB_RUN_ID" -o "$VERIFY_ROOT/latest.json"
+          curl --fail --silent --show-error --location "$ARCHIVE_URL?run=$GITHUB_RUN_ID" -o "$VERIFY_ROOT/update.app.tar.gz"
+          curl --fail --silent --show-error --location "$SIGNATURE_URL?run=$GITHUB_RUN_ID" -o "$VERIFY_ROOT/update.app.tar.gz.sig"
+          node -e 'const fs=require("node:fs"); const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const platform=manifest.platforms?.["darwin-aarch64"]; if (!platform?.url || !platform?.signature || !platform?.sha256 || !platform?.size) process.exit(1)' "$VERIFY_ROOT/latest.json"
+          test -s "$VERIFY_ROOT/update.app.tar.gz.sig"
+
+          mkdir -p "$VERIFY_ROOT/extracted"
+          tar -xzf "$VERIFY_ROOT/update.app.tar.gz" -C "$VERIFY_ROOT/extracted"
+          EXTRACTED_APP="$(find "$VERIFY_ROOT/extracted" -maxdepth 2 -type d -name '*.app' -print -quit)"
+          test -n "$EXTRACTED_APP"
+          codesign --verify --deep --strict --verbose=2 "$EXTRACTED_APP"
+          SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$EXTRACTED_APP" 2>&1)"
+          printf '%s\n' "$SIGNATURE_DETAILS"
+          grep -F "Signature=adhoc" <<< "$SIGNATURE_DETAILS"
+
       - name: Upload macOS ARM64 Preview
         uses: actions/upload-artifact@v4
         with:
@@ -179,4 +243,6 @@ jobs:
           retention-days: 14
           path: |
             src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
