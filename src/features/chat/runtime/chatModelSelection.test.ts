@@ -7,24 +7,39 @@ import {
 } from './chatModelSelection';
 
 describe('chat model selection', () => {
-  it('only exposes the three supported GPT 5.6 variants', () => {
+  it('exposes every model returned by the active provider', () => {
     expect(resolveAvailableChatModels([
-      'gpt-5.6',
+      'gpt-5.7',
       'gpt-5.6-luna',
-      'gpt-5.6-sol',
-      'gpt-5.6-preview',
-      'gpt-5.6-terra',
-      'gpt-5.5',
+      'provider/new-model-preview',
     ])).toEqual([
-      'gpt-5.6-sol',
-      'gpt-5.6-terra',
+      'gpt-5.7',
       'gpt-5.6-luna',
+      'provider/new-model-preview',
     ]);
   });
 
-  it('rejects the retired bare GPT 5.6 model for legacy conversation fallback', () => {
-    expect(normalizeSupportedChatModel('gpt-5.6')).toBe('');
-    expect(normalizeSupportedChatModel(' GPT-5.6-TERRA ')).toBe('gpt-5.6-terra');
+  it('trims dynamic model names without rewriting provider casing', () => {
+    expect(normalizeSupportedChatModel(' new-model-2026 ')).toBe('new-model-2026');
+    expect(normalizeSupportedChatModel(' GPT-5.7-PREVIEW ')).toBe('GPT-5.7-PREVIEW');
+    expect(normalizeSupportedChatModel('   ')).toBe('');
+  });
+
+  it('removes blank and duplicate models while preserving provider order', () => {
+    expect(resolveAvailableChatModels([
+      ' model-b ',
+      '',
+      'model-a',
+      'MODEL-B',
+      'model-c',
+    ])).toEqual(['model-b', 'model-a', 'model-c']);
+  });
+
+  it('keeps the current conversation model when it is absent from the remote list', () => {
+    expect(resolveAvailableChatModels(['model-b', 'model-c'], ' model-a '))
+      .toEqual(['model-a', 'model-b', 'model-c']);
+    expect(resolveAvailableChatModels([], 'model-a')).toEqual(['model-a']);
+    expect(resolveAvailableChatModels([], '')).toEqual([]);
   });
 
   it('uses the model selected by the composer for the request snapshot', () => {

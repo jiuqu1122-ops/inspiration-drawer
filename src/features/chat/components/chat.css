@@ -1102,6 +1102,15 @@
   font-weight: 600;
 }
 
+.chat-model-menu__status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 7px;
+  color: var(--chat-muted);
+  font-size: 8px;
+}
+
 .chat-model-menu__divider {
   height: 1px;
   margin: 4px 6px;
