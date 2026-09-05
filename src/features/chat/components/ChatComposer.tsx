@@ -1,9 +1,8 @@
 import { ArrowUp, Check, ChevronDown, Globe2, LoaderCircle, Paperclip, SlidersHorizontal, Square, X } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { createChatId } from '../model/chatTypes';
-import { resolveAvailableChatModels } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatImageSettings } from './ChatImageSettings';
 
@@ -26,6 +25,8 @@ export function ChatComposer({
   stoppable,
   model,
   modelOptions,
+  modelOptionsLoading = false,
+  onRefreshModelOptions,
   onModelChange,
   imageModel,
   imageModelOptions,
@@ -49,6 +50,8 @@ export function ChatComposer({
   stoppable: boolean;
   model: string;
   modelOptions: string[];
+  modelOptionsLoading?: boolean;
+  onRefreshModelOptions?: () => void | Promise<unknown>;
   onModelChange: (model: string) => void;
   imageModel: string;
   imageModelOptions: ChatImageModelOption[];
@@ -67,7 +70,6 @@ export function ChatComposer({
   const [dragging, setDragging] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
-  const availableModels = useMemo(() => resolveAvailableChatModels(modelOptions), [modelOptions]);
   useEffect(() => {
     if (!modelOpen) return;
     const close = (event: PointerEvent) => {
@@ -179,7 +181,10 @@ export function ChatComposer({
               type="button"
               className="chat-model-trigger"
               disabled={busy}
-              onClick={() => setModelOpen(value => !value)}
+              onClick={() => {
+                if (!modelOpen) void onRefreshModelOptions?.();
+                setModelOpen(value => !value);
+              }}
               aria-haspopup="menu"
               aria-expanded={modelOpen}
               title={`模型：${model || '默认模型'}`}
@@ -189,7 +194,13 @@ export function ChatComposer({
             </button>
             {modelOpen && (
               <div className="chat-model-menu" role="menu" aria-label="选择模型">
-                {availableModels.map(option => (
+                {modelOptionsLoading && (
+                  <div className="chat-model-menu__status">
+                    <LoaderCircle size={11} className="chat-spin" />
+                    <span>正在刷新模型…</span>
+                  </div>
+                )}
+                {modelOptions.map(option => (
                   <button
                     type="button"
                     role="menuitemradio"

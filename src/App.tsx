@@ -29065,21 +29065,81 @@ useEffect(() => {
   const [agentCustomBaseUrl, setAgentCustomBaseUrl] = useState('https://api.openai.com/v1');
   const [agentCustomApiKey, setAgentCustomApiKey] = useState('');
   const [agentCustomSaving, setAgentCustomSaving] = useState(false);
-  const agentModelsRequestedRef = useRef(false);
+  const agentModelsRef = useRef<string[]>([]);
+  const agentModelsProfileKeyRef = useRef('');
+  const agentModelsFlightRef = useRef<{
+    profileKey: string;
+    promise: Promise<string[]>;
+  } | null>(null);
+  const agentModelsProfileKey = JSON.stringify([
+    canvasAgent.settings.provider,
+    canvasAgent.settings.apiGatewayKind,
+    canvasAgent.settings.apiProvider,
+    canvasAgent.settings.apiBaseUrl,
+    canvasAgent.settings.apiHeaders,
+    canvasAgent.settings.apiCredentialSource,
+    canvasAgent.settings.hasApiKey,
+    canvasAgent.settings.apiKeyLast4,
+    licenseStatus?.valid,
+    cloudAccount?.email,
+  ]);
+
+  const refreshAgentModels = useCallback((force = false): Promise<string[]> => {
+    if (canvasAgent.settingsLoading) return Promise.resolve(agentModelsRef.current);
+    const profileKey = agentModelsProfileKey;
+    const currentFlight = agentModelsFlightRef.current;
+    if (!force && currentFlight?.profileKey === profileKey) return currentFlight.promise;
+
+    setAgentModelsLoading(true);
+    const flight: { profileKey: string; promise: Promise<string[]> } = {
+      profileKey,
+      promise: Promise.resolve([]),
+    };
+    flight.promise = canvasAgent.listOpenAiModels()
+      .then(models => {
+        const seen = new Set<string>();
+        const available = (models || []).flatMap(model => {
+          const value = model.trim();
+          const key = value.toLowerCase();
+          if (!value || seen.has(key)) return [];
+          seen.add(key);
+          return [value];
+        });
+        if (
+          agentModelsFlightRef.current === flight
+          && agentModelsProfileKeyRef.current === profileKey
+          && available.length > 0
+        ) {
+          agentModelsRef.current = available;
+          setAgentModels(available);
+        }
+        return available;
+      })
+      .catch(error => {
+        console.warn('读取 Chat 模型列表失败:', error);
+        return agentModelsRef.current;
+      })
+      .finally(() => {
+        if (agentModelsFlightRef.current === flight) {
+          agentModelsFlightRef.current = null;
+          setAgentModelsLoading(false);
+        }
+      });
+    agentModelsFlightRef.current = flight;
+    return flight.promise;
+  }, [agentModelsProfileKey, canvasAgent.listOpenAiModels, canvasAgent.settingsLoading]);
 
   useEffect(() => {
-    const isChatVisible = isCanvasMode || isDrawerAgentOpen;
-    if (canvasAgent.settingsLoading || !isChatVisible || agentModelsRequestedRef.current) return;
-    agentModelsRequestedRef.current = true;
-    setAgentModelsLoading(true);
-    void canvasAgent.listOpenAiModels()
-      .then(models => setAgentModels(Array.from(new Set((models || []).map(model => model.trim()).filter(Boolean)))))
-      .catch(error => {
-        agentModelsRequestedRef.current = false;
-        console.warn('读取 Chat 模型列表失败:', error);
-      })
-      .finally(() => setAgentModelsLoading(false));
-  }, [canvasAgent.listOpenAiModels, canvasAgent.settingsLoading, isCanvasMode, isDrawerAgentOpen]);
+    agentModelsProfileKeyRef.current = agentModelsProfileKey;
+    agentModelsRef.current = [];
+    setAgentModels([]);
+    if (!canvasAgent.settingsLoading) void refreshAgentModels();
+  }, [agentModelsProfileKey, canvasAgent.settingsLoading, refreshAgentModels]);
+
+  useEffect(() => {
+    if (canvasAgent.settingsLoading || (!isCanvasMode && !isDrawerAgentOpen)) return;
+    void refreshAgentModels();
+  }, [canvasAgent.settingsLoading, isCanvasMode, isDrawerAgentOpen, refreshAgentModels]);
 
   useEffect(() => {
     if (!isByokUnlocked) return;
@@ -29137,7 +29197,7 @@ useEffect(() => {
         apiKey: agentCustomApiKey.trim() || undefined,
       });
       setAgentCustomApiKey('');
-      agentModelsRequestedRef.current = false;
+      void refreshAgentModels(true);
       showToast('Agent 自定义 API 已保存');
     } catch (error) {
       showToast(String(error));
@@ -38308,6 +38368,8 @@ useEffect(() => {
                     lastSelectedDrawerItemIdRef.current = null;
                   }}
                   modelOptions={agentModels}
+                  modelOptionsLoading={agentModelsLoading}
+                  onRefreshModelOptions={refreshAgentModels}
                   imageModel={activeChatImageModel}
                   imageModelOptions={chatImageModelOptions}
                   onImageModelChange={setChatImageModel}

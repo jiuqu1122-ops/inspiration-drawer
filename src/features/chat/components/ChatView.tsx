@@ -21,6 +21,8 @@ export type ChatViewProps = {
   onClose: () => void;
   selectedItems: AgentCanvasSelectionItem[];
   modelOptions?: string[];
+  modelOptionsLoading?: boolean;
+  onRefreshModelOptions?: () => void | Promise<unknown>;
   imageModel: string;
   imageModelOptions?: ChatImageModelOption[];
   onImageModelChange: (model: string) => void;
@@ -61,6 +63,8 @@ export const ChatView = memo(function ChatView({
   onClose,
   selectedItems,
   modelOptions = [],
+  modelOptionsLoading = false,
+  onRefreshModelOptions,
   imageModel,
   imageModelOptions = [],
   onImageModelChange,
@@ -82,8 +86,11 @@ export const ChatView = memo(function ChatView({
   const activeConversationIdRef = useRef(runtime.activeConversationId);
   activeConversationIdRef.current = runtime.activeConversationId;
   const model = runtime.activeConversation?.model || '';
-  const chatModelOptions = useMemo(() => resolveAvailableChatModels(modelOptions), [modelOptions]);
-  const effectiveModel = normalizeSupportedChatModel(model) || chatModelOptions[0];
+  const chatModelOptions = useMemo(
+    () => resolveAvailableChatModels(modelOptions, model),
+    [model, modelOptions],
+  );
+  const effectiveModel = normalizeSupportedChatModel(model) || chatModelOptions[0] || 'default';
   const selectionAttachments = useMemo(() => selectionToAttachments(selectedItems), [selectedItems]);
   const selectionAttachmentIds = useMemo(
     () => new Set(selectionAttachments.map(item => item.id)),
@@ -252,6 +259,8 @@ export const ChatView = memo(function ChatView({
             stoppable={runtime.stoppable}
             model={effectiveModel}
             modelOptions={chatModelOptions}
+            modelOptionsLoading={modelOptionsLoading}
+            onRefreshModelOptions={onRefreshModelOptions}
             onModelChange={value => void runtime.setConversationModel(value)}
             imageModel={imageModel}
             imageModelOptions={imageModelOptions}
