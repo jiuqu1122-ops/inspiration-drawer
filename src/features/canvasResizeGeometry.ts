@@ -55,3 +55,16 @@ export const getCanvasBoxesBounds = (
     height: bottom - top,
   };
 };
+
+export const rotateCanvasBoxQuarterTurn = (
+  box: CanvasItemBox,
+): CanvasItemBox => {
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  return {
+    x: centerX - box.height / 2,
+    y: centerY - box.width / 2,
+    width: box.height,
+    height: box.width,
+  };
+};

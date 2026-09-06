@@ -48,6 +48,8 @@ export type CanvasImageItem = {
   y: number;
   width: number;
   height: number;
+  /** Clockwise visual rotation for ordinary image nodes. */
+  rotation?: 0 | 90 | 180 | 270;
   inputs?: string[];
   textMode?: 'agent' | 'plain';
   /** Opt-in structured context fan-out for text Agent nodes. */

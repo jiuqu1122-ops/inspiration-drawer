@@ -43,6 +43,8 @@ export type BufferItem = {
   imageAlt?: string;
   originalWidth?: number;
   originalHeight?: number;
+  /** Runtime-only quarter-turn applied when this canvas image is used as an AI reference. */
+  canvasRotation?: 0 | 90 | 180 | 270;
   captureSource?: 'browser-extension' | string;
   captureSourceType?: 'img' | 'picture' | 'srcset' | 'background' | 'lazy' | 'blob' | 'data' | string;
   inspirationProfile?: InspirationProfile;

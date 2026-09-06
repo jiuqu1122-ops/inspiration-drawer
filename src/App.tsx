@@ -30,7 +30,7 @@ import {
 import type { CanvasActionMenuPlacement } from './components/CanvasListItems';
 import {
   File as FileIcon, X, Download, Check, Pin, FolderOpen, Lightbulb,
-  Sun, RotateCcw, Settings, Image as ImageIcon, Type, Film, LayoutGrid,
+  Sun, RotateCcw, RotateCw, Settings, Image as ImageIcon, Type, Film, LayoutGrid,
   Compass, HardDrive, Monitor, BookOpen, Sparkles, Play,
   CheckSquare, Trash2, Smartphone, Edit3, Send, Search, Power,
   ChevronDown, ChevronLeft, ChevronRight, Palette, Keyboard, Plus, FolderPlus, Move, Link,
@@ -150,12 +150,14 @@ import {
 import {
   blobToDataUrl,
   dataUrlToBlob,
+  getCanvasAiRemoteFallbackForRotation,
   imageDataUrlToJpegDataUrl,
   imageDataUrlToPngDataUrl,
   isLikelyJpegOrPngImageSource,
   isRemoteHttpImageSource,
   isXaisAttachmentImageRef,
   optimizeCanvasAiInputDataUrl,
+  rotateImageDataUrl,
 } from './utils/canvasImageData';
 import {
   getCanvasLocalPathsFromDataTransfer,
@@ -627,7 +629,9 @@ import {
   fitCanvasBoxToDesign,
   getCanvasBoxesBounds,
   getCanvasDesignScale,
+  rotateCanvasBoxQuarterTurn,
 } from './features/canvasResizeGeometry';
+import { reorderCanvasInputs, replaceCanvasInputAt } from './features/canvasReferenceInputs';
 import { findNearestCanvasItemIdForEmptyViewport } from './features/canvasViewportNavigation';
 import {
   getCanvasDrawerMediaPreviewSource,
@@ -1007,6 +1011,23 @@ type CanvasFolderMediaPagingState = {
   videoTotal: number;
 };
 
+type CanvasReferenceReplaceTarget = {
+  targetId: string;
+  inputId: string;
+  inputIndex: number;
+};
+
+type CanvasReferenceDragState = {
+  targetId: string;
+  inputId: string;
+  overInputId: string;
+  clientX: number;
+  clientY: number;
+  previewSource: string;
+  inputIndex: number;
+  rotation: 0 | 90 | 180 | 270;
+};
+
 const getCanvasAiErrorSummary = (error?: string | null) => {
   const message = String(error || '').replace(/\s+/g, ' ').trim();
   if (!message) return '生成失败，请重试';
@@ -1309,6 +1330,8 @@ function MainApp() {
   const [canvasInputActionDraft, setCanvasInputActionDraft] = useState<{ targetId: string; fromX: number; fromY: number; toX: number; toY: number } | null>(null);
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [canvasInputMenuForId, setCanvasInputMenuForId] = useState<string | null>(null);
+  const [canvasReferenceReplaceTarget, setCanvasReferenceReplaceTarget] = useState<CanvasReferenceReplaceTarget | null>(null);
+  const [canvasReferenceDragState, setCanvasReferenceDragState] = useState<CanvasReferenceDragState | null>(null);
   const [canvasAiPromptEditingId, setCanvasAiPromptEditingId] = useState<string | null>(null);
   const [canvasPromptOptimizingId, setCanvasPromptOptimizingId] = useState<string | null>(null);
   const [canvasAiExpandedOutputNodeIds, setCanvasAiExpandedOutputNodeIds] = useState<Set<string>>(() => new Set());
@@ -1591,6 +1614,26 @@ function MainApp() {
   } | null>(null);
   const canvasUploadInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCanvasUploadTargetIdRef = useRef<string | null>(null);
+  const canvasReferenceReplaceTargetRef = useRef<CanvasReferenceReplaceTarget | null>(null);
+  const pendingCanvasReferenceUploadReplaceRef = useRef<CanvasReferenceReplaceTarget | null>(null);
+  const canvasReferenceLongPressRef = useRef<{
+    targetId: string;
+    inputId: string;
+    overInputId: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    clientX: number;
+    clientY: number;
+    previewSource: string;
+    inputIndex: number;
+    rotation: 0 | 90 | 180 | 270;
+    activated: boolean;
+    timer: number | null;
+    previousBodyCursor: string;
+    cleanup: () => void;
+  } | null>(null);
+  const canvasReferenceSuppressClickRef = useRef<{ targetId: string } | null>(null);
   const pendingCanvasFusionRoleRef = useRef<{
     targetId: string;
     role: CanvasImageFusionRole;
@@ -1714,6 +1757,11 @@ function MainApp() {
       setCanvasActionMenuId(null);
       setCanvasInputMenuForId(null);
       setCanvasInputPickTargetId(null);
+      setCanvasReferenceReplaceTarget(null);
+      setCanvasReferenceDragState(null);
+      canvasReferenceReplaceTargetRef.current = null;
+      pendingCanvasReferenceUploadReplaceRef.current = null;
+      canvasReferenceLongPressRef.current?.cleanup();
       pendingCanvasFusionRoleRef.current = null;
       setIsCanvasAiPanelOpen(false);
       setIsCanvasChromeHidden(false);
@@ -1818,9 +1866,13 @@ function MainApp() {
   useEffect(() => { canvasContextMenuRef.current = canvasContextMenu; }, [canvasContextMenu]);
   useEffect(() => {
     if (!isCanvasMode) return;
-    const closeCanvasClickWindows = () => {
+    const closeCanvasClickWindows = (preserveReferenceReplacement = false) => {
       setCanvasContextMenu(null);
       setCanvasInputMenuForId(null);
+      if (!preserveReferenceReplacement) {
+        setCanvasReferenceReplaceTarget(null);
+        canvasReferenceReplaceTargetRef.current = null;
+      }
       pendingCanvasFusionRoleRef.current = null;
       setCanvasFolderImportPrompt(null);
       setIsCanvasAiPanelOpen(false);
@@ -1830,10 +1882,10 @@ function MainApp() {
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest('[data-canvas-floating-layer="true"]')) return;
-      closeCanvasClickWindows();
+      closeCanvasClickWindows(!!canvasInputPickTargetIdRef.current);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeCanvasClickWindows();
+      if (event.key === 'Escape') closeCanvasClickWindows(false);
     };
     document.addEventListener('pointerdown', handlePointerDown, true);
     document.addEventListener('keydown', handleKeyDown, true);
@@ -1926,6 +1978,7 @@ function MainApp() {
     };
   }, [isCanvasMode]);
   useEffect(() => () => {
+    canvasReferenceLongPressRef.current?.cleanup();
     if (canvasChatViewportTimerRef.current !== null) {
       window.clearTimeout(canvasChatViewportTimerRef.current);
       canvasChatViewportTimerRef.current = null;
@@ -9474,6 +9527,18 @@ function MainApp() {
     }
   };
 
+  const settleCanvasZoomBeforePointerInteraction = () => {
+    if (canvasScaleCommitTimerRef.current !== null) {
+      window.clearTimeout(canvasScaleCommitTimerRef.current);
+      canvasScaleCommitTimerRef.current = null;
+    }
+    if (canvasZoomSettleTimerRef.current !== null) {
+      window.clearTimeout(canvasZoomSettleTimerRef.current);
+      canvasZoomSettleTimerRef.current = null;
+    }
+    if (isCanvasZoomingRef.current) finishCanvasZoomInteraction();
+  };
+
   const commitCanvasScaleSoon = () => {
     beginCanvasZoomInteraction();
     if (canvasScaleCommitTimerRef.current !== null) {
@@ -11942,7 +12007,12 @@ function MainApp() {
     const candidates = getCanvasAiInputSourceCandidates(item);
     const remoteFallback = candidates.find(source => isRemoteHttpImageSource(source));
     const forceJpegReference = referenceFormat === 'jpeg' && item.type === 'image';
-    if (mode === 'remote-first' && remoteFallback && !forceJpegReference) {
+    const canvasRotation = item.type === 'image' && (
+      item.canvasRotation === 90 || item.canvasRotation === 180 || item.canvasRotation === 270
+    ) ? item.canvasRotation : 0;
+    const hasCanvasRotation = canvasRotation !== 0;
+    const rotationSafeRemoteFallback = getCanvasAiRemoteFallbackForRotation(remoteFallback, canvasRotation);
+    if (mode === 'remote-first' && remoteFallback && !forceJpegReference && !hasCanvasRotation) {
       return { source: remoteFallback, remoteFallback, usedRemoteFirst: true };
     }
     const localCandidates = candidates.filter(source => !isRemoteHttpImageSource(source));
@@ -11956,12 +12026,12 @@ function MainApp() {
       throw new Error(item.type === 'video' ? '参考视频没有可用视频源' : '参考音频没有可用音频源');
     }
 
-    if (delivery === 'remote-only' && publishableDirectSource && !forceJpegReference) {
+    if (delivery === 'remote-only' && publishableDirectSource && !forceJpegReference && !hasCanvasRotation) {
       return { source: publishableDirectSource, remoteFallback, usedRemoteFirst: false };
     }
 
     let lastError: unknown = null;
-    if (forceJpegReference) {
+    if (forceJpegReference && !hasCanvasRotation) {
       const compatibleRemoteSource = remoteFallback && isLikelyJpegOrPngImageSource(remoteFallback)
         ? remoteFallback
         : '';
@@ -11985,19 +12055,37 @@ function MainApp() {
         };
       }
     }
-    const readableCandidates = forceJpegReference
+    const readableCandidates = forceJpegReference || hasCanvasRotation
       ? Array.from(new Set([...localCandidates, remoteFallback].filter((source): source is string => !!source)))
       : localCandidates;
 
     for (const source of readableCandidates) {
       try {
+        const sourceDataUrl = hasCanvasRotation
+          ? await imageSourceToDataUrl(source, false)
+          : '';
+        const rotatedDataUrl = hasCanvasRotation
+          ? await rotateImageDataUrl(sourceDataUrl, canvasRotation)
+          : '';
         const dataUrl = forceJpegReference
-          ? await imageSourceToJpegDataUrl(source)
-          : await imageSourceToDataUrl(source, true);
-        if (dataUrl) return { source: dataUrl, remoteFallback, usedRemoteFirst: false };
+          ? hasCanvasRotation
+            ? await imageDataUrlToJpegDataUrl(rotatedDataUrl)
+            : await imageSourceToJpegDataUrl(source)
+          : hasCanvasRotation
+            ? await optimizeCanvasAiInputDataUrl(rotatedDataUrl)
+            : await imageSourceToDataUrl(source, true);
+        if (dataUrl) return {
+          source: dataUrl,
+          remoteFallback: rotationSafeRemoteFallback,
+          usedRemoteFirst: false,
+        };
       } catch (err) {
         lastError = err;
       }
+    }
+
+    if (hasCanvasRotation) {
+      throw lastError || new Error('旋转后的参考图读取失败');
     }
 
     if (forceJpegReference) {
@@ -12319,9 +12407,12 @@ function MainApp() {
         || inputItem.item.type === 'video'
         || (inputItem.item.type === 'file' && isCanvasAudioFileName(inputItem.item.name || inputItem.item.path))
       ) {
+        const applyInputRotation = (item: BufferItem): BufferItem => inputItem.rotation
+          ? { ...item, canvasRotation: inputItem.rotation }
+          : item;
         if (inputItem.item.type === 'image' && (inputItem.workflowSlotAssets || []).length > 0) {
           inputItem.workflowSlotAssets?.forEach((asset, assetIndex) => {
-            pushInput({
+            pushInput(applyInputRotation({
               ...inputItem.item,
               id: asset.sourceItemId || `${inputItem.item.id}:slot:${assetIndex}`,
               type: 'image',
@@ -12332,10 +12423,10 @@ function MainApp() {
               sourceUrl: asset.originalUrl,
               originalUrl: asset.originalUrl,
               sourceItemId: asset.sourceItemId,
-            });
+            }));
           });
         } else {
-          pushInput(inputItem.item);
+          pushInput(applyInputRotation(inputItem.item));
         }
       } else if (inputItem.ai?.type === 'image-generator' || inputItem.ai?.type === 'workflow') {
         getCanvasAiSuccessfulOutputs(inputItem).slice(0, isImageFusion ? 1 : undefined).forEach((output, index) => {
@@ -15006,6 +15097,89 @@ function MainApp() {
     };
   };
 
+  const setCanvasReferenceReplacement = (next: CanvasReferenceReplaceTarget | null) => {
+    canvasReferenceReplaceTargetRef.current = next;
+    setCanvasReferenceReplaceTarget(next);
+  };
+
+  const openCanvasReferenceAddMenu = (targetId: string) => {
+    setCanvasReferenceReplacement(null);
+    setCanvasInputMenuForId(targetId);
+  };
+
+  const openCanvasReferenceReplaceMenu = (
+    targetId: string,
+    inputId: string,
+    inputIndex: number,
+  ) => {
+    setCanvasReferenceReplacement({ targetId, inputId, inputIndex });
+    setCanvasInputMenuForId(targetId);
+  };
+
+  const canReplaceCanvasImageReferenceForTarget = (target?: CanvasImageItem) => (
+    target?.ai?.type === 'image-generator'
+    || (
+      target?.ai?.type === 'workflow'
+      && normalizeCanvasWorkflowUserInput(getCanvasWorkflowTemplateFromNode(target)?.userInput).acceptImages !== false
+    )
+  );
+
+  const replaceCanvasGeneratorReference = (
+    replacement: CanvasReferenceReplaceTarget,
+    nextInputId: string,
+    options: { pushUndo?: boolean } = {},
+  ) => {
+    const target = canvasItemsRef.current.find(item => item.id === replacement.targetId);
+    const source = canvasItemsRef.current.find(item => item.id === nextInputId);
+    if (
+      !target
+      || !canReplaceCanvasImageReferenceForTarget(target)
+      || !source
+      || source.id === target.id
+      || !canUseCanvasItemAsImageEnhancementInput(source)
+    ) {
+      showToast('请选择可用的图片素材或图片生成结果');
+      return false;
+    }
+    const previousInputs = target.inputs || [];
+    const nextInputs = replaceCanvasInputAt(previousInputs, replacement.inputId, nextInputId);
+    if (nextInputs === previousInputs) {
+      setCanvasReferenceReplacement(null);
+      setCanvasInputMenuForId(null);
+      updateCanvasSelection([target.id]);
+      return true;
+    }
+    if (options.pushUndo !== false) pushCanvasUndoSnapshot('替换参考图');
+    updateCanvasItemsImmediate(previous => previous.map(item => (
+      item.id === target.id ? { ...item, inputs: nextInputs } : item
+    )));
+    setCanvasReferenceReplacement(null);
+    setCanvasInputMenuForId(null);
+    updateCanvasSelection([target.id]);
+    showToast(`已替换参考图 ${replacement.inputIndex + 1}`);
+    return true;
+  };
+
+  const rotateCanvasImageClockwise = (id: string) => {
+    const current = canvasItemsRef.current.find(item => item.id === id);
+    if (!current || current.item.type !== 'image') return;
+    const rotated = rotateCanvasBoxQuarterTurn(current);
+    const nextRotation = (((current.rotation || 0) + 90) % 360) as 0 | 90 | 180 | 270;
+    const nextBox = {
+      ...rotated,
+      x: Math.max(0, rotated.x),
+      y: Math.max(0, rotated.y),
+    };
+    pushCanvasUndoSnapshot('旋转图片');
+    updateCanvasItemsImmediate(previous => previous.map(item => item.id === id ? {
+      ...item,
+      ...nextBox,
+      rotation: nextRotation,
+    } : item));
+    growCanvasToFit(nextBox.x + nextBox.width, nextBox.y + nextBox.height);
+    updateCanvasSelection([id]);
+  };
+
   const connectSelectedCanvasItemsToGenerator = (targetId: string) => {
     const target = canvasItemsRef.current.find(item => item.id === targetId);
     if (!target || !canUseCanvasItemAsAiTarget(target)) {
@@ -15022,6 +15196,18 @@ function MainApp() {
       });
     if (sourceIds.length === 0) {
       showToast('先多选要接入的图片或文字节点');
+      return;
+    }
+    const referenceReplacement = canvasReferenceReplaceTargetRef.current;
+    if (referenceReplacement?.targetId === targetId && canReplaceCanvasImageReferenceForTarget(target)) {
+      const replacementSourceId = sourceIds.find(sourceId => (
+        canUseCanvasItemAsImageEnhancementInput(canvasItemsRef.current.find(item => item.id === sourceId))
+      ));
+      if (!replacementSourceId) {
+        showToast('已选节点中没有可用图片');
+        return;
+      }
+      replaceCanvasGeneratorReference(referenceReplacement, replacementSourceId);
       return;
     }
     pushCanvasUndoSnapshot('连接 AI 输入');
@@ -15486,6 +15672,11 @@ function MainApp() {
     pendingCanvasFusionUploadRoleRef.current = pendingFusionRole?.targetId === targetId
       ? pendingFusionRole
       : null;
+    const referenceReplacement = canvasReferenceReplaceTargetRef.current;
+    pendingCanvasReferenceUploadReplaceRef.current = referenceReplacement?.targetId === targetId
+      && canReplaceCanvasImageReferenceForTarget(target)
+      ? referenceReplacement
+      : null;
     pendingCanvasFusionRoleRef.current = null;
     pendingCanvasUploadTargetIdRef.current = targetId;
     setCanvasInputMenuForId(null);
@@ -15499,6 +15690,8 @@ function MainApp() {
     pendingCanvasUploadTargetIdRef.current = null;
     const fusionUploadRole = pendingCanvasFusionUploadRoleRef.current;
     pendingCanvasFusionUploadRoleRef.current = null;
+    const referenceUploadReplacement = pendingCanvasReferenceUploadReplaceRef.current;
+    pendingCanvasReferenceUploadReplaceRef.current = null;
     const files = Array.from(event.target.files || []);
     event.target.value = '';
     if (slotTarget) {
@@ -15544,7 +15737,9 @@ function MainApp() {
       return;
     }
 
-    const selectedImageFiles = isCanvasImageFusionAi(target.ai)
+    const selectedImageFiles = referenceUploadReplacement?.targetId === targetId
+      ? imageFiles.slice(0, 1)
+      : isCanvasImageFusionAi(target.ai)
       ? imageFiles.slice(0, fusionUploadRole?.targetId === targetId ? 1 : 2)
       : target.item.type === 'three-scene'
         ? imageFiles.slice(0, Math.max(0, 8 - (target.inputs || []).length))
@@ -15568,6 +15763,10 @@ function MainApp() {
     if (addedCount <= 0) return;
     if (fusionUploadRole?.targetId === targetId) {
       pendingCanvasFusionRoleRef.current = fusionUploadRole;
+    }
+    if (referenceUploadReplacement?.targetId === targetId) {
+      replaceCanvasGeneratorReference(referenceUploadReplacement, images[0].id, { pushUndo: false });
+      return;
     }
     connectCanvasItemsToGenerator(images.map(item => item.id), targetId);
   };
@@ -15774,7 +15973,10 @@ function MainApp() {
       );
       return false;
     }
-    const connected = connectCanvasItems(sourceId, targetId);
+    const referenceReplacement = canvasReferenceReplaceTargetRef.current;
+    const connected = referenceReplacement?.targetId === targetId && canReplaceCanvasImageReferenceForTarget(target)
+      ? replaceCanvasGeneratorReference(referenceReplacement, sourceId)
+      : connectCanvasItems(sourceId, targetId);
     if (connected) setCanvasInputPickTargetId(null);
     return connected;
   };
@@ -15936,6 +16138,143 @@ function MainApp() {
         } : item.ai,
       };
     }));
+  };
+
+  const startCanvasReferenceLongPress = (
+    event: React.PointerEvent<HTMLElement>,
+    targetId: string,
+    inputId: string,
+    previewSource: string,
+    inputIndex: number,
+    rotation: 0 | 90 | 180 | 270,
+  ) => {
+    if (event.button !== 0) return;
+    const target = canvasItemsRef.current.find(item => item.id === targetId);
+    if (!canReplaceCanvasImageReferenceForTarget(target) || !(target?.inputs || []).includes(inputId)) return;
+    event.stopPropagation();
+    canvasReferenceLongPressRef.current?.cleanup();
+    setCanvasReferenceDragState(null);
+
+    const session = {
+      targetId,
+      inputId,
+      overInputId: inputId,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      previewSource,
+      inputIndex,
+      rotation,
+      activated: false,
+      timer: null as number | null,
+      previousBodyCursor: '',
+      cleanup: () => {},
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (canvasReferenceLongPressRef.current !== session || moveEvent.pointerId !== session.pointerId) return;
+      const distance = Math.hypot(
+        moveEvent.clientX - session.startClientX,
+        moveEvent.clientY - session.startClientY,
+      );
+      if (!session.activated) {
+        if (distance > 7 && session.timer !== null) {
+          window.clearTimeout(session.timer);
+          session.timer = null;
+        }
+        return;
+      }
+      moveEvent.preventDefault();
+      moveEvent.stopPropagation();
+      session.clientX = moveEvent.clientX;
+      session.clientY = moveEvent.clientY;
+      const element = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
+      const referenceElement = element?.closest<HTMLElement>('[data-canvas-reference-input-id]');
+      if (
+        referenceElement?.dataset.canvasReferenceTargetId === targetId
+        && referenceElement.dataset.canvasReferenceInputId
+      ) {
+        session.overInputId = referenceElement.dataset.canvasReferenceInputId;
+      }
+      setCanvasReferenceDragState({
+        targetId,
+        inputId,
+        overInputId: session.overInputId,
+        clientX: session.clientX,
+        clientY: session.clientY,
+        previewSource: session.previewSource,
+        inputIndex: session.inputIndex,
+        rotation: session.rotation,
+      });
+    };
+
+    const finish = (upEvent: PointerEvent) => {
+      if (canvasReferenceLongPressRef.current !== session || upEvent.pointerId !== session.pointerId) return;
+      if (session.activated) {
+        upEvent.preventDefault();
+        upEvent.stopPropagation();
+        const latestTarget = canvasItemsRef.current.find(item => item.id === targetId);
+        const inputs = latestTarget?.inputs || [];
+        const fromIndex = inputs.indexOf(inputId);
+        const toIndex = inputs.indexOf(session.overInputId);
+        const nextInputs = reorderCanvasInputs(inputs, fromIndex, toIndex);
+        if (upEvent.type !== 'pointercancel' && canReplaceCanvasImageReferenceForTarget(latestTarget) && nextInputs !== inputs) {
+          pushCanvasUndoSnapshot('调整参考图顺序');
+          updateCanvasItemsImmediate(previous => previous.map(item => (
+            item.id === targetId ? { ...item, inputs: nextInputs } : item
+          )));
+          showToast('参考图顺序已更新');
+        }
+        const clickSuppression = { targetId };
+        canvasReferenceSuppressClickRef.current = clickSuppression;
+        window.setTimeout(() => {
+          if (canvasReferenceSuppressClickRef.current === clickSuppression) {
+            canvasReferenceSuppressClickRef.current = null;
+          }
+        }, 500);
+      }
+      session.cleanup();
+      setCanvasReferenceDragState(null);
+    };
+
+    session.cleanup = () => {
+      if (session.timer !== null) {
+        window.clearTimeout(session.timer);
+        session.timer = null;
+      }
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointerup', finish, true);
+      document.removeEventListener('pointercancel', finish, true);
+      if (canvasReferenceLongPressRef.current === session) {
+        canvasReferenceLongPressRef.current = null;
+      }
+      if (session.activated) document.body.style.cursor = session.previousBodyCursor;
+    };
+    canvasReferenceLongPressRef.current = session;
+    session.timer = window.setTimeout(() => {
+      if (canvasReferenceLongPressRef.current !== session) return;
+      session.timer = null;
+      session.activated = true;
+      session.previousBodyCursor = document.body.style.cursor;
+      document.body.style.cursor = 'grabbing';
+      setCanvasInputMenuForId(null);
+      setCanvasReferenceReplacement(null);
+      setCanvasReferenceDragState({
+        targetId,
+        inputId,
+        overInputId: inputId,
+        clientX: session.clientX,
+        clientY: session.clientY,
+        previewSource: session.previewSource,
+        inputIndex: session.inputIndex,
+        rotation: session.rotation,
+      });
+    }, 300);
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', finish, true);
+    document.addEventListener('pointercancel', finish, true);
   };
 
   const getCanvasAiRerunNodePosition = (source: CanvasImageItem) => {
@@ -19743,6 +20082,7 @@ function MainApp() {
       pickCanvasImageForGenerator(id, inputPickTargetId);
       return;
     }
+    settleCanvasZoomBeforePointerInteraction();
     e.preventDefault();
     e.stopPropagation();
     cancelCanvasImageSourceUpgradeQueue();
@@ -19923,6 +20263,7 @@ function MainApp() {
     if (e.button !== 0) return;
     const current = canvasItemsRef.current.find(item => item.id === id);
     if (!current) return;
+    settleCanvasZoomBeforePointerInteraction();
     const currentBox = getCanvasItemRenderedBox(current);
     e.preventDefault();
     e.stopPropagation();
@@ -20021,6 +20362,7 @@ function MainApp() {
     if (e.button !== 0) return;
     const selectedIds = canvasSelectedIdsRef.current;
     if (selectedIds.length < 2) return;
+    settleCanvasZoomBeforePointerInteraction();
     const selectedIdSet = new Set(selectedIds);
     const startItems = canvasItemsRef.current
       .filter(item => selectedIdSet.has(item.id))
@@ -34216,6 +34558,7 @@ useEffect(() => {
                                             styleWeight={canvasImageFusionConfig.styleWeight || 0}
                                             disabled={canvasItem.ai?.status === 'working'}
                                             onOpenSlot={(role) => {
+                                              setCanvasReferenceReplacement(null);
                                               pendingCanvasFusionRoleRef.current = { targetId: canvasItem.id, role };
                                               setCanvasInputMenuForId(canvasItem.id);
                                             }}
@@ -34237,13 +34580,20 @@ useEffect(() => {
                                             })}
                                           />
                                         ) : (
-                                        <button
+                                        <div
                                           data-no-drag="true"
-                                          type="button"
                                           onPointerDown={(event) => event.stopPropagation()}
                                           onClick={(event) => {
+                                            if (canvasReferenceSuppressClickRef.current?.targetId === canvasItem.id) {
+                                              canvasReferenceSuppressClickRef.current = null;
+                                              event.preventDefault();
+                                              event.stopPropagation();
+                                              return;
+                                            }
+                                            if (canvasItem.ai?.type === 'image-generator') return;
                                             event.preventDefault();
                                             event.stopPropagation();
+                                            setCanvasReferenceReplacement(null);
                                             setCanvasInputMenuForId(prev => prev === canvasItem.id ? null : canvasItem.id);
                                           }}
                                           className={`group/reference relative flex h-[58px] min-w-0 ${canvasAiMediaType === 'video' ? 'w-0 flex-1 overflow-hidden' : 'max-w-[330px] shrink-0 overflow-visible'} items-center justify-start rounded-[12px] text-stone-400 transition-colors hover:text-stone-600 dark:text-white/38 dark:hover:text-white/64`}
@@ -34367,6 +34717,137 @@ useEffect(() => {
                                                 </span>
                                               )}
                                             </CanvasHorizontalRail>
+                                          ) : canvasItem.ai?.type === 'image-generator' || (isCanvasWorkflowItem && canvasWorkflowAllowsImages) ? (
+                                            <CanvasHorizontalRail className="max-w-full">
+                                              {canvasInputPreviewItems.map((inputItem, inputIndex) => {
+                                                const inputPreviewSource = getCanvasReferencePreviewSource(inputItem);
+                                                const inputSourceNode = inputItem.node;
+                                                const actualInputIndex = Math.max(0, (canvasItem.inputs || []).indexOf(inputItem.disconnectId));
+                                                const isImageReference = isCanvasImageReferencePreviewItem(inputItem);
+                                                const canSortReference = isImageReference && !inputItem.bufferItem;
+                                                const isDraggingReference = canvasReferenceDragState?.targetId === canvasItem.id
+                                                  && canvasReferenceDragState.inputId === inputItem.disconnectId;
+                                                const isReferenceDropTarget = canvasReferenceDragState?.targetId === canvasItem.id
+                                                  && canvasReferenceDragState.overInputId === inputItem.disconnectId;
+                                                return (
+                                                  <span
+                                                    key={inputItem.id}
+                                                    data-canvas-reference-target-id={canvasItem.id}
+                                                    data-canvas-reference-input-id={inputItem.disconnectId}
+                                                    className={`group/reference-thumbnail relative flex h-[49px] w-[49px] shrink-0 items-center justify-center rounded-[14px] text-stone-400 transition-[transform,opacity,box-shadow] dark:text-white/60 ${
+                                                      isDraggingReference ? 'z-20 scale-[0.94] opacity-25' : 'hover:z-10 hover:scale-[1.03]'
+                                                    } ${isReferenceDropTarget && !isDraggingReference ? 'ring-2 ring-blue-500/75 ring-offset-1 ring-offset-white dark:ring-blue-300/75 dark:ring-offset-stone-900' : ''}`}
+                                                  >
+                                                    <button
+                                                      data-no-drag="true"
+                                                      type="button"
+                                                      className={`relative isolate flex h-full w-full touch-none items-center justify-center overflow-hidden rounded-[14px] bg-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/80 dark:bg-stone-900 ${
+                                                        canSortReference ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+                                                      }`}
+                                                      aria-label={isImageReference ? `替换参考图 ${inputIndex + 1}` : `管理输入 ${inputIndex + 1}`}
+                                                      title={canSortReference ? '点击替换图片；长按后拖动调整顺序' : isImageReference ? '点击替换图片' : '点击管理输入'}
+                                                      onPointerDown={(event) => {
+                                                        if (!canSortReference) {
+                                                          event.stopPropagation();
+                                                          return;
+                                                        }
+                                                        startCanvasReferenceLongPress(
+                                                          event,
+                                                          canvasItem.id,
+                                                          inputItem.disconnectId,
+                                                          inputPreviewSource,
+                                                          inputIndex,
+                                                          inputSourceNode.rotation || 0,
+                                                        );
+                                                      }}
+                                                      onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        const suppressed = canvasReferenceSuppressClickRef.current;
+                                                        if (suppressed?.targetId === canvasItem.id) {
+                                                          canvasReferenceSuppressClickRef.current = null;
+                                                          return;
+                                                        }
+                                                        if (isImageReference) {
+                                                          openCanvasReferenceReplaceMenu(
+                                                            canvasItem.id,
+                                                            inputItem.disconnectId,
+                                                            actualInputIndex,
+                                                          );
+                                                        } else {
+                                                          openCanvasReferenceAddMenu(canvasItem.id);
+                                                        }
+                                                      }}
+                                                    >
+                                                      {inputPreviewSource ? (
+                                                        <img
+                                                          src={inputPreviewSource}
+                                                          alt=""
+                                                          loading="lazy"
+                                                          decoding="async"
+                                                          className="block h-full w-full rounded-[14px] object-cover shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]"
+                                                          style={inputSourceNode.rotation ? {
+                                                            transform: `rotate(${inputSourceNode.rotation}deg)`,
+                                                          } : undefined}
+                                                          draggable={false}
+                                                          onDragStart={preventCanvasNativeDrag}
+                                                        />
+                                                      ) : isCanvasAiGeneratorType(inputSourceNode.ai?.type) || inputSourceNode.ai?.type === 'workflow' ? (
+                                                        <span className="flex h-full w-full items-center justify-center border border-stone-200/32 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                          <Sparkles className="h-4 w-4" />
+                                                        </span>
+                                                      ) : inputSourceNode.item.type === 'file' ? (
+                                                        <span className="flex h-full w-full items-center justify-center border border-stone-200/32 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                          <FileIcon className="h-4 w-4" />
+                                                        </span>
+                                                      ) : (
+                                                        <span className="flex h-full w-full items-center justify-center border border-stone-200/32 shadow-[0_2px_5px_rgba(15,23,42,0.07)] dark:border-white/[0.07] dark:shadow-[0_3px_7px_rgba(0,0,0,0.18)]">
+                                                          <Type className="h-4 w-4" />
+                                                        </span>
+                                                      )}
+                                                      <span className="pointer-events-none absolute left-1 top-1 z-10 flex h-4 min-w-4 items-center justify-center rounded bg-black/68 px-1 text-[9px] font-black leading-none text-white shadow-sm">
+                                                        {inputIndex + 1}
+                                                      </span>
+                                                      <span className="pointer-events-none absolute inset-0 rounded-[14px] ring-1 ring-inset ring-stone-950/10 dark:ring-white/10" />
+                                                    </button>
+                                                    <button
+                                                      data-no-drag="true"
+                                                      type="button"
+                                                      aria-label={`移除参考图 ${inputIndex + 1}`}
+                                                      title={`移除参考图 ${inputIndex + 1}`}
+                                                      className="absolute right-0.5 top-0.5 z-30 flex h-5 w-5 items-center justify-center rounded-full border border-white/30 bg-stone-950/82 text-white opacity-0 shadow-sm backdrop-blur transition-[opacity,background-color,transform] hover:scale-105 hover:bg-red-500 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover/reference-thumbnail:opacity-100"
+                                                      onPointerDown={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                      }}
+                                                      onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        disconnectCanvasInput(canvasItem.id, inputItem.disconnectId);
+                                                      }}
+                                                    >
+                                                      <X className="h-3 w-3" strokeWidth={2.5} />
+                                                    </button>
+                                                  </span>
+                                                );
+                                              })}
+                                              <button
+                                                data-no-drag="true"
+                                                type="button"
+                                                className="group/add-reference flex h-[49px] w-[49px] shrink-0 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-[14px] border border-dashed border-stone-300/65 bg-white/42 text-[8px] font-black text-stone-400 transition-[border-color,color,background-color,transform] hover:scale-[1.03] hover:border-blue-400/75 hover:bg-blue-50/70 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70 dark:border-white/[0.16] dark:bg-white/[0.025] dark:text-white/42 dark:hover:border-blue-300/60 dark:hover:bg-blue-400/10 dark:hover:text-blue-200"
+                                                aria-label="添加参考图"
+                                                title="添加参考图"
+                                                onPointerDown={(event) => event.stopPropagation()}
+                                                onClick={(event) => {
+                                                  event.preventDefault();
+                                                  event.stopPropagation();
+                                                  openCanvasReferenceAddMenu(canvasItem.id);
+                                                }}
+                                              >
+                                                <Plus className="h-3.5 w-3.5" strokeWidth={2.25} />
+                                                <span>参考图</span>
+                                              </button>
+                                            </CanvasHorizontalRail>
                                           ) : canvasInputPreviewItems.length > 0 ? (
                                             <span className="flex h-[58px] max-w-full items-center gap-1.5 overflow-hidden">
                                               {canvasInputPreviewItems.slice(0, 6).map((inputItem, inputIndex) => {
@@ -34457,7 +34938,7 @@ useEffect(() => {
                                               <span>{isCanvasWorkflowItem ? '输入素材' : '参考图'}</span>
                                             </span>
                                           )}
-                                        </button>
+                                        </div>
                                         )
                                         )}
                                         <div className="ml-auto flex min-w-[132px] flex-col items-end gap-1.5 pt-0.5">
@@ -35878,7 +36359,18 @@ useEffect(() => {
                                       loading="lazy"
                                       decoding="async"
                                       className="h-full w-full select-none object-contain"
-                                      style={{ imageRendering: 'auto' }}
+                                      style={canvasItem.rotation ? {
+                                        imageRendering: 'auto',
+                                        position: 'absolute',
+                                        left: '50%',
+                                        top: '50%',
+                                        width: canvasItem.rotation % 180 === 0 ? canvasItem.width : canvasItem.height,
+                                        height: canvasItem.rotation % 180 === 0 ? canvasItem.height : canvasItem.width,
+                                        maxWidth: 'none',
+                                        maxHeight: 'none',
+                                        transform: `translate(-50%, -50%) rotate(${canvasItem.rotation}deg)`,
+                                        transformOrigin: 'center',
+                                      } : { imageRendering: 'auto' }}
                                       draggable={false}
                                       onDragStart={preventCanvasNativeDrag}
                                     />
@@ -35902,50 +36394,52 @@ useEffect(() => {
                                 </div>
                               )}
                             {canvasItem.item.type === 'image' && canvasImageSource && !isGeneratedMediaPending && !isGeneratedMediaError && (
-                              <button
+                              <div
                                 data-no-drag="true"
-                                type="button"
-                                className="absolute left-1.5 top-1.5 z-50 rounded-full bg-white/86 p-1.5 text-blue-500 opacity-0 shadow-sm transition-all hover:bg-blue-50 hover:text-blue-600 group-hover/canvas-item:opacity-100 dark:bg-stone-900/86 dark:text-blue-300 dark:hover:bg-blue-950/36 dark:hover:text-blue-200"
-                                style={isCanvasAiNodeItem ? {
-                                  left: 6,
-                                  top: 6,
-                                } : undefined}
-                                onPointerDown={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  void openCanvasBrushEditor(canvasItem.id);
-                                }}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }}
-                                title="画笔标记"
+                                className="absolute left-1.5 top-1.5 z-50 flex items-center gap-0.5 rounded-[10px] border border-white/72 bg-white/88 p-0.5 text-stone-500 opacity-0 shadow-[0_5px_16px_rgba(15,23,42,0.14)] backdrop-blur-xl transition-[opacity,transform] focus-within:opacity-100 group-hover/canvas-item:opacity-100 dark:border-white/10 dark:bg-stone-950/82 dark:text-white/68 dark:shadow-[0_7px_20px_rgba(0,0,0,0.30)]"
+                                style={isCanvasAiNodeItem ? { left: 6, top: 6 } : undefined}
+                                onPointerDown={(event) => event.stopPropagation()}
                               >
-                                <Brush className="h-3.5 w-3.5" />
-                              </button>
-                            )}
-                            {canvasItem.item.type === 'image' && canvasImageSource && !isGeneratedMediaPending && !isGeneratedMediaError && (
-                              <button
-                                data-no-drag="true"
-                                type="button"
-                                className="absolute left-10 top-1.5 z-50 rounded-full bg-white/86 p-1.5 text-emerald-500 opacity-0 shadow-sm transition-all hover:bg-emerald-50 hover:text-emerald-600 group-hover/canvas-item:opacity-100 dark:bg-stone-900/86 dark:text-emerald-300 dark:hover:bg-emerald-950/36 dark:hover:text-emerald-200"
-                                style={isCanvasAiNodeItem ? {
-                                  left: 38,
-                                  top: 6,
-                                } : undefined}
-                                onPointerDown={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  void copyCanvasImageToSystemClipboard(canvasItem);
-                                }}
-                                title="复制图片"
-                              >
-                                <Copy className="h-3.5 w-3.5" />
-                              </button>
+                                <button
+                                  type="button"
+                                  className="flex h-7 w-7 items-center justify-center rounded-[8px] transition-[color,background-color,transform] hover:bg-blue-500/10 hover:text-blue-600 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/65 dark:hover:bg-blue-400/12 dark:hover:text-blue-200"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    void openCanvasBrushEditor(canvasItem.id);
+                                  }}
+                                  title="画笔标记"
+                                  aria-label="画笔标记"
+                                >
+                                  <Brush className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="flex h-7 w-7 items-center justify-center rounded-[8px] transition-[color,background-color,transform] hover:bg-blue-500/10 hover:text-blue-600 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/65 dark:hover:bg-blue-400/12 dark:hover:text-blue-200"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    void copyCanvasImageToSystemClipboard(canvasItem);
+                                  }}
+                                  title="复制图片"
+                                  aria-label="复制图片"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="flex h-7 w-7 items-center justify-center rounded-[8px] transition-[color,background-color,transform] hover:bg-blue-500/10 hover:text-blue-600 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/65 dark:hover:bg-blue-400/12 dark:hover:text-blue-200"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    rotateCanvasImageClockwise(canvasItem.id);
+                                  }}
+                                  title="顺时针旋转 90°"
+                                  aria-label="顺时针旋转 90°"
+                                >
+                                  <RotateCw className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
                             )}
                             {canvasExpandedInternalSlot && canvasExpandedWorkflowGroup && (
                               <div
@@ -36029,9 +36523,9 @@ useEffect(() => {
                             {!canvasExpandedInternalSlot && <button
                               data-no-drag="true"
                               type="button"
-                              className="absolute right-1.5 top-1.5 z-50 rounded-full bg-white/82 p-1 text-stone-400 opacity-0 shadow-sm transition-all hover:bg-red-50 hover:text-red-500 group-hover/canvas-item:opacity-100 dark:bg-stone-900/82 dark:text-stone-500 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+                              className="absolute right-1.5 top-1.5 z-50 flex h-7 w-7 items-center justify-center rounded-[10px] border border-white/72 bg-white/88 text-stone-400 opacity-0 shadow-[0_5px_16px_rgba(15,23,42,0.14)] backdrop-blur-xl transition-[opacity,color,background-color,transform] hover:bg-red-50 hover:text-red-500 active:scale-95 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/60 group-hover/canvas-item:opacity-100 dark:border-white/10 dark:bg-stone-950/82 dark:text-white/50 dark:shadow-[0_7px_20px_rgba(0,0,0,0.30)] dark:hover:bg-red-500/14 dark:hover:text-red-300"
                               style={isCanvasAiNodeItem ? {
-                                left: Math.max(6, canvasRenderedItemWidth - 30),
+                                left: Math.max(6, canvasRenderedItemWidth - 34),
                                 right: 'auto',
                                 top: 6,
                               } : undefined}
@@ -36046,7 +36540,7 @@ useEffect(() => {
                               }}
                               title="从画布移除"
                             >
-                              <X className="h-3 w-3" />
+                              <X className="h-3.5 w-3.5" />
                             </button>}
                             </div>
                           );
@@ -36151,6 +36645,9 @@ useEffect(() => {
                           const pendingFusionRole = pendingCanvasFusionRoleRef.current?.targetId === canvasItem.id
                             ? pendingCanvasFusionRoleRef.current.role
                             : null;
+                          const referenceReplacement = canvasReferenceReplaceTarget?.targetId === canvasItem.id
+                            ? canvasReferenceReplaceTarget
+                            : null;
                           return (
                             <div
                               key={`canvas-input-menu-${canvasItem.id}`}
@@ -36169,6 +36666,11 @@ useEffect(() => {
                               {pendingFusionRole && (
                                 <div className="px-2.5 pb-1 pt-1 text-[9px] font-black uppercase tracking-[0.14em] text-fuchsia-500 dark:text-fuchsia-300">
                                   {pendingFusionRole === 'BASE' ? '设置基图' : '设置意向图'}
+                                </div>
+                              )}
+                              {referenceReplacement && (
+                                <div className="px-2.5 pb-1 pt-1 text-[9px] font-black tracking-[0.08em] text-blue-600 dark:text-blue-300">
+                                  替换参考图 {referenceReplacement.inputIndex + 1}
                                 </div>
                               )}
                               {!isVideoOnlyInput && canUploadWorkflowImages && (
@@ -36822,6 +37324,44 @@ useEffect(() => {
                         </div>
                       </div>
                     </motion.div>
+                  )}
+                  {isCanvasMode && canvasReferenceDragState && (
+                    <div
+                      data-canvas-floating-layer="true"
+                      className="pointer-events-none fixed z-[100090]"
+                      style={{
+                        left: canvasReferenceDragState.clientX,
+                        top: canvasReferenceDragState.clientY,
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                    >
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.82, rotate: 0 }}
+                        animate={{ opacity: 1, scale: 1.08, rotate: 2 }}
+                        exit={{ opacity: 0, scale: 0.92, rotate: 0 }}
+                        transition={{ duration: 0.12 }}
+                        className="relative h-16 w-16 overflow-hidden rounded-[16px] border-2 border-white bg-stone-100 shadow-[0_18px_42px_rgba(15,23,42,0.34)] ring-2 ring-blue-500/65 dark:border-stone-900 dark:bg-stone-900 dark:ring-blue-300/70"
+                      >
+                        {canvasReferenceDragState.previewSource ? (
+                          <img
+                            src={canvasReferenceDragState.previewSource}
+                            alt=""
+                            className="block h-full w-full rounded-[14px] object-cover"
+                            style={canvasReferenceDragState.rotation ? {
+                              transform: `rotate(${canvasReferenceDragState.rotation}deg)`,
+                            } : undefined}
+                            draggable={false}
+                          />
+                        ) : (
+                          <span className="flex h-full w-full items-center justify-center text-blue-500 dark:text-blue-200">
+                            <ImageIcon className="h-5 w-5" />
+                          </span>
+                        )}
+                        <span className="absolute left-1.5 top-1.5 flex h-5 min-w-5 items-center justify-center rounded-[6px] bg-stone-950/82 px-1 text-[10px] font-black text-white shadow-sm">
+                          {canvasReferenceDragState.inputIndex + 1}
+                        </span>
+                      </motion.div>
+                    </div>
                   )}
                   {isCanvasMode && canvasContextMenu && (
                     <div
