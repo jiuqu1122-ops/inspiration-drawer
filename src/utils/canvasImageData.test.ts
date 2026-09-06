@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   blobToDataUrl,
   dataUrlToBlob,
+  getCanvasAiRemoteFallbackForRotation,
   getDataUrlByteSize,
   imageDataUrlToJpegDataUrl,
   imageDataUrlToPngDataUrl,
@@ -9,6 +10,7 @@ import {
   isRemoteHttpImageSource,
   isXaisAttachmentImageRef,
   optimizeCanvasAiInputDataUrl,
+  rotateImageDataUrl,
 } from './canvasImageData';
 
 afterEach(() => {
@@ -35,21 +37,27 @@ const installImageCanvasMocks = (outputByType: Record<string, string>) => {
     fillRect: vi.fn(),
     clearRect: vi.fn(),
     drawImage: vi.fn(),
+    translate: vi.fn(),
+    rotate: vi.fn(),
     imageSmoothingEnabled: false,
     imageSmoothingQuality: 'low',
   };
+  const exportedSizes: Array<{ width: number; height: number }> = [];
   const canvas = {
     width: 0,
     height: 0,
     getContext: vi.fn(() => context),
-    toDataURL: vi.fn((type: string) => outputByType[type] || ''),
+    toDataURL: vi.fn((type: string) => {
+      exportedSizes.push({ width: canvas.width, height: canvas.height });
+      return outputByType[type] || '';
+    }),
   };
   const createElement = vi.fn(() => canvas);
 
   vi.stubGlobal('window', { Image: MockImage });
   vi.stubGlobal('document', { createElement });
 
-  return { canvas, context, createElement };
+  return { canvas, context, createElement, exportedSizes };
 };
 
 describe('canvas image data utilities', () => {
@@ -134,5 +142,34 @@ describe('canvas image data utilities', () => {
     expect(context.drawImage).toHaveBeenCalledTimes(1);
     expect(canvas.width).toBe(0);
     expect(canvas.height).toBe(0);
+  });
+
+  it.each([90, 270] as const)('swaps output dimensions for a %s-degree rotation', async (rotation) => {
+    const png = 'data:image/png;base64,ROTATED';
+    const { context, exportedSizes } = installImageCanvasMocks({ 'image/png': png });
+
+    await expect(rotateImageDataUrl('data:image/jpeg;base64,SOURCE', rotation)).resolves.toBe(png);
+    expect(exportedSizes).toEqual([{ width: 800, height: 1600 }]);
+    expect(context.translate).toHaveBeenCalledWith(400, 800);
+    expect(context.rotate).toHaveBeenCalledWith(rotation * Math.PI / 180);
+    expect(context.drawImage).toHaveBeenCalledWith(expect.anything(), -800, -400, 1600, 800);
+  });
+
+  it('keeps output dimensions for a 180-degree rotation', async () => {
+    const png = 'data:image/png;base64,ROTATED';
+    const { context, exportedSizes } = installImageCanvasMocks({ 'image/png': png });
+
+    await expect(rotateImageDataUrl('data:image/jpeg;base64,SOURCE', 180)).resolves.toBe(png);
+    expect(exportedSizes).toEqual([{ width: 1600, height: 800 }]);
+    expect(context.translate).toHaveBeenCalledWith(800, 400);
+    expect(context.rotate).toHaveBeenCalledWith(Math.PI);
+  });
+
+  it('never exposes an unrotated remote fallback for a rotated canvas reference', () => {
+    const remote = 'https://example.com/reference.png';
+    expect(getCanvasAiRemoteFallbackForRotation(remote, 0)).toBe(remote);
+    expect(getCanvasAiRemoteFallbackForRotation(remote, 90)).toBeUndefined();
+    expect(getCanvasAiRemoteFallbackForRotation(remote, 180)).toBeUndefined();
+    expect(getCanvasAiRemoteFallbackForRotation(remote, 270)).toBeUndefined();
   });
 });

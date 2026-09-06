@@ -18,6 +18,11 @@ export const isRemoteHttpImageSource = (source?: string | null) => {
   return /^https?:\/\//i.test(value) && !/asset\.localhost|localhost|127\.0\.0\.1/i.test(value);
 };
 
+export const getCanvasAiRemoteFallbackForRotation = (
+  remoteFallback: string | undefined,
+  rotation: 0 | 90 | 180 | 270,
+) => rotation === 0 ? remoteFallback : undefined;
+
 export const isLikelyJpegOrPngImageSource = (source?: string | null) => {
   const value = String(source || '').trim();
   return /^data:image\/(?:png|jpe?g);base64,/i.test(value)
@@ -240,3 +245,43 @@ export const imageDataUrlToPngDataUrl = async (dataUrl: string) => {
     image.src = dataUrl;
   });
 };
+
+export const rotateImageDataUrl = (
+  dataUrl: string,
+  rotation: 0 | 90 | 180 | 270,
+) => new Promise<string>((resolve, reject) => {
+  if (rotation === 0) {
+    resolve(dataUrl);
+    return;
+  }
+  if (!/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
+    reject(new Error('invalid image data url'));
+    return;
+  }
+  const image = new window.Image();
+  image.onload = () => {
+    try {
+      const sourceWidth = image.naturalWidth || image.width;
+      const sourceHeight = image.naturalHeight || image.height;
+      if (!sourceWidth || !sourceHeight) throw new Error('empty image');
+      const swapsAxes = rotation === 90 || rotation === 270;
+      const canvas = document.createElement('canvas');
+      canvas.width = swapsAxes ? sourceHeight : sourceWidth;
+      canvas.height = swapsAxes ? sourceWidth : sourceHeight;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('canvas context unavailable');
+      context.translate(canvas.width / 2, canvas.height / 2);
+      context.rotate(rotation * Math.PI / 180);
+      context.drawImage(image, -sourceWidth / 2, -sourceHeight / 2, sourceWidth, sourceHeight);
+      const rotated = canvas.toDataURL('image/png');
+      canvas.width = 0;
+      canvas.height = 0;
+      resolve(rotated);
+    } catch (error) {
+      reject(error);
+    }
+  };
+  image.onerror = () => reject(new Error('image decode failed'));
+  image.decoding = 'async';
+  image.src = dataUrl;
+});
