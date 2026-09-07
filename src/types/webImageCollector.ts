@@ -14,6 +14,20 @@ export type WebImageCollectorReference = {
   pageTitle?: string;
 };
 
+export type WebImageCaptureMetadata = {
+  dragId?: string;
+  sourceUrl?: string;
+  pageUrl?: string;
+  pageTitle?: string;
+  imageAlt?: string;
+  width?: number;
+  height?: number;
+  sourceType?: string;
+  captureSource?: 'browser-extension';
+  folderId?: string;
+  localPath?: string;
+};
+
 export type WebImageSearchDescription = {
   query: string;
   source: 'ollama' | 'siliconflow';

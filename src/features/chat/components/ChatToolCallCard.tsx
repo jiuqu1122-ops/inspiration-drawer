@@ -1,21 +1,7 @@
 import { Check, ChevronDown, LoaderCircle, ShieldAlert, X } from 'lucide-react';
 import { useState } from 'react';
 import type { ChatToolCall } from '../model/chatTypes';
-
-const TOOL_LABELS: Record<string, string> = {
-  web_search: '联网搜索',
-  create_file: '生成文件',
-  get_canvas_selection: '读取画布选中项',
-  search_assets: '搜索素材库',
-  generate_image: '生成图片',
-  edit_image: '编辑图片',
-  batch_image_operation: '批量处理图片',
-  generate_video: '生成视频',
-  add_to_canvas: '发送到画布',
-  create_canvas_generator: '创建生成节点',
-  list_workflows: '读取工作流',
-  run_workflow: '运行工作流',
-};
+import { getChatToolLabel } from '../tools/chatToolLabels';
 
 const STATUS_LABELS: Record<string, string> = {
   pending: '准备中',
@@ -127,7 +113,7 @@ export function ChatToolCallCard({ call, onResolve }: {
         <span className="chat-tool__icon">
           {active ? <LoaderCircle size={13} className="chat-spin" /> : call.status === 'completed' || batchProgress?.phase === 'confirming' || batchRevisionRequested ? <Check size={13} /> : <ShieldAlert size={13} />}
         </span>
-        <span className="chat-tool__label">{TOOL_LABELS[call.toolName] || call.toolName}</span>
+        <span className="chat-tool__label">{getChatToolLabel(call.toolName)}</span>
         <span className="chat-tool__status">{batchProgress ? batchStatusLabel(batchProgress) : STATUS_LABELS[call.status] || call.status}</span>
         <ChevronDown size={12} className={expanded ? 'chat-tool__chevron is-open' : 'chat-tool__chevron'} />
       </button>

@@ -6,15 +6,21 @@ export const resolveChatReferenceArguments = (input: {
   currentImageAttachments: ChatAttachment[];
   latestGenerated?: ChatGeneratedMedia;
 }) => {
-  if (input.toolName !== 'generate_image' && input.toolName !== 'edit_image') return { ...input.args };
+  if (!['generate_image', 'generate_image_variants', 'edit_image'].includes(input.toolName)) {
+    return { ...input.args };
+  }
   const args = { ...input.args };
-  const hasReferenceImages = Object.prototype.hasOwnProperty.call(args, 'referenceImages');
+  if (args.useAttachedImages === false) return args;
+  const explicitReferenceImages = Array.isArray(args.referenceImages)
+    ? args.referenceImages.map(String).map(value => value.trim()).filter(Boolean)
+    : [];
+  const hasUsableReferenceImages = explicitReferenceImages.length > 0;
   const requestedAttachmentIds = Array.isArray(args.attachmentIds)
     ? args.attachmentIds.map(String).map(value => value.trim()).filter(Boolean)
     : [];
   const currentSources = input.currentImageAttachments.map(attachment => attachment.path.trim()).filter(Boolean);
 
-  if (!hasReferenceImages) {
+  if (!hasUsableReferenceImages) {
     if (requestedAttachmentIds.length > 0) {
       const selectedIds = new Set(requestedAttachmentIds);
       args.referenceImages = input.currentImageAttachments
@@ -28,7 +34,7 @@ export const resolveChatReferenceArguments = (input: {
 
   if (input.toolName === 'edit_image' && input.latestGenerated && currentSources.length === 0) {
     if (!args.sourceImageId) args.sourceImageId = input.latestGenerated.id;
-    if (!hasReferenceImages && !Array.isArray(args.referenceImages)) {
+    if (!hasUsableReferenceImages) {
       args.referenceImages = [input.latestGenerated.path || input.latestGenerated.url].filter(Boolean);
     }
   }

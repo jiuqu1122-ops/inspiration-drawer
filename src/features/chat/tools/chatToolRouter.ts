@@ -2,14 +2,16 @@ import { evaluateLegacyActionPermission } from '../../appAgent/commands/permissi
 import type { LegacyAgentAction } from '../../appAgent/commands/commandTypes';
 import type { ChatToolExecutionContext, ChatToolExecutor } from '../model/chatTypes';
 import { compactChatToolResult } from './chatToolResult';
+import { shouldComposeImageVariants, shouldUseIndependentImageVariants } from './chatToolDefinitions';
 
 const SUPPORTED_TOOLS = new Set([
-  'web_search', 'create_file', 'get_canvas_selection', 'search_assets', 'generate_image', 'edit_image', 'generate_video',
+  'web_search', 'create_file', 'get_canvas_selection', 'search_assets', 'generate_image', 'generate_image_variants', 'edit_image', 'generate_video',
   'batch_image_operation', 'add_to_canvas', 'create_canvas_generator', 'list_workflows', 'run_workflow',
 ]);
 
 const AUTO_EXECUTE_MEDIA_TOOLS = new Set([
   'generate_image',
+  'generate_image_variants',
   'edit_image',
   'generate_video',
   'batch_image_operation',
@@ -20,7 +22,7 @@ const permissionActionForChatTool = (name: string, args: Record<string, unknown>
     return { tool: name === 'search_assets' ? 'drawer_search_inspirations' : 'app_get_context', arguments: args };
   }
   if (name === 'run_workflow') return { tool: 'canvas_run_workflow', arguments: args };
-  if (name === 'generate_image' || name === 'edit_image' || name === 'generate_video' || name === 'batch_image_operation') {
+  if (name === 'generate_image' || name === 'generate_image_variants' || name === 'edit_image' || name === 'generate_video' || name === 'batch_image_operation') {
     return { tool: 'canvas_create_generator', arguments: { ...args, autoRun: true } };
   }
   if (name === 'add_to_canvas') return { tool: 'drawer_manage', arguments: { ...args, action: 'add_items_to_canvas' } };
@@ -39,6 +41,20 @@ export const routeChatToolCall = async (input: {
   if (!SUPPORTED_TOOLS.has(input.name)) throw new Error(`不支持的 Chat 工具：${input.name}`);
   if ((input.name === 'generate_image' || input.name === 'edit_image' || input.name === 'generate_video') && !String(input.args.prompt || '').trim()) {
     throw new Error('生成提示词不能为空');
+  }
+  if (input.name === 'generate_image' && Number(input.args.count) > 1
+    && shouldUseIndependentImageVariants(input.context.userText)) {
+    throw new Error('用户要求的是多个语义不同且独立出图的方案；请改用 generate_image_variants，为每个方案提供独立 prompt，并让每个任务只生成一张图。');
+  }
+  if (input.name === 'generate_image' && shouldComposeImageVariants(input.context.userText)) {
+    input.args.count = 1;
+  }
+  if (input.name === 'generate_image_variants') {
+    if (shouldComposeImageVariants(input.context.userText)) {
+      throw new Error('用户明确要求把多个方案放在同一张图中；请改用 generate_image，使用一个包含同图布局的 prompt，并设置 count=1。');
+    }
+    const variants = Array.isArray(input.args.variants) ? input.args.variants : [];
+    if (variants.length < 2) throw new Error('独立方案生图至少需要两个 variants');
   }
   if (input.name === 'batch_image_operation') {
     if (!String(input.args.instruction || '').trim()) throw new Error('批量图片任务 instruction 不能为空');

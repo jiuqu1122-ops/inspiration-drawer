@@ -81,12 +81,53 @@ export const compactChatToolResult = (name: string, value: unknown): unknown => 
       }),
     };
   }
+  if (name === 'generate_image_variants') {
+    const results = Array.isArray(record.results) ? record.results : [];
+    return {
+      ok: record.ok === true,
+      operation: 'generate_image_variants',
+      sharedRequirements: String(record.sharedRequirements || '').slice(0, 2_000),
+      total: Number(record.total) || 0,
+      completed: Number(record.completed) || 0,
+      succeeded: Number(record.succeeded) || 0,
+      failed: Number(record.failed) || 0,
+      cancelled: record.cancelled === true,
+      results: results.map(value => {
+        const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+        const media = Array.isArray(item.media) ? item.media : [];
+        return {
+          variantIndex: item.variantIndex,
+          name: item.name,
+          prompt: String(item.prompt || '').slice(0, 2_000),
+          status: item.status,
+          error: item.error ? String(item.error).slice(0, 500) : undefined,
+          media: media.flatMap(value => {
+            const output = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+            const url = String(output.url || '').trim();
+            const path = String(output.path || '').trim();
+            if (!path && !/^https:\/\//i.test(url)) return [];
+            return [{
+              id: output.id,
+              type: 'image',
+              path: path || undefined,
+              url: /^https:\/\//i.test(url) ? url : undefined,
+              thumbnail: output.thumbnail,
+              assetId: output.assetId,
+              prompt: output.prompt,
+              name: output.name || item.name,
+            }];
+          }),
+        };
+      }),
+    };
+  }
   return value;
 };
 
 export const compactChatToolResultForProvider = (name: string, value: unknown): unknown => {
   const compact = compactChatToolResult(name, value);
-  if (name !== 'batch_image_operation' || !compact || typeof compact !== 'object') return compact;
+  if (!['batch_image_operation', 'generate_image_variants'].includes(name)
+    || !compact || typeof compact !== 'object') return compact;
   const record = compact as Record<string, unknown>;
   return {
     ...record,
@@ -94,6 +135,9 @@ export const compactChatToolResultForProvider = (name: string, value: unknown): 
       const result = value && typeof value === 'object' ? value as Record<string, unknown> : {};
       return {
         attachmentId: result.attachmentId,
+        variantIndex: result.variantIndex,
+        name: result.name,
+        prompt: result.prompt,
         status: result.status,
         error: result.error,
         media: (Array.isArray(result.media) ? result.media : []).map(value => {

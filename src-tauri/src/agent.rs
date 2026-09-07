@@ -21,6 +21,7 @@ use crate::license::types::AiGatewayKind;
 
 const AGENT_SETTINGS_FILE: &str = "agent_config.json";
 const AGENT_WALLET_TASKS_FILE: &str = "agent_wallet_tasks.json";
+const WALLET_TASK_SUBMISSION_TIMEOUT_SECS: u64 = 90;
 const CONFIGURED_HEADER_VALUE: &str = "[configured]";
 const CODEX_RPC_TIMEOUT_SECS: u64 = 45;
 const CODEX_API_KEY_ENV: &str = "LINGGAN_CODEX_API_KEY";
@@ -968,8 +969,11 @@ pub async fn agent_analyze_inspiration(
 ) -> Result<Value, String> {
     let request_id = format!("inspiration-{}", uuid_like_id());
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
-    let (client, direct_client) =
-        crate::build_async_http_clients_with_direct_fallback(Some(&app_handle), None, 30)?;
+    let (client, direct_client) = crate::build_async_http_clients_with_direct_fallback(
+        Some(&app_handle),
+        None,
+        WALLET_TASK_SUBMISSION_TIMEOUT_SECS,
+    )?;
     let payload = build_inspiration_analysis_payload(&request);
     let (submission, use_direct) = submit_wallet_task(
         &client,
@@ -990,7 +994,8 @@ pub async fn agent_analyze_inspiration(
         submission,
         &state.openai_cancellations,
     )
-    .await?;
+    .await
+    .map_err(|error| error.message)?;
     Ok(value.get("profile").cloned().unwrap_or(value))
 }
 
@@ -1044,7 +1049,39 @@ fn wallet_task_is_terminal(status: &str) -> bool {
 }
 
 fn wallet_poll_status_is_retryable(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 429 | 502 | 503 | 504 | 524)
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+        || status.as_u16() == 524
+}
+
+#[derive(Debug)]
+struct WalletTaskPollError {
+    message: String,
+    terminal: bool,
+}
+
+impl WalletTaskPollError {
+    fn recoverable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            terminal: false,
+        }
+    }
+
+    fn terminal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            terminal: true,
+        }
+    }
+}
+
+fn wallet_task_mapping_should_be_removed<T>(result: &Result<T, WalletTaskPollError>) -> bool {
+    result
+        .as_ref()
+        .err()
+        .map(|error| error.terminal)
+        .unwrap_or(false)
 }
 
 fn wallet_submission_allows_direct_retry(
@@ -1077,7 +1114,7 @@ async fn submit_wallet_task(
     });
     let response = client
         .post("https://api.unmind.art/v1/ai/tasks")
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(WALLET_TASK_SUBMISSION_TIMEOUT_SECS))
         .bearer_auth(access_token)
         .json(&body)
         .send()
@@ -1095,7 +1132,7 @@ async fn submit_wallet_task(
             let direct_client = direct_client.expect("direct client checked above");
             let response = direct_client
                 .post("https://api.unmind.art/v1/ai/tasks")
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(WALLET_TASK_SUBMISSION_TIMEOUT_SECS))
                 .bearer_auth(access_token)
                 .json(&body)
                 .send()
@@ -1144,7 +1181,7 @@ async fn poll_wallet_task(
     request_id: &str,
     submission: WalletTaskSubmission,
     cancellations: &Arc<Mutex<HashSet<String>>>,
-) -> Result<Value, String> {
+) -> Result<Value, WalletTaskPollError> {
     let started_at = Instant::now();
     let mut consecutive_errors = 0_u32;
     let mut poll_count = 0_u32;
@@ -1174,10 +1211,12 @@ async fn poll_wallet_task(
                 .bearer_auth(access_token)
                 .send()
                 .await;
-            return Err("Agent 请求已取消".to_string());
+            return Err(WalletTaskPollError::terminal("Agent 请求已取消"));
         }
         if started_at.elapsed() > Duration::from_secs(12 * 60) {
-            return Err("后台任务查询超时，任务可能仍在服务器运行".to_string());
+            return Err(WalletTaskPollError::recoverable(
+                "后台任务查询超时，任务可能仍在服务器运行；再次请求会继续接管原任务",
+            ));
         }
 
         tokio_sleep(Duration::from_secs(2)).await;
@@ -1237,17 +1276,15 @@ async fn poll_wallet_task(
                     }),
                 );
                 if started_at.elapsed() > Duration::from_secs(12 * 60) {
-                    return Err(format!("后台任务查询持续失败：{error_detail}"));
+                    return Err(WalletTaskPollError::recoverable(format!(
+                        "后台任务查询持续失败：{error_detail}；再次请求会继续接管原任务"
+                    )));
                 }
                 tokio_sleep(Duration::from_secs(delay)).await;
                 continue;
             }
         };
         let http_status = response.status();
-        let value = response
-            .json::<Value>()
-            .await
-            .map_err(|error| format!("读取后台任务状态失败：{error}"))?;
         if wallet_poll_status_is_retryable(http_status) {
             consecutive_errors += 1;
             let delay = wallet_poll_backoff_seconds(consecutive_errors);
@@ -1266,15 +1303,58 @@ async fn poll_wallet_task(
             tokio_sleep(Duration::from_secs(delay)).await;
             continue;
         }
+        let value = match response.json::<Value>().await {
+            Ok(value) => value,
+            Err(error) if http_status.is_success() => {
+                consecutive_errors += 1;
+                let delay = wallet_poll_backoff_seconds(consecutive_errors);
+                let _ = app_handle.emit(
+                    "agent-openai-stream",
+                    json!({
+                        "requestId": request_id,
+                        "kind": "status",
+                        "taskId": task_id,
+                        "status": "running",
+                        "stage": "reconnecting",
+                        "progress": 0,
+                        "pollCount": poll_count,
+                        "detail": format!("任务状态响应暂时无法解析：{error}"),
+                    }),
+                );
+                tokio_sleep(Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(error) => json!({ "message": format!("响应无法解析：{error}") }),
+        };
         if !http_status.is_success() {
-            return Err(format!(
+            return Err(WalletTaskPollError::terminal(format!(
                 "查询后台任务 HTTP {http_status}：{}",
                 wallet_task_error(&value, "服务暂不可用")
-            ));
+            )));
         }
+        let task: WalletTaskStatus = match serde_json::from_value(value) {
+            Ok(task) => task,
+            Err(error) => {
+                consecutive_errors += 1;
+                let delay = wallet_poll_backoff_seconds(consecutive_errors);
+                let _ = app_handle.emit(
+                    "agent-openai-stream",
+                    json!({
+                        "requestId": request_id,
+                        "kind": "status",
+                        "taskId": task_id,
+                        "status": "running",
+                        "stage": "reconnecting",
+                        "progress": 0,
+                        "pollCount": poll_count,
+                        "detail": format!("后台任务状态格式暂时无效：{error}"),
+                    }),
+                );
+                tokio_sleep(Duration::from_secs(delay)).await;
+                continue;
+            }
+        };
         consecutive_errors = 0;
-        let task: WalletTaskStatus = serde_json::from_value(value)
-            .map_err(|error| format!("后台任务状态格式无效：{error}"))?;
         let _ = app_handle.emit(
             "agent-openai-stream",
             json!({
@@ -1294,14 +1374,17 @@ async fn poll_wallet_task(
             "succeeded" => {
                 return task
                     .result
-                    .ok_or_else(|| "后台任务完成但没有返回结果".to_string());
+                    .ok_or_else(|| WalletTaskPollError::terminal("后台任务完成但没有返回结果"));
             }
             "failed" | "cancelled" => {
                 let error = task.error.unwrap_or(WalletTaskError {
                     code: "TASK_FAILED".to_string(),
                     message: "后台任务未完成".to_string(),
                 });
-                return Err(format!("{}：{}", error.code, error.message));
+                return Err(WalletTaskPollError::terminal(format!(
+                    "{}：{}",
+                    error.code, error.message
+                )));
             }
             _ => {}
         }
@@ -1317,6 +1400,7 @@ async fn tokio_sleep(duration: Duration) {
 pub struct AgentOpenAiChatResult {
     request_id: String,
     content: String,
+    reasoning: String,
     tool_calls: Vec<OpenAiToolCallResult>,
     finish_reason: Option<String>,
     usage: Option<Value>,
@@ -1357,28 +1441,72 @@ struct OpenAiToolCallAccumulator {
     arguments: String,
 }
 
-fn merge_openai_choice(
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OpenAiToolCallDelta {
+    index: usize,
+    id: String,
+    name: String,
+    arguments_delta: String,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OpenAiChoiceDelta {
+    content: String,
+    reasoning: String,
+    tool_calls: Vec<OpenAiToolCallDelta>,
+}
+
+fn openai_text_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(values) => values.iter().map(openai_text_value).collect::<String>(),
+        Value::Object(record) => ["text", "content", "summary", "reasoning_text", "delta"]
+            .iter()
+            .find_map(|key| {
+                record
+                    .get(*key)
+                    .map(openai_text_value)
+                    .filter(|text| !text.is_empty())
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn openai_reasoning_delta(delta: &Value) -> String {
+    [
+        "reasoning_content",
+        "reasoning_summary",
+        "reasoning_text",
+        "reasoning",
+    ]
+    .iter()
+    .find_map(|key| {
+        delta
+            .get(*key)
+            .map(openai_text_value)
+            .filter(|text| !text.is_empty())
+    })
+    .unwrap_or_default()
+}
+
+fn merge_openai_choice_data(
     choice: &Value,
     content: &mut String,
+    reasoning: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
-    app_handle: &tauri::AppHandle,
-    request_id: &str,
-) {
-    let delta = choice.get("delta").or_else(|| choice.get("message"));
-    if let Some(text) = delta
-        .and_then(|value| value.get("content"))
-        .and_then(Value::as_str)
-    {
+) -> OpenAiChoiceDelta {
+    let mut update = OpenAiChoiceDelta::default();
+    let Some(delta) = choice.get("delta").or_else(|| choice.get("message")) else {
+        return update;
+    };
+    if let Some(text) = delta.get("content").and_then(Value::as_str) {
         content.push_str(text);
-        let _ = app_handle.emit(
-            "agent-openai-stream",
-            json!({ "requestId": request_id, "kind": "delta", "delta": text }),
-        );
+        update.content.push_str(text);
     }
-    if let Some(calls) = delta
-        .and_then(|value| value.get("tool_calls"))
-        .and_then(Value::as_array)
-    {
+    update.reasoning = openai_reasoning_delta(delta);
+    reasoning.push_str(&update.reasoning);
+    if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
         for (fallback_index, call) in calls.iter().enumerate() {
             let index = call
                 .get("index")
@@ -1389,40 +1517,309 @@ fn merge_openai_choice(
             if let Some(id) = call.get("id").and_then(Value::as_str) {
                 entry.id.push_str(id);
             }
+            let mut arguments_delta = String::new();
             if let Some(function) = call.get("function") {
                 if let Some(name) = function.get("name").and_then(Value::as_str) {
                     entry.name.push_str(name);
                 }
                 if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
                     entry.arguments.push_str(arguments);
+                    arguments_delta.push_str(arguments);
                 }
             }
+            update.tool_calls.push(OpenAiToolCallDelta {
+                index,
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                arguments_delta,
+            });
         }
     }
+    update
+}
+
+fn merge_openai_choice(
+    choice: &Value,
+    content: &mut String,
+    reasoning: &mut String,
+    tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
+    app_handle: &tauri::AppHandle,
+    request_id: &str,
+) {
+    let update = merge_openai_choice_data(choice, content, reasoning, tool_calls);
+    if !update.content.is_empty() {
+        let _ = app_handle.emit(
+            "agent-openai-stream",
+            json!({
+                "requestId": request_id,
+                "kind": "content_delta",
+                "delta": update.content,
+                "timestamp": crate::current_time_millis(),
+            }),
+        );
+    }
+    if !update.reasoning.is_empty() {
+        let _ = app_handle.emit(
+            "agent-openai-stream",
+            json!({
+                "requestId": request_id,
+                "kind": "reasoning_delta",
+                "delta": update.reasoning,
+                "timestamp": crate::current_time_millis(),
+            }),
+        );
+    }
+    for tool_call in update.tool_calls {
+        let _ = app_handle.emit(
+            "agent-openai-stream",
+            json!({
+                "requestId": request_id,
+                "kind": "tool_call_delta",
+                "toolCall": {
+                    "index": tool_call.index,
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "argumentsDelta": tool_call.arguments_delta,
+                },
+                "timestamp": crate::current_time_millis(),
+            }),
+        );
+    }
+}
+
+fn merge_openai_responses_event(
+    parsed: &Value,
+    content: &mut String,
+    reasoning: &mut String,
+    tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
+    app_handle: &tauri::AppHandle,
+    request_id: &str,
+) -> bool {
+    let event_type = parsed
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match event_type {
+        "response.output_text.delta" => {
+            let choice = json!({ "delta": { "content": parsed.get("delta") } });
+            merge_openai_choice(
+                &choice, content, reasoning, tool_calls, app_handle, request_id,
+            );
+            true
+        }
+        "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta"
+        | "response.reasoning.delta" => {
+            let choice = json!({ "delta": { "reasoning_content": parsed.get("delta") } });
+            merge_openai_choice(
+                &choice, content, reasoning, tool_calls, app_handle, request_id,
+            );
+            true
+        }
+        "response.function_call_arguments.delta" => {
+            let index = parsed
+                .get("output_index")
+                .or_else(|| parsed.get("index"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let choice = json!({
+                "delta": {
+                    "tool_calls": [{
+                        "index": index,
+                        "id": parsed.get("call_id").or_else(|| parsed.get("item_id")),
+                        "function": {
+                            "name": parsed.get("name"),
+                            "arguments": parsed.get("delta"),
+                        }
+                    }]
+                }
+            });
+            merge_openai_choice(
+                &choice, content, reasoning, tool_calls, app_handle, request_id,
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+fn merge_openai_responses_output(
+    parsed: &Value,
+    content: &mut String,
+    reasoning: &mut String,
+    tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
+    app_handle: &tauri::AppHandle,
+    request_id: &str,
+) {
+    let Some(outputs) = parsed.get("output").and_then(Value::as_array) else {
+        return;
+    };
+    for (index, output) in outputs.iter().enumerate() {
+        match output
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+        {
+            "message" => {
+                if let Some(parts) = output.get("content").and_then(Value::as_array) {
+                    for part in parts {
+                        let text = part
+                            .get("text")
+                            .or_else(|| part.get("content"))
+                            .map(openai_text_value)
+                            .unwrap_or_default();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        let choice = json!({ "message": { "content": text } });
+                        merge_openai_choice(
+                            &choice, content, reasoning, tool_calls, app_handle, request_id,
+                        );
+                    }
+                }
+            }
+            "reasoning" => {
+                let text = output
+                    .get("summary")
+                    .or_else(|| output.get("content"))
+                    .map(openai_text_value)
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    let choice = json!({ "message": { "reasoning_summary": text } });
+                    merge_openai_choice(
+                        &choice, content, reasoning, tool_calls, app_handle, request_id,
+                    );
+                }
+            }
+            "function_call" => {
+                let choice = json!({
+                    "message": {
+                        "tool_calls": [{
+                            "index": index,
+                            "id": output.get("call_id").or_else(|| output.get("id")),
+                            "function": {
+                                "name": output.get("name"),
+                                "arguments": output.get("arguments"),
+                            }
+                        }]
+                    }
+                });
+                merge_openai_choice(
+                    &choice, content, reasoning, tool_calls, app_handle, request_id,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn openai_response_error(parsed: &Value) -> Option<String> {
+    let event_type = parsed
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let error = parsed.get("error").or_else(|| {
+        parsed
+            .get("response")
+            .and_then(|response| response.get("error"))
+    });
+    if error.is_none() && !matches!(event_type, "error" | "response.failed") {
+        return None;
+    }
+    let error = error.unwrap_or(parsed);
+    let detail = error
+        .get("message")
+        .or_else(|| error.get("code"))
+        .map(openai_text_value)
+        .unwrap_or_else(|| openai_text_value(error));
+    Some(if detail.trim().is_empty() {
+        "上游流式响应失败".to_string()
+    } else {
+        detail
+    })
+}
+
+fn openai_usage_value(parsed: &Value) -> Option<&Value> {
+    parsed
+        .get("usage")
+        .or_else(|| {
+            parsed
+                .get("response")
+                .and_then(|response| response.get("usage"))
+        })
+        .filter(|value| !value.is_null())
 }
 
 fn parse_openai_response_value(
     parsed: &Value,
     content: &mut String,
+    reasoning: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Value>,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) {
-    if let Some(next_usage) = parsed.get("usage").filter(|value| !value.is_null()) {
+    if let Some(next_usage) = openai_usage_value(parsed) {
         *usage = Some(next_usage.clone());
+        let _ = app_handle.emit(
+            "agent-openai-stream",
+            json!({
+                "requestId": request_id,
+                "kind": "usage",
+                "usage": next_usage,
+                "timestamp": crate::current_time_millis(),
+            }),
+        );
+    }
+    if !merge_openai_responses_event(
+        parsed, content, reasoning, tool_calls, app_handle, request_id,
+    ) {
+        merge_openai_responses_output(
+            parsed, content, reasoning, tool_calls, app_handle, request_id,
+        );
     }
     if let Some(choice) = parsed
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
     {
-        merge_openai_choice(choice, content, tool_calls, app_handle, request_id);
+        merge_openai_choice(
+            choice, content, reasoning, tool_calls, app_handle, request_id,
+        );
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             *finish_reason = Some(reason.to_string());
         }
     }
+}
+
+#[derive(Debug, PartialEq)]
+enum OpenAiSseLine {
+    Ignore,
+    Done,
+    Data(Value),
+}
+
+fn parse_openai_sse_line(line: &str) -> Result<OpenAiSseLine, String> {
+    let Some(data) = line.trim().strip_prefix("data:") else {
+        return Ok(OpenAiSseLine::Ignore);
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(OpenAiSseLine::Ignore);
+    }
+    if data == "[DONE]" {
+        return Ok(OpenAiSseLine::Done);
+    }
+    serde_json::from_str(data)
+        .map(OpenAiSseLine::Data)
+        .map_err(|error| {
+            format!(
+                "解析 Agent 流失败：{}；响应片段：{}",
+                error,
+                preview_response_text(data)
+            )
+        })
 }
 
 fn preview_response_text(text: &str) -> String {
@@ -1446,24 +1843,22 @@ fn preview_response_text(text: &str) -> String {
 }
 
 fn parse_openai_sse_data(
-    data: &str,
+    parsed: &Value,
     content: &mut String,
+    reasoning: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Value>,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
-    let parsed: Value = serde_json::from_str(data).map_err(|error| {
-        format!(
-            "解析 Agent 流失败：{}；响应片段：{}",
-            error,
-            preview_response_text(data)
-        )
-    })?;
+    if let Some(error) = openai_response_error(parsed) {
+        return Err(error);
+    }
     parse_openai_response_value(
-        &parsed,
+        parsed,
         content,
+        reasoning,
         tool_calls,
         finish_reason,
         usage,
@@ -1476,6 +1871,7 @@ fn parse_openai_sse_data(
 fn parse_openai_buffered_text(
     text: &str,
     content: &mut String,
+    reasoning: &mut String,
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Value>,
@@ -1487,22 +1883,22 @@ fn parse_openai_buffered_text(
         .any(|line| line.trim_start().starts_with("data:"))
     {
         for line in text.lines() {
-            let Some(data) = line.trim().strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data.is_empty() || data == "[DONE]" {
-                continue;
+            match parse_openai_sse_line(line)? {
+                OpenAiSseLine::Ignore => {}
+                OpenAiSseLine::Done => break,
+                OpenAiSseLine::Data(parsed) => {
+                    parse_openai_sse_data(
+                        &parsed,
+                        content,
+                        reasoning,
+                        tool_calls,
+                        finish_reason,
+                        usage,
+                        app_handle,
+                        request_id,
+                    )?;
+                }
             }
-            parse_openai_sse_data(
-                data,
-                content,
-                tool_calls,
-                finish_reason,
-                usage,
-                app_handle,
-                request_id,
-            )?;
         }
         return Ok(());
     }
@@ -1514,16 +1910,28 @@ fn parse_openai_buffered_text(
             preview_response_text(text)
         )
     })?;
-    parse_openai_response_value(
+    parse_openai_sse_data(
         &parsed,
         content,
+        reasoning,
         tool_calls,
         finish_reason,
         usage,
         app_handle,
         request_id,
+    )
+}
+
+fn emit_chat_stream_error(app_handle: &tauri::AppHandle, request_id: &str, error: &str) {
+    let _ = app_handle.emit(
+        "agent-openai-stream",
+        json!({
+            "requestId": request_id,
+            "kind": "error",
+            "error": error,
+            "timestamp": crate::current_time_millis(),
+        }),
     );
-    Ok(())
 }
 
 #[tauri::command]
@@ -1535,21 +1943,28 @@ pub async fn agent_openai_chat(
     validate_chat_request_size(&request)?;
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
+        let request_id = request.request_id.clone();
         let mut wallet_request = request;
         wallet_request.model =
             resolve_wallet_agent_model(wallet_request.model.as_deref(), &settings.api_model);
-        return agent_wallet_chat(
-            app_handle,
+        let result = agent_wallet_chat(
+            app_handle.clone(),
             wallet_request,
             state.openai_cancellations.clone(),
             state.wallet_tasks.clone(),
             state.wallet_pollers.clone(),
         )
         .await;
+        if let Err(error) = &result {
+            emit_chat_stream_error(&app_handle, &request_id, error);
+        }
+        return result;
     }
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     let cancellations = state.openai_cancellations.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let request_id = request.request_id.clone();
+    let event_app_handle = app_handle.clone();
+    let result = match tauri::async_runtime::spawn_blocking(move || {
         if api_profile.api_key.trim().is_empty() {
             return Err("请先在 Agent 设置中填写 API Key".to_string());
         }
@@ -1620,6 +2035,7 @@ pub async fn agent_openai_chat(
             .unwrap_or_default()
             .to_ascii_lowercase();
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
         let mut finish_reason = None;
         let mut usage = None;
@@ -1635,25 +2051,22 @@ pub async fn agent_openai_chat(
                     return Err("Agent 请求已取消".to_string());
                 }
                 let line = line.map_err(|error| format!("读取 Agent 流失败：{}", error))?;
-                let Some(data) = line.trim().strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data == "[DONE]" {
-                    break;
+                match parse_openai_sse_line(&line)? {
+                    OpenAiSseLine::Ignore => {}
+                    OpenAiSseLine::Done => break,
+                    OpenAiSseLine::Data(parsed) => {
+                        parse_openai_sse_data(
+                            &parsed,
+                            &mut content,
+                            &mut reasoning,
+                            &mut tool_calls,
+                            &mut finish_reason,
+                            &mut usage,
+                            &app_handle,
+                            &request.request_id,
+                        )?;
+                    }
                 }
-                if data.is_empty() {
-                    continue;
-                }
-                parse_openai_sse_data(
-                    data,
-                    &mut content,
-                    &mut tool_calls,
-                    &mut finish_reason,
-                    &mut usage,
-                    &app_handle,
-                    &request.request_id,
-                )?;
             }
         } else {
             let text = response
@@ -1662,6 +2075,7 @@ pub async fn agent_openai_chat(
             parse_openai_buffered_text(
                 &text,
                 &mut content,
+                &mut reasoning,
                 &mut tool_calls,
                 &mut finish_reason,
                 &mut usage,
@@ -1688,18 +2102,30 @@ pub async fn agent_openai_chat(
         let result = AgentOpenAiChatResult {
             request_id: request.request_id.clone(),
             content,
+            reasoning,
             tool_calls,
             finish_reason,
             usage,
         };
         let _ = app_handle.emit(
             "agent-openai-stream",
-            json!({ "requestId": request.request_id, "kind": "completed" }),
+            json!({
+                "requestId": request.request_id,
+                "kind": "completed",
+                "timestamp": crate::current_time_millis(),
+            }),
         );
         Ok(result)
     })
     .await
-    .map_err(|error| format!("Agent API 后台任务失败：{}", error))?
+    {
+        Ok(result) => result,
+        Err(error) => Err(format!("Agent API 后台任务失败：{}", error)),
+    };
+    if let Err(error) = &result {
+        emit_chat_stream_error(&event_app_handle, &request_id, error);
+    }
+    result
 }
 
 fn resolve_wallet_agent_model(requested: Option<&str>, configured: &str) -> Option<String> {
@@ -1726,8 +2152,11 @@ async fn agent_wallet_chat(
     wallet_pollers: Arc<Mutex<HashSet<String>>>,
 ) -> Result<AgentOpenAiChatResult, String> {
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
-    let (client, direct_client) =
-        crate::build_async_http_clients_with_direct_fallback(Some(&app_handle), None, 30)?;
+    let (client, direct_client) = crate::build_async_http_clients_with_direct_fallback(
+        Some(&app_handle),
+        None,
+        WALLET_TASK_SUBMISSION_TIMEOUT_SECS,
+    )?;
     if let Ok(mut tasks) = wallet_tasks.lock() {
         if tasks.is_empty() {
             tasks.extend(read_pending_wallet_tasks(&app_handle));
@@ -1794,22 +2223,27 @@ async fn agent_wallet_chat(
     if let Ok(mut pollers) = wallet_pollers.lock() {
         pollers.remove(&request.request_id);
     }
-    if let Ok(mut tasks) = wallet_tasks.lock() {
-        tasks.remove(&request.request_id);
-        let _ = write_pending_wallet_tasks(&app_handle, &tasks);
+    let remove_persisted_task = wallet_task_mapping_should_be_removed(&value);
+    if remove_persisted_task {
+        if let Ok(mut tasks) = wallet_tasks.lock() {
+            tasks.remove(&request.request_id);
+            let _ = write_pending_wallet_tasks(&app_handle, &tasks);
+        }
     }
     if let Ok(mut values) = cancellations.lock() {
         values.remove(&request.request_id);
     }
-    let value = value?;
+    let value = value.map_err(|error| error.message)?;
 
     let mut content = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
     let mut finish_reason = None;
     let mut usage = None;
     parse_openai_response_value(
         &value,
         &mut content,
+        &mut reasoning,
         &mut tool_calls,
         &mut finish_reason,
         &mut usage,
@@ -1831,13 +2265,18 @@ async fn agent_wallet_chat(
     let result = AgentOpenAiChatResult {
         request_id: request.request_id.clone(),
         content,
+        reasoning,
         tool_calls,
         finish_reason,
         usage,
     };
     let _ = app_handle.emit(
         "agent-openai-stream",
-        json!({ "requestId": request.request_id, "kind": "completed" }),
+        json!({
+            "requestId": request.request_id,
+            "kind": "completed",
+            "timestamp": crate::current_time_millis(),
+        }),
     );
     Ok(result)
 }
@@ -1882,6 +2321,22 @@ pub fn agent_cancel_openai(
                     .await;
             }
         });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn agent_ack_wallet_task(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AgentRuntimeState>,
+    request_id: String,
+) -> Result<(), String> {
+    let mut tasks = state
+        .wallet_tasks
+        .lock()
+        .map_err(|_| "Agent wallet task lock poisoned".to_string())?;
+    if tasks.remove(&request_id).is_some() {
+        write_pending_wallet_tasks(&app_handle, &tasks)?;
     }
     Ok(())
 }
@@ -2655,6 +3110,120 @@ pub fn agent_codex_stop(state: State<'_, AgentRuntimeState>) -> Result<(), Strin
 mod tests {
     use super::*;
 
+    #[test]
+    fn openai_sse_line_parser_handles_done_empty_malformed_and_unknown_events() {
+        assert_eq!(
+            parse_openai_sse_line("data: [DONE]").expect("done line"),
+            OpenAiSseLine::Done
+        );
+        assert_eq!(
+            parse_openai_sse_line("data:   ").expect("empty data"),
+            OpenAiSseLine::Ignore
+        );
+        assert_eq!(
+            parse_openai_sse_line("").expect("empty line"),
+            OpenAiSseLine::Ignore
+        );
+        let unknown = parse_openai_sse_line("data: {\"type\":\"future.event\"}")
+            .expect("unknown JSON remains parseable");
+        assert_eq!(
+            unknown,
+            OpenAiSseLine::Data(json!({ "type": "future.event" }))
+        );
+        assert!(parse_openai_sse_line("data: {broken")
+            .expect_err("malformed JSON must fail")
+            .contains("解析 Agent 流失败"));
+    }
+
+    #[test]
+    fn openai_choice_parser_keeps_content_reasoning_and_tool_deltas_separate() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut tool_calls = BTreeMap::new();
+        let first = merge_openai_choice_data(
+            &json!({
+                "delta": {
+                    "reasoning_content": "公开摘要 ",
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-1",
+                        "function": { "name": "search_", "arguments": "{\"query\":" }
+                    }]
+                }
+            }),
+            &mut content,
+            &mut reasoning,
+            &mut tool_calls,
+        );
+        let second = merge_openai_choice_data(
+            &json!({
+                "delta": {
+                    "content": "最终正文",
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": { "name": "assets", "arguments": "\"car\"}" }
+                    }]
+                }
+            }),
+            &mut content,
+            &mut reasoning,
+            &mut tool_calls,
+        );
+
+        assert_eq!(first.reasoning, "公开摘要 ");
+        assert_eq!(second.content, "最终正文");
+        assert_eq!(reasoning, "公开摘要 ");
+        assert_eq!(content, "最终正文");
+        let tool = tool_calls.get(&0).expect("tool call accumulated");
+        assert_eq!(tool.id, "call-1");
+        assert_eq!(tool.name, "search_assets");
+        assert_eq!(tool.arguments, "{\"query\":\"car\"}");
+    }
+
+    #[test]
+    fn openai_reasoning_parser_accepts_common_public_summary_shapes() {
+        for (field, value) in [
+            ("reasoning_content", json!("A")),
+            ("reasoning", json!({ "text": "B" })),
+            ("reasoning_summary", json!([{ "text": "C" }])),
+            ("reasoning_text", json!({ "content": "D" })),
+        ] {
+            let mut delta = serde_json::Map::new();
+            delta.insert(field.to_string(), value);
+            assert!(!openai_reasoning_delta(&Value::Object(delta)).is_empty());
+        }
+        assert_eq!(
+            openai_reasoning_delta(&json!({ "content": "ordinary" })),
+            ""
+        );
+    }
+
+    #[test]
+    fn openai_usage_and_error_parser_support_chat_and_responses_shapes() {
+        let chat = json!({ "usage": { "output_tokens": 4 } });
+        assert_eq!(
+            openai_usage_value(&chat)
+                .and_then(|value| value.get("output_tokens"))
+                .and_then(Value::as_i64),
+            Some(4)
+        );
+        let responses = json!({ "response": { "usage": { "output_tokens": 8 } } });
+        assert_eq!(
+            openai_usage_value(&responses),
+            responses
+                .get("response")
+                .and_then(|value| value.get("usage"))
+        );
+        assert_eq!(
+            openai_response_error(&json!({ "type": "error", "error": { "message": "断开" } })),
+            Some("断开".to_string())
+        );
+        assert_eq!(
+            openai_response_error(&json!({ "type": "response.completed" })),
+            None
+        );
+    }
+
     fn chat_request_with_content(content: Value) -> AgentOpenAiChatRequest {
         AgentOpenAiChatRequest {
             request_id: "request-1".to_string(),
@@ -2904,6 +3473,10 @@ mod tests {
         );
         assert_eq!(resolve_wallet_agent_model(Some("  "), ""), None);
         assert_eq!(resolve_wallet_agent_model(Some("unmind-agent"), ""), None);
+        assert_eq!(
+            resolve_wallet_agent_model(Some("default"), "gpt-5.6-sol"),
+            None
+        );
     }
 
     #[test]
@@ -2924,7 +3497,7 @@ mod tests {
     }
 
     #[test]
-    fn wallet_task_polling_retries_only_transient_http_errors() {
+    fn wallet_task_polling_retries_transient_and_server_http_errors() {
         assert!(wallet_poll_status_is_retryable(
             reqwest::StatusCode::TOO_MANY_REQUESTS
         ));
@@ -2934,12 +3507,32 @@ mod tests {
         assert!(wallet_poll_status_is_retryable(
             reqwest::StatusCode::GATEWAY_TIMEOUT
         ));
+        assert!(wallet_poll_status_is_retryable(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
         assert!(!wallet_poll_status_is_retryable(
             reqwest::StatusCode::BAD_REQUEST
         ));
         assert!(!wallet_poll_status_is_retryable(
             reqwest::StatusCode::UNAUTHORIZED
         ));
+    }
+
+    #[test]
+    fn wallet_submission_timeout_is_ninety_seconds() {
+        assert_eq!(WALLET_TASK_SUBMISSION_TIMEOUT_SECS, 90);
+    }
+
+    #[test]
+    fn recoverable_poll_errors_keep_the_task_available_for_resume() {
+        let success: Result<(), WalletTaskPollError> = Ok(());
+        let recoverable: Result<(), WalletTaskPollError> =
+            Err(WalletTaskPollError::recoverable("temporary"));
+        let terminal: Result<(), WalletTaskPollError> =
+            Err(WalletTaskPollError::terminal("finished"));
+        assert!(!wallet_task_mapping_should_be_removed(&success));
+        assert!(!wallet_task_mapping_should_be_removed(&recoverable));
+        assert!(wallet_task_mapping_should_be_removed(&terminal));
     }
 
     #[test]

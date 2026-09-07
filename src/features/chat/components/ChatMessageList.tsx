@@ -17,6 +17,7 @@ export function ChatMessageList({
   onAddToCanvas,
   onRegenerateMedia,
   onEditMedia,
+  onStop,
   workflowResult,
 }: {
   messages: ChatMessageType[];
@@ -30,6 +31,7 @@ export function ChatMessageList({
   onAddToCanvas?: (media: ChatGeneratedMedia) => void;
   onRegenerateMedia?: (media: ChatGeneratedMedia) => void;
   onEditMedia?: (media: ChatGeneratedMedia) => void;
+  onStop?: () => void;
   workflowResult?: WorkflowResultCardData;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -46,6 +48,8 @@ export function ChatMessageList({
       lastMessage.id,
       lastMessage.status,
       lastMessage.content.length,
+      lastMessage.reasoning?.length || 0,
+      lastMessage.thinkingSteps?.map(step => `${step.id}:${step.status}`).join(',') || '',
       ...lastMessage.toolCalls.flatMap(call => [call.id, call.status, call.resultJson || '']),
     ].join(':')
     : '';
@@ -112,6 +116,7 @@ export function ChatMessageList({
               onAddToCanvas={onAddToCanvas}
               onRegenerateMedia={onRegenerateMedia}
               onEditMedia={onEditMedia}
+              onStop={message.role === 'assistant' && message.status === 'streaming' ? onStop : undefined}
             />
           );
         })}

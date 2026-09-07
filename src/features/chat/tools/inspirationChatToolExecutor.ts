@@ -1,5 +1,6 @@
 import type { ChatToolExecutor } from '../model/chatTypes';
 import { executeBatchImageOperation } from './batchImageOperation';
+import { executeImageVariantOperation } from './imageVariantOperation';
 
 type WorkflowDescriptor = { id: string; label: string; hint?: string };
 
@@ -42,6 +43,14 @@ export const createInspirationChatToolExecutor = (input: {
   }
   if (name === 'generate_image' || name === 'edit_image' || name === 'generate_video') {
     return input.generateMedia(name, args);
+  }
+  if (name === 'generate_image_variants') {
+    return executeImageVariantOperation({
+      args,
+      signal: context.signal,
+      onProgress: context.onProgress,
+      generate: generationArgs => input.generateMedia('generate_image', generationArgs),
+    });
   }
   if (name === 'batch_image_operation') {
     return executeBatchImageOperation({

@@ -2,6 +2,7 @@ pub mod assets;
 pub mod canvas;
 pub mod chat;
 pub mod chat_files;
+pub mod eagle;
 pub mod license;
 pub mod migration;
 

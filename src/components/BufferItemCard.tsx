@@ -199,6 +199,7 @@ type LazyCardImageProps = {
   title?: string;
   onClick?: React.MouseEventHandler<HTMLImageElement>;
   onLoad?: React.ReactEventHandler<HTMLImageElement>;
+  onError?: React.ReactEventHandler<HTMLImageElement>;
   onVisible?: () => void;
 };
 
@@ -218,9 +219,10 @@ const getSharedLazyCardObserver = () => {
   return sharedLazyCardObserver;
 };
 
-function LazyCardImage({ src, alt = '', className, style, title, onClick, onLoad, onVisible }: LazyCardImageProps) {
+function LazyCardImage({ src, alt = '', className, style, title, onClick, onLoad, onError, onVisible }: LazyCardImageProps) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const onVisibleRef = useRef(onVisible);
+  const failedSrcRef = useRef('');
   const [visibleSrc, setVisibleSrc] = useState('');
 
   useEffect(() => {
@@ -228,12 +230,13 @@ function LazyCardImage({ src, alt = '', className, style, title, onClick, onLoad
   }, [onVisible]);
 
   useEffect(() => {
+    failedSrcRef.current = '';
     setVisibleSrc('');
     if (!src) return;
     let wasVisible = false;
     const setVisible = (visible: boolean) => {
       setVisibleSrc(current => {
-        const next = visible ? src : '';
+        const next = visible && failedSrcRef.current !== src ? src : '';
         return current === next ? current : next;
       });
       if (visible && !wasVisible) onVisibleRef.current?.();
@@ -268,6 +271,11 @@ function LazyCardImage({ src, alt = '', className, style, title, onClick, onLoad
       draggable={false}
       onClick={onClick}
       onLoad={onLoad}
+      onError={(event) => {
+        failedSrcRef.current = src || '';
+        setVisibleSrc('');
+        onError?.(event);
+      }}
     />
   );
 }
@@ -284,6 +292,7 @@ function BufferItemCard({
   optimizeLargeList = false
 }: any) {
   const [copied, setCopied] = useState(false);
+  const [isMediaUnavailable, setIsMediaUnavailable] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const isLongText = item.type === 'text' && item.content && item.content.length > 80;
   const [isEditingRemark, setIsEditingRemark] = useState(false);
@@ -663,7 +672,8 @@ function BufferItemCard({
   useEffect(() => {
     resolutionLoadKeyRef.current = '';
     setResolvedOriginalSize(null);
-  }, [item.id]);
+    setIsMediaUnavailable(item.sourceAvailability === 'missing' || item.sourceAvailability === 'unavailable');
+  }, [imageCardSource, item.id, item.sourceAvailability]);
 
   const recordResolvedMediaSize = (width: unknown, height: unknown) => {
     if (declaredOriginalSize) return;
@@ -858,8 +868,14 @@ return (
               event.currentTarget.naturalWidth || event.currentTarget.width,
               event.currentTarget.naturalHeight || event.currentTarget.height,
             )}
+            onError={() => setIsMediaUnavailable(true)}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); !isSelectMode && onImageClick?.(imagePreviewSource, item, imagePreviewPlaceholderSource); }}
           />
+          {isMediaUnavailable && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-stone-100/95 px-4 text-center text-[11px] font-medium text-stone-500 dark:bg-stone-900/95 dark:text-stone-400">
+              原文件暂不可用
+            </div>
+          )}
           <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] bg-gradient-to-b from-black/50 via-black/16 to-transparent px-3 pb-7 pt-2.5" style={roundedTopStyle}>
             <div className="min-w-0 pr-12">
               <div

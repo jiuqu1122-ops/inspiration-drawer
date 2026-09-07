@@ -102,6 +102,35 @@ describe('inspiration Chat tool executor', () => {
     ]);
   });
 
+  it('runs different visual directions as independent count-one image jobs', async () => {
+    const generateMedia = vi.fn(async (_name, args: Record<string, unknown>) => ({
+      media: [{ id: String(args.prompt), path: 'C:\\generated.png' }],
+    }));
+    const executor = createInspirationChatToolExecutor({
+      executeExistingTool: vi.fn(),
+      generateMedia,
+      listWorkflowDescriptors: () => [],
+      searchWeb: vi.fn(),
+      createFile: vi.fn(),
+    });
+    const result = await executor('generate_image_variants', {
+      sharedRequirements: '保持同一个参考主体',
+      variants: [
+        { name: '自然方向', prompt: '天然材料与暖色' },
+        { name: '科技方向', prompt: '金属材料与冷色' },
+      ],
+      referenceImages: ['C:\\reference.png'],
+    }, context) as { succeeded: number };
+
+    expect(result.succeeded).toBe(2);
+    expect(generateMedia).toHaveBeenCalledTimes(2);
+    expect(generateMedia.mock.calls.every(call => call[0] === 'generate_image')).toBe(true);
+    expect(generateMedia.mock.calls.every(call => call[1].count === 1)).toBe(true);
+    expect(generateMedia.mock.calls.every(call => (
+      JSON.stringify(call[1].referenceImages) === JSON.stringify(['C:\\reference.png'])
+    ))).toBe(true);
+  });
+
   it('applies and then runs an existing workflow', async () => {
     const executeExistingTool = vi.fn(async (name: string) => (
       name === 'canvas_apply_workflow' ? { nodeId: 'workflow-node-1' } : { completed: true }

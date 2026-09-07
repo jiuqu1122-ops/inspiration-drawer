@@ -18,6 +18,7 @@ import { ChatView, type ChatViewProps } from './ChatView';
 export type ChatHostProps = Omit<ChatViewProps, 'runtime'> & {
   visible: boolean;
   model: string;
+  serverManagedChannelFailover?: boolean;
   runtimeImageModel?: string;
   approvalMode?: UseChatRuntimeOptions['approvalMode'];
   executeTool: UseChatRuntimeOptions['executeTool'];
@@ -63,6 +64,7 @@ const prepareChatAttachment = async (attachment: PendingChatAttachment) => {
 export function ChatHost({
   visible,
   model,
+  serverManagedChannelFailover,
   runtimeImageModel,
   approvalMode,
   executeTool,
@@ -83,6 +85,7 @@ export function ChatHost({
   const resolvedVisible = viewProps.variant === 'canvas' ? canvasChatVisible : visible;
   const runtime = useChatRuntime({
     model,
+    serverManagedChannelFailover,
     imageModel: runtimeImageModel || imageModel,
     imageAspectRatio,
     imageResolution: imageResolution || undefined,

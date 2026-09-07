@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getStoredDrawerSize } from '../features/drawerPrefs';
@@ -15,9 +15,11 @@ const appWindow = getCurrentWindow();
 export function SnipOverlay() {
   const [selection, setSelection] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [isCaptureOverlayHidden, setIsCaptureOverlayHidden] = useState(false);
+  const [backgroundPath, setBackgroundPath] = useState('');
   const isMouseDownRef = useRef(false);
   const startRef = useRef({ x: 0, y: 0 });
   const captureInFlightRef = useRef(false);
+  const backgroundPathRef = useRef('');
 
   const waitForTransparentSnipFrame = () => new Promise<void>((resolve) => {
     requestAnimationFrame(() => {
@@ -29,11 +31,15 @@ export function SnipOverlay() {
     const size = getStoredDrawerSize();
     const mode = getStoredTriggerMode();
     const restoreDrawer = localStorage.getItem(SNIP_RESTORE_DRAWER_STORAGE_KEY) === 'true';
+    const frozenBackgroundPath = backgroundPathRef.current;
+    backgroundPathRef.current = '';
+    setBackgroundPath('');
     await invoke('recover_after_snip', {
       restoreDrawer,
       width: size.width,
       height: size.height,
       mode,
+      backgroundPath: frozenBackgroundPath || null,
     }).catch(() => invoke('hide_snip_window').catch(() => appWindow.hide().catch(() => {})));
   };
 
@@ -48,7 +54,12 @@ export function SnipOverlay() {
 
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
-    listen('snip-reset', () => {
+    listen('snip-reset', (event: any) => {
+      const nextBackgroundPath = typeof event?.payload?.backgroundPath === 'string'
+        ? event.payload.backgroundPath
+        : '';
+      backgroundPathRef.current = nextBackgroundPath;
+      setBackgroundPath(nextBackgroundPath);
       captureInFlightRef.current = false;
       isMouseDownRef.current = false;
       setIsCaptureOverlayHidden(false);
@@ -116,11 +127,14 @@ export function SnipOverlay() {
         drawerWidth: size.width,
         drawerHeight: size.height,
         mode,
+        backgroundPath: backgroundPathRef.current || null,
       });
     } catch (err) {
       await emitTo('main', 'snip-failed', { message: err instanceof Error ? err.message : String(err) }).catch(() => {});
       await recoverAfterSnip();
     } finally {
+      backgroundPathRef.current = '';
+      setBackgroundPath('');
       captureInFlightRef.current = false;
       setIsCaptureOverlayHidden(false);
       setSelection(null);
@@ -151,6 +165,14 @@ export function SnipOverlay() {
       }}
       onMouseUp={finishSelection}
     >
+      {backgroundPath ? (
+        <img
+          src={convertFileSrc(backgroundPath)}
+          alt=""
+          draggable={false}
+          className="absolute inset-0 h-full w-full select-none object-fill pointer-events-none"
+        />
+      ) : null}
       {isCaptureOverlayHidden ? null : selection ? (
         <>
           <div className="absolute inset-0 pointer-events-none">

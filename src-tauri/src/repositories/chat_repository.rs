@@ -49,10 +49,73 @@ pub struct ChatMessageRecord {
     pub content: String,
     pub status: String,
     pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_steps: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Value>,
     #[serde(default)]
     pub attachments: Vec<ChatAttachmentRecord>,
     #[serde(default)]
     pub tool_calls: Vec<ChatToolCallRecord>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatMessageMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking_steps: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generation_started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generation_completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_started_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<Value>,
+}
+
+impl ChatMessageMetadata {
+    fn from_message(message: &ChatMessageRecord) -> Self {
+        Self {
+            reasoning: message.reasoning.clone(),
+            reasoning_status: message.reasoning_status.clone(),
+            thinking_steps: message.thinking_steps.clone(),
+            generation_started_at: message.generation_started_at,
+            generation_completed_at: message.generation_completed_at,
+            reasoning_started_at: message.reasoning_started_at,
+            reasoning_completed_at: message.reasoning_completed_at,
+            usage: message.usage.clone(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.reasoning.is_none()
+            && self.reasoning_status.is_none()
+            && self.thinking_steps.is_none()
+            && self.generation_started_at.is_none()
+            && self.generation_completed_at.is_none()
+            && self.reasoning_started_at.is_none()
+            && self.reasoning_completed_at.is_none()
+            && self.usage.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,7 +265,7 @@ impl ChatRepository {
             .conn
             .prepare(
                 r#"
-            SELECT id, conversation_id, role, content, status, created_at
+            SELECT id, conversation_id, role, content, status, created_at, metadata_json
             FROM chat_messages
             WHERE conversation_id = ?1 AND created_at < ?2
             ORDER BY created_at DESC, id DESC
@@ -214,6 +277,10 @@ impl ChatRepository {
             .query_map(
                 params![options.conversation_id, before, fetch_limit],
                 |row| {
+                    let metadata = row
+                        .get::<_, Option<String>>(6)?
+                        .and_then(|raw| serde_json::from_str::<ChatMessageMetadata>(&raw).ok())
+                        .unwrap_or_default();
                     Ok(ChatMessageRecord {
                         id: row.get(0)?,
                         conversation_id: row.get(1)?,
@@ -221,6 +288,14 @@ impl ChatRepository {
                         content: row.get(3)?,
                         status: row.get(4)?,
                         created_at: row.get(5)?,
+                        reasoning: metadata.reasoning,
+                        reasoning_status: metadata.reasoning_status,
+                        thinking_steps: metadata.thinking_steps,
+                        generation_started_at: metadata.generation_started_at,
+                        generation_completed_at: metadata.generation_completed_at,
+                        reasoning_started_at: metadata.reasoning_started_at,
+                        reasoning_completed_at: metadata.reasoning_completed_at,
+                        usage: metadata.usage,
                         attachments: Vec::new(),
                         tool_calls: Vec::new(),
                     })
@@ -246,14 +321,21 @@ impl ChatRepository {
     }
 
     pub fn upsert_message(&self, message: ChatMessageRecord) -> Result<ChatMessageRecord, String> {
+        let metadata = ChatMessageMetadata::from_message(&message);
+        let metadata_json = if metadata.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&metadata).map_err(|error| error.to_string())?)
+        };
         self.conn
             .execute(
                 r#"
-            INSERT INTO chat_messages (id, conversation_id, role, content, status, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            INSERT INTO chat_messages (id, conversation_id, role, content, status, created_at, metadata_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ON CONFLICT(id) DO UPDATE SET
                 content = excluded.content,
-                status = excluded.status
+                status = excluded.status,
+                metadata_json = excluded.metadata_json
             "#,
                 params![
                     message.id,
@@ -261,7 +343,8 @@ impl ChatRepository {
                     message.role,
                     message.content,
                     message.status,
-                    message.created_at
+                    message.created_at,
+                    metadata_json,
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -491,6 +574,14 @@ mod tests {
             content: format!("message {id}"),
             status: "completed".to_string(),
             created_at,
+            reasoning: None,
+            reasoning_status: None,
+            thinking_steps: None,
+            generation_started_at: None,
+            generation_completed_at: None,
+            reasoning_started_at: None,
+            reasoning_completed_at: None,
+            usage: None,
             attachments: Vec::new(),
             tool_calls: Vec::new(),
         }
@@ -546,6 +637,63 @@ mod tests {
         assert_eq!(page.messages[0].attachments.len(), 1);
         assert_eq!(page.messages[0].tool_calls.len(), 1);
         assert_eq!(page.next_before_created_at, Some(20));
+    }
+
+    #[test]
+    fn persists_reasoning_summary_steps_timing_and_usage_without_affecting_old_messages() {
+        let repository = repository();
+        repository
+            .upsert_conversation(conversation())
+            .expect("save conversation");
+        let mut rich_message = message("message-rich", 30);
+        rich_message.reasoning = Some("公开推理摘要".to_string());
+        rich_message.reasoning_status = Some("completed".to_string());
+        rich_message.thinking_steps = Some(vec![serde_json::json!({
+            "id": "step-1",
+            "type": "reasoning",
+            "title": "分析问题",
+            "status": "completed",
+            "startedAt": 30,
+            "completedAt": 35
+        })]);
+        rich_message.generation_started_at = Some(30);
+        rich_message.generation_completed_at = Some(40);
+        rich_message.reasoning_started_at = Some(30);
+        rich_message.reasoning_completed_at = Some(35);
+        rich_message.usage = Some(serde_json::json!({ "outputTokens": 12 }));
+        repository
+            .upsert_message(rich_message)
+            .expect("save message metadata");
+        repository
+            .upsert_message(message("message-old", 20))
+            .expect("save legacy-compatible message");
+
+        let page = repository
+            .list_messages(ChatMessageListOptions {
+                conversation_id: "conversation-1".to_string(),
+                before_created_at: None,
+                limit: Some(10),
+            })
+            .expect("load messages");
+        let restored = page
+            .messages
+            .iter()
+            .find(|value| value.id == "message-rich")
+            .expect("rich message exists");
+        assert_eq!(restored.reasoning.as_deref(), Some("公开推理摘要"));
+        assert_eq!(restored.thinking_steps.as_ref().map(Vec::len), Some(1));
+        assert_eq!(restored.generation_completed_at, Some(40));
+        assert_eq!(
+            restored.usage,
+            Some(serde_json::json!({ "outputTokens": 12 }))
+        );
+        let old = page
+            .messages
+            .iter()
+            .find(|value| value.id == "message-old")
+            .expect("old message exists");
+        assert!(old.reasoning.is_none());
+        assert!(old.thinking_steps.is_none());
     }
 
     #[test]

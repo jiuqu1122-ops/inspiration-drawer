@@ -58,6 +58,28 @@ export type InspirationAnalysisCounts = {
   skipped: number;
 };
 
+export type EagleSourceIdentity = {
+  externalId: string;
+  externalPath: string;
+};
+
+export type EagleDuplicateLookupResult = {
+  externalIds: string[];
+  externalPaths: string[];
+};
+
+export type EagleImportFailure = {
+  filePath: string;
+  reason: string;
+};
+
+export type EagleImportBatchResult = {
+  processed: number;
+  imported: number;
+  skipped: number;
+  failed: number;
+};
+
 export const ASSET_PAGE_SIZE = 200;
 export const ASSET_WRITE_BATCH_SIZE = 100;
 export const MAX_DRAWER_ASSET_CACHE_SIZE = 2000;
@@ -73,6 +95,27 @@ export const getAssetCount = (options: AssetListOptions) =>
 
 export const upsertAssets = (assets: BufferItem[]) =>
   invoke<number>('upsert_assets', { assets });
+
+export const startEagleImport = (importId: string, totalCount?: number) =>
+  invoke<void>('start_eagle_import', { request: { importId, totalCount } });
+
+export const findEagleDuplicates = (identities: EagleSourceIdentity[]) =>
+  invoke<EagleDuplicateLookupResult>('find_eagle_duplicates', { identities });
+
+export const importEagleAssetsBatch = (request: {
+  importId: string;
+  assets: BufferItem[];
+  failures: EagleImportFailure[];
+  totalCount?: number;
+  processedCount: number;
+}) => invoke<EagleImportBatchResult>('import_eagle_assets_batch', { request });
+
+export const finishEagleImport = (request: {
+  importId: string;
+  status: 'success' | 'partial_failed' | 'failed' | 'cancelled';
+  totalCount?: number;
+  processedCount: number;
+}) => invoke<void>('finish_eagle_import', { request });
 
 export const updateAsset = (id: string, patch: AssetUpdatePatch) =>
   invoke<BufferItem | null>('update_asset', { id, patch });

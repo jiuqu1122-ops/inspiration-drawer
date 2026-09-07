@@ -3,7 +3,9 @@ use serde_json::Value;
 use crate::db::connection::{open_connection, should_use_sqlite};
 use crate::repositories::asset_repository::{
     AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
-    MoveFoldersOptions, ViewportOptions,
+    EagleDuplicateLookupResult, EagleImportBatchRequest, EagleImportBatchResult,
+    EagleImportFinishRequest, EagleImportStartRequest, EagleSourceIdentity, MoveFoldersOptions,
+    ViewportOptions,
 };
 use crate::repositories::json_asset_repository::JsonAssetRepository;
 use crate::repositories::sqlite_asset_repository::SqliteAssetRepository;
@@ -38,6 +40,46 @@ pub fn get_asset_count(
 
 pub fn upsert_assets(app_handle: tauri::AppHandle, assets: Vec<Value>) -> Result<usize, String> {
     repository(&app_handle)?.upsert_assets(assets)
+}
+
+pub fn start_eagle_import(
+    app_handle: tauri::AppHandle,
+    request: EagleImportStartRequest,
+) -> Result<(), String> {
+    if !should_use_sqlite(&app_handle) {
+        return Err("Eagle database import requires SQLite storage mode".to_string());
+    }
+    SqliteAssetRepository::new(open_connection(&app_handle)?).start_eagle_import(request)
+}
+
+pub fn find_eagle_duplicates(
+    app_handle: tauri::AppHandle,
+    identities: Vec<EagleSourceIdentity>,
+) -> Result<EagleDuplicateLookupResult, String> {
+    if !should_use_sqlite(&app_handle) {
+        return Err("Eagle duplicate lookup requires SQLite storage mode".to_string());
+    }
+    SqliteAssetRepository::new(open_connection(&app_handle)?).find_eagle_duplicates(identities)
+}
+
+pub fn import_eagle_assets_batch(
+    app_handle: tauri::AppHandle,
+    request: EagleImportBatchRequest,
+) -> Result<EagleImportBatchResult, String> {
+    if !should_use_sqlite(&app_handle) {
+        return Err("Eagle database import requires SQLite storage mode".to_string());
+    }
+    SqliteAssetRepository::new(open_connection(&app_handle)?).import_eagle_assets_batch(request)
+}
+
+pub fn finish_eagle_import(
+    app_handle: tauri::AppHandle,
+    request: EagleImportFinishRequest,
+) -> Result<(), String> {
+    if !should_use_sqlite(&app_handle) {
+        return Err("Eagle database import requires SQLite storage mode".to_string());
+    }
+    SqliteAssetRepository::new(open_connection(&app_handle)?).finish_eagle_import(request)
 }
 
 pub fn update_asset(

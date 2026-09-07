@@ -1,6 +1,32 @@
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 export type ChatMessageStatus = 'streaming' | 'completed' | 'error' | 'cancelled';
 export type ChatToolCallStatus = 'pending' | 'awaiting-approval' | 'running' | 'completed' | 'cancelled' | 'declined' | 'error';
+export type ChatReasoningStatus = 'idle' | 'streaming' | 'completed' | 'unavailable';
+export type ChatThinkingStepType =
+  | 'queued'
+  | 'reasoning'
+  | 'context'
+  | 'tool'
+  | 'search'
+  | 'attachment'
+  | 'finalizing';
+export type ChatThinkingStepStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting-approval'
+  | 'completed'
+  | 'cancelled'
+  | 'error';
+
+export type ChatThinkingStep = {
+  id: string;
+  type: ChatThinkingStepType;
+  title: string;
+  detail?: string;
+  status: ChatThinkingStepStatus;
+  startedAt?: number;
+  completedAt?: number;
+};
 
 export type ChatAttachment = {
   id: string;
@@ -60,6 +86,14 @@ export type ChatMessage = {
   createdAt: number;
   attachments: ChatAttachment[];
   toolCalls: ChatToolCall[];
+  reasoning?: string;
+  reasoningStatus?: ChatReasoningStatus;
+  thinkingSteps?: ChatThinkingStep[];
+  generationStartedAt?: number;
+  generationCompletedAt?: number;
+  reasoningStartedAt?: number;
+  reasoningCompletedAt?: number;
+  usage?: ChatUsage;
 };
 
 export type ChatConversation = {

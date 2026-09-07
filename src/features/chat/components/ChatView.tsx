@@ -239,6 +239,7 @@ export const ChatView = memo(function ChatView({
           onAddToCanvas={onAddGeneratedToCanvas}
           onRegenerateMedia={regenerateMedia}
           onEditMedia={editMedia}
+          onStop={runtime.stoppable ? () => void runtime.stop() : undefined}
           workflowResult={workflowResult}
         />
         <div className="chat-composer-wrap">

@@ -25,7 +25,28 @@ const message = (
 });
 
 describe('historical Chat image attachments', () => {
-  it.each(['开始做吧', '就按刚才的方案来', '继续', '继续处理这些图片', '这六张', '没问题，开始生成']) (
+  it.each([
+    '开始做吧',
+    '就按刚才的方案来',
+    '继续',
+    '继续处理这些图片',
+    '这六张',
+    '没问题，开始生成',
+    '按你的想法帮我生成三个不同方向',
+    '根据前面的分析继续优化这个产品',
+    '保持原来的造型和比例，只调整材质',
+    '把这款设计做成两个独立版本',
+    '那你帮我改一下，然后出图',
+    '出图',
+    '改成红色',
+    '把材质换成金属',
+    '再做一个更简洁的版本',
+    '我想要红色宫墙的视觉效果，同样保留以上对话的特点，建筑不要纹理太复杂',
+    '我希望整体配色更温暖，但保留前面的设计特征',
+    '同样保留以上对话的特点',
+    '建筑不要纹理太复杂',
+    'Make the material warmer while keeping the previous design features',
+  ]) (
     'recognizes an explicit continuation: %s',
     text => expect(isHistoricalImageContinuation(text)).toBe(true),
   );
@@ -63,6 +84,62 @@ describe('historical Chat image attachments', () => {
     const source = message('message-1', '分析图片', ['C:\\a.png'], 1);
     const latest = message('message-2', '帮我写一段会议总结', [], 2);
     expect(selectChatImageAttachments([source, latest], latest.content).attachments).toEqual([]);
+  });
+
+  it.each([
+    '帮我生成一张全新的宇宙风景图',
+    '换个话题，生成一张城市夜景图',
+    '不要参考之前的图片，生成一张新海报',
+  ])('does not carry the old visual subject into an explicit new request: %s', text => {
+    const source = message('message-1', '分析图片', ['C:\\a.png'], 1);
+    const latest = message('message-2', text, [], 2);
+    expect(selectChatImageAttachments([source, latest], latest.content).attachments).toEqual([]);
+  });
+
+  it('keeps the original visual reference across analysis, revision and a terse render command', () => {
+    const source = message('message-1', '分析一下这个产品的 CMF', ['C:\\product.png'], 1);
+    const revision = message('message-2', '那你帮我改一下，然后出图', [], 2);
+    const render = message('message-3', '出图', [], 3);
+    const selection = selectChatImageAttachments([source, revision, render], render.content);
+
+    expect(selection.reusedFromHistory).toBe(true);
+    expect(selection.attachments.map(attachment => attachment.path)).toEqual(['C:\\product.png']);
+    expect(selection.toolIntentText).toBe([
+      source.content,
+      revision.content,
+      render.content,
+    ].join('\n'));
+  });
+
+  it('reuses a prior visual subject for a semantic follow-up without a fixed continuation command', () => {
+    const source = message('message-1', '分析这个产品还能如何优化', ['C:\\product.png'], 1);
+    const latest = message('message-2', '按你的建议做三个不同方向，每个方向单独出图', [], 2);
+    const selection = selectChatImageAttachments([source, latest], latest.content);
+
+    expect(selection.reusedFromHistory).toBe(true);
+    expect(selection.attachments.map(attachment => attachment.path)).toEqual(['C:\\product.png']);
+    expect(selection.toolIntentText).toContain(source.content);
+    expect(selection.toolIntentText).toContain(latest.content);
+  });
+
+  it('reuses the visual reference for a preference-and-constraint follow-up without an image command', () => {
+    const source = message('message-1', '分析这张建筑参考图的视觉特点', ['C:\\palace.png'], 1);
+    const analysis: ChatMessage = {
+      ...message('message-2', '红墙、克制的纹理和简洁轮廓是主要特点。', [], 2),
+      role: 'assistant',
+    };
+    const latest = message(
+      'message-3',
+      '我想要红色宫墙的视觉效果，同样保留以上对话的特点，建筑不要纹理太复杂',
+      [],
+      3,
+    );
+    const selection = selectChatImageAttachments([source, analysis, latest], latest.content);
+
+    expect(selection.reusedFromHistory).toBe(true);
+    expect(selection.attachments.map(attachment => attachment.path)).toEqual(['C:\\palace.png']);
+    expect(selection.toolIntentText).toContain(source.content);
+    expect(selection.toolIntentText).toContain(latest.content);
   });
 
   it('reuses the previous images when the user conversationally revises a pending batch plan', () => {

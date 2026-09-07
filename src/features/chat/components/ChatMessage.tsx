@@ -1,4 +1,4 @@
-import { Check, Copy, RotateCcw } from 'lucide-react';
+import { Check, Copy, RotateCcw, Square } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { memo, useState } from 'react';
 import { ChatAttachmentList } from './ChatAttachmentList';
@@ -6,6 +6,7 @@ import { ChatGeneratedImageCard } from './ChatGeneratedImageCard';
 import { ChatGeneratedFileCard } from './ChatGeneratedFileCard';
 import { ChatToolCallCard } from './ChatToolCallCard';
 import { ChatMarkdown } from './ChatMarkdown';
+import { ChatThinkingPanel } from './ChatThinkingPanel';
 import { getGeneratedFilesFromToolCall, getGeneratedMediaFromToolCall, type ChatGeneratedMedia, type ChatMessage as ChatMessageType } from '../model/chatTypes';
 
 const LINK_PATTERN = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s]+)/g;
@@ -47,6 +48,7 @@ export const ChatMessage = memo(function ChatMessage({
   onAddToCanvas,
   onRegenerateMedia,
   onEditMedia,
+  onStop,
 }: {
   message: ChatMessageType;
   onResolveTool: (id: string, approved: boolean) => void;
@@ -54,6 +56,7 @@ export const ChatMessage = memo(function ChatMessage({
   onAddToCanvas?: (media: ChatGeneratedMedia) => void;
   onRegenerateMedia?: (media: ChatGeneratedMedia) => void;
   onEditMedia?: (media: ChatGeneratedMedia) => void;
+  onStop?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const generated = message.toolCalls.flatMap(getGeneratedMediaFromToolCall);
@@ -68,12 +71,13 @@ export const ChatMessage = memo(function ChatMessage({
     <article className={`chat-message chat-message--${message.role}`}>
       <div className={`chat-message__body ${message.attachments.length > 0 ? 'has-attachments' : ''}`}>
         <ChatAttachmentList attachments={message.attachments} compact />
+        {message.role === 'assistant' && <ChatThinkingPanel message={message} />}
         {message.content && (
           message.role === 'assistant'
             ? <ChatMarkdown content={message.content} />
             : <ChatMessageText content={message.content} />
         )}
-        {message.role === 'assistant' && message.status === 'streaming' && !message.content && message.toolCalls.length === 0 && (
+        {message.role === 'assistant' && message.status === 'streaming' && !message.content && message.toolCalls.length === 0 && !(message.thinkingSteps?.length) && (
           <div className="chat-thinking" aria-label="正在生成"><i /><i /><i /></div>
         )}
         {message.toolCalls
@@ -97,6 +101,9 @@ export const ChatMessage = memo(function ChatMessage({
             <button type="button" onClick={() => void copy()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? '已复制' : '复制'}</button>
             {onRetry && message.status !== 'streaming' && <button type="button" onClick={onRetry}><RotateCcw size={12} />重新生成</button>}
           </div>
+        )}
+        {message.role === 'assistant' && message.status === 'streaming' && onStop && (
+          <button type="button" className="chat-message__stop" onClick={onStop}><Square size={10} />停止生成</button>
         )}
       </div>
     </article>
