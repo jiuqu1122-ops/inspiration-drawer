@@ -27,9 +27,29 @@ describe('Chat reference argument resolution', () => {
     }).referenceImages).toEqual(['C:\\explicit.png']);
     expect(resolveChatReferenceArguments({
       toolName: 'edit_image',
-      args: { prompt: '不要引用附件', referenceImages: [] },
+      args: { prompt: '不要引用附件', referenceImages: [], useAttachedImages: false },
       currentImageAttachments: attachments,
     }).referenceImages).toEqual([]);
+  });
+
+  it('treats an empty model-supplied reference list as omitted and restores the active images', () => {
+    expect(resolveChatReferenceArguments({
+      toolName: 'generate_image',
+      args: { prompt: '做三个独立方向', referenceImages: [], attachmentIds: [] },
+      currentImageAttachments: attachments,
+    }).referenceImages).toEqual(attachments.map(item => item.path));
+  });
+
+  it('restores the same active references for independent image variants', () => {
+    expect(resolveChatReferenceArguments({
+      toolName: 'generate_image_variants',
+      args: {
+        sharedRequirements: '保持主体不变',
+        variants: [{ name: '方向一', prompt: '哑光材质' }, { name: '方向二', prompt: '高光材质' }],
+        referenceImages: [],
+      },
+      currentImageAttachments: attachments.slice(0, 1),
+    }).referenceImages).toEqual(['C:\\source-1.png']);
   });
 
   it('resolves explicit attachment ids without exposing paths to the model schema', () => {

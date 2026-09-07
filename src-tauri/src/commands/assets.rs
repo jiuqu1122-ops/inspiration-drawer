@@ -2,7 +2,9 @@ use serde_json::Value;
 
 use crate::repositories::asset_repository::{
     AssetBatchUpdate, AssetListOptions, AssetUpdatePatch, DebugCanvasNodesOptions,
-    MoveFoldersOptions, ViewportOptions,
+    EagleDuplicateLookupResult, EagleImportBatchRequest, EagleImportBatchResult,
+    EagleImportFinishRequest, EagleImportStartRequest, EagleSourceIdentity, MoveFoldersOptions,
+    ViewportOptions,
 };
 
 #[tauri::command]
@@ -29,6 +31,38 @@ pub fn get_asset_count(
 #[tauri::command]
 pub fn upsert_assets(app_handle: tauri::AppHandle, assets: Vec<Value>) -> Result<usize, String> {
     crate::services::asset_service::upsert_assets(app_handle, assets)
+}
+
+#[tauri::command]
+pub fn start_eagle_import(
+    app_handle: tauri::AppHandle,
+    request: EagleImportStartRequest,
+) -> Result<(), String> {
+    crate::services::asset_service::start_eagle_import(app_handle, request)
+}
+
+#[tauri::command]
+pub fn find_eagle_duplicates(
+    app_handle: tauri::AppHandle,
+    identities: Vec<EagleSourceIdentity>,
+) -> Result<EagleDuplicateLookupResult, String> {
+    crate::services::asset_service::find_eagle_duplicates(app_handle, identities)
+}
+
+#[tauri::command]
+pub fn import_eagle_assets_batch(
+    app_handle: tauri::AppHandle,
+    request: EagleImportBatchRequest,
+) -> Result<EagleImportBatchResult, String> {
+    crate::services::asset_service::import_eagle_assets_batch(app_handle, request)
+}
+
+#[tauri::command]
+pub fn finish_eagle_import(
+    app_handle: tauri::AppHandle,
+    request: EagleImportFinishRequest,
+) -> Result<(), String> {
+    crate::services::asset_service::finish_eagle_import(app_handle, request)
 }
 
 #[tauri::command]

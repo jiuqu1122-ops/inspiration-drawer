@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 use crate::db::schema::DEFAULT_LIBRARY_ID;
 use crate::repositories::asset_repository::{
     AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch, DebugCanvasNodesOptions,
-    MoveFoldersOptions, ViewportOptions,
+    EagleDuplicateLookupResult, EagleImportBatchRequest, EagleImportBatchResult,
+    EagleImportFinishRequest, EagleImportStartRequest, EagleSourceIdentity, MoveFoldersOptions,
+    ViewportOptions,
 };
 
 pub struct SqliteAssetRepository {
@@ -24,9 +26,279 @@ struct FolderRow {
     deleted_at: Option<i64>,
 }
 
+fn find_eagle_duplicates_on_connection(
+    conn: &Connection,
+    identities: &[EagleSourceIdentity],
+) -> Result<EagleDuplicateLookupResult, String> {
+    let external_ids = identities
+        .iter()
+        .map(|identity| identity.external_id.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let external_paths = identities
+        .iter()
+        .map(|identity| identity.external_path.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let mut found_ids = HashSet::new();
+    for chunk in external_ids.chunks(400) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT external_id FROM assets WHERE deleted_at IS NULL AND external_provider = 'eagle' AND external_id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(
+                params_from_iter(chunk.iter().cloned().map(SqlValue::Text)),
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            found_ids.insert(row.map_err(|err| err.to_string())?);
+        }
+    }
+
+    let mut found_paths = HashSet::new();
+    for chunk in external_paths.chunks(400) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT external_path, file_path FROM assets WHERE deleted_at IS NULL AND (external_path COLLATE NOCASE IN ({0}) OR file_path COLLATE NOCASE IN ({0}))",
+            placeholders
+        );
+        let mut values = chunk
+            .iter()
+            .cloned()
+            .map(SqlValue::Text)
+            .collect::<Vec<_>>();
+        values.extend(chunk.iter().cloned().map(SqlValue::Text));
+        let mut stmt = conn.prepare(&sql).map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params_from_iter(values), |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            let (external_path, file_path) = row.map_err(|err| err.to_string())?;
+            if let Some(path) = external_path.filter(|value| !value.trim().is_empty()) {
+                found_paths.insert(path.to_lowercase());
+            }
+            if let Some(path) = file_path.filter(|value| !value.trim().is_empty()) {
+                found_paths.insert(path.to_lowercase());
+            }
+        }
+    }
+
+    let mut external_ids = found_ids.into_iter().collect::<Vec<_>>();
+    let mut external_paths = found_paths.into_iter().collect::<Vec<_>>();
+    external_ids.sort();
+    external_paths.sort();
+    Ok(EagleDuplicateLookupResult {
+        external_ids,
+        external_paths,
+    })
+}
+
 impl SqliteAssetRepository {
     pub fn new(conn: Connection) -> Self {
         Self { conn }
+    }
+
+    pub fn start_eagle_import(&self, request: EagleImportStartRequest) -> Result<(), String> {
+        let import_id = request.import_id.trim();
+        if import_id.is_empty() {
+            return Err("Eagle import id is required".to_string());
+        }
+        let now = crate::current_time_millis();
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO import_logs (id, library_id, status, total_count, processed_count, success_count, skipped_count, failed_count, started_at, finished_at) VALUES (?1, ?2, 'running', ?3, 0, 0, 0, 0, ?4, NULL)",
+                params![import_id, DEFAULT_LIBRARY_ID, request.total_count, now],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub fn find_eagle_duplicates(
+        &self,
+        identities: Vec<EagleSourceIdentity>,
+    ) -> Result<EagleDuplicateLookupResult, String> {
+        find_eagle_duplicates_on_connection(&self.conn, &identities)
+    }
+
+    pub fn import_eagle_assets_batch(
+        &self,
+        request: EagleImportBatchRequest,
+    ) -> Result<EagleImportBatchResult, String> {
+        let import_id = request.import_id.trim().to_string();
+        if import_id.is_empty() {
+            return Err("Eagle import id is required".to_string());
+        }
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        let now = crate::current_time_millis();
+        tx.execute(
+            "INSERT OR IGNORE INTO import_logs (id, library_id, status, total_count, processed_count, success_count, skipped_count, failed_count, started_at, finished_at) VALUES (?1, ?2, 'running', ?3, 0, 0, 0, 0, ?4, NULL)",
+            params![import_id, DEFAULT_LIBRARY_ID, request.total_count, now],
+        )
+        .map_err(|err| err.to_string())?;
+
+        let incoming_identities = request
+            .assets
+            .iter()
+            .map(|asset| EagleSourceIdentity {
+                external_id: asset
+                    .get("externalId")
+                    .or_else(|| asset.get("eagleId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                external_path: asset
+                    .get("externalPath")
+                    .or_else(|| asset.get("eagleSourcePath"))
+                    .or_else(|| asset.get("path"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        let existing = find_eagle_duplicates_on_connection(&tx, &incoming_identities)?;
+
+        let mut imported = 0_i64;
+        let mut skipped = 0_i64;
+        let mut failed = 0_i64;
+        let mut seen_external_ids = existing.external_ids.into_iter().collect::<HashSet<_>>();
+        let mut seen_paths = existing.external_paths.into_iter().collect::<HashSet<_>>();
+        for asset in request.assets {
+            let external_id = asset
+                .get("externalId")
+                .or_else(|| asset.get("eagleId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let external_path = asset
+                .get("externalPath")
+                .or_else(|| asset.get("eagleSourcePath"))
+                .or_else(|| asset.get("path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let normalized_path = external_path.as_ref().map(|path| path.to_lowercase());
+            let is_duplicate = external_id
+                .as_ref()
+                .is_some_and(|id| seen_external_ids.contains(id))
+                || normalized_path
+                    .as_ref()
+                    .is_some_and(|path| seen_paths.contains(path));
+            if is_duplicate {
+                skipped += 1;
+                continue;
+            }
+            match crate::services::migration_service::insert_asset(&tx, &asset, now) {
+                Ok(()) => {
+                    if let Some(id) = asset.get("id").and_then(Value::as_str) {
+                        tx.execute(
+                            "UPDATE assets SET drawer_visible = 1 WHERE id = ?1",
+                            params![id],
+                        )
+                        .map_err(|err| err.to_string())?;
+                    }
+                    if let Some(id) = external_id {
+                        seen_external_ids.insert(id);
+                    }
+                    if let Some(path) = normalized_path {
+                        seen_paths.insert(path);
+                    }
+                    imported += 1;
+                }
+                Err(reason) => {
+                    failed += 1;
+                    let file_path = asset
+                        .get("externalPath")
+                        .or_else(|| asset.get("path"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    tx.execute(
+                        "INSERT INTO import_errors (id, import_log_id, file_path, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![format!("{}-error-{}", import_id, request.processed_count + failed), import_id, file_path, reason, now],
+                    )
+                    .map_err(|err| err.to_string())?;
+                }
+            }
+        }
+        for (index, failure) in request.failures.iter().enumerate() {
+            failed += 1;
+            tx.execute(
+                "INSERT INTO import_errors (id, import_log_id, file_path, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![format!("{}-failure-{}-{}", import_id, request.processed_count, index), import_id, failure.file_path, failure.reason, now],
+            )
+            .map_err(|err| err.to_string())?;
+        }
+        tx.execute(
+            r#"
+            UPDATE import_logs
+            SET total_count = COALESCE(?2, total_count),
+                processed_count = MAX(processed_count, ?3),
+                success_count = success_count + ?4,
+                skipped_count = skipped_count + ?5,
+                failed_count = failed_count + ?6
+            WHERE id = ?1
+            "#,
+            params![
+                import_id,
+                request.total_count,
+                request.processed_count,
+                imported,
+                skipped,
+                failed,
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        let result = tx
+            .query_row(
+                "SELECT processed_count, success_count, skipped_count, failed_count FROM import_logs WHERE id = ?1",
+                params![import_id],
+                |row| {
+                    Ok(EagleImportBatchResult {
+                        processed: row.get(0)?,
+                        imported: row.get(1)?,
+                        skipped: row.get(2)?,
+                        failed: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(|err| err.to_string())?;
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(result)
+    }
+
+    pub fn finish_eagle_import(&self, request: EagleImportFinishRequest) -> Result<(), String> {
+        let status = match request.status.as_str() {
+            "success" | "partial_failed" | "failed" | "cancelled" => request.status,
+            _ => "failed".to_string(),
+        };
+        self.conn
+            .execute(
+                "UPDATE import_logs SET status = ?2, total_count = COALESCE(?3, total_count), processed_count = MAX(processed_count, ?4), finished_at = ?5 WHERE id = ?1",
+                params![request.import_id, status, request.total_count, request.processed_count, crate::current_time_millis()],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(())
     }
 
     fn normalize_list_options(options: AssetListOptions) -> AssetListOptions {
@@ -134,12 +406,32 @@ impl SqliteAssetRepository {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
-            clauses.push("(file_name LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\' OR metadata_json LIKE ? ESCAPE '\\')".to_string());
-            let pattern = format!("%{}%", keyword.replace('%', "\\%").replace('_', "\\_"));
-            values.push(SqlValue::Text(pattern.clone()));
-            values.push(SqlValue::Text(pattern.clone()));
-            values.push(SqlValue::Text(pattern.clone()));
-            values.push(SqlValue::Text(pattern));
+            if keyword.chars().count() >= 3 {
+                clauses.push(
+                    "id IN (SELECT asset_id FROM asset_fts WHERE asset_fts MATCH ?)".to_string(),
+                );
+                values.push(SqlValue::Text(format!(
+                    "\"{}\"",
+                    keyword.replace('"', "\"\"")
+                )));
+            } else {
+                // FTS5's trigram tokenizer cannot match one- or two-character terms.
+                // Keep the fallback bounded to explicit search columns; never scan metadata_json.
+                clauses.push(
+                    "id IN (SELECT asset_id FROM asset_fts WHERE file_name LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR ai_tags LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR source_url LIKE ? ESCAPE '\\')"
+                        .to_string(),
+                );
+                let pattern = format!(
+                    "%{}%",
+                    keyword
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                );
+                for _ in 0..6 {
+                    values.push(SqlValue::Text(pattern.clone()));
+                }
+            }
         }
         if let Some(tags) = options.tags.as_ref().filter(|tags| !tags.is_empty()) {
             let placeholders = tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -629,10 +921,21 @@ impl AssetRepository for SqliteAssetRepository {
     }
 
     fn delete_asset(&self, id: &str) -> Result<bool, String> {
-        let changed = self.conn.execute(
-            "UPDATE assets SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-            params![id, crate::current_time_millis()],
-        ).map_err(|err| err.to_string())?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        let changed = tx
+            .execute(
+                "UPDATE assets SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+                params![id, crate::current_time_millis()],
+            )
+            .map_err(|err| err.to_string())?;
+        if changed > 0 {
+            tx.execute("DELETE FROM asset_fts WHERE asset_id = ?1", params![id])
+                .map_err(|err| err.to_string())?;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
         Ok(changed > 0)
     }
 
@@ -658,6 +961,13 @@ impl AssetRepository for SqliteAssetRepository {
             changed += tx
                 .execute(&sql, params_from_iter(values))
                 .map_err(|err| err.to_string())?;
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let fts_sql = format!("DELETE FROM asset_fts WHERE asset_id IN ({})", placeholders);
+            tx.execute(
+                &fts_sql,
+                params_from_iter(chunk.iter().cloned().map(SqlValue::Text)),
+            )
+            .map_err(|err| err.to_string())?;
         }
         tx.commit().map_err(|err| err.to_string())?;
         Ok(changed)
@@ -1172,6 +1482,8 @@ mod tests {
     use crate::db::schema::{ensure_schema, DEFAULT_LIBRARY_ID};
     use crate::repositories::asset_repository::{
         AssetBatchUpdate, AssetListOptions, AssetRepository, AssetUpdatePatch,
+        EagleImportBatchRequest, EagleImportBatchResult, EagleImportFailure,
+        EagleImportFinishRequest, EagleImportStartRequest, EagleSourceIdentity,
     };
 
     fn repository() -> SqliteAssetRepository {
@@ -1404,32 +1716,374 @@ mod tests {
     }
 
     #[test]
+    fn fts_search_covers_languages_metadata_updates_deletes_and_filters() {
+        let repo = repository();
+        repo.upsert_assets(vec![
+            json!({
+                "id": "chair",
+                "type": "image",
+                "name": "Modern Chair 现代座椅设计.jpg",
+                "content": "mixed Product 2026 产品灵感",
+                "path": "C:/assets/chair.jpg",
+                "folderId": "furniture",
+                "rating": 5,
+                "createdAt": 5,
+                "remark": "ergonomic seating 人体工学备注",
+                "remarks": ["#minimal", "#极简"],
+                "inspirationProfile": {
+                    "aiTags": [
+                        { "name": "industrial design", "category": "domain", "confidence": 0.9 },
+                        { "name": "工业设计", "category": "领域", "confidence": 0.9 }
+                    ]
+                }
+            }),
+            json!({
+                "id": "video",
+                "type": "video",
+                "name": "Modern Chair process.mp4",
+                "path": "C:/assets/chair.mp4",
+                "folderId": "process",
+                "rating": 3,
+                "createdAt": 4
+            }),
+            json!({
+                "id": "note",
+                "type": "text",
+                "name": "Research",
+                "content": "材料研究 42",
+                "remark": "English notebook",
+                "createdAt": 3
+            }),
+        ])
+        .expect("seed searchable assets");
+
+        let search_ids = |keyword: &str, options: AssetListOptions| -> Vec<String> {
+            repo.list_assets(AssetListOptions {
+                keyword: Some(keyword.to_string()),
+                ..options
+            })
+            .expect("search assets")
+            .into_iter()
+            .filter_map(|value| value["id"].as_str().map(str::to_string))
+            .collect()
+        };
+
+        for keyword in [
+            "Modern Chair",
+            "ergonomic",
+            "人体工学",
+            "minimal",
+            "极简",
+            "industrial design",
+            "工业设计",
+            "材料研究",
+            "Product 2026",
+        ] {
+            assert!(
+                !search_ids(keyword, AssetListOptions::default()).is_empty(),
+                "{keyword}"
+            );
+        }
+        assert_eq!(search_ids("椅", AssetListOptions::default()), vec!["chair"]);
+        assert_eq!(
+            search_ids("座椅", AssetListOptions::default()),
+            vec!["chair"]
+        );
+        assert_eq!(
+            search_ids("现代座", AssetListOptions::default()),
+            vec!["chair"]
+        );
+        assert_eq!(
+            search_ids("现代座椅设计", AssetListOptions::default()),
+            vec!["chair"]
+        );
+
+        assert_eq!(
+            search_ids(
+                "Modern Chair",
+                AssetListOptions {
+                    folder_id: Some("furniture".to_string()),
+                    ..Default::default()
+                },
+            ),
+            vec!["chair"]
+        );
+        assert!(search_ids(
+            "Modern Chair",
+            AssetListOptions {
+                folder_id: Some("missing".to_string()),
+                ..Default::default()
+            },
+        )
+        .is_empty());
+        assert_eq!(
+            search_ids(
+                "Modern Chair",
+                AssetListOptions {
+                    file_type: Some("video".to_string()),
+                    ..Default::default()
+                },
+            ),
+            vec!["video"]
+        );
+        assert_eq!(
+            search_ids(
+                "Modern Chair",
+                AssetListOptions {
+                    rating: Some(5),
+                    ..Default::default()
+                },
+            ),
+            vec!["chair"]
+        );
+
+        let listed = search_ids("Modern Chair", AssetListOptions::default());
+        let counted = repo
+            .get_asset_count(AssetListOptions {
+                keyword: Some("Modern Chair".to_string()),
+                ..Default::default()
+            })
+            .expect("count search assets");
+        assert_eq!(listed.len() as i64, counted);
+
+        repo.update_asset(
+            "chair",
+            AssetUpdatePatch {
+                name: Some("Aurora Seat 极光座椅.jpg".to_string()),
+                note: Some("fresh searchable note 新备注".to_string()),
+                metadata: Some(json!({
+                    "remarks": ["#future"],
+                    "inspirationProfile": { "aiTags": [{ "name": "未来感", "category": "风格", "confidence": 0.95 }] }
+                })),
+                ..Default::default()
+            },
+        )
+        .expect("update searchable asset");
+        assert!(search_ids(
+            "Modern Chair",
+            AssetListOptions {
+                file_type: Some("image".to_string()),
+                ..Default::default()
+            }
+        )
+        .is_empty());
+        for keyword in [
+            "Aurora Seat",
+            "fresh searchable",
+            "future",
+            "未来感",
+            "新备注",
+        ] {
+            assert_eq!(
+                search_ids(keyword, AssetListOptions::default()),
+                vec!["chair"],
+                "{keyword}"
+            );
+        }
+
+        assert!(repo.delete_asset("chair").expect("delete searchable asset"));
+        assert!(search_ids("Aurora Seat", AssetListOptions::default()).is_empty());
+        let fts_rows: i64 = repo
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM asset_fts WHERE asset_id = 'chair'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count stale FTS rows");
+        assert_eq!(fts_rows, 0);
+    }
+
+    #[test]
+    fn eagle_batches_use_database_identity_and_keep_progress_across_pages() {
+        let repo = repository();
+        repo.start_eagle_import(EagleImportStartRequest {
+            import_id: "eagle-test".to_string(),
+            total_count: Some(6),
+        })
+        .expect("start Eagle import");
+
+        let first = repo
+            .import_eagle_assets_batch(EagleImportBatchRequest {
+                import_id: "eagle-test".to_string(),
+                assets: vec![
+                    json!({
+                        "id": "asset-1",
+                        "type": "image",
+                        "name": "one.jpg",
+                        "path": "D:/Eagle/one.jpg",
+                        "createdAt": 1,
+                        "externalProvider": "eagle",
+                        "externalId": "eagle-1",
+                        "externalPath": "D:/Eagle/one.jpg",
+                        "eagleId": "eagle-1",
+                        "eagleSourcePath": "D:/Eagle/one.jpg",
+                        "eagleImportMode": "reference"
+                    }),
+                    json!({
+                        "id": "asset-2",
+                        "type": "image",
+                        "name": "two.jpg",
+                        "path": "D:/Eagle/two.jpg",
+                        "createdAt": 2,
+                        "externalProvider": "eagle",
+                        "externalId": "eagle-2",
+                        "externalPath": "D:/Eagle/two.jpg",
+                        "eagleImportMode": "reference"
+                    }),
+                ],
+                processed_count: 2,
+                total_count: Some(6),
+                failures: vec![],
+            })
+            .expect("write first Eagle page");
+        assert_eq!(
+            first,
+            EagleImportBatchResult {
+                processed: 2,
+                imported: 2,
+                skipped: 0,
+                failed: 0
+            }
+        );
+
+        let second = repo
+            .import_eagle_assets_batch(EagleImportBatchRequest {
+                import_id: "eagle-test".to_string(),
+                assets: vec![
+                    json!({
+                        "id": "duplicate-id",
+                        "type": "image",
+                        "name": "duplicate id.jpg",
+                        "path": "D:/Eagle/another-path.jpg",
+                        "createdAt": 3,
+                        "externalProvider": "eagle",
+                        "externalId": "eagle-1",
+                        "externalPath": "D:/Eagle/another-path.jpg"
+                    }),
+                    json!({
+                        "id": "duplicate-path",
+                        "type": "image",
+                        "name": "duplicate path.jpg",
+                        "path": "d:/eagle/TWO.jpg",
+                        "createdAt": 4,
+                        "externalProvider": "eagle",
+                        "externalId": "eagle-4",
+                        "externalPath": "d:/eagle/TWO.jpg"
+                    }),
+                ],
+                processed_count: 4,
+                total_count: Some(6),
+                failures: vec![],
+            })
+            .expect("deduplicate second Eagle page");
+        assert_eq!(
+            second,
+            EagleImportBatchResult {
+                processed: 4,
+                imported: 2,
+                skipped: 2,
+                failed: 0
+            }
+        );
+
+        let final_page = repo
+            .import_eagle_assets_batch(EagleImportBatchRequest {
+                import_id: "eagle-test".to_string(),
+                assets: vec![json!({ "type": "image", "path": "D:/Eagle/malformed.jpg" })],
+                processed_count: 6,
+                total_count: Some(6),
+                failures: vec![EagleImportFailure {
+                    file_path: "D:/Eagle/missing.jpg".to_string(),
+                    reason: "copy failed".to_string(),
+                }],
+            })
+            .expect("record failed Eagle rows without losing earlier pages");
+        assert_eq!(final_page.imported, 2);
+        assert_eq!(final_page.skipped, 2);
+        assert_eq!(final_page.failed, 2);
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            2
+        );
+
+        repo.finish_eagle_import(EagleImportFinishRequest {
+            import_id: "eagle-test".to_string(),
+            status: "partial_failed".to_string(),
+            total_count: Some(6),
+            processed_count: 6,
+        })
+        .expect("finish Eagle import");
+        let log: (String, i64, i64, i64, i64, i64) = repo
+            .conn
+            .query_row(
+                "SELECT status, total_count, processed_count, success_count, skipped_count, failed_count FROM import_logs WHERE id = 'eagle-test'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .expect("read Eagle import log");
+        assert_eq!(log, ("partial_failed".to_string(), 6, 6, 2, 2, 2));
+
+        repo.start_eagle_import(EagleImportStartRequest {
+            import_id: "eagle-repeat".to_string(),
+            total_count: Some(2),
+        })
+        .expect("start repeated import");
+        let repeated = repo
+            .import_eagle_assets_batch(EagleImportBatchRequest {
+                import_id: "eagle-repeat".to_string(),
+                assets: vec![
+                    json!({ "id": "repeat-1", "type": "image", "path": "D:/Eagle/one.jpg", "externalProvider": "eagle", "externalId": "eagle-1", "externalPath": "D:/Eagle/one.jpg" }),
+                    json!({ "id": "repeat-2", "type": "image", "path": "D:/Eagle/two.jpg", "externalProvider": "eagle", "externalId": "eagle-2", "externalPath": "D:/Eagle/two.jpg" }),
+                ],
+                processed_count: 2,
+                total_count: Some(2),
+                failures: vec![],
+            })
+            .expect("repeat same Eagle library");
+        assert_eq!(repeated.imported, 0);
+        assert_eq!(repeated.skipped, 2);
+        assert_eq!(
+            repo.get_asset_count(AssetListOptions::default()).unwrap(),
+            2
+        );
+    }
+
+    #[test]
     #[ignore = "explicit 100k metadata performance acceptance test"]
     fn repository_perf_100k() {
         let repo = repository();
         let seed_started = Instant::now();
         let tx = repo.conn.unchecked_transaction().expect("seed transaction");
         {
-            let mut stmt = tx
+            let mut asset_stmt = tx
                 .prepare(
                     r#"
                     INSERT INTO assets
                     (id, library_id, folder_id, file_path, file_name, file_ext, file_type, file_size, width, height, duration, hash, quick_hash, source_url, note, rating, created_at, updated_at, imported_at, modified_at, deleted_at, metadata_json)
-                    VALUES (?1, ?2, ?3, ?4, ?5, 'jpg', 'image', 1024, 512, 512, NULL, NULL, NULL, NULL, ?6, 0, ?7, ?7, ?7, ?7, NULL, ?8)
+                    VALUES (?1, ?2, ?3, ?4, ?5, 'jpg', ?6, 1024, 512, 512, NULL, NULL, NULL, NULL, ?7, 0, ?8, ?8, ?8, ?8, NULL, ?9)
                     "#,
                 )
                 .expect("prepare seed");
+            let mut fts_stmt = tx
+                .prepare(
+                    "INSERT INTO asset_fts (asset_id, file_name, note, tags, ai_tags, content, source_url) VALUES (?1, ?2, ?3, '', '', ?2, '')",
+                )
+                .expect("prepare FTS seed");
             for index in 0_i64..100_000 {
                 let id = format!("perf-{index:06}");
                 let folder_id = format!("folder-{}", index % 100);
                 let file_name = if index == 99_999 {
                     "needle-99999.jpg".to_string()
+                } else if index == 88_888 {
+                    "中文检索命中-88888.jpg".to_string()
                 } else {
                     format!("asset-{index:06}.jpg")
                 };
+                let file_type = if index % 10 == 0 { "video" } else { "image" };
                 let metadata = json!({
                     "id": id.clone(),
-                    "type": "image",
+                    "type": file_type,
                     "name": file_name.clone(),
                     "content": file_name.clone(),
                     "path": format!("C:/mock/{file_name}"),
@@ -1437,17 +2091,30 @@ mod tests {
                     "createdAt": index,
                 })
                 .to_string();
-                stmt.execute(params![
-                    id,
-                    DEFAULT_LIBRARY_ID,
-                    folder_id,
-                    format!("C:/mock/{file_name}"),
-                    file_name,
-                    "",
-                    index,
-                    metadata,
-                ])
-                .expect("insert perf asset");
+                asset_stmt
+                    .execute(params![
+                        &id,
+                        DEFAULT_LIBRARY_ID,
+                        folder_id,
+                        format!("C:/mock/{file_name}"),
+                        &file_name,
+                        file_type,
+                        "",
+                        index,
+                        metadata,
+                    ])
+                    .expect("insert perf asset");
+                fts_stmt
+                    .execute(params![
+                        &id,
+                        &file_name,
+                        if index == 77_777 {
+                            "performance note target"
+                        } else {
+                            ""
+                        }
+                    ])
+                    .expect("insert perf FTS row");
             }
         }
         tx.commit().expect("commit seed");
@@ -1464,20 +2131,61 @@ mod tests {
         let analysis_counts = repo
             .get_inspiration_analysis_counts(None)
             .expect("analysis queue counts");
-        assert_eq!(analysis_counts["total"], 100_000);
+        assert_eq!(analysis_counts["total"], 90_000);
         assert_eq!(analysis_counts["analyzed"], 0);
         let analysis_queue_count_ms = analysis_queue_started.elapsed().as_millis();
 
-        let page_started = Instant::now();
-        let page = repo
+        let initial_page_started = Instant::now();
+        let initial_page = repo
             .list_assets(AssetListOptions {
-                offset: Some(50_000),
                 limit: Some(200),
                 ..Default::default()
             })
-            .expect("middle page");
-        assert_eq!(page.len(), 200);
-        let page_ms = page_started.elapsed().as_millis();
+            .expect("initial page");
+        assert_eq!(initial_page.len(), 200);
+        let initial_page_ms = initial_page_started.elapsed().as_millis();
+
+        let next_page_started = Instant::now();
+        let next_page = repo
+            .list_assets(AssetListOptions {
+                offset: Some(200),
+                limit: Some(200),
+                ..Default::default()
+            })
+            .expect("next page");
+        assert_eq!(next_page.len(), 200);
+        let next_page_ms = next_page_started.elapsed().as_millis();
+
+        let deep_page_started = Instant::now();
+        let deep_page = repo
+            .list_assets(AssetListOptions {
+                offset: Some(90_000),
+                limit: Some(200),
+                ..Default::default()
+            })
+            .expect("deep page");
+        assert_eq!(deep_page.len(), 200);
+        let deep_page_ms = deep_page_started.elapsed().as_millis();
+
+        let folder_filter_started = Instant::now();
+        let folder_count = repo
+            .get_asset_count(AssetListOptions {
+                folder_id: Some("folder-42".to_string()),
+                ..Default::default()
+            })
+            .expect("folder count");
+        assert_eq!(folder_count, 1_000);
+        let folder_filter_ms = folder_filter_started.elapsed().as_millis();
+
+        let type_filter_started = Instant::now();
+        let video_count = repo
+            .get_asset_count(AssetListOptions {
+                file_type: Some("video".to_string()),
+                ..Default::default()
+            })
+            .expect("video count");
+        assert_eq!(video_count, 10_000);
+        let type_filter_ms = type_filter_started.elapsed().as_millis();
 
         let search_started = Instant::now();
         let search = repo
@@ -1490,8 +2198,32 @@ mod tests {
         assert_eq!(search.len(), 1);
         let search_ms = search_started.elapsed().as_millis();
 
+        let chinese_search_started = Instant::now();
+        let chinese_search = repo
+            .list_assets(AssetListOptions {
+                keyword: Some("中文检索命中".to_string()),
+                ..Default::default()
+            })
+            .expect("Chinese search page");
+        assert_eq!(chinese_search.len(), 1);
+        let chinese_search_ms = chinese_search_started.elapsed().as_millis();
+
+        let duplicate_lookup_started = Instant::now();
+        let duplicates = repo
+            .find_eagle_duplicates(
+                (0..200)
+                    .map(|index| EagleSourceIdentity {
+                        external_id: format!("eagle-{index}"),
+                        external_path: format!("C:/mock/asset-{index:06}.jpg"),
+                    })
+                    .collect(),
+            )
+            .expect("batch duplicate lookup");
+        assert_eq!(duplicates.external_paths.len(), 200);
+        let duplicate_lookup_ms = duplicate_lookup_started.elapsed().as_millis();
+
         println!(
-            "[DrawerPerf100k] seed_ms={seed_ms} count_ms={count_ms} analysis_queue_count_ms={analysis_queue_count_ms} page_offset_50000_ms={page_ms} search_ms={search_ms}"
+            "[DrawerPerf100k] seed_ms={seed_ms} count_ms={count_ms} analysis_queue_count_ms={analysis_queue_count_ms} initial_page_ms={initial_page_ms} next_page_ms={next_page_ms} deep_offset_90000_ms={deep_page_ms} folder_filter_ms={folder_filter_ms} type_filter_ms={type_filter_ms} search_ms={search_ms} chinese_search_ms={chinese_search_ms} duplicate_lookup_200_ms={duplicate_lookup_ms}"
         );
     }
 }

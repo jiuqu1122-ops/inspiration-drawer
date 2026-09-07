@@ -68,7 +68,25 @@ static WINDOW_RESIZE_ANIMATION_TOKEN: AtomicU64 = AtomicU64::new(0);
 static ANTI_TOUCH_LOCKED: AtomicU16 = AtomicU16::new(0);
 static MAIN_WORKBENCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static POST_INSTALL_LAUNCH_PENDING: AtomicBool = AtomicBool::new(false);
+static SNIP_BACKGROUND_PATH: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 const POST_INSTALL_LAUNCH_MARKER: &str = ".inspiration-drawer-post-install";
+
+fn store_snip_background_path(path: String) {
+    if let Ok(mut current) = SNIP_BACKGROUND_PATH.get_or_init(|| Mutex::new(None)).lock() {
+        *current = Some(path);
+    }
+}
+
+fn take_snip_background_path(preferred: Option<String>) -> Option<String> {
+    let stored = SNIP_BACKGROUND_PATH
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut current| current.take());
+    preferred
+        .filter(|value| !value.trim().is_empty())
+        .or(stored)
+}
 
 struct CloudflaredShare {
     child: Child,
@@ -9377,160 +9395,6 @@ async fn eagle_probe_process() -> Result<bool, String> {
     .map_err(|error| error.to_string())?
 }
 
-fn read_eagle_json(path: &Path) -> Option<serde_json::Value> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
-}
-
-fn eagle_offline_item_file(info_dir: &Path, metadata: &serde_json::Value) -> Option<PathBuf> {
-    let name = metadata
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let ext = metadata
-        .get("ext")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    if !name.is_empty() && !ext.is_empty() {
-        let preferred = info_dir.join(format!("{}.{}", name, ext.trim_start_matches('.')));
-        if preferred.is_file() {
-            return Some(preferred);
-        }
-    }
-
-    fs::read_dir(info_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            if !path.is_file() {
-                return false;
-            }
-            let file_name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            file_name != "metadata.json"
-                && !file_name.contains("thumbnail")
-                && !file_name.contains("preview")
-        })
-}
-
-fn eagle_offline_thumbnail_file(info_dir: &Path) -> Option<PathBuf> {
-    fs::read_dir(info_dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            if !path.is_file() {
-                return false;
-            }
-            let file_name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            file_name.contains("thumbnail") || file_name.contains("preview")
-        })
-}
-
-#[tauri::command]
-async fn eagle_read_offline_library(path: String) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let library_path = fs::canonicalize(path.trim())
-            .map_err(|error| format!("无法打开 Eagle 资料库：{}", error))?;
-        let is_library = library_path
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| value.eq_ignore_ascii_case("library"));
-        if !is_library || !library_path.is_dir() {
-            return Err("请选择以 .library 结尾的 Eagle 资料库目录".to_string());
-        }
-        let images_dir = library_path.join("images");
-        if !images_dir.is_dir() {
-            return Err("所选 .library 中没有 images 目录".to_string());
-        }
-
-        let library_metadata = read_eagle_json(&library_path.join("metadata.json"))
-            .unwrap_or_else(|| serde_json::json!({}));
-        let folders = library_metadata
-            .get("folders")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([]));
-        let mut items = Vec::new();
-        for entry in fs::read_dir(&images_dir)
-            .map_err(|error| format!("读取 Eagle images 目录失败：{}", error))?
-            .filter_map(Result::ok)
-        {
-            let info_dir = entry.path();
-            if !info_dir.is_dir()
-                || !info_dir
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|value| value.to_ascii_lowercase().ends_with(".info"))
-            {
-                continue;
-            }
-            let Some(mut metadata) = read_eagle_json(&info_dir.join("metadata.json")) else {
-                continue;
-            };
-            let Some(file_path) = eagle_offline_item_file(&info_dir, &metadata) else {
-                continue;
-            };
-            let thumbnail_path = eagle_offline_thumbnail_file(&info_dir);
-            let Some(record) = metadata.as_object_mut() else {
-                continue;
-            };
-            if !record.contains_key("id") {
-                let id = info_dir
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("")
-                    .trim_end_matches(".info")
-                    .to_string();
-                record.insert("id".to_string(), serde_json::Value::String(id));
-            }
-            record.insert(
-                "filePath".to_string(),
-                serde_json::Value::String(display_local_path(&file_path)),
-            );
-            if let Some(thumbnail_path) = thumbnail_path {
-                record.insert(
-                    "thumbnailPath".to_string(),
-                    serde_json::Value::String(display_local_path(&thumbnail_path)),
-                );
-            }
-            items.push(metadata);
-        }
-
-        let library_name = library_metadata
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                library_path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| "Eagle Library".to_string());
-
-        Ok(serde_json::json!({
-            "library": {
-                "name": library_name,
-                "path": display_local_path(&library_path),
-            },
-            "folders": folders,
-            "items": items,
-        }))
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
 #[cfg(test)]
 mod eagle_import_tests {
     use super::*;
@@ -9549,74 +9413,6 @@ mod eagle_import_tests {
         assert!(!is_allowed_eagle_api_url(
             "http://127.0.0.1:41596/api/v2/app/info"
         ));
-    }
-
-    #[test]
-    fn eagle_offline_item_prefers_original_over_thumbnail() {
-        let root = std::env::temp_dir().join(format!(
-            "inspiration-drawer-eagle-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("metadata.json"), "{}").unwrap();
-        fs::write(root.join("Product.png"), b"image").unwrap();
-        fs::write(root.join("Product_thumbnail.png"), b"thumbnail").unwrap();
-        let metadata = serde_json::json!({ "name": "Product", "ext": "png" });
-
-        assert_eq!(
-            eagle_offline_item_file(&root, &metadata).unwrap(),
-            root.join("Product.png")
-        );
-        assert_eq!(
-            eagle_offline_thumbnail_file(&root).unwrap(),
-            root.join("Product_thumbnail.png")
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn scans_a_read_only_eagle_library_directory() {
-        let root = std::env::temp_dir().join(format!(
-            "inspiration-drawer-eagle-library-test-{}.library",
-            std::process::id()
-        ));
-        let info_dir = root.join("images").join("ITEM-1.info");
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&info_dir).unwrap();
-        fs::write(
-            root.join("metadata.json"),
-            r#"{"name":"Design","folders":[{"id":"F1","name":"Products"}]}"#,
-        )
-        .unwrap();
-        fs::write(
-            info_dir.join("metadata.json"),
-            r#"{"id":"ITEM-1","name":"Wheel","ext":"png","folders":["F1"]}"#,
-        )
-        .unwrap();
-        fs::write(info_dir.join("Wheel.png"), b"image").unwrap();
-
-        let result = tauri::async_runtime::block_on(eagle_read_offline_library(
-            root.to_string_lossy().to_string(),
-        ))
-        .unwrap();
-        assert_eq!(
-            result
-                .pointer("/library/name")
-                .and_then(|value| value.as_str()),
-            Some("Design")
-        );
-        assert_eq!(
-            result
-                .pointer("/items/0/id")
-                .and_then(|value| value.as_str()),
-            Some("ITEM-1")
-        );
-        assert!(result
-            .pointer("/items/0/filePath")
-            .and_then(|value| value.as_str())
-            .is_some_and(|value| value.ends_with("Wheel.png")));
-        let _ = fs::remove_dir_all(root);
     }
 
     fn managed_canvas_profile(provider: &str) -> ai_credentials::EffectiveApiProfile {
@@ -16536,11 +16332,19 @@ async fn capture_screen_to_file(
             .find(|s| s.display_info.x == monitor_pos.x && s.display_info.y == monitor_pos.y)
             .unwrap_or(&screens[0])
             .clone();
+
+        // Freeze exactly what the user can currently see, including the drawer. Keeping
+        // the transparent selection window above a hardware-accelerated video can make
+        // DWM return a black frame after a short delay, so every later crop uses this
+        // initial frame instead of capturing the live desktop again.
+        if let Some(snip) = app_handle.get_webview_window("snip") {
+            let _ = snip.hide();
+        }
         let image = screen.capture().map_err(|e| e.to_string())?;
         let out_dir = read_web_image_cache_dir(&app_handle);
         fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
         let file_name = format!(
-            "drawer_snip_background_{}.jpg",
+            "drawer_snip_background_{}.png",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
@@ -16548,14 +16352,87 @@ async fn capture_screen_to_file(
         );
         let out_path = out_dir.join(file_name);
         let file = File::create(&out_path).map_err(|e| e.to_string())?;
-        let mut file = BufWriter::new(file);
-        image
-            .write_to(&mut file, screenshots::image::ImageFormat::Jpeg)
-            .map_err(|e| e.to_string())?;
-        Ok(out_path.to_string_lossy().to_string())
+        let writer = BufWriter::new(file);
+        let encoder = screenshots::image::codecs::png::PngEncoder::new_with_quality(
+            writer,
+            screenshots::image::codecs::png::CompressionType::Fast,
+            screenshots::image::codecs::png::FilterType::NoFilter,
+        );
+        screenshots::image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            screenshots::image::ColorType::Rgba8,
+        )
+        .map_err(|e| e.to_string())?;
+        let saved_path = out_path.to_string_lossy().to_string();
+        store_snip_background_path(saved_path.clone());
+        Ok(saved_path)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn crop_image_file_to_file_impl(
+    app_handle: &tauri::AppHandle,
+    path: &str,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+    file_name: Option<&str>,
+) -> Result<String, String> {
+    let source = local_path_from_url_like(path).unwrap_or_else(|| PathBuf::from(path));
+    let image = screenshots::image::open(&source).map_err(|e| e.to_string())?;
+    let image_w = image.width().max(1);
+    let image_h = image.height().max(1);
+    let scale_x = image_w as f64 / viewport_width.max(1.0);
+    let scale_y = image_h as f64 / viewport_height.max(1.0);
+
+    let sx = (x * scale_x).round().max(0.0).min((image_w - 1) as f64) as u32;
+    let sy = (y * scale_y).round().max(0.0).min((image_h - 1) as f64) as u32;
+    let max_w = image_w.saturating_sub(sx).max(1);
+    let max_h = image_h.saturating_sub(sy).max(1);
+    let sw = (width * scale_x).round().max(1.0).min(max_w as f64) as u32;
+    let sh = (height * scale_y).round().max(1.0).min(max_h as f64) as u32;
+
+    let cropped = image.crop_imm(sx, sy, sw, sh);
+    let out_dir = read_web_image_cache_dir(app_handle);
+    fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let fallback_name = format!(
+        "drawer_snip_area_{}.png",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis()
+    );
+    let safe_name = file_name
+        .map(sanitize_file_name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(fallback_name);
+    let out_path = unique_file_path(out_dir.join(safe_name));
+    cropped.save(&out_path).map_err(|e| e.to_string())?;
+    Ok(out_path.to_string_lossy().to_string())
+}
+
+fn remove_snip_background_file(app_handle: &tauri::AppHandle, path: Option<&str>) {
+    let Some(path) = path.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let candidate = local_path_from_url_like(path).unwrap_or_else(|| PathBuf::from(path));
+    let Some(file_name) = candidate.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    if !file_name.starts_with("drawer_snip_background_") {
+        return;
+    }
+    let cache_dir = read_web_image_cache_dir(app_handle);
+    if candidate.parent() == Some(cache_dir.as_path()) {
+        let _ = fs::remove_file(candidate);
+    }
 }
 
 #[tauri::command]
@@ -16571,38 +16448,17 @@ async fn crop_image_file_to_file(
     file_name: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let source = local_path_from_url_like(&path).unwrap_or_else(|| PathBuf::from(&path));
-        let image = screenshots::image::open(&source).map_err(|e| e.to_string())?;
-        let image_w = image.width().max(1);
-        let image_h = image.height().max(1);
-        let scale_x = image_w as f64 / viewport_width.max(1.0);
-        let scale_y = image_h as f64 / viewport_height.max(1.0);
-
-        let sx = (x * scale_x).round().max(0.0).min((image_w - 1) as f64) as u32;
-        let sy = (y * scale_y).round().max(0.0).min((image_h - 1) as f64) as u32;
-        let max_w = image_w.saturating_sub(sx).max(1);
-        let max_h = image_h.saturating_sub(sy).max(1);
-        let sw = (width * scale_x).round().max(1.0).min(max_w as f64) as u32;
-        let sh = (height * scale_y).round().max(1.0).min(max_h as f64) as u32;
-
-        let cropped = image.crop_imm(sx, sy, sw, sh);
-        let out_dir = read_web_image_cache_dir(&app_handle);
-        fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-        let fallback_name = format!(
-            "drawer_snip_area_{}.png",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_millis()
-        );
-        let safe_name = file_name
-            .as_deref()
-            .map(sanitize_file_name)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or(fallback_name);
-        let out_path = unique_file_path(out_dir.join(safe_name));
-        cropped.save(&out_path).map_err(|e| e.to_string())?;
-        Ok(out_path.to_string_lossy().to_string())
+        crop_image_file_to_file_impl(
+            &app_handle,
+            &path,
+            x,
+            y,
+            width,
+            height,
+            viewport_width,
+            viewport_height,
+            file_name.as_deref(),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -16748,7 +16604,9 @@ async fn complete_snip_selection(
     drawer_width: f64,
     drawer_height: f64,
     mode: Option<String>,
+    background_path: Option<String>,
 ) -> Result<(), String> {
+    let background_path = take_snip_background_path(background_path);
     let snip = app_handle
         .get_webview_window("snip")
         .ok_or_else(|| "snip window not found".to_string())?;
@@ -16769,20 +16627,45 @@ async fn complete_snip_selection(
     }
 
     let app_for_capture = app_handle.clone();
+    let frozen_background_path = background_path.clone();
     let capture_result = tauri::async_runtime::spawn_blocking(move || {
-        capture_physical_area_to_file(
-            Some(&app_for_capture),
-            physical_x,
-            physical_y,
-            physical_w,
-            physical_h,
-        )
+        if let Some(path) = frozen_background_path.as_deref() {
+            let result = crop_image_file_to_file_impl(
+                &app_for_capture,
+                path,
+                x,
+                y,
+                width,
+                height,
+                viewport_width,
+                viewport_height,
+                None,
+            );
+            remove_snip_background_file(&app_for_capture, Some(path));
+            result
+        } else {
+            capture_physical_area_to_file(
+                Some(&app_for_capture),
+                physical_x,
+                physical_y,
+                physical_w,
+                physical_h,
+            )
+        }
     })
     .await
     .map_err(|e| e.to_string())?;
 
     match capture_result {
         Ok(path) => {
+            let _ = recover_after_snip(
+                app_handle.clone(),
+                restore_drawer,
+                drawer_width,
+                drawer_height,
+                mode.clone(),
+                None,
+            );
             if let Some(main) = app_handle.get_webview_window("main") {
                 let _ = main.emit(
                     "snip-captured",
@@ -16796,7 +16679,6 @@ async fn complete_snip_selection(
                         "noteY": note_y,
                     }),
                 );
-                let _ = main.emit("snip-recovered", ());
             }
             Ok(())
         }
@@ -16807,6 +16689,7 @@ async fn complete_snip_selection(
                 drawer_width,
                 drawer_height,
                 mode.clone(),
+                background_path,
             );
             Err(err)
         }
@@ -17311,7 +17194,10 @@ fn hide_edge(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn show_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+fn show_snip_window(
+    app_handle: tauri::AppHandle,
+    background_path: Option<String>,
+) -> Result<(), String> {
     let snip = app_handle
         .get_webview_window("snip")
         .ok_or_else(|| "snip window not found".to_string())?;
@@ -17342,6 +17228,10 @@ fn show_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     snip.set_position(*monitor.position())
         .map_err(|e| e.to_string())?;
     snip.set_size(*monitor.size()).map_err(|e| e.to_string())?;
+    let _ = snip.emit(
+        "snip-reset",
+        serde_json::json!({ "backgroundPath": background_path }),
+    );
     snip.show().map_err(|e| e.to_string())?;
     let _ = snip.set_focus();
 
@@ -17371,7 +17261,6 @@ fn show_snip_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Some(main) = main.as_ref() {
         let _ = main.set_ignore_cursor_events(true);
     }
-    let _ = snip.emit("snip-reset", ());
     Ok(())
 }
 
@@ -17395,7 +17284,10 @@ fn recover_after_snip(
     width: f64,
     height: f64,
     mode: Option<String>,
+    background_path: Option<String>,
 ) -> Result<(), String> {
+    let background_path = take_snip_background_path(background_path);
+    remove_snip_background_file(&app_handle, background_path.as_deref());
     let _ = width;
     if let Some(snip) = app_handle.get_webview_window("snip") {
         let _ = snip.hide();
@@ -18632,6 +18524,10 @@ fn main() {
             commands::assets::get_asset_by_id,
             commands::assets::get_asset_count,
             commands::assets::upsert_assets,
+            commands::assets::start_eagle_import,
+            commands::assets::find_eagle_duplicates,
+            commands::assets::import_eagle_assets_batch,
+            commands::assets::finish_eagle_import,
             commands::assets::update_asset,
             commands::assets::update_assets_batch,
             commands::assets::delete_asset,
@@ -18699,6 +18595,7 @@ fn main() {
             agent::agent_openai_chat,
             agent::agent_analyze_inspiration,
             agent::agent_cancel_openai,
+            agent::agent_ack_wallet_task,
             agent::agent_list_openai_models,
             agent::agent_test_api_connection,
             agent::agent_query_api_balance,
@@ -18791,7 +18688,9 @@ fn main() {
             eagle_api_get,
             eagle_probe_port,
             eagle_probe_process,
-            eagle_read_offline_library,
+            commands::eagle::eagle_start_offline_library,
+            commands::eagle::eagle_read_offline_page,
+            commands::eagle::eagle_finish_offline_library,
             save_item_source_as,
             save_dropped_file,
             commands::license::get_machine_id,
@@ -18818,6 +18717,8 @@ fn main() {
             commands::enter_snip_mode,
             commands::exit_snip_mode,
             capture_screen_area,
+            capture_screen_to_file,
+            crop_image_file_to_file,
             capture_screen_area_to_file,
             capture_screen_area_absolute_to_file,
             capture_snip_selection_to_file,

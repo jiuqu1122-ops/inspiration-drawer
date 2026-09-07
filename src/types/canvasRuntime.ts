@@ -19,6 +19,33 @@ export type CanvasPersistedState = {
 
 export type CanvasBrushEditorMode = 'brush' | 'crop' | 'eraser' | 'rectangle' | 'circle' | 'ellipse';
 
+export type CanvasAiXaisBalanceState = {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  balance?: number;
+  id?: number;
+  hasWx?: boolean;
+  isMgr?: boolean;
+  message?: string;
+  checkedAt?: number;
+};
+
+export type CanvasReferenceReplaceTarget = {
+  targetId: string;
+  inputId: string;
+  inputIndex: number;
+};
+
+export type CanvasReferenceDragState = {
+  targetId: string;
+  inputId: string;
+  overInputId: string;
+  clientX: number;
+  clientY: number;
+  previewSource: string;
+  inputIndex: number;
+  rotation: 0 | 90 | 180 | 270;
+};
+
 export type CanvasBrushShapeMode = Extract<CanvasBrushEditorMode, 'rectangle' | 'circle' | 'ellipse'>;
 
 export type CanvasBrushPoint = { x: number; y: number };

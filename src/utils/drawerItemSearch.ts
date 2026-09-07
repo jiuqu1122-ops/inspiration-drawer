@@ -33,9 +33,7 @@ export const replaceFirstItemRemark = (
 
 export const getDrawerItemSearchText = (item: BufferItem) => {
   const profile = item.inspirationProfile;
-  const searchableRemarks = item.type === 'image'
-    ? []
-    : [item.remark, ...cleanTextList(item.remarks)];
+  const searchableRemarks = [item.remark, ...cleanTextList(item.remarks)];
   const profileText = profile ? [
     profile.summary,
     ...cleanTextList(profile.objects),

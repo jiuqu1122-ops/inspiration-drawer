@@ -65,4 +65,34 @@ describe('Chat tool-result compaction', () => {
     expect(provider).not.toContain('VERY_LARGE_PRIVATE_PAYLOAD');
     expect(provider).toContain('https://cdn.example.com/generated.png');
   });
+
+  it('keeps independent variant media local while exposing only safe result metadata to the provider', () => {
+    const source = {
+      ok: true,
+      operation: 'generate_image_variants',
+      total: 2,
+      completed: 2,
+      succeeded: 2,
+      failed: 0,
+      results: [{
+        variantIndex: 0,
+        name: '方向 A',
+        prompt: '独立方向 A',
+        status: 'completed',
+        media: [{
+          id: 'variant-a',
+          path: 'C:\\private\\variant-a.png',
+          url: 'data:image/png;base64,PRIVATE',
+          assetId: 'asset-a',
+        }],
+      }],
+    };
+
+    const local = serializeChatToolResult(compactChatToolResult('generate_image_variants', source));
+    const provider = serializeChatToolResult(compactChatToolResultForProvider('generate_image_variants', source));
+    expect(local).toContain('C:\\\\private\\\\variant-a.png');
+    expect(provider).not.toContain('C:\\\\private');
+    expect(provider).not.toContain('data:image');
+    expect(provider).toContain('方向 A');
+  });
 });

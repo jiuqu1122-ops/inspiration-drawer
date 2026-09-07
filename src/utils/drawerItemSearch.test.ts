@@ -40,14 +40,14 @@ describe('drawer item search', () => {
     expect(searchText).toContain('玫瑰金色');
   });
 
-  it('does not index drawer remarks attached to images', () => {
+  it('indexes drawer remarks attached to images', () => {
     const searchText = getDrawerItemSearchText(createItem({
       remark: 'private generation prompt',
       remarks: ['another private note'],
     }));
 
-    expect(searchText).not.toContain('private generation prompt');
-    expect(searchText).not.toContain('another private note');
+    expect(searchText).toContain('private generation prompt');
+    expect(searchText).toContain('another private note');
   });
 
   it('continues to index remarks for non-image items', () => {

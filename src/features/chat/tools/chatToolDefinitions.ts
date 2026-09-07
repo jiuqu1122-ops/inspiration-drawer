@@ -1,3 +1,5 @@
+import { isShortVisualFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
+
 type ChatToolDefinition = {
   type: 'function';
   function: { name: string; description: string; parameters: Record<string, unknown> };
@@ -12,8 +14,9 @@ export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
   { type: 'function', function: { name: 'create_file', description: '创建一个可打开、下载和另存为的真实文件。仅当用户明确要求生成文件、文档、报告、表格或可下载内容时调用。DOCX/PDF 的 content 使用 Markdown；XLSX 使用 sheets；不要返回 Base64、XML 或伪造下载链接。', parameters: objectSchema({ fileName: { type: 'string', description: '用户可见的文件名，包含对应扩展名。' }, format: { type: 'string', enum: ['txt', 'md', 'csv', 'json', 'docx', 'xlsx', 'pdf'] }, content: { type: ['string', 'null'], description: 'TXT/MD/CSV/JSON 的文件正文；DOCX/PDF 使用 Markdown 正文；XLSX 可为 null。' }, sheets: { type: ['array', 'null'], description: '仅 XLSX 使用。第一行应为表头。', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } } }, required: ['name', 'rows'], additionalProperties: false } } }, ['fileName', 'format']) } },
   { type: 'function', function: { name: 'get_canvas_selection', description: '读取当前画布选中项的精简信息。仅在用户提到当前画布、当前节点或选中内容时使用。', parameters: objectSchema({}) } },
   { type: 'function', function: { name: 'search_assets', description: '在本地素材库中搜索少量相关素材。', parameters: objectSchema({ query: { type: 'string' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 }, filter: { type: ['object', 'null'], additionalProperties: true } }, ['query']) } },
-  { type: 'function', function: { name: 'generate_image', description: '使用灵感抽屉现有生图系统生成图片，结果显示在聊天中并自动加入画布。当前附件默认自动作为共同参考；只参考部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度默认来自用户的图片设置，只有用户在对话里明确指定新值时才填写对应参数。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，例如 16:9；否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
-  { type: 'function', function: { name: 'edit_image', description: '继续编辑本轮或此前聊天生成的图片。只编辑部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度默认来自用户的图片设置，只有用户在对话里明确指定新值时才填写对应参数。', parameters: objectSchema({ prompt: { type: 'string' }, sourceImageId: { type: ['string', 'null'] }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null。' } }, ['prompt']) } },
+  { type: 'function', function: { name: 'generate_image', description: '使用灵感抽屉现有生图系统执行一个图片任务，结果显示在聊天中并自动加入画布。count>1 只表示同一提示词的随机候选，不得用它承载多个独立任务；如果用户明确要求把多个方向放进同一张对比图、拼版或方案板，也使用本工具并固定 count=1，在 prompt 中描述同图布局。当前附件默认自动作为共同参考；只有用户明确说不要使用附件时才传 useAttachedImages=false。只参考部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度默认来自用户的图片设置，只有用户在对话里明确指定新值时才填写对应参数。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，例如 16:9；否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
+  { type: 'function', function: { name: 'generate_image_variants', description: '当用户要求同一个参考对象产生多个语义不同的设计方向、方案、版本、风格或概念，并且每个方向要独立出图时调用。适用于任何视觉领域，不限于产品或 CMF。每个 variants 项会成为一个独立并行任务且固定只生成一张图；禁止把所有方向合进一个 prompt，也禁止用 generate_image 的 count 代替。如果用户明确要求一张图同时展示多个方案、并排比较或做成方案板，不得调用本工具，应使用 generate_image 且 count=1。当前或历史续接图片会自动作为所有任务的共同参考。', parameters: objectSchema({ sharedRequirements: { type: 'string', description: '所有独立方案共同遵守的要求，包括必须保持的主体身份、结构、比例、视角、构图或其他连续性约束。' }, variants: { type: 'array', minItems: 2, maxItems: 4, items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', description: '用户可识别的方案名称。' }, prompt: { type: 'string', description: '只描述当前这一个方案的完整、可执行生图指令，不得混入其他方案。' } }, required: ['name', 'prompt'] } }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null。' }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' } }, ['sharedRequirements', 'variants']) } },
+  { type: 'function', function: { name: 'edit_image', description: '继续编辑本轮或此前聊天生成的图片。只有用户明确说不要使用附件时才传 useAttachedImages=false。只编辑部分当前附件时传 attachmentIds，不要猜测本地路径。模型、比例和清晰度默认来自用户的图片设置，只有用户在对话里明确指定新值时才填写对应参数。', parameters: objectSchema({ prompt: { type: 'string' }, sourceImageId: { type: ['string', 'null'] }, referenceImages: { type: 'array', items: { type: 'string' } }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' } }, useAttachedImages: { type: ['boolean', 'null'], description: '仅当用户明确要求忽略、不参考当前或历史附件时传 false；其他情况为 null。' }, model: { type: ['string', 'null'], description: '仅当用户明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null。' } }, ['prompt']) } },
   { type: 'function', function: { name: 'batch_image_operation', description: '仅当正常对话中确认用户希望对多张图片分别执行同一种图像任务时调用。任务可以是排版、换背景、增加或移除元素、修复增强、风格转换、改色、扩图或其他编辑，不得预设任务类型。该调用先形成与用户目标匹配的具体方案并等待自然语言确认，不会立即执行。必须逐张查看图片；不要只复述原话或输出泛化摘要。每张图片会成为相互隔离的并发任务，不会合并成一张参考图。', parameters: objectSchema({ taskUnderstanding: { type: 'string', description: '结合对话说明真正的任务目标、任务类型和成功标准；不要默认写成排版任务。' }, sourceAssessment: { type: 'string', description: '按“图片 1、图片 2…”逐张说明看到了什么、当前差异、处理重点和风险；使用 Markdown 列表。' }, executionPlan: { type: 'string', description: '说明后续工具会对每张图执行哪些步骤、先后关系以及如何根据不同原图自适应。' }, specificChanges: { type: 'string', description: '写清所有图片共同需要增加、移除、替换、调整或修复的内容及目标效果。只有任务涉及排版时才写版式、标题、文案、网格与字体；其他任务写对应的背景、颜色、元素、光影、边缘、清晰度等具体处理。' }, perImageInstructions: { type: 'array', minItems: 1, description: '为当前每张附件各写一条可直接执行的专属指令，数量必须与图片数一致，imageIndex 从 1 开始且不得重复。排版任务要在这里写明该页的实际标题、文案和位置；其他任务写明该图特有的处理区域、难点和目标。', items: { type: 'object', additionalProperties: false, properties: { imageIndex: { type: 'number', minimum: 1 }, instruction: { type: 'string' } }, required: ['imageIndex', 'instruction'] } }, preservationRules: { type: 'string', description: '明确必须保留的主体身份、造型、构图、材质或其他信息，以及禁止出现的变化。' }, deliveryPlan: { type: 'string', description: '只说明独立处理数量、结果顺序和自动编组方式。不要规划或推荐模型、宽高比、分辨率、清晰度。' }, analysisSummary: { type: ['string', 'null'], description: '可选补充说明，不要用它替代上述具体方案字段。' }, instruction: { type: 'string', description: '概括用户本次真实任务。运行时会把完整结构化方案自动编译进最终提示词，因此这里不得套用固定模板。' }, mode: { type: 'string', enum: ['one_per_image'] }, attachmentIds: { type: ['array', 'null'], items: { type: 'string' }, description: '只处理指定附件时填写稳定 attachmentId；省略或 null 时使用当前消息的全部图片。' }, outputCountPerImage: { type: ['number', 'null'], minimum: 1, maximum: 4 }, model: { type: ['string', 'null'], description: '仅当用户在对话里明确指定模型时填写，否则为 null。' }, aspectRatio: { type: ['string', 'null'], description: '仅当用户明确指定比例时填写，否则为 null，运行时将使用图片设置。' }, resolution: { type: ['string', 'null'], description: '仅当用户明确指定清晰度或分辨率时填写，否则为 null，运行时将使用图片设置。' } }, ['taskUnderstanding', 'sourceAssessment', 'executionPlan', 'specificChanges', 'perImageInstructions', 'preservationRules', 'deliveryPlan', 'instruction', 'mode']) } },
   { type: 'function', function: { name: 'generate_video', description: '使用灵感抽屉现有视频生成系统生成视频，结果显示在聊天中。', parameters: objectSchema({ prompt: { type: 'string' }, model: { type: ['string', 'null'] }, aspectRatio: { type: ['string', 'null'] }, resolution: { type: ['string', 'null'] }, referenceImages: { type: 'array', items: { type: 'string' } }, duration: { type: ['number', 'null'] }, count: { type: ['number', 'null'], minimum: 1, maximum: 4 } }, ['prompt']) } },
   { type: 'function', function: { name: 'add_to_canvas', description: '把聊天生成的媒体明确发送到画布。没有用户明确要求时禁止调用。', parameters: objectSchema({ mediaId: { type: ['string', 'null'] }, assetId: { type: ['string', 'null'] } }) } },
@@ -22,18 +25,28 @@ export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
   { type: 'function', function: { name: 'run_workflow', description: '运行指定工作流。可能产生费用，继续使用现有确认机制。', parameters: objectSchema({ workflowId: { type: 'string' }, inputIds: { type: 'array', items: { type: 'string' } }, projectBrief: { type: ['string', 'null'] } }, ['workflowId']) } },
 ];
 
-const EXPLICIT_TOOL_INTENT = /((当前|我的|这个|这块|现有).{0,4}画布|画布.{0,8}(选中|节点|内容|添加|放入|放进|创建|运行|有什么|看看|读取|操作)|素材库|(生成|做|画|绘制|制作|渲染).{0,40}(图|图片|视频|照片|风景照|海报|插画|封面|头像|壁纸)|生图|放进画布|发送到画布|选中.{0,4}(图|节点)|当前节点|(列出|查看|运行|执行|有哪些|使用).{0,8}(工作流|workflow)|(工作流|workflow).{0,8}(列表|运行|执行|有哪些)|查找.{0,8}素材|搜索.{0,8}素材)/i;
+const EXPLICIT_TOOL_INTENT = /((当前|我的|这个|这块|现有).{0,4}画布|画布.{0,8}(选中|节点|内容|添加|放入|放进|创建|运行|有什么|看看|读取|操作)|素材库|(生成|做|画|绘制|制作|渲染).{0,40}(图|图片|视频|照片|风景照|海报|插画|封面|头像|壁纸)|(?:generate|create|render|make).{0,40}(?:images?|pictures?|photos?|posters?|illustrations?|covers?|wallpapers?|videos?)|生图|放进画布|发送到画布|选中.{0,4}(图|节点)|当前节点|(列出|查看|运行|执行|有哪些|使用).{0,8}(工作流|workflow)|(工作流|workflow).{0,8}(列表|运行|执行|有哪些)|查找.{0,8}素材|搜索.{0,8}素材)/i;
 const FOLLOWUP_EDIT_INTENT = /(再|继续|刚才|这张|上一张).{0,12}(冷|暖|亮|暗|改|修改|编辑|调整|换|增加|减少)|颜色再|构图再/i;
-const DIRECT_IMAGE_INTENT = /(?:生成|做|画|绘制|制作|渲染|设计).{0,40}(?:图|图片|照片|风景照|海报|插画|封面|头像|壁纸)|生图/i;
+const DIRECT_IMAGE_INTENT = /(?:生成|做|画|绘制|制作|渲染|设计).{0,40}(?:图|图片|照片|风景照|海报|插画|封面|头像|壁纸)|(?:出|产出|输出)(?:[一二两三四五六七八九十\d]+)?(?:张|幅)?(?:图|图片|图像)|(?:generate|create|render|make).{0,40}(?:images?|pictures?|photos?|posters?|illustrations?|covers?|wallpapers?)|生图/i;
+const NEGATED_IMAGE_GENERATION_INTENT = /(?:先\s*)?(?:不要|不用|无需|不需要|暂不|暂时不|别)(?:再|立即|现在|马上|先)?\s*(?:出图|生图|做图|画图|生成(?:图片?|图像)|渲染)(?:了|啦|吧)?/gi;
 const FILE_CREATION_INTENT = /(?:生成|创建|制作|导出|整理|写成|保存为|做成|做).{0,28}(?:文件|文档|报告|表格|电子表格|下载|Word|Excel|PDF|DOCX|XLSX|CSV|JSON|Markdown|TXT)|(?:给我|需要|要).{0,12}(?:Word|Excel|PDF|DOCX|XLSX|CSV|JSON|Markdown|TXT)|(?:Word|Excel|PDF|DOCX|XLSX|CSV|JSON|Markdown|TXT).{0,20}(?:文件|文档|报告|表格|生成|创建|导出|下载)/i;
 const BATCH_IMAGE_INTENT = /(?:全部|每张|每一张|每个|分别|逐张|各自|一个个|所有(?:图|图片)|这些(?:图|图片)|(?:这|那)几张.{0,8}(?:图|图片)|多张.{0,8}(?:图|图片)|(?:图|图片).{0,8}都|all\s+(?:images?|pictures?)|each\s+(?:image|picture)|every\s+(?:image|picture)|separately|one\s+per\s+image)/i;
 const COMBINED_REFERENCE_INTENT = /(?:(?:融合|综合|结合).{0,40}(?:生成|做|设计|创作)|参考.{0,20}(?:这些|这几张|多张|所有|全部).{0,20}(?:生成|做|设计|创作).{0,12}(?:一个|一张|一款|新(?:的)?))/i;
 const EXPLICIT_SEPARATE_IMAGE_INTENT = /(?:(?:不要|无需|别)(?:再)?(?:把)?.{0,8}(?:合并|融合|整合)|(?:每张|每一张|逐张|分别|各自).{0,16}(?:单独|独立|各自))/i;
 const ATTACHED_IMAGE_OPERATION_INTENT = /(?:参考|融合|综合|基于|按照).{0,24}(?:图|图片|设计|视觉).{0,24}(?:生成|做|设计|改|制作|排版)|(?:生成|做|设计|修改|编辑|整理|排版|重排|换|增强|去掉|添加).{0,32}(?:图|图片|背景|设计|视觉|版面|作品集|说明)/i;
 const GENERAL_IMAGE_EDIT_INTENT = /(?:去掉|删除|移除|消除|清除|替换|抠图|换背景|改背景|改色|调色|修图|精修|增强|修复|扩图|去水印|加字|加上|变清晰|提高清晰度|放大).{0,24}(?:背景|水印|文字|元素|颜色|画面|图像|图片|主体|清晰度)?/i;
+const INDEPENDENT_IMAGE_VARIANT_INTENT = /(?:(?:[二两三四2-4]|几)\s*(?:个|种|款|套|组)?\s*(?:方案|方向|版本|款式|设计|风格|配色|材质|造型|形态|外观|场景|情境|环境|空间|视角|机位|镜头|构图|布局|氛围|叙事|概念|效果)|(?:[二两三四2-4]\s*(?:个|种|款|套|组|幅|张))?.{0,8}(?:不同|差异化|有区别|各不相同|多种|多个|几种|若干).{0,10}(?:方案|方向|版本|款式|设计|风格|配色|材质|造型|形态|外观|场景|情境|环境|空间|视角|机位|镜头|构图|布局|氛围|叙事|概念|效果|options?|variants?|directions?|versions?|styles?|scenes?|settings?|compositions?)|(?:方案|方向|版本|款式|设计|风格|配色|材质|造型|形态|外观|场景|情境|环境|空间|视角|机位|镜头|构图|布局|氛围|叙事|概念).{0,8}(?:分别|各自|每个|每种|每款|独立|单独).{0,16}(?:生成|出图|做图|图|图片|图像)|(?:separate|distinct|different|multiple).{0,12}(?:options?|variants?|directions?|versions?|styles?|scenes?|settings?|compositions?))/i;
+const COMPOSITE_VARIANT_OUTPUT_INTENT = /(?:(?:一|同一)(?:张图|张图片|个画面|个版面).{0,18}(?:有|包含|放入|放进|放下|展示|呈现|对比|排版|容纳|分成|分为).{0,18}(?:多个|多种|几个|不同|方案|方向|版本|场景|环境|空间|镜头)|(?:一张|单张).{0,8}(?:包含|展示|呈现|容纳|表现).{0,16}(?:多个|多种|几个|两种|三种|四种|不同).{0,10}(?:方案|方向|版本|款式|设计|风格|场景|环境|空间|镜头).{0,8}(?:图|图片|画面)|(?:(?:[二两三四2-4]\s*(?:个|种|款|套))|多个|多种|几个|不同|所有|全部).{0,18}(?:方案|方向|版本|款式|设计|风格|配色|材质|造型|形态|外观|场景|情境|环境|空间|视角|机位|镜头|构图|布局|氛围|叙事|概念).{0,18}(?:一张图|同一张图|一个画面|同一画面|一个版面|同一版面)|(?:拼在|放在|排在|组合在|做在|画在).{0,8}(?:一起|一张图|同一张图|同一画面|同一版面)|(?:并排|拼图|拼版|组图|九宫格|分屏|分栏|分区|左右分割|上下分割|双联画|三联画|四联画|方案板|对比图|对照图|contact\s*sheet|comparison\s*(?:board|sheet|image)|split[ -]?screen))/i;
+const EXPLICIT_INDEPENDENT_VARIANT_DELIVERY = /(?:(?:每(?:个|种|款|套)(?:方案|方向|版本|款式|设计|风格)?|分别|各自|独立|单独).{0,16}(?:各自|分别|独立|单独)?.{0,8}(?:出|生成|制作|做).{0,4}(?:一张|一幅|图片|图像)|(?:one|single)\s+(?:image|picture)\s+(?:per|for each)\s+(?:option|variant|direction|version))/i;
 
 export const shouldExposeChatTools = (text: string, hasRecentGeneratedMedia = false) => (
-  EXPLICIT_TOOL_INTENT.test(text) || (hasRecentGeneratedMedia && FOLLOWUP_EDIT_INTENT.test(text))
+  EXPLICIT_TOOL_INTENT.test(text)
+  || shouldDirectGenerateImage(text)
+  || (hasRecentGeneratedMedia && (
+    FOLLOWUP_EDIT_INTENT.test(text)
+    || isShortVisualFollowup(text)
+    || isVisualRevisionFollowup(text)
+  ))
 );
 
 const WEB_SEARCH_INTENT = /(联网|上网|网上|网络搜索|网页搜索|搜索网络|搜索网页|查一下最新|查查最新|(最新|实时|今天|当前).{0,18}(新闻|消息|情况|信息|数据|行情|价格|汇率|天气|赛程|政策|法规|版本|发布)|搜索.{0,16}(新闻|资料|论文|网站|网页))/i;
@@ -58,8 +71,15 @@ export const getChatToolDefinitions = (
   imageAttachmentCount = 0,
 ) => {
   const exposeBatch = shouldExposeBatchImageOperation(text, imageAttachmentCount);
-  const exposeAttachedImageTools = imageAttachmentCount > 0 && ATTACHED_IMAGE_OPERATION_INTENT.test(text);
-  const exposeLocalTools = shouldExposeChatTools(text, hasRecentGeneratedMedia) || exposeBatch || exposeAttachedImageTools;
+  const exposeAttachedImageTools = imageAttachmentCount > 0 && (
+    ATTACHED_IMAGE_OPERATION_INTENT.test(text)
+    || isShortVisualFollowup(text)
+    || isVisualRevisionFollowup(text)
+  );
+  const exposeLocalTools = shouldExposeChatTools(text, hasRecentGeneratedMedia)
+    || shouldUseIndependentImageVariants(text)
+    || exposeBatch
+    || exposeAttachedImageTools;
   const exposeFileCreation = FILE_CREATION_INTENT.test(text);
   const exposeWebSearch = !webSearchBlocked && (webSearchEnabled || shouldExposeWebSearch(text));
   return CHAT_TOOL_DEFINITIONS.filter(tool => (
@@ -73,4 +93,32 @@ export const getChatToolDefinitions = (
   ));
 };
 
-export const shouldDirectGenerateImage = (text: string) => DIRECT_IMAGE_INTENT.test(text);
+export const shouldDirectGenerateImage = (text: string) => (
+  DIRECT_IMAGE_INTENT.test(text.replace(NEGATED_IMAGE_GENERATION_INTENT, ' '))
+);
+
+export type DirectVisualToolName = 'generate_image' | 'edit_image';
+
+export const resolveDirectVisualTool = (
+  text: string,
+  hasRecentGeneratedMedia = false,
+  imageAttachmentCount = 0,
+): DirectVisualToolName | null => {
+  if (shouldDirectGenerateImage(text)) return 'generate_image';
+  if (!isShortVisualFollowup(text) && !isVisualRevisionFollowup(text)) return null;
+  if (hasRecentGeneratedMedia) return 'edit_image';
+  return imageAttachmentCount > 0 ? 'generate_image' : null;
+};
+
+export const shouldUseIndependentImageVariants = (text: string) => (
+  INDEPENDENT_IMAGE_VARIANT_INTENT.test(text)
+  && (EXPLICIT_INDEPENDENT_VARIANT_DELIVERY.test(text) || !COMPOSITE_VARIANT_OUTPUT_INTENT.test(text))
+  && (shouldDirectGenerateImage(text) || /(?:做成|制成|产出|输出|生成|制作|渲染|create|generate|render|make)/i.test(text.replace(NEGATED_IMAGE_GENERATION_INTENT, ' ')))
+);
+
+export const shouldComposeImageVariants = (text: string) => (
+  INDEPENDENT_IMAGE_VARIANT_INTENT.test(text)
+  && COMPOSITE_VARIANT_OUTPUT_INTENT.test(text)
+  && !EXPLICIT_INDEPENDENT_VARIANT_DELIVERY.test(text)
+  && (shouldDirectGenerateImage(text) || /(?:做成|制成|产出|输出|生成|制作|渲染|放在|放进|放到|展示|呈现|拼成|create|generate|render|make|show|place)/i.test(text.replace(NEGATED_IMAGE_GENERATION_INTENT, ' ')))
+);

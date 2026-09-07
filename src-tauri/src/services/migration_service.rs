@@ -1105,13 +1105,22 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
     let updated_at = value_i64(item, "updatedAt").unwrap_or(created_at);
     let imported_at = value_i64(item, "importedAt").unwrap_or(created_at);
     let modified_at = value_i64(item, "modifiedAt").unwrap_or(0);
+    let external_id = value_string(item, "externalId").or_else(|| value_string(item, "eagleId"));
+    let external_provider = value_string(item, "externalProvider")
+        .or_else(|| external_id.as_ref().map(|_| "eagle".to_string()));
+    let external_path =
+        value_string(item, "externalPath").or_else(|| value_string(item, "eagleSourcePath"));
+    let source_available = !matches!(
+        value_string(item, "sourceAvailability").as_deref(),
+        Some("missing" | "unavailable")
+    );
     let metadata_json = serde_json::to_string(item).map_err(|err| err.to_string())?;
 
     conn.execute(
         r#"
         INSERT INTO assets
-        (id, library_id, folder_id, file_path, file_name, file_ext, file_type, file_size, width, height, duration, hash, quick_hash, source_url, note, rating, created_at, updated_at, imported_at, modified_at, deleted_at, metadata_json)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20)
+        (id, library_id, folder_id, file_path, file_name, file_ext, file_type, file_size, width, height, duration, hash, quick_hash, source_url, note, rating, created_at, updated_at, imported_at, modified_at, deleted_at, external_provider, external_id, external_path, source_available, metadata_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20, ?21, ?22, ?23, ?24)
         ON CONFLICT(id) DO UPDATE SET
             library_id = excluded.library_id,
             folder_id = excluded.folder_id,
@@ -1133,6 +1142,10 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
             imported_at = excluded.imported_at,
             modified_at = excluded.modified_at,
             deleted_at = NULL,
+            external_provider = excluded.external_provider,
+            external_id = excluded.external_id,
+            external_path = excluded.external_path,
+            source_available = excluded.source_available,
             metadata_json = excluded.metadata_json
         "#,
         params![
@@ -1155,6 +1168,10 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
             updated_at,
             imported_at,
             modified_at,
+            external_provider,
+            external_id,
+            external_path,
+            if source_available { 1 } else { 0 },
             metadata_json,
         ],
     ).map_err(|err| err.to_string())?;
@@ -1203,6 +1220,71 @@ pub(crate) fn insert_asset(conn: &Connection, item: &Value, now: i64) -> Result<
         }
     }
 
+    refresh_asset_fts(conn, &id)?;
+
+    Ok(())
+}
+
+pub(crate) fn refresh_asset_fts(conn: &Connection, asset_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM asset_fts WHERE asset_id = ?1",
+        params![asset_id],
+    )
+    .map_err(|err| err.to_string())?;
+    conn.execute(
+        r#"
+        INSERT INTO asset_fts (asset_id, file_name, note, tags, ai_tags, content, source_url)
+        SELECT
+            assets.id,
+            COALESCE(assets.file_name, ''),
+            COALESCE(assets.note, ''),
+            COALESCE((
+                SELECT GROUP_CONCAT(tags.name, ' ')
+                FROM asset_tags
+                JOIN tags ON tags.id = asset_tags.tag_id
+                WHERE asset_tags.asset_id = assets.id
+            ), ''),
+            COALESCE((
+                SELECT GROUP_CONCAT(
+                    CASE
+                        WHEN json_type(ai_tag.value) = 'object'
+                            THEN COALESCE(json_extract(ai_tag.value, '$.name'), '')
+                        ELSE CAST(ai_tag.value AS TEXT)
+                    END,
+                    ' '
+                )
+                FROM json_each(assets.metadata_json, '$.inspirationProfile.aiTags') AS ai_tag
+            ), ''),
+            TRIM(
+                COALESCE(json_extract(assets.metadata_json, '$.content'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.remark'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.remarks'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.imageAlt'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.pageTitle'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.sourceSite'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.summary'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.objects'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.category'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.form.silhouette'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.form.geometry'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.form.proportion'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.cmf.colors'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.cmf.materials'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.cmf.finishes'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.style'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.interaction'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.scene'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.mood'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.userTags'), '') || ' ' ||
+                COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.userNotes'), '')
+            ),
+            COALESCE(assets.source_url, '')
+        FROM assets
+        WHERE assets.id = ?1
+        "#,
+        params![asset_id],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
 

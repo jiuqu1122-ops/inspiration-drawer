@@ -2,32 +2,32 @@
 import { LucideIcon } from 'lucide-react';
 import type { InspirationProfile } from '../features/appAgent/inspirationMemory/types';
 
-export type Folder = { 
-  id: string; 
-  name: string; 
-  color: string; 
+export type Folder = {
+  id: string;
+  name: string;
+  color: string;
   parentId?: string;
 };
 
-export type BufferItem = { 
-  id: string; 
+export type BufferItem = {
+  id: string;
   type: 'text' | 'image' | 'file' | 'video' | 'three-scene';
-  content: string; 
-  name?: string; 
-  path?: string; 
-  url?: string; 
-  thumbnail?: string; 
+  content: string;
+  name?: string;
+  path?: string;
+  url?: string;
+  thumbnail?: string;
   fileSize?: number;
   modifiedAt?: number;
   fingerprint?: string;
   width?: number;
   height?: number;
-  createdAt: number; 
+  createdAt: number;
   updatedAt?: number;
   importedAt?: number;
   rating?: number;
-  isQuickAccess?: boolean; 
-  remark?: string; 
+  isQuickAccess?: boolean;
+  remark?: string;
   remarks?: string[];
   folderId?: string;
   sourceItemId?: string;
@@ -47,6 +47,15 @@ export type BufferItem = {
   canvasRotation?: 0 | 90 | 180 | 270;
   captureSource?: 'browser-extension' | string;
   captureSourceType?: 'img' | 'picture' | 'srcset' | 'background' | 'lazy' | 'blob' | 'data' | string;
+  externalProvider?: string;
+  externalId?: string;
+  externalPath?: string;
+  eagleId?: string;
+  eagleSourcePath?: string;
+  eagleSourceUrl?: string;
+  eagleThumbnailPath?: string;
+  eagleImportMode?: 'reference' | 'copy';
+  sourceAvailability?: 'available' | 'missing' | 'unavailable';
   inspirationProfile?: InspirationProfile;
   inspirationAnalysisFailure?: {
     attemptedAt: number;

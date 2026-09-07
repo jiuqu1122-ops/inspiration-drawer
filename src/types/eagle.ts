@@ -3,6 +3,8 @@ export type EagleImportStatus = {
   message: string;
   total: number;
   imported: number;
+  processed: number;
+  skipped: number;
   cached: number;
   failed: number;
   startedAt?: number;
@@ -24,13 +26,28 @@ export type EagleConnectionDiagnostics = {
 
 export type EagleDetectionResult = EagleConnectionDiagnostics & {
   baseUrl?: string;
-  libraryInfo?: any;
+  libraryInfo?: {
+    name?: string;
+    path?: string;
+    [key: string]: unknown;
+  };
 };
 
-export type EagleOfflineLibraryPayload = {
-  library?: { name?: string; path?: string };
+export type EagleImportMode = 'reference' | 'copy';
+
+export type EagleOfflineLibraryStart = {
+  sessionId: string;
+  library: { name?: string; path?: string };
   folders?: EagleFolderPayload[];
-  items?: EagleItemPayload[];
+  total: number;
+};
+
+export type EagleOfflineLibraryPage = {
+  items: EagleItemPayload[];
+  failures: Array<{ filePath: string; reason: string }>;
+  scanned: number;
+  total: number;
+  done: boolean;
 };
 
 export type EagleFolderPayload = {
@@ -41,4 +58,29 @@ export type EagleFolderPayload = {
   children?: EagleFolderPayload[];
 };
 
-export type EagleItemPayload = Record<string, any>;
+export type EagleItemPayload = {
+  id?: string | number;
+  _id?: string | number;
+  name?: string;
+  ext?: string;
+  extension?: string;
+  filePath?: string;
+  path?: string;
+  url?: string;
+  metadataFilePath?: string;
+  thumbnailPath?: string;
+  thumbPath?: string;
+  previewPath?: string;
+  folders?: unknown;
+  folderIds?: unknown;
+  folderId?: unknown;
+  folder?: unknown;
+  tags?: unknown[];
+  annotation?: string;
+  importedAt?: string | number;
+  createdAt?: string | number;
+  modificationTime?: string | number;
+  modifiedAt?: string | number;
+  sourceAvailability?: string;
+  [key: string]: unknown;
+};

@@ -3,9 +3,12 @@ use rusqlite::Connection;
 pub const DEFAULT_LIBRARY_ID: &str = "default";
 pub const DEFAULT_PROJECT_ID: &str = "default";
 pub const DEFAULT_CANVAS_ID: &str = "default";
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 10;
 const INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID: &str =
     "inspiration-analysis-request-schema-recovery-v1";
+const ASSET_SOURCE_IDENTITY_MIGRATION_ID: &str = "asset-source-identity-v1";
+const ASSET_FTS_MIGRATION_ID: &str = "asset-fts5-trigram-v1";
+const ASSET_FTS_REBUILD_BATCH_SIZE: i64 = 500;
 
 pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -41,6 +44,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             modified_at INTEGER,
             deleted_at INTEGER,
             drawer_visible INTEGER NOT NULL DEFAULT 1,
+            external_provider TEXT,
+            external_id TEXT,
+            external_path TEXT,
+            source_available INTEGER NOT NULL DEFAULT 1,
             metadata_json TEXT
         );
 
@@ -153,6 +160,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             content TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             created_at INTEGER NOT NULL,
+            metadata_json TEXT,
             FOREIGN KEY(conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
         );
 
@@ -222,6 +230,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
             updated_at,
             id
         );
+        CREATE INDEX IF NOT EXISTS idx_assets_file_path ON assets(file_path);
 
         CREATE INDEX IF NOT EXISTS idx_asset_tags_asset_id ON asset_tags(asset_id);
         CREATE INDEX IF NOT EXISTS idx_asset_tags_tag_id ON asset_tags(tag_id);
@@ -255,10 +264,15 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), String> {
 
     ensure_canvas_schema_migrations(conn)?;
     ensure_folder_schema_migrations(conn)?;
+    ensure_chat_schema_migrations(conn)?;
     ensure_asset_schema_migrations(conn)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn ensure_chat_schema_migrations(conn: &Connection) -> Result<(), String> {
+    add_column_if_missing(conn, "chat_messages", "metadata_json", "TEXT")
 }
 
 fn ensure_asset_schema_migrations(conn: &Connection) -> Result<(), String> {
@@ -268,15 +282,227 @@ fn ensure_asset_schema_migrations(conn: &Connection) -> Result<(), String> {
         "drawer_visible",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
+    add_column_if_missing(conn, "assets", "external_provider", "TEXT")?;
+    add_column_if_missing(conn, "assets", "external_id", "TEXT")?;
+    add_column_if_missing(conn, "assets", "external_path", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "assets",
+        "source_available",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    add_column_if_missing(
+        conn,
+        "import_logs",
+        "processed_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     conn.execute_batch(
         r#"
         CREATE INDEX IF NOT EXISTS idx_assets_library_drawer_deleted_created
             ON assets(library_id, drawer_visible, deleted_at, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_assets_file_path ON assets(file_path);
+        CREATE INDEX IF NOT EXISTS idx_assets_file_path_nocase ON assets(file_path COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_assets_external_path ON assets(external_path);
+        CREATE INDEX IF NOT EXISTS idx_assets_external_path_nocase ON assets(external_path COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_assets_external_identity ON assets(external_provider, external_id);
         "#,
     )
     .map_err(|err| err.to_string())?;
+    migrate_asset_source_identity(conn)?;
+    ensure_asset_fts(conn)?;
     recover_incompatible_inspiration_requests(conn)?;
     Ok(())
+}
+
+fn migration_succeeded(conn: &Connection, id: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migrations WHERE id = ?1 AND status = 'success')",
+        rusqlite::params![id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .unwrap_or(false)
+}
+
+fn record_schema_migration(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    status: &str,
+    started_at: i64,
+    finished_at: Option<i64>,
+    error: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO migrations (id, version, name, status, started_at, finished_at, error) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, SCHEMA_VERSION, name, status, started_at, finished_at, error],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn migrate_asset_source_identity(conn: &Connection) -> Result<(), String> {
+    if migration_succeeded(conn, ASSET_SOURCE_IDENTITY_MIGRATION_ID) {
+        return Ok(());
+    }
+    let started_at = crate::current_time_millis();
+    record_schema_migration(
+        conn,
+        ASSET_SOURCE_IDENTITY_MIGRATION_ID,
+        "Backfill external asset source identity",
+        "running",
+        started_at,
+        None,
+        None,
+    )?;
+    conn.execute_batch(
+        r#"
+        UPDATE assets
+        SET external_provider = COALESCE(
+                NULLIF(external_provider, ''),
+                NULLIF(json_extract(metadata_json, '$.externalProvider'), ''),
+                CASE WHEN NULLIF(json_extract(metadata_json, '$.eagleId'), '') IS NOT NULL THEN 'eagle' END
+            ),
+            external_id = COALESCE(
+                NULLIF(external_id, ''),
+                NULLIF(json_extract(metadata_json, '$.externalId'), ''),
+                NULLIF(json_extract(metadata_json, '$.eagleId'), '')
+            ),
+            external_path = COALESCE(
+                NULLIF(external_path, ''),
+                NULLIF(json_extract(metadata_json, '$.externalPath'), ''),
+                NULLIF(json_extract(metadata_json, '$.eagleSourcePath'), '')
+            )
+        WHERE external_provider IS NULL
+           OR external_id IS NULL
+           OR external_path IS NULL;
+        "#,
+    )
+    .map_err(|err| err.to_string())?;
+    let finished_at = crate::current_time_millis();
+    record_schema_migration(
+        conn,
+        ASSET_SOURCE_IDENTITY_MIGRATION_ID,
+        "Backfill external asset source identity",
+        "success",
+        started_at,
+        Some(finished_at),
+        None,
+    )
+}
+
+fn ensure_asset_fts(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE VIRTUAL TABLE IF NOT EXISTS asset_fts USING fts5(
+            asset_id UNINDEXED,
+            file_name,
+            note,
+            tags,
+            ai_tags,
+            content,
+            source_url,
+            tokenize = 'trigram case_sensitive 0'
+        );
+        "#,
+    )
+    .map_err(|err| format!("create asset FTS5 index: {err}"))?;
+    if migration_succeeded(conn, ASSET_FTS_MIGRATION_ID) {
+        return Ok(());
+    }
+
+    let started_at = crate::current_time_millis();
+    record_schema_migration(
+        conn,
+        ASSET_FTS_MIGRATION_ID,
+        "Build trigram asset search index",
+        "running",
+        started_at,
+        None,
+        None,
+    )?;
+    conn.execute("DELETE FROM asset_fts", [])
+        .map_err(|err| format!("clear asset FTS5 index: {err}"))?;
+    let mut last_rowid = 0_i64;
+    loop {
+        let batch_end: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(rowid) FROM (SELECT rowid FROM assets WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2)",
+                rusqlite::params![last_rowid, ASSET_FTS_REBUILD_BATCH_SIZE],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        let Some(batch_end) = batch_end else {
+            break;
+        };
+        conn.execute(
+            r#"
+            INSERT INTO asset_fts (asset_id, file_name, note, tags, ai_tags, content, source_url)
+            SELECT
+                assets.id,
+                COALESCE(assets.file_name, ''),
+                COALESCE(assets.note, ''),
+                COALESCE((
+                    SELECT GROUP_CONCAT(tags.name, ' ')
+                    FROM asset_tags
+                    JOIN tags ON tags.id = asset_tags.tag_id
+                    WHERE asset_tags.asset_id = assets.id
+                ), ''),
+                COALESCE((
+                    SELECT GROUP_CONCAT(
+                        CASE
+                            WHEN json_type(ai_tag.value) = 'object'
+                                THEN COALESCE(json_extract(ai_tag.value, '$.name'), '')
+                            ELSE CAST(ai_tag.value AS TEXT)
+                        END,
+                        ' '
+                    )
+                    FROM json_each(assets.metadata_json, '$.inspirationProfile.aiTags') AS ai_tag
+                ), ''),
+                TRIM(
+                    COALESCE(json_extract(assets.metadata_json, '$.content'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.remark'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.remarks'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.imageAlt'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.pageTitle'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.sourceSite'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.summary'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.objects'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.category'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.form.silhouette'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.form.geometry'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.form.proportion'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.cmf.colors'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.cmf.materials'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.cmf.finishes'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.style'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.interaction'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.scene'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.mood'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.userTags'), '') || ' ' ||
+                    COALESCE(json_extract(assets.metadata_json, '$.inspirationProfile.userNotes'), '')
+                ),
+                COALESCE(assets.source_url, '')
+            FROM assets
+            WHERE assets.rowid > ?1 AND assets.rowid <= ?2
+            ORDER BY assets.rowid ASC
+            "#,
+            rusqlite::params![last_rowid, batch_end],
+        )
+        .map_err(|err| format!("rebuild asset FTS5 batch: {err}"))?;
+        last_rowid = batch_end;
+    }
+    let finished_at = crate::current_time_millis();
+    record_schema_migration(
+        conn,
+        ASSET_FTS_MIGRATION_ID,
+        "Build trigram asset search index",
+        "success",
+        started_at,
+        Some(finished_at),
+        None,
+    )
 }
 
 fn recover_incompatible_inspiration_requests(conn: &Connection) -> Result<(), String> {
@@ -561,7 +787,7 @@ mod tests {
     use rusqlite::{params, Connection};
     use serde_json::{json, Value};
 
-    use super::{ensure_schema, INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID};
+    use super::{ensure_schema, ASSET_FTS_MIGRATION_ID, INSPIRATION_REQUEST_RECOVERY_MIGRATION_ID};
 
     #[test]
     fn incompatible_inspiration_request_failures_are_requeued_once() {
@@ -626,5 +852,137 @@ mod tests {
             )
             .expect("read migration marker");
         assert_eq!(marker_count, 1);
+    }
+
+    #[test]
+    fn old_chat_message_table_gains_optional_metadata_without_rewriting_history() {
+        let conn = Connection::open_in_memory().expect("open database");
+        ensure_schema(&conn).expect("create schema");
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys = OFF;
+            DROP TABLE chat_messages;
+            CREATE TABLE chat_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            INSERT INTO chat_messages (id, conversation_id, role, content, status, created_at)
+            VALUES ('old-message', 'old-conversation', 'assistant', '旧消息', 'completed', 1);
+            PRAGMA foreign_keys = ON;
+            "#,
+        )
+        .expect("create old chat table");
+
+        ensure_schema(&conn).expect("migrate old chat table");
+        let has_metadata = conn
+            .prepare("PRAGMA table_info(chat_messages)")
+            .expect("read table info")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query columns")
+            .filter_map(Result::ok)
+            .any(|column| column == "metadata_json");
+        assert!(has_metadata);
+        let old_content: String = conn
+            .query_row(
+                "SELECT content FROM chat_messages WHERE id = 'old-message'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("old message remains");
+        assert_eq!(old_content, "旧消息");
+    }
+
+    #[test]
+    fn old_asset_database_builds_fts_once_and_keeps_master_rows_untouched() {
+        let conn = Connection::open_in_memory().expect("open database");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                library_id TEXT,
+                folder_id TEXT,
+                file_path TEXT,
+                file_name TEXT,
+                file_ext TEXT,
+                file_type TEXT,
+                file_size INTEGER,
+                width INTEGER,
+                height INTEGER,
+                duration REAL,
+                hash TEXT,
+                quick_hash TEXT,
+                source_url TEXT,
+                note TEXT,
+                rating INTEGER,
+                created_at INTEGER,
+                updated_at INTEGER,
+                imported_at INTEGER,
+                modified_at INTEGER,
+                deleted_at INTEGER,
+                metadata_json TEXT
+            );
+            "#,
+        )
+        .expect("create legacy assets table");
+        let metadata = json!({
+            "id": "legacy",
+            "type": "image",
+            "name": "旧数据库中文素材.jpg",
+            "content": "legacy searchable content",
+            "path": "C:/legacy.jpg",
+            "createdAt": 1,
+            "eagleId": "eagle-legacy",
+            "eagleSourcePath": "D:/legacy.library/images/eagle-legacy.info/legacy.jpg"
+        });
+        conn.execute(
+            "INSERT INTO assets (id, library_id, file_path, file_name, file_type, created_at, metadata_json) VALUES ('legacy', 'default', 'C:/legacy.jpg', '旧数据库中文素材.jpg', 'image', 1, ?1)",
+            params![metadata.to_string()],
+        )
+        .expect("seed legacy asset");
+
+        ensure_schema(&conn).expect("migrate legacy database");
+        let master_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))
+            .expect("count master assets");
+        let matched: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM asset_fts WHERE asset_fts MATCH '\"数据库中文\"'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("search migrated FTS");
+        let identity: (String, String, String) = conn
+            .query_row(
+                "SELECT external_provider, external_id, external_path FROM assets WHERE id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read source identity");
+        assert_eq!(master_count, 1);
+        assert_eq!(matched, 1);
+        assert_eq!(identity.0, "eagle");
+        assert_eq!(identity.1, "eagle-legacy");
+        assert!(identity.2.ends_with("legacy.jpg"));
+
+        let migration_finished_at: i64 = conn
+            .query_row(
+                "SELECT finished_at FROM migrations WHERE id = ?1 AND status = 'success'",
+                params![ASSET_FTS_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .expect("read FTS migration marker");
+        ensure_schema(&conn).expect("repeat schema migration");
+        let repeated_finished_at: i64 = conn
+            .query_row(
+                "SELECT finished_at FROM migrations WHERE id = ?1 AND status = 'success'",
+                params![ASSET_FTS_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .expect("read repeated FTS migration marker");
+        assert_eq!(migration_finished_at, repeated_finished_at);
     }
 }

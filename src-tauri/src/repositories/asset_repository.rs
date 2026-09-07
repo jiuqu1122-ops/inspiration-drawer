@@ -74,6 +74,73 @@ pub struct AssetBatchUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct EagleImportFailure {
+    #[serde(default)]
+    pub file_path: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EagleImportStartRequest {
+    pub import_id: String,
+    #[serde(default)]
+    pub total_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EagleImportBatchRequest {
+    pub import_id: String,
+    #[serde(default)]
+    pub assets: Vec<Value>,
+    #[serde(default)]
+    pub failures: Vec<EagleImportFailure>,
+    #[serde(default)]
+    pub total_count: Option<i64>,
+    #[serde(default)]
+    pub processed_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EagleImportBatchResult {
+    pub processed: i64,
+    pub imported: i64,
+    pub skipped: i64,
+    pub failed: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EagleImportFinishRequest {
+    pub import_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub total_count: Option<i64>,
+    #[serde(default)]
+    pub processed_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EagleSourceIdentity {
+    #[serde(default)]
+    pub external_id: String,
+    #[serde(default)]
+    pub external_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EagleDuplicateLookupResult {
+    pub external_ids: Vec<String>,
+    pub external_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct MoveFoldersOptions {
     #[serde(default, alias = "folder_ids")]
     pub folder_ids: Vec<String>,
