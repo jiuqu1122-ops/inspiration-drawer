@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHAT_AUTOMATIC_MODEL,
   createKeyedSerialTaskQueue,
+  isAutomaticChatModel,
   normalizeSupportedChatModel,
   resolveAvailableChatModels,
   resolveChatRequestModel,
@@ -13,9 +15,21 @@ describe('chat model selection', () => {
       'gpt-5.6-luna',
       'provider/new-model-preview',
     ])).toEqual([
-      'gpt-5.7',
-      'gpt-5.6-luna',
       'provider/new-model-preview',
+      'gpt-5.6-luna',
+      'gpt-5.7',
+    ]);
+  });
+
+  it('reverses the provider catalog so the newest model is shown first', () => {
+    expect(resolveAvailableChatModels([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-6-astra',
+    ])).toEqual([
+      'gpt-6-astra',
+      'gpt-5.6-terra',
+      'gpt-5.6-sol',
     ]);
   });
 
@@ -25,19 +39,35 @@ describe('chat model selection', () => {
     expect(normalizeSupportedChatModel('   ')).toBe('');
   });
 
-  it('removes blank and duplicate models while preserving provider order', () => {
+  it('maps internal wallet routing aliases to one user-facing automatic choice', () => {
+    expect(isAutomaticChatModel('unmind-agent')).toBe(true);
+    expect(isAutomaticChatModel(' Recommended ')).toBe(true);
+    expect(normalizeSupportedChatModel('unmind-agent')).toBe(CHAT_AUTOMATIC_MODEL);
+    expect(resolveAvailableChatModels([
+      'unmind-agent',
+      'gpt-5.6',
+      'default',
+      'gpt-5.6-luna',
+    ], 'unmind-agent')).toEqual([
+      'gpt-5.6-luna',
+      'gpt-5.6',
+      CHAT_AUTOMATIC_MODEL,
+    ]);
+  });
+
+  it('removes blank and duplicate models before reversing provider order', () => {
     expect(resolveAvailableChatModels([
       ' model-b ',
       '',
       'model-a',
       'MODEL-B',
       'model-c',
-    ])).toEqual(['model-b', 'model-a', 'model-c']);
+    ])).toEqual(['model-c', 'model-a', 'model-b']);
   });
 
-  it('keeps the current conversation model when it is absent from the remote list', () => {
+  it('keeps the current conversation model after the remote list when it is absent', () => {
     expect(resolveAvailableChatModels(['model-b', 'model-c'], ' model-a '))
-      .toEqual(['model-a', 'model-b', 'model-c']);
+      .toEqual(['model-c', 'model-b', 'model-a']);
     expect(resolveAvailableChatModels([], 'model-a')).toEqual(['model-a']);
     expect(resolveAvailableChatModels([], '')).toEqual([]);
   });

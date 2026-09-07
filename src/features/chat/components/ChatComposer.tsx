@@ -3,16 +3,25 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatImageModelOption, PendingChatAttachment } from '../model/chatTypes';
 import { createChatId } from '../model/chatTypes';
+import { isAutomaticChatModel } from '../runtime/chatModelSelection';
 import { ChatAttachmentList } from './ChatAttachmentList';
 import { ChatImageSettings } from './ChatImageSettings';
 
-const compactModelLabel = (value: string) => value
-  .replace(/^gpt-/i, '')
-  .replace(/-codex-spark$/i, ' Spark')
-  .replace(/-mini$/i, ' Mini')
-  .replace(/-sol$/i, ' Sol')
-  .replace(/-terra$/i, ' Terra')
-  .replace(/-luna$/i, ' Luna');
+const compactModelLabel = (value: string) => (
+  isAutomaticChatModel(value)
+    ? '自动选择'
+    : value
+      .replace(/^gpt-/i, 'gpt ')
+      .replace(/-codex-spark$/i, ' Spark')
+      .replace(/-mini$/i, ' Mini')
+      .replace(/-sol$/i, ' Sol')
+      .replace(/-terra$/i, ' Terra')
+      .replace(/-luna$/i, ' Luna')
+);
+
+const fullModelLabel = (value: string) => (
+  isAutomaticChatModel(value) ? '自动选择（推荐）' : value
+);
 
 export function ChatComposer({
   value,
@@ -187,7 +196,7 @@ export function ChatComposer({
               }}
               aria-haspopup="menu"
               aria-expanded={modelOpen}
-              title={`模型：${model || '默认模型'}`}
+              title={`模型：${fullModelLabel(model || 'default')}`}
             >
               <span>{compactModelLabel(model || '默认模型')}</span>
               <ChevronDown size={12} className={modelOpen ? 'is-open' : ''} />
@@ -212,7 +221,7 @@ export function ChatComposer({
                       setModelOpen(false);
                     }}
                   >
-                    <span>{option || '默认模型'}</span>
+                    <span>{fullModelLabel(option)}</span>
                     {option === model && <Check size={12} />}
                   </button>
                 ))}
