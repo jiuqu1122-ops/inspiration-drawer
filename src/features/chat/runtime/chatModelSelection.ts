@@ -2,8 +2,23 @@ export const normalizeChatModelSelection = (value?: string | null) => (
   String(value || '').trim()
 );
 
+export const CHAT_AUTOMATIC_MODEL = 'default';
+
+const CHAT_AUTOMATIC_MODEL_ALIASES = new Set([
+  'unmind-agent',
+  'auto',
+  'default',
+  'recommended',
+]);
+
+export const isAutomaticChatModel = (value?: string | null) => (
+  CHAT_AUTOMATIC_MODEL_ALIASES.has(normalizeChatModelSelection(value).toLowerCase())
+);
+
 export const normalizeSupportedChatModel = (value?: string | null) => (
-  normalizeChatModelSelection(value)
+  isAutomaticChatModel(value)
+    ? CHAT_AUTOMATIC_MODEL
+    : normalizeChatModelSelection(value)
 );
 
 export const resolveAvailableChatModels = (
@@ -12,14 +27,24 @@ export const resolveAvailableChatModels = (
 ) => {
   const available: string[] = [];
   const seen = new Set<string>();
-  [currentModel, ...models].forEach(value => {
+  models.forEach(value => {
     const model = normalizeSupportedChatModel(value);
     const key = model.toLowerCase();
     if (!model || seen.has(key)) return;
     seen.add(key);
     available.push(model);
   });
-  return available;
+  available.reverse();
+
+  const concreteModels = available.filter(model => !isAutomaticChatModel(model));
+  const automaticModels = available.filter(model => isAutomaticChatModel(model));
+  const current = normalizeSupportedChatModel(currentModel);
+  const currentKey = current.toLowerCase();
+  if (current && !seen.has(currentKey)) {
+    if (isAutomaticChatModel(current)) automaticModels.push(current);
+    else concreteModels.push(current);
+  }
+  return [...concreteModels, ...automaticModels];
 };
 
 export const resolveChatRequestModel = (
@@ -30,7 +55,7 @@ export const resolveChatRequestModel = (
   normalizeChatModelSelection(selectedModel)
   || normalizeChatModelSelection(conversationModel)
   || normalizeChatModelSelection(fallbackModel)
-  || 'default'
+  || CHAT_AUTOMATIC_MODEL
 );
 
 export type KeyedSerialTaskQueue = <T>(key: string, task: () => Promise<T>) => Promise<T>;
