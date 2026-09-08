@@ -34,7 +34,51 @@ type RoundedSelectProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'v
   collapsedLabel?: string;
   expandedLabel?: string;
   deferChange?: boolean;
+  optionVisual?: 'default' | 'aspect-ratio';
 };
+
+const getAspectRatioOptionVisualDimensions = (value: string) => {
+  const [rawWidth, rawHeight] = String(value || '')
+    .split(/[:x×]/i)
+    .map(part => Number(part.trim()));
+  const ratio = rawWidth > 0 && rawHeight > 0 ? rawWidth / rawHeight : 1;
+  const maxSize = 20;
+  const width = ratio >= 1 ? maxSize : maxSize * ratio;
+  const height = ratio >= 1 ? maxSize / ratio : maxSize;
+  const x = (28 - width) / 2;
+  const y = (28 - height) / 2;
+
+  return { width, height, x, y };
+};
+
+function AspectRatioOptionVisual({ value, active }: { value: string; active: boolean }) {
+  const { width, height, x, y } = getAspectRatioOptionVisualDimensions(value);
+
+  return (
+    <svg className="h-7 w-7" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        rx={Math.min(3, width / 4, height / 4)}
+        fill="currentColor"
+        fillOpacity={active ? 0.16 : 0.04}
+        stroke="currentColor"
+        strokeWidth="1.7"
+      />
+      {active && (
+        <path
+          d="m10.2 14.1 2.35 2.3 5.25-5.35"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      )}
+    </svg>
+  );
+}
 
 function RoundedSelect({
   value,
@@ -56,6 +100,7 @@ function RoundedSelect({
   collapsedLabel,
   expandedLabel,
   deferChange = false,
+  optionVisual = 'default',
   ...buttonProps
 }: RoundedSelectProps) {
   const [open, setOpen] = useState(false);
@@ -173,6 +218,7 @@ function RoundedSelect({
     const showSection = option.section && option.section !== list[index - 1]?.section;
     const isAction = option.kind === 'action';
     const isDisabled = option.disabled === true;
+    const usesAspectRatioVisual = optionVisual === 'aspect-ratio' && !isAction;
     const ActionIcon = /manage|管理/i.test(option.value + option.label) ? Settings2 : Plus;
 
     return (
@@ -214,14 +260,18 @@ function RoundedSelect({
                 : 'hover:bg-stone-100/78 dark:hover:bg-white/8'
           } ${optionClassName}`}
         >
-          <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border transition-colors ${
-            active
-              ? 'border-white/20 bg-white/14 text-current dark:border-stone-900/10 dark:bg-stone-900/10'
+          <span className={`flex h-7 w-7 shrink-0 items-center justify-center transition-colors ${
+            usesAspectRatioVisual
+              ? `rounded-none border border-transparent bg-transparent ${active ? 'text-current' : 'text-stone-500 dark:text-stone-300'}`
+              : active
+              ? 'rounded-[8px] border border-white/20 bg-white/14 text-current dark:border-stone-900/10 dark:bg-stone-900/10'
               : isAction
-                ? 'border-stone-200 bg-white text-stone-500 group-hover/rounded-select-option:border-stone-300 dark:border-white/10 dark:bg-white/6 dark:text-stone-300'
-                : 'border-stone-200/80 bg-stone-50 text-stone-400 group-hover/rounded-select-option:border-stone-300 dark:border-white/10 dark:bg-white/6 dark:text-stone-400'
+                ? 'rounded-[8px] border border-stone-200 bg-white text-stone-500 group-hover/rounded-select-option:border-stone-300 dark:border-white/10 dark:bg-white/6 dark:text-stone-300'
+                : 'rounded-[8px] border border-stone-200/80 bg-stone-50 text-stone-400 group-hover/rounded-select-option:border-stone-300 dark:border-white/10 dark:bg-white/6 dark:text-stone-400'
           }`}>
-            {active ? (
+            {usesAspectRatioVisual ? (
+              <AspectRatioOptionVisual value={option.value} active={active} />
+            ) : active ? (
               <Check className="h-3.5 w-3.5" strokeWidth={2.7} />
             ) : isAction ? (
               <ActionIcon className="h-3.5 w-3.5" strokeWidth={2.4} />
@@ -314,5 +364,5 @@ function RoundedSelect({
   );
 }
 
-export { RoundedSelect };
+export { RoundedSelect, getAspectRatioOptionVisualDimensions };
 export type { RoundedSelectOption };

@@ -114,8 +114,9 @@ export function CanvasGeneratorControls({
         menuClassName={CANVAS_AI_NODE_SELECT_MENU_CLASS}
         optionClassName={CANVAS_AI_NODE_SELECT_OPTION_CLASS}
         selectedOptionClassName={CANVAS_AI_NODE_SELECT_ACTIVE_CLASS}
-        menuMinWidth={useWideAspectRatioMenu ? 188 : 86}
+        menuMinWidth={useWideAspectRatioMenu ? 188 : 104}
         menuScale={menuScale}
+        optionVisual="aspect-ratio"
       />
       {supportsImageResolution && (
         <RoundedSelect
