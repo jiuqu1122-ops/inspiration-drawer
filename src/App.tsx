@@ -39,6 +39,11 @@ subscribeCanvasChatVisibility
 import {
 setCanvasWorkflowProgress
 } from './features/chat/runtime/canvasWorkflowProgress';
+import {
+cacheAvailableAgentModels,
+clearAvailableAgentModels,
+resolveValidAgentModel
+} from './features/chat/runtime/agentModelResolution';
 import type {
 ChatBatchCompletedPayload,
 ChatBatchMediaReadyPayload,
@@ -206,6 +211,7 @@ const ENABLE_THREE_SCENE_CREATION = false;
 
 import { type RoundedSelectOption } from './components/RoundedSelect';
 import {
+DEFAULT_AGENT_SETTINGS,
 type AgentCanvasSelectionItem,
 type AgentCanvasVisualReference,
 type WorkflowResultCardData
@@ -5782,6 +5788,7 @@ useEffect(() => {
   const [agentCustomApiKey, setAgentCustomApiKey] = useState('');
   const [agentCustomSaving, setAgentCustomSaving] = useState(false);
   const agentModelsRef = useRef<string[]>([]);
+  const agentModelRepairKeyRef = useRef('');
   const agentModelsProfileKeyRef = useRef('');
   const agentModelsFlightRef = useRef<{
     profileKey: string;
@@ -5826,8 +5833,43 @@ useEffect(() => {
           && agentModelsProfileKeyRef.current === profileKey
           && available.length > 0
         ) {
+          cacheAvailableAgentModels(available);
           agentModelsRef.current = available;
           setAgentModels(available);
+          const modelResolution = resolveValidAgentModel({
+            savedModel: canvasAgent.settings.apiModel,
+            availableModels: available,
+            usageContext: 'system_internal',
+            fallbackModel: DEFAULT_AGENT_SETTINGS.apiModel,
+          });
+          if (modelResolution.fallbackUsed) {
+            const savedModel = canvasAgent.settings.apiModel;
+            const repairKey = `${profileKey}:${savedModel.toLowerCase()}`;
+            agentModelRef.current = modelResolution.resolvedModel;
+            if (agentModelRepairKeyRef.current !== repairKey) {
+              agentModelRepairKeyRef.current = repairKey;
+              console.warn('[agent-model-fallback]', {
+                context: 'system_internal',
+                savedModel,
+                reason: modelResolution.fallbackReason || 'not_in_available_models',
+                fallbackTarget: modelResolution.resolvedModel,
+                requestId: `model_refresh_${Date.now().toString(36)}`,
+              });
+              void canvasAgent.saveSettings({
+                ...canvasAgent.settings,
+                apiModel: modelResolution.resolvedModel,
+              }).catch(error => {
+                if (agentModelRepairKeyRef.current === repairKey) {
+                  agentModelRef.current = savedModel;
+                }
+                console.warn('Repairing stale Agent model selection failed:', error);
+              }).finally(() => {
+                if (agentModelRepairKeyRef.current === repairKey) {
+                  agentModelRepairKeyRef.current = '';
+                }
+              });
+            }
+          }
         }
         return available;
       })
@@ -5843,12 +5885,23 @@ useEffect(() => {
       });
     agentModelsFlightRef.current = flight;
     return flight.promise;
-  }, [agentModelsProfileKey, canvasAgent.listOpenAiModels, canvasAgent.settingsLoading]);
+  }, [
+    agentModelsProfileKey,
+    canvasAgent.listOpenAiModels,
+    canvasAgent.saveSettings,
+    canvasAgent.settings,
+    canvasAgent.settingsLoading,
+  ]);
 
   useEffect(() => {
+    const profileChanged = agentModelsProfileKeyRef.current !== agentModelsProfileKey;
     agentModelsProfileKeyRef.current = agentModelsProfileKey;
-    agentModelsRef.current = [];
-    setAgentModels([]);
+    if (profileChanged) {
+      clearAvailableAgentModels();
+      agentModelRepairKeyRef.current = '';
+      agentModelsRef.current = [];
+      setAgentModels([]);
+    }
     if (!canvasAgent.settingsLoading) void refreshAgentModels();
   }, [agentModelsProfileKey, canvasAgent.settingsLoading, refreshAgentModels]);
 
@@ -5858,7 +5911,9 @@ useEffect(() => {
   }, [canvasAgent.settingsLoading, isCanvasMode, isDrawerAgentOpen, refreshAgentModels]);
 
   useEffect(() => { return runChatCanvasEffect01({ canvasAgent, isByokUnlocked, setAgentCustomBaseUrl, setAgentCustomProvider }); }, [canvasAgent.settings.apiBaseUrl, canvasAgent.settings.apiProvider, isByokUnlocked]);
-  agentModelRef.current = canvasAgent.settings.apiModel;
+  if (!agentModelRepairKeyRef.current) {
+    agentModelRef.current = canvasAgent.settings.apiModel;
+  }
 
   const switchAgentFundingSource = async (source: 'wallet' | 'codex' | 'custom') => { return switchAgentFundingSourceImpl({ agentCustomBaseUrl, agentCustomProvider, canvasAgent, showToast }, source); };
 

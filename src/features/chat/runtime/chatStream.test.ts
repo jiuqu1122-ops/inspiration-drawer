@@ -73,10 +73,23 @@ describe('Chat request recovery', () => {
     expect(invoke).toHaveBeenCalledOnce();
   });
 
+  it('does not silently replace a model rejected by ordinary Chat', async () => {
+    invoke.mockRejectedValueOnce(new Error('TASK FAILED: Unknown chat model'));
+    await expect(requestChatCompletion({
+      requestId: 'request-model-error',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [],
+      model: 'gpt-5.6-sol',
+      usageContext: 'chat',
+    })).rejects.toThrow('Unknown chat model');
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
   it('classifies network and server errors without treating validation failures as recoverable', () => {
     expect(isRecoverableChatRequestError('HTTP 500')).toBe(true);
     expect(isRecoverableChatRequestError('connection reset')).toBe(true);
     expect(isRecoverableChatRequestError('HTTP 400 bad request')).toBe(false);
+    expect(isRecoverableChatRequestError('MODEL_FALLBACK_EXHAUSTED: HTTP 500')).toBe(false);
   });
 
   it('separates a terminal upstream model timeout from a resumable transport interruption', () => {

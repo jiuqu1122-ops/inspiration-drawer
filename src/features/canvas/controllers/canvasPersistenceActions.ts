@@ -1820,11 +1820,10 @@ export const analyzeCanvasThreeSceneNodeImpl = async (ctx: Pick<canvasPersistenc
     setThreeSceneRunState(nodeId, 'working');
     showToast(images.length > 1 ? `正在综合分析 ${images.length} 个参考视角…` : '正在分析参考图片…');
     try {
-      const selectedModel = agentModelRef.current.trim();
-      const model = /^(?:unmind-agent|auto|default|recommended)$/i.test(selectedModel)
-        ? undefined
-        : selectedModel || undefined;
-      const { analysis, sceneSpec } = await analyzeImagesToThreeSceneResult({ images, model });
+      const { analysis, sceneSpec } = await analyzeImagesToThreeSceneResult({
+        images,
+        model: agentModelRef.current,
+      });
       const latest = canvasItemsRef.current.find(item => item.id === nodeId);
       if (!latest?.threeScene) return;
       const sourceImageIds = (latest.inputs || []).slice(0, 8);

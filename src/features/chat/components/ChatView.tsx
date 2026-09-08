@@ -90,7 +90,10 @@ export const ChatView = memo(function ChatView({
     () => resolveAvailableChatModels(modelOptions, model),
     [model, modelOptions],
   );
-  const effectiveModel = normalizeSupportedChatModel(model) || chatModelOptions[0] || 'default';
+  const normalizedModel = normalizeSupportedChatModel(model);
+  const effectiveModel = chatModelOptions.find(option => (
+    option.toLowerCase() === normalizedModel.toLowerCase()
+  )) || (modelOptions.length > 0 ? 'default' : normalizedModel || chatModelOptions[0] || 'default');
   const selectionAttachments = useMemo(() => selectionToAttachments(selectedItems), [selectedItems]);
   const selectionAttachmentIds = useMemo(
     () => new Set(selectionAttachments.map(item => item.id)),
@@ -111,10 +114,6 @@ export const ChatView = memo(function ChatView({
       return next.length === current.length ? current : next;
     });
   }, [selectionAttachmentKey]);
-  useEffect(() => {
-    if (!runtime.activeConversation || model === effectiveModel) return;
-    void runtime.setConversationModel(effectiveModel);
-  }, [effectiveModel, model, runtime.activeConversation, runtime.setConversationModel]);
   useEffect(() => {
     const move = (event: PointerEvent) => {
       if (!resizeRef.current || !onWidthChange) return;

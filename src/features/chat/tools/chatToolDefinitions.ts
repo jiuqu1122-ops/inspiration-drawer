@@ -1,4 +1,5 @@
 import { isShortVisualFollowup, isVisualRevisionFollowup } from '../context/chatVisualIntent';
+import { MAX_WEB_SEARCH_QUERIES_PER_TURN } from '../runtime/chatTurnPolicy';
 
 type ChatToolDefinition = {
   type: 'function';
@@ -10,7 +11,7 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
 });
 
 export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
-  { type: 'function', function: { name: 'web_search', description: '通用互联网搜索，可查询新闻、网页、资料、行情等公开信息，并返回摘要、正文摘录、发布时间和来源链接。同一条用户消息最多使用两个不同关键词。', parameters: objectSchema({ query: { type: 'string', description: '完整、具体的搜索词；涉及相对日期时必须写成明确日期。' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 } }, ['query']) } },
+  { type: 'function', function: { name: 'web_search', description: `通用互联网搜索，可查询新闻、网页、资料、行情等公开信息，并返回摘要、正文摘录、发布时间和来源链接。同一条用户消息最多使用 ${MAX_WEB_SEARCH_QUERIES_PER_TURN} 个不同关键词。`, parameters: objectSchema({ query: { type: 'string', description: '完整、具体的搜索词；涉及相对日期时必须写成明确日期。' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 } }, ['query']) } },
   { type: 'function', function: { name: 'create_file', description: '创建一个可打开、下载和另存为的真实文件。仅当用户明确要求生成文件、文档、报告、表格或可下载内容时调用。DOCX/PDF 的 content 使用 Markdown；XLSX 使用 sheets；不要返回 Base64、XML 或伪造下载链接。', parameters: objectSchema({ fileName: { type: 'string', description: '用户可见的文件名，包含对应扩展名。' }, format: { type: 'string', enum: ['txt', 'md', 'csv', 'json', 'docx', 'xlsx', 'pdf'] }, content: { type: ['string', 'null'], description: 'TXT/MD/CSV/JSON 的文件正文；DOCX/PDF 使用 Markdown 正文；XLSX 可为 null。' }, sheets: { type: ['array', 'null'], description: '仅 XLSX 使用。第一行应为表头。', items: { type: 'object', properties: { name: { type: 'string' }, rows: { type: 'array', items: { type: 'array', items: { type: ['string', 'number', 'boolean', 'null'] } } } }, required: ['name', 'rows'], additionalProperties: false } } }, ['fileName', 'format']) } },
   { type: 'function', function: { name: 'get_canvas_selection', description: '读取当前画布选中项的精简信息。仅在用户提到当前画布、当前节点或选中内容时使用。', parameters: objectSchema({}) } },
   { type: 'function', function: { name: 'search_assets', description: '在本地素材库中搜索少量相关素材。', parameters: objectSchema({ query: { type: 'string' }, limit: { type: ['number', 'null'], minimum: 1, maximum: 8 }, filter: { type: ['object', 'null'], additionalProperties: true } }, ['query']) } },

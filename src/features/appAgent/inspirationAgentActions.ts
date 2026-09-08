@@ -9,6 +9,7 @@ import { getCanvasAiOutputPreviewSlots } from '../../utils/canvasWorkflowRuntime
 import { type AgentCanvasSelectionItem,type AgentCanvasVisualReference } from '../agentModel';
 import { getCanvasAiMediaType,getCanvasAiNodeTitle } from '../canvasAiRuntime';
 import { type CanvasImageItem } from '../canvasModel';
+import { runInternalAgentModelRequest } from '../chat/runtime/agentModelResolution';
 import { getDrawerFolderPathName } from '../folderModel';
 import { AUTO_INSPIRATION_ANALYSIS_MAX_ATTEMPTS,INSPIRATION_ANALYSIS_IMAGE_MAX_EDGE,INSPIRATION_ANALYSIS_IMAGE_TARGET_BYTES,applyInspirationCandidateRanking,buildInspirationAnalysisRequest,buildInspirationCandidateRankingPrompt,extractJsonObject,getInspirationAnalysisSourceCandidates,hasUsableInspirationAiTags,isPermanentInspirationAnalysisFailure,normalizeInspirationProfile,searchDrawerInspirations,shouldRankInspirationCandidates,type DrawerSearchInspirationsInput,type InspirationAnalysisJob,type InspirationCandidate,type InspirationProfile } from './inspirationMemory';
 
@@ -450,21 +451,29 @@ export const retrieveDrawerInspirationCandidatesImpl = async (ctx: Pick<inspirat
     }
     try {
       const requestId = `inspiration_rank_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-      const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
-        request: {
-          requestId,
-          model: agentModelRef.current,
-          messages: [
-            {
-              role: 'system',
-              content: 'Rank compact inspiration metadata. Return JSON only. Never request or analyze the source images.',
-            },
-            {
-              role: 'user',
-              content: buildInspirationCandidateRankingPrompt(input.query, candidates),
-            },
-          ],
+      const messages = [
+        {
+          role: 'system',
+          content: 'Rank compact inspiration metadata. Return JSON only. Never request or analyze the source images.',
         },
+        {
+          role: 'user',
+          content: buildInspirationCandidateRankingPrompt(input.query, candidates),
+        },
+      ];
+      const result = await runInternalAgentModelRequest({
+        savedModel: agentModelRef.current,
+        usageContext: 'inspiration_analysis',
+        requestId,
+        createRequestId: () => `inspiration_rank_fallback_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        request: requestModel => invoke<AgentOpenAiChatResult>('agent_openai_chat', {
+          request: {
+            requestId: requestModel.requestId,
+            model: requestModel.model,
+            usageContext: requestModel.usageContext,
+            messages,
+          },
+        }),
       });
       const ranked = applyInspirationCandidateRanking(
         candidates,

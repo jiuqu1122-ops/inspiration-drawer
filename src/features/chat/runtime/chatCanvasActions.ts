@@ -11,6 +11,7 @@ import { truncatePromptToUtf8ByteLimit } from '../../appAgent/imageQuality/image
 import { type CanvasImageItem,type CanvasItemBox } from '../../canvasModel';
 import { buildDesignAgentSystemPrompt,normalizeDesignAgentConfig } from '../../designAgentNode';
 import type { ChatGeneratedMedia } from '../model/chatTypes';
+import { runInternalAgentModelRequest } from './agentModelResolution';
 import { createChatBatchCanvasLayout,getChatBatchCanvasSlotSize } from './chatBatchCanvasLayout';
 import type { ChatBatchCompletedPayload,ChatBatchMediaReadyPayload,ChatBatchStartedPayload } from './useChatRuntime';
 
@@ -406,23 +407,27 @@ export const runCanvasTextAgentTargetImpl = async (ctx: Pick<chatAgentActionCont
       contextRoutingInstruction,
     ].filter(Boolean);
     const requestId = 'canvas_text_agent_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-    const selectedAgentModel = agentModelRef.current.trim();
-    const requestedAgentModel = /^(?:unmind-agent|auto|default|recommended)$/i.test(selectedAgentModel)
-      ? undefined
-      : selectedAgentModel || undefined;
     const userPrompt = truncatePromptToUtf8ByteLimit(
       promptParts.join('\n\n'),
       CANVAS_TEXT_AGENT_USER_PROMPT_UTF8_BYTE_LIMIT,
     );
-    const result = await invoke<AgentOpenAiChatResult>('agent_openai_chat', {
-      request: {
-        requestId,
-        model: requestedAgentModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
-        ],
-      },
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: buildCanvasTextAgentUserContent(userPrompt, preparedReferences, isSeedanceVideoAnalysis) },
+    ];
+    const result = await runInternalAgentModelRequest({
+      savedModel: agentModelRef.current,
+      usageContext: 'canvas_text_agent',
+      requestId,
+      createRequestId: () => 'canvas_text_agent_fallback_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+      request: requestModel => invoke<AgentOpenAiChatResult>('agent_openai_chat', {
+        request: {
+          requestId: requestModel.requestId,
+          model: requestModel.model,
+          usageContext: requestModel.usageContext,
+          messages,
+        },
+      }),
     });
     const output = String(result.content || '').trim();
     if (!output) throw new Error('Agent API 没有返回可写入的文字结果');

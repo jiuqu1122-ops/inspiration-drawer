@@ -40,9 +40,11 @@ export const resolveAvailableChatModels = (
   const automaticModels = available.filter(model => isAutomaticChatModel(model));
   const current = normalizeSupportedChatModel(currentModel);
   const currentKey = current.toLowerCase();
+  // A non-empty remote catalog is authoritative. Only preserve a missing
+  // concrete selection while the catalog has not loaded successfully.
   if (current && !seen.has(currentKey)) {
     if (isAutomaticChatModel(current)) automaticModels.push(current);
-    else concreteModels.push(current);
+    else if (available.length === 0) concreteModels.push(current);
   }
   return [...concreteModels, ...automaticModels];
 };

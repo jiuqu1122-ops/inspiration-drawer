@@ -71,6 +71,9 @@ import {
   writeAgentConversations,
 } from './agentStorage';
 import { upsertWorkflowResultMessage } from './workflowResult';
+import {
+  runInternalAgentModelRequest,
+} from './chat/runtime/agentModelResolution';
 
 type RuntimeOptions = {
   getContext: () => AgentCanvasContext;
@@ -1336,19 +1339,48 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     };
     let result: OpenAiChatResult;
     let activeStream: { conversationId: string; messageId: string; streamed: boolean } | undefined;
+    const modelRequestIds = [requestId];
     try {
-      result = await invoke<OpenAiChatResult>('agent_openai_chat', {
-        request: {
-          requestId,
-          messages: providerMessages,
-          tools: CANVAS_AGENT_TOOL_DEFINITIONS,
-          model: settingsRef.current.apiModel,
+      result = await runInternalAgentModelRequest({
+        savedModel: settingsRef.current.apiModel,
+        usageContext: 'system_internal',
+        requestId,
+        createRequestId: () => createAgentId('agent-api-model-fallback'),
+        request: requestModel => {
+          if (!modelRequestIds.includes(requestModel.requestId)) {
+            modelRequestIds.push(requestModel.requestId);
+            activeOpenAiRequestsRef.current.set(requestModel.requestId, {
+              conversationId,
+              messageId: assistantMessageId,
+              streamed: false,
+            });
+            if (activeRequestRef.current?.requestId === requestId) {
+              activeRequestRef.current.requestId = requestModel.requestId;
+            }
+          }
+          return invoke<OpenAiChatResult>('agent_openai_chat', {
+            request: {
+              requestId: requestModel.requestId,
+              messages: providerMessages,
+              tools: CANVAS_AGENT_TOOL_DEFINITIONS,
+              model: requestModel.model,
+              usageContext: requestModel.usageContext,
+            },
+          });
         },
       });
-      activeStream = activeOpenAiRequestsRef.current.get(requestId);
+      activeStream = [...modelRequestIds]
+        .reverse()
+        .map(id => activeOpenAiRequestsRef.current.get(id))
+        .find(value => value?.streamed)
+        || activeOpenAiRequestsRef.current.get(modelRequestIds[modelRequestIds.length - 1]);
     } finally {
-      activeStream ??= activeOpenAiRequestsRef.current.get(requestId);
-      activeOpenAiRequestsRef.current.delete(requestId);
+      activeStream ??= [...modelRequestIds]
+        .reverse()
+        .map(id => activeOpenAiRequestsRef.current.get(id))
+        .find(value => value?.streamed)
+        || activeOpenAiRequestsRef.current.get(modelRequestIds[modelRequestIds.length - 1]);
+      modelRequestIds.forEach(id => activeOpenAiRequestsRef.current.delete(id));
     }
     upsertThinkingStep(conversationId, assistantMessageId, `api-request-${depth}`, {
       title: '模型请求已返回',
@@ -1728,13 +1760,20 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
         detail: '模型只返回结构化 proposal，不直接操作画布',
         status: 'running',
       });
-      const result = await invoke<OpenAiChatResult>('agent_openai_chat', {
-        request: {
-          requestId,
-          messages: plannerMessages,
-          tools: [],
-          model: settingsRef.current.apiModel,
-        },
+      const result = await runInternalAgentModelRequest({
+        savedModel: settingsRef.current.apiModel,
+        usageContext: 'workflow',
+        requestId,
+        createRequestId: () => createAgentId('workflow-planner-model-fallback'),
+        request: requestModel => invoke<OpenAiChatResult>('agent_openai_chat', {
+          request: {
+            requestId: requestModel.requestId,
+            messages: plannerMessages,
+            tools: [],
+            model: requestModel.model,
+            usageContext: requestModel.usageContext,
+          },
+        }),
       });
       raw = String(result.content || '').trim();
     }
@@ -2469,24 +2508,31 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     const mediaInstruction = mediaType === 'video'
       ? '这是视频生成提示词。补充并组织主体、动作与时间节奏、镜头运动、景别、运镜速度、场景、光线和视觉风格；不要凭空改变用户意图。'
       : '这是图片生成提示词。补充并组织主体、构图、视角、材质、光线、色彩、背景和视觉风格；不要凭空改变用户意图。';
-    const result = await invoke<OpenAiChatResult>('agent_openai_chat', {
-      request: {
-        requestId,
-        messages: [
-          {
-            role: 'system',
-            content: [
+    const result = await runInternalAgentModelRequest({
+      savedModel: settingsRef.current.apiModel,
+      usageContext: 'prompt_optimization',
+      requestId,
+        createRequestId: () => createAgentId('prompt-optimize-model-fallback'),
+        request: requestModel => invoke<OpenAiChatResult>('agent_openai_chat', {
+          request: {
+            requestId: requestModel.requestId,
+            messages: [
+              {
+                role: 'system',
+                content: [
               '你是专业的生成式媒体提示词优化器。',
               mediaInstruction,
               '保留原提示词的主体、核心动作和风格方向，只做必要的专业化补全与重组。',
               '请沿用原提示词的主要语言，只返回一段可直接粘贴到生成模型的最终提示词，不要解释、不要标题、不要 Markdown。',
-            ].join('\n'),
-          },
-          { role: 'user', content: text },
-        ],
-        tools: [],
-        model: settingsRef.current.apiModel,
-      },
+                ].join('\n'),
+              },
+              { role: 'user', content: text },
+            ],
+            tools: [],
+          model: requestModel.model,
+          usageContext: requestModel.usageContext,
+        },
+      }),
     });
     return result.content.trim();
   }, []);
@@ -2654,9 +2700,9 @@ export function useCanvasAgentRuntime(options: RuntimeOptions) {
     return saved;
   }, [commitConversations, installCodex]);
 
-  const listOpenAiModels = useCallback(async () => (
-    invoke<string[]>('agent_list_openai_models')
-  ), []);
+  const listOpenAiModels = useCallback(async () => {
+    return invoke<string[]>('agent_list_openai_models');
+  }, []);
 
   const testAgentApiConnection = useCallback(async () => (
     invoke<AgentApiConnectionResult>('agent_test_api_connection')
