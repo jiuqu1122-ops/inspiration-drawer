@@ -87,6 +87,10 @@ import {
   runInternalAgentModelRequest,
 } from './agentModelResolution';
 import {
+  buildCompositeImageVariantFallback,
+  buildIndependentImageVariantFallback,
+} from './chatImageToolFallback';
+import {
   cancelChatCompletion,
   isChatRequestIdCurrent,
   isRecoverableChatRequestError,
@@ -1563,19 +1567,49 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       acceptedWebSearchQueries.add(query);
       return true;
     });
+    const assistantContextTexts = conversationMessages
+      .filter(message => (
+        message.id !== assistantMessageId
+        && message.role === 'assistant'
+        && message.content.trim()
+      ))
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .map(message => message.content);
+    const missingVisualToolFallback = independentImageVariantsRequested
+      ? buildIndependentImageVariantFallback({
+          userText,
+          toolIntentText,
+          assistantTexts: [result.content, ...assistantContextTexts],
+        })
+      : compositeImageVariantsRequested
+        ? buildCompositeImageVariantFallback({
+            userText,
+            toolIntentText,
+            assistantTexts: [result.content, ...assistantContextTexts],
+          })
+        : directVisualTool
+          ? { prompt: toolIntentText }
+          : undefined;
+    const missingVisualToolName = independentImageVariantsRequested
+      ? 'generate_image_variants'
+      : compositeImageVariantsRequested
+        ? 'generate_image'
+        : directVisualTool;
     if (
       depth === 0
       && toolCalls.length === 0
       && !batchImageOperationRequested
-      && !independentImageVariantsRequested
-      && !compositeImageVariantsRequested
-      && directVisualTool
+      && missingVisualToolName
+      && missingVisualToolFallback
     ) {
       const fallbackCall: ChatToolCall = {
         id: createChatId('chat-tool'),
         messageId: assistantMessageId,
-        toolName: directVisualTool,
-        argumentsJson: JSON.stringify(applyChatImageGenerationSettings({ prompt: toolIntentText }, optionsRef.current)),
+        toolName: missingVisualToolName,
+        argumentsJson: JSON.stringify(applyChatImageGenerationSettings(
+          missingVisualToolFallback,
+          optionsRef.current,
+        )),
         status: 'pending',
         createdAt: Date.now(),
       };
