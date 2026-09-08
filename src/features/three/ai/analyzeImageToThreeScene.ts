@@ -1,5 +1,10 @@
 import type { ChatAttachment } from '../../chat/model/chatTypes';
 import { createChatVisionAttachmentResolver } from '../../chat/attachments/chatVisionAttachmentResolver';
+import {
+  isAgentModelFallbackExhaustedError,
+  isUnavailableChatModelError,
+  runInternalAgentModelRequest,
+} from '../../chat/runtime/agentModelResolution';
 import { requestChatCompletion, type ChatProviderResult } from '../../chat/runtime/chatStream';
 import { mapSceneAnalysisToSceneSpec } from '../model/mapSceneAnalysisToSceneSpec';
 import {
@@ -194,7 +199,23 @@ export const analyzeImagesToThreeSceneResult = async (input: {
       { role: 'system', content: THREE_SCENE_ANALYSIS_SYSTEM_PROMPT },
       { role: 'user', content },
     ];
-    const request = input.requestCompletion || requestChatCompletion;
+    const requestCompletion = input.requestCompletion || requestChatCompletion;
+    let effectiveModel = input.model;
+    const request = (completion: Parameters<typeof requestChatCompletion>[0]) => (
+      runInternalAgentModelRequest({
+        savedModel: effectiveModel,
+        usageContext: 'three_scene_analysis',
+        requestId: completion.requestId,
+        createRequestId,
+        onFallback: resolution => { effectiveModel = resolution.resolvedModel; },
+        request: requestModel => requestCompletion({
+          ...completion,
+          requestId: requestModel.requestId,
+          model: requestModel.model,
+          usageContext: requestModel.usageContext,
+        }),
+      })
+    );
     let providerResult: ChatProviderResult;
     try {
       providerResult = await request({
@@ -206,11 +227,17 @@ export const analyzeImagesToThreeSceneResult = async (input: {
         toolChoice: { type: 'function', function: { name: 'submit_three_scene_analysis' } },
       });
     } catch (structuredError) {
+      if (
+        isUnavailableChatModelError(structuredError)
+        || isAgentModelFallbackExhaustedError(structuredError)
+      ) {
+        throw structuredError;
+      }
       console.warn('SceneAnalysis structured request failed, trying JSON-only compatibility mode:', structuredError);
       try {
         providerResult = await request({
           requestId: createRequestId(),
-          model: input.model,
+          model: effectiveModel,
           stream: false,
           messages: [...messages, { role: 'system', content: THREE_SCENE_ANALYSIS_JSON_ONLY_PROMPT }],
           tools: [],
@@ -232,7 +259,7 @@ export const analyzeImagesToThreeSceneResult = async (input: {
         analysis = await repairSceneAnalysis({
           rawResponse: rawAnalysis,
           parseError,
-          model: input.model,
+          model: effectiveModel,
           requestCompletion: request,
         });
       } catch (repairError) {

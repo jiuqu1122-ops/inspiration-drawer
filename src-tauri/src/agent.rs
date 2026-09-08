@@ -2,7 +2,7 @@ use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -810,7 +810,7 @@ pub fn agent_save_settings(
     Ok(public_settings_from_stored(&app_handle, &current))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentOpenAiChatRequest {
     request_id: String,
@@ -825,6 +825,8 @@ pub struct AgentOpenAiChatRequest {
     stream: bool,
     #[serde(default)]
     reasoning_effort: Option<String>,
+    #[serde(default)]
+    usage_context: Option<String>,
 }
 
 const MAX_INLINE_VISION_BYTES: usize = 5 * 1024 * 1024 / 2;
@@ -1460,15 +1462,24 @@ fn openai_text_value(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::Array(values) => values.iter().map(openai_text_value).collect::<String>(),
-        Value::Object(record) => ["text", "content", "summary", "reasoning_text", "delta"]
-            .iter()
-            .find_map(|key| {
-                record
-                    .get(*key)
-                    .map(openai_text_value)
-                    .filter(|text| !text.is_empty())
-            })
-            .unwrap_or_default(),
+        Value::Object(record) => [
+            "text",
+            "content",
+            "output_text",
+            "value",
+            "refusal",
+            "summary",
+            "reasoning_text",
+            "delta",
+        ]
+        .iter()
+        .find_map(|key| {
+            record
+                .get(*key)
+                .map(openai_text_value)
+                .filter(|text| !text.is_empty())
+        })
+        .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -1500,9 +1511,13 @@ fn merge_openai_choice_data(
     let Some(delta) = choice.get("delta").or_else(|| choice.get("message")) else {
         return update;
     };
-    if let Some(text) = delta.get("content").and_then(Value::as_str) {
-        content.push_str(text);
-        update.content.push_str(text);
+    if let Some(text) = delta
+        .get("content")
+        .map(openai_text_value)
+        .filter(|text| !text.is_empty())
+    {
+        content.push_str(&text);
+        update.content.push_str(&text);
     }
     update.reasoning = openai_reasoning_delta(delta);
     reasoning.push_str(&update.reasoning);
@@ -1600,8 +1615,12 @@ fn merge_openai_responses_event(
         .and_then(Value::as_str)
         .unwrap_or_default();
     match event_type {
-        "response.output_text.delta" => {
-            let choice = json!({ "delta": { "content": parsed.get("delta") } });
+        "response.output_text.delta" | "response.output_text.done" => {
+            let choice = json!({
+                "delta": {
+                    "content": parsed.get("delta").or_else(|| parsed.get("text"))
+                }
+            });
             merge_openai_choice(
                 &choice, content, reasoning, tool_calls, app_handle, request_id,
             );
@@ -1643,6 +1662,49 @@ fn merge_openai_responses_event(
     }
 }
 
+fn openai_responses_root(parsed: &Value) -> &Value {
+    parsed.get("response").unwrap_or(parsed)
+}
+
+fn openai_responses_explicit_output_text(parsed: &Value) -> String {
+    openai_responses_root(parsed)
+        .get("output_text")
+        .map(openai_text_value)
+        .unwrap_or_default()
+}
+
+fn openai_response_message_output_text(output: &Value) -> String {
+    output
+        .get("content")
+        .map(|content| match content {
+            Value::Array(parts) => parts
+                .iter()
+                .map(|part| {
+                    part.get("text")
+                        .or_else(|| part.get("content"))
+                        .map(openai_text_value)
+                        .unwrap_or_else(|| openai_text_value(part))
+                })
+                .collect::<String>(),
+            value => openai_text_value(value),
+        })
+        .unwrap_or_default()
+}
+
+fn openai_responses_output_message_text(parsed: &Value) -> String {
+    openai_responses_root(parsed)
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|outputs| {
+            outputs
+                .iter()
+                .filter(|output| output.get("type").and_then(Value::as_str) == Some("message"))
+                .map(openai_response_message_output_text)
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
 fn merge_openai_responses_output(
     parsed: &Value,
     content: &mut String,
@@ -1650,34 +1712,30 @@ fn merge_openai_responses_output(
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     app_handle: &tauri::AppHandle,
     request_id: &str,
+    include_message_text: bool,
 ) {
-    let Some(outputs) = parsed.get("output").and_then(Value::as_array) else {
+    let Some(outputs) = openai_responses_root(parsed)
+        .get("output")
+        .and_then(Value::as_array)
+    else {
         return;
     };
+    if include_message_text {
+        let text = openai_responses_output_message_text(parsed);
+        if !text.is_empty() {
+            let choice = json!({ "message": { "content": text } });
+            merge_openai_choice(
+                &choice, content, reasoning, tool_calls, app_handle, request_id,
+            );
+        }
+    }
     for (index, output) in outputs.iter().enumerate() {
         match output
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default()
         {
-            "message" => {
-                if let Some(parts) = output.get("content").and_then(Value::as_array) {
-                    for part in parts {
-                        let text = part
-                            .get("text")
-                            .or_else(|| part.get("content"))
-                            .map(openai_text_value)
-                            .unwrap_or_default();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        let choice = json!({ "message": { "content": text } });
-                        merge_openai_choice(
-                            &choice, content, reasoning, tool_calls, app_handle, request_id,
-                        );
-                    }
-                }
-            }
+            "message" => {}
             "reasoning" => {
                 let text = output
                     .get("summary")
@@ -1750,6 +1808,159 @@ fn openai_usage_value(parsed: &Value) -> Option<&Value> {
         .filter(|value| !value.is_null())
 }
 
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+#[derive(Debug, Default)]
+struct OpenAiResponseDiagnostics {
+    top_level_fields: BTreeSet<String>,
+    response_fields: BTreeSet<String>,
+    event_types: BTreeSet<String>,
+    message_content_types: BTreeSet<String>,
+    output_item_types: BTreeSet<String>,
+    choices_count: usize,
+    output_count: usize,
+    output_content_count: usize,
+    has_output_text: bool,
+}
+
+impl OpenAiResponseDiagnostics {
+    fn observe(&mut self, parsed: &Value) {
+        if let Some(record) = parsed.as_object() {
+            for (key, value) in record.iter().take(48) {
+                if self.top_level_fields.len() >= 96 {
+                    break;
+                }
+                self.top_level_fields.insert(format!(
+                    "{}:{}",
+                    key.chars().take(96).collect::<String>(),
+                    json_value_kind(value)
+                ));
+            }
+        }
+        if let Some(event_type) = parsed.get("type").and_then(Value::as_str) {
+            if self.event_types.len() < 24 {
+                self.event_types
+                    .insert(event_type.chars().take(96).collect::<String>());
+            }
+        }
+        if let Some(response) = parsed.get("response").and_then(Value::as_object) {
+            for (key, value) in response.iter().take(48) {
+                if self.response_fields.len() >= 96 {
+                    break;
+                }
+                self.response_fields.insert(format!(
+                    "{}:{}",
+                    key.chars().take(96).collect::<String>(),
+                    json_value_kind(value)
+                ));
+            }
+        }
+        let root = openai_responses_root(parsed);
+        self.has_output_text |= root
+            .get("output_text")
+            .is_some_and(|value| !value.is_null());
+        if let Some(choices) = parsed.get("choices").and_then(Value::as_array) {
+            self.choices_count = self.choices_count.max(choices.len());
+            for choice in choices {
+                if let Some(content) = choice
+                    .get("message")
+                    .or_else(|| choice.get("delta"))
+                    .and_then(|message| message.get("content"))
+                {
+                    self.message_content_types
+                        .insert(json_value_kind(content).to_string());
+                }
+            }
+        }
+        if let Some(outputs) = root.get("output").and_then(Value::as_array) {
+            self.output_count = self.output_count.max(outputs.len());
+            for output in outputs {
+                if let Some(output_type) = output.get("type").and_then(Value::as_str) {
+                    if self.output_item_types.len() < 24 {
+                        self.output_item_types
+                            .insert(output_type.chars().take(96).collect::<String>());
+                    }
+                }
+                if let Some(parts) = output.get("content").and_then(Value::as_array) {
+                    self.output_content_count = self.output_content_count.max(parts.len());
+                }
+            }
+        }
+    }
+
+    fn protocol(&self) -> &'static str {
+        if self.has_output_text
+            || self.output_count > 0
+            || !self.response_fields.is_empty()
+            || self
+                .event_types
+                .iter()
+                .any(|value| value.starts_with("response."))
+        {
+            "responses"
+        } else if self.choices_count > 0 {
+            "chat_completions"
+        } else {
+            "unknown"
+        }
+    }
+}
+
+fn log_empty_chat_provider_response(
+    request_id: &str,
+    model: &str,
+    provider: &str,
+    transport: &str,
+    content: &str,
+    reasoning: &str,
+    tool_call_count: usize,
+    finish_reason: Option<&str>,
+    usage_present: bool,
+    diagnostics: &OpenAiResponseDiagnostics,
+) {
+    eprintln!(
+        "Empty successful Chat provider response: requestId={} model={} provider={} finishReason={} contentLength={} reasoningLength={} toolCallCount={} usagePresent={} protocol={} transport={} choicesCount={} outputCount={} outputContentCount={} hasOutputText={} messageContentTypes={:?} outputItemTypes={:?} topLevelFields={:?} responseFields={:?} eventTypes={:?}",
+        request_id,
+        model,
+        provider,
+        finish_reason.unwrap_or(""),
+        content.len(),
+        reasoning.len(),
+        tool_call_count,
+        usage_present,
+        diagnostics.protocol(),
+        transport,
+        diagnostics.choices_count,
+        diagnostics.output_count,
+        diagnostics.output_content_count,
+        diagnostics.has_output_text,
+        diagnostics.message_content_types,
+        diagnostics.output_item_types,
+        diagnostics.top_level_fields,
+        diagnostics.response_fields,
+        diagnostics.event_types,
+    );
+}
+
+fn has_visible_chat_provider_content(content: &str) -> bool {
+    content.chars().any(|character| {
+        !character.is_whitespace()
+            && !matches!(
+                character,
+                '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}'
+            )
+    })
+}
+
 fn parse_openai_response_value(
     parsed: &Value,
     content: &mut String,
@@ -1757,9 +1968,11 @@ fn parse_openai_response_value(
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Value>,
+    diagnostics: &mut OpenAiResponseDiagnostics,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) {
+    diagnostics.observe(parsed);
     if let Some(next_usage) = openai_usage_value(parsed) {
         *usage = Some(next_usage.clone());
         let _ = app_handle.emit(
@@ -1775,8 +1988,23 @@ fn parse_openai_response_value(
     if !merge_openai_responses_event(
         parsed, content, reasoning, tool_calls, app_handle, request_id,
     ) {
+        let output_text = openai_responses_explicit_output_text(parsed);
+        let has_output_text = !output_text.is_empty();
+        if has_output_text {
+            let choice = json!({ "message": { "content": output_text } });
+            merge_openai_choice(
+                &choice, content, reasoning, tool_calls, app_handle, request_id,
+            );
+        }
+        let include_output_message_text = !has_output_text && content.is_empty();
         merge_openai_responses_output(
-            parsed, content, reasoning, tool_calls, app_handle, request_id,
+            parsed,
+            content,
+            reasoning,
+            tool_calls,
+            app_handle,
+            request_id,
+            include_output_message_text,
         );
     }
     if let Some(choice) = parsed
@@ -1790,6 +2018,18 @@ fn parse_openai_response_value(
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
             *finish_reason = Some(reason.to_string());
         }
+    }
+    let root = openai_responses_root(parsed);
+    if let Some(response_finish_reason) = root
+        .get("finish_reason")
+        .or_else(|| {
+            root.get("incomplete_details")
+                .and_then(|details| details.get("reason"))
+        })
+        .or_else(|| root.get("status"))
+        .and_then(Value::as_str)
+    {
+        *finish_reason = Some(response_finish_reason.to_string());
     }
 }
 
@@ -1849,6 +2089,7 @@ fn parse_openai_sse_data(
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Value>,
+    diagnostics: &mut OpenAiResponseDiagnostics,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
@@ -1862,6 +2103,7 @@ fn parse_openai_sse_data(
         tool_calls,
         finish_reason,
         usage,
+        diagnostics,
         app_handle,
         request_id,
     );
@@ -1875,6 +2117,7 @@ fn parse_openai_buffered_text(
     tool_calls: &mut BTreeMap<usize, OpenAiToolCallAccumulator>,
     finish_reason: &mut Option<String>,
     usage: &mut Option<Value>,
+    diagnostics: &mut OpenAiResponseDiagnostics,
     app_handle: &tauri::AppHandle,
     request_id: &str,
 ) -> Result<(), String> {
@@ -1894,6 +2137,7 @@ fn parse_openai_buffered_text(
                         tool_calls,
                         finish_reason,
                         usage,
+                        diagnostics,
                         app_handle,
                         request_id,
                     )?;
@@ -1917,6 +2161,7 @@ fn parse_openai_buffered_text(
         tool_calls,
         finish_reason,
         usage,
+        diagnostics,
         app_handle,
         request_id,
     )
@@ -1944,22 +2189,74 @@ pub async fn agent_openai_chat(
     let settings = read_settings(&app_handle);
     if stored_api_provider(&settings).eq_ignore_ascii_case("unmind-wallet") {
         let request_id = request.request_id.clone();
-        let mut wallet_request = request;
-        wallet_request.model =
-            resolve_wallet_agent_model(wallet_request.model.as_deref(), &settings.api_model);
-        let result = agent_wallet_chat(
+        let usage_context =
+            resolve_agent_usage_context(request.usage_context.as_deref(), &request_id);
+        let internal_request = is_internal_agent_usage_context(&usage_context);
+        let requested_specific_model = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| !is_automatic_agent_model(value))
+            .unwrap_or(false);
+        let mut wallet_request = request.clone();
+        wallet_request.model = resolve_wallet_agent_model_for_request(
+            wallet_request.model.as_deref(),
+            &settings.api_model,
+            internal_request,
+        );
+        let mut result = agent_wallet_chat(
             app_handle.clone(),
             wallet_request,
             state.openai_cancellations.clone(),
             state.wallet_tasks.clone(),
             state.wallet_pollers.clone(),
+            None,
         )
         .await;
+        if internal_request
+            && requested_specific_model
+            && result
+                .as_ref()
+                .err()
+                .map(|error| is_unavailable_chat_model_error(error))
+                .unwrap_or(false)
+        {
+            let fallback_request_id = format!("{}_model_fallback_{}", request_id, uuid_like_id());
+            eprintln!(
+                "[agent-model-fallback] context={} saved={} reason=provider_rejected_model fallback=default requestId={}",
+                usage_context,
+                request.model.as_deref().unwrap_or("(empty)"),
+                fallback_request_id
+            );
+            let mut fallback_request = request;
+            fallback_request.request_id = fallback_request_id.clone();
+            fallback_request.model = Some("default".to_string());
+            fallback_request.model = resolve_wallet_agent_model_for_request(
+                fallback_request.model.as_deref(),
+                &settings.api_model,
+                true,
+            );
+            result = agent_wallet_chat(
+                app_handle.clone(),
+                fallback_request,
+                state.openai_cancellations.clone(),
+                state.wallet_tasks.clone(),
+                state.wallet_pollers.clone(),
+                Some(request_id.clone()),
+            )
+            .await;
+            result = match result {
+                Ok(value) => Ok(value),
+                Err(error) => Err(format!("MODEL_FALLBACK_EXHAUSTED: {}", error)),
+            };
+        }
         if let Err(error) = &result {
             emit_chat_stream_error(&app_handle, &request_id, error);
         }
         return result;
     }
+    let provider_name = stored_api_provider(&settings).to_string();
     let api_profile = resolve_agent_api_profile(&app_handle, &settings)?;
     let cancellations = state.openai_cancellations.clone();
     let request_id = request.request_id.clone();
@@ -1977,6 +2274,7 @@ pub async fn agent_openai_chat(
         if api_model.trim().is_empty() {
             return Err("请先在 Agent 设置中填写模型".to_string());
         }
+        let diagnostic_model = api_model.clone();
         if let Ok(mut values) = cancellations.lock() {
             values.remove(&request.request_id);
         }
@@ -2039,6 +2337,12 @@ pub async fn agent_openai_chat(
         let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
         let mut finish_reason = None;
         let mut usage = None;
+        let mut diagnostics = OpenAiResponseDiagnostics::default();
+        let response_transport = if content_type.contains("text/event-stream") {
+            "sse"
+        } else {
+            "json"
+        };
 
         if content_type.contains("text/event-stream") {
             let reader = BufReader::new(response);
@@ -2062,6 +2366,7 @@ pub async fn agent_openai_chat(
                             &mut tool_calls,
                             &mut finish_reason,
                             &mut usage,
+                            &mut diagnostics,
                             &app_handle,
                             &request.request_id,
                         )?;
@@ -2079,6 +2384,7 @@ pub async fn agent_openai_chat(
                 &mut tool_calls,
                 &mut finish_reason,
                 &mut usage,
+                &mut diagnostics,
                 &app_handle,
                 &request.request_id,
             )?;
@@ -2098,7 +2404,21 @@ pub async fn agent_openai_chat(
                 name: value.name,
                 arguments: value.arguments,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if !has_visible_chat_provider_content(&content) && tool_calls.is_empty() {
+            log_empty_chat_provider_response(
+                &request.request_id,
+                &diagnostic_model,
+                &provider_name,
+                response_transport,
+                &content,
+                &reasoning,
+                tool_calls.len(),
+                finish_reason.as_deref(),
+                usage.is_some(),
+                &diagnostics,
+            );
+        }
         let result = AgentOpenAiChatResult {
             request_id: request.request_id.clone(),
             content,
@@ -2144,13 +2464,113 @@ fn resolve_wallet_agent_model(requested: Option<&str>, configured: &str) -> Opti
     }
 }
 
+fn is_automatic_agent_model(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "unmind-agent" | "auto" | "default" | "recommended"
+    )
+}
+
+fn is_internal_agent_usage_context(context: &str) -> bool {
+    matches!(
+        context.trim().to_ascii_lowercase().as_str(),
+        "workflow"
+            | "canvas_text_agent"
+            | "inspiration_analysis"
+            | "three_scene_analysis"
+            | "prompt_optimization"
+            | "system_internal"
+    )
+}
+
+fn resolve_agent_usage_context(explicit: Option<&str>, request_id: &str) -> String {
+    let explicit = explicit.map(str::trim).unwrap_or_default();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    let normalized_id = request_id.trim().to_ascii_lowercase();
+    for (prefix, context) in [
+        ("canvas_text_agent_", "canvas_text_agent"),
+        ("inspiration_rank_", "inspiration_analysis"),
+        ("three-analysis-", "three_scene_analysis"),
+        ("workflow-planner-api-", "workflow"),
+        ("prompt-optimize-", "prompt_optimization"),
+        ("agent-api-", "system_internal"),
+        ("chat-summary-", "system_internal"),
+        ("chat-batch-plan-decision-", "system_internal"),
+    ] {
+        if normalized_id.starts_with(prefix) {
+            return context.to_string();
+        }
+    }
+    "chat".to_string()
+}
+
+fn resolve_wallet_agent_model_for_request(
+    requested: Option<&str>,
+    configured: &str,
+    internal_request: bool,
+) -> Option<String> {
+    if internal_request
+        && requested
+            .map(str::trim)
+            .map(|value| value.is_empty() || is_automatic_agent_model(value))
+            .unwrap_or(true)
+    {
+        return None;
+    }
+    resolve_wallet_agent_model(requested, configured)
+}
+
+fn is_unavailable_chat_model_error(error: &str) -> bool {
+    let normalized = error.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.contains("model_fallback_exhausted")
+        || normalized.contains("http 500")
+        || normalized.contains("http 501")
+        || normalized.contains("http 502")
+        || normalized.contains("http 503")
+        || normalized.contains("http 504")
+        || normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+        || normalized.contains("authentication")
+        || normalized.contains("insufficient balance")
+        || normalized.contains("quota")
+        || normalized.contains("rate limit")
+        || normalized.contains("timeout")
+        || normalized.contains("timed out")
+    {
+        return false;
+    }
+    normalized.contains("model_not_available")
+        || normalized.contains("model_not_found")
+        || normalized.contains("model_disabled")
+        || normalized.contains("unsupported_model")
+        || normalized.contains("stale_model")
+        || normalized.contains("unknown chat model")
+        || normalized.contains("model not found")
+        || normalized.contains("unsupported model")
+        || normalized.contains("disabled model")
+        || normalized.contains("stale chat model")
+        || normalized.contains("model is disabled")
+        || normalized.contains("model was disabled")
+}
+
 async fn agent_wallet_chat(
     app_handle: tauri::AppHandle,
     request: AgentOpenAiChatRequest,
     cancellations: Arc<Mutex<HashSet<String>>>,
     wallet_tasks: Arc<Mutex<HashMap<String, String>>>,
     wallet_pollers: Arc<Mutex<HashSet<String>>>,
+    client_request_id: Option<String>,
 ) -> Result<AgentOpenAiChatResult, String> {
+    let provider_request_id = request.request_id.clone();
+    let is_model_fallback = client_request_id.is_some();
+    let request_id = client_request_id.unwrap_or_else(|| provider_request_id.clone());
+    let diagnostic_model = request
+        .model
+        .clone()
+        .unwrap_or_else(|| "server-selected".to_string());
     let access_token = crate::commands::license::cloud_access_token(&app_handle).await?;
     let (client, direct_client) = crate::build_async_http_clients_with_direct_fallback(
         Some(&app_handle),
@@ -2162,13 +2582,15 @@ async fn agent_wallet_chat(
             tasks.extend(read_pending_wallet_tasks(&app_handle));
         }
     }
-    if let Ok(mut values) = cancellations.lock() {
-        values.remove(&request.request_id);
+    if !is_model_fallback {
+        if let Ok(mut values) = cancellations.lock() {
+            values.remove(&request_id);
+        }
     }
     let persisted_task_id = wallet_tasks
         .lock()
         .ok()
-        .and_then(|tasks| tasks.get(&request.request_id).cloned());
+        .and_then(|tasks| tasks.get(&request_id).cloned());
     let (submission, use_direct) = if let Some(task_id) = persisted_task_id {
         (
             WalletTaskSubmission {
@@ -2192,7 +2614,7 @@ async fn agent_wallet_chat(
             &client,
             direct_client.as_ref(),
             &access_token,
-            &request.request_id,
+            &provider_request_id,
             "agent_chat",
             payload,
         )
@@ -2200,13 +2622,13 @@ async fn agent_wallet_chat(
     };
     let poller_started = wallet_pollers
         .lock()
-        .map(|mut pollers| pollers.insert(request.request_id.clone()))
+        .map(|mut pollers| pollers.insert(request_id.clone()))
         .unwrap_or(false);
     if !poller_started {
         return Err("同一个 Agent 后台任务已在查询中".to_string());
     }
     if let Ok(mut tasks) = wallet_tasks.lock() {
-        tasks.insert(request.request_id.clone(), submission.task_id.clone());
+        tasks.insert(request_id.clone(), submission.task_id.clone());
         let _ = write_pending_wallet_tasks(&app_handle, &tasks);
     }
     let value = poll_wallet_task(
@@ -2215,23 +2637,23 @@ async fn agent_wallet_chat(
         direct_client.as_ref(),
         use_direct,
         &access_token,
-        &request.request_id,
+        &request_id,
         submission,
         &cancellations,
     )
     .await;
     if let Ok(mut pollers) = wallet_pollers.lock() {
-        pollers.remove(&request.request_id);
+        pollers.remove(&request_id);
     }
     let remove_persisted_task = wallet_task_mapping_should_be_removed(&value);
     if remove_persisted_task {
         if let Ok(mut tasks) = wallet_tasks.lock() {
-            tasks.remove(&request.request_id);
+            tasks.remove(&request_id);
             let _ = write_pending_wallet_tasks(&app_handle, &tasks);
         }
     }
     if let Ok(mut values) = cancellations.lock() {
-        values.remove(&request.request_id);
+        values.remove(&request_id);
     }
     let value = value.map_err(|error| error.message)?;
 
@@ -2240,6 +2662,7 @@ async fn agent_wallet_chat(
     let mut tool_calls = BTreeMap::<usize, OpenAiToolCallAccumulator>::new();
     let mut finish_reason = None;
     let mut usage = None;
+    let mut diagnostics = OpenAiResponseDiagnostics::default();
     parse_openai_response_value(
         &value,
         &mut content,
@@ -2247,8 +2670,9 @@ async fn agent_wallet_chat(
         &mut tool_calls,
         &mut finish_reason,
         &mut usage,
+        &mut diagnostics,
         &app_handle,
-        &request.request_id,
+        &request_id,
     );
     let tool_calls = tool_calls
         .into_values()
@@ -2261,9 +2685,23 @@ async fn agent_wallet_chat(
             name: value.name,
             arguments: value.arguments,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    if !has_visible_chat_provider_content(&content) && tool_calls.is_empty() {
+        log_empty_chat_provider_response(
+            &request_id,
+            &diagnostic_model,
+            "unmind-wallet",
+            "wallet_task_json",
+            &content,
+            &reasoning,
+            tool_calls.len(),
+            finish_reason.as_deref(),
+            usage.is_some(),
+            &diagnostics,
+        );
+    }
     let result = AgentOpenAiChatResult {
-        request_id: request.request_id.clone(),
+        request_id: request_id.clone(),
         content,
         reasoning,
         tool_calls,
@@ -2273,7 +2711,7 @@ async fn agent_wallet_chat(
     let _ = app_handle.emit(
         "agent-openai-stream",
         json!({
-            "requestId": request.request_id,
+            "requestId": request_id,
             "kind": "completed",
             "timestamp": crate::current_time_millis(),
         }),
@@ -3181,6 +3619,117 @@ mod tests {
     }
 
     #[test]
+    fn chat_completions_fixtures_extract_message_and_stream_content_variants() {
+        let fixtures = [
+            json!({
+                "choices": [{ "message": { "content": "完整正文" }, "finish_reason": "stop" }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": [
+                            { "type": "text", "text": "数组" },
+                            { "type": "output_text", "text": "正文" }
+                        ]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "delta": {
+                        "content": [{ "type": "text", "text": "流式正文" }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": [{ "type": "text", "value": "兼容正文" }]
+                    }
+                }]
+            }),
+        ];
+        let expected = ["完整正文", "数组正文", "流式正文", "兼容正文"];
+
+        for (fixture, expected_text) in fixtures.iter().zip(expected) {
+            let choice = fixture
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|choices| choices.first())
+                .expect("chat completion choice");
+            let mut content = String::new();
+            let mut reasoning = String::new();
+            let mut tool_calls = BTreeMap::new();
+            merge_openai_choice_data(choice, &mut content, &mut reasoning, &mut tool_calls);
+            assert_eq!(content, expected_text);
+        }
+    }
+
+    #[test]
+    fn responses_fixtures_extract_output_parts_output_text_and_delta() {
+        let output_fixture = json!({
+            "id": "resp-1",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [
+                    { "type": "output_text", "text": "第一段" },
+                    { "type": "text", "content": { "text": "第二段" } }
+                ]
+            }]
+        });
+        assert_eq!(
+            openai_responses_output_message_text(&output_fixture),
+            "第一段第二段"
+        );
+
+        let top_level_output_text = json!({ "output_text": "顶层正文" });
+        assert_eq!(
+            openai_responses_explicit_output_text(&top_level_output_text),
+            "顶层正文"
+        );
+
+        let completed_event = json!({
+            "type": "response.completed",
+            "response": { "output_text": [{ "text": "嵌套正文" }] }
+        });
+        assert_eq!(
+            openai_responses_explicit_output_text(&completed_event),
+            "嵌套正文"
+        );
+
+        let delta_event = json!({
+            "type": "response.output_text.delta",
+            "delta": "增量正文"
+        });
+        assert_eq!(
+            delta_event
+                .get("delta")
+                .map(openai_text_value)
+                .unwrap_or_default(),
+            "增量正文"
+        );
+    }
+
+    #[test]
+    fn empty_response_diagnostics_keep_only_shape_metadata() {
+        let mut diagnostics = OpenAiResponseDiagnostics::default();
+        diagnostics.observe(&json!({
+            "choices": [{
+                "message": { "content": "SENSITIVE_RESPONSE_TEXT" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "output_tokens": 0 }
+        }));
+
+        let rendered = format!("{diagnostics:?}");
+        assert_eq!(diagnostics.protocol(), "chat_completions");
+        assert!(diagnostics.top_level_fields.contains("choices:array"));
+        assert!(diagnostics.message_content_types.contains("string"));
+        assert!(!rendered.contains("SENSITIVE_RESPONSE_TEXT"));
+    }
+
+    #[test]
     fn openai_reasoning_parser_accepts_common_public_summary_shapes() {
         for (field, value) in [
             ("reasoning_content", json!("A")),
@@ -3233,6 +3782,7 @@ mod tests {
             model: Some("gpt-5.6-terra".to_string()),
             stream: true,
             reasoning_effort: None,
+            usage_context: None,
         }
     }
 
@@ -3477,6 +4027,74 @@ mod tests {
             resolve_wallet_agent_model(Some("default"), "gpt-5.6-sol"),
             None
         );
+    }
+
+    #[test]
+    fn internal_automatic_model_bypasses_stale_configured_wallet_model() {
+        assert_eq!(
+            resolve_wallet_agent_model_for_request(None, "old-model", true),
+            None
+        );
+        assert_eq!(
+            resolve_wallet_agent_model_for_request(Some("default"), "old-model", true),
+            None
+        );
+        assert_eq!(
+            resolve_wallet_agent_model_for_request(None, "configured-model", false),
+            Some("configured-model".to_string())
+        );
+    }
+
+    #[test]
+    fn only_known_internal_agent_contexts_enable_model_fallback() {
+        assert!(is_internal_agent_usage_context("workflow"));
+        assert!(is_internal_agent_usage_context("three_scene_analysis"));
+        assert!(is_internal_agent_usage_context("system_internal"));
+        assert!(!is_internal_agent_usage_context("chat"));
+        assert!(!is_internal_agent_usage_context(""));
+    }
+
+    #[test]
+    fn legacy_internal_request_ids_keep_old_clients_compatible() {
+        assert_eq!(
+            resolve_agent_usage_context(None, "canvas_text_agent_123"),
+            "canvas_text_agent"
+        );
+        assert_eq!(
+            resolve_agent_usage_context(None, "workflow-planner-api-123"),
+            "workflow"
+        );
+        assert_eq!(
+            resolve_agent_usage_context(None, "chat-request-123"),
+            "chat"
+        );
+        assert_eq!(
+            resolve_agent_usage_context(Some("chat"), "workflow-planner-api-123"),
+            "chat"
+        );
+    }
+
+    #[test]
+    fn model_unavailable_error_detection_is_narrow() {
+        for error in [
+            "MODEL_NOT_AVAILABLE",
+            "MODEL_DISABLED",
+            "TASK FAILED: Unknown chat model",
+            "model not found",
+            "unsupported model",
+        ] {
+            assert!(is_unavailable_chat_model_error(error), "{error}");
+        }
+        for error in [
+            "HTTP 401 unauthorized",
+            "insufficient balance",
+            "quota exceeded",
+            "request timeout",
+            "Agent API HTTP 500: internal server error",
+            "MODEL_FALLBACK_EXHAUSTED: Unknown chat model",
+        ] {
+            assert!(!is_unavailable_chat_model_error(error), "{error}");
+        }
     }
 
     #[test]

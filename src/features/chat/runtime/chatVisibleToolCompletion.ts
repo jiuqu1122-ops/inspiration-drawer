@@ -12,6 +12,20 @@ export type ChatVisibleToolCompletion = {
   fileCount: number;
 };
 
+const MEDIA_RESULT_TOOL_NAMES = new Set([
+  'generate_image',
+  'generate_image_variants',
+  'edit_image',
+  'generate_video',
+  'batch_image_operation',
+]);
+
+export const completedMediaToolIsMissingVisibleResult = (call: ChatToolCall) => (
+  call.status === 'completed'
+  && MEDIA_RESULT_TOOL_NAMES.has(call.toolName)
+  && getGeneratedMediaFromToolCall(call).length === 0
+);
+
 const uniqueByIdentity = <T extends { id?: string }>(
   values: T[],
   fallbackIdentity: (value: T) => string,

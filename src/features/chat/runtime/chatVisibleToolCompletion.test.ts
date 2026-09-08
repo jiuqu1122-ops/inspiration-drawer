@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatToolCall } from '../model/chatTypes';
 import type { ChatMessage } from '../model/chatTypes';
 import {
+  completedMediaToolIsMissingVisibleResult,
   finalizeOrphanedStreamingChatMessage,
   summarizeCompletedVisibleToolCalls,
 } from './chatVisibleToolCompletion';
@@ -41,6 +42,16 @@ describe('visible Chat tool completion', () => {
         media: [{ id: 'partial', type: 'image', path: 'C:\\outputs\\partial.png' }],
       }),
     ])).toBeNull();
+  });
+
+  it('rejects a completed media tool that has no real media result', () => {
+    const completedWithoutMedia = call('generate_image', 'completed', {
+      message: '图片生成已完成',
+      media: [],
+    });
+
+    expect(completedMediaToolIsMissingVisibleResult(completedWithoutMedia)).toBe(true);
+    expect(summarizeCompletedVisibleToolCalls([completedWithoutMedia])).toBeNull();
   });
 
   it('deduplicates visible artifacts returned by multiple progress snapshots', () => {

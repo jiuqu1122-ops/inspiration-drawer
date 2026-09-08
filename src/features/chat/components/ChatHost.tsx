@@ -85,6 +85,7 @@ export function ChatHost({
   const resolvedVisible = viewProps.variant === 'canvas' ? canvasChatVisible : visible;
   const runtime = useChatRuntime({
     model,
+    modelOptions: viewProps.modelOptions,
     serverManagedChannelFailover,
     imageModel: runtimeImageModel || imageModel,
     imageAspectRatio,

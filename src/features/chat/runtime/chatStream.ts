@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { protectChatProviderRequest } from '../context/chatRequestSize';
+import type { AgentModelUsageContext } from './agentModelResolution';
 
 export type ChatProviderToolCall = { id: string; name: string; arguments: string };
 export type ChatProviderResult = {
@@ -107,6 +108,7 @@ export const isUpstreamUnavailableChatError = (error: unknown) => {
 
 export const isRecoverableChatRequestError = (error: unknown) => {
   const text = String(error instanceof Error ? error.message : error || '');
+  if (/MODEL_FALLBACK_EXHAUSTED/i.test(text)) return false;
   if (isUpstreamUnavailableChatError(text)) return false;
   if (/\b(?:400|401|403|413)\b|unauthori[sz]ed|forbidden|invalid api|payload too large|content too large|余额|配额|quota/i.test(text)) {
     return false;
@@ -121,6 +123,7 @@ export const requestChatCompletion = (input: {
   toolChoice?: string | Record<string, unknown>;
   model?: string;
   stream?: boolean;
+  usageContext?: AgentModelUsageContext;
 }) => {
   const protectedRequest = protectChatProviderRequest({
     messages: input.messages,
@@ -135,6 +138,7 @@ export const requestChatCompletion = (input: {
       toolChoice: input.toolChoice,
       model: input.model,
       stream: input.stream !== false,
+      usageContext: input.usageContext,
     },
   });
   const requestWithRecovery = invokeRequest().catch(async error => {

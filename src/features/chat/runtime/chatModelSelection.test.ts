@@ -65,9 +65,12 @@ describe('chat model selection', () => {
     ])).toEqual(['model-c', 'model-a', 'model-b']);
   });
 
-  it('keeps the current conversation model after the remote list when it is absent', () => {
+  it('drops a stale current model when the remote list is authoritative', () => {
     expect(resolveAvailableChatModels(['model-b', 'model-c'], ' model-a '))
-      .toEqual(['model-c', 'model-b', 'model-a']);
+      .toEqual(['model-c', 'model-b']);
+  });
+
+  it('keeps the current conversation model while the remote list is unavailable', () => {
     expect(resolveAvailableChatModels([], 'model-a')).toEqual(['model-a']);
     expect(resolveAvailableChatModels([], '')).toEqual([]);
   });

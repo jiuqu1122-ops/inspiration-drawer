@@ -43,9 +43,21 @@ import { selectBatchImageAttachments } from '../tools/batchImageOperation';
 import { applyChatImageGenerationSettings } from './chatImageGenerationSettings';
 import { summarizeCompletedBatchCall } from './chatBatchCompletion';
 import {
+  completedMediaToolIsMissingVisibleResult,
   finalizeOrphanedStreamingChatMessage,
   summarizeCompletedVisibleToolCalls,
 } from './chatVisibleToolCompletion';
+import {
+  buildWebSearchTurnInstruction,
+  canAcceptWebSearchQuery,
+  canRunChatToolRound,
+  classifyChatProviderOutcome,
+  EMPTY_CHAT_RESULT_ERROR,
+  EMPTY_RESPONSE_RECOVERY_INSTRUCTION,
+  MAX_TOOL_ROUNDS,
+  MAX_WEB_SEARCH_QUERIES_PER_TURN,
+  normalizeWebSearchQuery,
+} from './chatTurnPolicy';
 import { extractChatBatchImagePlan } from './chatBatchImagePlan';
 import {
   fallbackBatchPlanDecision,
@@ -70,6 +82,10 @@ import {
   resolveChatRequestModel,
   type KeyedSerialTaskQueue,
 } from './chatModelSelection';
+import {
+  resolveValidAgentModel,
+  runInternalAgentModelRequest,
+} from './agentModelResolution';
 import {
   cancelChatCompletion,
   isChatRequestIdCurrent,
@@ -110,6 +126,7 @@ export type ChatBatchCompletedPayload = {
 
 export type UseChatRuntimeOptions = {
   model: string;
+  modelOptions?: string[];
   serverManagedChannelFailover?: boolean;
   imageModel?: string;
   imageAspectRatio?: string;
@@ -136,6 +153,7 @@ type PendingApprovalRun = {
   index: number;
   toolMessages: Array<Record<string, unknown>>;
   depth: number;
+  emptyRecoveryCount: number;
 };
 
 type ActiveChatRequest = {
@@ -154,7 +172,6 @@ type ActiveBatchRun = {
 };
 
 const PAGE_SIZE = 50;
-const MAX_TOOL_ROUNDS = 6;
 const SUMMARY_TRIGGER_TOKENS = 18_000;
 const SUMMARY_TRIGGER_MESSAGES = 36;
 const SUMMARY_KEEP_RECENT = 28;
@@ -170,33 +187,39 @@ const classifyBatchPlanReply = async (input: {
 }): Promise<BatchPlanDecision> => {
   const requestId = createChatId('chat-batch-plan-decision');
   try {
-    const result = await requestChatCompletion({
+    const result = await runInternalAgentModelRequest({
+      savedModel: input.model,
+      usageContext: 'system_internal',
       requestId,
-      model: input.model,
-      stream: false,
-      messages: [
-        {
-          role: 'system',
-          content: [
+      createRequestId: () => createChatId('chat-batch-plan-model-fallback'),
+      request: requestModel => requestChatCompletion({
+        requestId: requestModel.requestId,
+        model: requestModel.model,
+        usageContext: requestModel.usageContext,
+        stream: false,
+        messages: [
+          {
+            role: 'system',
+            content: [
             '你负责判断用户对图片批处理执行方案的自然语言回复。',
             'confirm：用户认可方案、表示继续、让你开始做或开始生图，即使没有使用固定口令。',
             'revise：用户提出任何新增要求、否定项、修改意见，或带来了新的附件。',
             'cancel：用户明确表示取消、停止或暂时不做。',
             '不要回答用户，不要解释，只调用 decide_batch_plan_reply 一次。',
-          ].join('\n'),
-        },
-        {
-          role: 'user',
-          content: [
+            ].join('\n'),
+          },
+          {
+            role: 'user',
+            content: [
             `当前方案：\n${input.analysisSummary.slice(0, 6_000)}`,
             `用户回复：\n${input.userReply.slice(0, 2_000)}`,
             `用户是否新增附件：${input.hasNewAttachments ? '是' : '否'}`,
-          ].join('\n\n'),
-        },
-      ],
-      tools: [{
-        type: 'function',
-        function: {
+            ].join('\n\n'),
+          },
+        ],
+        tools: [{
+          type: 'function',
+          function: {
           name: 'decide_batch_plan_reply',
           description: '判断用户是在确认执行、修改方案还是取消任务。',
           parameters: {
@@ -207,12 +230,13 @@ const classifyBatchPlanReply = async (input: {
             },
             required: ['action'],
           },
+          },
+        }],
+        toolChoice: {
+          type: 'function',
+          function: { name: 'decide_batch_plan_reply' },
         },
-      }],
-      toolChoice: {
-        type: 'function',
-        function: { name: 'decide_batch_plan_reply' },
-      },
+      }),
     });
     const toolDecision = result.toolCalls
       .find(call => call.name === 'decide_batch_plan_reply')?.arguments;
@@ -317,13 +341,8 @@ const providerToolCallQueries = (
       ? call.function as Record<string, unknown>
       : {};
     if (String(fn.name || '') !== toolName) return [];
-    try {
-      const args = JSON.parse(String(fn.arguments || '{}')) as Record<string, unknown>;
-      const query = String(args.query || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-      return query ? [query] : [];
-    } catch (_) {
-      return [];
-    }
+    const query = normalizeWebSearchQuery(String(fn.arguments || '{}'));
+    return query ? [query] : [];
   });
 });
 
@@ -543,6 +562,24 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     }
     return applyConversationModel(conversation, model);
   }, [applyConversationModel]);
+
+  const authoritativeModelOptions = options.modelOptions;
+  useEffect(() => {
+    if (!authoritativeModelOptions || authoritativeModelOptions.length === 0) return;
+    const staleConversations = conversationsRef.current.flatMap(conversation => {
+      const resolution = resolveValidAgentModel({
+        savedModel: conversation.model,
+        availableModels: authoritativeModelOptions,
+        usageContext: 'chat',
+      });
+      return conversation.model !== resolution.resolvedModel
+        ? [{ conversation, model: resolution.resolvedModel }]
+        : [];
+    });
+    staleConversations.forEach(({ conversation, model }) => {
+      void applyConversationModel(conversation, model);
+    });
+  }, [applyConversationModel, authoritativeModelOptions, conversations]);
 
   const persistMessageSoon = useCallback((message: ChatMessage, immediate = false) => {
     const existing = persistTimersRef.current.get(message.id);
@@ -858,12 +895,21 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     if (tokens < SUMMARY_TRIGGER_TOKENS && unsummarized.length < SUMMARY_TRIGGER_MESSAGES) return;
     try {
       const requestId = createChatId('chat-summary');
-      const result = await requestChatCompletion({
+      const savedModel = conversationsRef.current.find(item => item.id === conversationId)?.model
+        || optionsRef.current.model;
+      const result = await runInternalAgentModelRequest({
+        savedModel,
+        usageContext: 'system_internal',
         requestId,
-        messages: buildSummaryRequestMessages(currentSummary, unsummarized),
-        tools: [],
-        model: conversationsRef.current.find(item => item.id === conversationId)?.model || optionsRef.current.model,
-        stream: false,
+        createRequestId: () => createChatId('chat-summary-model-fallback'),
+        request: requestModel => requestChatCompletion({
+          requestId: requestModel.requestId,
+          messages: buildSummaryRequestMessages(currentSummary, unsummarized),
+          tools: [],
+          model: requestModel.model,
+          usageContext: requestModel.usageContext,
+          stream: false,
+        }),
       });
       if (!result.content.trim()) return;
       const next: ChatSummary = {
@@ -890,6 +936,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     providerMessages: Array<Record<string, unknown>>,
     depth: number,
     resumeRequestId?: string,
+    emptyRecoveryCount?: number,
   ) => Promise<void>>(async () => {});
 
   const continueToolCalls = useCallback(async (run: PendingApprovalRun, approvedCallId?: string) => {
@@ -1119,6 +1166,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           ? routed.result as Record<string, unknown>
           : {};
         call.status = resultRecord.cancelled === true ? 'cancelled' : 'completed';
+        if (completedMediaToolIsMissingVisibleResult(call)) {
+          call.status = 'error';
+          call.resultJson = serializeChatToolResult({
+            ...resultRecord,
+            incomplete: true,
+            error: '媒体工具未返回有效的图片或视频结果',
+          });
+        }
         call.completedAt = Date.now();
         patchThinkingStep(run.assistantMessageId, `tool-${index}`, {
           type: call.toolName === 'web_search' ? 'search' : 'tool',
@@ -1129,7 +1184,9 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         toolMessages.push({
           role: 'tool',
           tool_call_id: call.id,
-          content: serializeChatToolResult(compactChatToolResultForProvider(call.toolName, routed.result)),
+          content: call.status === 'error'
+            ? call.resultJson
+            : serializeChatToolResult(compactChatToolResultForProvider(call.toolName, routed.result)),
         });
         if (call.toolName === 'generate_image' || call.toolName === 'generate_image_variants' || call.toolName === 'edit_image' || call.toolName === 'batch_image_operation') {
           await notifyGeneratedMedia();
@@ -1200,6 +1257,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       run.requestModel,
       [...run.providerMessages, ...toolMessages],
       run.depth + 1,
+      undefined,
+      run.emptyRecoveryCount,
     );
   }, [
     getConversationMessages,
@@ -1218,8 +1277,14 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
     providerMessages: Array<Record<string, unknown>>,
     depth: number,
     resumeRequestId?: string,
+    emptyRecoveryCount = 0,
   ) => {
-    if (depth >= MAX_TOOL_ROUNDS) throw new Error('连续工具调用过多，已停止');
+    if (!canRunChatToolRound(depth)) throw new Error(`连续工具调用超过 ${MAX_TOOL_ROUNDS} 轮，已停止`);
+    const providerRequestModel = resolveValidAgentModel({
+      savedModel: requestModel,
+      availableModels: optionsRef.current.modelOptions,
+      usageContext: 'chat',
+    }).requestedModel;
     const requestId = resumeRequestId || createChatId('chat-request');
     const conversationMessages = getConversationMessages(conversationId);
     const imageSelection = selectChatImageAttachments(conversationMessages, userText);
@@ -1255,7 +1320,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       : providerToolCallCount(providerMessages, 'generate_image');
     const webSearchCount = previousWebSearchQueries.size;
     const webSearchRequested = webSearchEnabled || shouldExposeWebSearch(userText);
-    const webSearchAvailable = webSearchRequested && webSearchCount < 2;
+    const webSearchAvailable = webSearchRequested
+      && webSearchCount < MAX_WEB_SEARCH_QUERIES_PER_TURN;
     const batchImageOperationAvailable = batchImageOperationRequested
       && previousBatchImageOperationCount === 0;
     const tools = previousFileCreateCount > 0
@@ -1264,7 +1330,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         toolIntentText,
         hasRecentMedia,
         webSearchAvailable,
-        webSearchCount >= 2,
+        webSearchCount >= MAX_WEB_SEARCH_QUERIES_PER_TURN,
         currentImageAttachmentCount,
       ).filter(tool => (
         (previousBatchImageOperationCount === 0 || tool.function.name !== 'batch_image_operation')
@@ -1322,18 +1388,15 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       });
     }
     if (webSearchRequested) {
-      const remainingSearches = Math.max(0, 2 - webSearchCount);
       requestInstructions.push({
         role: 'system',
-        content: [
-          `当前本地日期是 ${currentLocalDateContext()}。解析“今天、昨天、最近”等相对日期时必须以此为准，并把具体日期写入搜索词。`,
-          webSearchCount === 0
-            ? '本轮用户已开启联网搜索。先调用一次 web_search；只有首轮结果明显缺失、歧义或关键词错误时，才可换一个不同关键词再搜索一次。'
-            : remainingSearches > 0
-              ? '本轮已有一次联网搜索结果。结果足够时直接回答；仅在结果明显不足时可再用一个不同关键词纠错，禁止重复原关键词。'
-              : '本轮已用完两次联网搜索。禁止再次调用 web_search，必须基于已有结果回答并说明仍存在的不确定性。',
-          '回答必须综合搜索结果中的摘要、正文摘录、发布时间，并用 Markdown 链接标注来源。不要只给用户一组链接。',
-        ].join('\n'),
+        content: buildWebSearchTurnInstruction(webSearchCount, currentLocalDateContext()),
+      });
+    }
+    if (emptyRecoveryCount > 0) {
+      requestInstructions.push({
+        role: 'system',
+        content: EMPTY_RESPONSE_RECOVERY_INSTRUCTION,
       });
     }
     if (previousFileCreateCount > 0) {
@@ -1372,7 +1435,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         messages: requestMessages,
         tools,
         toolChoice,
-        model: requestModel,
+        model: providerRequestModel,
+        usageContext: 'chat',
         stream: true,
       });
     } catch (initialError) {
@@ -1405,6 +1469,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
             // can select a different healthy backend channel instead of merely
             // retrying the failed public model/channel pair from the first task.
             model: 'default',
+            usageContext: 'chat',
             stream: true,
           });
         } catch (fallbackError) {
@@ -1437,7 +1502,8 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
           requestId: fallbackRequestId,
           messages: fallbackMessages,
           tools: [],
-          model: requestModel,
+          model: providerRequestModel,
+          usageContext: 'chat',
           stream: true,
         });
       }
@@ -1485,16 +1551,12 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         return true;
       }
       if (call.name !== 'web_search') return true;
-      let query = '';
-      try {
-        query = String((JSON.parse(call.arguments || '{}') as Record<string, unknown>).query || '')
-          .trim()
-          .replace(/\s+/g, ' ')
-          .toLocaleLowerCase();
-      } catch (_) {
-        return false;
-      }
-      if (!query || acceptedWebSearchInResponse || acceptedWebSearchQueries.has(query) || acceptedWebSearchQueries.size >= 2) {
+      const query = normalizeWebSearchQuery(call.arguments || '{}');
+      if (
+        !query
+        || acceptedWebSearchInResponse
+        || !canAcceptWebSearchQuery(acceptedWebSearchQueries, call.arguments || '{}')
+      ) {
         return false;
       }
       acceptedWebSearchInResponse = true;
@@ -1538,17 +1600,55 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         index: 0,
         toolMessages: [],
         depth,
+        emptyRecoveryCount,
       });
       return;
     }
     if (toolCalls.length === 0) {
+      const outcome = classifyChatProviderOutcome({
+        content: result.content,
+        toolCallCount: 0,
+        emptyRecoveryCount,
+      });
+      if (outcome === 'complete') {
+        patchMessage(assistantMessageId, message => finalizeChatMessageState({
+          ...message,
+          content: normalizeVisibleChatText(message.content),
+          usage: normalizeUsage(result.usage) || message.usage,
+        }, 'completed'), true);
+        updateConversationBusy(conversationId, false);
+        void maybeSummarize(conversationId);
+        return;
+      }
+      console.warn('Chat provider returned an empty successful result', {
+        requestId: result.requestId || expectedRequestId,
+        model: requestModel,
+        finishReason: result.finishReason,
+        contentLength: result.content.length,
+        reasoningLength: result.reasoning?.length || 0,
+        toolCallCount: result.toolCalls?.length || 0,
+        hasUsage: Boolean(result.usage),
+        emptyRecoveryCount,
+      });
+      if (outcome === 'recover-empty') {
+        await runModelLoopRef.current(
+          conversationId,
+          assistantMessageId,
+          userText,
+          requestModel,
+          providerMessages,
+          depth,
+          undefined,
+          emptyRecoveryCount + 1,
+        );
+        return;
+      }
       patchMessage(assistantMessageId, message => finalizeChatMessageState({
         ...message,
-        content: message.content.trim() || '已完成。',
+        content: EMPTY_CHAT_RESULT_ERROR,
         usage: normalizeUsage(result.usage) || message.usage,
-      }, 'completed'), true);
+      }, 'error', Date.now(), '上游连续返回空结果'), true);
       updateConversationBusy(conversationId, false);
-      void maybeSummarize(conversationId);
       return;
     }
     const calls: ChatToolCall[] = toolCalls.map(call => ({
@@ -1632,6 +1732,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
         index: 0,
         toolMessages: [],
         depth,
+        emptyRecoveryCount,
       });
       updateConversationBusy(conversationId, false);
       return;
@@ -1657,6 +1758,7 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       index: 0,
       toolMessages: [],
       depth,
+      emptyRecoveryCount,
     });
   }, [
     continueToolCalls,
@@ -1825,12 +1927,20 @@ export function useChatRuntime(options: UseChatRuntimeOptions) {
       busyConversationIdsRef.current.has(conversation.id)
       || pendingApprovalsRef.current.has(conversation.id)
     )) return false;
-    const requestModel = resolveChatRequestModel(
+    const selectedRequestModel = resolveChatRequestModel(
       selectedModel,
       conversation?.model,
       optionsRef.current.model,
     );
-    if (conversation && normalizeChatModelSelection(selectedModel) && conversation.model !== requestModel) {
+    const requestModel = resolveValidAgentModel({
+      savedModel: selectedRequestModel,
+      availableModels: optionsRef.current.modelOptions,
+      usageContext: 'chat',
+    }).resolvedModel;
+    if (conversation && conversation.model !== requestModel && (
+      normalizeChatModelSelection(selectedModel)
+      || selectedRequestModel !== requestModel
+    )) {
       void applyConversationModel(conversation, requestModel);
       conversation = conversationsRef.current.find(item => item.id === conversation!.id) || conversation;
     }
