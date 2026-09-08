@@ -1042,6 +1042,28 @@ fn wallet_task_error(value: &Value, fallback: &str) -> String {
         .to_string()
 }
 
+fn wallet_task_submission_allows_legacy_tool_choice_retry(
+    task_type: &str,
+    payload: &Value,
+    status: reqwest::StatusCode,
+    response: &Value,
+) -> bool {
+    task_type == "agent_chat"
+        && payload
+            .as_object()
+            .map(|record| record.contains_key("toolChoice"))
+            .unwrap_or(false)
+        && status == reqwest::StatusCode::BAD_REQUEST
+        && response.get("error").and_then(Value::as_str) == Some("invalid_request")
+        && response.get("message").and_then(Value::as_str) == Some("异步任务请求格式无效")
+}
+
+fn wallet_task_payload_without_tool_choice(payload: &Value) -> Option<Value> {
+    let mut legacy_payload = payload.as_object()?.clone();
+    legacy_payload.remove("toolChoice")?;
+    Some(Value::Object(legacy_payload))
+}
+
 fn wallet_poll_backoff_seconds(consecutive_errors: u32) -> u64 {
     2_u64.saturating_pow(consecutive_errors.min(5)).min(30)
 }
@@ -1154,11 +1176,43 @@ async fn submit_wallet_task(
             ));
         }
     };
-    let status = response.status();
-    let value = response
+    let mut status = response.status();
+    let mut value = response
         .json::<Value>()
         .await
         .map_err(|error| format!("读取后台任务提交响应失败：{error}"))?;
+    if wallet_task_submission_allows_legacy_tool_choice_retry(task_type, &payload, status, &value) {
+        let legacy_payload = wallet_task_payload_without_tool_choice(&payload)
+            .expect("toolChoice presence checked above");
+        let legacy_body = json!({
+            "type": task_type,
+            "requestId": request_id,
+            "payload": legacy_payload,
+        });
+        let retry_client = if used_direct {
+            direct_client.unwrap_or(client)
+        } else {
+            client
+        };
+        let retry_response = retry_client
+            .post("https://api.unmind.art/v1/ai/tasks")
+            .timeout(Duration::from_secs(WALLET_TASK_SUBMISSION_TIMEOUT_SECS))
+            .bearer_auth(access_token)
+            .json(&legacy_body)
+            .send()
+            .await
+            .map_err(|error| {
+                format!(
+                    "旧版服务端兼容重试失败：{}",
+                    crate::describe_reqwest_error(&error)
+                )
+            })?;
+        status = retry_response.status();
+        value = retry_response
+            .json::<Value>()
+            .await
+            .map_err(|error| format!("读取旧版服务端兼容重试响应失败：{error}"))?;
+    }
     if status != reqwest::StatusCode::ACCEPTED {
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             eprintln!("Wallet task submission rejected with HTTP 413 (taskType={task_type})");
@@ -4154,6 +4208,48 @@ mod tests {
         assert!(!wallet_submission_allows_direct_retry(true, true, true));
         assert!(!wallet_submission_allows_direct_retry(true, false, false));
         assert!(!wallet_submission_allows_direct_retry(false, true, false));
+    }
+
+    #[test]
+    fn wallet_submission_only_downgrades_tool_choice_for_the_old_strict_schema() {
+        let payload = json!({
+            "messages": [{ "role": "user", "content": "分别出图" }],
+            "tools": [],
+            "toolChoice": {
+                "type": "function",
+                "function": { "name": "generate_image_variants" }
+            }
+        });
+        let old_server_error = json!({
+            "error": "invalid_request",
+            "message": "异步任务请求格式无效"
+        });
+
+        assert!(wallet_task_submission_allows_legacy_tool_choice_retry(
+            "agent_chat",
+            &payload,
+            reqwest::StatusCode::BAD_REQUEST,
+            &old_server_error,
+        ));
+        assert!(!wallet_task_submission_allows_legacy_tool_choice_retry(
+            "agent_chat",
+            &payload,
+            reqwest::StatusCode::UNAUTHORIZED,
+            &old_server_error,
+        ));
+        assert!(!wallet_task_submission_allows_legacy_tool_choice_retry(
+            "inspiration_analysis",
+            &payload,
+            reqwest::StatusCode::BAD_REQUEST,
+            &old_server_error,
+        ));
+        assert_eq!(
+            wallet_task_payload_without_tool_choice(&payload),
+            Some(json!({
+                "messages": [{ "role": "user", "content": "分别出图" }],
+                "tools": []
+            }))
+        );
     }
 
     #[test]
