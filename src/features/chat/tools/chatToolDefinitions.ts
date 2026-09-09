@@ -29,7 +29,10 @@ export const CHAT_TOOL_DEFINITIONS: ChatToolDefinition[] = [
 const EXPLICIT_TOOL_INTENT = /((当前|我的|这个|这块|现有).{0,4}画布|画布.{0,8}(选中|节点|内容|添加|放入|放进|创建|运行|有什么|看看|读取|操作)|素材库|(生成|做|画|绘制|制作|渲染).{0,40}(图|图片|视频|照片|风景照|海报|插画|封面|头像|壁纸)|(?:generate|create|render|make).{0,40}(?:images?|pictures?|photos?|posters?|illustrations?|covers?|wallpapers?|videos?)|生图|放进画布|发送到画布|选中.{0,4}(图|节点)|当前节点|(列出|查看|运行|执行|有哪些|使用).{0,8}(工作流|workflow)|(工作流|workflow).{0,8}(列表|运行|执行|有哪些)|查找.{0,8}素材|搜索.{0,8}素材)/i;
 const FOLLOWUP_EDIT_INTENT = /(再|继续|刚才|这张|上一张).{0,12}(冷|暖|亮|暗|改|修改|编辑|调整|换|增加|减少)|颜色再|构图再/i;
 const DIRECT_IMAGE_INTENT = /(?:生成|做|画|绘制|制作|渲染|设计).{0,40}(?:图|图片|照片|风景照|海报|插画|封面|头像|壁纸)|(?:出|产出|输出)(?:[一二两三四五六七八九十\d]+)?(?:张|幅)?(?:图|图片|图像)|(?:generate|create|render|make).{0,40}(?:images?|pictures?|photos?|posters?|illustrations?|covers?|wallpapers?)|生图/i;
-const NEGATED_IMAGE_GENERATION_INTENT = /(?:先\s*)?(?:不要|不用|无需|不需要|暂不|暂时不|别)(?:再|立即|现在|马上|先)?\s*(?:出图|生图|做图|画图|生成(?:图片?|图像)|渲染)(?:了|啦|吧)?/gi;
+// `别` is a negation only when it is not the final character of `分别`.
+// Without this guard, requests such as “三个方案分别出图” lose their image
+// intent before tool routing runs.
+const NEGATED_IMAGE_GENERATION_INTENT = /(?:先\s*)?(?:不要|不用|无需|不需要|暂不|暂时不|(?<!分)别)(?:再|立即|现在|马上|先)?\s*(?:出图|生图|做图|画图|生成(?:图片?|图像)|渲染)(?:了|啦|吧)?/gi;
 const FILE_CREATION_INTENT = /(?:生成|创建|制作|导出|整理|写成|保存为|做成|做).{0,28}(?:文件|文档|报告|表格|电子表格|下载|Word|Excel|PDF|DOCX|XLSX|CSV|JSON|Markdown|TXT)|(?:给我|需要|要).{0,12}(?:Word|Excel|PDF|DOCX|XLSX|CSV|JSON|Markdown|TXT)|(?:Word|Excel|PDF|DOCX|XLSX|CSV|JSON|Markdown|TXT).{0,20}(?:文件|文档|报告|表格|生成|创建|导出|下载)/i;
 const BATCH_IMAGE_INTENT = /(?:全部|每张|每一张|每个|分别|逐张|各自|一个个|所有(?:图|图片)|这些(?:图|图片)|(?:这|那)几张.{0,8}(?:图|图片)|多张.{0,8}(?:图|图片)|(?:图|图片).{0,8}都|all\s+(?:images?|pictures?)|each\s+(?:image|picture)|every\s+(?:image|picture)|separately|one\s+per\s+image)/i;
 const COMBINED_REFERENCE_INTENT = /(?:(?:融合|综合|结合).{0,40}(?:生成|做|设计|创作)|参考.{0,20}(?:这些|这几张|多张|所有|全部).{0,20}(?:生成|做|设计|创作).{0,12}(?:一个|一张|一款|新(?:的)?))/i;
